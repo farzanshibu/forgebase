@@ -133,6 +133,11 @@ pub enum Action {
     ReadSql,
     /// Run SQL that writes or changes the schema.
     WriteSql,
+    /// Read graph nodes and edges, run traversals (FB-51). Graph data has no
+    /// row-level policies: a `Decision::Filter` is treated as a denial.
+    GraphRead,
+    /// Create, change or delete graph nodes and edges (FB-51).
+    GraphWrite,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

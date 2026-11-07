@@ -1,0 +1,90 @@
+//! Graph errors and their HTTP mapping.
+
+use forgebase_core::{ErrorCode, ErrorKind};
+use forgebase_data::DataError;
+use forgebase_db::DbError;
+
+/// Errors of the graph service.
+#[derive(Debug, thiserror::Error)]
+pub enum GraphError {
+    /// The caller must authenticate.
+    #[error("authentication required")]
+    Unauthenticated,
+    /// The caller is not allowed to do this.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+    /// No such node (or not visible to the caller's tenant).
+    #[error("node {0:?} not found")]
+    NodeNotFound(String),
+    /// No such edge (or not visible to the caller's tenant).
+    #[error("edge {0:?} not found")]
+    EdgeNotFound(String),
+    /// A node with this id exists.
+    #[error("node {0:?} already exists")]
+    NodeExists(String),
+    /// An edge with this id exists.
+    #[error("edge {0:?} already exists")]
+    EdgeExists(String),
+    /// The request is malformed or exceeds a limit.
+    #[error("{message}")]
+    Invalid {
+        /// Stable code.
+        code: &'static str,
+        /// Explanation.
+        message: String,
+    },
+    /// Storage failure.
+    #[error(transparent)]
+    Db(#[from] DbError),
+    /// Stored data could not be decoded (corruption or a bug).
+    #[error("internal graph error: {0}")]
+    Internal(String),
+}
+
+impl GraphError {
+    pub(crate) fn invalid(code: &'static str, message: impl Into<String>) -> Self {
+        GraphError::Invalid {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<DataError> for GraphError {
+    fn from(e: DataError) -> Self {
+        match e {
+            DataError::Unauthenticated => GraphError::Unauthenticated,
+            DataError::Forbidden(m) => GraphError::Forbidden(m),
+            DataError::Db(e) => GraphError::Db(e),
+            other => GraphError::Internal(other.to_string()),
+        }
+    }
+}
+
+impl ErrorCode for GraphError {
+    fn code(&self) -> &'static str {
+        match self {
+            GraphError::Unauthenticated => "unauthenticated",
+            GraphError::Forbidden(_) => "forbidden",
+            GraphError::NodeNotFound(_) => "node_not_found",
+            GraphError::EdgeNotFound(_) => "edge_not_found",
+            GraphError::NodeExists(_) => "node_exists",
+            GraphError::EdgeExists(_) => "edge_exists",
+            GraphError::Invalid { code, .. } => code,
+            GraphError::Db(e) => e.code(),
+            GraphError::Internal(_) => "internal_error",
+        }
+    }
+
+    fn kind(&self) -> ErrorKind {
+        match self {
+            GraphError::Unauthenticated => ErrorKind::Unauthenticated,
+            GraphError::Forbidden(_) => ErrorKind::Forbidden,
+            GraphError::NodeNotFound(_) | GraphError::EdgeNotFound(_) => ErrorKind::NotFound,
+            GraphError::NodeExists(_) | GraphError::EdgeExists(_) => ErrorKind::Conflict,
+            GraphError::Invalid { .. } => ErrorKind::InvalidInput,
+            GraphError::Db(e) => e.kind(),
+            GraphError::Internal(_) => ErrorKind::Internal,
+        }
+    }
+}

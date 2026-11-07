@@ -117,3 +117,11 @@ paths, index sizes and planner statistics; no extra C code is added.
 | tower-http | 0.7.1, adds features `cors`, `limit` | MIT | api | CORS, request body size limits |
 
 `cargo deny check advisories licenses bans` (cargo-deny 0.20.2): ok.
+
+## Phase 6 graph (FB-51, 2026-11-07)
+
+New crate `forgebase-graph` (graph model on SQLite, recursive-CTE traversal,
+shortest path, REST under `/api/v1/graph`). **No new third-party crates.** It
+uses packages already in the tree: axum, serde, serde_json, thiserror,
+tower-http (`limit`), tracing, url, utoipa, uuid. The bundled SQLite's recursive
+CTEs and JSON1 functions are enough; no graph library is added.

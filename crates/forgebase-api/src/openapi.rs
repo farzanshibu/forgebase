@@ -147,6 +147,7 @@ fn add_errors(op: &mut Operation, with_path_params: bool) {
 /// The complete OpenAPI document.
 pub fn document() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    doc.merge(forgebase_graph::openapi());
     for (path, item) in &mut doc.paths.paths {
         if !path.starts_with("/api/v1/") {
             continue;

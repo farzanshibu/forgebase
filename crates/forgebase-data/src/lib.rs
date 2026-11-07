@@ -130,7 +130,8 @@ impl DataService {
     }
 
     /// Asks the authorizer. `Ok(Some(p))` restricts rows to predicate `p`.
-    pub(crate) fn authorize(
+    /// Public so feature crates (graph, FB-51) authorise through the same hook.
+    pub fn authorize(
         &self,
         ctx: &AccessContext,
         action: Action,

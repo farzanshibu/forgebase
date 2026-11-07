@@ -1,0 +1,31 @@
+[package]
+name = "forgebase-graph"
+description = "ForgeBase graph model on SQLite: nodes, typed edges, traversal, neighbours, shortest path, REST."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
