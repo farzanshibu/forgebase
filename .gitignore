@@ -1,0 +1,9 @@
+/target
+**/node_modules
+/dashboard/dist
+/forgebase-data
+*.db
+*.db-wal
+*.db-shm
+.env
+.DS_Store
