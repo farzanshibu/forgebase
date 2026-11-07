@@ -1,0 +1,76 @@
+# systemd unit for a single-node ForgeBase on Linux.
+#
+# Install (as root):
+#   useradd --system --home-dir /var/lib/forgebase --shell /usr/sbin/nologin forgebase
+#   install -m 0755 forgebase /usr/local/bin/forgebase
+#   install -m 0644 deploy/systemd/forgebase.service /etc/systemd/system/
+#   # optional overrides: /etc/forgebase/forgebase.env (FORGEBASE_* lines)
+#   systemctl daemon-reload && systemctl enable --now forgebase
+#
+# State lives in /var/lib/forgebase (created by StateDirectory=). The server
+# binds 127.0.0.1:8090 unless FORGEBASE_HOST says otherwise; put a reverse
+# proxy with TLS in front before exposing it.
+
+[Unit]
+Description=ForgeBase backend server
+Documentation=https://github.com/forgebase/forgebase
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=forgebase
+Group=forgebase
+ExecStart=/usr/local/bin/forgebase serve
+# Optional overrides; the leading "-" means a missing file is not an error.
+EnvironmentFile=-/etc/forgebase/forgebase.env
+Environment=FORGEBASE_DATA_DIR=/var/lib/forgebase
+Environment=FORGEBASE_LOG_FORMAT=json
+WorkingDirectory=/var/lib/forgebase
+
+# Graceful shutdown: SIGTERM drains requests and checkpoints the WAL.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=5
+
+# Filesystem: state directory only, otherwise read-only.
+StateDirectory=forgebase
+StateDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=/var/lib/forgebase
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+
+# Privileges: none needed (port is above 1024).
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+
+# Network: loopback and outbound only what the server uses.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Syscalls: the standard service allow-list, minus privilege and module calls.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,7 @@
 
 mod commands;
 mod doctor;
+mod dotenv;
 mod probe;
 
 use std::path::PathBuf;
@@ -123,6 +124,11 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // `.env` first: its values feed the environment layer of the config loader.
+    if let Err(e) = dotenv::load_from_cwd() {
+        eprintln!("error: {e:#}");
+        return ExitCode::FAILURE;
+    }
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,

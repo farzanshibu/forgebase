@@ -477,6 +477,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dotenvy",
  "forgebase-api",
  "forgebase-core",
  "forgebase-db",

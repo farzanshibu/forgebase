@@ -1,0 +1,54 @@
+# forgebase.example.toml: every configuration key ForgeBase Phase 1 reads.
+#
+# Copy to forgebase.toml (or run `forgebase init`, which writes an equivalent
+# file). Every value below is the built-in default, so this file changes
+# nothing until you edit a value.
+#
+# Precedence (highest first): command-line flags > FORGEBASE_* environment
+# variables > this file > built-in defaults. Unknown keys are errors.
+
+# Data directory: the database, storage/, indexes/, backups/, tmp/.
+# Relative paths resolve against the directory of this file.
+# Env: FORGEBASE_DATA_DIR   Flag: --data-dir
+data_dir = "forgebase-data"
+
+[server]
+# Bind address. Loopback by default because admin endpoints have no login yet.
+# Env: FORGEBASE_HOST   Flag: --host
+host = "127.0.0.1"
+
+# TCP port. 0 picks a free port (useful in tests).
+# Env: FORGEBASE_PORT   Flag: --port
+port = 8090
+
+# Per-request timeout, seconds. Allowed range 1..=3600.
+# Env: FORGEBASE_REQUEST_TIMEOUT_SECS
+request_timeout_secs = 30
+
+# Grace period for in-flight requests on shutdown, seconds. Range 1..=3600.
+# Env: FORGEBASE_SHUTDOWN_TIMEOUT_SECS
+shutdown_timeout_secs = 30
+
+[database]
+# "full": fsync the WAL on every commit, so committed data survives power loss.
+# "normal": faster, but a power cut can lose the most recent commits.
+# Env: FORGEBASE_DB_SYNCHRONOUS
+synchronous = "full"
+
+# How long a connection waits for another process's lock (CLI migrate, doctor,
+# backups), milliseconds. Maximum 600000.
+# Env: FORGEBASE_DB_BUSY_TIMEOUT_MS
+busy_timeout_ms = 5000
+
+# Parallel read-only connections. Range 1..=64.
+# Env: FORGEBASE_DB_READ_POOL_SIZE
+read_pool_size = 8
+
+[log]
+# Tracing filter, for example "info" or "forgebase=debug". Must not be empty.
+# Env: FORGEBASE_LOG_LEVEL   Flag: --log-level
+level = "info"
+
+# "pretty" (human-readable) or "json" (one object per line).
+# Env: FORGEBASE_LOG_FORMAT   Flag: --log-format
+format = "pretty"
