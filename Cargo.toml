@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+repository = "https://github.com/forgebase/forgebase"
+
+[workspace.dependencies]
+# internal crates
+forgebase-core = { path = "crates/forgebase-core" }
+forgebase-observability = { path = "crates/forgebase-observability" }
+forgebase-migrations = { path = "crates/forgebase-migrations" }
+forgebase-db = { path = "crates/forgebase-db" }
+forgebase-api = { path = "crates/forgebase-api" }
+forgebase-server = { path = "crates/forgebase-server" }
+
+# third party (versions and licences recorded in docs/adr/0002-dependencies.md)
+anyhow = "1.0.104"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "original-uri", "tokio", "tracing"] }
+clap = { version = "4.6.7", features = ["derive"] }
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+mime_guess = { version = "2.0.5", default-features = false }
+rust-embed = { version = "8.13.0", features = ["debug-embed"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["formatting"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "net", "fs", "time", "sync", "io-util"] }
+toml = "1.2.1"
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tower-http = { version = "0.7.1", features = ["catch-panic", "request-id", "timeout", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.29.1", features = ["v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
