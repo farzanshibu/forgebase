@@ -14,8 +14,8 @@
 //!   if WAL cannot be enabled.
 //!
 //! SQLite specifics stay inside this crate: other crates use [`Database`]
-//! methods, never `sqlx` pools. Phase 2 (FB-10) puts a backend trait in front
-//! of this so a PostgreSQL implementation can follow.
+//! methods or the [`Backend`] trait (ADR-0003), never `sqlx` pools, so a
+//! PostgreSQL implementation can follow without changing callers.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,6 +28,16 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Row, SqlitePool};
 
 pub use forgebase_migrations as migrations;
+
+pub mod backend;
+pub mod dialect;
+mod sqlite_backend;
+
+pub use backend::{
+    Backend, BoxFuture, ExecResult, PlanStep, QueryLabel, Rows, SlowQuery, Statement, TxMode, Value, WriteTx,
+};
+pub use dialect::{ColumnType, Dialect, JsonPathSeg, SqliteDialect};
+pub use sqlite_backend::{DEFAULT_SLOW_QUERY_THRESHOLD, SLOW_QUERY_LOG_CAPACITY};
 
 /// How long a caller waits for the writer (or a reader) before giving up.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -89,6 +99,7 @@ struct Inner {
     writer: SqlitePool,
     reader: SqlitePool,
     path: PathBuf,
+    slow: sqlite_backend::SlowLog,
 }
 
 /// Result of [`Database::migrate`].
@@ -213,6 +224,7 @@ impl Database {
                 writer,
                 reader,
                 path: opts.path,
+                slow: sqlite_backend::SlowLog::default(),
             }),
         })
     }
@@ -537,6 +549,26 @@ fn classify(e: sqlx::Error, path: &Path) -> DbError {
                 },
                 // SQLITE_BUSY, SQLITE_LOCKED
                 Some(5) | Some(6) => DbError::Busy(db.message().to_owned()),
+                // SQLITE_READONLY: a write reached a read connection.
+                Some(8) => DbError::ReadOnly(db.message().to_owned()),
+                // SQLITE_CONSTRAINT: classify by extended code.
+                Some(19) => {
+                    let extended = db.code().and_then(|c| c.parse::<i32>().ok()).unwrap_or(19);
+                    let kind = match extended {
+                        2067 | 1555 => ConstraintKind::Unique,
+                        787 => ConstraintKind::ForeignKey,
+                        275 => ConstraintKind::Check,
+                        1299 => ConstraintKind::NotNull,
+                        _ => ConstraintKind::Other,
+                    };
+                    DbError::Constraint {
+                        kind,
+                        message: db.message().to_owned(),
+                    }
+                }
+                // SQLITE_ERROR (syntax, unknown table/column, ...), SQLITE_RANGE,
+                // SQLITE_MISMATCH, SQLITE_TOOBIG: the statement is at fault.
+                Some(1) | Some(25) | Some(20) | Some(18) => DbError::Statement(db.message().to_owned()),
                 _ => DbError::Sqlx(e),
             }
         }
@@ -544,6 +576,22 @@ fn classify(e: sqlx::Error, path: &Path) -> DbError {
         sqlx::Error::PoolClosed => DbError::Closed,
         _ => DbError::Sqlx(e),
     }
+}
+
+/// Which constraint a statement violated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConstraintKind {
+    /// UNIQUE or PRIMARY KEY.
+    Unique,
+    /// FOREIGN KEY.
+    ForeignKey,
+    /// CHECK.
+    Check,
+    /// NOT NULL.
+    NotNull,
+    /// Any other constraint (e.g. a trigger's RAISE).
+    Other,
 }
 
 /// Database errors.
@@ -581,6 +629,20 @@ pub enum DbError {
         #[source]
         source: std::io::Error,
     },
+    /// A constraint was violated; nothing was written.
+    #[error("constraint violated: {message}")]
+    Constraint {
+        /// Which constraint.
+        kind: ConstraintKind,
+        /// Engine message (names the table and column for unique constraints).
+        message: String,
+    },
+    /// A statement tried to write through a read-only connection.
+    #[error("statement is not read-only: {0}")]
+    ReadOnly(String),
+    /// The statement is invalid (syntax error, unknown table or column, type mismatch).
+    #[error("invalid statement: {0}")]
+    Statement(String),
     /// Any other driver error.
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
@@ -596,6 +658,15 @@ impl ErrorCode for DbError {
             DbError::Closed => "database_closed",
             DbError::Migration(m) => m.code(),
             DbError::Io { .. } => "io_error",
+            DbError::Constraint { kind, .. } => match kind {
+                ConstraintKind::Unique => "unique_violation",
+                ConstraintKind::ForeignKey => "foreign_key_violation",
+                ConstraintKind::Check => "check_violation",
+                ConstraintKind::NotNull => "not_null_violation",
+                ConstraintKind::Other => "constraint_violation",
+            },
+            DbError::ReadOnly(_) => "statement_not_read_only",
+            DbError::Statement(_) => "invalid_statement",
             DbError::Sqlx(_) => "database_error",
         }
     }
@@ -606,6 +677,8 @@ impl ErrorCode for DbError {
                 ErrorKind::Unavailable
             }
             DbError::Migration(m) => m.kind(),
+            DbError::Constraint { .. } => ErrorKind::Conflict,
+            DbError::ReadOnly(_) | DbError::Statement(_) => ErrorKind::InvalidInput,
             DbError::NotWal(_) | DbError::Io { .. } | DbError::Sqlx(_) => ErrorKind::Internal,
         }
     }

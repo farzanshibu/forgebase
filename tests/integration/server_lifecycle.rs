@@ -25,7 +25,10 @@ async fn start_write_restart_and_read_back() {
 
     // First start on a fresh directory creates and migrates everything.
     let server = forgebase_server::start(&cfg).await.unwrap();
-    assert_eq!(server.startup_migrations().applied.len(), 1);
+    assert_eq!(
+        server.startup_migrations().applied.len(),
+        forgebase_db::migrations::SYSTEM_MIGRATIONS.len()
+    );
     let addr = server.local_addr().to_string();
     assert_ne!(server.local_addr().port(), 0, "random port was bound");
 
@@ -39,7 +42,10 @@ async fn start_write_restart_and_read_back() {
     );
     let (s, info) = get_json(&addr, "/api/system/info");
     assert_eq!(s, 200);
-    assert_eq!(info["database"]["schema_version"], 1);
+    assert_eq!(
+        info["database"]["schema_version"],
+        forgebase_db::migrations::Migrator::system().latest_version()
+    );
     assert_eq!(info["database"]["journal_mode"], "wal");
     assert_eq!(info["data_dir"], cfg.data_dir.display().to_string());
     let (s, _, metrics) = http("GET", &addr, "/metrics").unwrap();
@@ -86,7 +92,10 @@ async fn start_write_restart_and_read_back() {
     let addr = server.local_addr().to_string();
     let (s, info) = get_json(&addr, "/api/system/info");
     assert_eq!(s, 200);
-    assert_eq!(info["database"]["schema_version"], 1);
+    assert_eq!(
+        info["database"]["schema_version"],
+        forgebase_db::migrations::Migrator::system().latest_version()
+    );
     server.shutdown().await.unwrap();
 }
 

@@ -83,3 +83,25 @@ MIT/Apache combinations, 2 `Apache-2.0`, 1 `Zlib`, 1 `MIT AND BSD-3-Clause`,
 
 - Rust 1.99.0 / Cargo 1.99.0 used to build and test.
 - Workspace `rust-version = 1.94` (sqlx 0.9 MSRV); edition 2024; resolver 3.
+
+## Phase 2 additions (FB-10, 2026-11-07)
+
+New internal crates: `forgebase-schema`, `forgebase-query`, `forgebase-data`
+(ADR-0003). **No new third-party crates enter the tree**: `Cargo.lock` gains
+only the three internal packages. Two crates already in the tree become direct
+dependencies, and one feature is enabled:
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| url | 2.5.8 (`std` only) | MIT OR Apache-2.0 | schema | URL field validation (already in the tree via `sqlx-core`) |
+| base64 | 0.22.1 | MIT OR Apache-2.0 | data | pagination cursors, BLOB values in JSON (already in the tree via `metrics-exporter-prometheus`) |
+| time | 0.3.55, adds feature `parsing` | MIT OR Apache-2.0 | schema | RFC 3339 parsing of `date` fields |
+| tokio | 1.54.1 (workspace features) | MIT | data | `sync::Mutex` serialising schema changes |
+
+`cargo deny check advisories licenses` (cargo-deny 0.20.2, RustSec database
+fetched 2026-11-07) on the full tree: **advisories ok, licences ok** (with the
+policy licences plus Unicode-3.0 allowed, as above).
+
+The bundled SQLite (libsqlite3-sys 0.37.0) is compiled with FTS5, JSON1,
+RTREE, DBSTAT and STAT4, which the data core uses for full-text indexes, JSON
+paths, index sizes and planner statistics; no extra C code is added.
