@@ -22,6 +22,7 @@ forgebase-server = { path = "crates/forgebase-server" }
 anyhow = "1.0.104"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "original-uri", "tokio", "tracing"] }
 clap = { version = "4.6.7", features = ["derive"] }
+dotenvy = { version = "0.15.7", default-features = false }
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }

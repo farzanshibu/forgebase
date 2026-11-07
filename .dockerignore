@@ -1,0 +1,17 @@
+# Build outputs and local state never belong in the build context.
+.git
+.github
+**/target
+**/node_modules
+dashboard/dist
+forgebase-data
+**/forgebase-data
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+forgebase.toml
+.DS_Store
+.claude
+docs

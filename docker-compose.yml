@@ -1,0 +1,25 @@
+# Local single-node ForgeBase. Run: docker compose up --build
+# The port is published on loopback only: admin endpoints have no login yet.
+services:
+  forgebase:
+    build: .
+    image: forgebase:0.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - forgebase-data:/data
+    environment:
+      FORGEBASE_LOG_LEVEL: info
+      # Uncomment to tune the database (defaults shown in forgebase.example.toml):
+      # FORGEBASE_DB_SYNCHRONOUS: full
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  forgebase-data:
