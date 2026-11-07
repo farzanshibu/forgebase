@@ -57,11 +57,18 @@ impl Migration {
 }
 
 /// ForgeBase's own schema, in order. Append only; never edit a shipped entry.
-pub static SYSTEM_MIGRATIONS: &[Migration] = &[Migration::new(
-    1,
-    "initial",
-    include_str!("../../../migrations/system/0001_initial.sql"),
-)];
+pub static SYSTEM_MIGRATIONS: &[Migration] = &[
+    Migration::new(
+        1,
+        "initial",
+        include_str!("../../../migrations/system/0001_initial.sql"),
+    ),
+    Migration::new(
+        2,
+        "data_core",
+        include_str!("../../../migrations/system/0002_data_core.sql"),
+    ),
+];
 
 /// A migration recorded as applied in the database.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -215,7 +215,10 @@ mod tests {
         assert!(j["started_at"].as_str().unwrap().ends_with('Z'));
         assert!(j["uptime_secs"].is_u64());
         assert_eq!(j["database"]["journal_mode"], "wal");
-        assert_eq!(j["database"]["schema_version"], 1);
+        assert_eq!(
+            j["database"]["schema_version"],
+            forgebase_db::migrations::Migrator::system().latest_version()
+        );
         assert!(j["database"]["size_bytes"].as_u64().unwrap() > 0);
         assert!(j["database"]["path"].as_str().unwrap().ends_with("forgebase.db"));
     }

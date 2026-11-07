@@ -1,0 +1,1178 @@
+//! SPEC §27 scenarios 2-6 and 24 at the service layer, against a real SQLite
+//! file. Each scenario also reopens the database to prove persistence.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use common::{admin, open_db, service};
+use forgebase_data::query::StatementKind;
+use forgebase_data::schema::{Collection, Field, FieldKind};
+use forgebase_data::{
+    AggregateFunction, AggregateQuery, AggregateSpec, DataError, GetOptions, IndexDefinition, IndexKey, IndexKind,
+    ListQuery, SqlStatement, UpdateOptions,
+};
+use serde_json::{Value as Json, json};
+
+fn text() -> FieldKind {
+    FieldKind::Text {
+        min_length: None,
+        max_length: None,
+    }
+}
+
+fn number() -> FieldKind {
+    FieldKind::Number {
+        min: None,
+        max: None,
+        integer: false,
+    }
+}
+
+fn sql(s: &str, params: Vec<Json>) -> SqlStatement {
+    SqlStatement { sql: s.into(), params }
+}
+
+/// #2 Create a SQL table (and use the SQL interface: FKs, CHECK, UNIQUE,
+/// views, triggers, joins, GROUP BY, transactions, introspection).
+#[tokio::test]
+async fn scenario_02_create_sql_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let ctx = admin();
+
+    let created = svc
+        .execute_sql_batch(
+            &ctx,
+            vec![
+                sql("CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", vec![]),
+                sql(
+                    "CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL REFERENCES authors(id),
+                     title TEXT NOT NULL, pages INTEGER CHECK (pages > 0))",
+                    vec![],
+                ),
+                sql("CREATE INDEX books_author ON books (author_id)", vec![]),
+                sql("CREATE VIEW author_pages AS SELECT a.name, sum(b.pages) AS pages FROM authors a JOIN books b ON b.author_id = a.id GROUP BY a.name", vec![]),
+                sql("CREATE TABLE audit (msg TEXT)", vec![]),
+                sql("CREATE TRIGGER books_audit AFTER INSERT ON books BEGIN INSERT INTO audit VALUES ('book ' || new.title); END", vec![]),
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(created.iter().all(|r| r.kind == StatementKind::Schema));
+
+    for (name, pages) in [("Ann", 100), ("Bob", 50)] {
+        let r = svc
+            .execute_sql(&ctx, sql("INSERT INTO authors (name) VALUES (?1)", vec![json!(name)]))
+            .await
+            .unwrap();
+        assert_eq!(r.kind, StatementKind::Write);
+        let author = r.last_insert_id.unwrap();
+        for i in 0..3 {
+            svc.execute_sql(
+                &ctx,
+                sql(
+                    "INSERT INTO books (author_id, title, pages) VALUES (?1, ?2, ?3)",
+                    vec![json!(author), json!(format!("{name} {i}")), json!(pages)],
+                ),
+            )
+            .await
+            .unwrap();
+        }
+    }
+    // Constraints are enforced and reported as conflicts / bad input.
+    let fk = svc
+        .execute_sql(
+            &ctx,
+            sql(
+                "INSERT INTO books (author_id, title, pages) VALUES (99, 'x', 1)",
+                vec![],
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(forgebase_core::ErrorCode::code(&fk), "foreign_key_violation");
+    let check = svc
+        .execute_sql(
+            &ctx,
+            sql("INSERT INTO books (author_id, title, pages) VALUES (1, 'x', 0)", vec![]),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(forgebase_core::ErrorCode::code(&check), "check_violation");
+
+    // A failing batch changes nothing.
+    let err = svc
+        .execute_sql_batch(
+            &ctx,
+            vec![
+                sql("INSERT INTO authors (name) VALUES ('Cy')", vec![]),
+                sql("INSERT INTO authors (name) VALUES ('Ann')", vec![]),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(forgebase_core::ErrorCode::code(&err), "unique_violation");
+
+    let r = svc
+        .execute_sql(
+            &ctx,
+            sql(
+                "SELECT a.name, count(*) AS n, sum(b.pages) AS total FROM authors a JOIN books b ON b.author_id = a.id
+                 GROUP BY a.name ORDER BY total DESC LIMIT ?1 OFFSET 0",
+                vec![json!(10)],
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.kind, StatementKind::Read);
+    assert_eq!(r.columns, vec!["name", "n", "total"]);
+    assert_eq!(
+        r.rows,
+        vec![
+            vec![json!("Ann"), json!(3), json!(300)],
+            vec![json!("Bob"), json!(3), json!(150)]
+        ]
+    );
+    let view = svc
+        .execute_sql(&ctx, sql("SELECT * FROM author_pages ORDER BY name", vec![]))
+        .await
+        .unwrap();
+    assert_eq!(view.rows.len(), 2);
+    let audit = svc
+        .execute_sql(&ctx, sql("SELECT count(*) FROM audit", vec![]))
+        .await
+        .unwrap();
+    assert_eq!(audit.rows[0][0], json!(6), "trigger fired per insert");
+
+    // ALTER TABLE and DROP TABLE, recorded in the schema history.
+    svc.execute_sql(&ctx, sql("ALTER TABLE books ADD COLUMN isbn TEXT", vec![]))
+        .await
+        .unwrap();
+    let books = svc.describe_table(&ctx, "books").await.unwrap();
+    assert!(books.columns.iter().any(|c| c.name == "isbn"));
+    assert!(books.indexes.contains(&"books_author".to_string()));
+    let history = svc.schema_history(&ctx, None).await.unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|h| h.action == "sql" && h.statements.iter().any(|s| s.contains("ADD COLUMN isbn")))
+    );
+    let tables: Vec<String> = svc
+        .list_tables(&ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert!(tables.contains(&"books".into()) && tables.contains(&"author_pages".into()));
+    assert!(!tables.iter().any(|t| t.starts_with("_forgebase")));
+
+    // Persistence across reopen.
+    db.close().await;
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let r = svc
+        .execute_sql(&ctx, sql("SELECT count(*) FROM books", vec![]))
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0][0], json!(6));
+    db.close().await;
+}
+
+/// #3 Create a document collection (dynamic schema, nested JSON, JSON-path
+/// queries, merge-patch updates, versions, timestamps).
+#[tokio::test]
+async fn scenario_03_create_document_collection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let ctx = admin();
+
+    let mut products = Collection::documents("products");
+    products.versioned = true;
+    let products = svc.create_collection(&ctx, products).await.unwrap();
+    assert_eq!(products.version, 1);
+    let doc = json!({
+        "name": "Laptop",
+        "price": 75000,
+        "category": "electronics",
+        "metadata": {"brand": "Example", "specifications": {"ram": 16, "storage": 1024}},
+        "tags": ["portable", "work"]
+    });
+    let laptop = svc.create_record(&ctx, "products", doc.clone()).await.unwrap();
+    let id = laptop["id"].as_str().unwrap().to_owned();
+    assert_eq!(laptop["metadata"]["specifications"]["ram"], json!(16));
+    assert_eq!(laptop["_version"], json!(1));
+    assert!(laptop["created"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(laptop["created"], laptop["updated"]);
+    svc.create_record(&ctx, "products", json!({"name": "Phone", "price": 30000, "category": "electronics", "metadata": {"brand": "Other", "specifications": {"ram": 8}}}))
+        .await
+        .unwrap();
+    svc.create_record(
+        &ctx,
+        "products",
+        json!({"name": "Desk", "price": 12000, "category": "furniture"}),
+    )
+    .await
+    .unwrap();
+
+    let q = ListQuery {
+        filter: Some("metadata.specifications.ram >= 16 && category = 'electronics'".into()),
+        fields: Some(vec!["name".into(), "metadata.brand".into()]),
+        ..ListQuery::default()
+    };
+    let page = svc.list_records(&ctx, "products", &q).await.unwrap();
+    assert_eq!(page.total_items, Some(1));
+    assert_eq!(
+        Json::Object(page.items[0].clone()),
+        json!({"name": "Laptop", "metadata": {"brand": "Example"}})
+    );
+
+    // Array membership inside a dynamic document.
+    let tagged = svc
+        .list_records(
+            &ctx,
+            "products",
+            &ListQuery {
+                filter: Some("tags.0 = 'portable'".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(tagged.items.len(), 1);
+
+    // Partial update: RFC 7386 merge patch on nested objects.
+    std::thread::sleep(Duration::from_millis(5));
+    let updated = svc
+        .update_record(
+            &ctx,
+            "products",
+            &id,
+            json!({"price": 70000, "metadata": {"specifications": {"ram": 32, "storage": null}}, "tags": null}),
+            UpdateOptions {
+                expected_version: Some(1),
+                replace: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["_version"], json!(2));
+    assert_eq!(
+        updated["metadata"],
+        json!({"brand": "Example", "specifications": {"ram": 32}})
+    );
+    assert!(updated.get("tags").is_none());
+    assert_eq!(updated["name"], json!("Laptop"));
+    assert!(updated["updated"].as_str() > updated["created"].as_str());
+    // Optimistic concurrency.
+    let stale = svc
+        .update_record(
+            &ctx,
+            "products",
+            &id,
+            json!({"price": 1}),
+            UpdateOptions {
+                expected_version: Some(1),
+                replace: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(stale, DataError::VersionConflict { expected: 1, actual: 2 }));
+
+    // Versions.
+    let versions = svc.record_versions(&ctx, "products", &id).await.unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0].data.as_ref().unwrap()["price"], json!(75000));
+    assert_eq!(versions[1].data.as_ref().unwrap()["price"], json!(70000));
+    svc.delete_record(&ctx, "products", &id, None).await.unwrap();
+    let versions = svc.record_versions(&ctx, "products", &id).await.unwrap();
+    assert_eq!(versions.last().unwrap().op, "delete");
+
+    // Reserved keys are rejected in documents.
+    let bad = svc
+        .create_record(&ctx, "products", json!({"_secret": 1}))
+        .await
+        .unwrap_err();
+    assert!(matches!(bad, DataError::Validation(_)));
+
+    db.close().await;
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    assert_eq!(
+        svc.count_records(&ctx, "products", None, HashMap::new()).await.unwrap(),
+        2
+    );
+    db.close().await;
+}
+
+/// #4 Insert and query records: typed fields, validation, relations with
+/// expand, sorting, offset and cursor pagination, counts, aggregation.
+#[tokio::test]
+async fn scenario_04_insert_and_query_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let ctx = admin();
+
+    let authors = svc
+        .create_collection(
+            &ctx,
+            Collection::base("authors")
+                .with_field(Field::new("name", text()).required())
+                .with_field(Field::new("email", FieldKind::Email).unique()),
+        )
+        .await
+        .unwrap();
+    let tags = svc
+        .create_collection(
+            &ctx,
+            Collection::base("tags").with_field(Field::new("label", text()).required()),
+        )
+        .await
+        .unwrap();
+    svc.create_collection(
+        &ctx,
+        Collection::base("posts")
+            .with_field(
+                Field::new(
+                    "title",
+                    FieldKind::Text {
+                        min_length: Some(3),
+                        max_length: Some(100),
+                    },
+                )
+                .required(),
+            )
+            .with_field(
+                Field::new(
+                    "views",
+                    FieldKind::Number {
+                        min: Some(0.0),
+                        max: None,
+                        integer: true,
+                    },
+                )
+                .with_default(json!(0)),
+            )
+            .with_field(Field::new("published", FieldKind::Bool).with_default(json!(false)))
+            .with_field(Field::new("published_at", FieldKind::Date))
+            .with_field(Field::new("site", FieldKind::Url))
+            .with_field(
+                Field::new(
+                    "status",
+                    FieldKind::Select {
+                        values: vec!["draft".into(), "live".into()],
+                        max_select: 1,
+                    },
+                )
+                .with_default(json!("draft")),
+            )
+            .with_field(
+                Field::new(
+                    "author",
+                    FieldKind::Relation {
+                        collection_id: authors.id.clone(),
+                        max_select: 1,
+                        cascade_delete: true,
+                    },
+                )
+                .required(),
+            )
+            .with_field(Field::new(
+                "tags",
+                FieldKind::Relation {
+                    collection_id: tags.id.clone(),
+                    max_select: 5,
+                    cascade_delete: false,
+                },
+            ))
+            .with_field(Field::new("meta", FieldKind::Json { max_size: None }))
+            .with_field(Field::new(
+                "scores",
+                FieldKind::Array {
+                    items: forgebase_data::schema::ArrayItems::Number,
+                    min_items: None,
+                    max_items: Some(10),
+                },
+            ))
+            .with_field(Field::new("location", FieldKind::Geo))
+            .with_field(Field::new("embedding", FieldKind::Vector { dimensions: 3 }))
+            .with_field(Field::new("cover", FieldKind::File { max_select: 1 })),
+    )
+    .await
+    .unwrap();
+
+    let ann = svc
+        .create_record(&ctx, "authors", json!({"name": "Ann", "email": "ann@example.com"}))
+        .await
+        .unwrap();
+    let bob = svc
+        .create_record(&ctx, "authors", json!({"name": "Bob", "email": "bob@example.com"}))
+        .await
+        .unwrap();
+    let dup = svc
+        .create_record(&ctx, "authors", json!({"name": "X", "email": "ann@example.com"}))
+        .await
+        .unwrap_err();
+    let DataError::Validation(v) = dup else {
+        panic!("{dup:?}")
+    };
+    assert_eq!(v.fields["email"].code, "unique");
+    let t1 = svc.create_record(&ctx, "tags", json!({"label": "rust"})).await.unwrap();
+    let t2 = svc.create_record(&ctx, "tags", json!({"label": "db"})).await.unwrap();
+
+    // Validation covers every type.
+    let err = svc
+        .create_record(
+            &ctx,
+            "posts",
+            json!({"title": "no", "views": 1.5, "published_at": "tomorrow", "site": "ftp://x", "status": "gone",
+                   "author": "missing", "scores": [1, "x"], "location": {"lon": 500, "lat": 0}, "embedding": [1, 2],
+                   "cover": "../x", "unknown": 1}),
+        )
+        .await
+        .unwrap_err();
+    let DataError::Validation(v) = err else {
+        panic!("{err:?}")
+    };
+    for f in [
+        "title",
+        "views",
+        "published_at",
+        "site",
+        "status",
+        "scores",
+        "location",
+        "embedding",
+        "cover",
+        "unknown",
+    ] {
+        assert!(v.fields.contains_key(f), "{f} should fail: {v:?}");
+    }
+    let err = svc
+        .create_record(&ctx, "posts", json!({"title": "Hello", "author": "nope00000000000"}))
+        .await
+        .unwrap_err();
+    let DataError::Validation(v) = err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(v.fields["author"].code, "not_found");
+
+    // A batch of valid records (bulk insert, one transaction).
+    let mut batch = Vec::new();
+    for i in 0..25 {
+        let author = if i % 2 == 0 { &ann["id"] } else { &bob["id"] };
+        batch.push(json!({
+            "title": format!("Post {i:02}"),
+            "views": i * 10,
+            "published": i % 3 == 0,
+            "published_at": format!("2026-01-{:02}T10:00:00+02:00", i + 1),
+            "site": "https://example.com/p",
+            "status": if i % 3 == 0 { "live" } else { "draft" },
+            "author": author,
+            "tags": if i % 2 == 0 { json!([t1["id"], t2["id"]]) } else { json!([t2["id"]]) },
+            "meta": {"lang": if i < 10 { "en" } else { "de" }},
+            "scores": [i, i + 1],
+            "location": {"lon": 10.5, "lat": 50.25},
+            "embedding": [0.1, 0.2, 0.3],
+            "cover": "cover.png"
+        }));
+    }
+    let created = svc.create_records(&ctx, "posts", batch).await.unwrap();
+    assert_eq!(created.len(), 25);
+    assert_eq!(
+        created[0]["published_at"],
+        json!("2026-01-01T08:00:00.000Z"),
+        "dates are normalised to UTC"
+    );
+    assert_eq!(created[0]["published"], json!(true));
+    assert_eq!(created[0]["location"], json!({"lat": 50.25, "lon": 10.5}));
+    let defaulted = svc
+        .create_record(&ctx, "posts", json!({"title": "Defaults", "author": ann["id"]}))
+        .await
+        .unwrap();
+    assert_eq!(defaulted["views"], json!(0));
+    assert_eq!(defaulted["status"], json!("draft"));
+
+    // Filter + sort + offset pagination + count.
+    let q = ListQuery {
+        filter: Some("author.name = 'Ann' && views >= 40 && tags ?= {:tag} && meta.lang = 'de'".into()),
+        params: HashMap::from([("tag".to_string(), t1["id"].clone())]),
+        sort: Some("-views".into()),
+        per_page: Some(3),
+        expand: vec!["author".into(), "tags".into()],
+        ..ListQuery::default()
+    };
+    let p1 = svc.list_records(&ctx, "posts", &q).await.unwrap();
+    assert_eq!(p1.total_items, Some(8)); // even i in 10..=24
+    assert_eq!(p1.total_pages, Some(3));
+    let views: Vec<i64> = p1.items.iter().map(|r| r["views"].as_i64().unwrap()).collect();
+    assert_eq!(views, vec![240, 220, 200]);
+    assert_eq!(p1.items[0]["expand"]["author"]["name"], json!("Ann"));
+    assert_eq!(p1.items[0]["expand"]["tags"].as_array().unwrap().len(), 2);
+    let p3 = svc
+        .list_records(
+            &ctx,
+            "posts",
+            &ListQuery {
+                page: Some(3),
+                ..q.clone()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(p3.items.len(), 2);
+    assert!(p3.next_cursor.is_none());
+
+    // Cursor pagination walks the same order without gaps or repeats.
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = svc
+            .list_records(
+                &ctx,
+                "posts",
+                &ListQuery {
+                    cursor: cursor.clone(),
+                    page: None,
+                    ..q.clone()
+                },
+            )
+            .await
+            .unwrap();
+        seen.extend(page.items.iter().map(|r| r["views"].as_i64().unwrap()));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    assert_eq!(seen, vec![240, 220, 200, 180, 160, 140, 120, 100]);
+    let tampered = svc
+        .list_records(
+            &ctx,
+            "posts",
+            &ListQuery {
+                cursor: cursor.map(|c| c + "x"),
+                sort: Some("title".into()),
+                ..q.clone()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(forgebase_core::ErrorCode::code(&tampered), "invalid_cursor");
+
+    // Text contains, nulls, multi-value all/any.
+    let n = svc
+        .count_records(&ctx, "posts", Some("title ~ 'post 1'"), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(n, 10);
+    let n = svc
+        .count_records(&ctx, "posts", Some("published_at = null"), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    let n = svc
+        .count_records(
+            &ctx,
+            "posts",
+            Some("tags = {:t2} && tags:length = 1"),
+            HashMap::from([("t2".into(), t2["id"].clone())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, 12);
+    let n = svc
+        .count_records(
+            &ctx,
+            "posts",
+            Some("location.lat > 50 && published_at < '2026-01-05'"),
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, 4);
+
+    // Aggregation.
+    let agg = svc
+        .aggregate(
+            &ctx,
+            "posts",
+            &AggregateQuery {
+                filter: Some("status != null".into()),
+                group_by: vec!["status".into()],
+                aggregates: vec![
+                    AggregateSpec {
+                        function: AggregateFunction::Count,
+                        field: None,
+                        alias: None,
+                    },
+                    AggregateSpec {
+                        function: AggregateFunction::Sum,
+                        field: Some("views".into()),
+                        alias: Some("views".into()),
+                    },
+                    AggregateSpec {
+                        function: AggregateFunction::Max,
+                        field: Some("meta.lang".into()),
+                        alias: None,
+                    },
+                ],
+                ..AggregateQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(agg.len(), 2);
+    assert_eq!(
+        Json::Object(agg[0].clone()),
+        json!({"status": "draft", "count": 17, "views": 1920, "max_meta_lang": "en"})
+    );
+    assert_eq!(agg[1]["count"], json!(9));
+
+    // Get with expand + projection; delete with cascade.
+    let one = svc
+        .get_record(
+            &ctx,
+            "posts",
+            created[0]["id"].as_str().unwrap(),
+            &GetOptions {
+                fields: Some(vec!["title".into(), "expand.author.name".into()]),
+                expand: vec!["author".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        Json::Object(one),
+        json!({"title": "Post 00", "expand": {"author": {"name": "Ann"}}})
+    );
+    // Deleting a tag removes it from multi relations; deleting an author cascades.
+    svc.delete_record(&ctx, "tags", t1["id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
+    let n = svc
+        .count_records(
+            &ctx,
+            "posts",
+            Some("tags ?= {:t}"),
+            HashMap::from([("t".into(), t1["id"].clone())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    svc.delete_record(&ctx, "authors", bob["id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        svc.count_records(&ctx, "posts", None, HashMap::new()).await.unwrap(),
+        14
+    );
+
+    db.close().await;
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    assert_eq!(
+        svc.count_records(&ctx, "posts", Some("author.name = 'Ann'"), HashMap::new())
+            .await
+            .unwrap(),
+        14
+    );
+    db.close().await;
+}
+
+async fn seed_products(svc: &forgebase_data::DataService, n: usize) {
+    let ctx = admin();
+    svc.create_collection(
+        &ctx,
+        Collection::documents("products")
+            .with_field(Field::new("name", text()).required())
+            .with_field(Field::new("category", text()))
+            .with_field(Field::new("price", number()))
+            .with_field(Field::new("sku", text())),
+    )
+    .await
+    .unwrap();
+    let cats = ["electronics", "furniture", "books", "toys"];
+    let mut batch = Vec::new();
+    for i in 0..n {
+        batch.push(json!({
+            "name": format!("Item {i} {}", if i % 7 == 0 { "Wireless Keyboard" } else { "thing" }),
+            "category": cats[i % cats.len()],
+            "price": (i % 100) as f64 * 10.0,
+            "sku": format!("SKU-{i:05}"),
+            "metadata": {"brand": format!("brand{}", i % 20)}
+        }));
+        if batch.len() == 500 {
+            svc.create_records(&ctx, "products", std::mem::take(&mut batch))
+                .await
+                .unwrap();
+        }
+    }
+    if !batch.is_empty() {
+        svc.create_records(&ctx, "products", batch).await.unwrap();
+    }
+}
+
+/// #5 Create a composite index (plus unique, partial, expression, JSON-path
+/// and full-text indexes; inspection, statistics, rebuild).
+#[tokio::test]
+async fn scenario_05_create_composite_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    seed_products(&svc, 2000).await;
+
+    let composite = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "idx_products_cat_price".into(),
+                keys: vec![
+                    IndexKey::asc("category"),
+                    IndexKey {
+                        path: "price".into(),
+                        desc: true,
+                    },
+                ],
+                ..IndexDefinition::btree("products", &[])
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(composite.columns, vec!["category", "price"]);
+    assert!(!composite.unique);
+    let uniq = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                unique: true,
+                ..IndexDefinition::btree("products", &["sku"])
+            },
+        )
+        .await
+        .unwrap();
+    assert!(uniq.unique);
+    let partial = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "idx_cheap".into(),
+                partial: Some("price < 100 && category != 'books'".into()),
+                ..IndexDefinition::btree("products", &["price"])
+            },
+        )
+        .await
+        .unwrap();
+    assert!(partial.partial);
+    let expr = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "idx_name_lower".into(),
+                ..IndexDefinition::btree("products", &["name:lower"])
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(expr.columns, vec!["<expr>"]);
+    let jsonpath = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "idx_brand".into(),
+                ..IndexDefinition::btree("products", &["metadata.brand"])
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        jsonpath
+            .sql
+            .unwrap()
+            .contains("json_extract(\"_data\", '$.metadata.brand')")
+    );
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "products_search".into(),
+            kind: IndexKind::Fulltext,
+            ..IndexDefinition::btree("products", &["name", "metadata.brand"])
+        },
+    )
+    .await
+    .unwrap();
+
+    // A unique index over duplicate data fails and leaves nothing behind.
+    let dup = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "idx_cat_unique".into(),
+                unique: true,
+                ..IndexDefinition::btree("products", &["category"])
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(forgebase_core::ErrorCode::code(&dup), "duplicate_values");
+    // Unknown fields and injection-shaped keys are refused.
+    for bad in [
+        "price; DROP TABLE products",
+        "name\"",
+        "name.x",
+        "_data",
+        "price:length:x",
+    ] {
+        assert!(
+            svc.create_index(&ctx, IndexDefinition::btree("products", &[bad]))
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+
+    // Unique index is enforced on writes.
+    let err = svc
+        .create_record(&ctx, "products", json!({"name": "x", "sku": "SKU-00001"}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::Conflict { .. } | DataError::Validation(_)),
+        "{err:?}"
+    );
+
+    // Full-text search, kept in sync by triggers; FTS operators in input are literal.
+    let found = svc
+        .list_records(
+            &ctx,
+            "products",
+            &ListQuery {
+                search: Some("wireless keyboard".into()),
+                per_page: Some(500),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.total_items, Some(286));
+    let id = found.items[0]["id"].as_str().unwrap().to_owned();
+    svc.update_record(
+        &ctx,
+        "products",
+        &id,
+        json!({"name": "Plain"}),
+        UpdateOptions::default(),
+    )
+    .await
+    .unwrap();
+    let found = svc
+        .list_records(
+            &ctx,
+            "products",
+            &ListQuery {
+                search: Some("wireless OR \"keyboard\" NEAR".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        found.total_items,
+        Some(0),
+        "operators are quoted, so NEAR/OR must appear literally"
+    );
+    let found = svc
+        .list_records(
+            &ctx,
+            "products",
+            &ListQuery {
+                search: Some("wireless".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.total_items, Some(285));
+
+    // Inspection with statistics after ANALYZE, rebuild.
+    svc.analyze(&ctx, Some("products")).await.unwrap();
+    let list = svc.list_indexes(&ctx, Some("products")).await.unwrap();
+    let names: Vec<&str> = list.iter().map(|i| i.name.as_str()).collect();
+    for n in [
+        "idx_products_cat_price",
+        "idx_cheap",
+        "idx_name_lower",
+        "idx_brand",
+        "products_search",
+    ] {
+        assert!(names.contains(&n), "{n} in {names:?}");
+    }
+    let c = list.iter().find(|i| i.name == "idx_products_cat_price").unwrap();
+    assert_eq!(c.stats.rows_estimate, Some(2000));
+    assert!(c.stats.size_bytes.unwrap() > 0);
+    let rebuilt = svc.rebuild_index(&ctx, "idx_products_cat_price").await.unwrap();
+    assert_eq!(rebuilt.stats.rows_estimate, Some(2000));
+    svc.rebuild_index(&ctx, "products_search").await.unwrap();
+    let found = svc
+        .list_records(
+            &ctx,
+            "products",
+            &ListQuery {
+                search: Some("wireless".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.total_items, Some(285));
+
+    // Indexes survive restart; drop works.
+    db.close().await;
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    svc.drop_index(&ctx, "idx_cheap").await.unwrap();
+    assert!(svc.get_index(&ctx, "idx_cheap").await.is_err());
+    assert!(svc.get_index(&ctx, "idx_products_cat_price").await.is_ok());
+    let history = svc.schema_history(&ctx, Some("products")).await.unwrap();
+    assert!(history.iter().any(|h| h.action == "index_create"));
+    assert!(history.iter().any(|h| h.action == "index_drop"));
+    db.close().await;
+}
+
+/// #6 Validate index usage with query plans (and the slow-query log and
+/// recommendations).
+#[tokio::test]
+async fn scenario_06_index_usage_in_query_plans() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    seed_products(&svc, 3000).await;
+
+    let q = ListQuery {
+        filter: Some("category = 'books' && price > 500".into()),
+        sort: Some("-price".into()),
+        ..ListQuery::default()
+    };
+    let before = svc.explain_list(&ctx, "products", &q).await.unwrap();
+    assert!(before.full_scans.contains(&"t".to_string()), "{before:?}");
+
+    // The slow-query log captures the scan; recommendations propose an index.
+    svc.set_slow_query_threshold(&ctx, Duration::ZERO).unwrap();
+    svc.list_records(&ctx, "products", &q).await.unwrap();
+    let json_q = ListQuery {
+        filter: Some("metadata.brand = 'brand7'".into()),
+        ..ListQuery::default()
+    };
+    svc.list_records(&ctx, "products", &json_q).await.unwrap();
+    let slow = svc.slow_queries(&ctx).unwrap();
+    assert!(slow.iter().any(|s| {
+        s.label
+            .as_ref()
+            .is_some_and(|l| l.collection == "products" && l.equality_keys == vec!["category"])
+    }));
+    let recs = svc.recommend_indexes(&ctx).await.unwrap();
+    let rec = recs
+        .iter()
+        .find(|r| r.definition.keys.iter().map(|k| k.path.as_str()).collect::<Vec<_>>() == vec!["category", "price"])
+        .unwrap_or_else(|| panic!("{recs:#?}"));
+    assert!(rec.occurrences >= 1);
+    assert!(recs.iter().any(|r| r.definition.keys[0].path == "metadata.brand"));
+
+    // Apply the recommendations; the planner now uses the indexes.
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "idx_cat_price".into(),
+            ..rec.definition.clone()
+        },
+    )
+    .await
+    .unwrap();
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "idx_brand".into(),
+            ..IndexDefinition::btree("products", &["metadata.brand"])
+        },
+    )
+    .await
+    .unwrap();
+    svc.analyze(&ctx, None).await.unwrap();
+    let after = svc.explain_list(&ctx, "products", &q).await.unwrap();
+    assert_eq!(after.indexes_used, vec!["idx_cat_price"], "{after:#?}");
+    assert!(after.full_scans.is_empty(), "{after:#?}");
+    let after_json = svc.explain_list(&ctx, "products", &json_q).await.unwrap();
+    assert_eq!(after_json.indexes_used, vec!["idx_brand"], "{after_json:#?}");
+    let expr = svc
+        .explain_list(
+            &ctx,
+            "products",
+            &ListQuery {
+                filter: Some("sku = 'SKU-00042'".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(expr.full_scans.contains(&"t".to_string()));
+    let recs = svc.recommend_indexes(&ctx).await.unwrap();
+    assert!(
+        !recs
+            .iter()
+            .any(|r| r.definition.keys[0].path == "category" || r.definition.keys[0].path == "metadata.brand"),
+        "covered recommendations are dropped: {recs:#?}"
+    );
+
+    // Results are the same with and without the index.
+    let page = svc.list_records(&ctx, "products", &q).await.unwrap();
+    assert_eq!(page.total_items, Some(360));
+    assert!(
+        page.items
+            .windows(2)
+            .all(|w| w[0]["price"].as_f64() >= w[1]["price"].as_f64())
+    );
+
+    // SQL editor plans too.
+    let plan = svc
+        .explain_sql(
+            &ctx,
+            SqlStatement {
+                sql: "SELECT * FROM products WHERE category = ?1 AND price > ?2".into(),
+                params: vec![json!("toys"), json!(5)],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan.indexes_used, vec!["idx_cat_price"]);
+    db.close().await;
+}
+
+/// #24 Concurrent reads and writes through the single writer: no busy
+/// errors, readers always see whole transactions, counts never go back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn scenario_24_concurrent_reads_and_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = open_db(tmp.path()).await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    svc.create_collection(
+        &ctx,
+        Collection::base("events")
+            .with_field(
+                Field::new(
+                    "writer",
+                    FieldKind::Number {
+                        min: None,
+                        max: None,
+                        integer: true,
+                    },
+                )
+                .required(),
+            )
+            .with_field(
+                Field::new(
+                    "seq",
+                    FieldKind::Number {
+                        min: None,
+                        max: None,
+                        integer: true,
+                    },
+                )
+                .required(),
+            ),
+    )
+    .await
+    .unwrap();
+
+    const WRITERS: i64 = 8;
+    const BATCHES: i64 = 20;
+    const BATCH: i64 = 10;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut writers = Vec::new();
+    for w in 0..WRITERS {
+        let svc = svc.clone();
+        writers.push(tokio::spawn(async move {
+            let ctx = admin();
+            for b in 0..BATCHES {
+                let batch: Vec<Json> = (0..BATCH).map(|i| json!({"writer": w, "seq": b * BATCH + i})).collect();
+                svc.create_records(&ctx, "events", batch).await.unwrap();
+            }
+            // Updates go through the same writer.
+            let page = svc
+                .list_records(
+                    &ctx,
+                    "events",
+                    &ListQuery {
+                        filter: Some(format!("writer = {w} && seq = 0")),
+                        ..ListQuery::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let id = page.items[0]["id"].as_str().unwrap().to_owned();
+            svc.update_record(&ctx, "events", &id, json!({"seq": -1}), UpdateOptions::default())
+                .await
+                .unwrap();
+        }));
+    }
+    let mut readers = Vec::new();
+    for _ in 0..8 {
+        let svc = svc.clone();
+        let done = done.clone();
+        readers.push(tokio::spawn(async move {
+            let ctx = admin();
+            let mut last = 0u64;
+            let mut reads = 0u32;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) || reads < 5 {
+                let n = svc.count_records(&ctx, "events", None, HashMap::new()).await.unwrap();
+                assert_eq!(n % BATCH as u64, 0, "a reader saw a partial batch");
+                assert!(n >= last, "count went backwards");
+                last = n;
+                let page = svc
+                    .list_records(
+                        &ctx,
+                        "events",
+                        &ListQuery {
+                            sort: Some("-created".into()),
+                            per_page: Some(50),
+                            skip_total: true,
+                            ..ListQuery::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert!(page.items.len() as u64 <= 50);
+                reads += 1;
+            }
+            reads
+        }));
+    }
+    for w in writers {
+        w.await.unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut total_reads = 0;
+    for r in readers {
+        total_reads += r.await.unwrap();
+    }
+    assert!(total_reads >= 40);
+    let total = svc.count_records(&ctx, "events", None, HashMap::new()).await.unwrap();
+    assert_eq!(total, (WRITERS * BATCHES * BATCH) as u64);
+    assert_eq!(
+        svc.count_records(&ctx, "events", Some("seq = -1"), HashMap::new())
+            .await
+            .unwrap(),
+        WRITERS as u64
+    );
+    assert!(db.integrity_check().await.unwrap().is_empty());
+    db.close().await;
+}

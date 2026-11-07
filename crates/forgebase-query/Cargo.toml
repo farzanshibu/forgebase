@@ -1,0 +1,18 @@
+[package]
+name = "forgebase-query"
+description = "ForgeBase filter language and SQL text analysis: parses user filters and compiles them to parameterised SQL (no I/O)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+forgebase-core.workspace = true
+forgebase-db.workspace = true
+forgebase-schema.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

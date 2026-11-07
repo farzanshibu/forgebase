@@ -162,7 +162,10 @@ async fn init_then_serve_from_an_empty_folder_and_survive_restart() {
     assert_eq!(info["data_dir"], data.display().to_string());
     assert_eq!(info["database"]["path"], db_path.display().to_string());
     assert_eq!(info["database"]["journal_mode"], "wal");
-    assert_eq!(info["database"]["schema_version"], 1);
+    assert_eq!(
+        info["database"]["schema_version"],
+        forgebase_db::migrations::Migrator::system().latest_version()
+    );
     let (s, err) = get_json(&addr, "/api/does-not-exist");
     assert_eq!(s, 404);
     assert_eq!(err["error"]["code"], "not_found");
@@ -184,7 +187,10 @@ async fn init_then_serve_from_an_empty_folder_and_survive_restart() {
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(status["server"]["running"], true);
     assert_eq!(status["server"]["healthy"], true);
-    assert_eq!(status["database"]["schema_version"], 1);
+    assert_eq!(
+        status["database"]["schema_version"],
+        forgebase_db::migrations::Migrator::system().latest_version()
+    );
     assert_eq!(status["instance_id"], instance_id.as_str());
 
     // migrate refuses while the server holds the data directory
@@ -210,7 +216,10 @@ async fn init_then_serve_from_an_empty_folder_and_survive_restart() {
     let server = Serve::start(&project, port);
     let (s, info) = get_json(&server.addr, "/api/system/info");
     assert_eq!(s, 200);
-    assert_eq!(info["database"]["schema_version"], 1);
+    assert_eq!(
+        info["database"]["schema_version"],
+        forgebase_db::migrations::Migrator::system().latest_version()
+    );
     server.stop();
 
     let db = Database::open(db_options(db_path.clone())).await.unwrap();

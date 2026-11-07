@@ -503,6 +503,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-data"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "forgebase-core",
+ "forgebase-db",
+ "forgebase-query",
+ "forgebase-schema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "forgebase-db"
 version = "0.1.0"
 dependencies = [
@@ -539,6 +556,31 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "forgebase-query"
+version = "0.1.0"
+dependencies = [
+ "forgebase-core",
+ "forgebase-db",
+ "forgebase-schema",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "forgebase-schema"
+version = "0.1.0"
+dependencies = [
+ "forgebase-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]

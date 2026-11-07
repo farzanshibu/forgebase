@@ -17,9 +17,13 @@ forgebase-migrations = { path = "crates/forgebase-migrations" }
 forgebase-db = { path = "crates/forgebase-db" }
 forgebase-api = { path = "crates/forgebase-api" }
 forgebase-server = { path = "crates/forgebase-server" }
+forgebase-schema = { path = "crates/forgebase-schema" }
+forgebase-query = { path = "crates/forgebase-query" }
+forgebase-data = { path = "crates/forgebase-data" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
+base64 = "0.22.1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "original-uri", "tokio", "tracing"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dotenvy = { version = "0.15.7", default-features = false }
@@ -34,13 +38,14 @@ sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-time = { version = "0.3.55", features = ["formatting"] }
+time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "net", "fs", "time", "sync", "io-util"] }
 toml = "1.2.1"
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tower-http = { version = "0.7.1", features = ["catch-panic", "request-id", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+url = { version = "2.5.8", default-features = false, features = ["std"] }
 uuid = { version = "1.29.1", features = ["v4"] }
 
 [workspace.lints.rust]
