@@ -69,11 +69,14 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
             return Err(e.into());
         }
     };
-    let state = AppState::new(db.clone(), layout.clone()).with_auth(auth);
+    // One data service, built by the auth service with the Argon2id hasher;
+    // the auth layer turns credentials into each request's AccessContext.
+    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
     let app = forgebase_api::router(
         state,
         RouterOptions {
             request_timeout: Duration::from_secs(config.server.request_timeout_secs),
+            ..RouterOptions::default()
         },
     );
 
@@ -90,7 +93,7 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     let addr = listener.local_addr().map_err(ServerError::Serve)?;
     if !addr.ip().is_loopback() {
-        tracing::warn!(%addr, "listening on a non-loopback address; admin endpoints have no authentication yet");
+        tracing::warn!(%addr, "listening on a non-loopback address; /api/system/* and /metrics are not behind admin authentication yet (FB-23)");
     }
     lock.record_owner(&LockOwner {
         pid: std::process::id(),
@@ -283,6 +286,9 @@ pub enum ServerError {
     /// The database failed to open or migrate.
     #[error(transparent)]
     Database(#[from] DbError),
+    /// The data service could not load its catalog.
+    #[error(transparent)]
+    Data(#[from] forgebase_data::DataError),
     /// A filesystem error.
     #[error("i/o error at {path}: {source}")]
     Io {
@@ -307,6 +313,7 @@ impl ErrorCode for ServerError {
             ServerError::Bind { source, .. } if source.kind() == std::io::ErrorKind::AddrInUse => "port_in_use",
             ServerError::Bind { .. } => "bind_failed",
             ServerError::Database(e) => e.code(),
+            ServerError::Data(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
@@ -317,6 +324,7 @@ impl ErrorCode for ServerError {
         match self {
             ServerError::Locked { .. } | ServerError::Bind { .. } => ErrorKind::Conflict,
             ServerError::Database(e) => e.kind(),
+            ServerError::Data(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
         }

@@ -26,21 +26,29 @@ pub struct ApiError {
     status: StatusCode,
     code: Cow<'static, str>,
     message: String,
+    details: Option<serde_json::Value>,
 }
 
 /// The `error` object of the envelope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct ErrorDetail {
     /// Stable machine-readable code.
+    #[schema(value_type = String)]
     pub code: Cow<'static, str>,
     /// Human-readable message.
     pub message: String,
+    /// Structured context, e.g. per-field validation errors
+    /// (`{"fields": {"name": {"code": "required", "message": "..."}}}`).
+    /// Additive and optional (ADR-0001 §6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub details: Option<serde_json::Value>,
     /// Id of the request (also in the `x-request-id` response header).
     pub request_id: String,
 }
 
 /// The whole error body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct ErrorEnvelope {
     /// The error.
     pub error: ErrorDetail,
@@ -53,7 +61,25 @@ impl ApiError {
             status,
             code: code.into(),
             message: message.into(),
+            details: None,
         }
+    }
+
+    /// Same error with structured `details`.
+    #[must_use]
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    /// `400` with an explicit code.
+    pub fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, code, message)
+    }
+
+    /// The structured details, if any.
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        self.details.as_ref()
     }
 
     /// `404 not_found`.
@@ -107,6 +133,7 @@ impl ApiError {
             error: ErrorDetail {
                 code: self.code.clone(),
                 message: self.message.clone(),
+                details: self.details.clone(),
                 request_id: request_id.to_owned(),
             },
         }
@@ -149,6 +176,22 @@ pub fn status_for(kind: ErrorKind) -> StatusCode {
         ErrorKind::Conflict => StatusCode::CONFLICT,
         ErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         ErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+impl From<forgebase_data::DataError> for ApiError {
+    /// The DataError → HTTP mapping. Status comes from the error's
+    /// [`ErrorKind`] (ADR-0001 §7): validation, bad filters and bad SQL are
+    /// 400, `Unauthenticated` 401, `Forbidden` 403, missing things 404,
+    /// duplicates, version and schema conflicts 409, a missing password
+    /// hasher 503, storage and catalog failures 500 (message hidden).
+    /// Validation errors carry per-field details.
+    fn from(e: forgebase_data::DataError) -> Self {
+        let mut api = Self::from_error(&e);
+        if let forgebase_data::DataError::Validation(v) = &e {
+            api = api.with_details(serde_json::json!({ "fields": v.fields }));
+        }
+        api
     }
 }
 

@@ -269,18 +269,6 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
     res
 }
 
-/// Middleware for routers built without an [`AuthService`] (tests, tools):
-/// every request is anonymous. Fails closed: nothing is authenticated.
-pub async fn anonymous(mut req: Request, next: Next) -> Response {
-    let ctx = AccessContext::anonymous();
-    let ctx = match req.headers().get("x-request-id").and_then(|v| v.to_str().ok()) {
-        Some(id) => ctx.with_request_id(id),
-        None => ctx,
-    };
-    req.extensions_mut().insert(ctx);
-    next.run(req).await
-}
-
 // ---------------------------------------------------------------------------
 // Extractors
 // ---------------------------------------------------------------------------

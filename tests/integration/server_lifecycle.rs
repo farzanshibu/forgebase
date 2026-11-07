@@ -148,3 +148,29 @@ async fn concurrent_requests_while_writing() {
         .expect("shutdown finished")
         .unwrap();
 }
+
+/// The Phase 2 data API over a real socket: documented by OpenAPI, and denied
+/// to anonymous callers until the auth layer (FB-20) is mounted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn data_api_is_documented_and_denies_anonymous_requests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = forgebase_server::start(&config(tmp.path())).await.unwrap();
+    let addr = server.local_addr().to_string();
+
+    let (s, doc) = get_json(&addr, "/api/openapi.json");
+    assert_eq!(s, 200);
+    assert!(doc["paths"]["/api/v1/collections/{collection}/records"]["get"].is_object());
+
+    for (method, path) in [
+        ("GET", "/api/v1/collections"),
+        ("GET", "/api/v1/collections/anything/records"),
+        ("GET", "/api/v1/sql/tables"),
+        ("GET", "/api/v1/indexes"),
+    ] {
+        let (status, _, body) = http(method, &addr, path).unwrap();
+        let j: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(status, 401, "{method} {path}: {body}");
+        assert_eq!(j["error"]["code"], "unauthenticated");
+    }
+    server.shutdown().await.unwrap();
+}

@@ -24,7 +24,11 @@
 pub mod admin;
 pub mod context;
 pub mod error;
+pub mod http;
+pub mod openapi;
+pub mod principal;
 pub mod routes;
+pub mod v1;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,15 +40,18 @@ use axum::middleware;
 use axum::routing::get;
 use forgebase_auth::AuthService;
 use forgebase_core::DataLayout;
+use forgebase_data::{Authorizer, DataError, DataService, DefaultAuthorizer};
 use forgebase_db::Database;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 pub use context::{RequestId, X_REQUEST_ID};
 pub use error::ApiError;
+pub use principal::Access;
 
 /// Shared state of the HTTP layer. Cheap to clone.
 #[derive(Debug, Clone)]
@@ -55,6 +62,8 @@ pub struct AppState {
 #[derive(Debug, Clone)]
 struct StateInner {
     db: Database,
+    data: DataService,
+    limits: Limits,
     layout: DataLayout,
     started_at: String,
     started: Instant,
@@ -62,12 +71,70 @@ struct StateInner {
     auth: Option<AuthService>,
 }
 
+/// Size limits the handlers enforce themselves (see [`RouterOptions`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Largest import body in bytes.
+    pub max_import_bytes: u64,
+}
+
 impl AppState {
-    /// State for an open, migrated database in `layout`.
-    pub fn new(db: Database, layout: DataLayout) -> Self {
+    /// State for an open, migrated database in `layout`, with the fail-closed
+    /// [`DefaultAuthorizer`] (administrators and the system only).
+    pub async fn new(db: Database, layout: DataLayout) -> Result<Self, DataError> {
+        Self::with_authorizer(db, layout, Arc::new(DefaultAuthorizer)).await
+    }
+
+    /// Same with a custom [`Authorizer`] (the policy engine, or a test double).
+    pub async fn with_authorizer(
+        db: Database,
+        layout: DataLayout,
+        authorizer: Arc<dyn Authorizer>,
+    ) -> Result<Self, DataError> {
+        let data = DataService::new(Arc::new(db.clone()), authorizer).await?;
+        Ok(Self {
+            inner: Arc::new(StateInner {
+                db,
+                data,
+                limits: Limits {
+                    max_import_bytes: RouterOptions::default().max_import_bytes,
+                },
+                layout,
+                started_at: forgebase_core::now_rfc3339(),
+                started: Instant::now(),
+                metrics: forgebase_observability::metrics_handle(),
+                auth: None,
+            }),
+        })
+    }
+
+    /// The data-core service every `/api/v1` handler calls.
+    pub fn data(&self) -> &DataService {
+        &self.inner.data
+    }
+
+    /// Limits enforced inside handlers.
+    pub fn limits(&self) -> Limits {
+        self.inner.limits
+    }
+
+    fn with_limits(&self, limits: Limits) -> Self {
+        // A new state sharing everything but the limits.
+        let mut inner = (*self.inner).clone();
+        inner.limits = limits;
+        Self { inner: Arc::new(inner) }
+    }
+
+    /// State on an existing data service (the one the auth service built,
+    /// with the Argon2id hasher for `password` fields).
+    pub fn from_data(db: Database, layout: DataLayout, data: DataService) -> Self {
         Self {
             inner: Arc::new(StateInner {
                 db,
+                data,
+                limits: Limits {
+                    max_import_bytes: RouterOptions::default().max_import_bytes,
+                },
                 layout,
                 started_at: forgebase_core::now_rfc3339(),
                 started: Instant::now(),
@@ -78,9 +145,12 @@ impl AppState {
     }
 
     /// Same state with authentication: installs the auth layer and mounts
-    /// `/api/auth/*`. Without it every request is anonymous.
+    /// `/api/auth/*`. Without it every request is anonymous. The data service
+    /// becomes the auth service's (one catalog, one password hasher).
     pub fn with_auth(mut self, auth: AuthService) -> Self {
-        Arc::make_mut(&mut self.inner).auth = Some(auth);
+        let inner = Arc::make_mut(&mut self.inner);
+        inner.data = auth.data().clone();
+        inner.auth = Some(auth);
         self
     }
 
@@ -116,34 +186,94 @@ impl AppState {
 }
 
 /// Router options.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RouterOptions {
     /// Per-request timeout; exceeding it returns `408 request_timeout`.
+    /// It bounds the whole handler, including reading an import body.
     pub request_timeout: Duration,
+    /// Largest JSON request body of `/api/v1` (413 `payload_too_large` above).
+    pub max_body_bytes: u64,
+    /// Largest import body (streamed, so far above the JSON limit).
+    pub max_import_bytes: u64,
+    /// Origins allowed by CORS: exact origins such as `https://app.example.com`,
+    /// or `*` for any. Empty (the default) sends no CORS headers, so browsers
+    /// only allow same-origin use.
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Default for RouterOptions {
     fn default() -> Self {
         Self {
             request_timeout: Duration::from_secs(30),
+            max_body_bytes: 4 * 1024 * 1024,
+            max_import_bytes: 256 * 1024 * 1024,
+            cors_allowed_origins: Vec::new(),
         }
     }
 }
 
+fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
+    use axum::http::{HeaderName, Method, header};
+    if origins.is_empty() {
+        return None;
+    }
+    let allow = if origins.iter().any(|o| o == "*") {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(origins.iter().filter_map(|o| o.parse().ok()))
+    };
+    Some(
+        CorsLayer::new()
+            .allow_origin(allow)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::IF_MATCH,
+                HeaderName::from_static("x-request-id"),
+                HeaderName::from_static(forgebase_auth::http::API_KEY_HEADER),
+                HeaderName::from_static(forgebase_auth::http::CSRF_HEADER),
+            ])
+            .expose_headers([header::ETAG, header::LOCATION, HeaderName::from_static("x-request-id")])
+            .max_age(Duration::from_secs(600)),
+    )
+}
+
 /// Builds the application router.
+///
+/// `/api/v1/*` handlers read the request's `AccessContext`. When the state has
+/// an [`AuthService`] ([`AppState::with_auth`]), its layer runs just outside
+/// [`principal::install_anonymous`] (inside request ids, CORS and the timeout,
+/// so auth errors keep the envelope) and stores the caller's context;
+/// otherwise [`principal::install_anonymous`] stores an anonymous context and
+/// the default authorizer denies the request.
 pub fn router(state: AppState, opts: RouterOptions) -> Router {
     let auth = state.auth().cloned();
+    let state = state.with_limits(Limits {
+        max_import_bytes: opts.max_import_bytes,
+    });
     let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
         .route("/metrics", get(routes::metrics))
         .route("/api/system/info", get(routes::system_info))
+        .route("/api/openapi.json", get(openapi::serve))
+        .nest("/api/v1", v1::router(&opts))
         .route("/admin", get(admin::redirect))
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))
         .fallback(routes::not_found)
-        .with_state(state);
-    with_auth_layer(app, auth)
+        .with_state(state)
+        .layer(middleware::from_fn(principal::hide_collection_existence))
+        .layer(middleware::from_fn(principal::install_anonymous));
+    let app = with_auth_layer(app, auth)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             opts.request_timeout,
@@ -164,18 +294,22 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
                 })
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
-        )
-        .layer(middleware::from_fn(context::request_context))
+        );
+    let app = match cors_layer(&opts.cors_allowed_origins) {
+        Some(cors) => app.layer(cors),
+        None => app,
+    };
+    app.layer(middleware::from_fn(context::request_context))
 }
 
-/// Mounts `/api/auth/*` and installs the authentication layer (or the
-/// anonymous layer when there is no auth service).
+/// Mounts `/api/auth/*` and installs the authentication layer, which must run
+/// before (outside) [`principal::install_anonymous`].
 fn with_auth_layer(app: Router, auth: Option<AuthService>) -> Router {
     match auth {
         Some(auth) => app
             .merge(forgebase_auth::http::router(auth.clone()))
             .layer(middleware::from_fn_with_state(auth, forgebase_auth::http::authenticate)),
-        None => app.layer(middleware::from_fn(forgebase_auth::http::anonymous)),
+        None => app,
     }
 }
 
@@ -198,7 +332,10 @@ mod tests {
         .await
         .unwrap();
         db.migrate(Some(&layout.backups_dir())).await.unwrap();
-        (router(AppState::new(db, layout), RouterOptions::default()), tmp)
+        (
+            router(AppState::new(db, layout).await.unwrap(), RouterOptions::default()),
+            tmp,
+        )
     }
 
     async fn call(
