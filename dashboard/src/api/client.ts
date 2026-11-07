@@ -1,4 +1,5 @@
-import type { ApiErrorBody } from "./types";
+import { authHeaders } from "./token";
+import type { ApiErrorBody, FieldError } from "./types";
 
 /** Error model of PLAN section 5: `{"error":{"code","message","request_id"}}`. */
 export class ApiError extends Error {
@@ -15,6 +16,26 @@ export class ApiError extends Error {
     this.code = init.code;
     this.requestId = init.requestId;
     this.body = init.body;
+  }
+
+  /** Per-field validation errors from `error.details.fields` (400 `validation_failed`). */
+  get fields(): Record<string, FieldError> {
+    const b = this.body as { error?: { details?: { fields?: unknown } } } | undefined;
+    const f = b?.error?.details?.fields;
+    if (typeof f !== "object" || f === null) return {};
+    const out: Record<string, FieldError> = {};
+    for (const [k, v] of Object.entries(f as Record<string, unknown>)) {
+      if (typeof v === "object" && v !== null) {
+        const o = v as { code?: unknown; message?: unknown };
+        out[k] = { code: String(o.code ?? "invalid"), message: String(o.message ?? "") };
+      }
+    }
+    return out;
+  }
+
+  /** 401/403: the server wants credentials the dashboard does not have (sign-in is FB-23). */
+  get isAuth(): boolean {
+    return this.status === 401 || this.status === 403;
   }
 
   /** True when no HTTP response was received (server down, DNS, CORS, etc). */
@@ -34,13 +55,19 @@ export interface RequestOptions {
   body?: unknown;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  /** Send `body` as is (string / Blob) with this content type instead of JSON. */
+  rawBody?: BodyInit;
+  /** Return the response text instead of parsing JSON (export). */
+  text?: boolean;
 }
 
 /** Fetch JSON from the server; throws `ApiError` for every failure mode. */
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json", ...opts.headers };
-  let body: string | undefined;
-  if (opts.body !== undefined) {
+  const headers: Record<string, string> = { Accept: "application/json", ...(await authHeaders()), ...opts.headers };
+  let body: BodyInit | undefined;
+  if (opts.rawBody !== undefined) {
+    body = opts.rawBody;
+  } else if (opts.body !== undefined) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(opts.body);
   }
@@ -58,6 +85,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
 
   const text = await res.text();
+  if (opts.text && res.ok) return text as T;
   let parsed: unknown;
   if (text) {
     try {
@@ -84,4 +112,6 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   return parsed as T;
 }
 
+export const send = <T>(method: string, path: string, body?: unknown, headers?: Record<string, string>) =>
+  request<T>(path, { method, body, headers });
 export const get = <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal });
