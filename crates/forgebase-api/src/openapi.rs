@@ -10,6 +10,9 @@ use axum::Json;
 use axum::response::{IntoResponse, Response};
 use utoipa::OpenApi;
 use utoipa::openapi::path::Operation;
+use utoipa::openapi::security::{
+    ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
+};
 use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder};
 
 use crate::error::{ErrorDetail, ErrorEnvelope};
@@ -63,9 +66,11 @@ fn doc_openapi() {}
     info(
         title = "ForgeBase API",
         description = "REST API over ForgeBase's SQL, collection and document engine. \
-            Errors are `{\"error\":{\"code\",\"message\",\"request_id\",\"details?\"}}`. Until authentication ships \
-            (FB-20) every `/api/v1` request is anonymous and is denied with `401`; the `/api/v1` data API is versioned \
-            additively (ADR-0001 §6).",
+            Errors are `{\"error\":{\"code\",\"message\",\"request_id\",\"details?\"}}`. Authenticate with \
+            `Authorization: Bearer <access token | API key | personal access token>`, `X-API-Key`, or the \
+            `fb_session` cookie (+ `X-CSRF-Token` on writes); see `/api/auth/*` and ADR-0004. Requests without \
+            credentials are anonymous and the authorizer decides; the `/api/v1` data API is versioned additively \
+            (ADR-0001 §6).",
         license(name = "MIT OR Apache-2.0"),
     ),
     paths(
@@ -144,9 +149,52 @@ fn add_errors(op: &mut Operation, with_path_params: bool) {
     }
 }
 
+/// Security schemes of the auth layer (FB-20, ADR-0004).
+fn add_security(doc: &mut utoipa::openapi::OpenApi) {
+    let components = doc.components.get_or_insert_with(Default::default);
+    components.add_security_scheme(
+        "bearer",
+        SecurityScheme::Http(
+            HttpBuilder::new()
+                .scheme(HttpAuthScheme::Bearer)
+                .bearer_format("access token (HS256 JWT), API key (fbk_…) or personal access token (fbp_…)")
+                .description(Some(
+                    "`Authorization: Bearer <token>`. Access tokens come from `/api/auth/login` and \
+                     `/api/auth/refresh`; API keys and PATs carry scopes (`<area>:read|write[:<name>]`).",
+                ))
+                .build(),
+        ),
+    );
+    components.add_security_scheme(
+        "api_key",
+        SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+            "X-API-Key",
+            "Service-account API key or personal access token (alternative to the bearer header).",
+        ))),
+    );
+    components.add_security_scheme(
+        "session_cookie",
+        SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
+            "fb_session",
+            "Browser session cookie from `/api/auth/login` with `cookie: true`; unsafe methods also need `X-CSRF-Token`.",
+        ))),
+    );
+}
+
+/// Any one credential, or none (anonymous; the authorizer decides).
+fn api_security() -> Vec<SecurityRequirement> {
+    vec![
+        SecurityRequirement::new("bearer", Vec::<String>::new()),
+        SecurityRequirement::new("api_key", Vec::<String>::new()),
+        SecurityRequirement::new("session_cookie", Vec::<String>::new()),
+        SecurityRequirement::default(),
+    ]
+}
+
 /// The complete OpenAPI document.
 pub fn document() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    add_security(&mut doc);
     for (path, item) in &mut doc.paths.paths {
         if !path.starts_with("/api/v1/") {
             continue;
@@ -163,6 +211,7 @@ pub fn document() -> utoipa::openapi::OpenApi {
         .flatten()
         {
             add_errors(op, params);
+            op.security = Some(api_security());
         }
     }
     doc

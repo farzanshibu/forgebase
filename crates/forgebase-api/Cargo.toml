@@ -10,6 +10,7 @@ build = "build.rs"
 
 [dependencies]
 axum.workspace = true
+forgebase-auth.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true

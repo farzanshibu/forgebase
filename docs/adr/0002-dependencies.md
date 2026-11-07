@@ -117,3 +117,32 @@ paths, index sizes and planner statistics; no extra C code is added.
 | tower-http | 0.7.1, adds features `cors`, `limit` | MIT | api | CORS, request body size limits |
 
 `cargo deny check advisories licenses bans` (cargo-deny 0.20.2): ok.
+
+## Phase 3 authentication additions (FB-20, 2026-11-07)
+
+Versions checked with `cargo info` against crates.io on 2026-11-07; all are
+RustCrypto crates (pure Rust, no C, no `unsafe` in our code).
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| argon2 | 0.6.0 (no default features; `alloc`, `password-hash`) | MIT OR Apache-2.0 | auth | Argon2id password hashing, PHC strings |
+| hmac | 0.13.0 | MIT OR Apache-2.0 | auth | HS256 access tokens, keyed token hashing, key derivation, TOTP |
+| sha1 | 0.11.0 (no default features) | MIT OR Apache-2.0 | auth | HMAC-SHA1 for TOTP (RFC 6238 default, what authenticator apps use) |
+| chacha20poly1305 | 0.11.0 (no default features; `alloc`) | Apache-2.0 OR MIT | auth | XChaCha20-Poly1305 encryption of signing keys and TOTP seeds at rest |
+| subtle | 2.6.1 (no default features) | BSD-3-Clause | auth | constant-time comparisons |
+| getrandom | 0.4.3 | MIT OR Apache-2.0 | auth | OS CSPRNG for salts, tokens, codes, keys (already in the tree via uuid) |
+| sha2 | 0.11.1 | MIT OR Apache-2.0 | auth | HMAC-SHA256 (already a direct dependency of migrations) |
+
+New packages in `Cargo.lock` (transitive): `aead` 0.6.1, `base64ct` 1.8.3,
+`blake2` 0.11.0, `chacha20` 0.10.2, `cipher` 0.5.2, `cmov` 0.5.4,
+`ctutils` 0.4.8, `inout` 0.2.6, `password-hash` 0.6.1, `phc` 0.6.1,
+`poly1305` 0.9.1, `universal-hash` 0.6.1, all `MIT OR Apache-2.0`.
+
+Deliberately **not** added: a JWT library (`jsonwebtoken` pulls `ring` or
+`aws-lc`; the strict HS256 subset we need is ~60 tested lines that accept only
+`alg=HS256` with a known `kid`), a TOTP crate (RFC 6238 is ~30 lines, tested
+against the RFC vectors), `rand` (getrandom is enough), an SMTP client (the
+`Mailer` trait has a dev mailer; a provider is a later card).
+
+`cargo deny check advisories licenses` (cargo-deny 0.20.2, RustSec database
+fetched 2026-11-07) on the full tree: **advisories ok, licences ok**.
