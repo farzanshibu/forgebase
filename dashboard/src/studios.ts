@@ -20,7 +20,7 @@ export const STUDIOS: Studio[] = [
     path: "database",
     label: "Database Studio",
     summary: "Collections, tables, SQL",
-    phase: 2,
+    phase: null,
     features: ["Collection browser and table editor", "Spreadsheet-style viewer with inline editing", "Schema designer and index management", "SQL editor, query history, profiler, explain plans", "Import and export"],
   },
   {

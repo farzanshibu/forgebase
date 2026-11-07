@@ -11,7 +11,7 @@ describe("App shell", () => {
   });
 
   it("shows an honest arrives-in-phase panel for unbuilt studios", () => {
-    render(<MemoryRouter initialEntries={["/database"]}><App /></MemoryRouter>);
-    expect(screen.getByText("Arrives in phase 2")).toBeInTheDocument();
+    render(<MemoryRouter initialEntries={["/redis"]}><App /></MemoryRouter>);
+    expect(screen.getByText("Arrives in phase 4")).toBeInTheDocument();
   });
 });

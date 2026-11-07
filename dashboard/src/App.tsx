@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import StudioPlaceholder from "./components/StudioPlaceholder";
+import DatabasePage from "./pages/database/DatabasePage";
 import SystemPage from "./pages/SystemPage";
 import { STUDIOS } from "./studios";
 
@@ -11,6 +12,8 @@ export default function App() {
         {STUDIOS.map((s) =>
           s.path === "system" ? (
             <Route key={s.path} path="system" element={<SystemPage />} />
+          ) : s.path === "database" ? (
+            <Route key={s.path} path="database/*" element={<DatabasePage />} />
           ) : s.path === "" ? (
             <Route key="index" index element={<StudioPlaceholder studio={s} />} />
           ) : (

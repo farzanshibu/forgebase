@@ -48,3 +48,39 @@ export function usePolling<T>(fn: (signal: AbortSignal) => Promise<T>, intervalM
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   return { data, error, loading, updatedAt, refresh };
 }
+
+export interface LoadState<T> {
+  data: T | undefined;
+  error: unknown;
+  loading: boolean;
+  reload: () => void;
+}
+
+/** Load once per `key` (and per `reload()`); the previous key's data is never shown for a new key. */
+export function useLoad<T>(fn: (signal: AbortSignal) => Promise<T>, key: string): LoadState<T> {
+  const [state, setState] = useState<{ key: string; data?: T; error?: unknown }>();
+  const [tick, setTick] = useState(0);
+  const fnRef = useRef(fn);
+  useEffect(() => {
+    fnRef.current = fn;
+  });
+  const full = `${key}#${tick}`;
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fnRef.current(ctrl.signal).then(
+      (data) => !ctrl.signal.aborted && setState({ key: full, data }),
+      (error: unknown) => !ctrl.signal.aborted && setState({ key: full, error }),
+    );
+    return () => ctrl.abort();
+  }, [full]);
+  const reload = useCallback(() => setTick((t) => t + 1), []);
+  const fresh = state?.key === full;
+  // After reload() keep showing the last data of the same key rather than flashing empty.
+  const sameKey = state?.key.split("#")[0] === key;
+  return {
+    data: fresh || sameKey ? state?.data : undefined,
+    error: fresh ? state?.error : undefined,
+    loading: !fresh,
+    reload,
+  };
+}
