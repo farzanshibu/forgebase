@@ -1,0 +1,31 @@
+[package]
+name = "forgebase-api"
+description = "ForgeBase HTTP API: routes, error envelope, request ids, metrics and the embedded admin dashboard."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+axum.workspace = true
+forgebase-core.workspace = true
+forgebase-db.workspace = true
+forgebase-observability.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+mime_guess.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
