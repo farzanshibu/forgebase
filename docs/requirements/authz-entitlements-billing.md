@@ -393,3 +393,36 @@ One important architecture decision: Are you building this for:
 - Both, with users able to have personal plans and also belong to multiple paid teams?
 
 I recommend the third model if you're building a general-purpose SaaS platform.
+
+## E. Second addendum from the human, 2026-11-07 (verbatim)
+
+| Area | Included capabilities |
+|---|---|
+| Multi-tenant identity | Isolated realms, email/password and one-time-code login, phone-number login with SMS codes, Google, GitHub, Apple, Facebook, WeChat, Discord, and LDAP login, passkeys, TOTP 2FA, an OpenID Connect layer, Cloudflare Turnstile bot protection |
+| Authorization and apps | Realm-level RBAC, organizations with their own roles and membership, Client Apps, API keys, OAuth 2.0, device authorization, cross-app SSO |
+| Billing and payments | Stripe, Creem, and WeChat Pay, App Store / Google Play in-app purchases, subscriptions, one-time purchases, multi-currency pricing, invoices, payment-to-entitlement mapping, payment and credit-consumption statistics |
+| Credits and usage | Prepaid balances, top-ups, refunds, expiry, per-user ledgers, grants, rolling quota windows |
+| Admin and operations | Users, roles, billing, credits, apps, tenant settings, audit trails, account lifecycle management |
+| Product customization | Custom domains, white-label branding, transactional email, versioned legal agreements, API docs, SDKs |
+
+## F. Decisions and mapping for section E (god, 2026-11-07)
+
+1. **Realm** is the top isolation level: realm → organizations → projects/teams. A realm is a separate user pool (the same email can exist in two realms), with its own login methods, providers, branding, apps and realm-level roles. Existing data lives in realm `default`.
+2. **OpenID Connect layer** means ForgeBase is also an identity provider for other apps: Client Apps, OAuth 2.0 authorization server, device authorization (RFC 8628), cross-app single sign-on inside a realm.
+3. **Credits** are an append-only ledger (every grant, top-up, consumption, refund and expiry is a row; balances are derived and checked), separate from quotas (FB-24) but able to pay for usage.
+
+| Capability | Package |
+|---|---|
+| Realm as top tenant level in the data model, AccessContext and realm-level RBAC | FB-21 (told) |
+| Facebook, WeChat, Discord login (with Google, GitHub, Apple, generic OIDC), passkeys | FB-22 |
+| Realm-scoped auth tables, phone-number login with SMS codes (provider trait), LDAP login, Cloudflare Turnstile on signup/login/reset/OTP, account lifecycle (suspend, deactivate, delete, anonymise, export) | FB-25 (new) |
+| Client Apps, OAuth 2.0 authorization server (code + PKCE, client credentials, refresh, introspection, revocation), device authorization, OIDC discovery/JWKS/userinfo/ID tokens, consent, cross-app SSO | FB-26 (new) |
+| Rolling (sliding) quota windows | FB-24 |
+| Multi-currency pricing, payment-to-entitlement mapping, payment statistics | FB-70 |
+| Creem, WeChat Pay, App Store and Google Play in-app purchases (server-side verification and server notifications) | FB-72 (new) |
+| Prepaid balances, top-ups, refunds, expiry, per-user and per-org ledgers, grants, credit consumption and statistics | FB-73 (new) |
+| Custom domains, white-label branding and hosted login pages, transactional email (SMTP + templates), versioned legal agreements with acceptance records, hosted API docs | FB-74 (new) |
+| Admin: users, roles, audit trails, account lifecycle | FB-23 |
+| Admin: billing, credits, payment and credit statistics | FB-71 |
+| Admin: realms, apps, identity providers, tenant settings, branding, domains, email templates, legal agreements | FB-27 (new) |
+| SDKs | FB-41, FB-82 |
