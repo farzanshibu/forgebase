@@ -105,3 +105,15 @@ policy licences plus Unicode-3.0 allowed, as above).
 The bundled SQLite (libsqlite3-sys 0.37.0) is compiled with FTS5, JSON1,
 RTREE, DBSTAT and STAT4, which the data core uses for full-text indexes, JSON
 paths, index sizes and planner statistics; no extra C code is added.
+
+## Phase 2 REST API additions (FB-11, 2026-11-07)
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| utoipa (+ utoipa-gen 6.0.1, feature `macros`) | 6.0.0 | MIT OR Apache-2.0 | api | OpenAPI 3 document at `/api/openapi.json`; new to the tree (the only new third-party packages in `Cargo.lock`) |
+| futures-util | 0.3.34 (`std`) | MIT OR Apache-2.0 | api | streamed export bodies (`stream::try_unfold`); already in the tree |
+| http-body-util | 0.1.5 | MIT | api | reading import bodies frame by frame; already in the tree via axum |
+| url | 2.5.8 | MIT OR Apache-2.0 | api | `form_urlencoded` query-string parsing; already in the tree |
+| tower-http | 0.7.1, adds features `cors`, `limit` | MIT | api | CORS, request body size limits |
+
+`cargo deny check advisories licenses bans` (cargo-deny 0.20.2): ok.

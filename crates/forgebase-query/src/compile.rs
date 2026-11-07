@@ -77,7 +77,7 @@ impl<'d> SqlBuilder<'d> {
 }
 
 /// Looks up collections by id (relation targets).
-pub trait Catalog {
+pub trait Catalog: Sync {
     /// Collection with this id.
     fn collection_by_id(&self, id: &str) -> Option<&Collection>;
 }

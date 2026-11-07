@@ -61,11 +61,20 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     let instance = db.ensure_instance().await?;
 
-    let state = AppState::new(db.clone(), layout.clone());
+    let state = match AppState::new(db.clone(), layout.clone()).await {
+        Ok(state) => state,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
+    // Until the auth layer (FB-20) is mounted here, every /api/v1 request is
+    // anonymous and the default authorizer denies it.
     let app = forgebase_api::router(
         state,
         RouterOptions {
             request_timeout: Duration::from_secs(config.server.request_timeout_secs),
+            ..RouterOptions::default()
         },
     );
 
@@ -255,6 +264,9 @@ pub enum ServerError {
     /// The database failed to open or migrate.
     #[error(transparent)]
     Database(#[from] DbError),
+    /// The data service could not load its catalog.
+    #[error(transparent)]
+    Data(#[from] forgebase_data::DataError),
     /// A filesystem error.
     #[error("i/o error at {path}: {source}")]
     Io {
@@ -276,6 +288,7 @@ impl ErrorCode for ServerError {
             ServerError::Bind { source, .. } if source.kind() == std::io::ErrorKind::AddrInUse => "port_in_use",
             ServerError::Bind { .. } => "bind_failed",
             ServerError::Database(e) => e.code(),
+            ServerError::Data(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
         }
@@ -285,6 +298,7 @@ impl ErrorCode for ServerError {
         match self {
             ServerError::Locked { .. } | ServerError::Bind { .. } => ErrorKind::Conflict,
             ServerError::Database(e) => e.kind(),
+            ServerError::Data(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
         }
     }
