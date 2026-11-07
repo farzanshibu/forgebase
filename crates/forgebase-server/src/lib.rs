@@ -7,11 +7,15 @@
 //! 3. open the primary database (WAL, pragmas) and apply pending system
 //!    migrations, snapshotting first if the database already existed,
 //! 4. record the instance id on first start,
-//! 5. bind the listener and serve the API.
+//! 5. bind the listener and serve the API (with the jobs API of
+//!    `forgebase-jobs` mounted under `/api/v1/jobs`),
+//! 6. start the job scheduler and in-process worker pool.
 //!
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
-//! `shutdown_timeout_secs` for in-flight requests, checkpoints the WAL into
-//! the main database file, closes the pools and releases the lock.
+//! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
+//! jobs get the same time to finish, the rest are released back to the queue),
+//! checkpoints the WAL into the main database file, closes the pools and
+//! releases the lock.
 
 mod lock;
 
@@ -26,6 +30,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use forgebase_jobs::{JobRegistry, JobService, PoolConfig};
 pub use lock::{DataDirLock, LockOwner};
 
 /// A started server.
@@ -38,12 +43,30 @@ pub struct RunningServer {
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
     upkeep: JoinHandle<()>,
+    jobs: JobService,
+    job_pool: Option<forgebase_jobs::PoolHandle>,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
 
-/// Starts a server for `config`. Returns once the listener is bound.
+/// Starts a server for `config` with no in-process job handlers (jobs are
+/// still stored, scheduled and served to external workers). Returns once the
+/// listener is bound.
 pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
+    let pool = PoolConfig {
+        shutdown_grace: Duration::from_secs(config.server.shutdown_timeout_secs),
+        ..PoolConfig::default()
+    };
+    start_with_jobs(config, JobRegistry::new(), pool).await
+}
+
+/// Like [`start`], with in-process handlers for job kinds. The worker pool
+/// claims only the kinds registered in `registry`.
+pub async fn start_with_jobs(
+    config: &Config,
+    registry: JobRegistry,
+    pool: PoolConfig,
+) -> Result<RunningServer, ServerError> {
     let layout = DataLayout::new(&config.data_dir);
     layout.ensure().map_err(|source| ServerError::Io {
         path: layout.root().to_path_buf(),
@@ -68,12 +91,14 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
             return Err(e.into());
         }
     };
+    let jobs = JobService::new(state.data().clone());
     // Until the auth layer (FB-20) is mounted here, every /api/v1 request is
     // anonymous and the default authorizer denies it.
     let app = forgebase_api::router(
         state,
         RouterOptions {
             request_timeout: Duration::from_secs(config.server.request_timeout_secs),
+            extensions: vec![forgebase_jobs::extension(jobs.clone())],
             ..RouterOptions::default()
         },
     );
@@ -116,6 +141,8 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         }
     });
 
+    let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
+
     tracing::info!(
         %addr,
         data_dir = %layout.root().display(),
@@ -131,6 +158,8 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         shutdown_tx: Some(shutdown_tx),
         task: Some(task),
         upkeep,
+        jobs,
+        job_pool: Some(job_pool),
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -145,6 +174,12 @@ impl RunningServer {
     /// The primary database.
     pub fn database(&self) -> &Database {
         &self.db
+    }
+
+    /// The job queue of this instance (enqueue, inspect, claim as the system
+    /// principal).
+    pub fn jobs(&self) -> &JobService {
+        &self.jobs
     }
 
     /// This instance's identity.
@@ -209,6 +244,9 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.upkeep.abort();
+        if let Some(pool) = self.job_pool.take() {
+            pool.shutdown().await;
+        }
         if let Err(e) = self.db.checkpoint().await {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
         }

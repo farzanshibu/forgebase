@@ -21,6 +21,7 @@ forgebase-server = { path = "crates/forgebase-server" }
 forgebase-schema = { path = "crates/forgebase-schema" }
 forgebase-query = { path = "crates/forgebase-query" }
 forgebase-data = { path = "crates/forgebase-data" }
+forgebase-jobs = { path = "crates/forgebase-jobs" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"

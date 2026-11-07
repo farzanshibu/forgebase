@@ -155,6 +155,18 @@ impl DataService {
         }
     }
 
+    /// Authorises an action that is not about one collection (jobs, FB-61).
+    ///
+    /// The system is always allowed; everybody else goes through the
+    /// [`Authorizer`] with no collection. Such actions have no rows to filter,
+    /// so a [`Decision::Filter`] answer is treated as a denial (fail closed).
+    pub fn authorize_action(&self, ctx: &AccessContext, action: Action) -> Result<(), DataError> {
+        match self.authorize(ctx, action, None)? {
+            None => Ok(()),
+            Some(_) => Err(DataError::Forbidden(format!("{action:?} is not allowed"))),
+        }
+    }
+
     pub(crate) fn compile_options(&self, ctx: &AccessContext) -> CompileOptions {
         CompileOptions {
             allow_hidden: ctx.is_privileged(),

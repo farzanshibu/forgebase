@@ -144,9 +144,20 @@ fn add_errors(op: &mut Operation, with_path_params: bool) {
     }
 }
 
-/// The complete OpenAPI document.
+/// The complete OpenAPI document of the core API.
 pub fn document() -> utoipa::openapi::OpenApi {
+    document_with(std::iter::empty())
+}
+
+/// The document with the fragments of feature crates merged in
+/// ([`crate::ApiExtension`]).
+pub fn document_with<'a>(
+    extensions: impl IntoIterator<Item = &'a utoipa::openapi::OpenApi>,
+) -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    for ext in extensions {
+        doc.merge(ext.clone());
+    }
     for (path, item) in &mut doc.paths.paths {
         if !path.starts_with("/api/v1/") {
             continue;
@@ -169,6 +180,6 @@ pub fn document() -> utoipa::openapi::OpenApi {
 }
 
 /// `GET /api/openapi.json`.
-pub async fn serve() -> Response {
-    Json(document()).into_response()
+pub async fn serve(doc: std::sync::Arc<utoipa::openapi::OpenApi>) -> Response {
+    Json(&*doc).into_response()
 }
