@@ -1,0 +1,36 @@
+[package]
+name = "forgebase-auth"
+description = "ForgeBase authentication: passwords, sessions, tokens, MFA, API keys, audit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+axum.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+forgebase-db.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

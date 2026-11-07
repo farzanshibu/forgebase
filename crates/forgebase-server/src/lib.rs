@@ -17,6 +17,7 @@ mod lock;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
@@ -61,7 +62,14 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     let instance = db.ensure_instance().await?;
 
-    let state = AppState::new(db.clone(), layout.clone());
+    let auth = match open_auth(&db, &layout, config).await {
+        Ok(a) => a,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
+    let state = AppState::new(db.clone(), layout.clone()).with_auth(auth);
     let app = forgebase_api::router(
         state,
         RouterOptions {
@@ -92,7 +100,7 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async {
                 let _ = shutdown_rx.await;
             })
@@ -125,6 +133,26 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
+}
+
+/// Opens the auth service (FB-20) and the data service it shares, with the
+/// fail-closed default authorizer until the policy engine (FB-21) lands.
+async fn open_auth(
+    db: &Database,
+    layout: &DataLayout,
+    config: &Config,
+) -> Result<forgebase_auth::AuthService, forgebase_auth::AuthError> {
+    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
+    cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+    forgebase_auth::AuthService::open_with_data(
+        backend,
+        Arc::new(forgebase_auth::data::DefaultAuthorizer),
+        layout.root(),
+        cfg,
+        None,
+    )
+    .await
 }
 
 impl RunningServer {
@@ -267,6 +295,9 @@ pub enum ServerError {
     /// The HTTP server failed.
     #[error("http server error: {0}")]
     Serve(#[source] std::io::Error),
+    /// The auth service failed to start (master key, signing keys).
+    #[error("auth: {0}")]
+    Auth(#[from] forgebase_auth::AuthError),
 }
 
 impl ErrorCode for ServerError {
@@ -278,6 +309,7 @@ impl ErrorCode for ServerError {
             ServerError::Database(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
+            ServerError::Auth(e) => e.code(),
         }
     }
 
@@ -286,6 +318,7 @@ impl ErrorCode for ServerError {
             ServerError::Locked { .. } | ServerError::Bind { .. } => ErrorKind::Conflict,
             ServerError::Database(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
+            ServerError::Auth(e) => e.kind(),
         }
     }
 }

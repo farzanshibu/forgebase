@@ -8,6 +8,7 @@
 //! | `GET /health/ready` | readiness (database + storage) |
 //! | `GET /metrics` | Prometheus metrics |
 //! | `GET /api/system/info` | instance information |
+//! | `/api/auth/*` | authentication (forgebase-auth, ADR-0004) |
 //! | `/admin/` | embedded admin dashboard |
 //!
 //! Versioning: management endpoints live under `/api/system/*`. Data APIs
@@ -17,7 +18,8 @@
 //!
 //! Middleware, outermost first: request context (request id, error
 //! envelope, security headers) → tracing span → metrics → panic catcher →
-//! request timeout → handler.
+//! request timeout → authentication (credential → `AccessContext`
+//! extension) → handler.
 
 pub mod admin;
 pub mod context;
@@ -32,6 +34,7 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::get;
+use forgebase_auth::AuthService;
 use forgebase_core::DataLayout;
 use forgebase_db::Database;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -49,13 +52,14 @@ pub struct AppState {
     inner: Arc<StateInner>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct StateInner {
     db: Database,
     layout: DataLayout,
     started_at: String,
     started: Instant,
     metrics: &'static PrometheusHandle,
+    auth: Option<AuthService>,
 }
 
 impl AppState {
@@ -68,8 +72,21 @@ impl AppState {
                 started_at: forgebase_core::now_rfc3339(),
                 started: Instant::now(),
                 metrics: forgebase_observability::metrics_handle(),
+                auth: None,
             }),
         }
+    }
+
+    /// Same state with authentication: installs the auth layer and mounts
+    /// `/api/auth/*`. Without it every request is anonymous.
+    pub fn with_auth(mut self, auth: AuthService) -> Self {
+        Arc::make_mut(&mut self.inner).auth = Some(auth);
+        self
+    }
+
+    /// The auth service, when configured.
+    pub fn auth(&self) -> Option<&AuthService> {
+        self.inner.auth.as_ref()
     }
 
     /// The primary database.
@@ -115,7 +132,8 @@ impl Default for RouterOptions {
 
 /// Builds the application router.
 pub fn router(state: AppState, opts: RouterOptions) -> Router {
-    Router::new()
+    let auth = state.auth().cloned();
+    let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
         .route("/metrics", get(routes::metrics))
@@ -124,7 +142,8 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))
         .fallback(routes::not_found)
-        .with_state(state)
+        .with_state(state);
+    with_auth_layer(app, auth)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             opts.request_timeout,
@@ -147,6 +166,17 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         )
         .layer(middleware::from_fn(context::request_context))
+}
+
+/// Mounts `/api/auth/*` and installs the authentication layer (or the
+/// anonymous layer when there is no auth service).
+fn with_auth_layer(app: Router, auth: Option<AuthService>) -> Router {
+    match auth {
+        Some(auth) => app
+            .merge(forgebase_auth::http::router(auth.clone()))
+            .layer(middleware::from_fn_with_state(auth, forgebase_auth::http::authenticate)),
+        None => app.layer(middleware::from_fn(forgebase_auth::http::anonymous)),
+    }
 }
 
 #[cfg(test)]

@@ -21,13 +21,18 @@ forgebase-server = { path = "crates/forgebase-server" }
 forgebase-schema = { path = "crates/forgebase-schema" }
 forgebase-query = { path = "crates/forgebase-query" }
 forgebase-data = { path = "crates/forgebase-data" }
+forgebase-auth = { path = "crates/forgebase-auth" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
 base64 = "0.22.1"
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "original-uri", "tokio", "tracing"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dotenvy = { version = "0.15.7", default-features = false }
+getrandom = "0.4.3"
+hmac = "0.13.0"
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
@@ -35,7 +40,9 @@ mime_guess = { version = "2.0.5", default-features = false }
 rust-embed = { version = "8.13.0", features = ["debug-embed"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha1 = { version = "0.11.0", default-features = false }
 sha2 = "0.11.1"
+subtle = { version = "2.6.1", default-features = false }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
