@@ -35,10 +35,11 @@ Phase gate: god merges every package of a phase, re-runs the full test suite and
 | FB-11 | 2 | Normal | REST: collections, records, documents, SQL endpoint, pagination/sort/filter/projection, import/export, OpenAPI (utoipa) | FB-10 | API tests for #2–#6 |
 | FB-12 | 2 | Normal | Database Studio: collection browser, table editor, JSON editor, schema designer, indexes, SQL editor, explain | FB-11 | build + e2e smoke |
 | FB-20 | 3 | High | Auth core: Argon2id, sessions, rotating refresh tokens, JWT, verify/reset/magic link/OTP (pluggable mailer), TOTP + recovery codes, API keys, service accounts, PATs, rate limit, lockout, audit log | FB-10 | #7 #8 |
-| FB-21 | 3 | High | Policy engine: rule language compiled to SQL predicates, fail-closed, RBAC/ABAC, field-level, tenant isolation; orgs/projects/environments/teams/invitations | FB-20 | #1 #9 #25 |
+| FB-21 | 3 | High | Policy engine: rule language compiled to SQL predicates, fail-closed, RBAC/ABAC, field-level, tenant isolation; orgs/projects/environments/teams/invitations. **Addendum (docs/requirements/authz-entitlements-billing.md §C):** 10 default roles, `resource:action` + `org:<feature>:<permission>` permission keys, custom roles, role sets, team hierarchy, inheritance, explicit deny wins, resource ACL, platform super-admin (not an org role), suspension, cache invalidation, 6-step evaluation pipeline with hook points for steps 4 and 6 | FB-20 | #1 #9 #25 + pipeline order and deny-precedence tests |
 | FB-22 | 3 | Normal | OAuth2/OIDC (Google, GitHub, Apple, generic) + WebAuthn/passkeys | FB-20 | provider flow tests with mock IdP |
-| FB-23 | 3 | Normal | Admin login + Auth Studio (users, sessions, roles, policies editor, API keys, audit) | FB-21 | admin routes reject anonymous |
-| FB-30 | 4 | Normal | Object storage: trait, local FS + S3 driver, streaming, multipart/resumable, checksums, dedup, versions, signed URLs, bucket policies, quotas, staging + reconciler | FB-21 | #10 #11 |
+| FB-23 | 3 | Normal | Admin login + Auth Studio (users, sessions, roles, policies editor, API keys, audit). **Addendum:** permission matrix editor, custom roles, role sets, team hierarchy, resource ACL, user overrides, suspension, controlled and audited admin impersonation | FB-21 | admin routes reject anonymous; impersonation audited and super-admin only |
+| FB-24 | 3 | High | **New (docs/requirements/authz-entitlements-billing.md):** entitlement and quota engine: plans, features, plan_features, add-ons, trials, user and org entitlements (B2C + B2B), user_overrides, quota_policies, immutable idempotent usage_events, usage_counters, atomic reservation/release, concurrency leases, hourly/daily/monthly/lifetime/storage periods, per user/team/resource scopes, soft/hard limits, 70/90/100 % alerts, rollover, usage packs, enterprise limits, plan-based API rate limits, resets via jobs, `has({permission})` / `has({feature})` / quota APIs; plugs into FB-21 pipeline steps 4 and 6 | FB-21, FB-61 | entitlement ≠ quota tests, concurrent reservation never over-grants, idempotent replay, period reset, alerts |
+| FB-30 | 4 | Normal | Object storage: trait, local FS + S3 driver, streaming, multipart/resumable, checksums, dedup, versions, signed URLs, bucket policies, quotas, staging + reconciler | FB-21; FB-24 for storage quota | #10 #11 |
 | FB-31 | 4 | Normal | KV engine: strings/hashes/lists/sets/zsets/streams, TTL, LRU + memory limit, namespaces, tenant isolation, pub/sub, REST | FB-21 | KV unit + API tests |
 | FB-32 | 4 | Normal | RESP listener subset + compatibility matrix + conformance tests; Redis/Valkey adapter | FB-31 | redis-cli conformance suite |
 | FB-33 | 4 | Normal | Storage Studio + Redis Studio | FB-30, FB-31 | build + e2e smoke |
@@ -50,8 +51,8 @@ Phase gate: god merges every package of a phase, re-runs the full test suite and
 | FB-60 | 7 | High | Wasmtime functions: capability host API, fuel/memory/timeouts, versions/rollback, CRUD hooks, HTTP functions, secrets, SSRF-safe fetch | FB-40 | #18 |
 | FB-61 | 7 | Normal | Durable jobs: delayed, cron, retries/backoff, DLQ, priority, heartbeats, external workers, cancellation | FB-21 | #19 + restart survival |
 | FB-62 | 7 | Normal | Functions Studio, jobs view, `forgebase functions deploy/logs` | FB-60, FB-61 | build + CLI tests |
-| FB-70 | 8 | High | Billing: plans, subscriptions, metering, quotas, invoices, provider trait, Stripe + Razorpay, signed idempotent webhooks; off by default | FB-61 | #20 |
-| FB-71 | 8 | Normal | Billing Studio | FB-70 | build + e2e smoke |
+| FB-70 | 8 | High | Billing: plans, subscriptions, metering, quotas, invoices, provider trait, Stripe + Razorpay, signed idempotent webhooks; off by default. **Addendum:** a proper billing application: catalog (products, prices: recurring monthly/yearly, one-time, usage-based/metered, tiered), subscriptions for users and orgs with lifecycle (trial, active, past_due, paused, cancelled), one-time purchases/orders, usage billing from FB-24 usage_events, overage and usage packs, proration on plan change, coupons/discounts, tax fields, invoices + credit notes/refunds, dunning, customer portal API, entitlement sync to FB-24 | FB-24, FB-61 | #20 + lifecycle, proration, metered invoice, webhook replay |
+| FB-71 | 8 | Normal | Billing Studio, a proper billing app: catalog (plans, prices, features, add-ons, usage packs), customers (users and orgs), subscriptions with lifecycle actions, one-time orders, usage meters (e.g. 750 / 1,000 with 70/90/100 % states), invoices, payments, refunds, coupons, dunning queue, revenue metrics (MRR, ARR, churn) | FB-70 | build + e2e smoke over every screen |
 | FB-80 | 9 | High | Security audit + fixes: threat model, bypass suite, SSRF, path traversal, upload validation, cargo-audit/deny | all of 1–8 | #25 full |
 | FB-81 | 9 | Normal | Benchmarks (Criterion + HTTP load), documented hardware, recovery-time tests | all of 1–8 | report in `docs/benchmarks.md` |
 | FB-82 | 9 | Normal | Rust SDK + Dart/Flutter SDK | FB-41 | SDK tests vs live server |
@@ -62,7 +63,8 @@ Phase gate: god merges every package of a phase, re-runs the full test suite and
 ## 4. Parallelism
 
 - Phase 1: FB-01 ∥ FB-02 (disjoint paths), then FB-03.
-- Phase 3: FB-22 ∥ FB-21 once FB-20 lands.
+- Phase 3: FB-22 ∥ FB-21 once FB-20 lands; FB-23 ∥ FB-24 once FB-21 lands (FB-24 also needs FB-61).
+- Addendum docs/requirements/authz-entitlements-billing.md (2026-11-07, human): B2C + B2B tenancy, 6-step evaluation pipeline, FB-24 entitlement/quota engine, full billing application in FB-70/FB-71.
 - Phases 4, 6, 7: most packages run in parallel once FB-21 is merged.
 - Dashboard studios always follow their API package.
 
