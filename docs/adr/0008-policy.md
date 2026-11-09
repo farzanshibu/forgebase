@@ -66,7 +66,10 @@ realm ─► organization ─► project ─► environment (= tenant)
   super-admins**: until FB-25 makes identities realm-scoped, every user and
   service account belongs to `default` (`engine::home_realm`), so a request
   for any other realm by them is refused at step 2. FB-25 replaces
-  `home_realm` with the identity's realm.
+  `home_realm` with the identity's realm. **Done (FB-25, ADR-0015 §3):**
+  `home_realm(snap, ctx)` reads the auth service's `RealmDirectory`
+  (attached with `PolicyService::attach_realms`); anonymous callers act in
+  the realm they select.
 - Roles exist at **realm scope** (`org_id` NULL: usable in every organization
   of the realm and in realm bindings) and at **org scope** (an org's own
   roles, which shadow realm roles of the same key inside that org).

@@ -35,6 +35,11 @@ allow = [
     "MPL-2.0",
     "Unicode-3.0",
 ]
+# webpki-roots ships Mozilla's CA list as data under the permissive
+# CDLA-Permissive-2.0 licence; allowed for that crate only (FB-25, ADR-0015 §2).
+exceptions = [
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
 
 [bans]
 multiple-versions = "warn"

@@ -94,6 +94,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "impersonation",
         include_str!("../../../migrations/system/0013_impersonation.sql"),
     ),
+    Migration::new(
+        14,
+        "identity",
+        include_str!("../../../migrations/system/0014_identity.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

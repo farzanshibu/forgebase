@@ -377,17 +377,25 @@ impl ProviderRegistry {
         v
     }
 
-    /// Loads providers from JSON: `{"providers": [ProviderConfig, ...]}`
-    /// (realm `default`, or `"realm"` per entry is not supported yet).
+    /// Loads providers from JSON: `{"providers": [ProviderConfig, ...]}`; an
+    /// entry's optional `"realm"` places it in that realm (default `default`).
     pub fn load_json(&self, json: &str) -> Result<usize, AuthError> {
         #[derive(Deserialize)]
         struct File {
-            providers: Vec<ProviderConfig>,
+            providers: Vec<serde_json::Value>,
         }
         let f: File = serde_json::from_str(json).map_err(|e| AuthError::invalid(format!("providers file: {e}")))?;
         let n = f.providers.len();
-        for p in f.providers {
-            self.register(DEFAULT_REALM, p)?;
+        for mut p in f.providers {
+            let realm = match p.as_object_mut().and_then(|o| o.remove("realm")) {
+                Some(serde_json::Value::String(r)) => r,
+                None => DEFAULT_REALM.to_owned(),
+                Some(_) => return Err(AuthError::invalid("providers file: realm must be a string")),
+            };
+            crate::realm::check_realm_id(&realm)?;
+            let cfg: ProviderConfig =
+                serde_json::from_value(p).map_err(|e| AuthError::invalid(format!("providers file: {e}")))?;
+            self.register(&realm, cfg)?;
         }
         Ok(n)
     }

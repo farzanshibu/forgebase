@@ -347,8 +347,10 @@ impl AuthService {
         ci: &ClientInfo,
         use_as_mfa: bool,
     ) -> Result<CeremonyOptions, AuthError> {
+        crate::lifecycle::not_impersonated(caller)?;
         self.limit_attempt(ci)?;
         let (coll, uid) = session_user(caller)?;
+        self.realm_of(&coll)?.require(crate::realm::Method::Passkey)?;
         let user = self.user_view(&coll, &uid).await?;
         let email = user.get("email").and_then(Json::as_str).unwrap_or_default().to_owned();
         // A stable user handle: opaque, random, not the email or record id.
@@ -400,6 +402,7 @@ impl AuthService {
         name: Option<&str>,
         cred: &RegistrationCredential,
     ) -> Result<CredentialView, AuthError> {
+        crate::lifecycle::not_impersonated(caller)?;
         self.limit_attempt(ci)?;
         let (coll, uid) = session_user(caller)?;
         let (challenge, c, u, detail) = self.claim_ceremony("register", ceremony_id).await?;
@@ -480,7 +483,7 @@ impl AuthService {
                 "INSERT INTO _forgebase_webauthn_credentials
                     (credential_id, realm, collection, user_id, user_handle, public_key, alg, sign_count, uv,
                      backup_eligible, backup_state, transports, name, use_as_mfa, created_at)
-                 VALUES (?1, 'default', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 VALUES (?1, ?15, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 vec![
                     t(b64url(cred_id)),
                     t(coll.clone()),
@@ -496,6 +499,7 @@ impl AuthService {
                     ot(label),
                     i(i64::from(use_as_mfa)),
                     i(ts),
+                    t(self.realms().realm_of_collection(&coll)),
                 ],
             )
             .await;
@@ -548,6 +552,7 @@ impl AuthService {
 
     /// Deletes one of the caller's passkeys.
     pub async fn webauthn_delete(&self, caller: &Authenticated, ci: &ClientInfo, id: &str) -> Result<(), AuthError> {
+        crate::lifecycle::not_impersonated(caller)?;
         let (coll, uid) = session_user(caller)?;
         let r = read(
             self.data().backend(),
@@ -558,7 +563,7 @@ impl AuthService {
         if r.is_empty() {
             return Err(AuthError::NotFound("passkey not found".into()));
         }
-        if self.sole_way_in(&coll, &uid, None, Some(id)).await? {
+        if self.sole_way_in(&coll, &uid, None, Some(id), false).await? {
             return Err(AuthError::Conflict(
                 "this is the only way to sign in to the account; add another passkey or a provider first".into(),
             ));
@@ -597,7 +602,8 @@ impl AuthService {
         email: Option<&str>,
     ) -> Result<CeremonyOptions, AuthError> {
         self.limit_attempt(ci)?;
-        let coll = self.auth_collection(collection).await?;
+        let (realm, coll) = self.request_collection(ci, collection).await?;
+        realm.require(crate::realm::Method::Passkey)?;
         let allow = match email {
             Some(e) => {
                 let e = crate::service::normalize_email(e)?;
@@ -765,7 +771,20 @@ impl AuthService {
         opts: &LoginOptions,
     ) -> Result<SessionTokens, AuthError> {
         self.limit_attempt(ci)?;
-        let (challenge, _coll, _, _) = self.claim_ceremony("login", ceremony_id).await?;
+        let (challenge, ceremony_coll, _, _) = self.claim_ceremony("login", ceremony_id).await?;
+        // A passkey signs in only to the user pool (realm) the ceremony was
+        // started for.
+        let r = read(
+            self.data().backend(),
+            "SELECT collection FROM _forgebase_webauthn_credentials WHERE credential_id = ?1",
+            vec![t(cred.id.trim_end_matches('='))],
+        )
+        .await?;
+        if let (Some(row), Some(want)) = (first(&r), ceremony_coll.as_deref())
+            && row.str("collection") != want
+        {
+            return Err(failed());
+        }
         let (coll, uid, _uv) = self.verify_assertion(ci, &challenge, cred, true, None, false).await?;
         let subject = Subject::User {
             collection: coll,

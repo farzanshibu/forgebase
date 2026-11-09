@@ -266,6 +266,8 @@ pub struct Snapshot {
     pub(crate) acl: HashMap<(String, String), Vec<AclEntry>>,
     pub(crate) suspended: HashMap<String, Option<i64>>,
     pub(crate) policies: HashMap<String, CollectionPolicy>,
+    /// Home realms of identities (FB-25), shared with the auth service.
+    pub(crate) realm_dir: Option<forgebase_auth::realm::RealmDirectory>,
     cache: Mutex<HashMap<CacheKey, Arc<Effective>>>,
 }
 

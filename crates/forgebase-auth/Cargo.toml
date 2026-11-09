@@ -18,6 +18,7 @@ getrandom.workspace = true
 hmac.workspace = true
 num-bigint.workspace = true
 p256.workspace = true
+rustls = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
@@ -28,7 +29,15 @@ time.workspace = true
 url.workspace = true
 utoipa.workspace = true
 tokio.workspace = true
+tokio-rustls = { workspace = true, optional = true }
 tracing.workspace = true
+webpki-roots = { workspace = true, optional = true }
+
+[features]
+default = ["https"]
+# Outbound HTTPS (identity providers, Turnstile, SMS gateways) and LDAPS:
+# rustls with the ring provider and the webpki-roots CA bundle (ADR-0015 §2).
+https = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]
 
 [dev-dependencies]
 forgebase-db.workspace = true

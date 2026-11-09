@@ -3,6 +3,8 @@
 #![allow(dead_code, clippy::unwrap_used, missing_docs)]
 
 pub mod idp;
+pub mod ldap;
+pub mod mock_http;
 pub mod rsa_key;
 
 use std::sync::Arc;
@@ -77,11 +79,44 @@ impl H {
         bearer: Option<&str>,
         body: Option<(&str, String)>,
     ) -> Resp {
+        self.req_with(method, path, bearer, body, &[]).await
+    }
+
+    /// A JSON request with extra headers (realm, Turnstile token, ...).
+    pub async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<Value>,
+        headers: &[(&str, &str)],
+    ) -> Resp {
+        self.req_with(
+            method,
+            path,
+            bearer,
+            body.map(|v| ("application/json", v.to_string())),
+            headers,
+        )
+        .await
+    }
+
+    pub async fn req_with(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<(&str, String)>,
+        headers: &[(&str, &str)],
+    ) -> Resp {
         let mut b = Request::builder()
             .method(method)
             .uri(path)
             .header("x-request-id", "test-req")
             .header("x-forwarded-for", "10.0.0.1");
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
         if let Some(t) = bearer {
             b = b.header("authorization", format!("Bearer {t}"));
         }
@@ -142,6 +177,45 @@ impl H {
             .await;
         assert_eq!(r.status, StatusCode::CREATED, "{}", r.json);
         r.json["user"]["id"].as_str().unwrap().to_owned()
+    }
+}
+
+impl H {
+    /// Creates the administrator `root@example.com` and returns an access token.
+    pub async fn root_token(&self) -> String {
+        self.auth
+            .create_admin(
+                "root@example.com",
+                "admin password 1",
+                "test",
+                &forgebase_auth::ClientInfo::default(),
+            )
+            .await
+            .unwrap();
+        let r = self
+            .post(
+                "/api/auth/admins/login",
+                None,
+                json!({"email": "root@example.com", "password": "admin password 1"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.json);
+        r.json["access_token"].as_str().unwrap().to_owned()
+    }
+
+    /// Runs one SQL statement on the database.
+    pub async fn sql(&self, sql: &str) {
+        use forgebase_db::Backend;
+        let mut tx = self.db.begin(forgebase_db::TxMode::Normal).await.unwrap();
+        tx.execute(&forgebase_db::Statement::raw(sql)).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// One integer from a query.
+    pub async fn count(&self, sql: &str) -> i64 {
+        use forgebase_db::Backend;
+        let r = self.db.fetch_all(&forgebase_db::Statement::raw(sql)).await.unwrap();
+        r.rows[0][0].as_i64().unwrap()
     }
 }
 
