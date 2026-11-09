@@ -82,6 +82,8 @@ and run against a live server; the others are crate tests.
 | OAuth state/nonce/PKCE abuse, ID-token forgery | State and nonce bound to the flow, PKCE, JWKS-verified RS256/ES256 | `social_login` (ADR-0009) |
 | SSRF through an OIDC discovery document, SMS gateway or Turnstile URL | Auth HTTPS client refuses blocked ranges unless `allow_private_outbound` | `https_client::the_default_auth_client_refuses_private_addresses`; `security_bypass::outbound_clients_never_reach_internal_addresses` |
 | Impersonation abuse | Admin only, audited, impersonated sessions cannot mint PATs | `auth_flows` |
+| Realm OAuth providers and SMS gateways set through the admin API (FIX-4): misuse or secret disclosure | Administrators only; client secrets and gateway tokens sealed per realm (row-bound AAD) and never returned; their URLs go through the same SSRF-guarded client | `security_bypass::administrative_endpoints_…`, `secrets_never_reach_logs_or_api_output`, `outbound_clients_never_reach_internal_addresses`; `identity_admin` |
+| OIDC signing keys exposed through `/api/auth/realms/{realm}/keys` | Lists `kid`, algorithm and status only | `security_bypass::secrets_never_reach_logs_or_api_output` |
 
 ### 4.2 Policy and tenancy (`forgebase-policy`, ADR-0008)
 
@@ -182,7 +184,7 @@ their own, so §4.2 and §4.3 apply. Proof: `forgebase-vector/tests/service.rs`,
 
 | Threat | Control | Proof |
 |---|---|---|
-| Ordinary users or anonymous callers using admin APIs | `require_admin` / privileged context on every admin route | `security_bypass::administrative_endpoints_refuse_anonymous_and_ordinary_users` |
+| Ordinary users or anonymous callers using admin APIs, including the FIX-4 identity, billing, storage and KV admin endpoints | `require_admin` / privileged context or policy permission on every admin route | `security_bypass::administrative_endpoints_refuse_anonymous_and_ordinary_users` (48 routes, billing on) |
 | Path traversal in `/admin/{*path}` | Assets are embedded in the binary (no filesystem lookup) | `security_bypass::storage_keys_…` |
 | XSS in the console | React escapes output; admin sessions use an `HttpOnly` cookie plus CSRF token | dashboard tests |
 
@@ -226,12 +228,12 @@ CARGO_INCREMENTAL=0 cargo test -p forgebase-server --test security_bypass
 | `realm_org_and_tenant_boundaries_hold_over_http` | Foreign realm header, foreign org header and membership edit, a known record id in another tenant (read, update, delete, list), smuggling `_tenant`, anonymous reads |
 | `a_deny_beats_every_allow` | `reports:*` allow plus `reports:export` deny, in any role order, plus the org `admin` role |
 | `scoped_keys_and_pats_cannot_escalate` | A `collections:read:notes` admin key on other collections, through `?expand=` and a relation filter, writes, auth, KV, storage, realtime; a scoped PAT minting `*`, `collections:read`, `auth:*`, `collections:*`; malformed scopes |
-| `administrative_endpoints_refuse_anonymous_and_ordinary_users` | 20 admin routes as anonymous and as a user; forged JWTs and keys |
-| `outbound_clients_never_reach_internal_addresses` | Queue push to loopback, metadata, IPv4-mapped, private, unique-local, `file:`/`gopher:`, credentials in URLs, and a name resolving to loopback; functions `fetch` to loopback and metadata; an OIDC provider whose issuer is on loopback. A canary listener proves nothing connected. |
+| `administrative_endpoints_refuse_anonymous_and_ordinary_users` | 48 admin routes (auth, policy, functions, storage, queues, jobs, and FIX-4's realm keys, consents, OAuth providers, SMS, billing admin, bucket usage and metadata, KV lists, streams and channels) as anonymous and as a user, with billing on; forged JWTs and keys |
+| `outbound_clients_never_reach_internal_addresses` | Queue push to loopback, metadata, IPv4-mapped, private, unique-local, `file:`/`gopher:`, credentials in URLs, and a name resolving to loopback; functions `fetch` to loopback and metadata; OAuth providers set through the admin API with a loopback issuer, and with a loopback token URL hit by the callback; an OIDC provider from the provider file. A canary listener proves nothing connected. |
 | `storage_keys_cannot_escape_and_uploads_are_validated` | Five traversal key forms, bad bucket names, `/admin` traversal, HTML and PDF under `image/png`, HTML into an `image/*` bucket, oversize, inert download headers |
 | `brute_force_is_locked_out_and_rate_limited_without_trusting_client_headers` | 30 wrong passwords with a fresh `X-Forwarded-For` each; then the right password; an unknown account |
 | `cors_is_closed_and_cookie_writes_need_the_csrf_token` | Cross-origin GET and preflight; cookie writes without and with a wrong CSRF token |
-| `secrets_never_reach_logs_or_api_output` | Captures every log line at TRACE while signing in, failing a sign-in, refreshing, minting keys, PATs, a webhook secret and a function secret; then reads every listing endpoint and checks no secret appears in a log line or a response |
+| `secrets_never_reach_logs_or_api_output` | Captures every log line at TRACE while signing in, failing a sign-in, refreshing, minting keys, PATs, a webhook secret, a function secret, a realm SMS token and an OAuth client secret; then reads every listing endpoint (including realm SMS, providers and signing keys) and checks no secret or private key appears in a log line or a response |
 | `malicious_inputs_are_refused_without_errors_or_leaks` | SQL injection in filter, sort, fields, ids and collection names; system tables; NoSQL-style operators; 5 MiB and 100 000-deep bodies; truncated JSON. No `5xx`, no SQL or paths in errors. |
 
 Crate-level security tests that complement it: `forgebase-functions/tests/ssrf.rs`
@@ -269,6 +271,14 @@ the billing and store webhook tests, and `forgebase-resp` tests.
 7. **Jobs run as the system** (§4.8).
 8. **Push webhooks may redirect to `http://`** public addresses even when
    `allow_http_push` is off; internal addresses stay refused on every hop.
+9. **Bucket names are not secret.** Anonymous callers get `404` for a missing
+   bucket and `401`/`403` for an existing private one, so bucket names can be
+   probed. Object keys and contents stay protected. Do not put secrets in
+   bucket names.
+10. **Some admin routes parse the body before the admin check**, so a
+    non-admin with a malformed body gets `400` instead of `403`. Nothing is
+    read or changed; it only tells the caller the expected shape, which the
+    OpenAPI document publishes anyway.
 
 Resolved by FB-80: the bypass suite (§6), path traversal and upload
 validation (§4.4), forwarded client addresses (`[auth] trust_forwarded_for`,

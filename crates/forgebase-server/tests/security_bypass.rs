@@ -439,8 +439,29 @@ async fn scoped_keys_and_pats_cannot_escalate() {
 
 #[tokio::test]
 async fn administrative_endpoints_refuse_anonymous_and_ordinary_users() {
-    let env = Env::new().await;
+    let env = Env::with(|c| c.billing.enabled = true).await;
     let (user, _) = env.user("plain@example.com").await;
+    // Real targets, so "not found" cannot pass for a refusal.
+    let admin = env.admin("real-admin@example.com").await;
+    let r = env
+        .as_(
+            &admin,
+            "POST",
+            "/api/v1/storage/buckets",
+            &[],
+            Some(json!({"name": "b"})),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let r = send(
+        env.addr,
+        "PUT",
+        "/api/v1/storage/buckets/b/objects/k",
+        &[("Authorization", &bearer(&admin)), ("Content-Type", "text/plain")],
+        b"private",
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.text());
     let cases: &[(&str, &str, Option<Json>)] = &[
         ("GET", "/api/auth/admins", None),
         (
@@ -482,6 +503,51 @@ async fn administrative_endpoints_refuse_anonymous_and_ordinary_users() {
         ("POST", "/api/v1/storage/maintenance/reconcile", Some(json!({}))),
         ("POST", "/api/v1/queues/topics", Some(json!({"name": "t"}))),
         ("GET", "/api/v1/jobs", None),
+        // FIX-4 (identity, billing, storage and KV admin endpoints).
+        ("GET", "/api/auth/realms", None),
+        ("POST", "/api/auth/realms", Some(json!({"id": "evil", "name": "evil"}))),
+        ("GET", "/api/auth/realms/default/keys", None),
+        ("GET", "/api/auth/realms/default/consents", None),
+        ("DELETE", "/api/auth/realms/default/consents/x", None),
+        ("GET", "/api/auth/realms/default/oauth-providers", None),
+        ("GET", "/api/auth/realms/default/oauth-providers/x", None),
+        (
+            "PUT",
+            "/api/auth/realms/default/oauth-providers/x",
+            Some(json!({"kind": "github", "client_id": "c", "client_secret": "s"})),
+        ),
+        ("DELETE", "/api/auth/realms/default/oauth-providers/x", None),
+        ("GET", "/api/auth/realms/default/sms", None),
+        (
+            "PUT",
+            "/api/auth/realms/default/sms",
+            Some(json!({"provider": "webhook", "url": "https://sms.example/x"})),
+        ),
+        ("DELETE", "/api/auth/realms/default/sms", None),
+        ("GET", "/api/v1/billing/admin/orders", None),
+        ("GET", "/api/v1/billing/admin/usage-meters", None),
+        ("GET", "/api/v1/billing/dunning", None),
+        ("POST", "/api/v1/billing/products/p/archive", Some(json!({}))),
+        ("POST", "/api/v1/billing/prices/p/archive", Some(json!({}))),
+        ("POST", "/api/v1/billing/coupons/c/archive", Some(json!({}))),
+        ("POST", "/api/v1/billing/tax-rates/in/archive", Some(json!({}))),
+        ("GET", "/api/v1/billing/webhook-events", None),
+        (
+            "PUT",
+            "/api/v1/billing/providers/stripe",
+            Some(json!({"api_key": "sk_test_x"})),
+        ),
+        ("GET", "/api/v1/storage/buckets/b/usage", None),
+        ("GET", "/api/v1/storage/buckets/b/meta/k", None),
+        ("GET", "/api/v1/kv/_info", None),
+        ("GET", "/api/v1/kv/app/channels", None),
+        (
+            "POST",
+            "/api/v1/kv/app/lists/l/set",
+            Some(json!({"index": 0, "value": "x"})),
+        ),
+        ("POST", "/api/v1/kv/app/lists/l/remove", Some(json!({"value": "x"}))),
+        ("POST", "/api/v1/kv/app/streams/s/delete", Some(json!({"ids": ["0-1"]}))),
     ];
     for (method, path, body) in cases {
         let r = env.req(method, path, &[], body.clone()).await;
@@ -643,9 +709,76 @@ async fn outbound_clients_never_reach_internal_addresses() {
         assert_eq!(out["code"], "fetch_blocked", "{name} {url}: {out}");
     }
 
-    // 3. OAuth / OIDC: an identity provider whose discovery URL points at
-    //    loopback (the operator's provider file, or a discovery document that
-    //    names internal endpoints) is refused before connecting.
+    // 3. OAuth / OIDC: a provider configured through the admin API (FIX-4)
+    //    or the operator's provider file whose discovery URL or endpoints
+    //    point at loopback or the metadata address is refused before
+    //    connecting.
+    for (id, cfg) in [
+        (
+            "api-issuer",
+            json!({"kind": "oidc", "client_id": "c", "client_secret": "s",
+                              "issuer": format!("https://localhost:{p}")}),
+        ),
+        (
+            "api-token",
+            json!({"kind": "github", "client_id": "c", "client_secret": "s",
+                             "token_url": format!("http://127.0.0.1:{p}/token"),
+                             "authorize_url": "https://github.com/login/oauth/authorize",
+                             "userinfo_url": "http://169.254.169.254/latest/meta-data/"}),
+        ),
+    ] {
+        let r = env
+            .as_(
+                &admin,
+                "PUT",
+                &format!("/api/auth/realms/default/oauth-providers/{id}"),
+                &[],
+                Some(cfg),
+            )
+            .await;
+        assert!(r.status < 300, "{id}: {}", r.text());
+    }
+    let r = env
+        .req(
+            "POST",
+            "/api/auth/oauth/api-issuer/start",
+            &[],
+            Some(json!({"redirect_to": "/"})),
+        )
+        .await;
+    assert!(r.status >= 400, "{}", r.text());
+    assert!(
+        r.text().contains("refused") || r.status == 502,
+        "{} {}",
+        r.status,
+        r.text()
+    );
+    // The callback is where a code is exchanged at the token URL.
+    let start = env
+        .req(
+            "POST",
+            "/api/auth/oauth/api-token/start",
+            &[],
+            Some(json!({"redirect_to": "/"})),
+        )
+        .await;
+    assert_eq!(start.status, 200, "{}", start.text());
+    let state = start.json()["state"].as_str().unwrap().to_owned();
+    let r = env
+        .req(
+            "GET",
+            &format!("/api/auth/oauth/api-token/callback?code=abc&state={state}"),
+            &[],
+            None,
+        )
+        .await;
+    assert!(
+        r.status >= 300,
+        "token exchange against loopback: {} {}",
+        r.status,
+        r.text()
+    );
+    assert!(!r.text().contains("access_token"), "{}", r.text());
     let providers = env.dir.path().join("forgebase-data/auth/oauth-providers.json");
     std::fs::write(
         &providers,
@@ -1116,6 +1249,32 @@ async fn secrets_never_reach_logs_or_api_output() {
         .await;
     assert!(r.status < 300, "{}", r.text());
 
+    // Realm SMS gateway and OAuth provider secrets set through the admin API.
+    let (sms_token, oauth_secret) = ("sms-bearer-secret-5be1", "oauth-client-secret-77c0");
+    secrets.push(sms_token.to_owned());
+    secrets.push(oauth_secret.to_owned());
+    let r = env
+        .as_(
+            &admin,
+            "PUT",
+            "/api/auth/realms/default/sms",
+            &[],
+            Some(json!({"provider": "webhook", "url": "https://sms.example.com/send", "bearer_token": sms_token})),
+        )
+        .await;
+    assert!(r.status < 300, "{}", r.text());
+    let r = env
+        .as_(
+            &admin,
+            "PUT",
+            "/api/auth/realms/default/oauth-providers/gh",
+            &[],
+            Some(json!({"kind": "github", "client_id": "cid", "client_secret": oauth_secret})),
+        )
+        .await;
+    assert!(r.status < 300, "{}", r.text());
+    outputs.push(r);
+
     // Everything a client can read back.
     for (token, path) in [
         (&admin, "/api/auth/api-keys"),
@@ -1130,6 +1289,11 @@ async fn secrets_never_reach_logs_or_api_output() {
         (&admin, "/api/v1/functions/sf"),
         (&admin, "/api/v1/authz/audit"),
         (&admin, "/api/auth/realms/default"),
+        (&admin, "/api/auth/realms/default/sms"),
+        (&admin, "/api/auth/realms/default/oauth-providers"),
+        (&admin, "/api/auth/realms/default/oauth-providers/gh"),
+        (&admin, "/api/auth/realms/default/keys"),
+        (&user, "/api/auth/oauth/providers"),
         (&admin, "/api/system/info"),
         (&admin, "/metrics"),
     ] {
@@ -1146,6 +1310,9 @@ async fn secrets_never_reach_logs_or_api_output() {
             .await,
     );
 
+    for o in &outputs {
+        assert!(!o.raw().contains("PRIVATE KEY"), "signing keys stay private");
+    }
     env.shutdown().await;
     let log = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
     assert!(log.contains("forgebase started"), "the capture works");
