@@ -25,6 +25,7 @@ forgebase-graph = { path = "crates/forgebase-graph" }
 forgebase-jobs = { path = "crates/forgebase-jobs" }
 forgebase-auth = { path = "crates/forgebase-auth" }
 forgebase-kv = { path = "crates/forgebase-kv" }
+forgebase-vector = { path = "crates/forgebase-vector" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
@@ -58,6 +59,7 @@ tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tower-http = { version = "0.7.1", features = ["catch-panic", "cors", "limit", "request-id", "timeout", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+usearch = { version = "2.26.6", default-features = false }
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
 uuid = { version = "1.29.1", features = ["v4"] }
