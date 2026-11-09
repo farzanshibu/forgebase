@@ -7,7 +7,7 @@
  */
 import type {
   BillingSettings, CreditNote, Coupon, Customer, Invoice, LedgerEntry, Order, Payment, Price, Product, ProviderAccount, Refund,
-  Subscription, UsageSummary, WebhookEvent,
+  Subscription, UsageSummary, WebhookEvent, StoreProduct, StorePurchase,
 } from "../api";
 import { envelope, type MockApi } from "./mockApi";
 
@@ -27,7 +27,9 @@ export interface BillingState {
   coupons: Coupon[];
   providers: ProviderAccount[];
   /** Secrets as received: the API must never echo them back. */
-  secrets: Record<string, { api_key?: string | null; webhook_secret?: string | null }>;
+  secrets: Record<string, { api_key?: string | null; webhook_secret?: string | null; config?: Record<string, unknown> | null }>;
+  storeProducts: StoreProduct[];
+  storePurchases: StorePurchase[];
   settings: BillingSettings;
   webhooks: WebhookEvent[];
   usage: UsageSummary[];
@@ -91,6 +93,15 @@ export function seedBilling(): BillingState {
     coupons: [{ id: "cp1", code: "WELCOME15", name: null, kind: "percent", percent_bp: 1500, amount_off: null, currency: null, duration: "once", duration_cycles: null, max_redemptions: 100, redeemed: 3, expires_at: null, products: [], active: true }],
     providers: [{ provider: "stripe", key_id: null, hint: "…c4f2", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/stripe", updated_at: T0 }],
     secrets: {},
+    storeProducts: [
+      { provider: "app_store", product_id: "com.acme.pro.monthly", price: "team_month", kind: "subscription", updated_at: T0 },
+      { provider: "google_play", product_id: "coins_100", price: "credits_once", kind: "one_time", updated_at: T0 },
+    ],
+    storePurchases: [
+      { id: "sp1", provider: "app_store", purchase_id: "orig-1001", subject: "usr_ana", status: "active", kind: "subscription", price: "team_month", product_id: "com.acme.pro.monthly", environment: "test", auto_renew: true, expires_at: T1, last_transaction_id: "tx-9", order_id: null, subscription_id: "sub1", created_at: T0, updated_at: T0 },
+      { id: "sp2", provider: "google_play", purchase_id: "tok-2", subject: "org:acme", status: "grace", kind: "subscription", price: "team_month", product_id: "pro", environment: "test", auto_renew: false, expires_at: T1, created_at: T0, updated_at: T0 },
+      { id: "sp3", provider: "creem", purchase_id: "ord-3", subject: "usr_ana", status: "refunded", kind: "one_time", price: "credits_once", product_id: "prod_c", environment: "test", auto_renew: false, order_id: "ord1", created_at: T0, updated_at: T0 },
+    ],
     settings: { default_currency: "USD", retry_days: [1, 3, 5], final_action: "cancel", invoice_prefix: "INV", credit_note_prefix: "CN", incomplete_days: 1, webhook_max_age_secs: 259200, webhook_tolerance_secs: 300 },
     webhooks: [{ id: "we1", provider: "stripe", event_id: "evt_1", event_type: "invoice.paid", event_at: T0, received_at: T0, status: "processed", result: "applied", attempts: 1 }],
     usage: [
@@ -123,13 +134,26 @@ export function installBilling(mock: MockApi, opts: { disabled?: boolean } = {})
   on("PUT", `${B}/settings`, ({ body }) => { st.settings = body as BillingSettings; return { status: 200, body: st.settings }; });
   on("GET", `${B}/providers`, () => list(st.providers));
   on("PUT", `${B}/providers/{p}`, ({ params, body }) => {
-    const b = body as { api_key?: string; webhook_secret?: string; enabled: boolean };
-    st.secrets[params.p!] = { api_key: b.api_key, webhook_secret: b.webhook_secret };
-    const acct: ProviderAccount = { provider: params.p!, key_id: null, hint: b.api_key ? `…${b.api_key.slice(-4)}` : null, api_base: null, enabled: b.enabled, webhook_path: `${B}/webhooks/${params.p}`, updated_at: T0 };
+    const b = body as { api_key?: string; webhook_secret?: string; enabled: boolean; config?: Record<string, unknown> | null; api_base?: string | null };
+    st.secrets[params.p!] = { api_key: b.api_key, webhook_secret: b.webhook_secret, config: b.config };
+    const acct: ProviderAccount = { provider: params.p!, key_id: null, hint: b.api_key && b.api_key.length > 8 ? `…${b.api_key.slice(-4)}` : null, api_base: b.api_base ?? null, enabled: b.enabled, webhook_path: `${B}/webhooks/${params.p}`, updated_at: T0 };
     st.providers = [...st.providers.filter((a) => a.provider !== params.p), acct];
     return { status: 200, body: acct };
   });
   on("DELETE", `${B}/providers/{p}`, ({ params }) => { st.providers = st.providers.filter((a) => a.provider !== params.p); return { status: 204 }; });
+  on("GET", `${B}/store-products`, () => list(st.storeProducts));
+  on("PUT", `${B}/store-products/{provider}/{product_id}`, ({ params, body }) => {
+    const price = st.prices.find((p) => p.key === (body as { price: string }).price);
+    if (!price) return envelope(404, "not_found", "no such price");
+    const sp: StoreProduct = { provider: params.provider!, product_id: params.product_id!, price: price.key, kind: price.type === "recurring" ? "subscription" : "one_time", updated_at: T1 };
+    st.storeProducts = [...st.storeProducts.filter((x) => !(x.provider === sp.provider && x.product_id === sp.product_id)), sp];
+    return { status: 200, body: sp };
+  });
+  on("DELETE", `${B}/store-products/{provider}/{product_id}`, ({ params }) => {
+    st.storeProducts = st.storeProducts.filter((x) => !(x.provider === params.provider && x.product_id === params.product_id));
+    return { status: 204 };
+  });
+  on("GET", `${B}/store-purchases`, ({ query }) => list(bySubject(st.storePurchases, query)));
   on("GET", `${B}/products`, () => list(st.products));
   on("PUT", `${B}/products/{key}`, ({ params, body }) => {
     const p = product(params.key!, { ...(body as Partial<Product>) });

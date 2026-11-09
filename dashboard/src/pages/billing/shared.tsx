@@ -17,8 +17,8 @@ const STATUS_TONE: Record<string, keyof typeof TONES> = {
   past_due: "bad", failed: "bad", uncollectible: "bad", paused: "warn", canceled: "idle", void: "idle", draft: "idle", refunded: "warn",
 };
 
-export function Badge({ status }: { status: string }) {
-  return <span className={`rounded px-1.5 py-0.5 text-xs ${TONES[STATUS_TONE[status] ?? "idle"]}`}>{status}</span>;
+export function Badge({ status, label }: { status: string; label?: string }) {
+  return <span className={`rounded px-1.5 py-0.5 text-xs ${TONES[STATUS_TONE[status] ?? "idle"]}`}>{label ?? status}</span>;
 }
 
 export const Money = ({ amount, currency }: { amount: number; currency: string }) => <span className="tabular-nums">{formatMoney(amount, currency)}</span>;

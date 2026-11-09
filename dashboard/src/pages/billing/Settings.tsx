@@ -4,6 +4,7 @@ import type { BillingSettings, FinalAction, ProviderAccount } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
+import StoreProviders from "./StoreProviders";
 import { Badge, BillingError, Empty, Field, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
@@ -124,6 +125,7 @@ export default function Settings() {
           {PROVIDERS.map((p) => <ProviderCard key={p} name={p} account={providers.data!.find((a) => a.provider === p)} onChanged={providers.reload} />)}
         </div>
       )}
+      {providers.data && <StoreProviders accounts={providers.data} onChanged={providers.reload} />}
       <Panel title="Billing settings">
         <ErrorView error={settings.error} />
         {settings.data && <SettingsForm key={JSON.stringify(settings.data)} initial={settings.data} onSaved={settings.reload} />}
