@@ -70,11 +70,11 @@ pub enum OAuthOutcome {
 
 /// A normalised provider profile.
 #[derive(Debug, Clone, Default)]
-struct Profile {
-    subject: String,
-    email: Option<String>,
-    email_verified: bool,
-    name: Option<String>,
+pub(crate) struct Profile {
+    pub(crate) subject: String,
+    pub(crate) email: Option<String>,
+    pub(crate) email_verified: bool,
+    pub(crate) name: Option<String>,
 }
 
 fn provider_err(m: &str) -> AuthError {
@@ -83,6 +83,7 @@ fn provider_err(m: &str) -> AuthError {
 
 /// A state row, claimed.
 struct StateRow {
+    realm: String,
     purpose: String,
     nonce: String,
     verifier: Option<String>,
@@ -122,14 +123,19 @@ impl AuthService {
         }
     }
 
-    /// Providers a login page may offer.
+    /// Providers a login page of realm `default` may offer.
     pub fn oauth_providers(&self) -> Vec<ProviderInfo> {
         self.providers().list(DEFAULT_REALM)
     }
 
-    fn provider(&self, id: &str) -> Result<std::sync::Arc<Provider>, AuthError> {
+    /// Providers a login page of `realm` may offer.
+    pub fn oauth_providers_in(&self, realm: &str) -> Vec<ProviderInfo> {
+        self.providers().list(realm)
+    }
+
+    fn provider_in(&self, realm: &str, id: &str) -> Result<std::sync::Arc<Provider>, AuthError> {
         self.providers()
-            .get(DEFAULT_REALM, id)
+            .get(realm, id)
             .ok_or_else(|| AuthError::NotFound("unknown identity provider".into()))
     }
 
@@ -210,8 +216,10 @@ impl AuthService {
         opts: &LoginOptions,
     ) -> Result<OAuthStart, AuthError> {
         self.limit_attempt(ci)?;
-        let coll = self.auth_collection(collection).await?;
-        self.oauth_begin(provider, "login", &coll.name, None, opts).await
+        let (realm, coll) = self.request_collection(ci, collection).await?;
+        realm.require(crate::realm::Method::Oauth)?;
+        self.oauth_begin(&realm.realm, provider, "login", &coll.name, None, opts)
+            .await
     }
 
     /// Starts linking a provider account to the signed-in user.
@@ -221,9 +229,12 @@ impl AuthService {
         ci: &ClientInfo,
         provider: &str,
     ) -> Result<OAuthStart, AuthError> {
+        crate::lifecycle::not_impersonated(caller)?;
         self.limit_attempt(ci)?;
         let (collection, id) = Self::session_user(caller)?;
-        self.oauth_begin(provider, "link", &collection, Some(id), &LoginOptions::default())
+        let realm = self.realm_of(&collection)?;
+        realm.require(crate::realm::Method::Oauth)?;
+        self.oauth_begin(&realm.realm, provider, "link", &collection, Some(id), &LoginOptions::default())
             .await
     }
 
@@ -238,13 +249,14 @@ impl AuthService {
 
     async fn oauth_begin(
         &self,
+        realm: &str,
         provider: &str,
         purpose: &str,
         collection: &str,
         link_user: Option<String>,
         opts: &LoginOptions,
     ) -> Result<OAuthStart, AuthError> {
-        let p = self.provider(provider)?;
+        let p = self.provider_in(realm, provider)?;
         let ep = self.endpoints(&p).await?;
         let state = crypto::random_token(32)?;
         let nonce = crypto::random_token(24)?;
@@ -269,7 +281,7 @@ impl AuthService {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             vec![
                 t(state_hash),
-                t(DEFAULT_REALM),
+                t(realm),
                 t(provider),
                 t(purpose),
                 t(nonce.clone()),
@@ -331,7 +343,6 @@ impl AuthService {
         cb: &OAuthCallback,
     ) -> Result<OAuthOutcome, AuthError> {
         self.limit_attempt(ci)?;
-        let p = self.provider(provider)?;
         let bad_state = AuthError::InvalidToken("invalid or expired authorization state");
         let state = cb
             .state
@@ -339,6 +350,7 @@ impl AuthService {
             .filter(|s| !s.is_empty() && s.len() <= 256)
             .ok_or(bad_state)?;
         let st = self.oauth_claim_state(provider, state).await?;
+        let p = self.provider_in(&st.realm, provider)?;
         let audit_fail = |reason: &str| {
             self.audit(
                 "oauth.login",
@@ -384,10 +396,10 @@ impl AuthService {
         let hash = self.keyring().token_hash("oauth_state", state);
         let r = read(
             self.data().backend(),
-            "SELECT provider, purpose, nonce, verifier_enc, redirect_uri, collection, link_user_id, options
+            "SELECT realm, provider, purpose, nonce, verifier_enc, redirect_uri, collection, link_user_id, options
              FROM _forgebase_oauth_states
-             WHERE state_hash = ?1 AND realm = ?2 AND used_at IS NULL AND expires_at > ?3",
-            vec![t(hash.clone()), t(DEFAULT_REALM), i(now())],
+             WHERE state_hash = ?1 AND used_at IS NULL AND expires_at > ?2",
+            vec![t(hash.clone()), i(now())],
         )
         .await?;
         let Some(row) = first(&r) else { return Err(bad) };
@@ -415,6 +427,7 @@ impl AuthService {
             }
         };
         Ok(StateRow {
+            realm: row.str("realm"),
             purpose: row.str("purpose"),
             nonce: row.str("nonce"),
             verifier,
@@ -646,8 +659,9 @@ impl AuthService {
     // Account resolution
     // -----------------------------------------------------------------------
 
-    async fn identity_by_subject(
+    pub(crate) async fn identity_by_subject(
         &self,
+        realm: &str,
         provider: &str,
         subject: &str,
     ) -> Result<Option<(String, String, String)>, AuthError> {
@@ -655,16 +669,17 @@ impl AuthService {
             self.data().backend(),
             "SELECT id, collection, user_id FROM _forgebase_oauth_identities
              WHERE realm = ?1 AND provider = ?2 AND provider_subject = ?3",
-            vec![t(DEFAULT_REALM), t(provider), t(subject)],
+            vec![t(realm), t(provider), t(subject)],
         )
         .await?;
         Ok(first(&r).map(|row| (row.str("id"), row.str("collection"), row.str("user_id"))))
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn insert_identity(
+    pub(crate) async fn insert_identity(
         &self,
         ci: &ClientInfo,
+        realm: &str,
         provider: &str,
         profile: &Profile,
         collection: &str,
@@ -683,7 +698,7 @@ impl AuthService {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             vec![
                 t(id.clone()),
-                t(DEFAULT_REALM),
+                t(realm),
                 t(provider),
                 t(profile.subject.clone()),
                 t(collection),
@@ -724,7 +739,7 @@ impl AuthService {
         if profile.email.is_none() {
             profile.email_verified = false;
         }
-        let existing = self.identity_by_subject(provider, &profile.subject).await?;
+        let existing = self.identity_by_subject(&st.realm, provider, &profile.subject).await?;
 
         if st.purpose == "link" {
             let user_id = st
@@ -749,7 +764,7 @@ impl AuthService {
                         return Err(AuthError::Unauthenticated);
                     }
                     let id = self
-                        .insert_identity(ci, provider, &profile, &st.collection, &user_id, "explicit")
+                        .insert_identity(ci, &st.realm, provider, &profile, &st.collection, &user_id, "explicit")
                         .await
                         .map_err(|e| {
                             if is_unique_violation(&e) {
@@ -807,19 +822,48 @@ impl AuthService {
         st: &StateRow,
         profile: &Profile,
     ) -> Result<(String, String), AuthError> {
-        let provider = p.config.id.as_str();
+        let realm = self.realm_identity(&st.realm)?;
         let coll = self.auth_collection(Some(&st.collection)).await?;
+        self.external_first_login(
+            ci,
+            &realm,
+            &p.config.id,
+            p.config.auto_link_verified_email,
+            p.config.allow_signup,
+            &coll,
+            profile,
+            "oauth.invalid",
+        )
+        .await
+    }
+
+    /// First sign-in of an external account (provider, LDAP): link to a
+    /// local account with the same email only when both sides proved it and
+    /// `auto_link` is on, otherwise `409`; else sign up when allowed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn external_first_login(
+        &self,
+        ci: &ClientInfo,
+        realm: &crate::realm::RealmIdentity,
+        provider: &str,
+        auto_link: bool,
+        allow_signup: bool,
+        coll: &forgebase_data::schema::Collection,
+        profile: &Profile,
+        placeholder_domain: &str,
+    ) -> Result<(String, String), AuthError> {
+        let event = if provider == "ldap" { "ldap.login" } else { "oauth.login" };
         if let Some(email) = &profile.email
-            && let Some(user) = self.find_user(&coll, email).await?
+            && let Some(user) = self.find_user(coll, email).await?
         {
             // Never merge accounts on an address nobody proved to us. Both
             // sides must have proved it: the provider (verified flag) and the
             // local account (verified), else a pre-registered, unverified
             // account could be taken over through the provider.
-            let allowed = p.config.auto_link_verified_email && profile.email_verified && user.verified;
+            let allowed = auto_link && profile.email_verified && user.verified;
             if !allowed {
                 self.audit(
-                    "oauth.login",
+                    event,
                     false,
                     ci,
                     "anonymous",
@@ -832,11 +876,11 @@ impl AuthService {
                         .into(),
                 ));
             }
-            self.insert_identity(ci, provider, profile, &coll.name, &user.id, "verified_email")
+            self.insert_identity(ci, &realm.realm, provider, profile, &coll.name, &user.id, "verified_email")
                 .await?;
-            return Ok((coll.name, user.id));
+            return Ok((coll.name.clone(), user.id));
         }
-        if !p.config.allow_signup {
+        if !allow_signup || !realm.config.signup {
             return Err(AuthError::Forbidden("sign-up with this provider is disabled".into()));
         }
         // Only a verified address becomes the account's email; otherwise a
@@ -844,9 +888,14 @@ impl AuthService {
         let (email, verified) = match (&profile.email, profile.email_verified) {
             (Some(e), true) => (e.clone(), true),
             _ => {
-                let digest = Sha256::digest(format!("{provider}:{}", profile.subject).as_bytes());
+                let key = if realm.realm == DEFAULT_REALM {
+                    format!("{provider}:{}", profile.subject)
+                } else {
+                    format!("{}:{provider}:{}", realm.realm, profile.subject)
+                };
+                let digest = Sha256::digest(key.as_bytes());
                 (
-                    format!("{provider}.{}@oauth.invalid", &crypto::hex(&digest)[..24]),
+                    format!("{provider}.{}@{placeholder_domain}", &crypto::hex(&digest)[..24]),
                     false,
                 )
             }
@@ -873,7 +922,7 @@ impl AuthService {
             })?;
         let uid = rec.get("id").and_then(Json::as_str).unwrap_or_default().to_owned();
         match self
-            .insert_identity(ci, provider, profile, &coll.name, &uid, "signup")
+            .insert_identity(ci, &realm.realm, provider, profile, &coll.name, &uid, "signup")
             .await
         {
             Ok(_) => {}
@@ -885,7 +934,7 @@ impl AuthService {
                     .delete_record(&AccessContext::system(), &coll.name, &uid, None)
                     .await;
                 if is_unique_violation(&e)
-                    && let Some((_, c, u)) = self.identity_by_subject(provider, &profile.subject).await?
+                    && let Some((_, c, u)) = self.identity_by_subject(&realm.realm, provider, &profile.subject).await?
                 {
                     return Ok((c, u));
                 }
@@ -905,7 +954,7 @@ impl AuthService {
             json!({"collection": coll.name, "provider": provider}),
         )
         .await?;
-        Ok((coll.name, uid))
+        Ok((coll.name.clone(), uid))
     }
 
     // -----------------------------------------------------------------------
@@ -947,22 +996,27 @@ impl AuthService {
         uid: &str,
         skip_identity: Option<&str>,
         skip_credential: Option<&str>,
+        skip_phone: bool,
     ) -> Result<bool, AuthError> {
         let r = read(
             self.data().backend(),
             "SELECT
                (SELECT COUNT(*) FROM _forgebase_oauth_identities WHERE collection = ?1 AND user_id = ?2 AND id <> ?3) AS ids,
-               (SELECT COUNT(*) FROM _forgebase_webauthn_credentials WHERE collection = ?1 AND user_id = ?2 AND credential_id <> ?4) AS keys",
+               (SELECT COUNT(*) FROM _forgebase_webauthn_credentials WHERE collection = ?1 AND user_id = ?2 AND credential_id <> ?4) AS keys,
+               (SELECT COUNT(*) FROM _forgebase_auth_phones WHERE collection = ?1 AND user_id = ?2) AS phones",
             vec![t(coll), t(uid), t(skip_identity.unwrap_or("")), t(skip_credential.unwrap_or(""))],
         )
         .await?;
-        let (ids, keys) = first(&r).map_or((0, 0), |r| (r.i64("ids"), r.i64("keys")));
+        let (ids, keys, phones) = first(&r).map_or((0, 0, 0), |r| (r.i64("ids"), r.i64("keys"), r.i64("phones")));
+        let phones = if skip_phone { 0 } else { phones };
         let user = self.user_view(coll, uid).await?;
+        // Placeholder addresses (`@oauth.invalid`, `@ldap.invalid`,
+        // `@phone.invalid`) have no mailbox to reset a password at.
         let placeholder = user
             .get("email")
             .and_then(Json::as_str)
-            .is_some_and(|e| e.ends_with("@oauth.invalid"));
-        Ok(placeholder && ids == 0 && keys == 0)
+            .is_some_and(|e| e.ends_with(".invalid"));
+        Ok(placeholder && ids == 0 && keys == 0 && phones == 0)
     }
 
     /// Unlinks a provider account. Refused when it would leave an account
@@ -973,6 +1027,7 @@ impl AuthService {
         ci: &ClientInfo,
         identity_id: &str,
     ) -> Result<(), AuthError> {
+        crate::lifecycle::not_impersonated(caller)?;
         let (coll, uid) = Self::session_user(caller)?;
         let r = read(
             self.data().backend(),
@@ -984,7 +1039,7 @@ impl AuthService {
             return Err(AuthError::NotFound("identity not found".into()));
         };
         let provider = row.str("provider");
-        if self.sole_way_in(&coll, &uid, Some(identity_id), None).await? {
+        if self.sole_way_in(&coll, &uid, Some(identity_id), None, false).await? {
             return Err(AuthError::Conflict(
                 "this is the only way to sign in to the account; add a passkey or another provider first".into(),
             ));

@@ -79,6 +79,7 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0008_oauth_webauthn.sql"),
     ),
     Migration::new(12, "vector", include_str!("../../../migrations/system/0012_vector.sql")),
+    Migration::new(14, "identity", include_str!("../../../migrations/system/0014_identity.sql")),
 ];
 
 /// A migration recorded as applied in the database.

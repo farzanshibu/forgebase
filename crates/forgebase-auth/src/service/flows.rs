@@ -15,6 +15,8 @@ use super::{AuthService, ClientInfo, SessionTokens, audit_in, is_unique_violatio
 use crate::crypto;
 use crate::mailer::{Mail, MailKind};
 use crate::password::check_password_policy;
+use crate::realm::Method;
+use crate::turnstile::TurnstileAction;
 use crate::store::{Tx, first, i, now, ot, read, t};
 use crate::{AuthError, AuthMethod, Authenticated, Subject};
 
@@ -170,7 +172,10 @@ impl AuthService {
         extra: Option<Map<String, Json>>,
     ) -> Result<UserView, AuthError> {
         self.limit_mail(ci)?;
-        let coll = self.auth_collection(collection).await?;
+        let (realm, coll) = self.request_collection(ci, collection).await?;
+        realm.require(Method::Password)?;
+        realm.require_signup()?;
+        self.turnstile_check(&realm, TurnstileAction::Signup, ci).await?;
         let email = normalize_email(email)?;
         check_password_policy(password, Self::password_min(&coll))?;
         let mut doc = extra.unwrap_or_default();
@@ -238,7 +243,9 @@ impl AuthService {
         opts: &LoginOptions,
     ) -> Result<LoginOutcome, AuthError> {
         self.limit_attempt(ci)?;
-        let coll = self.auth_collection(collection).await?;
+        let (realm, coll) = self.request_collection(ci, collection).await?;
+        realm.require(Method::Password)?;
+        self.turnstile_check(&realm, TurnstileAction::Login, ci).await?;
         let email_n = email.trim().to_lowercase();
         let lock_key = format!("pw:user:{}:{email_n}", coll.name);
         if let Err(e) = self.lockout_check(&lock_key).await {
@@ -278,7 +285,11 @@ impl AuthService {
             collection: coll.name.clone(),
             id: user.id.clone(),
         };
-        if self.config().require_verified_email && !user.verified {
+        let require_verified = realm
+            .config
+            .require_verified_email
+            .unwrap_or(self.config().require_verified_email);
+        if require_verified && !user.verified {
             self.audit(
                 "login",
                 false,
@@ -666,10 +677,19 @@ impl AuthService {
 
     async fn user_for_request(
         &self,
+        ci: &ClientInfo,
         collection: Option<&str>,
         email: &str,
+        method: Option<Method>,
+        turnstile: Option<TurnstileAction>,
     ) -> Result<(Collection, Option<UserRow>), AuthError> {
-        let coll = self.auth_collection(collection).await?;
+        let (realm, coll) = self.request_collection(ci, collection).await?;
+        if let Some(m) = method {
+            realm.require(m)?;
+        }
+        if let Some(a) = turnstile {
+            self.turnstile_check(&realm, a, ci).await?;
+        }
         let user = match normalize_email(email) {
             Ok(e) => self.find_user(&coll, &e).await?,
             Err(_) => None,
@@ -686,7 +706,7 @@ impl AuthService {
         email: &str,
     ) -> Result<(), AuthError> {
         self.limit_mail(ci)?;
-        let (coll, user) = self.user_for_request(collection, email).await?;
+        let (coll, user) = self.user_for_request(ci, collection, email, None, None).await?;
         if let Some(u) = user.filter(|u| !u.verified) {
             let subject = Subject::User {
                 collection: coll.name,
@@ -748,7 +768,9 @@ impl AuthService {
         email: &str,
     ) -> Result<(), AuthError> {
         self.limit_mail(ci)?;
-        let (coll, user) = self.user_for_request(collection, email).await?;
+        let (coll, user) = self
+            .user_for_request(ci, collection, email, None, Some(TurnstileAction::PasswordReset))
+            .await?;
         if let Some(u) = user {
             let subject = Subject::User {
                 collection: coll.name,
@@ -808,7 +830,9 @@ impl AuthService {
         email: &str,
     ) -> Result<(), AuthError> {
         self.limit_mail(ci)?;
-        let (coll, user) = self.user_for_request(collection, email).await?;
+        let (coll, user) = self
+            .user_for_request(ci, collection, email, Some(Method::MagicLink), Some(TurnstileAction::Otp))
+            .await?;
         if let Some(u) = user {
             let subject = Subject::User {
                 collection: coll.name,
@@ -846,6 +870,7 @@ impl AuthService {
             }
         };
         if let Subject::User { collection, id } = &subject {
+            self.realm_of(collection)?.require(Method::MagicLink)?;
             self.mark_verified(collection, id).await?;
         }
         self.complete_first_factor(&subject, AuthMethod::MagicLink, ci, opts)
@@ -860,7 +885,9 @@ impl AuthService {
         email: &str,
     ) -> Result<(), AuthError> {
         self.limit_mail(ci)?;
-        let (coll, user) = self.user_for_request(collection, email).await?;
+        let (coll, user) = self
+            .user_for_request(ci, collection, email, Some(Method::EmailOtp), Some(TurnstileAction::Otp))
+            .await?;
         if let Some(u) = user {
             let subject = Subject::User {
                 collection: coll.name,
@@ -899,7 +926,9 @@ impl AuthService {
         opts: &LoginOptions,
     ) -> Result<LoginOutcome, AuthError> {
         self.limit_attempt(ci)?;
-        let (coll, user) = self.user_for_request(collection, email).await?;
+        let (coll, user) = self
+            .user_for_request(ci, collection, email, Some(Method::EmailOtp), None)
+            .await?;
         let lock_key = format!("otp:user:{}:{}", coll.name, email.trim().to_lowercase());
         self.lockout_check(&lock_key).await?;
         let fail = |svc: &Self, subject: Option<Subject>| {

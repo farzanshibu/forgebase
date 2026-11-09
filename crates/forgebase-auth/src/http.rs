@@ -145,6 +145,14 @@ fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: 
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
+        // An invalid realm id becomes "" (no such realm), never another realm.
+        realm: req_headers
+            .get(crate::realm::REALM_HEADER)
+            .map(|v| v.to_str().ok().filter(|r| crate::realm::check_realm_id(r).is_ok()).unwrap_or("").to_owned()),
+        turnstile_token: crate::turnstile::TOKEN_HEADERS
+            .iter()
+            .find_map(|h| req_headers.get(*h))
+            .map(|v| v.to_str().unwrap_or("").chars().take(4096).collect()),
     }
 }
 
@@ -249,7 +257,9 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
                     .into_response();
                 }
             }
-            let ctx = a.access_context(None);
+            // The identity's home realm, unless the request selects one
+            // (the policy tenancy layer refuses a foreign realm).
+            let ctx = auth.access_context_for(&a);
             req.extensions_mut().insert(a);
             ctx
         }
@@ -541,7 +551,8 @@ pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> 
         .route("/audit", get(audit))
         .route("/keys/rotate", post(rotate_keys))
         .merge(crate::social::http::routes())
-        .merge(crate::webauthn::http::routes());
+        .merge(crate::webauthn::http::routes())
+        .merge(crate::identity_http::routes());
     Router::new().nest("/api/auth", r.with_state(auth))
 }
 

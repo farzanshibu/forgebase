@@ -31,15 +31,22 @@
 pub mod crypto;
 mod error;
 pub mod http;
+mod identity_http;
+pub mod ldap;
+pub mod lifecycle;
 pub mod limits;
 pub mod mailer;
 pub mod net;
 mod openapi;
 pub mod password;
+pub mod phone;
+pub mod realm;
 pub mod scopes;
 mod service;
+pub mod sms;
 pub mod social;
 pub mod store;
+pub mod turnstile;
 pub mod webauthn;
 
 use std::path::PathBuf;
@@ -235,6 +242,10 @@ pub enum AuthMethod {
     Oauth,
     /// Passkey (WebAuthn).
     Passkey,
+    /// Phone number + SMS code.
+    Sms,
+    /// LDAP directory bind.
+    Ldap,
 }
 
 impl AuthMethod {
@@ -245,6 +256,8 @@ impl AuthMethod {
             AuthMethod::EmailOtp => "email_otp",
             AuthMethod::Oauth => "oauth",
             AuthMethod::Passkey => "passkey",
+            AuthMethod::Sms => "sms",
+            AuthMethod::Ldap => "ldap",
         }
     }
 }

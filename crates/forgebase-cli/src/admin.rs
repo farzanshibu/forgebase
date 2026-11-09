@@ -116,6 +116,8 @@ fn cli_client() -> ClientInfo {
         ip: None,
         user_agent: Some("forgebase-cli".into()),
         request_id: None,
+        realm: None,
+        turnstile_token: None,
     }
 }
 

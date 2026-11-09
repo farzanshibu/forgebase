@@ -54,6 +54,8 @@ pub struct ServiceAccountView {
     pub created_at: String,
     /// Disabled (keys stop working).
     pub disabled: bool,
+    /// Realm the service account belongs to.
+    pub realm: String,
 }
 
 /// An API key or PAT without its secret.
@@ -121,6 +123,7 @@ fn sa_view(row: crate::store::Row<'_>) -> ServiceAccountView {
         created_by: row.str("created_by"),
         created_at: rfc3339(row.i64("created_at")),
         disabled: row.opt_i64("disabled_at").is_some(),
+        realm: row.str("realm"),
     }
 }
 
@@ -258,13 +261,24 @@ impl AuthService {
         if !matches!(role, "service" | "admin") {
             return Err(AuthError::invalid("role must be 'service' or 'admin'"));
         }
+        let realm = ci.realm.clone().unwrap_or_else(|| forgebase_data::DEFAULT_REALM.to_owned());
+        crate::realm::check_realm_id(&realm)?;
+        let known = crate::store::read(
+            self.data().backend(),
+            "SELECT 1 AS x FROM _forgebase_realms WHERE id = ?1",
+            vec![t(realm.clone())],
+        )
+        .await?;
+        if crate::store::first(&known).is_none() {
+            return Err(AuthError::NotFound(format!("realm {realm:?} not found")));
+        }
         let id = crypto::random_id(15)?;
         let now = now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let res = tx
             .exec(
-                "INSERT INTO _forgebase_service_accounts (id, name, description, role, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO _forgebase_service_accounts (id, name, description, role, created_by, created_at, realm)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 vec![
                     t(id.clone()),
                     t(name),
@@ -272,6 +286,7 @@ impl AuthService {
                     t(role),
                     t(caller.subject.actor()),
                     i(now),
+                    t(realm.clone()),
                 ],
             )
             .await;
@@ -294,10 +309,11 @@ impl AuthService {
             ci,
             &caller.subject.actor(),
             Some(&subject),
-            json!({"name": name, "role": role}),
+            json!({"name": name, "role": role, "realm": realm}),
         )
         .await?;
         tx.commit().await?;
+        self.realms().set_service_account(&id, &realm);
         self.get_service_account(caller, &id).await
     }
 
@@ -638,6 +654,7 @@ impl AuthService {
         if !matches!(subject, Subject::ServiceAccount { .. }) && !self.subject_exists(&subject).await? {
             return Err(AuthError::InvalidToken("API key owner no longer exists"));
         }
+        self.ensure_active(&subject).await?;
         let scopes: Vec<Scope> = serde_json::from_str::<Vec<String>>(&row.str("scopes"))
             .ok()
             .and_then(|v| parse_scopes(&v).ok())

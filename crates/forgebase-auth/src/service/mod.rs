@@ -38,6 +38,11 @@ pub struct ClientInfo {
     pub user_agent: Option<String>,
     /// Request id.
     pub request_id: Option<String>,
+    /// Realm the request selects (`X-ForgeBase-Realm`); `None` = `default`.
+    pub realm: Option<String>,
+    /// Cloudflare Turnstile token sent with the request (`cf-turnstile-response`
+    /// or `x-turnstile-token` header).
+    pub turnstile_token: Option<String>,
 }
 
 /// Tokens of a new or refreshed session.
@@ -191,7 +196,23 @@ struct Inner {
     keys: RwLock<Vec<SigningKey>>,
     social: crate::social::Social,
     webauthn: crate::webauthn::WebAuthnConfig,
+    realms: crate::realm::RealmDirectory,
+    sms: RwLock<Arc<dyn crate::sms::SmsProvider>>,
+    change_hook: RwLock<Option<Hook>>,
 }
+
+#[derive(Clone)]
+struct Hook(ChangeHook);
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ChangeHook")
+    }
+}
+
+/// Called after the auth service changed state the policy engine caches
+/// (suspensions); the server wires it to `PolicyService::reload`.
+pub type ChangeHook = Arc<dyn Fn() + Send + Sync>;
 
 impl AuthService {
     /// Builds the data service (with the Argon2id hasher for `password`
@@ -235,6 +256,9 @@ impl AuthService {
                 keys: RwLock::new(Vec::new()),
                 social: crate::social::Social::default(),
                 webauthn: crate::webauthn::WebAuthnConfig::from_public_url(&public_url),
+                realms: crate::realm::RealmDirectory::default(),
+                sms: RwLock::new(Arc::new(crate::sms::DevSmsProvider::default())),
+                change_hook: RwLock::new(None),
             }),
         };
         svc.install_default_http_client()?;
@@ -243,6 +267,8 @@ impl AuthService {
         if let Some(name) = svc.inner.cfg.default_collection.clone() {
             svc.ensure_auth_collection(&name).await?;
         }
+        svc.reconcile_default_realm().await?;
+        svc.load_sms_file().await?;
         Ok(svc)
     }
 
@@ -265,6 +291,33 @@ impl AuthService {
             self.set_http_client(Arc::new(client));
         }
         Ok(())
+    }
+
+    /// The realm directory (shared with the policy engine).
+    pub fn realms(&self) -> &crate::realm::RealmDirectory {
+        &self.inner.realms
+    }
+
+    /// The SMS provider (development provider unless replaced).
+    pub fn sms(&self) -> Arc<dyn crate::sms::SmsProvider> {
+        self.inner.sms.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Replaces the SMS provider.
+    pub fn set_sms_provider(&self, p: Arc<dyn crate::sms::SmsProvider>) {
+        *self.inner.sms.write().unwrap_or_else(|e| e.into_inner()) = p;
+    }
+
+    /// Installs the hook run after suspensions change.
+    pub fn set_change_hook(&self, hook: ChangeHook) {
+        *self.inner.change_hook.write().unwrap_or_else(|e| e.into_inner()) = Some(Hook(hook));
+    }
+
+    pub(crate) fn changed(&self) {
+        let hook = self.inner.change_hook.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(Hook(h)) = hook {
+            h();
+        }
     }
 
     /// The outbound HTTP client (providers, Turnstile, SMS gateways).
@@ -343,6 +396,14 @@ impl AuthService {
                 self.inner.cfg.ip_attempts_per_minute,
                 Duration::from_secs(60),
             )
+            .map_err(|retry_after| AuthError::RateLimited { retry_after })
+    }
+
+    /// Counts one hit of `key` in `bucket` (e.g. SMS sends per number).
+    pub(crate) fn limit_key(&self, bucket: &str, key: &str, limit: u32, window: Duration) -> Result<(), AuthError> {
+        self.inner
+            .limiter
+            .hit(bucket, key, limit, window)
             .map_err(|retry_after| AuthError::RateLimited { retry_after })
     }
 
@@ -629,6 +690,7 @@ impl AuthService {
         ci: &ClientInfo,
         opts: &LoginOptions,
     ) -> Result<SessionTokens, AuthError> {
+        self.ensure_active(subject).await?;
         let (st, coll, sid_subject) = match subject {
             Subject::User { collection, id } => ("user", Some(collection.clone()), id.clone()),
             Subject::Admin { id } => ("admin", None, id.clone()),
@@ -897,6 +959,16 @@ impl AuthService {
         };
         let sid = row.str("session_id");
         let subject = session_subject(&row)?;
+        if let Err(e) = self.ensure_active(&subject).await {
+            tx.exec(
+                "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = 'account_inactive'
+                 WHERE id = ?1 AND revoked_at IS NULL",
+                vec![t(sid.clone()), i(now)],
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(e);
+        }
         let reuse = row.opt_i64("used_at").is_some();
         let claimed = if reuse {
             false
@@ -1244,8 +1316,10 @@ pub(crate) async fn audit_in(
         t(detail.to_string())
     };
     tx.exec(
-        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, realm)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                 COALESCE((SELECT realm_id FROM _forgebase_realm_identity WHERE collection = ?6),
+                          CASE WHEN ?6 IS NULL THEN ?12 ELSE 'default' END))",
         vec![
             i(now()),
             t(event),
@@ -1258,6 +1332,7 @@ pub(crate) async fn audit_in(
             ot(ci.user_agent.clone()),
             ot(ci.request_id.clone()),
             detail,
+            ot(ci.realm.clone()),
         ],
     )
     .await?;
@@ -1299,4 +1374,11 @@ pub(crate) fn is_unique_violation(e: &AuthError) -> bool {
         AuthError::Data(DataError::Validation(v)) => format!("{v:?}").contains("unique"),
         _ => false,
     }
+}
+
+/// Refuses self-service credential and account changes inside an
+/// administrator's impersonation session. Impersonation (FB-23, ADR-0014)
+/// is not on this branch yet: no session is impersonated, so this passes.
+pub(crate) fn reject_impersonated(_caller: &Authenticated) -> Result<(), AuthError> {
+    Ok(())
 }
