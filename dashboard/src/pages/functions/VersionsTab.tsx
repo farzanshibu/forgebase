@@ -41,7 +41,7 @@ export default function VersionsTab({ info, onChanged }: { info: FunctionInfo; o
           key={active?.version ?? 0}
           fixedName={info.name}
           info={info}
-          config={active?.config}
+          config={active}
           onDone={(d) => {
             setDeploying(false);
             setNote(`Deployed v${d.version.version}${d.version.active ? " (active)" : ""}`);
@@ -61,9 +61,9 @@ export default function VersionsTab({ info, onChanged }: { info: FunctionInfo; o
             {versions.data.map((v) => (
               <tr key={v.version} className="border-t border-zinc-800 align-top">
                 <td className="py-2">v{v.version} {v.active && <span className="ml-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs text-emerald-300">active</span>}</td>
-                <td>{v.size} B</td>
-                <td className="font-mono text-xs">{v.config.capabilities.join(", ") || "none"}</td>
-                <td className="font-mono text-xs">{v.config.limits.timeout_ms} ms · {v.config.limits.max_concurrency} concurrent</td>
+                <td title={v.sha256}>{v.size} B</td>
+                <td className="font-mono text-xs">{v.capabilities.join(", ") || "none"}</td>
+                <td className="font-mono text-xs">{v.limits.timeout_ms} ms · {v.limits.max_concurrency} concurrent</td>
                 <td className="text-zinc-400">{when(v.created_at)} by {v.created_by}</td>
                 <td className="text-right">
                   {!v.active && <Button aria-label={`Activate v${v.version}`} onClick={() => void rollback(v.version)}>Activate</Button>}

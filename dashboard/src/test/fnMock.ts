@@ -39,8 +39,8 @@ export function installFunctions(mock: MockApi): FnState {
     functions: [{ id: "f1", name: "hello", description: "Says hi", access: "permission", active_version: 2, latest_version: 2, principal: "service:function.hello", created_at: NOW, updated_at: NOW, created_by: "admin" }],
     versions: {
       hello: [
-        { version: 2, size: 120, config: cfg(["log"]), active: true, created_at: NOW, created_by: "admin" },
-        { version: 1, size: 100, config: cfg([]), active: false, created_at: NOW, created_by: "admin" },
+        { version: 2, sha256: "b".repeat(64), size: 120, ...cfg(["log"]), active: true, created_at: NOW, created_by: "admin" },
+        { version: 1, sha256: "a".repeat(64), size: 100, ...cfg([]), active: false, created_at: NOW, created_by: "admin" },
       ],
     },
     secrets: { hello: [{ name: "API_KEY", created_at: NOW, updated_at: NOW }] },
@@ -69,7 +69,7 @@ export function installFunctions(mock: MockApi): FnState {
     }
     fn.latest_version = version;
     if (activate) { fn.active_version = version; vs.forEach((v) => (v.active = false)); }
-    const v: VersionInfo = { version, size: atob(b.wasm).length, config: cfg(b.capabilities), active: activate, created_at: NOW, created_by: "admin" };
+    const v: VersionInfo = { version, sha256: "c".repeat(64), size: atob(b.wasm).length, ...cfg(b.capabilities), active: activate, created_at: NOW, created_by: "admin" };
     vs.unshift(v);
     return { status: 201, body: { function: fn, version: v } };
   });

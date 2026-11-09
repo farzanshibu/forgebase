@@ -23,7 +23,8 @@ export interface FunctionInfo {
   id: string; name: string; description: string; access: InvokeAccess; active_version: number; latest_version: number;
   principal: string; created_at: string; updated_at: string; created_by: string;
 }
-export interface VersionInfo { version: number; size: number; config: VersionConfig; active: boolean; created_at: string; created_by: string }
+/** The version's configuration is flattened into the object on the wire. */
+export interface VersionInfo extends VersionConfig { version: number; sha256: string; size: number; active: boolean; created_at: string; created_by: string }
 export interface Deployed { function: FunctionInfo; version: VersionInfo }
 export interface SecretInfo { name: string; created_at: string; updated_at: string }
 export interface LogLine { level: string; message: string }

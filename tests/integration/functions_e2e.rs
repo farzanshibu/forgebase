@@ -205,8 +205,8 @@ fn deploy_invoke_and_read_logs_through_the_cli() {
     );
     assert_eq!(j["description"], "says hi");
     let (_, j) = call(&addr, "GET", "/api/v1/functions/hello/versions", Some(&token), None);
-    assert_eq!(j["items"][1]["config"]["limits"]["timeout_ms"], 2000);
-    assert_eq!(j["items"][1]["config"]["env"]["MODE"], "test");
+    assert_eq!(j["items"][1]["limits"]["timeout_ms"], 2000);
+    assert_eq!(j["items"][1]["env"]["MODE"], "test");
 
     // A module the server rejects reports the server's code.
     let bad = project.join("empty.wasm");
