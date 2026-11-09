@@ -58,9 +58,11 @@ export class MockApi {
     for (const c of this.custom) {
       if (c.method !== method) continue;
       const tp = c.template.split("/");
-      if (tp.length !== parts.length) continue;
+      const wild = tp[tp.length - 1]?.startsWith("{*") ?? false;
+      if (wild ? parts.length < tp.length : tp.length !== parts.length) continue;
       const params: Record<string, string> = {};
       const ok = tp.every((seg, i) => {
+        if (wild && i === tp.length - 1) { params[seg.slice(2, -1)] = parts.slice(i).map((x) => decodeURIComponent(x)).join("/"); return true; }
         if (seg.startsWith("{")) { params[seg.slice(1, -1)] = decodeURIComponent(parts[i] ?? ""); return true; }
         return seg === parts[i];
       });
@@ -111,6 +113,8 @@ export class MockApi {
       let cb: unknown;
       if (typeof init.body === "string" && init.body) {
         try { cb = JSON.parse(init.body); } catch { cb = init.body; }
+      } else if (init.body) {
+        cb = init.body; // raw bytes (storage uploads): Blob / Uint8Array
       }
       (this.bodies[`${method.toLowerCase()} ${custom.c.template}`] ??= []).push(cb);
       const reply = await custom.c.handler({ method, path: u.pathname, params: custom.params, query: u.searchParams, body: cb, headers });

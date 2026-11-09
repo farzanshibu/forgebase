@@ -1,20 +1,20 @@
 import { useState } from "react";
-import { PERMISSIONS, getAcl, putAcl } from "../../api";
-import type { AclEntry, Bucket, Permission } from "../../api";
+import { PERMISSIONS, getBucketAcl, putBucketAcl } from "../../api";
+import type { BucketAclEntry, Bucket, Permission } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 
 /** Prefix ACL: each entry grants a grantee (a principal such as `user:alice`, `role:editor` or `*`) a permission on keys under a prefix. */
 export default function AclEditor({ bucket }: { bucket: Bucket }) {
-  const acl = useLoad((s) => getAcl(bucket.name, s), `acl:${bucket.name}`);
+  const acl = useLoad((s) => getBucketAcl(bucket.name, s), `acl:${bucket.name}`);
   const [prefix, setPrefix] = useState("");
   const [grantee, setGrantee] = useState("");
   const [permission, setPermission] = useState<Permission>("read");
   const [error, setError] = useState<unknown>();
   const [saved, setSaved] = useState(false);
-  const save = async (entries: AclEntry[]) => {
+  const save = async (entries: BucketAclEntry[]) => {
     setError(undefined); setSaved(false);
-    try { await putAcl(bucket.name, { entries }); setSaved(true); acl.reload(); } catch (e) { setError(e); }
+    try { await putBucketAcl(bucket.name, { entries }); setSaved(true); acl.reload(); } catch (e) { setError(e); }
   };
   const entries = acl.data?.entries ?? [];
   return (

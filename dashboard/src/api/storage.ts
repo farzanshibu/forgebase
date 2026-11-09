@@ -18,8 +18,8 @@ export interface Bucket {
 }
 export interface BucketInput { name: string; visibility?: Visibility; versioning?: boolean; max_object_bytes?: number | null; allowed_content_types?: string[] | null }
 export type BucketPatch = Partial<Omit<BucketInput, "name">>;
-export interface AclEntry { prefix: string; grantee: string; permission: Permission }
-export interface Acl { entries: AclEntry[] }
+export interface BucketAclEntry { prefix: string; grantee: string; permission: Permission }
+export interface BucketAcl { entries: BucketAclEntry[] }
 export interface ObjectInfo {
   bucket: string; key: string; version_id: string; size: number; content_type: string; checksum_sha256?: string | null;
   metadata: Record<string, string>; is_latest: boolean; delete_marker: boolean; created_by: string; created_at: string;
@@ -52,8 +52,8 @@ export const createBucket = (b: BucketInput) => send<Bucket>("POST", `${S}/bucke
 export const getBucket = (name: string, signal?: AbortSignal) => request<Bucket>(`${S}/buckets/${enc(name)}`, { signal });
 export const updateBucket = (name: string, p: BucketPatch) => send<Bucket>("PATCH", `${S}/buckets/${enc(name)}`, p);
 export const deleteBucket = (name: string, force = false) => send<void>("DELETE", `${S}/buckets/${enc(name)}${force ? "?force=true" : ""}`);
-export const getAcl = (name: string, signal?: AbortSignal) => request<Acl>(`${S}/buckets/${enc(name)}/acl`, { signal });
-export const putAcl = (name: string, acl: Acl) => send<Acl>("PUT", `${S}/buckets/${enc(name)}/acl`, acl);
+export const getBucketAcl = (name: string, signal?: AbortSignal) => request<BucketAcl>(`${S}/buckets/${enc(name)}/acl`, { signal });
+export const putBucketAcl = (name: string, acl: BucketAcl) => send<BucketAcl>("PUT", `${S}/buckets/${enc(name)}/acl`, acl);
 
 export function listObjects(bucket: string, o: ObjectListOptions = {}, signal?: AbortSignal) {
   const q = new URLSearchParams();
@@ -115,6 +115,7 @@ export async function uploadObject(bucket: string, key: string, file: Blob, o: U
   o.onProgress?.(offset, total);
   try {
     for (;;) {
+      o.signal?.throwIfAborted();
       const end = Math.min(offset + chunk, total);
       let out: ObjectInfo | UploadSession;
       try {
@@ -132,7 +133,7 @@ export async function uploadObject(bucket: string, key: string, file: Blob, o: U
       if (offset >= total) throw new ApiError({ status: 0, code: "upload_incomplete", message: "The server did not finish the upload" });
     }
   } catch (e) {
-    if (!(e instanceof DOMException && e.name === "AbortError")) await send<void>("DELETE", `${S}/uploads/${enc(session.id)}`).catch(() => undefined);
+    await send<void>("DELETE", `${S}/uploads/${enc(session.id)}`).catch(() => undefined);
     throw e;
   }
 }
