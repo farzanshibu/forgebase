@@ -215,9 +215,12 @@ the image.
 └── .forgebase.lock               held by the running server
 ```
 
-Back up `forgebase.db`, `storage/`, and `auth/master.key` together, with the
-server stopped. Losing `master.key` makes the stored secrets unreadable. Keep
-its copy separate from the database backup if your policy requires it.
+Back up with `forgebase backup` (online, consistent; it covers `forgebase.db`,
+`storage/` and `indexes/`). `auth/master.key` is **not** copied unless you pass
+`--include-master-key`: losing it makes the stored secrets unreadable, so keep
+one copy of it apart from the backups. Schedule snapshots with cron or a
+systemd timer, for example `forgebase backup --keep-last 14 --max-age-days 30`.
+Restore with `forgebase restore latest --force` on the stopped data directory.
 See [database.md §5](database.md#5-backups-and-rollback).
 
 ## 5. TLS
@@ -246,7 +249,8 @@ Migrations run automatically on `serve`. Before you upgrade:
 2. Check the current migration state with the **old** binary:
    `forgebase migrate --status`.
 3. Stop the server (SIGTERM, or `systemctl stop forgebase`).
-4. Back up the data directory: `forgebase.db`, `storage/`, `auth/master.key`.
+4. Take a snapshot: `forgebase backup --label pre-upgrade` (works online or
+   stopped), and make sure `auth/master.key` is stored safely.
 5. Run `forgebase doctor` on the stopped data directory.
 6. Replace the binary, or pull the new image.
 7. Start the server. Pending migrations run. Before the first pending migration
@@ -257,7 +261,8 @@ Migrations run automatically on `serve`. Before you upgrade:
 To roll back:
 
 1. Stop the server.
-2. Copy the snapshot from `backups/` over `forgebase.db`, and delete
+2. Restore the snapshot you took (`forgebase restore <id> --force`), or copy
+   `backups/pre-migrate-v<N>-<time>.db` over `forgebase.db` and delete
    `forgebase.db-wal` and `forgebase.db-shm`.
 3. Start the previous binary.
 
@@ -305,7 +310,8 @@ test-mode keys are accepted (see [security.md §3](security.md#3-trust-boundarie
 ## 8. Release checklist
 
 - [ ] `forgebase doctor` passes on the data directory.
-- [ ] `auth/master.key` is backed up with the database.
+- [ ] `auth/master.key` is backed up separately from the data backups.
+- [ ] `forgebase backup` runs on a schedule and `forgebase backup verify latest` passes.
 - [ ] `FORGEBASE_HOST` is loopback, or only the proxy can reach the port.
 - [ ] TLS terminates at the proxy.
 - [ ] `log.format` is `json` for log collection.

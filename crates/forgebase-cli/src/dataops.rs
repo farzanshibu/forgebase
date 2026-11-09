@@ -39,9 +39,12 @@ fn lock(layout: &DataLayout, what: &str) -> anyhow::Result<DataDirLock> {
 
 async fn open_read_only(config: &Config, layout: &DataLayout) -> anyhow::Result<Database> {
     let opts = DbOptions::from_config(&config.database, layout.database_path()).read_only();
-    Database::open(opts)
-        .await
-        .with_context(|| format!("cannot open {} (run `forgebase init` first)", layout.database_path().display()))
+    Database::open(opts).await.with_context(|| {
+        format!(
+            "cannot open {} (run `forgebase init` first)",
+            layout.database_path().display()
+        )
+    })
 }
 
 async fn data_service(db: &Database) -> anyhow::Result<DataService> {
@@ -69,11 +72,18 @@ fn human_bytes(n: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
 }
 
 fn retention(keep_last: Option<usize>, max_age_days: Option<u32>) -> Option<Retention> {
-    (keep_last.is_some() || max_age_days.is_some()).then_some(Retention { keep_last, max_age_days })
+    (keep_last.is_some() || max_age_days.is_some()).then_some(Retention {
+        keep_last,
+        max_age_days,
+    })
 }
 
 // ------------------------------------------------------------------ backup
@@ -156,7 +166,10 @@ fn resolve_backup(store: &SnapshotStore, spec: &str) -> anyhow::Result<PathBuf> 
     }
     match store.resolve(spec) {
         Ok(s) => Ok(s.path),
-        Err(e) if as_path.is_dir() => bail!("{} is not a ForgeBase backup (no MANIFEST.json); {e}", as_path.display()),
+        Err(e) if as_path.is_dir() => bail!(
+            "{} is not a ForgeBase backup (no MANIFEST.json); {e}",
+            as_path.display()
+        ),
         Err(e) => Err(e.into()),
     }
 }
@@ -186,7 +199,11 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
                         s.manifest.schema_version,
                         human_bytes(s.manifest.total_bytes()),
                         s.manifest.files.len(),
-                        s.manifest.label.as_deref().map(|l| format!("  [{l}]")).unwrap_or_default()
+                        s.manifest
+                            .label
+                            .as_deref()
+                            .map(|l| format!("  [{l}]"))
+                            .unwrap_or_default()
                     );
                 }
             }
@@ -210,9 +227,20 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
                 for p in &report.problems {
                     println!("[FAIL] {p}");
                 }
-                println!("{}", if report.ok { "backup is valid" } else { "backup is NOT valid" });
+                println!(
+                    "{}",
+                    if report.ok {
+                        "backup is valid"
+                    } else {
+                        "backup is NOT valid"
+                    }
+                );
             }
-            Ok(if report.ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         Some(BackupCommand::Prune {
             keep_last,
@@ -226,7 +254,15 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
             if as_json {
                 print_json(&json!({ "deleted": gone }))?;
             } else {
-                println!("deleted {} snapshot(s){}", gone.len(), if gone.is_empty() { String::new() } else { format!(": {}", gone.join(", ")) });
+                println!(
+                    "deleted {} snapshot(s){}",
+                    gone.len(),
+                    if gone.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", gone.join(", "))
+                    }
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -238,7 +274,12 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
     }
 }
 
-async fn create(config: &Config, layout: &DataLayout, store: &SnapshotStore, a: CreateArgs) -> anyhow::Result<ExitCode> {
+async fn create(
+    config: &Config,
+    layout: &DataLayout,
+    store: &SnapshotStore,
+    a: CreateArgs,
+) -> anyhow::Result<ExitCode> {
     let db = open_read_only(config, layout).await?;
     let opts = BackupOptions {
         include_indexes: !a.no_indexes,
@@ -270,7 +311,11 @@ async fn create(config: &Config, layout: &DataLayout, store: &SnapshotStore, a: 
             m.files.len(),
             human_bytes(m.total_bytes()),
             m.schema_version,
-            if m.master_key.included { "included" } else { "not included (keep auth/master.key safe separately)" }
+            if m.master_key.included {
+                "included"
+            } else {
+                "not included (keep auth/master.key safe separately)"
+            }
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -307,11 +352,20 @@ pub struct RestoreCli {
 /// Runs `forgebase restore`.
 pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<ExitCode> {
     let (_config, layout) = setup(g)?;
-    layout.ensure().with_context(|| format!("cannot create {}", layout.root().display()))?;
+    layout
+        .ensure()
+        .with_context(|| format!("cannot create {}", layout.root().display()))?;
     let _lock = lock(&layout, "restoring")?;
     if cli.recover {
         let rolled = restore::recover(&layout)?;
-        println!("{}", if rolled { "rolled back an interrupted restore" } else { "no interrupted restore" });
+        println!(
+            "{}",
+            if rolled {
+                "rolled back an interrupted restore"
+            } else {
+                "no interrupted restore"
+            }
+        );
         return Ok(ExitCode::SUCCESS);
     }
     let Some(source) = cli.source else {
@@ -475,7 +529,11 @@ pub async fn run_export(g: &GlobalArgs, cmd: ExportCommand) -> anyhow::Result<Ex
             let db = open_read_only(&config, &layout).await?;
             let result = async {
                 let data = data_service(&db).await?;
-                let config_toml = if with_config { Some(transfer::config_to_toml(&config)?) } else { None };
+                let config_toml = if with_config {
+                    Some(transfer::config_to_toml(&config)?)
+                } else {
+                    None
+                };
                 let opts = ExportOptions {
                     collections: (!collections.is_empty()).then_some(collections),
                     config_toml,
@@ -506,7 +564,9 @@ pub async fn run_export(g: &GlobalArgs, cmd: ExportCommand) -> anyhow::Result<Ex
             let db = open_read_only(&config, &layout).await?;
             let result = async {
                 let data = data_service(&db).await?;
-                Ok::<_, anyhow::Error>(transfer::export_records(&data, &collection, &std::path::absolute(&dest)?, format).await?)
+                Ok::<_, anyhow::Error>(
+                    transfer::export_records(&data, &collection, &std::path::absolute(&dest)?, format).await?,
+                )
             }
             .await;
             db.close().await;
@@ -600,7 +660,14 @@ pub async fn run_import(g: &GlobalArgs, cmd: ImportCommand) -> anyhow::Result<Ex
             let result = async {
                 let data = data_service(&db).await?;
                 Ok::<_, anyhow::Error>(
-                    transfer::import_records_file(&data, &collection, &std::path::absolute(&src)?, format, on_conflict.into()).await?,
+                    transfer::import_records_file(
+                        &data,
+                        &collection,
+                        &std::path::absolute(&src)?,
+                        format,
+                        on_conflict.into(),
+                    )
+                    .await?,
                 )
             }
             .await;
@@ -615,7 +682,10 @@ pub async fn run_import(g: &GlobalArgs, cmd: ImportCommand) -> anyhow::Result<Ex
 
 async fn open_read_write(config: &Config, layout: &DataLayout) -> anyhow::Result<Database> {
     let opts = DbOptions::from_config(&config.database, layout.database_path()).create_if_missing(false);
-    Database::open(opts)
-        .await
-        .with_context(|| format!("cannot open {} (run `forgebase init` first)", layout.database_path().display()))
+    Database::open(opts).await.with_context(|| {
+        format!(
+            "cannot open {} (run `forgebase init` first)",
+            layout.database_path().display()
+        )
+    })
 }

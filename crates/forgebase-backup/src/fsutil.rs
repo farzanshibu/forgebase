@@ -37,7 +37,11 @@ pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
 #[cfg(unix)]
 pub(crate) fn create_private(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
 }
 
 #[cfg(not(unix))]
@@ -116,7 +120,11 @@ pub(crate) fn join_rel(base: &Path, rel: &str) -> PathBuf {
 
 /// Whether a manifest path is safe to join onto a directory.
 pub(crate) fn safe_rel(rel: &str) -> bool {
-    !rel.is_empty() && !rel.starts_with('/') && rel.split('/').all(|s| !s.is_empty() && s != "." && s != ".." && !s.contains('\\'))
+    !rel.is_empty()
+        && !rel.starts_with('/')
+        && rel
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != ".." && !s.contains('\\'))
 }
 
 /// Flushes a directory entry change to disk (best effort off Unix).

@@ -47,7 +47,10 @@ impl Instance {
         let ctx = admin();
         let authors = self
             .data
-            .create_collection(&ctx, Collection::base("authors").with_field(Field::new("name", text()).required()))
+            .create_collection(
+                &ctx,
+                Collection::base("authors").with_field(Field::new("name", text()).required()),
+            )
             .await
             .unwrap();
         // Created first on purpose: a relation target must be imported first.

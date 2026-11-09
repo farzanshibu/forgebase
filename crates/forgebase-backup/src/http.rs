@@ -34,7 +34,11 @@ fn guard(ctx: &AccessContext) -> Result<(), ApiError> {
     if ctx.is_privileged() {
         Ok(())
     } else if matches!(ctx.principal, forgebase_data::access::Principal::Anonymous) {
-        Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthenticated", "authentication required"))
+        Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "authentication required",
+        ))
     } else {
         Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -124,7 +128,13 @@ pub struct PruneResult {
     responses((status = 200, description = "Snapshots", body = SnapshotList)))]
 async fn list(State(s): State<BackupService>, Access(ctx): Access) -> ApiResult {
     guard(&ctx)?;
-    let items = s.store().list().map_err(api)?.into_iter().map(SnapshotView::from).collect();
+    let items = s
+        .store()
+        .list()
+        .map_err(api)?
+        .into_iter()
+        .map(SnapshotView::from)
+        .collect();
     Ok(Json(SnapshotList { items }).into_response())
 }
 

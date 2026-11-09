@@ -134,11 +134,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Check database integrity, disk space, permissions, migrations and port.
+    /// Check configuration, permissions, disk, database integrity, migrations,
+    /// indexes, storage blobs, master key, snapshots and port.
     Doctor {
         /// Print JSON.
         #[arg(long)]
         json: bool,
+        /// Also verify the newest snapshot's files and database.
+        #[arg(long)]
+        deep: bool,
     },
     /// Back up the data directory online (a snapshot, or a directory you name).
     Backup(Box<dataops::BackupCli>),
@@ -199,7 +203,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Serve => commands::serve(g).await,
         Command::Migrate { status } => commands::migrate(g, status).await,
         Command::Status { json } => commands::status(g, json).await,
-        Command::Doctor { json } => doctor::run(g, json).await,
+        Command::Doctor { json, deep } => doctor::run(g, json, deep).await,
         Command::Backup(b) => dataops::run_backup(g, *b).await,
         Command::Restore(r) => dataops::run_restore(g, *r).await,
         Command::Export { command } => dataops::run_export(g, command).await,

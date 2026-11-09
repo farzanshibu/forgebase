@@ -119,14 +119,72 @@ These rules are in [`migrations/README.md`](../migrations/README.md).
 - **Pre-migration snapshot.** Before pending migrations run on an existing
   database, the server writes `backups/pre-migrate-v<N>-<time>.db` with
   `VACUUM INTO`. Restoring that file is the rollback for a bad migration.
-- **Manual copy.** Stop the server, then copy `forgebase.db`, `forgebase.db-wal`
-  (if present), `storage/`, and `auth/master.key`. Copying the database file
-  while the server runs can produce an inconsistent copy.
-- **Full backup and restore commands** are work package FB-83 and are not
-  built yet.
+- **Backup (online).** `forgebase backup` copies the whole data directory while
+  the server keeps serving: the database with `VACUUM INTO` (one consistent
+  read snapshot; readers are never blocked), then `storage/` blobs and the
+  derived `indexes/`. The copy goes to `<dest>.partial` and is renamed after
+  `MANIFEST.json` (every file with size and SHA-256) is on disk, so a crash
+  never leaves something that looks complete. Without a destination it writes
+  a **snapshot** to `backups/snapshots/<UTC time>`; `--keep-last N` and
+  `--max-age-days D` apply a retention policy afterwards (`backup prune` and
+  `backup delete <id>` do it on demand; `backup list` shows what exists).
+  Snapshots are also available over REST: `/api/v1/system/backups`
+  (administrators only; see [api.md](api.md)).
+- **Verify.** `forgebase backup verify <dir|id|latest>` re-hashes every file,
+  rejects missing and unlisted files, opens the copied database read-only and
+  runs `integrity_check`, `foreign_key_check` and the migration check.
+- **Restore.** `forgebase restore <dir|snapshot id|latest|time> [--force]`,
+  with the server stopped (it takes the data-directory lock). The backup is
+  verified first, staged and hashed again, then swapped in. The data it
+  replaces is **moved**, never deleted, to `backups/pre-restore-<time>/`. A
+  crash mid-swap leaves a journal; the next `restore` (or
+  `restore --recover`) rolls the previous data back, and `forgebase doctor`
+  reports it. Giving a time restores the newest snapshot taken at or before it
+  (point-in-time restore).
+- **Master key.** `auth/master.key` seals every stored secret. A backup does
+  **not** contain it unless you pass `--include-master-key`, because a key
+  stored next to the data it protects is no protection. The manifest records the
+  key's fingerprint; restore refuses a different key and, when no key is
+  available, refuses to continue unless you pass `--master-key FILE` (the
+  original) or `--allow-missing-key` (sealed secrets become unreadable). Back
+  the key up separately, once.
+- **What is covered.** The system database (all collections, users, policies,
+  jobs, queues, vectors, billing records), local object-storage blobs and the
+  vector/other index files (rebuildable; `--no-indexes` leaves them out). Not
+  covered: objects in an S3 bucket (`storage.driver = "s3"`; use the bucket's
+  own versioning or replication) and in-flight temporary files.
+- **Manual copy.** Stopping the server and copying `forgebase.db`,
+  `forgebase.db-wal` (if present), `storage/` and `auth/master.key` still works.
+  Copying the database file while the server runs can produce an inconsistent
+  copy; use `forgebase backup` instead.
 
-`forgebase doctor` checks database integrity, free disk space, file permissions,
-migration state and the port. It exits with code 1 when a check fails.
+### Export and import
+
+`forgebase export collections <dir>` writes collection definitions and records
+(NDJSON, ids preserved) with SHA-256 checksums; `import collections <dir>`
+recreates them with the **same collection, field and record ids**, relation
+targets first. `--on-conflict skip` merges into existing collections.
+`export records <collection> <file> --format json|ndjson|csv` and
+`import records <collection> <file> --format json|ndjson` work on one
+collection (CSV import is the REST endpoint `POST /collections/{name}/import`).
+`export config [file]` writes the effective configuration as TOML and
+`import config <file>` validates it exactly as the server does before installing
+it. Import needs the server stopped; export does not. Records of auth
+collections are not exported (password hashes stay in the database), and
+`created`/`updated` are reassigned on import, as in the REST import.
+
+### `forgebase doctor`
+
+Prints one line per check (`[ok]`, `[warn]`, `[FAIL]`) or JSON with `--json`
+(`{"ok", "failed", "warnings", "checks": [{"name", "status", "detail"}]}`) and
+exits with code 1 when a check fails. Checks: `config`, `data_dir`
+(permissions), `database` (`integrity_check`, `foreign_key_check`, WAL mode,
+file mode), `migrations`, `storage`, `indexes`, `disk` (free space),
+`master_key` (presence, owner-only), `restore` (an interrupted restore),
+`snapshots` (count and age of the newest; `--deep` also verifies it),
+`staging` (leftovers of unfinished backups or restores), `index_files`
+(vector index files readable), `wal` (size), `storage_blobs` (referenced blobs
+that are missing: fail; files without metadata: warn) and `port`.
 
 ## 6. Query language
 

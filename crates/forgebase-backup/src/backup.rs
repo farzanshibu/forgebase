@@ -111,9 +111,23 @@ pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: Backu
             sha256: sha,
             kind: FileKind::Database,
         }];
-        copy_tree(&layout.storage_dir(), &partial, "storage", FileKind::Storage, STORAGE_SKIP, &mut files)?;
+        copy_tree(
+            &layout.storage_dir(),
+            &partial,
+            "storage",
+            FileKind::Storage,
+            STORAGE_SKIP,
+            &mut files,
+        )?;
         if opts.include_indexes {
-            copy_tree(&layout.indexes_dir(), &partial, "indexes", FileKind::Index, &[], &mut files)?;
+            copy_tree(
+                &layout.indexes_dir(),
+                &partial,
+                "indexes",
+                FileKind::Index,
+                &[],
+                &mut files,
+            )?;
         }
         let key_src = master_key_path(&layout);
         let fingerprint = key_fingerprint(&key_src)?;
@@ -155,7 +169,10 @@ pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: Backu
 
 /// `x.partial` → `x`.
 fn dest_of(partial: &Path) -> PathBuf {
-    let name = partial.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = partial
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     partial.with_file_name(name.trim_end_matches(".partial"))
 }
 

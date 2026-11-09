@@ -28,6 +28,7 @@ forgebase-server.workspace = true
 fs4.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -54,6 +55,10 @@ path = "../../tests/integration/auth_e2e.rs"
 [[test]]
 name = "realtime_e2e"
 path = "../../tests/integration/realtime_e2e.rs"
+
+[[test]]
+name = "backup_e2e"
+path = "../../tests/integration/backup_e2e.rs"
 
 [[test]]
 name = "functions_e2e"

@@ -97,8 +97,8 @@ impl Manifest {
             }
             Err(e) => return Err(io(&path)(e)),
         };
-        let m: Manifest =
-            serde_json::from_str(&text).map_err(|e| BackupError::Verify(vec![format!("{MANIFEST} is invalid: {e}")]))?;
+        let m: Manifest = serde_json::from_str(&text)
+            .map_err(|e| BackupError::Verify(vec![format!("{MANIFEST} is invalid: {e}")]))?;
         if m.format != FORMAT {
             return Err(BackupError::Verify(vec![format!(
                 "unsupported manifest format {} (this build reads format {FORMAT})",

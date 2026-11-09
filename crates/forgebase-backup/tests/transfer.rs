@@ -16,7 +16,9 @@ async fn export_import_preserves_ids_and_orders_relations() {
     let (authors_id, books_id) = a.seed(30).await;
 
     let dir = tmp.path().join("bundle");
-    let rep = transfer::export_bundle(&a.data, &dir, ExportOptions::default()).await.unwrap();
+    let rep = transfer::export_bundle(&a.data, &dir, ExportOptions::default())
+        .await
+        .unwrap();
     let names: Vec<_> = rep.bundle.collections.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["authors", "books"], "relation targets come first");
     assert_eq!(rep.bundle.collections[1].records, 30);
@@ -25,7 +27,9 @@ async fn export_import_preserves_ids_and_orders_relations() {
 
     // Into an empty instance.
     let b = open(&tmp.path().join("b")).await;
-    let imp = transfer::import_bundle(&b.data, &dir, ImportOptions::default()).await.unwrap();
+    let imp = transfer::import_bundle(&b.data, &dir, ImportOptions::default())
+        .await
+        .unwrap();
     assert!(imp.collections.iter().all(|c| c.created));
     assert_eq!(b.count("books").await, 30);
     let coll = b.data.get_collection(&admin(), "books").await.unwrap();
@@ -37,7 +41,11 @@ async fn export_import_preserves_ids_and_orders_relations() {
         .await
         .unwrap();
     assert_eq!(rec["title"], json!("Book 12"));
-    assert_eq!(rec["author"], json!("author00000001"), "record ids and relations are preserved");
+    assert_eq!(
+        rec["author"],
+        json!("author00000001"),
+        "record ids and relations are preserved"
+    );
 }
 
 #[tokio::test]
@@ -46,15 +54,21 @@ async fn conflicts_fail_by_default_and_skip_on_request() {
     let a = open(&tmp.path().join("a")).await;
     a.seed(10).await;
     let dir = tmp.path().join("bundle");
-    transfer::export_bundle(&a.data, &dir, ExportOptions::default()).await.unwrap();
+    transfer::export_bundle(&a.data, &dir, ExportOptions::default())
+        .await
+        .unwrap();
 
     // Importing back into the source collides on the collection.
-    let err = transfer::import_bundle(&a.data, &dir, ImportOptions::default()).await.unwrap_err();
+    let err = transfer::import_bundle(&a.data, &dir, ImportOptions::default())
+        .await
+        .unwrap_err();
     assert!(matches!(err, BackupError::Conflict(_)), "{err}");
 
     // Skip mode merges: one new record in the target stays, existing ids are skipped.
     let b = open(&tmp.path().join("b")).await;
-    transfer::import_bundle(&b.data, &dir, ImportOptions::default()).await.unwrap();
+    transfer::import_bundle(&b.data, &dir, ImportOptions::default())
+        .await
+        .unwrap();
     b.data
         .create_record(&admin(), "books", json!({"id": "extra000000001", "title": "only in b"}))
         .await
@@ -75,8 +89,13 @@ async fn conflicts_fail_by_default_and_skip_on_request() {
 
     // Merge into a target missing some records.
     let c = open(&tmp.path().join("c")).await;
-    transfer::import_bundle(&c.data, &dir, ImportOptions::default()).await.unwrap();
-    c.data.delete_record(&admin(), "books", "book0000000003", None).await.unwrap();
+    transfer::import_bundle(&c.data, &dir, ImportOptions::default())
+        .await
+        .unwrap();
+    c.data
+        .delete_record(&admin(), "books", "book0000000003", None)
+        .await
+        .unwrap();
     let imp = transfer::import_bundle(
         &c.data,
         &dir,
@@ -98,7 +117,9 @@ async fn dry_run_changes_nothing_and_subsets_work() {
     let a = open(&tmp.path().join("a")).await;
     a.seed(5).await;
     let dir = tmp.path().join("bundle");
-    transfer::export_bundle(&a.data, &dir, ExportOptions::default()).await.unwrap();
+    transfer::export_bundle(&a.data, &dir, ExportOptions::default())
+        .await
+        .unwrap();
 
     let b = open(&tmp.path().join("b")).await;
     let rep = transfer::import_bundle(
@@ -152,18 +173,27 @@ async fn corrupt_or_foreign_bundles_are_refused_before_anything_is_written() {
     let a = open(&tmp.path().join("a")).await;
     a.seed(5).await;
     let dir = tmp.path().join("bundle");
-    transfer::export_bundle(&a.data, &dir, ExportOptions::default()).await.unwrap();
+    transfer::export_bundle(&a.data, &dir, ExportOptions::default())
+        .await
+        .unwrap();
 
     let b = open(&tmp.path().join("b")).await;
     let nd = dir.join("collections/books.ndjson");
     let mut text = std::fs::read_to_string(&nd).unwrap();
     text.push_str("{\"id\":\"tampered\"}\n");
     std::fs::write(&nd, text).unwrap();
-    let err = transfer::import_bundle(&b.data, &dir, ImportOptions::default()).await.unwrap_err();
+    let err = transfer::import_bundle(&b.data, &dir, ImportOptions::default())
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("corrupt"), "{err}");
-    assert!(b.data.get_collection(&admin(), "authors").await.is_err(), "nothing was created");
+    assert!(
+        b.data.get_collection(&admin(), "authors").await.is_err(),
+        "nothing was created"
+    );
 
-    let err = transfer::import_bundle(&b.data, tmp.path(), ImportOptions::default()).await.unwrap_err();
+    let err = transfer::import_bundle(&b.data, tmp.path(), ImportOptions::default())
+        .await
+        .unwrap_err();
     assert!(matches!(err, BackupError::Format(_)));
 }
 
@@ -212,4 +242,82 @@ async fn export_bundle_can_carry_the_config() {
     .unwrap();
     assert!(rep.bundle.config);
     assert!(dir.join("config.toml").is_file());
+}
+
+#[tokio::test]
+async fn single_collection_files_in_json_ndjson_and_csv() {
+    use forgebase_backup::transfer::Format;
+    let tmp = tempfile::tempdir().unwrap();
+    let a = open(&tmp.path().join("a")).await;
+    a.seed(12).await;
+    a.data
+        .create_record(
+            &admin(),
+            "books",
+            json!({"id": "tricky00000001", "title": "Comma, \"quote\"\nnewline"}),
+        )
+        .await
+        .unwrap();
+
+    let csv = tmp.path().join("books.csv");
+    assert_eq!(
+        transfer::export_records(&a.data, "books", &csv, Format::Csv)
+            .await
+            .unwrap(),
+        13
+    );
+    let text = std::fs::read_to_string(&csv).unwrap();
+    assert!(text.starts_with("id,created,updated,title,author\n"), "{text}");
+    assert!(text.contains("\"Comma, \"\"quote\"\"\nnewline\""), "{text}");
+
+    let json_file = tmp.path().join("books.json");
+    transfer::export_records(&a.data, "books", &json_file, Format::Json)
+        .await
+        .unwrap();
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&json_file).unwrap()).unwrap();
+    assert_eq!(arr.len(), 13);
+    let nd = tmp.path().join("books.ndjson");
+    transfer::export_records(&a.data, "books", &nd, Format::Ndjson)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&nd).unwrap().lines().count(), 13);
+    // Existing files are never overwritten; unknown collections are errors.
+    assert!(matches!(
+        transfer::export_records(&a.data, "books", &nd, Format::Ndjson).await,
+        Err(BackupError::Conflict(_))
+    ));
+    assert!(
+        transfer::export_records(&a.data, "nope", &tmp.path().join("n"), Format::Json)
+            .await
+            .is_err()
+    );
+
+    // Both JSON flavours import into an existing collection, ids preserved.
+    for (file, format) in [(&json_file, Format::Json), (&nd, Format::Ndjson)] {
+        let b = open(&tmp.path().join(format!("b-{file:?}").replace(['/', '"', ' '], "_"))).await;
+        let bundle = tmp
+            .path()
+            .join(format!("bundle-{}", file.file_name().unwrap().to_string_lossy()));
+        transfer::export_bundle(&a.data, &bundle, ExportOptions::default())
+            .await
+            .unwrap();
+        transfer::import_bundle(
+            &b.data,
+            &bundle,
+            ImportOptions {
+                collections: Some(vec!["authors".into(), "books".into()]),
+                ..ImportOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (n, skipped) = transfer::import_records_file(&b.data, "books", file, format, OnConflict::Skip)
+            .await
+            .unwrap();
+        assert_eq!((n, skipped), (0, 13));
+    }
+    assert!(matches!(
+        transfer::import_records_file(&a.data, "books", &csv, Format::Csv, OnConflict::Skip).await,
+        Err(BackupError::Invalid(_))
+    ));
 }

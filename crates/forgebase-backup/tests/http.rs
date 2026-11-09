@@ -76,18 +76,34 @@ async fn admin_manages_snapshots_over_http() {
     assert_eq!(list["items"], json!([]));
 
     let (s, m) = api
-        .call(Method::POST, "/api/v1/system/backups", Some(json!({"label": "nightly"})))
+        .call(
+            Method::POST,
+            "/api/v1/system/backups",
+            Some(json!({"label": "nightly"})),
+        )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{m}");
     assert_eq!(m["kind"], "snapshot");
     assert_eq!(m["label"], "nightly");
-    assert_eq!(m["master_key"]["included"], false, "the key is never copied through the API");
+    assert_eq!(
+        m["master_key"]["included"], false,
+        "the key is never copied through the API"
+    );
     let id = m["id"].as_str().unwrap().to_owned();
-    assert!(api.layout.backups_dir().join("snapshots").join(&id).join("MANIFEST.json").is_file());
+    assert!(
+        api.layout
+            .backups_dir()
+            .join("snapshots")
+            .join(&id)
+            .join("MANIFEST.json")
+            .is_file()
+    );
 
     let (_, list) = api.call(Method::GET, "/api/v1/system/backups", None).await;
     assert_eq!(list["items"][0]["id"], json!(id));
-    let (s, one) = api.call(Method::GET, &format!("/api/v1/system/backups/{id}"), None).await;
+    let (s, one) = api
+        .call(Method::GET, &format!("/api/v1/system/backups/{id}"), None)
+        .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(one["manifest"]["schema_version"], m["schema_version"]);
 
@@ -107,7 +123,11 @@ async fn admin_manages_snapshots_over_http() {
         .await;
     }
     let (s, pruned) = api
-        .call(Method::POST, "/api/v1/system/backups/prune", Some(json!({"keep_last": 1})))
+        .call(
+            Method::POST,
+            "/api/v1/system/backups/prune",
+            Some(json!({"keep_last": 1})),
+        )
         .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(pruned["deleted"].as_array().unwrap().len(), 2);
@@ -115,9 +135,13 @@ async fn admin_manages_snapshots_over_http() {
     let left = list["items"][0]["id"].as_str().unwrap().to_owned();
     assert_eq!(list["items"].as_array().unwrap().len(), 1);
 
-    let (s, _) = api.call(Method::DELETE, &format!("/api/v1/system/backups/{left}"), None).await;
+    let (s, _) = api
+        .call(Method::DELETE, &format!("/api/v1/system/backups/{left}"), None)
+        .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, e) = api.call(Method::GET, &format!("/api/v1/system/backups/{left}"), None).await;
+    let (s, e) = api
+        .call(Method::GET, &format!("/api/v1/system/backups/{left}"), None)
+        .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(e["error"]["code"], "backup_not_found");
     let (s, e) = api.call(Method::GET, "/api/v1/system/backups/..%2Fetc", None).await;
@@ -159,6 +183,9 @@ async fn openapi_documents_every_backup_route() {
         ("post", "/api/v1/system/backups/{id}/verify"),
         ("post", "/api/v1/system/backups/prune"),
     ] {
-        assert!(doc["paths"][path][method].is_object(), "{method} {path} is not documented");
+        assert!(
+            doc["paths"][path][method].is_object(),
+            "{method} {path} is not documented"
+        );
     }
 }

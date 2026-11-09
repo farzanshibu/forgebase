@@ -2,8 +2,11 @@
 //!
 //! Checks configuration, data-directory permissions, database integrity
 //! (`PRAGMA integrity_check` and `foreign_key_check`), migration status,
-//! storage and index directories, free disk space and the HTTP port.
-//! Nothing is created or modified; the database is opened read-only.
+//! storage and index directories, free disk space and the HTTP port, plus
+//! (FB-83) the master key, an interrupted restore, snapshots, storage blobs
+//! against their metadata (orphans and missing files), vector index files,
+//! WAL size and leftover staging files. `--deep` also hashes the newest
+//! snapshot. Nothing is created or modified; the database is opened read-only.
 //! Exit code 1 when any check fails.
 
 use std::path::Path;
@@ -59,7 +62,7 @@ impl Report {
 }
 
 /// Runs every check and prints the report.
-pub async fn run(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
+pub async fn run(g: &GlobalArgs, as_json: bool, deep: bool) -> anyhow::Result<ExitCode> {
     let level = g.log_level.as_deref().unwrap_or("error");
     forgebase_observability::init_logging(level, forgebase_core::LogFormat::Pretty)?;
 
@@ -73,7 +76,7 @@ pub async fn run(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
                     format!("loaded {}", f.display())
                 });
             r.push("config", Level::Ok, source);
-            check_instance(&mut r, &loaded.config).await;
+            check_instance(&mut r, &loaded.config, deep).await;
         }
         Err(e) => r.push("config", Level::Fail, format!("{e:#}")),
     }
@@ -109,7 +112,7 @@ pub async fn run(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
     })
 }
 
-async fn check_instance(r: &mut Report, config: &Config) {
+async fn check_instance(r: &mut Report, config: &Config, deep: bool) {
     let layout = DataLayout::new(&config.data_dir);
     let root = layout.root();
 
@@ -191,7 +194,257 @@ async fn check_instance(r: &mut Report, config: &Config) {
     }
 
     check_disk(r, root);
+    check_extras(r, config, &layout, deep).await;
     check_port(r, config, &layout).await;
+}
+
+/// Master key, interrupted restore, snapshots, blobs, vector index files, WAL, staging leftovers.
+async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, deep: bool) {
+    if !layout.root().is_dir() {
+        return;
+    }
+    check_key(r, layout);
+    if forgebase_backup::restore::interrupted(layout) {
+        r.push(
+            "restore",
+            Level::Fail,
+            "an earlier restore was interrupted; run `forgebase restore --recover` (the server is stopped)",
+        );
+    }
+    check_snapshots(r, layout, deep).await;
+    check_staging(r, layout);
+    check_index_files(r, layout);
+    if layout.database_path().is_file() {
+        let opts = DbOptions::from_config(&config.database, layout.database_path()).read_only();
+        if let Ok(db) = Database::open(opts).await {
+            if let Ok(info) = db.info().await {
+                if info.wal_size_bytes > WAL_WARN_BYTES {
+                    r.push(
+                        "wal",
+                        Level::Warn,
+                        format!(
+                            "write-ahead log is {} MiB; a checkpoint runs at clean shutdown (a long-running reader may be holding it)",
+                            info.wal_size_bytes / (1024 * 1024)
+                        ),
+                    );
+                }
+            }
+            if config.storage.driver == forgebase_core::StorageDriverKind::Local {
+                check_blobs(r, &db, layout).await;
+            }
+            db.close().await;
+        }
+    }
+}
+
+/// WAL size above which doctor warns.
+const WAL_WARN_BYTES: u64 = 256 * 1024 * 1024;
+/// Age of the newest snapshot above which doctor warns.
+const SNAPSHOT_STALE_DAYS: i64 = 7;
+
+fn check_key(r: &mut Report, layout: &DataLayout) {
+    let key = forgebase_backup::backup::master_key_path(layout);
+    match std::fs::metadata(&key) {
+        Err(_) => r.push(
+            "master_key",
+            Level::Warn,
+            format!(
+                "{} is missing: it is created at the first start; on a restored directory restore the original key, or stored secrets stay unreadable",
+                key.display()
+            ),
+        ),
+        Ok(m) if m.len() == 0 => r.push("master_key", Level::Fail, format!("{} is empty", key.display())),
+        Ok(_) => match loose_permissions(&key) {
+            Some(mode) => r.push(
+                "master_key",
+                Level::Warn,
+                format!("{} has mode {mode:o}; run chmod 600", key.display()),
+            ),
+            None => r.push("master_key", Level::Ok, format!("{} present, owner-only", key.display())),
+        },
+    }
+}
+
+async fn check_snapshots(r: &mut Report, layout: &DataLayout, deep: bool) {
+    let store = forgebase_backup::SnapshotStore::new(layout);
+    let all = match store.list() {
+        Ok(a) => a,
+        Err(e) => {
+            r.push(
+                "snapshots",
+                Level::Warn,
+                format!("cannot read {}: {e}", store.dir().display()),
+            );
+            return;
+        }
+    };
+    let Some(latest) = all.first() else {
+        r.push(
+            "snapshots",
+            Level::Warn,
+            "no snapshot yet; run `forgebase backup` (schedule it with cron or a systemd timer)",
+        );
+        return;
+    };
+    let age_days =
+        time::OffsetDateTime::parse(&latest.manifest.created, &time::format_description::well_known::Rfc3339)
+            .map(|t| (time::OffsetDateTime::now_utc() - t).whole_days())
+            .ok();
+    let mut level = Level::Ok;
+    let mut detail = format!(
+        "{} snapshot(s); newest {} ({})",
+        all.len(),
+        latest.id,
+        latest.manifest.created
+    );
+    if age_days.is_some_and(|d| d >= SNAPSHOT_STALE_DAYS) {
+        level = Level::Warn;
+        detail.push_str(&format!("; older than {SNAPSHOT_STALE_DAYS} days"));
+    }
+    if deep {
+        let v = forgebase_backup::verify(&latest.path).await;
+        if v.ok {
+            detail.push_str(&format!("; verified ({} files)", v.files_checked));
+        } else {
+            level = Level::Fail;
+            detail.push_str(&format!("; verification FAILED: {}", v.problems.join("; ")));
+        }
+    }
+    r.push("snapshots", level, detail);
+}
+
+fn check_staging(r: &mut Report, layout: &DataLayout) {
+    let mut leftovers = Vec::new();
+    for dir in [layout.tmp_dir(), layout.backups_dir().join("snapshots")] {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with("restore-") || name.ends_with(".partial") {
+                    leftovers.push(e.path().display().to_string());
+                }
+            }
+        }
+    }
+    if !leftovers.is_empty() {
+        r.push(
+            "staging",
+            Level::Warn,
+            format!(
+                "leftovers of an unfinished backup or restore (safe to delete when stopped): {}",
+                leftovers.join(", ")
+            ),
+        );
+    }
+}
+
+/// Vector index files: each manifest parses and each `.usearch` file is non-empty.
+/// A bad index is derived data: the server rebuilds it, so this only warns.
+fn check_index_files(r: &mut Report, layout: &DataLayout) {
+    let root = layout.indexes_dir();
+    let mut stack = vec![root.clone()];
+    let (mut files, mut bad) = (0usize, Vec::new());
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                stack.push(path);
+            } else if name.ends_with(".manifest.json") {
+                files += 1;
+                let ok = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                    .is_some();
+                if !ok {
+                    bad.push(path.display().to_string());
+                }
+            } else if name.ends_with(".usearch") {
+                files += 1;
+                if e.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+                    bad.push(path.display().to_string());
+                }
+            }
+        }
+    }
+    if !root.is_dir() {
+        return;
+    }
+    if bad.is_empty() {
+        r.push(
+            "index_files",
+            Level::Ok,
+            format!("{files} vector index file(s) readable"),
+        );
+    } else {
+        r.push(
+            "index_files",
+            Level::Warn,
+            format!(
+                "damaged index file(s), rebuilt by the server at startup: {}",
+                bad.join(", ")
+            ),
+        );
+    }
+}
+
+/// Blobs on disk against `_forgebase_storage_blobs`: files nobody references
+/// (orphans, removed by the reconciler) and referenced blobs that are gone.
+async fn check_blobs(r: &mut Report, db: &Database, layout: &DataLayout) {
+    use forgebase_db::{Backend, Statement};
+    let rows = match db
+        .fetch_all(&Statement::raw("SELECT sha256, refcount FROM _forgebase_storage_blobs"))
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return, // storage tables not created yet
+    };
+    let mut known: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for row in &rows.rows {
+        if let (Some(sha), Some(rc)) = (row[0].as_str(), row[1].as_i64()) {
+            known.insert(sha.to_owned(), rc);
+        }
+    }
+    let root = layout.storage_dir().join("blobs");
+    let mut on_disk = std::collections::HashSet::new();
+    if let Ok(prefixes) = std::fs::read_dir(&root) {
+        for p in prefixes.flatten() {
+            if let Ok(files) = std::fs::read_dir(p.path()) {
+                for f in files.flatten() {
+                    on_disk.insert(f.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    let missing = known
+        .iter()
+        .filter(|(sha, rc)| **rc > 0 && !on_disk.contains(*sha))
+        .count();
+    let orphans = on_disk.iter().filter(|sha| !known.contains_key(*sha)).count();
+    if missing > 0 {
+        r.push(
+            "storage_blobs",
+            Level::Fail,
+            format!(
+                "{missing} referenced blob(s) are missing from {} (restore from a backup)",
+                root.display()
+            ),
+        );
+    } else if orphans > 0 {
+        r.push(
+            "storage_blobs",
+            Level::Warn,
+            format!(
+                "{orphans} blob file(s) have no metadata; the storage reconciler removes them after its grace period"
+            ),
+        );
+    } else {
+        r.push(
+            "storage_blobs",
+            Level::Ok,
+            format!("{} blob(s), all accounted for", known.len()),
+        );
+    }
 }
 
 async fn check_database(r: &mut Report, config: &Config, layout: &DataLayout) {

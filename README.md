@@ -6,8 +6,8 @@ billing. It is single-node.
 
 ## What is in this repository
 
-- `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `version`,
-  `admin`, `functions`.
+- `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `backup`,
+  `restore`, `export`, `import`, `version`, `admin`, `functions`.
 - Embedded SQLite database in WAL mode, one writer and a read pool, with
   checksummed system migrations and pre-migration snapshots.
 - HTTP API: health probes, Prometheus metrics, `/api/system/*`, `/api/auth/*`,
@@ -85,7 +85,11 @@ Commands:
   serve    Start the server and serve until Ctrl-C / SIGTERM
   migrate  Apply pending system migrations
   status   Show project, database and server state
-  doctor   Check database integrity, disk space, permissions, migrations and port
+  doctor   Check config, permissions, disk, database, migrations, indexes, blobs, key, snapshots and port
+  backup   Online backup or snapshot (list, verify, prune, delete)
+  restore  Verified restore of a backup or snapshot into a stopped data directory
+  export   Export collections, records or the configuration
+  import   Import collections, records or a configuration file
   version  Print version information
   help     Print this message or the help of the given subcommand(s)
 
@@ -103,6 +107,8 @@ Options:
 Subcommand options: `migrate --status` lists applied and pending migrations
 without changing anything; `status --json`, `doctor --json` and
 `version --json` print JSON. `doctor` exits with code 1 if any check fails.
+Backup, restore, export and import are described in
+[docs/database.md §5](docs/database.md#5-backups-and-rollback).
 
 Subcommand flags: `forgebase <command> --help`.
 

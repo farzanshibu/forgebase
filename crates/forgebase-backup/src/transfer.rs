@@ -153,12 +153,18 @@ pub async fn export_bundle(data: &DataService, dest: &Path, opts: ExportOptions)
     let names: HashSet<String> = chosen.iter().map(|c| c.id.clone()).collect();
     for c in &chosen {
         if !safe_name(&c.name) {
-            return Err(BackupError::Invalid(format!("collection name {:?} cannot be used as a file name", c.name)));
+            return Err(BackupError::Invalid(format!(
+                "collection name {:?} cannot be used as a file name",
+                c.name
+            )));
         }
         for f in &c.fields {
             if let Some(t) = f.kind.relation_target() {
                 if !names.contains(t) {
-                    warnings.push(format!("{}.{} relates to a collection that is not part of this export", c.name, f.name));
+                    warnings.push(format!(
+                        "{}.{} relates to a collection that is not part of this export",
+                        c.name, f.name
+                    ));
                 }
             }
         }
@@ -285,7 +291,10 @@ pub fn read_bundle(src: &Path) -> Result<Bundle> {
     let path = src.join(BUNDLE);
     let text = std::fs::read_to_string(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            BackupError::Format(format!("{} is not an export bundle ({BUNDLE} is missing)", src.display()))
+            BackupError::Format(format!(
+                "{} is not an export bundle ({BUNDLE} is missing)",
+                src.display()
+            ))
         } else {
             io(&path)(e)
         }
@@ -302,7 +311,10 @@ pub fn read_bundle(src: &Path) -> Result<Bundle> {
             let p = join_rel(src, &format!("collections/{}.ndjson", c.name));
             let (got, _) = sha256_file(&p)?;
             if &got != want {
-                return Err(BackupError::Format(format!("{} is corrupt (SHA-256 differs from {BUNDLE})", p.display())));
+                return Err(BackupError::Format(format!(
+                    "{} is corrupt (SHA-256 differs from {BUNDLE})",
+                    p.display()
+                )));
             }
         }
     }
@@ -313,7 +325,10 @@ pub fn read_bundle(src: &Path) -> Result<Bundle> {
 pub async fn import_bundle(data: &DataService, src: &Path, opts: ImportOptions) -> Result<ImportReport> {
     let ctx = AccessContext::system();
     let bundle = read_bundle(src)?;
-    let wanted: Option<HashSet<&str>> = opts.collections.as_ref().map(|v| v.iter().map(String::as_str).collect());
+    let wanted: Option<HashSet<&str>> = opts
+        .collections
+        .as_ref()
+        .map(|v| v.iter().map(String::as_str).collect());
     let mut report = ImportReport {
         collections: Vec::new(),
         warnings: Vec::new(),
@@ -333,8 +348,8 @@ pub async fn import_bundle(data: &DataService, src: &Path, opts: ImportOptions) 
         }
         let schema_path = src.join("collections").join(format!("{}.schema.json", entry.name));
         let text = std::fs::read_to_string(&schema_path).map_err(io(&schema_path))?;
-        let def: Collection = serde_json::from_str(&text)
-            .map_err(|e| BackupError::Format(format!("{}: {e}", schema_path.display())))?;
+        let def: Collection =
+            serde_json::from_str(&text).map_err(|e| BackupError::Format(format!("{}: {e}", schema_path.display())))?;
         let exists = data.get_collection(&ctx, &entry.name).await.is_ok();
         known.insert(entry.name.clone(), exists);
         if exists && opts.on_conflict == OnConflict::Fail {
@@ -385,14 +400,17 @@ async fn import_records(
     on_conflict: OnConflict,
 ) -> Result<(u64, u64)> {
     let file = std::fs::File::open(path).map_err(io(path))?;
-    let records = BufReader::new(file).lines().enumerate().filter_map(|(n, line)| match line {
-        Err(e) => Some(Err(io(path)(e))),
-        Ok(l) if l.trim().is_empty() => None,
-        Ok(l) => Some(
-            serde_json::from_str::<Map<String, Json>>(&l)
-                .map_err(|e| BackupError::Format(format!("{} line {}: {e}", path.display(), n + 1))),
-        ),
-    });
+    let records = BufReader::new(file)
+        .lines()
+        .enumerate()
+        .filter_map(|(n, line)| match line {
+            Err(e) => Some(Err(io(path)(e))),
+            Ok(l) if l.trim().is_empty() => None,
+            Ok(l) => Some(
+                serde_json::from_str::<Map<String, Json>>(&l)
+                    .map_err(|e| BackupError::Format(format!("{} line {}: {e}", path.display(), n + 1))),
+            ),
+        });
     import_stream(data, ctx, collection, records, on_conflict).await
 }
 
@@ -408,10 +426,28 @@ async fn import_stream(
     for rec in records {
         batch.push(clean(rec?));
         if batch.len() == BATCH {
-            flush(data, ctx, collection, &mut batch, on_conflict, &mut inserted, &mut skipped).await?;
+            flush(
+                data,
+                ctx,
+                collection,
+                &mut batch,
+                on_conflict,
+                &mut inserted,
+                &mut skipped,
+            )
+            .await?;
         }
     }
-    flush(data, ctx, collection, &mut batch, on_conflict, &mut inserted, &mut skipped).await?;
+    flush(
+        data,
+        ctx,
+        collection,
+        &mut batch,
+        on_conflict,
+        &mut inserted,
+        &mut skipped,
+    )
+    .await?;
     Ok((inserted, skipped))
 }
 
@@ -499,10 +535,16 @@ pub async fn export_records(data: &DataService, collection: &str, dest: &Path, f
             match format {
                 Format::Json => {
                     put(&mut w, if count == 0 { b"\n" } else { b",\n" })?;
-                    put(&mut w, &serde_json::to_vec(rec).map_err(|e| BackupError::Internal(e.to_string()))?)?;
+                    put(
+                        &mut w,
+                        &serde_json::to_vec(rec).map_err(|e| BackupError::Internal(e.to_string()))?,
+                    )?;
                 }
                 Format::Ndjson => {
-                    put(&mut w, &serde_json::to_vec(rec).map_err(|e| BackupError::Internal(e.to_string()))?)?;
+                    put(
+                        &mut w,
+                        &serde_json::to_vec(rec).map_err(|e| BackupError::Internal(e.to_string()))?,
+                    )?;
                     put(&mut w, b"\n")?;
                 }
                 Format::Csv => {
@@ -545,7 +587,8 @@ pub async fn import_records_file(
             import_stream(data, &ctx, collection, items.into_iter().map(Ok), on_conflict).await
         }
         Format::Csv => Err(BackupError::Invalid(
-            "CSV import is available over REST (POST /api/v1/collections/{name}/import); use json or ndjson here".into(),
+            "CSV import is available over REST (POST /api/v1/collections/{name}/import); use json or ndjson here"
+                .into(),
         )),
     }
 }
@@ -553,7 +596,9 @@ pub async fn import_records_file(
 /// A record whose id (or another unique value) is already taken.
 fn is_duplicate(e: &forgebase_data::DataError) -> bool {
     match e {
-        forgebase_data::DataError::Validation(v) => v.fields.contains_key("id") || v.fields.keys().any(|k| k.ends_with(".id")),
+        forgebase_data::DataError::Validation(v) => {
+            v.fields.contains_key("id") || v.fields.keys().any(|k| k.ends_with(".id"))
+        }
         other => other.kind() == ErrorKind::Conflict,
     }
 }
@@ -611,7 +656,9 @@ pub fn config_to_toml(config: &forgebase_core::Config) -> Result<String> {
 /// environment.
 pub fn validate_config_file(path: &Path) -> Result<forgebase_core::Config> {
     use forgebase_core::config::{ConfigLoader, ConfigOverrides};
-    let cwd = path.parent().map_or_else(|| std::path::PathBuf::from("."), Path::to_path_buf);
+    let cwd = path
+        .parent()
+        .map_or_else(|| std::path::PathBuf::from("."), Path::to_path_buf);
     let loaded = ConfigLoader::new(cwd)
         .cli(ConfigOverrides {
             config_file: Some(path.to_path_buf()),

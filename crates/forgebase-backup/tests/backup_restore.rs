@@ -41,7 +41,10 @@ async fn backup_verify_restore_round_trip_keeps_ids_and_files() {
     assert!(m.files.iter().any(|f| f.path == "storage/blobs/ab/abcdef"));
     assert!(m.files.iter().any(|f| f.path == "indexes/vector/c1/f.usearch"));
     assert!(m.files.iter().any(|f| f.path == "auth/master.key"));
-    assert!(!m.files.iter().any(|f| f.path.contains(".tmp")), "in-flight temp files are skipped");
+    assert!(
+        !m.files.iter().any(|f| f.path.contains(".tmp")),
+        "in-flight temp files are skipped"
+    );
 
     let report = verify(&dest).await;
     assert!(report.ok, "{:?}", report.problems);
@@ -50,12 +53,17 @@ async fn backup_verify_restore_round_trip_keeps_ids_and_files() {
     // Restore into a different, empty data directory.
     let target = tmp.path().join("restored");
     let layout = forgebase_core::DataLayout::new(&target);
-    let r = restore::restore(&dest, &layout, RestoreOptions::default()).await.unwrap();
+    let r = restore::restore(&dest, &layout, RestoreOptions::default())
+        .await
+        .unwrap();
     assert_eq!(r.schema_version, m.schema_version);
     assert!(r.previous_data.is_none());
     assert_eq!(read(layout.storage_dir().join("blobs/ab/abcdef")), b"blob one");
     assert_eq!(read(layout.indexes_dir().join("vector/c1/f.usearch")), b"index bytes");
-    assert_eq!(read(backup::master_key_path(&layout)), b"0123456789abcdef0123456789abcdef");
+    assert_eq!(
+        read(backup::master_key_path(&layout)),
+        b"0123456789abcdef0123456789abcdef"
+    );
 
     let restored = open(&target).await;
     assert_eq!(restored.count("books").await, 25);
@@ -89,14 +97,18 @@ async fn backup_is_consistent_while_the_database_is_written() {
         })
     };
     let dest = tmp.path().join("bk");
-    backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
     writer.await.unwrap();
 
     let report = verify(&dest).await;
     assert!(report.ok, "{:?}", report.problems);
     let target = tmp.path().join("restored");
     let layout = forgebase_core::DataLayout::new(&target);
-    restore::restore(&dest, &layout, RestoreOptions::default()).await.unwrap();
+    restore::restore(&dest, &layout, RestoreOptions::default())
+        .await
+        .unwrap();
     let restored = open(&target).await;
     let n = restored.count("books").await;
     assert!(n <= 100, "a snapshot never sees more than was committed");
@@ -117,7 +129,9 @@ async fn verify_rejects_corruption_missing_extra_and_unfinished_backups() {
     let src = seeded(&tmp.path().join("src")).await;
 
     let dest = tmp.path().join("bk");
-    backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
     assert!(verify(&dest).await.ok);
 
     // Flipped byte in a blob.
@@ -126,7 +140,11 @@ async fn verify_rejects_corruption_missing_extra_and_unfinished_backups() {
     bytes[0] ^= 0xff;
     std::fs::write(&blob, &bytes).unwrap();
     let r = verify(&dest).await;
-    assert!(!r.ok && r.problems.iter().any(|p| p.contains("corrupt")), "{:?}", r.problems);
+    assert!(
+        !r.ok && r.problems.iter().any(|p| p.contains("corrupt")),
+        "{:?}",
+        r.problems
+    );
     bytes[0] ^= 0xff;
     std::fs::write(&blob, &bytes).unwrap();
     assert!(verify(&dest).await.ok);
@@ -140,7 +158,9 @@ async fn verify_rejects_corruption_missing_extra_and_unfinished_backups() {
 
     // A damaged database is caught even when the manifest is rewritten to match.
     let dest2 = tmp.path().join("bk2");
-    backup::create(&src.db, &src.layout, &dest2, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest2, BackupOptions::default())
+        .await
+        .unwrap();
     let db_file = dest2.join("forgebase.db");
     let mut db_bytes = std::fs::read(&db_file).unwrap();
     let mid = db_bytes.len() / 2;
@@ -153,12 +173,16 @@ async fn verify_rejects_corruption_missing_extra_and_unfinished_backups() {
 
     // No manifest: an unfinished backup is refused by verify and by restore.
     let dest3 = tmp.path().join("bk3");
-    backup::create(&src.db, &src.layout, &dest3, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest3, BackupOptions::default())
+        .await
+        .unwrap();
     std::fs::remove_file(dest3.join("MANIFEST.json")).unwrap();
     let r = verify(&dest3).await;
     assert!(!r.ok && r.problems[0].contains("MANIFEST.json is missing"));
     let layout = forgebase_core::DataLayout::new(tmp.path().join("t"));
-    let err = restore::restore(&dest3, &layout, RestoreOptions::default()).await.unwrap_err();
+    let err = restore::restore(&dest3, &layout, RestoreOptions::default())
+        .await
+        .unwrap_err();
     assert!(matches!(err, BackupError::Verify(_)));
     assert!(!layout.database_path().exists(), "a refused restore changes nothing");
 }
@@ -173,11 +197,15 @@ async fn a_crashed_backup_leaves_no_complete_looking_directory() {
     std::fs::write(partial.join("forgebase.db"), b"half written").unwrap();
     let dest = tmp.path().join("bk");
     assert!(!verify(&partial).await.ok);
-    backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
     assert!(verify(&dest).await.ok);
     assert!(!partial.exists());
     // Existing destinations are never overwritten.
-    let err = backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap_err();
+    let err = backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap_err();
     assert!(matches!(err, BackupError::Conflict(_)));
 }
 
@@ -186,7 +214,9 @@ async fn restore_replaces_existing_data_only_with_force_and_keeps_the_old_data()
     let tmp = tempfile::tempdir().unwrap();
     let src = seeded(&tmp.path().join("live")).await;
     let dest = tmp.path().join("bk");
-    backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
 
     // The live instance changes after the backup.
     src.data
@@ -197,7 +227,9 @@ async fn restore_replaces_existing_data_only_with_force_and_keeps_the_old_data()
     src.db.checkpoint().await.unwrap();
     src.db.close().await;
 
-    let err = restore::restore(&dest, &src.layout, RestoreOptions::default()).await.unwrap_err();
+    let err = restore::restore(&dest, &src.layout, RestoreOptions::default())
+        .await
+        .unwrap_err();
     assert!(matches!(err, BackupError::Conflict(_)), "{err}");
 
     let r = restore::restore(
@@ -225,7 +257,9 @@ async fn restore_after_a_crash_rolls_back_and_can_be_retried() {
     let tmp = tempfile::tempdir().unwrap();
     let src = seeded(&tmp.path().join("live")).await;
     let dest = tmp.path().join("bk");
-    backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
     src.data
         .create_record(&common::admin(), "books", json!({"title": "newer than the backup"}))
         .await
@@ -248,9 +282,16 @@ async fn restore_after_a_crash_rolls_back_and_can_be_retried() {
         // The next start (or `restore --recover`) puts the previous data back.
         assert!(restore::recover(&src.layout).unwrap());
         assert!(!restore::interrupted(&src.layout));
-        assert_eq!(read(src.layout.database_path()), live_db_before, "crash_after={crash_after}");
+        assert_eq!(
+            read(src.layout.database_path()),
+            live_db_before,
+            "crash_after={crash_after}"
+        );
         assert_eq!(read(src.layout.storage_dir().join("blobs/ab/abcdef")), b"blob one");
-        assert_eq!(read(src.layout.indexes_dir().join("vector/c1/f.usearch")), b"index bytes");
+        assert_eq!(
+            read(src.layout.indexes_dir().join("vector/c1/f.usearch")),
+            b"index bytes"
+        );
     }
 
     // A restore that finds the journal rolls back by itself, then succeeds.
@@ -280,7 +321,9 @@ async fn restore_into_an_empty_directory_after_a_crash_leaves_it_empty() {
     let tmp = tempfile::tempdir().unwrap();
     let src = seeded(&tmp.path().join("src")).await;
     let dest = tmp.path().join("bk");
-    backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
     let layout = forgebase_core::DataLayout::new(tmp.path().join("fresh"));
     for crash_after in 1..=3 {
         restore::restore(
@@ -315,7 +358,9 @@ async fn master_key_is_excluded_by_default_and_checked_on_restore() {
     let tmp = tempfile::tempdir().unwrap();
     let src = seeded(&tmp.path().join("src")).await;
     let dest = tmp.path().join("bk");
-    let m = backup::create(&src.db, &src.layout, &dest, BackupOptions::default()).await.unwrap();
+    let m = backup::create(&src.db, &src.layout, &dest, BackupOptions::default())
+        .await
+        .unwrap();
     assert!(!m.master_key.included);
     assert!(m.master_key.fingerprint.is_some());
     assert!(!dest.join("auth").exists(), "the key is not copied unless asked for");
@@ -324,7 +369,9 @@ async fn master_key_is_excluded_by_default_and_checked_on_restore() {
 
     let layout = forgebase_core::DataLayout::new(tmp.path().join("t"));
     // No key anywhere: refused with instructions.
-    let err = restore::restore(&dest, &layout, RestoreOptions::default()).await.unwrap_err();
+    let err = restore::restore(&dest, &layout, RestoreOptions::default())
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("--master-key"), "{err}");
     assert!(!layout.database_path().exists());
 
@@ -357,7 +404,10 @@ async fn master_key_is_excluded_by_default_and_checked_on_restore() {
     .await
     .unwrap();
     assert!(r.master_key.contains("--master-key"));
-    assert_eq!(read(backup::master_key_path(&layout)), b"0123456789abcdef0123456789abcdef");
+    assert_eq!(
+        read(backup::master_key_path(&layout)),
+        b"0123456789abcdef0123456789abcdef"
+    );
 
     // An existing, matching key in the target is kept.
     let kept = forgebase_core::DataLayout::new(tmp.path().join("kept"));
@@ -420,7 +470,10 @@ async fn snapshots_list_resolve_point_in_time_and_prune() {
     // Point in time: the newest snapshot at or before a time.
     let far_future = "2999-01-01T00:00:00Z";
     assert_eq!(store.resolve(far_future).unwrap().id, ids[3]);
-    assert!(matches!(store.resolve("2000-01-01T00:00:00Z"), Err(BackupError::NotFound(_))));
+    assert!(matches!(
+        store.resolve("2000-01-01T00:00:00Z"),
+        Err(BackupError::NotFound(_))
+    ));
 
     // Retention: keep the newest two.
     let gone = store
@@ -491,7 +544,10 @@ async fn a_snapshot_restores_like_any_backup() {
     let tmp = tempfile::tempdir().unwrap();
     let src = seeded(&tmp.path().join("src")).await;
     let store = SnapshotStore::new(&src.layout);
-    store.create(&src.db, &src.layout, BackupOptions::default(), None).await.unwrap();
+    store
+        .create(&src.db, &src.layout, BackupOptions::default(), None)
+        .await
+        .unwrap();
     let snap = store.resolve("latest").unwrap();
     let layout = forgebase_core::DataLayout::new(tmp.path().join("t"));
     restore::restore(

@@ -69,7 +69,9 @@ pub async fn verify(dir: &Path) -> VerifyReport {
     if manifest.files.iter().filter(|f| f.kind == FileKind::Database).count() != 1
         || !manifest.files.iter().any(|f| f.path == DB_FILE)
     {
-        report.problems.push(format!("manifest does not list exactly one {DB_FILE}"));
+        report
+            .problems
+            .push(format!("manifest does not list exactly one {DB_FILE}"));
     } else if report.problems.is_empty() {
         check_database(dir, &manifest, &mut report).await;
     }
@@ -138,20 +140,25 @@ async fn check_database(dir: &Path, m: &Manifest, report: &mut VerifyReport) {
     let db = match Database::open(opts).await {
         Ok(db) => db,
         Err(e) => {
-            report.problems.push(format!("the copied database cannot be opened: {e}"));
+            report
+                .problems
+                .push(format!("the copied database cannot be opened: {e}"));
             return;
         }
     };
     match db.integrity_check().await {
         Ok(p) if p.is_empty() => {}
-        Ok(p) => report
-            .problems
-            .push(format!("integrity_check: {}", p.into_iter().take(5).collect::<Vec<_>>().join("; "))),
+        Ok(p) => report.problems.push(format!(
+            "integrity_check: {}",
+            p.into_iter().take(5).collect::<Vec<_>>().join("; ")
+        )),
         Err(e) => report.problems.push(format!("integrity_check failed: {e}")),
     }
     match db.foreign_key_violations().await {
         Ok(0) => {}
-        Ok(n) => report.problems.push(format!("{n} foreign-key violation(s) in the copied database")),
+        Ok(n) => report
+            .problems
+            .push(format!("{n} foreign-key violation(s) in the copied database")),
         Err(e) => report.problems.push(format!("foreign_key_check failed: {e}")),
     }
     match db.migration_status().await {

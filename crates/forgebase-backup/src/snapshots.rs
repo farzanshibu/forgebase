@@ -50,7 +50,9 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 80
         && !id.starts_with('.')
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         && !id.ends_with(".partial")
 }
 
@@ -132,7 +134,12 @@ impl SnapshotStore {
                 });
             }
         }
-        out.sort_by(|a, b| b.manifest.created.cmp(&a.manifest.created).then_with(|| b.id.cmp(&a.id)));
+        out.sort_by(|a, b| {
+            b.manifest
+                .created
+                .cmp(&a.manifest.created)
+                .then_with(|| b.id.cmp(&a.id))
+        });
         Ok(out)
     }
 
@@ -155,7 +162,10 @@ impl SnapshotStore {
     pub fn resolve(&self, spec: &str) -> Result<Snapshot> {
         let all = self.list()?;
         if spec == "latest" {
-            return all.into_iter().next().ok_or_else(|| BackupError::NotFound("latest".into()));
+            return all
+                .into_iter()
+                .next()
+                .ok_or_else(|| BackupError::NotFound("latest".into()));
         }
         if let Some(at) = parse_time(spec) {
             return all
