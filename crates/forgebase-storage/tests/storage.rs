@@ -1398,3 +1398,172 @@ async fn openapi_documents_the_storage_api() {
         assert!(paths.contains_key(p), "missing {p}");
     }
 }
+
+// ---- FIX-4: bucket usage and object metadata ----------------------------
+
+#[tokio::test]
+async fn bucket_usage_and_object_metadata_endpoints() {
+    let env = Env::new().await;
+    let (s, _) = env
+        .json(
+            Some(admin()),
+            Method::POST,
+            "/api/v1/storage/buckets",
+            json!({"name": "docs", "versioning": true}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let put = |key: &'static str, n: usize| {
+        let env = &env;
+        async move {
+            let (s, _, b) = env
+                .req(
+                    Some(admin()),
+                    Method::PUT,
+                    &format!("/api/v1/storage/buckets/docs/objects/{key}"),
+                    &[("content-type", "text/plain"), ("x-forgebase-meta-owner", "bob")],
+                    Body::from(bytes_of(n)),
+                )
+                .await;
+            assert_eq!(s, StatusCode::CREATED, "{}", String::from_utf8_lossy(&b));
+        }
+    };
+    put("a.txt", 100).await;
+    put("a.txt", 50).await; // second version of a.txt
+    put("b.txt", 10).await;
+
+    let (s, u) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            "/api/v1/storage/buckets/docs/usage",
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    assert_eq!(
+        u,
+        json!({"bucket": "docs", "objects": 2, "versions": 3, "logical_bytes": 60, "version_bytes": 160})
+    );
+    // a delete marker leaves the version count up and the current objects down
+    env.json(
+        Some(admin()),
+        Method::DELETE,
+        "/api/v1/storage/buckets/docs/objects/b.txt",
+        json!(null),
+    )
+    .await;
+    let (_, u) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            "/api/v1/storage/buckets/docs/usage",
+            json!(null),
+        )
+        .await;
+    assert_eq!(
+        (u["objects"].clone(), u["logical_bytes"].clone()),
+        (json!(1), json!(50))
+    );
+    // unknown bucket, and other users cannot read usage
+    let (s, _) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            "/api/v1/storage/buckets/nope/usage",
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = env
+        .json(
+            Some(user("eve")),
+            Method::GET,
+            "/api/v1/storage/buckets/docs/usage",
+            json!(null),
+        )
+        .await;
+    assert!(s == StatusCode::FORBIDDEN || s == StatusCode::NOT_FOUND, "{s}");
+
+    // JSON metadata
+    let (s, m) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            "/api/v1/storage/buckets/docs/meta/a.txt",
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert_eq!(m["key"], "a.txt");
+    assert_eq!(m["size"], 50);
+    assert_eq!(m["content_type"], "text/plain");
+    assert_eq!(m["metadata"]["owner"], "bob");
+    assert_eq!(m["is_latest"], true);
+    // an older version by id
+    let (_, vs) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            "/api/v1/storage/buckets/docs/versions/a.txt",
+            json!(null),
+        )
+        .await;
+    let old = vs["items"][1]["version_id"].as_str().unwrap().to_owned();
+    let (s, m) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            &format!("/api/v1/storage/buckets/docs/meta/a.txt?version={old}"),
+            json!(null),
+        )
+        .await;
+    assert_eq!((s, m["size"].clone()), (StatusCode::OK, json!(100)));
+    // deleted and missing objects are 404
+    let (s, _) = env
+        .json(
+            Some(admin()),
+            Method::GET,
+            "/api/v1/storage/buckets/docs/meta/b.txt",
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // HEAD: headers only
+    let (s, h, body) = env
+        .req(
+            Some(admin()),
+            Method::HEAD,
+            "/api/v1/storage/buckets/docs/meta/a.txt",
+            &[],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!((s, body.len()), (StatusCode::OK, 0));
+    assert_eq!(h["content-length"], "50");
+    assert_eq!(h["content-type"], "text/plain");
+    assert_eq!(h["x-forgebase-meta-owner"], "bob");
+    assert!(h.contains_key("x-forgebase-version-id"));
+    let (s, _, _) = env
+        .req(
+            Some(admin()),
+            Method::HEAD,
+            "/api/v1/storage/buckets/docs/meta/zzz",
+            &[],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // anonymous callers are refused
+    let (s, _, _) = env
+        .req(
+            None,
+            Method::GET,
+            "/api/v1/storage/buckets/docs/meta/a.txt",
+            &[],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}

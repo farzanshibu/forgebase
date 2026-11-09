@@ -2,23 +2,32 @@
 //! account lifecycle (ADR-0015 §8).
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::AuthService;
 use crate::http::{Body, Caller, Client, HttpError, Res, login_response, ok};
-use crate::realm::RealmInput;
+use crate::realm::{RealmCreate, RealmInput};
 use crate::service::LoginOptions;
 
 pub(crate) fn routes() -> Router<AuthService> {
     Router::new()
         .route("/realm", get(realm_info))
-        .route("/realms", get(list_realms))
+        .route("/realms", get(list_realms).post(create_realm))
         .route("/realms/{realm}", get(get_realm).put(put_realm))
+        .route("/realms/{realm}/keys", get(realm_keys))
+        .route("/realms/{realm}/consents", get(realm_consents))
+        .route("/realms/{realm}/consents/{id}", delete(realm_consent_revoke))
+        .route("/realms/{realm}/oauth-providers", get(provider_list))
+        .route(
+            "/realms/{realm}/oauth-providers/{id}",
+            get(provider_get).put(provider_put).delete(provider_delete),
+        )
+        .route("/realms/{realm}/sms", get(sms_get).put(sms_put).delete(sms_delete))
         .route("/phone/request", post(phone_request))
         .route("/phone/verify", post(phone_verify))
         .route("/phone", get(phone_get).delete(phone_delete))
@@ -105,6 +114,16 @@ async fn list_realms(State(a): State<AuthService>, Client(_, rid): Client, Calle
     let v = a.list_realm_identities(&c).map_err(err(&rid))?;
     let items: Vec<&crate::realm::RealmIdentity> = v.iter().map(|r| &**r).collect();
     Ok(ok(StatusCode::OK, json!({"items": items})))
+}
+
+async fn create_realm(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Body(b): Body<RealmCreate>,
+) -> Res {
+    let v = a.create_realm_with_identity(&c, &ci, b).await.map_err(err(&rid))?;
+    Ok(ok(StatusCode::CREATED, serde_json::to_value(&*v).unwrap_or_default()))
 }
 
 async fn get_realm(
@@ -306,4 +325,145 @@ async fn user_export(
         StatusCode::OK,
         a.export_user(&c, &ci, &col, &id).await.map_err(err(&rid))?,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// FIX-4: realm administration (consents, keys, social providers, SMS gateway)
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ConsentQuery {
+    client_id: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+fn consent_query(raw: Option<&str>) -> ConsentQuery {
+    let mut q = ConsentQuery::default();
+    for (k, v) in url::form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
+        match &*k {
+            "client_id" => q.client_id = Some(v.into_owned()),
+            "limit" => q.limit = v.parse().ok(),
+            "offset" => q.offset = v.parse().ok(),
+            _ => {}
+        }
+    }
+    q
+}
+
+async fn realm_keys(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+) -> Res {
+    Ok(ok(StatusCode::OK, a.list_oidc_keys(&c, &r).await.map_err(err(&rid))?))
+}
+
+async fn realm_consents(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Res {
+    let q = consent_query(raw.as_deref());
+    let (limit, offset) = (q.limit.unwrap_or(100), q.offset.unwrap_or(0));
+    let items = a
+        .list_realm_consents(&c, &r, q.client_id.as_deref().filter(|s| !s.is_empty()), limit, offset)
+        .await
+        .map_err(err(&rid))?;
+    Ok(ok(
+        StatusCode::OK,
+        json!({"items": items, "limit": limit.clamp(1, 500), "offset": offset.max(0)}),
+    ))
+}
+
+async fn realm_consent_revoke(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((r, id)): P2,
+) -> Res {
+    a.revoke_realm_consent(&c, &ci, &r, &id).await.map_err(err(&rid))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn provider_list(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+) -> Res {
+    Ok(ok(
+        StatusCode::OK,
+        a.list_realm_providers(&c, &r).await.map_err(err(&rid))?,
+    ))
+}
+
+async fn provider_get(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path((r, id)): P2,
+) -> Res {
+    Ok(ok(
+        StatusCode::OK,
+        a.get_realm_provider(&c, &r, &id).await.map_err(err(&rid))?,
+    ))
+}
+
+async fn provider_put(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((r, id)): P2,
+    Body(b): Body<serde_json::Value>,
+) -> Res {
+    Ok(ok(
+        StatusCode::OK,
+        a.put_realm_provider(&c, &ci, &r, &id, b).await.map_err(err(&rid))?,
+    ))
+}
+
+async fn provider_delete(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((r, id)): P2,
+) -> Res {
+    a.delete_realm_provider(&c, &ci, &r, &id).await.map_err(err(&rid))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn sms_get(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+) -> Res {
+    Ok(ok(StatusCode::OK, a.get_realm_sms(&c, &r).await.map_err(err(&rid))?))
+}
+
+async fn sms_put(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+    Body(b): Body<serde_json::Value>,
+) -> Res {
+    Ok(ok(
+        StatusCode::OK,
+        a.put_realm_sms(&c, &ci, &r, b).await.map_err(err(&rid))?,
+    ))
+}
+
+async fn sms_delete(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+) -> Res {
+    a.delete_realm_sms(&c, &ci, &r).await.map_err(err(&rid))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

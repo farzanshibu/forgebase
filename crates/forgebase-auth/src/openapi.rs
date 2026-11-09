@@ -5,6 +5,7 @@
 
 use utoipa::OpenApi;
 
+mod admin_routes;
 mod core_routes;
 
 /// List the social login providers a login page may offer (no secrets).
@@ -388,7 +389,8 @@ fn idp_keys_rotate() {}
         idp_discovery, idp_jwks, idp_authorize_get,
         idp_authorize_post, idp_consent, idp_token, idp_userinfo_get, idp_userinfo_post, idp_introspect, idp_revoke, idp_device_authorization, idp_device_get,
         idp_device_post, idp_logout_get, idp_logout_post, idp_clients, idp_client_create, idp_client_get, idp_client_update, idp_client_delete,
-        idp_client_secret, idp_consents, idp_consent_revoke, idp_keys_rotate
+        idp_client_secret, idp_consents, idp_consent_revoke, idp_keys_rotate,
+        admin_routes::identity_realm_create, admin_routes::identity_realm_keys, admin_routes::identity_realm_consents, admin_routes::identity_realm_consent_revoke, admin_routes::identity_provider_list, admin_routes::identity_provider_get, admin_routes::identity_provider_put, admin_routes::identity_provider_delete, admin_routes::identity_sms_get, admin_routes::identity_sms_put, admin_routes::identity_sms_delete
     ),
     components(schemas(
         core_routes::AuthSignupRequest,

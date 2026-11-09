@@ -271,3 +271,95 @@ async fn suspensions_set_through_the_auth_api_reach_the_policy_engine() {
     let (s, j) = call(&app, "GET", "/api/v1/orgs", Some(&tok), None, None).await;
     assert_eq!(s, StatusCode::OK, "{j}");
 }
+
+/// FIX-4: one call creates the realm (policy engine) and its identity (auth).
+#[tokio::test]
+async fn one_call_realm_create_with_identity_settings() {
+    let (app, auth, policy, _tmp) = app().await;
+    auth.create_admin("root@example.com", "admin password 1", "test", &ClientInfo::default())
+        .await
+        .unwrap();
+    let (s, j) = call(
+        &app,
+        "POST",
+        "/api/auth/admins/login",
+        None,
+        None,
+        Some(json!({"email": "root@example.com", "password": "admin password 1"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    let admin = j["access_token"].as_str().unwrap().to_owned();
+
+    let body = json!({
+        "id": "acme", "name": "Acme Inc",
+        "config": {"signup": true, "methods": {"phone": true}, "phone": {"signup": true}}
+    });
+    let (s, j) = call(&app, "POST", "/api/auth/realms", Some(&admin), None, Some(body.clone())).await;
+    assert_eq!(s, StatusCode::CREATED, "{j}");
+    assert_eq!(j["realm"], "acme");
+    assert_eq!(j["collection"], "acme_users");
+    assert_eq!(j["config"]["methods"]["phone"], true);
+
+    // The realm exists for the policy engine and has its identity.
+    let (s, j) = call(&app, "GET", "/api/v1/realms", Some(&admin), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    assert!(
+        j.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "acme" && r["name"] == "Acme Inc")
+    );
+    let (s, j) = call(&app, "GET", "/api/auth/realms/acme", Some(&admin), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    assert_eq!(j["config"]["phone"]["signup"], true);
+    // The existing list route still works next to the new POST.
+    let (s, j) = call(&app, "GET", "/api/auth/realms", Some(&admin), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    assert!(j["items"].as_array().unwrap().iter().any(|r| r["realm"] == "acme"));
+    // Users sign up inside the new realm.
+    signup_login(&app, Some("acme"), "alice@example.com").await;
+    let _ = policy;
+
+    // Duplicates and bad input are refused; nothing is half-written.
+    let (s, _) = call(&app, "POST", "/api/auth/realms", Some(&admin), None, Some(body)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, j) = call(
+        &app,
+        "POST",
+        "/api/auth/realms",
+        Some(&admin),
+        None,
+        Some(json!({"id": "bad", "config": {"methods": {"ldap": true}}})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{j}");
+    let (_, j) = call(&app, "GET", "/api/v1/realms", Some(&admin), None, None).await;
+    assert!(
+        !j.as_array().unwrap().iter().any(|r| r["id"] == "bad"),
+        "validated before the realm was created"
+    );
+
+    // Administrators only.
+    let (_, user) = signup_login(&app, None, "kim@example.com").await;
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/auth/realms",
+        Some(&user),
+        None,
+        Some(json!({"id": "evil"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/auth/realms",
+        None,
+        None,
+        Some(json!({"id": "evil"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}

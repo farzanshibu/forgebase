@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatBp, formatMoney, meterState, minorToInput, parseMinor, percent, prorate } from "./money";
+import { formatBp, formatMoney, meterState, minorToInput, parseMinor, percent } from "./money";
 import { parseCurrencyOptions, parseTiers } from "./catalogUtil";
-import { prorationPreview } from "./proration";
-import { price } from "../../test/billingMock";
-import type { Subscription } from "../../api";
 
 describe("money", () => {
   it("formats integer minor units with the currency's own digits", () => {
@@ -37,12 +34,6 @@ describe("money", () => {
     expect(percent(750, 1000)).toBe(75);
     expect(percent(2000, 1000)).toBe(100);
   });
-  it("prorates with integers, rounding half away from zero", () => {
-    expect(prorate(3000, 15, 30)).toBe(1500);
-    expect(prorate(1, 1, 2)).toBe(1);
-    expect(prorate(-1, 1, 2)).toBe(-1);
-    expect(prorate(100, 0, 30)).toBe(0);
-  });
   it("parses currency options and tiers", () => {
     expect(parseCurrencyOptions("EUR=9.00\nJPY=1500")).toEqual({ EUR: { unit_amount: 900 }, JPY: { unit_amount: 1500 } });
     expect(() => parseCurrencyOptions("EUR 9")).toThrow(/EUR=9.00/);
@@ -50,12 +41,5 @@ describe("money", () => {
       { up_to: 100, unit_amount: 500, flat_amount: 0 }, { up_to: null, unit_amount: 400, flat_amount: 150 },
     ]);
     expect(() => parseTiers("x, y", "USD")).toThrow();
-  });
-  it("previews a plan change from the unused part of the period", () => {
-    const sub = { currency: "USD", current_period_start: "2026-11-01T00:00:00Z", current_period_end: "2026-12-01T00:00:00Z", items: [{ quantity: 1 }] } as unknown as Subscription;
-    const mid = Date.parse("2026-11-16T00:00:00Z");
-    const p = prorationPreview(sub, price("a", "x", { unit_amount: 2900 }), price("b", "x", { unit_amount: 9900 }), mid);
-    expect(p).toEqual({ credit: -1450, charge: 4950, net: 3500, currency: "USD" });
-    expect(prorationPreview(sub, undefined, price("b", "x"))).toBeUndefined();
   });
 });

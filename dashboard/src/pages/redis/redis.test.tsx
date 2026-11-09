@@ -134,10 +134,10 @@ describe("Redis key viewers and editors", () => {
     expect(st.ns.default!["user:1"]!.value).toEqual({ name: "Annie", city: "Oslo" });
   });
 
-  it("pushes, pops and removes list items", async () => {
-    const { st } = setup();
+  it("pushes, pops, edits (LSET) and removes (LREM) list items through REST", async () => {
+    const { mock, st } = setup();
     renderStudio("/redis?key=todo");
-    const items = () => within(screen.getByRole("list", { name: "List items" })).getAllByRole("listitem").map((li) => li.textContent?.replace(/Remove$/, ""));
+    const items = () => within(screen.getByRole("list", { name: "List items" })).getAllByRole("listitem").map((li) => li.textContent?.replace(/EditRemove$/, ""));
     await waitFor(() => expect(items()).toEqual(["0a", "1b", "2c"]));
     await userEvent.type(screen.getByLabelText("List value"), "z");
     await userEvent.click(screen.getByRole("button", { name: "Push left" }));
@@ -152,6 +152,16 @@ describe("Redis key viewers and editors", () => {
     await userEvent.click(screen.getByRole("button", { name: "Remove item 1" }));
     await waitFor(() => expect(items()).toEqual(["0a", "1c"]));
     expect(st.ns.default!.todo!.value).toEqual(["a", "c"]);
+    expect(st.execs).toEqual([]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Edit item 1" }));
+    const box = screen.getByLabelText("Item 1 value");
+    await userEvent.clear(box);
+    await userEvent.type(box, "C2");
+    await userEvent.click(screen.getByRole("button", { name: "Save item 1" }));
+    await waitFor(() => expect(items()).toEqual(["0a", "1C2"]));
+    expect(st.ns.default!.todo!.value).toEqual(["a", "C2"]);
+    expect(mock.problems).toEqual([]);
   });
 
   it("adds and removes set members", async () => {
@@ -200,7 +210,8 @@ describe("Redis key viewers and editors", () => {
     expect(await screen.findByText("2-0")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Delete entry 1-0" }));
     await waitFor(() => expect(screen.queryByText("1-0")).not.toBeInTheDocument());
-    expect(st.execs).toContainEqual(["XDEL", "events", "1-0"]);
+    expect(st.execs).toEqual([]);
+    expect((st.ns.default!.events!.value as { id: string }[]).map((e) => e.id)).toEqual(["2-0"]);
   });
 
   it("deletes a key after confirmation and returns to the list", async () => {
@@ -303,6 +314,16 @@ describe("Redis Pub/Sub inspector", () => {
     expect(await screen.findByRole("button", { name: "Listen" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.getByText("No messages yet.")).toBeInTheDocument();
+  });
+
+  it("lists channels with live subscribers and fills the channel field from one", async () => {
+    const { mock } = setup();
+    renderStudio("/redis/pubsub");
+    const list = await screen.findByRole("list", { name: "Active channels" });
+    expect(within(list).getByText("2 subscribers")).toBeInTheDocument();
+    await userEvent.click(within(list).getByRole("button", { name: "news" }));
+    expect(screen.getByLabelText("Channel")).toHaveValue("news");
+    expect(mock.problems).toEqual([]);
   });
 
   it("publishes a message and reports the receivers", async () => {

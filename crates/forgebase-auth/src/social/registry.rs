@@ -315,6 +315,9 @@ impl Provider {
 #[derive(Debug, Default)]
 pub struct ProviderRegistry {
     map: RwLock<HashMap<(String, String), Arc<Provider>>>,
+    /// `(realm, id)` of providers defined in `oauth-providers.json`; the API
+    /// treats them as read-only.
+    file: RwLock<std::collections::HashSet<(String, String)>>,
 }
 
 /// What clients may know about a provider.
@@ -339,6 +342,14 @@ impl ProviderRegistry {
         });
         self.map.write().unwrap_or_else(|e| e.into_inner()).insert(key, p);
         Ok(())
+    }
+
+    /// Whether the provider comes from `oauth-providers.json`.
+    pub fn is_file_defined(&self, realm: &str, id: &str) -> bool {
+        self.file
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&(realm.to_owned(), id.to_owned()))
     }
 
     /// Removes a provider.
@@ -395,7 +406,9 @@ impl ProviderRegistry {
             crate::realm::check_realm_id(&realm)?;
             let cfg: ProviderConfig =
                 serde_json::from_value(p).map_err(|e| AuthError::invalid(format!("providers file: {e}")))?;
+            let id = cfg.id.clone();
             self.register(&realm, cfg)?;
+            self.file.write().unwrap_or_else(|e| e.into_inner()).insert((realm, id));
         }
         Ok(n)
     }

@@ -375,6 +375,21 @@ pub struct StorageStats {
     pub open_uploads: u64,
 }
 
+/// Space used by one bucket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BucketUsage {
+    /// Bucket name.
+    pub bucket: String,
+    /// Current (non-deleted) objects.
+    pub objects: u64,
+    /// Object versions, including older ones and delete markers.
+    pub versions: u64,
+    /// Logical bytes of current objects.
+    pub logical_bytes: u64,
+    /// Logical bytes of every version (before deduplication).
+    pub version_bytes: u64,
+}
+
 pub(crate) fn json_map(v: &str) -> BTreeMap<String, String> {
     match serde_json::from_str::<Json>(v) {
         Ok(Json::Object(m)) => m

@@ -1,6 +1,26 @@
-/** In-memory fake of `/api/v1/kv` with a tiny Redis-like core, for component tests. Plain handlers: the OpenAPI fixture has no kv routes yet (FIX-3). */
+/** In-memory fake of `/api/v1/kv` with a tiny Redis-like core, for component tests. Routes the OpenAPI fixture describes are contract-checked (undocumented route/status or a body that does not fit its schema lands in `mock.problems`). */
 import type { KvStats } from "../api";
-import { envelope, type MockApi } from "./mockApi";
+import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
+import { hasResponse, matchRoute, responseSchemaName, validateBody } from "./contract";
+
+/** Registers a route and, unless `check` is false, validates every answer against the OpenAPI fixture (status documented, JSON body fits the schema). */
+function checkedOn(mock: MockApi) {
+  return (method: string, template: string, h: (r: MockRequest) => MockReply, check = true) =>
+    mock.on(method, template, (req) => {
+      const out = h(req);
+      if (!check) return out;
+      const path = template.replace(/\{\*?(\w+)\}/g, (_, n: string) => encodeURIComponent(req.params[n] ?? ""));
+      const spec = matchRoute(method, path);
+      if (!spec) mock.problems.push(`not in openapi.json: ${method} ${template}`);
+      else if (out.status < 400) {
+        if (!hasResponse(spec.op, out.status)) mock.problems.push(`${method} ${template}: status ${out.status} not documented`);
+        const name = responseSchemaName(spec.op, out.status);
+        if (name && out.body !== undefined) for (const p of validateBody(name, out.body)) mock.problems.push(`${method} ${template} -> ${name}: ${p}`);
+      }
+      return out;
+    });
+}
+
 
 type V = string | Record<string, string> | string[] | { member: string; score: number }[] | { id: string; fields: Record<string, string> }[];
 export interface KvItem { type: "string" | "hash" | "list" | "set" | "zset" | "stream"; value: V; ttl_ms: number | null }
@@ -10,11 +30,14 @@ export interface KvState {
   /** Commands received by /exec. */
   execs: string[][];
   published: { channel: string; message: unknown }[];
+  /** Channels with live subscribers, as `GET /channels` reports them. */
+  channels: { name: string; subscribers: number }[];
   /** SSE frames the next subscribe stream sends, then it stays open until aborted. */
   frames: string[];
 }
 
-export function installKv(mock: MockApi): KvState {
+export function installKv(mockApi: MockApi): KvState {
+  const mock = { on: checkedOn(mockApi) };
   const st: KvState = {
     ns: {
       default: {
@@ -29,7 +52,7 @@ export function installKv(mock: MockApi): KvState {
       other: { x: { type: "string", value: "1", ttl_ms: null } },
     },
     stats: { keys: 8, used_memory_bytes: 5 * 1024 * 1024, max_memory_bytes: 10 * 1024 * 1024, eviction_policy: "allkeys-lru", hits: 90, misses: 10, expired_keys: 3, evicted_keys: 1, channels: 2, unsaved_keys: 0, persistent: true },
-    execs: [], published: [], frames: [],
+    execs: [], published: [], frames: [], channels: [{ name: "news", subscribers: 2 }],
   };
   const K = "/api/v1/kv";
   const space = (n: string) => (st.ns[n] ??= {});
@@ -94,6 +117,38 @@ export function installKv(mock: MockApi): KvState {
     if (l.length === 0) delete space(params.ns!)[params.key!];
     return { status: 200, body: { values: out } };
   });
+  mock.on("POST", `${K}/{ns}/lists/{key}/remove`, ({ params, body }) => {
+    const it = get(params.ns!, params.key!, "list");
+    if (!it || it === "wrong") return { status: 200, body: { removed: 0 } };
+    const b = body as { value: string; count?: number | null };
+    const l = it.value as string[];
+    const idx = l.map((v, i) => (v === b.value ? i : -1)).filter((i) => i >= 0);
+    const n = b.count ?? 0;
+    const pick = n === 0 ? idx : n > 0 ? idx.slice(0, n) : idx.slice(n);
+    it.value = l.filter((_, i) => !pick.includes(i));
+    if ((it.value as string[]).length === 0) delete space(params.ns!)[params.key!];
+    return { status: 200, body: { removed: pick.length } };
+  });
+  mock.on("POST", `${K}/{ns}/lists/{key}/set`, ({ params, body }) => {
+    const it = get(params.ns!, params.key!, "list");
+    if (!it) return nokey();
+    if (it === "wrong") return wrong();
+    const b = body as { index: number; value: string };
+    const l = it.value as string[];
+    const i = b.index < 0 ? l.length + b.index : b.index;
+    if (i < 0 || i >= l.length) return envelope(400, "kv_index_out_of_range", "index out of range");
+    l[i] = b.value;
+    return { status: 200, body: { ok: true } };
+  });
+  mock.on("POST", `${K}/{ns}/streams/{key}/delete`, ({ params, body }) => {
+    const it = get(params.ns!, params.key!, "stream");
+    if (!it || it === "wrong") return { status: 200, body: { removed: 0 } };
+    const ids = (body as { ids: string[] }).ids;
+    const before = (it.value as { id: string }[]).length;
+    it.value = (it.value as { id: string }[]).filter((e) => !ids.includes(e.id)) as V;
+    return { status: 200, body: { removed: before - (it.value as unknown[]).length } };
+  });
+  mock.on("GET", `${K}/{ns}/channels`, () => ({ status: 200, body: { channels: st.channels } }));
   mock.on("POST", `${K}/{ns}/sets/{key}/add`, ({ params, body }) => {
     let it = get(params.ns!, params.key!, "set");
     if (it === "wrong") return wrong();

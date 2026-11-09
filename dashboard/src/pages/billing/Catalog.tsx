@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { PRICE_TYPES, PRODUCT_KINDS, SCHEMES, listAddons, listFeatures, listPlans, listPrices, listProducts, listUsagePacks, putPrice, putProduct } from "../../api";
+import { PRICE_TYPES, PRODUCT_KINDS, SCHEMES, listAddons, listFeatures, listPlans, listPrices, listProducts, listUsagePacks, putPrice, putProduct, archivePrice, archiveProduct } from "../../api";
 import type { BillingInterval, PriceInput, PriceScheme, PriceType, Product, ProductKind } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { describePrice, parseCurrencyOptions, parseTiers } from "./catalogUtil";
 import { formatMoney, parseMinor } from "./money";
@@ -133,6 +133,7 @@ export default function Catalog() {
     products.reload();
     prices.reload();
   };
+  const act = useAct(reload);
   const byProduct = (key: string) => (prices.data ?? []).filter((p) => p.product === key);
   return (
     <div className="space-y-4">
@@ -158,17 +159,23 @@ export default function Catalog() {
                             {pr.trial_days > 0 && <span className="ml-2 text-sky-300">{pr.trial_days}-day trial</span>}
                             {pr.feature && <span className="ml-2 text-zinc-400">metered {pr.feature} ({pr.meter_basis})</span>}
                             {!pr.active && <span className="ml-2"><Badge status="canceled" /></span>}
+                            {pr.active && <span className="ml-2"><ConfirmButton label={`Archive price ${pr.key}`} disabled={act.busy} onConfirm={() => void act.run(() => archivePrice(pr.key), "Price archived")} /></span>}
                           </li>
                         ))}
                         {byProduct(p.key).length === 0 && <li className="text-zinc-500">no prices</li>}
                       </ul>
                     </td>
-                    <td><Badge status={p.active ? "active" : "canceled"} /></td>
+                    <td>
+                      <Badge status={p.active ? "active" : "canceled"} />
+                      {p.active && <div className="mt-1"><ConfirmButton label={`Archive product ${p.key}`} disabled={act.busy} onConfirm={() => void act.run(() => archiveProduct(p.key), "Product archived")} /></div>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+          <ErrorView error={act.error} />
+          {act.note && <p role="status" className="mt-2 text-sm text-emerald-300">{act.note}</p>}
         </Panel>
       )}
       <div className="grid gap-4 lg:grid-cols-2">
