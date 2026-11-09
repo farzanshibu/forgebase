@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use crate::generated::{CollectionSchema, ImportResult, NewCollection};
+use crate::generated::{CollectionSchema, ImportResult};
 use crate::http::{Req, Transport, seg};
 
 /// Query options for [`Records::list`].
@@ -426,13 +426,16 @@ impl CollectionsApi {
             .await
     }
 
-    /// Creates a collection.
-    pub async fn create(&self, def: &NewCollection) -> Result<CollectionSchema> {
+    /// Creates a collection. `def` is the definition as JSON, for example
+    /// `{"name": "posts", "type": "base", "fields": [{"name": "title", "type": "text", "required": true}]}`.
+    /// (It is not typed: the OpenAPI document names two different request schemas `NewCollection`, so the
+    /// generated model is the vector collection's, not this one.)
+    pub async fn create<B: Serialize + ?Sized>(&self, def: &B) -> Result<CollectionSchema> {
         self.t.json(Req::post("/api/v1/collections").json(def)?).await
     }
 
     /// Replaces a collection's definition (schema migration).
-    pub async fn update(&self, name: &str, def: &NewCollection) -> Result<CollectionSchema> {
+    pub async fn update<B: Serialize + ?Sized>(&self, name: &str, def: &B) -> Result<CollectionSchema> {
         self.t
             .json(Req::put(format!("/api/v1/collections/{}", seg(name))).json(def)?)
             .await

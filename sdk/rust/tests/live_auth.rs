@@ -168,7 +168,7 @@ async fn personal_access_tokens_work_as_api_keys_until_revoked() {
     let keyed = ForgeBase::builder(&s.base).api_key(created.key.clone()).build().expect("client");
     assert!(keyed.collections().list().await.is_ok());
     // No write scope: a typed 403.
-    let def: forgebase_sdk::generated::NewCollection = serde_json::from_value(serde_json::json!({"name": "nope", "type": "base", "fields": []})).expect("def");
+    let def = serde_json::json!({"name": "nope", "type": "base", "fields": []});
     let err = keyed.collections().create(&def).await.expect_err("scope");
     assert!(err.is_forbidden(), "{err}");
 
