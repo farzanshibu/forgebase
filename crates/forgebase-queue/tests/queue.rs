@@ -504,7 +504,9 @@ async fn queued_and_leased_messages_survive_a_restart() {
 
     let h = h.restart().await;
     assert_eq!(h.svc.topics(&admin()).await.unwrap().len(), 1);
-    assert_eq!(ids(&h.pull("s", 10).await), vec![b], "never-delivered message is still queued");
+    let fresh = h.pull("s", 10).await;
+    assert_eq!(ids(&fresh), vec![b], "never-delivered message is still queued");
+    h.ack("s", &fresh).await;
     h.clock.advance(Duration::from_millis(5_001));
     let again = h.pull("s", 10).await;
     assert_eq!(ids(&again), vec![a], "the crashed consumer's lease expired: redelivered");

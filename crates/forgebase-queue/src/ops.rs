@@ -7,7 +7,7 @@ use std::time::Duration;
 use forgebase_data::{AccessContext, Action, ChangeOp};
 use forgebase_db::Statement;
 use forgebase_entitlements::{EntitlementError, UsageRequest};
-use serde_json::json;
+use serde_json::{Value as Json, json};
 use tokio::sync::watch;
 
 use crate::error::QueueError;
@@ -386,11 +386,21 @@ impl QueueService {
             self.set_relay_cursor(last).await?;
             return Ok(0);
         }
+        // Records as the data core shows them (reads, so before the write transaction).
+        let mut records = Vec::with_capacity(events.len());
+        for ev in &events {
+            let wanted = topics.iter().any(|t| {
+                t.source
+                    .as_ref()
+                    .is_some_and(|s| s.collection == ev.collection || s.collection == ev.collection_id)
+            });
+            records.push(if wanted { self.record_json(ev).await } else { Json::Null });
+        }
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let mut n = 0;
-            for ev in &events {
+            for (ev, record) in events.iter().zip(&records) {
                 let op = match ev.op {
                     ChangeOp::Create => "create",
                     ChangeOp::Update => "update",
@@ -409,7 +419,7 @@ impl QueueService {
                             "op": op,
                             "collection": ev.collection,
                             "record_id": ev.record_id,
-                            "record": ev.snapshot.to_json(),
+                            "record": record,
                             "tenant": ev.tenant,
                             "actor": ev.actor,
                             "changed_at": ev.created_at,
@@ -450,6 +460,31 @@ impl QueueService {
             self.notify();
         }
         Ok(n)
+    }
+
+    /// The changed row as a record: through the data core (field rules of the
+    /// system view: password columns are never in the outbox), else the raw
+    /// columns when the collection is gone.
+    async fn record_json(&self, ev: &forgebase_realtime::Event) -> Json {
+        match self
+            .inner
+            .data
+            .view_snapshot(&AccessContext::system(), Action::View, &ev.collection_id, &ev.snapshot, None)
+            .await
+        {
+            Ok(Some(rec)) => Json::Object(rec),
+            _ => {
+                let raw = ev.snapshot.to_json();
+                let cols = raw["c"].as_array().cloned().unwrap_or_default();
+                let vals = raw["v"].as_array().cloned().unwrap_or_default();
+                Json::Object(
+                    cols.iter()
+                        .zip(vals)
+                        .filter_map(|(c, v)| c.as_str().filter(|c| !c.starts_with("__")).map(|c| (c.to_owned(), v)))
+                        .collect(),
+                )
+            }
+        }
     }
 
     async fn set_relay_cursor(&self, value: i64) -> Result<()> {
