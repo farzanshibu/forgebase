@@ -960,3 +960,77 @@ async fn export_returns_the_account_data() {
     );
     assert!(h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'account.exported'").await >= 2);
 }
+
+// ---------------------------------------------------------------------------
+// Impersonation (ADR-0014): no changes to the target's ways in or account
+// ---------------------------------------------------------------------------
+
+fn assert_impersonation_refused(r: &Resp, what: &str) {
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{what}: {}", r.json);
+    assert!(
+        r.json["error"]["message"].as_str().unwrap_or("").contains("impersonated_session"),
+        "{what}: {}",
+        r.json
+    );
+}
+
+#[tokio::test]
+async fn impersonated_sessions_cannot_change_ways_in_or_take_the_account() {
+    let h = harness(|_| {}).await;
+    let admin = h.root_token().await;
+    let _sms = dev_sms(&h);
+    enable_phone(&h, &admin, "default", true).await;
+    let (uid, own) = h.verified_user("target@example.com").await;
+    let g = h
+        .post(
+            "/api/auth/impersonate",
+            Some(&admin),
+            json!({"principal": format!("user:users/{uid}"), "reason": "support ticket 42"}),
+        )
+        .await;
+    assert_eq!(g.status, StatusCode::OK, "{}", g.json);
+    let tok = g.json["access_token"].as_str().unwrap().to_owned();
+    // The impersonation works for reading.
+    assert_eq!(h.get("/api/auth/me", Some(&tok)).await.status, StatusCode::OK);
+
+    let cases: Vec<(&str, Resp)> = vec![
+        ("oauth link", h.post("/api/auth/oauth/google/link", Some(&tok), json!({})).await),
+        ("oauth unlink", h.delete("/api/auth/oauth/identities/some-id", Some(&tok)).await),
+        (
+            "passkey register",
+            h.post("/api/auth/webauthn/register/options", Some(&tok), json!({})).await,
+        ),
+        ("passkey delete", h.delete("/api/auth/webauthn/credentials/some-id", Some(&tok)).await),
+        ("phone add", h.post("/api/auth/phone/add", Some(&tok), json!({"phone": "+15550100077"})).await),
+        (
+            "phone confirm",
+            h.post("/api/auth/phone/confirm", Some(&tok), json!({"phone": "+15550100077", "code": "123456"}))
+                .await,
+        ),
+        ("phone remove", h.delete("/api/auth/phone", Some(&tok)).await),
+        ("deactivate", h.post("/api/auth/account/deactivate", Some(&tok), json!({})).await),
+        (
+            "delete",
+            h.post("/api/auth/account/delete", Some(&tok), json!({"current_password": PW})).await,
+        ),
+        (
+            "anonymise",
+            h.post("/api/auth/account/delete", Some(&tok), json!({"anonymise": true})).await,
+        ),
+        ("export", h.get("/api/auth/account/export", Some(&tok)).await),
+    ];
+    for (what, r) in &cases {
+        assert_impersonation_refused(r, what);
+    }
+    // Nothing happened to the account; its own session still can.
+    let r = h.get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin)).await;
+    assert_eq!(r.json["status"], "active");
+    assert_eq!(h.get("/api/auth/account/export", Some(&own)).await.status, StatusCode::OK);
+    let r = h.post("/api/auth/phone/add", Some(&own), json!({"phone": "+15550100077"})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
+    // Administrator lifecycle routes are not reachable with the user token.
+    let r = h
+        .post(&format!("/api/auth/users/users/{uid}/anonymise"), Some(&tok), json!({}))
+        .await;
+    assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
+}

@@ -15,7 +15,7 @@ use super::{
 use crate::crypto;
 use crate::password::check_password_policy;
 use crate::scopes::{Scope, parse_scopes};
-use crate::store::{Tx, first, i, now, ot, read, rfc3339, rows, t};
+use crate::store::{Tx, first, i, ot, read, rfc3339, rows, t};
 use crate::{AuthError, Authenticated, CredentialKind, Subject};
 
 const API_KEY_PREFIX: &str = "fbk_";
@@ -95,7 +95,7 @@ pub struct CreatedKey {
     pub info: ApiKeyView,
 }
 
-fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
+pub(super) fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
     ApiKeyView {
         id: row.str("id"),
         kind: row.str("kind"),
@@ -111,7 +111,7 @@ fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
     }
 }
 
-const KEY_COLS: &str =
+pub(super) const KEY_COLS: &str =
     "id, kind, name, owner_type, collection, owner_id, scopes, created_at, expires_at, last_used_at, revoked_at";
 
 fn sa_view(row: crate::store::Row<'_>) -> ServiceAccountView {
@@ -145,7 +145,7 @@ impl AuthService {
         check_password_policy(password, ADMIN_PASSWORD_MIN)?;
         let hash = self.hasher().hash_async(password).await?;
         let id = crypto::random_id(15)?;
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let res = tx
             .exec(
@@ -196,7 +196,7 @@ impl AuthService {
         let r = tx
             .read(
                 "UPDATE _forgebase_admins SET password_hash = ?2, updated_at = ?3 WHERE email = ?1 RETURNING id",
-                vec![t(email.clone()), t(hash), i(now())],
+                vec![t(email.clone()), t(hash), i(self.now())],
             )
             .await?;
         let id = first(&r)
@@ -273,7 +273,7 @@ impl AuthService {
             return Err(AuthError::NotFound(format!("realm {realm:?} not found")));
         }
         let id = crypto::random_id(15)?;
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let res = tx
             .exec(
@@ -420,7 +420,7 @@ impl AuthService {
         let secret = crypto::random_token(32)?;
         let prefix = if kind == "api_key" { API_KEY_PREFIX } else { PAT_PREFIX };
         let key = format!("{prefix}{id}_{secret}");
-        let now = now();
+        let now = self.now();
         let expires_at = expires_in_days.map(|d| now + i64::from(d) * 86_400);
         let scope_strs: Vec<String> = scopes.iter().map(|s| s.as_str().to_owned()).collect();
         let (owner_type, coll, owner_id) = match owner {
@@ -523,6 +523,7 @@ impl AuthService {
     /// Revokes an API key or PAT. Owners may revoke their own PATs;
     /// administrators any key.
     pub async fn revoke_key(&self, caller: &Authenticated, ci: &ClientInfo, key_id: &str) -> Result<(), AuthError> {
+        super::reject_impersonated(caller)?;
         let (st, coll, id) = subject_cols(&caller.subject);
         let admin = caller.subject.is_admin();
         let mut tx = Tx::begin(self.data().backend()).await?;
@@ -532,7 +533,7 @@ impl AuthService {
                  WHERE id = ?1 AND revoked_at IS NULL
                    AND (?6 OR (kind = 'pat' AND owner_type = ?3 AND collection IS ?4 AND owner_id = ?5))
                  RETURNING kind",
-                vec![t(key_id), i(now()), t(st), ot(coll), t(id), i(i64::from(admin))],
+                vec![t(key_id), i(self.now()), t(st), ot(coll), t(id), i(i64::from(admin))],
             )
             .await?;
         let Some(row) = first(&r) else {
@@ -565,6 +566,7 @@ impl AuthService {
         scopes: &[String],
         expires_in_days: Option<u32>,
     ) -> Result<CreatedKey, AuthError> {
+        super::reject_impersonated(caller)?;
         if !matches!(caller.subject, Subject::User { .. } | Subject::Admin { .. }) {
             return Err(AuthError::Forbidden("service accounts use API keys".into()));
         }
@@ -619,7 +621,7 @@ impl AuthService {
         if !crypto::ct_eq(candidate.as_bytes(), row.str("secret_hash").as_bytes()) || row.str("kind") != kind {
             return Err(bad);
         }
-        let now = now();
+        let now = self.now();
         if row.opt_i64("revoked_at").is_some() {
             return Err(AuthError::InvalidToken("API key revoked"));
         }
@@ -688,6 +690,7 @@ impl AuthService {
             credential_id: id.to_owned(),
             scopes: Some(scopes),
             mfa: false,
+            impersonator: None,
         })
     }
 
@@ -705,6 +708,19 @@ impl AuthService {
         });
         if let Some(sid) = caller.session_id() {
             out["session_id"] = json!(sid);
+        }
+        if let Some(admin) = &caller.impersonator {
+            out["impersonator"] = json!(admin);
+            let r = read(
+                self.db(),
+                "SELECT expires_at, impersonation_reason FROM _forgebase_auth_sessions WHERE id = ?1",
+                vec![t(caller.credential_id.clone())],
+            )
+            .await?;
+            if let Some(row) = first(&r) {
+                out["impersonation_expires_at"] = json!(rfc3339(row.i64("expires_at")));
+                out["impersonation_reason"] = json!(row.opt_str("impersonation_reason"));
+            }
         }
         if let Some(s) = &caller.scopes {
             out["scopes"] = json!(s.iter().map(Scope::as_str).collect::<Vec<_>>());

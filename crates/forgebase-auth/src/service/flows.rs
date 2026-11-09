@@ -16,8 +16,8 @@ use crate::crypto;
 use crate::mailer::{Mail, MailKind};
 use crate::password::check_password_policy;
 use crate::realm::Method;
+use crate::store::{Tx, first, i, ot, read, t};
 use crate::turnstile::TurnstileAction;
-use crate::store::{Tx, first, i, now, ot, read, t};
 use crate::{AuthError, AuthMethod, Authenticated, Subject};
 
 /// A user record as returned to clients (no password, no hidden fields).
@@ -407,7 +407,7 @@ impl AuthService {
             let mut tx = Tx::begin(self.data().backend()).await?;
             tx.exec(
                 "UPDATE _forgebase_admins SET password_hash = ?2, updated_at = ?3 WHERE id = ?1",
-                vec![t(id.clone()), t(new_hash), i(now())],
+                vec![t(id.clone()), t(new_hash), i(self.now())],
             )
             .await?;
             tx.commit().await?;
@@ -425,6 +425,7 @@ impl AuthService {
         current: &str,
         new: &str,
     ) -> Result<(), AuthError> {
+        super::reject_impersonated(caller)?;
         self.limit_attempt(ci)?;
         let (stored, min, lock_key) = match &caller.subject {
             Subject::User { collection, id } => {
@@ -504,7 +505,7 @@ impl AuthService {
                 let mut tx = Tx::begin(self.data().backend()).await?;
                 tx.exec(
                     "UPDATE _forgebase_admins SET password_hash = ?2, updated_at = ?3 WHERE id = ?1",
-                    vec![t(id.clone()), t(hash), i(now())],
+                    vec![t(id.clone()), t(hash), i(self.now())],
                 )
                 .await?;
                 tx.commit().await?;
@@ -522,7 +523,7 @@ impl AuthService {
                     t(st),
                     ot(coll),
                     t(id),
-                    i(now()),
+                    i(self.now()),
                     t(reason),
                     ot(keep_session.map(str::to_owned)),
                 ],
@@ -557,7 +558,7 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let (st, coll, id) = subject_cols(subject);
         let hash = self.one_time_hash(purpose, &id, token_or_code);
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         // A new code or link replaces older unused ones of the same purpose.
         tx.exec(
@@ -616,7 +617,7 @@ impl AuthService {
                 "UPDATE _forgebase_auth_one_time SET used_at = ?3
                  WHERE token_hash = ?1 AND purpose = ?2 AND used_at IS NULL AND expires_at > ?3
                  RETURNING subject_type, collection, subject_id, detail",
-                vec![t(hash), t(purpose), i(now())],
+                vec![t(hash), t(purpose), i(self.now())],
             )
             .await?;
         let Some(row) = first(&r) else {
@@ -956,7 +957,7 @@ impl AuthService {
             collection: coll.name.clone(),
             id: u.id.clone(),
         };
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let r = tx
             .read(
@@ -1043,6 +1044,7 @@ impl AuthService {
     }
 
     fn require_session_subject(caller: &Authenticated) -> Result<(), AuthError> {
+        super::reject_impersonated(caller)?;
         match (&caller.subject, caller.session_id()) {
             (Subject::User { .. } | Subject::Admin { .. }, Some(_)) => Ok(()),
             _ => Err(AuthError::Forbidden("MFA is managed from a signed-in session".into())),
@@ -1063,7 +1065,7 @@ impl AuthService {
             "INSERT INTO _forgebase_auth_mfa (subject_type, collection, subject_id, secret_enc, enabled, last_step, created_at)
              VALUES (?1, ?2, ?3, ?4, 0, 0, ?5)
              ON CONFLICT (subject_type, collection, subject_id) DO UPDATE SET secret_enc = ?4, enabled = 0, last_step = 0, created_at = ?5",
-            vec![t(st), t(coll), t(id), Value::Blob(sealed), i(now())],
+            vec![t(st), t(coll), t(id), Value::Blob(sealed), i(self.now())],
         )
         .await?;
         audit_in(
@@ -1121,7 +1123,7 @@ impl AuthService {
             return Ok(false);
         }
         let secret = self.keyring().open(&row.blob("secret_enc"), &Self::mfa_aad(subject))?;
-        let now = now() as u64;
+        let now = self.now() as u64;
         let Some(step) = crypto::totp_check(&secret, code, now, 1, row.i64("last_step").max(0) as u64) else {
             return Ok(false);
         };
@@ -1156,7 +1158,7 @@ impl AuthService {
         let n = tx
             .exec(
                 "UPDATE _forgebase_auth_recovery_codes SET used_at = ?2 WHERE code_hash = ?1 AND used_at IS NULL",
-                vec![t(hash), i(now())],
+                vec![t(hash), i(self.now())],
             )
             .await?
             .rows_affected;
@@ -1180,7 +1182,7 @@ impl AuthService {
             tx.exec(
                 "INSERT INTO _forgebase_auth_recovery_codes (code_hash, subject_type, collection, subject_id, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                vec![t(hash), t(st), t(coll.clone()), t(id.clone()), i(now())],
+                vec![t(hash), t(st), t(coll.clone()), t(id.clone()), i(self.now())],
             )
             .await?;
             codes.push(format!("{}-{}", &raw[..5], &raw[5..]));
@@ -1217,7 +1219,7 @@ impl AuthService {
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
             "UPDATE _forgebase_auth_mfa SET enabled = 1, enabled_at = ?4 WHERE subject_type = ?1 AND collection = ?2 AND subject_id = ?3",
-            vec![t(st), t(coll), t(id), i(now())],
+            vec![t(st), t(coll), t(id), i(self.now())],
         )
         .await?;
         let codes = self.new_recovery_codes(&mut tx, &caller.subject).await?;
@@ -1343,7 +1345,7 @@ impl AuthService {
             self.data().backend(),
             "SELECT subject_type, collection, subject_id, detail, attempts FROM _forgebase_auth_one_time
              WHERE token_hash = ?1 AND purpose = 'mfa_challenge' AND used_at IS NULL AND expires_at > ?2",
-            vec![t(hash.clone()), i(now())],
+            vec![t(hash.clone()), i(self.now())],
         )
         .await?;
         let Some(row) = first(&r) else {
@@ -1371,7 +1373,7 @@ impl AuthService {
             let mut tx = Tx::begin(self.data().backend()).await?;
             tx.exec(
                 "UPDATE _forgebase_auth_one_time SET attempts = ?2, used_at = CASE WHEN ?3 THEN ?4 ELSE used_at END WHERE token_hash = ?1",
-                vec![t(hash), i(attempts), i(i64::from(burn)), i(now())],
+                vec![t(hash), i(attempts), i(i64::from(burn)), i(self.now())],
             )
             .await?;
             tx.commit().await?;
@@ -1391,7 +1393,7 @@ impl AuthService {
         let claimed = tx
             .exec(
                 "UPDATE _forgebase_auth_one_time SET used_at = ?2 WHERE token_hash = ?1 AND used_at IS NULL",
-                vec![t(hash), i(now())],
+                vec![t(hash), i(self.now())],
             )
             .await?
             .rows_affected

@@ -17,7 +17,7 @@ use forgebase_data::{AccessContext, DataError, UpdateOptions};
 use serde_json::{Map, Value as Json, json};
 
 use crate::service::{AuthService, ClientInfo, audit_in, require_admin};
-use crate::store::{Tx, first, i, now, read, rfc3339, rows, t};
+use crate::store::{Tx, first, i, read, rfc3339, rows, t};
 use crate::{AuthError, Authenticated, Subject};
 
 /// How recent a sign-in must be to stand in for the password (seconds).
@@ -67,7 +67,7 @@ impl AuthService {
                (SELECT suspended_by FROM _forgebase_suspensions WHERE principal = ?3 AND (until_at IS NULL OR until_at > ?4)) AS sus_by,
                (SELECT suspended_at FROM _forgebase_suspensions WHERE principal = ?3 AND (until_at IS NULL OR until_at > ?4)) AS sus_at,
                (SELECT until_at FROM _forgebase_suspensions WHERE principal = ?3 AND (until_at IS NULL OR until_at > ?4)) AS sus_until",
-            vec![t(collection), t(id), t(principal), i(now())],
+            vec![t(collection), t(id), t(principal), i(self.now())],
         )
         .await?;
         let Some(row) = first(&r) else {
@@ -123,7 +123,7 @@ impl AuthService {
                 let r = read(
                     self.data().backend(),
                     "SELECT 1 AS x FROM _forgebase_suspensions WHERE principal = ?1 AND (until_at IS NULL OR until_at > ?2)",
-                    vec![t(format!("service:{id}")), i(now())],
+                    vec![t(format!("service:{id}")), i(self.now())],
                 )
                 .await?;
                 if first(&r).is_some() {
@@ -180,7 +180,7 @@ impl AuthService {
             vec![t(sid)],
         )
         .await?;
-        let recent = first(&r).is_some_and(|row| now() - row.i64("created_at") <= RECENT_AUTH_SECS);
+        let recent = first(&r).is_some_and(|row| self.now() - row.i64("created_at") <= RECENT_AUTH_SECS);
         if recent {
             Ok(())
         } else {
@@ -206,7 +206,7 @@ impl AuthService {
         until: Option<i64>,
     ) -> Result<AccountStatus, AuthError> {
         let subject = self.admin_target(caller, collection, id).await?;
-        if until.is_some_and(|u| u <= now()) {
+        if until.is_some_and(|u| u <= self.now()) {
             return Err(AuthError::invalid("until must be in the future"));
         }
         let reason: String = reason.chars().filter(|c| !c.is_control()).take(500).collect();
@@ -218,7 +218,7 @@ impl AuthService {
                 t(subject.actor()),
                 t(reason.clone()),
                 t(caller.subject.actor()),
-                i(now()),
+                i(self.now()),
                 until.map_or(forgebase_data::db::Value::Null, i),
             ],
         )
@@ -297,7 +297,7 @@ impl AuthService {
         tx.exec(
             "INSERT OR REPLACE INTO _forgebase_auth_account_status (collection, user_id, status, reason, changed_by, changed_at)
              VALUES (?1, ?2, 'deactivated', ?3, ?4, ?5)",
-            vec![t(coll), t(id), t(reason.clone()), t(caller.subject.actor()), i(now())],
+            vec![t(coll), t(id), t(reason.clone()), t(caller.subject.actor()), i(self.now())],
         )
         .await?;
         let revoked = Self::revoke_all_in(&mut tx, subject, "account_deactivated").await?;
@@ -534,7 +534,7 @@ impl AuthService {
         tx.exec(
             "INSERT OR REPLACE INTO _forgebase_auth_account_status (collection, user_id, status, reason, changed_by, changed_at)
              VALUES (?1, ?2, 'anonymised', '', ?3, ?4)",
-            vec![t(coll_name), t(id), t(caller.subject.actor()), i(now())],
+            vec![t(coll_name), t(id), t(caller.subject.actor()), i(self.now())],
         )
         .await?;
         audit_in(
@@ -648,7 +648,7 @@ impl AuthService {
         let ts = |v: Option<i64>| v.map(rfc3339);
         Ok(json!({
             "format": "forgebase.account-export.v1",
-            "exported_at": rfc3339(now()),
+            "exported_at": rfc3339(self.now()),
             "realm": self.realms().realm_of_collection(coll),
             "user": user,
             "status": self.account_status(coll, id).await?,

@@ -165,6 +165,7 @@ impl Database {
         if !opts.create_if_missing && !opts.path.is_file() {
             return Err(DbError::NotFound(opts.path));
         }
+        check_wal_page_size(&opts.path)?;
         if opts.create_if_missing && !opts.read_only && !opts.path.exists() {
             // Pre-create the file owner-only; SQLite gives -wal/-shm the same mode.
             create_private_file(&opts.path).map_err(|source| DbError::Io {
@@ -509,6 +510,68 @@ impl Database {
 }
 
 /// Maps a driver error onto [`DbError`], recognising corruption and contention.
+/// Refuses to open a database whose sibling `-wal` file was written with a
+/// different page size than the database header declares.
+///
+/// Mitigation for RUSTSEC-2026-0459 (bundled SQLite older than 3.54, held back
+/// by `sqlx-sqlite`; see ADR-0002): recovery of a WAL whose page size differs
+/// from the database's is what the advisory exploits, so a pair that does not
+/// match is rejected before SQLite sees it. A missing, empty or short file, a
+/// WAL without a valid header magic (SQLite ignores it) and a database file
+/// shorter than its 100-byte header are not checked.
+fn check_wal_page_size(path: &Path) -> Result<(), DbError> {
+    use std::io::Read;
+
+    let mut wal_name = path.as_os_str().to_owned();
+    wal_name.push("-wal");
+    let wal = PathBuf::from(wal_name);
+    let io = |p: &Path| {
+        let p = p.to_path_buf();
+        move |source| DbError::Io { path: p, source }
+    };
+
+    let mut wal_header = [0u8; 32];
+    match std::fs::File::open(&wal) {
+        Ok(mut f) => {
+            if f.read_exact(&mut wal_header).is_err() {
+                return Ok(()); // empty or truncated: SQLite discards it
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(io(&wal)(e)),
+    }
+    let magic = u32::from_be_bytes([wal_header[0], wal_header[1], wal_header[2], wal_header[3]]);
+    if magic != 0x377f_0682 && magic != 0x377f_0683 {
+        return Ok(());
+    }
+    let wal_page_size = u32::from_be_bytes([wal_header[8], wal_header[9], wal_header[10], wal_header[11]]);
+
+    let mut db_header = [0u8; 100];
+    match std::fs::File::open(path) {
+        Ok(mut f) => {
+            if f.read_exact(&mut db_header).is_err() {
+                return Ok(()); // new or empty database
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(io(path)(e)),
+    }
+    // The header stores the page size in two bytes; the value 1 means 65536.
+    let db_page_size = match u16::from_be_bytes([db_header[16], db_header[17]]) {
+        1 => 65_536,
+        n => u32::from(n),
+    };
+    if db_page_size != wal_page_size {
+        return Err(DbError::WalPageSizeMismatch {
+            path: path.to_path_buf(),
+            wal,
+            db_page_size,
+            wal_page_size,
+        });
+    }
+    Ok(())
+}
+
 /// Creates an empty file readable and writable by the owner only (Unix).
 /// SQLite treats an empty file as a new database.
 fn create_private_file(path: &Path) -> std::io::Result<()> {
@@ -611,6 +674,22 @@ pub enum DbError {
     /// WAL mode could not be enabled (e.g. unsupported filesystem).
     #[error("database could not be switched to WAL mode (journal_mode is {0:?})")]
     NotWal(String),
+    /// The `-wal` file next to the database was written with a different page
+    /// size than the database header says (mitigation for RUSTSEC-2026-0459,
+    /// see ADR-0002). Opening would let SQLite replay a mismatched WAL.
+    #[error(
+        "refusing to open {path}: its write-ahead log {wal} has page size {wal_page_size} but the database header says {db_page_size} (damaged or mismatched files; restore a backup or move the -wal file away)"
+    )]
+    WalPageSizeMismatch {
+        /// Database file.
+        path: PathBuf,
+        /// The `-wal` file.
+        wal: PathBuf,
+        /// Page size in the database header.
+        db_page_size: u32,
+        /// Page size in the WAL header.
+        wal_page_size: u32,
+    },
     /// Lock contention outlasted the busy timeout.
     #[error("database is busy: {0}")]
     Busy(String),
@@ -654,6 +733,7 @@ impl ErrorCode for DbError {
             DbError::NotFound(_) => "database_not_found",
             DbError::Corrupt { .. } => "database_corrupt",
             DbError::NotWal(_) => "database_not_wal",
+            DbError::WalPageSizeMismatch { .. } => "database_wal_mismatch",
             DbError::Busy(_) => "database_busy",
             DbError::Closed => "database_closed",
             DbError::Migration(m) => m.code(),
@@ -679,7 +759,9 @@ impl ErrorCode for DbError {
             DbError::Migration(m) => m.kind(),
             DbError::Constraint { .. } => ErrorKind::Conflict,
             DbError::ReadOnly(_) | DbError::Statement(_) => ErrorKind::InvalidInput,
-            DbError::NotWal(_) | DbError::Io { .. } | DbError::Sqlx(_) => ErrorKind::Internal,
+            DbError::NotWal(_) | DbError::WalPageSizeMismatch { .. } | DbError::Io { .. } | DbError::Sqlx(_) => {
+                ErrorKind::Internal
+            }
         }
     }
 }
@@ -929,5 +1011,81 @@ mod tests {
                 db.close().await;
             }
         }
+    }
+
+    /// A database/WAL pair with the given page sizes, written by hand: only the
+    /// two headers matter to the check.
+    fn crafted_pair(dir: &Path, db_page: u16, wal_page: u32, magic: u32) -> PathBuf {
+        let path = dir.join("crafted.db");
+        let mut db = vec![0u8; 4096];
+        db[..16].copy_from_slice(b"SQLite format 3\0");
+        db[16..18].copy_from_slice(&db_page.to_be_bytes());
+        std::fs::write(&path, db).unwrap();
+        let mut wal = vec![0u8; 32];
+        wal[..4].copy_from_slice(&magic.to_be_bytes());
+        wal[4..8].copy_from_slice(&3_007_000u32.to_be_bytes());
+        wal[8..12].copy_from_slice(&wal_page.to_be_bytes());
+        std::fs::write(dir.join("crafted.db-wal"), wal).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn a_wal_with_another_page_size_than_the_database_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = crafted_pair(tmp.path(), 4096, 8192, 0x377f_0682);
+        let Err(err) = Database::open(opts(&path)).await else {
+            panic!("a mismatched WAL must be refused");
+        };
+        match &err {
+            DbError::WalPageSizeMismatch {
+                db_page_size,
+                wal_page_size,
+                ..
+            } => assert_eq!((*db_page_size, *wal_page_size), (4096, 8192)),
+            other => panic!("wrong error: {other}"),
+        }
+        assert!(err.to_string().contains("page size 8192"), "{err}");
+        assert_eq!(ErrorCode::code(&err), "database_wal_mismatch");
+        // Also refused read-only, and nothing was modified.
+        let ro = DbOptions {
+            read_only: true,
+            create_if_missing: false,
+            ..opts(&path)
+        };
+        assert!(matches!(
+            Database::open(ro).await.err(),
+            Some(DbError::WalPageSizeMismatch { .. })
+        ));
+        assert_eq!(std::fs::metadata(tmp.path().join("crafted.db-wal")).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn matching_page_sizes_and_unrelated_wal_files_pass_the_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = crafted_pair(tmp.path(), 4096, 4096, 0x377f_0683);
+        check_wal_page_size(&ok).unwrap();
+        // 1 in the header means 65536.
+        let big = crafted_pair(tmp.path(), 1, 65_536, 0x377f_0682);
+        check_wal_page_size(&big).unwrap();
+        // A WAL without the magic number is ignored by SQLite, so it is not judged here.
+        let junk = crafted_pair(tmp.path(), 4096, 8192, 0xdead_beef);
+        check_wal_page_size(&junk).unwrap();
+        // No WAL, an empty WAL and a new database are fine.
+        let none = tmp.path().join("none.db");
+        check_wal_page_size(&none).unwrap();
+        std::fs::write(tmp.path().join("empty.db-wal"), b"").unwrap();
+        check_wal_page_size(&tmp.path().join("empty.db")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_real_database_reopens_after_a_clean_shutdown_and_with_a_live_wal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = fresh(tmp.path()).await;
+        // While open, the -wal file exists with the real page size: a second open passes the check.
+        assert!(tmp.path().join("forgebase.db-wal").exists());
+        check_wal_page_size(&tmp.path().join("forgebase.db")).unwrap();
+        db.close().await;
+        let db = Database::open(opts(&tmp.path().join("forgebase.db"))).await.unwrap();
+        db.close().await;
     }
 }

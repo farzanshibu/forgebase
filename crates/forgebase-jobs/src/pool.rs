@@ -19,7 +19,7 @@ use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use crate::JobError;
 use crate::model::{ClaimRequest, ClaimedJob};
 use crate::registry::{HandlerError, JobContext, JobRegistry};
-use crate::service::{JobService, now_ms};
+use crate::service::JobService;
 
 /// Worker pool settings.
 #[derive(Debug, Clone)]
@@ -138,7 +138,7 @@ async fn run(service: JobService, registry: JobRegistry, config: PoolConfig, mut
                 && last_purge.elapsed() >= Duration::from_secs(60)
             {
                 last_purge = std::time::Instant::now();
-                let cutoff = now_ms() - i64::try_from(retention.as_millis()).unwrap_or(i64::MAX);
+                let cutoff = service.now() - i64::try_from(retention.as_millis()).unwrap_or(i64::MAX);
                 match service.purge_finished(&system, cutoff).await {
                     Ok(n) if n > 0 => tracing::info!(purged = n, "purged finished jobs"),
                     Ok(_) => {}

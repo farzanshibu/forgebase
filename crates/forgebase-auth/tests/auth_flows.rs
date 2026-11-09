@@ -575,14 +575,19 @@ async fn per_ip_rate_limit() {
 
 #[tokio::test]
 async fn expired_and_revoked_tokens_are_rejected() {
-    let h = harness(|c| c.access_token_ttl = Duration::from_secs(1)).await;
+    let clock = forgebase_auth::ManualClock::from_system();
+    let h = harness(|c| {
+        c.access_token_ttl = Duration::from_secs(60);
+        c.clock = Arc::new(clock.clone());
+    })
+    .await;
     h.signup("erin@example.com").await;
     let a = h.login("erin@example.com").await;
     let b = h.login("erin@example.com").await;
     let (ta, tb) = (s(&a["access_token"]).to_owned(), s(&b["access_token"]).to_owned());
     assert_eq!(h.get("/api/auth/me", Some(&ta)).await.status, StatusCode::OK);
 
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    clock.advance(Duration::from_secs(61));
     let r = h.get("/api/auth/me", Some(&ta)).await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_token");
     assert_eq!(r.json["error"]["message"], "access token expired");

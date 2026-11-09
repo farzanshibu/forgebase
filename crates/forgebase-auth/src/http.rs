@@ -153,6 +153,7 @@ fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: 
             .iter()
             .find_map(|h| req_headers.get(*h))
             .map(|v| v.to_str().unwrap_or("").chars().take(4096).collect()),
+        impersonator: None,
     }
 }
 
@@ -204,7 +205,7 @@ fn credential(headers: &HeaderMap) -> Result<Option<Credential>, AuthError> {
 pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, next: Next) -> Response {
     let rid = request_id(req.headers());
     let connect = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
-    let ci = client_info(req.headers(), connect, auth.config().trust_forwarded_for);
+    let mut ci = client_info(req.headers(), connect, auth.config().trust_forwarded_for);
     let rid_opt = ci.request_id.clone();
 
     let cred = match credential(req.headers()) {
@@ -260,6 +261,7 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
             // The identity's home realm, unless the request selects one
             // (the policy tenancy layer refuses a foreign realm).
             let ctx = auth.access_context_for(&a);
+            ci.impersonator.clone_from(&a.impersonator);
             req.extensions_mut().insert(a);
             ctx
         }
@@ -511,6 +513,14 @@ struct AdminCreateReq {
     password: String,
 }
 
+#[derive(Deserialize)]
+struct ImpersonateReq {
+    principal: String,
+    reason: String,
+    #[serde(default)]
+    ttl_minutes: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -548,6 +558,17 @@ pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> 
         .route("/service-accounts/{id}", get(get_sa).delete(delete_sa))
         .route("/service-accounts/{id}/keys", get(list_sa_keys).post(create_sa_key))
         .route("/api-keys/{id}", delete(revoke_key))
+        .route("/api-keys", get(list_all_keys))
+        .route("/users/{collection}/{id}", get(admin_user))
+        .route("/users/{collection}/{id}/sessions", get(admin_user_sessions))
+        .route(
+            "/users/{collection}/{id}/sessions/revoke",
+            post(admin_revoke_user_sessions),
+        )
+        .route("/users/{collection}/{id}/login-history", get(admin_user_history))
+        .route("/impersonate", post(impersonate))
+        .route("/impersonations", get(list_impersonations))
+        .route("/impersonations/{id}/end", post(end_impersonation))
         .route("/audit", get(audit))
         .route("/keys/rotate", post(rotate_keys))
         .merge(crate::social::http::routes())
@@ -871,6 +892,97 @@ async fn create_sa_key(
         .await
         .map_err(|e| HttpError::new(e, &rid))?;
     Ok(ok(StatusCode::CREATED, serde_json::to_value(k).unwrap_or(Json_::Null)))
+}
+
+async fn list_all_keys(State(a): State<AuthService>, Client(_, rid): Client, Caller(c): Caller) -> Res {
+    let v = a.list_all_keys(&c).await.map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, json!({"items": v})))
+}
+
+async fn admin_user(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path((collection, id)): Path<(String, String)>,
+) -> Res {
+    let v = a
+        .admin_user_detail(&c, &collection, &id)
+        .await
+        .map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, v))
+}
+
+async fn admin_user_sessions(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path((collection, id)): Path<(String, String)>,
+) -> Res {
+    let v = a
+        .admin_user_sessions(&c, &collection, &id)
+        .await
+        .map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, json!({"items": v})))
+}
+
+async fn admin_revoke_user_sessions(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((collection, id)): Path<(String, String)>,
+) -> Res {
+    let n = a
+        .admin_revoke_user_sessions(&c, &ci, &collection, &id)
+        .await
+        .map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, json!({"revoked": n})))
+}
+
+async fn admin_user_history(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path((collection, id)): Path<(String, String)>,
+    uri: axum::http::Uri,
+) -> Res {
+    let limit = query_param(uri.query().unwrap_or(""), "limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(50);
+    let v = a
+        .admin_user_login_history(&c, &collection, &id, limit)
+        .await
+        .map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, json!({"items": v})))
+}
+
+async fn impersonate(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Body(b): Body<ImpersonateReq>,
+) -> Res {
+    let g = a
+        .impersonate(&c, &ci, &b.principal, &b.reason, b.ttl_minutes)
+        .await
+        .map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, serde_json::to_value(g).unwrap_or(Json_::Null)))
+}
+
+async fn list_impersonations(State(a): State<AuthService>, Client(_, rid): Client, Caller(c): Caller) -> Res {
+    let v = a.list_impersonations(&c).await.map_err(|e| HttpError::new(e, &rid))?;
+    Ok(ok(StatusCode::OK, json!({"items": v})))
+}
+
+async fn end_impersonation(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path(id): Path<String>,
+) -> Res {
+    a.end_impersonation(&c, &ci, &id)
+        .await
+        .map_err(|e| HttpError::new(e, &rid))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 fn query_param(q: &str, name: &str) -> Option<String> {

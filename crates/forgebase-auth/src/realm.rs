@@ -28,7 +28,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value as Json, json};
 
 use crate::service::{ClientInfo, is_unique_violation, require_admin};
-use crate::store::{Tx, first, i, now, read, rfc3339, rows, t};
+use crate::store::{Tx, first, i, read, rfc3339, rows, t};
 use crate::{AuthError, AuthService, Authenticated, Subject};
 
 /// Header selecting the realm of a request.
@@ -515,7 +515,7 @@ impl AuthService {
                 .exec(
                     "UPDATE _forgebase_realm_identity SET collection = ?1, updated_at = ?2
                      WHERE realm_id = 'default' AND collection <> ?1",
-                    vec![t(c.clone()), i(now())],
+                    vec![t(c.clone()), i(self.now())],
                 )
                 .await;
             match res {
@@ -670,7 +670,7 @@ impl AuthService {
         input.config.validate()?;
         self.ensure_auth_collection(&collection).await?;
         let stored = self.stored_config(realm, &input.config)?;
-        let ts = now();
+        let ts = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let res = tx
             .exec(

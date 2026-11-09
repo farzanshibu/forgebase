@@ -50,6 +50,7 @@ async fn api_key(server: &RunningServer, dir: &Path, name: &str) -> String {
         credential_id: "t".into(),
         scopes: None,
         mfa: false,
+        impersonator: None,
     };
     let sa = auth
         .create_service_account(&caller, &ci, name, "", "admin")

@@ -43,8 +43,8 @@ export function ErrorView({ error }: { error: unknown }) {
       <div role="alert" className="rounded-lg border border-amber-700/60 bg-amber-500/10 p-5">
         <p className="font-medium text-amber-300">Sign-in required</p>
         <p className="mt-1 text-sm text-zinc-300">
-          The server refused this request ({error.status} {error.code}). Admin sign-in is not available in this build yet; once it is,
-          sign in and reload this page.
+          The server refused this request ({error.status} {error.code}). Your account may lack the permission, or the session ended:
+          sign in again or ask an administrator.
         </p>
         {error.requestId && <p className="mt-2 font-mono text-xs text-zinc-500">request {error.requestId}</p>}
       </div>

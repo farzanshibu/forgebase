@@ -2,13 +2,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderStudio } from "./test/helpers";
+import { renderStudio, signedIn } from "./test/helpers";
 import { MockApi } from "./test/mockApi";
 
 afterEach(() => vi.unstubAllGlobals());
 
 it("create collection -> add record -> filter -> edit cell -> index -> SQL -> slow log", async () => {
-  const mock = new MockApi().install();
+  const mock = signedIn(new MockApi().install());
   renderStudio("/database");
   const u = userEvent.setup();
 

@@ -118,6 +118,7 @@ fn cli_client() -> ClientInfo {
         request_id: None,
         realm: None,
         turnstile_token: None,
+        impersonator: None,
     }
 }
 

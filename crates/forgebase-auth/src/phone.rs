@@ -27,7 +27,7 @@ use crate::crypto;
 use crate::realm::{Method, RealmIdentity};
 use crate::service::{ClientInfo, LoginOptions, LoginOutcome, audit_in, is_unique_violation};
 use crate::sms::{Sms, SmsKind, mask_phone};
-use crate::store::{Tx, first, i, now, ot, read, rfc3339, t};
+use crate::store::{Tx, first, i, ot, read, rfc3339, t};
 use crate::turnstile::TurnstileAction;
 use crate::{AuthError, AuthMethod, AuthService, Authenticated, Subject};
 
@@ -99,7 +99,7 @@ impl AuthService {
         self.limit_key("sms_number", phone, SMS_PER_NUMBER_PER_HOUR, Duration::from_secs(3600))?;
         let code = crypto::random_digits(6)?;
         let ttl = self.config().email_otp_ttl.as_secs();
-        let ts = now();
+        let ts = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
             "DELETE FROM _forgebase_auth_sms_codes WHERE expires_at < ?1",
@@ -156,7 +156,7 @@ impl AuthService {
         code: &str,
         user_id: Option<&str>,
     ) -> Result<bool, AuthError> {
-        let ts = now();
+        let ts = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let r = tx
             .read(
@@ -305,7 +305,7 @@ impl AuthService {
                 return Err(e);
             }
         };
-        let ts = now();
+        let ts = self.now();
         let subject = Subject::User {
             collection: coll.name.clone(),
             id: uid.clone(),
@@ -404,7 +404,7 @@ impl AuthService {
         {
             return Err(AuthError::InvalidCredentials);
         }
-        let ts = now();
+        let ts = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
             "DELETE FROM _forgebase_auth_phones WHERE collection = ?1 AND user_id = ?2",

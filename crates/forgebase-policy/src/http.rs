@@ -13,7 +13,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use forgebase_core::{ErrorCode, ErrorKind};
 use forgebase_data::{AccessContext, GetOptions, Principal};
@@ -375,6 +375,9 @@ pub struct CheckBody {
     /// Resource id.
     #[serde(default)]
     pub resource_id: Option<String>,
+    /// Check as this principal (`user:<collection>/<id>`; super-admins).
+    #[serde(default)]
+    pub principal: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +707,48 @@ pub mod docs {
     );
     doc!(
         get,
+        "/api/v1/orgs/{org}/role-sets",
+        "authorization",
+        "Role sets usable in the org (`roles:read`).",
+        list_org_role_sets
+    );
+    doc!(
+        get,
+        "/api/v1/role-sets",
+        "authorization",
+        "Realm role sets.",
+        list_realm_role_sets
+    );
+    doc!(
+        get,
+        "/api/v1/realm-bindings",
+        "authorization",
+        "Realm role bindings (super-admins).",
+        list_realm_bindings
+    );
+    doc!(
+        get,
+        "/api/v1/overrides",
+        "authorization",
+        "Overrides of `?org=` (`roles:read`), or of the realm (super-admins).",
+        list_overrides
+    );
+    doc!(
+        get,
+        "/api/v1/suspensions",
+        "authorization",
+        "Active suspensions (super-admins).",
+        list_suspensions
+    );
+    doc!(
+        get,
+        "/api/v1/orgs/{org}/invitations",
+        "tenancy",
+        "Invitations of the org, never the token (`users:read`).",
+        list_invitations
+    );
+    doc!(
+        get,
         "/api/v1/authz/audit",
         "authorization",
         "Recent denials with their pipeline step (super-admins).",
@@ -736,22 +781,28 @@ pub fn router(svc: PolicyService) -> Router {
         .route("/api/v1/teams/{team}/members/remove", post(remove_team_member))
         .route("/api/v1/orgs/{org}/roles", get(list_org_roles).put(put_org_role))
         .route("/api/v1/orgs/{org}/roles/{key}", axum::routing::delete(delete_org_role))
-        .route("/api/v1/orgs/{org}/role-sets", put(put_org_role_set))
+        .route(
+            "/api/v1/orgs/{org}/role-sets",
+            get(list_org_role_sets).put(put_org_role_set),
+        )
         .route("/api/v1/roles", get(list_realm_roles).put(put_realm_role))
         .route("/api/v1/roles/{key}", axum::routing::delete(delete_realm_role))
-        .route("/api/v1/role-sets", put(put_realm_role_set))
-        .route("/api/v1/realm-bindings", put(put_realm_binding))
-        .route("/api/v1/overrides", post(add_override))
+        .route("/api/v1/role-sets", get(list_realm_role_sets).put(put_realm_role_set))
+        .route(
+            "/api/v1/realm-bindings",
+            get(list_realm_bindings).put(put_realm_binding),
+        )
+        .route("/api/v1/overrides", get(list_overrides).post(add_override))
         .route("/api/v1/overrides/{id}", axum::routing::delete(delete_override))
         .route("/api/v1/acl", get(list_acl).post(put_acl))
         .route("/api/v1/acl/{id}", axum::routing::delete(delete_acl))
-        .route("/api/v1/suspensions", post(suspend))
+        .route("/api/v1/suspensions", get(list_suspensions).post(suspend))
         .route("/api/v1/suspensions/lift", post(unsuspend))
         .route(
             "/api/v1/policies/{collection}",
             get(get_policy).put(put_policy).delete(delete_policy),
         )
-        .route("/api/v1/orgs/{org}/invitations", post(invite))
+        .route("/api/v1/orgs/{org}/invitations", get(list_invitations).post(invite))
         .route("/api/v1/invitations/accept", post(accept))
         .route("/api/v1/authz/me", get(me))
         .route("/api/v1/authz/check", post(check))
@@ -963,6 +1014,24 @@ async fn delete_realm_role(State(s): S, Caller(c): Caller, Path(k): Path<String>
 async fn put_realm_role_set(State(s): S, Caller(c): Caller, Json(b): Json<RoleSetBody>) -> ApiResult<Response> {
     ok(s.put_role_set(&c, None, &b.key, &b.name, &b.roles).await.ctx(&c)?)
 }
+async fn list_org_role_sets(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
+    ok(s.list_role_sets(&c, Some(&o)).ctx(&c)?)
+}
+async fn list_realm_role_sets(State(s): S, Caller(c): Caller) -> ApiResult<Response> {
+    ok(s.list_role_sets(&c, None).ctx(&c)?)
+}
+async fn list_realm_bindings(State(s): S, Caller(c): Caller) -> ApiResult<Response> {
+    ok(s.list_realm_bindings(&c).ctx(&c)?)
+}
+async fn list_overrides(State(s): S, Caller(c): Caller, Query(q): Query<OrgQuery>) -> ApiResult<Response> {
+    ok(s.list_overrides(&c, q.org.as_deref()).ctx(&c)?)
+}
+async fn list_suspensions(State(s): S, Caller(c): Caller) -> ApiResult<Response> {
+    ok(s.list_suspensions(&c).await.ctx(&c)?)
+}
+async fn list_invitations(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
+    ok(s.list_invitations(&c, &o).await.ctx(&c)?)
+}
 async fn put_realm_binding(State(s): S, Caller(c): Caller, Json(b): Json<MemberBody>) -> ApiResult<Response> {
     ok(s.put_realm_binding(&c, &b.principal, &b.roles, &b.role_sets)
         .await
@@ -1060,7 +1129,11 @@ async fn check(State(s): S, Caller(c): Caller, Json(b): Json<CheckBody>) -> ApiR
         owner,
         allow_anonymous: false,
     };
-    ok(match s.dry_run(&c, &chk) {
+    let subject = match &b.principal {
+        Some(p) => s.context_for(&c, p).ctx(&c)?,
+        None => c.clone(),
+    };
+    ok(match s.dry_run(&subject, &chk) {
         Ok(()) => json!({"allowed": true}),
         Err(d) => json!({"allowed": false, "step": d.step, "reason": d.reason}),
     })
