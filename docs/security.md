@@ -43,7 +43,7 @@ To report a vulnerability, see [`SECURITY.md`](../SECURITY.md).
 | Network to HTTP API | TLS terminated by a reverse proxy you run. The binary speaks plain HTTP. Default bind is `127.0.0.1`. | [deployment.md](deployment.md#5-tls) |
 | Credential to identity | Argon2id passwords (m = 19 MiB, t = 2, p = 1). Access tokens are 15-minute HS256 JWTs, checked against their session on each use. Refresh tokens rotate; reuse revokes the session. Alg must be `HS256` with a known `kid`. | ADR-0004 §§3, 6 |
 | Stored secrets | Tokens, codes, API-key secrets and cookies are HMAC-SHA256 under a pepper derived from the master key. Signing keys, TOTP seeds and provider secrets are XChaCha20-Poly1305 encrypted, bound to their row. Secrets are shown once. | ADR-0004 §6 |
-| Brute force | Per-IP fixed-window limits: 30 credential attempts per minute, 20 mail-sending requests per hour. Per-account lockout (5 failures in 15 minutes) persisted in the database. | ADR-0004 §8 |
+| Brute force | Per-IP fixed-window limits: 30 failed credential attempts per minute (a successful sign-in gives its attempt back), 20 mail-sending requests per hour. Admin sign-in has its own per-IP budget. Per-account lockout (5 failures in 15 minutes) persisted in the database. A known-device cookie lets an administrator's own browser past both (§4.1). | ADR-0004 §8; FB-80 |
 | Client address | The socket address. `[auth] trust_forwarded_for = true` takes the **last** `X-Forwarded-For` entry (the one your proxy appended); entries the client wrote are ignored. | FB-80; [deployment.md §5](deployment.md#5-tls) |
 | Sessions | Revocation is immediate: logout, device list, password change, password reset, account deletion, key revoke. CSRF token required on cookie writes. Cookies are `HttpOnly` and `SameSite`. | ADR-0004 §§4, 9 |
 | Scope | API keys and PATs carry scopes, enforced centrally from the request path for every route; a scoped credential cannot mint a broader PAT. | ADR-0004 §10 |
@@ -72,7 +72,8 @@ and run against a live server; the others are crate tests.
 
 | Threat | Control | Proof |
 |---|---|---|
-| Password guessing, credential stuffing | 30 attempts/min per IP, account lockout after 5 failures (persisted), same cost for unknown accounts | `security_bypass::brute_force_is_locked_out_and_rate_limited_without_trusting_client_headers`; `auth_flows` |
+| Password guessing, credential stuffing | 30 failed attempts/min per IP, account lockout after 5 failures (persisted), same cost for unknown accounts | `security_bypass::brute_force_is_locked_out_and_rate_limited_without_trusting_client_headers`; `auth_flows` |
+| Locking the administrator out from a shared address (NAT, proxy): flooding sign-in from that address, or failing on purpose with the admin's email (FB-81 finding) | **FB-80:** admin sign-in has its own per-IP budget, so end-user traffic cannot spend it; budgets count failures only (a success gives its attempt back, counted first so parallel guesses stay bounded); a successful admin sign-in sets `fb_admin_device` (`HttpOnly`, `SameSite=Strict`, path `/api/auth/admins/login`, 90 days, HMAC-bound to the email and issue time), and a browser presenting it skips the per-IP budget and the account lockout, with its own budget of 5 failures per 15 minutes | `security_bypass::an_attacker_on_the_admins_address_cannot_lock_the_admin_out`; `limits::refunds_give_back_one_event` |
 | Spoofing `X-Forwarded-For` to reset the IP budget | Header ignored unless `trust_forwarded_for`; then only the last (proxy) entry counts | `security_bypass::brute_force_…`; `forgebase-auth` unit test `forwarded_for_uses_the_entry_the_proxy_appended` |
 | Forged or `alg: none` tokens, foreign keys | HS256 only, known `kid`, session row checked on each use; a bad credential is `401`, never anonymous | `security_bypass::administrative_endpoints_refuse_anonymous_and_ordinary_users`; `auth_flows` |
 | Refresh-token theft | Rotation; reuse revokes the session | `auth_flows` |
@@ -232,6 +233,7 @@ CARGO_INCREMENTAL=0 cargo test -p forgebase-server --test security_bypass
 | `outbound_clients_never_reach_internal_addresses` | Queue push to loopback, metadata, IPv4-mapped, private, unique-local, `file:`/`gopher:`, credentials in URLs, and a name resolving to loopback; functions `fetch` to loopback and metadata; OAuth providers set through the admin API with a loopback issuer, and with a loopback token URL hit by the callback; an OIDC provider from the provider file. A canary listener proves nothing connected. |
 | `storage_keys_cannot_escape_and_uploads_are_validated` | Five traversal key forms, bad bucket names, `/admin` traversal, HTML and PDF under `image/png`, HTML into an `image/*` bucket, oversize, inert download headers |
 | `brute_force_is_locked_out_and_rate_limited_without_trusting_client_headers` | 30 wrong passwords with a fresh `X-Forwarded-For` each; then the right password; an unknown account |
+| `an_attacker_on_the_admins_address_cannot_lock_the_admin_out` | 40 successful colleague sign-ins (no budget spent); an end-user sign-in flood; 6 deliberate failures with the admin's email; an admin sign-in flood; forged, altered and foreign device tokens; 5 failures through the device itself |
 | `cors_is_closed_and_cookie_writes_need_the_csrf_token` | Cross-origin GET and preflight; cookie writes without and with a wrong CSRF token |
 | `secrets_never_reach_logs_or_api_output` | Captures every log line at TRACE while signing in, failing a sign-in, refreshing, minting keys, PATs, a webhook secret, a function secret, a realm SMS token and an OAuth client secret; then reads every listing endpoint (including realm SMS, providers and signing keys) and checks no secret or private key appears in a log line or a response |
 | `malicious_inputs_are_refused_without_errors_or_leaks` | SQL injection in filter, sort, fields, ids and collection names; system tables; NoSQL-style operators; 5 MiB and 100 000-deep bodies; truncated JSON. No `5xx`, no SQL or paths in errors. |
@@ -258,6 +260,12 @@ the billing and store webhook tests, and `forgebase-resp` tests.
 2. **Rate limits are per process.** Fixed-window limits live in memory. A
    shared limiter (Redis) is a later phase (ADR-0004 §8). Multiple instances
    multiply the limit; the per-account lockout is shared (database).
+   Known-device budgets are per process too.
+2a. **Admin lockout for new browsers.** An attacker who knows an
+   administrator's email can still lock it for browsers without a
+   known-device cookie (the CLI, a new machine) for 15 minutes. Keep a second
+   administrator, use API keys for automation, and sign in from the
+   dashboard once so the browser is known. End users have no device bypass.
 3. **Auth routes in OpenAPI.** ADR-0004 lists `/api/auth/*` as not fully
    annotated. Check the live `/api/openapi.json` before you rely on it.
 4. **Mail.** The server's default mail provider logs the message envelope only.
@@ -298,3 +306,5 @@ Each is a security fix; nothing else changed.
 | Trusted `X-Forwarded-For` | First (client-written) entry | Last (proxy-appended) entry; settable as `[auth] trust_forwarded_for` |
 | Auth outbound HTTPS (OAuth/OIDC, SMS, Turnstile) | Any address | Loopback, private, link-local and metadata refused unless `[auth] allow_private_outbound` |
 | Upload declared as PNG/JPEG/GIF/WebP/PDF | Accepted with any bytes | `400 content_type_mismatch` unless the bytes match |
+| Upload with no type and a signature-type extension (`x.png`) whose bytes differ | Stored as `image/png` | Stored as `application/octet-stream` (so an `image/*` allow-list refuses it) |
+| Sign-in rate limit | Every attempt counted; admin and end-user sign-ins share one per-IP budget | Failures counted; admin sign-in has its own budget; `fb_admin_device` cookie set on admin sign-in, bypassing the per-IP budget and the lockout for that browser |
