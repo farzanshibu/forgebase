@@ -40,8 +40,8 @@ use forgebase_query::CompileOptions;
 use forgebase_schema::Collection;
 
 pub use access::{
-    AccessContext, Action, Authorizer, Decision, DefaultAuthorizer, FieldAccess, Predicate, Principal,
-    READS_TENANT_DATA_OPTION, SecretHasher, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped, reads_tenant_data,
+    AccessContext, Action, Authorizer, DEFAULT_REALM, Decision, DefaultAuthorizer, FieldAccess, Predicate, Principal,
+    READS_TENANT_DATA_OPTION, SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped, reads_tenant_data,
 };
 pub use collections::SchemaChange;
 pub use error::DataError;

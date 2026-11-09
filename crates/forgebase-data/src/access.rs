@@ -85,6 +85,13 @@ impl Principal {
 pub struct AccessContext {
     /// Caller.
     pub principal: Principal,
+    /// Realm (top isolation level, ADR-0008 §3) the request acts in.
+    /// [`DEFAULT_REALM`] unless the tenancy layer selected another one;
+    /// crossing realms is denied to everyone but platform super-admins.
+    pub realm_id: String,
+    /// Active organization (B2B subject) of the request; `None` = the
+    /// caller's personal scope (B2C subject).
+    pub org_id: Option<String>,
     /// Tenant (project environment id) the request is scoped to. Every
     /// statement on a tenant-scoped collection is restricted to it.
     pub tenant: Option<String>,
@@ -133,6 +140,8 @@ impl AccessContext {
     fn of(principal: Principal) -> Self {
         Self {
             principal,
+            realm_id: DEFAULT_REALM.to_owned(),
+            org_id: None,
             tenant: None,
             request_id: None,
             scopes: None,
@@ -145,6 +154,36 @@ impl AccessContext {
     pub fn with_request_id(mut self, id: impl Into<String>) -> Self {
         self.request_id = Some(id.into());
         self
+    }
+
+    /// Same context in another realm.
+    pub fn with_realm(mut self, realm: impl Into<String>) -> Self {
+        self.realm_id = realm.into();
+        self
+    }
+
+    /// Same context with an active organization.
+    pub fn with_org(mut self, org: impl Into<String>) -> Self {
+        self.org_id = Some(org.into());
+        self
+    }
+
+    /// The principal as a string (`user:<collection>/<id>`, `service:<id>`,
+    /// `admin:<id>`, `anonymous`, `system`), as stored in tenancy tables.
+    pub fn principal_key(&self) -> String {
+        match &self.principal {
+            Principal::Service { id, .. } => format!("service:{id}"),
+            _ => self.actor(),
+        }
+    }
+
+    /// Who a check is billed and metered against: the active organization,
+    /// else the caller (B2C + B2B, ADR-0008 §2).
+    pub fn subject(&self) -> SubjectRef {
+        match &self.org_id {
+            Some(org) => SubjectRef::Org(org.clone()),
+            None => SubjectRef::Principal(self.principal_key()),
+        }
     }
 
     /// Same context scoped to a tenant.
@@ -195,6 +234,18 @@ impl AccessContext {
             Principal::Service { id, .. } => format!("service:{id}"),
         }
     }
+}
+
+/// The realm everything belongs to unless placed elsewhere.
+pub const DEFAULT_REALM: &str = "default";
+
+/// The subject of a check: an organization or the caller's personal scope.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubjectRef {
+    /// An organization id.
+    Org(String),
+    /// A principal key (`user:users/abc`, `service:xyz`).
+    Principal(String),
 }
 
 /// What the caller wants to do.
