@@ -222,7 +222,11 @@ async fn the_default_auth_client_refuses_private_addresses() {
         "http://192.168.1.1/".to_owned(),
         "http://0.0.0.0/".to_owned(),
     ] {
-        let err = client.send(HttpRequest::get(url.clone())).await.unwrap_err().to_string();
+        let err = client
+            .send(HttpRequest::get(url.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("refused"), "{url}: {err}");
     }
     assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0, "never connected");

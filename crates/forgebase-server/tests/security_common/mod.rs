@@ -226,7 +226,10 @@ impl Env {
             .or_else(|| j["user"]["collection"].as_str())
             .unwrap_or("users")
             .to_owned();
-        (j["access_token"].as_str().unwrap().to_owned(), format!("user:{coll}/{id}"))
+        (
+            j["access_token"].as_str().unwrap().to_owned(),
+            format!("user:{coll}/{id}"),
+        )
     }
 
     /// An admin service account's API key with `scopes`.

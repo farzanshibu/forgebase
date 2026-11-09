@@ -1253,7 +1253,10 @@ mod tests {
             "unknown values are refused"
         );
         std::fs::write(tmp.path().join("forgebase.toml"), "[auth]\ntrust_forwarded = true\n").unwrap();
-        assert!(ConfigLoader::new(tmp.path()).load().is_err(), "unknown [auth] keys are refused");
+        assert!(
+            ConfigLoader::new(tmp.path()).load().is_err(),
+            "unknown [auth] keys are refused"
+        );
     }
 
     #[test]

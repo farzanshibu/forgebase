@@ -77,4 +77,3 @@ fn blocked_v6(ip: Ipv6Addr) -> Option<&'static str> {
     };
     Some(reason)
 }
-

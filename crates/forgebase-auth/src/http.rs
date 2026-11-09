@@ -1076,12 +1076,24 @@ mod tests {
         // The client sent "1.2.3.4"; the proxy appended the real address.
         h.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4, 198.51.100.7"));
         assert_eq!(client_info(&h, peer, true).ip.as_deref(), Some("198.51.100.7"));
-        assert_eq!(client_info(&h, peer, false).ip.as_deref(), Some("127.0.0.1"), "untrusted: socket");
+        assert_eq!(
+            client_info(&h, peer, false).ip.as_deref(),
+            Some("127.0.0.1"),
+            "untrusted: socket"
+        );
         h.append("x-forwarded-for", HeaderValue::from_static("203.0.113.5"));
-        assert_eq!(client_info(&h, peer, true).ip.as_deref(), Some("203.0.113.5"), "last header line");
+        assert_eq!(
+            client_info(&h, peer, true).ip.as_deref(),
+            Some("203.0.113.5"),
+            "last header line"
+        );
         let mut bad = HeaderMap::new();
         bad.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4, not-an-ip"));
-        assert_eq!(client_info(&bad, peer, true).ip.as_deref(), Some("127.0.0.1"), "garbage: socket");
+        assert_eq!(
+            client_info(&bad, peer, true).ip.as_deref(),
+            Some("127.0.0.1"),
+            "garbage: socket"
+        );
     }
 
     #[test]

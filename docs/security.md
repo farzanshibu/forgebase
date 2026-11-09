@@ -78,8 +78,8 @@ and run against a live server; the others are crate tests.
 | Refresh-token theft | Rotation; reuse revokes the session | `auth_flows` |
 | CSRF on cookie sessions | `X-CSRF-Token` required on every non-GET cookie request, constant-time compare; `HttpOnly`, `SameSite` cookie; tokens not returned in cookie mode | `security_bypass::cors_is_closed_and_cookie_writes_need_the_csrf_token` |
 | Cross-origin reads | No CORS headers unless origins are configured | same test |
-| MFA bypass, recovery-code reuse | MFA challenge token, rate-limited verification, single-use codes | `auth_flows`, `mfa` tests |
-| OAuth state/nonce/PKCE abuse, ID-token forgery | State and nonce bound to the flow, PKCE, JWKS-verified RS256/ES256 | `social` tests (ADR-0009) |
+| MFA bypass, recovery-code reuse | MFA challenge token, rate-limited verification with lockout, single-use recovery codes | `auth_flows` |
+| OAuth state/nonce/PKCE abuse, ID-token forgery | State and nonce bound to the flow, PKCE, JWKS-verified RS256/ES256 | `social_login` (ADR-0009) |
 | SSRF through an OIDC discovery document, SMS gateway or Turnstile URL | Auth HTTPS client refuses blocked ranges unless `allow_private_outbound` | `https_client::the_default_auth_client_refuses_private_addresses`; `security_bypass::outbound_clients_never_reach_internal_addresses` |
 | Impersonation abuse | Admin only, audited, impersonated sessions cannot mint PATs | `auth_flows` |
 
@@ -92,6 +92,7 @@ and run against a live server; the others are crate tests.
 | Reading or writing a known record id of another tenant | Data core adds `_tenant = ctx.tenant` to every statement; `_tenant` is read-only and never returned | same test; `forgebase-policy` `isolation` tests |
 | An allow somewhere overriding a deny | Deny wins at every level (role, role set, override, ACL) | `security_bypass::a_deny_beats_every_allow`; `rbac` tests |
 | Rule injection widening access | Rules compile to SQL with parameters; random rule fuzzing never widens | `isolation::random_rules_never_widen_access`, `injection_and_existence_oracles_fail` |
+| A scoped admin key reading other collections through `expand` or a relation filter (`ref.title = …`) | **FB-80:** scopes bind privileged callers in the engine and in the relation-path field guard | `security_bypass::scoped_keys_and_pats_cannot_escalate`; `isolation::scopes_bind_privileged_callers_across_relations` |
 
 ### 4.3 Records and collections (`forgebase-data`, `forgebase-query`, ADR-0003)
 
@@ -112,41 +113,41 @@ and run against a live server; the others are crate tests.
 | Oversized uploads | Bucket and instance limits checked while streaming (`413`), also without `Content-Length` | same test; `storage::bucket_limits_and_content_types_are_checked` |
 | Type confusion: HTML or a PDF uploaded as `image/png` into an `image/*` bucket | **FB-80:** a declared PNG, JPEG, GIF, WebP or PDF must carry that file signature (`400 content_type_mismatch`); the allow-list is checked against the resolved type | same test; `util::declared_types_with_a_signature_must_match_the_bytes` |
 | Stored XSS through downloads | `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, HTML/SVG/XML served as attachments | same test |
-| Signed URL tampering | HMAC over method, bucket, key, expiry and content type | `storage` signed-URL tests |
+| Signed URL tampering | HMAC-SHA256 over method, bucket, key, expiry, version, file name, content type and subject | `storage.rs` signed-URL tests |
 
 ### 4.5 Server functions (`forgebase-functions`, ADR-0017)
 
 | Threat | Control | Proof |
 |---|---|---|
-| Escaping the sandbox (files, clock, processes, raw sockets) | Wasmtime without WASI; only granted host functions | `forgebase-functions` sandbox tests |
-| Resource exhaustion | Fuel, memory and wall-time limits per call | `limits` tests |
+| Escaping the sandbox (files, clock, processes, raw sockets) | Wasmtime without WASI; only granted host functions | `forgebase-functions/tests/sandbox.rs` |
+| Resource exhaustion | Fuel, memory and wall-time limits per call | `sandbox.rs` |
 | SSRF through `fetch` | Blocked ranges after resolution, vetted address only, redirects re-checked, per-function host allow-list, credentials dropped across origins | `ssrf` tests (5); `security_bypass::outbound_clients_never_reach_internal_addresses` |
 | Reading another function's secrets | Secrets sealed per function; values never returned by the API | `security_bypass::secrets_never_reach_logs_or_api_output` |
-| Deploying code without permission | Admin (or `functions:deploy`) only | `security_bypass::administrative_endpoints_…` |
+| Deploying code without permission | `Action::ManageFunctions` through the policy engine (administrators by default) | `security_bypass::administrative_endpoints_…` |
 
 ### 4.6 Realtime (`forgebase-realtime`, ADR-0011)
 
 | Threat | Control | Proof |
 |---|---|---|
-| Subscribing to records one may not read | Subscriptions authorised when made; **every event** re-checked against the subscriber's current access | `realtime` tests, `realtime_e2e` |
-| Keeping a socket after revocation | Revoked or expired credentials close the socket (`4001`) | `realtime` tests |
-| Cross-tenant events | Events carry the tenant; the view check runs in the subscriber's tenant | `realtime` tests |
-| Flooding | Per-connection and per-principal limits, bounded queues | `realtime` tests |
+| Subscribing to records one may not read | Subscriptions authorised when made; **every event** re-checked against the subscriber's current access | `forgebase-realtime/tests/realtime.rs`, `realtime_e2e` |
+| Keeping a socket after revocation | Revoked or expired credentials close the socket (`4001`) | `realtime.rs` |
+| Cross-tenant events | The per-event check uses the subscriber's own context (realm, org, tenant), so the data core's tenant rules apply | `realtime.rs` |
+| Flooding | Per-connection and per-principal limits, bounded queues, slow consumers closed (`4008`) | `realtime.rs` |
 
 ### 4.7 Queues and topics (`forgebase-queue`, ADR-0022)
 
 | Threat | Control | Proof |
 |---|---|---|
 | SSRF through a push webhook URL | `https://` only (unless `allow_http_push`), no credentials in URLs, literal blocked addresses refused at creation; names resolved and vetted at **delivery** by the functions fetcher | `security_bypass::outbound_clients_never_reach_internal_addresses` |
-| Forged deliveries to the subscriber | Each delivery is HMAC-signed with the subscription's secret | `queue` tests |
-| Reading another tenant's messages | `engine:queue_*` permissions through the policy engine | `queue` tests |
+| Forged deliveries to the subscriber | Each delivery is HMAC-signed with the subscription's secret | `forgebase-queue` tests |
+| Reading another tenant's messages | `engine:queue_*` permissions through the policy engine | `forgebase-queue` tests |
 
 ### 4.8 Jobs (`forgebase-jobs`, ADR-0007, 0023)
 
 | Threat | Control | Proof |
 |---|---|---|
-| Enqueueing or reading jobs without permission | Every route asks the authorizer first (`Action::EnqueueJob` and friends) before reading the body | `jobs` tests; `security_bypass::administrative_endpoints_…` |
-| Using job progress channels to spy | `jobs:<id>` channels need permission to read jobs; only the system publishes | `job_progress` tests |
+| Enqueueing or reading jobs without permission | Every route asks the authorizer first (`Action::EnqueueJob` and friends) before reading the body | `forgebase-jobs/tests/http.rs`; `security_bypass::administrative_endpoints_…` |
+| Using job progress channels to spy | `jobs:<id>` channels need permission to read jobs; only the system publishes | `forgebase-jobs/tests/long_tasks.rs` |
 
 Accepted risk: a job runs with the system's authority. Grant
 `engine:jobs_enqueue` only to principals you would let run any registered job
@@ -156,17 +157,17 @@ type (for example `function.invoke`).
 
 | Threat | Control | Proof |
 |---|---|---|
-| Forged webhook bodies | Constant-time HMAC (Stripe, Razorpay, Creem), RSA (WeChat Pay), JWS chain to Apple Root CA G3 (App Store), Google-signed Pub/Sub (Google Play) | `billing`, `stores`, `wechat_pay` tests |
-| Replays and reordering | Timestamp tolerance, event-id dedup, out-of-order events ignored; a store transaction id is unique, so a replay is a no-op | same tests |
-| Live keys in a test system | Only test-mode keys accepted; provider URLs must be `https://` | `billing` tests |
+| Forged webhook bodies | Constant-time HMAC (Stripe, Razorpay, Creem), platform-certificate signatures (WeChat Pay), JWS chain to Apple Root CA G3 (App Store), Google-signed OIDC token on the Pub/Sub push (Google Play) | `forgebase-billing/tests/webhooks.rs`, `stores.rs`, `wechat_pay.rs` |
+| Replays and reordering | Timestamp tolerance, event-id dedup, out-of-order events ignored; a store transaction id is unique, so a replay is a no-op | `webhooks.rs`, `stores.rs` |
+| Live keys in a test system | Only test-mode keys accepted; provider URLs must be `https://` | `forgebase-billing/tests/http.rs`, `payments.rs` |
 
 ### 4.10 KV and the Redis protocol (`forgebase-kv`, `forgebase-resp`, ADR-0005, 0013)
 
 | Threat | Control | Proof |
 |---|---|---|
-| Unauthenticated RESP commands | Every connection must `AUTH` with an API key or PAT first; nothing else is accepted before | `resp` tests |
-| A `kv:read` key writing | Namespace scopes checked per command | `resp` tests |
-| Namespace hopping over HTTP | `kv:<access>:<ns>` scopes and policy per namespace | `kv` tests; `security_bypass::scoped_keys_and_pats_cannot_escalate` |
+| Unauthenticated RESP commands | Every connection must `AUTH` with an API key or PAT first; nothing else is accepted before | `forgebase-resp/tests/real_auth.rs`; server `resp` test |
+| A `kv:read` key writing | Namespace scopes checked per command | `real_auth.rs` |
+| Namespace hopping over HTTP | `kv:<access>:<ns>` scopes and policy per namespace | `forgebase-kv/tests/api.rs`; `security_bypass::scoped_keys_and_pats_cannot_escalate` |
 | Sniffing RESP traffic | No TLS: loopback or a tunnel only | documented (§8) |
 
 ### 4.11 Vector and graph (`forgebase-vector`, `forgebase-graph`, ADR-0006, 0012)
@@ -174,7 +175,8 @@ type (for example `function.invoke`).
 Both are built on the data service: every call asks the authorizer first
 (`VectorRead`/`VectorWrite`, `GraphRead`/`GraphWrite`) and rows are
 tenant-scoped like records. They contain no authentication or policy code of
-their own, so §4.2 and §4.3 apply. Proof: `vector` and `graph` crate tests.
+their own, so §4.2 and §4.3 apply. Proof: `forgebase-vector/tests/service.rs`,
+`http.rs` and `forgebase-graph/tests/graph.rs`.
 
 ### 4.12 Admin console and administrative APIs (ADR-0014)
 
@@ -223,7 +225,7 @@ CARGO_INCREMENTAL=0 cargo test -p forgebase-server --test security_bypass
 | `ops_endpoints_need_an_administrator_unless_called_directly_on_loopback` | `/metrics` and `/api/system/info` through a proxy, as a user, with a key lacking `system:read`; `ops_access = "admin"` |
 | `realm_org_and_tenant_boundaries_hold_over_http` | Foreign realm header, foreign org header and membership edit, a known record id in another tenant (read, update, delete, list), smuggling `_tenant`, anonymous reads |
 | `a_deny_beats_every_allow` | `reports:*` allow plus `reports:export` deny, in any role order, plus the org `admin` role |
-| `scoped_keys_and_pats_cannot_escalate` | A `collections:read:notes` key on other collections, writes, auth, KV, storage, realtime; a scoped PAT minting `*`, `collections:read`, `auth:*`, `collections:*`; malformed scopes |
+| `scoped_keys_and_pats_cannot_escalate` | A `collections:read:notes` admin key on other collections, through `?expand=` and a relation filter, writes, auth, KV, storage, realtime; a scoped PAT minting `*`, `collections:read`, `auth:*`, `collections:*`; malformed scopes |
 | `administrative_endpoints_refuse_anonymous_and_ordinary_users` | 20 admin routes as anonymous and as a user; forged JWTs and keys |
 | `outbound_clients_never_reach_internal_addresses` | Queue push to loopback, metadata, IPv4-mapped, private, unique-local, `file:`/`gopher:`, credentials in URLs, and a name resolving to loopback; functions `fetch` to loopback and metadata; an OIDC provider whose issuer is on loopback. A canary listener proves nothing connected. |
 | `storage_keys_cannot_escape_and_uploads_are_validated` | Five traversal key forms, bad bucket names, `/admin` traversal, HTML and PDF under `image/png`, HTML into an `image/*` bucket, oversize, inert download headers |
@@ -271,7 +273,8 @@ the billing and store webhook tests, and `forgebase-resp` tests.
 Resolved by FB-80: the bypass suite (§6), path traversal and upload
 validation (§4.4), forwarded client addresses (`[auth] trust_forwarded_for`,
 last entry only), the unauthenticated `/metrics` (§5), SSRF through the auth
-HTTPS client, and the missing disclosure policy (`SECURITY.md`).
+HTTPS client, scope bypass by scoped admin keys through relations, and the
+missing disclosure policy (`SECURITY.md`).
 
 ## 9. Behaviour changed by FB-80
 
@@ -281,6 +284,7 @@ Each is a security fix; nothing else changed.
 |---|---|---|
 | `/metrics`, `/api/system/info` | Anyone | Admins; unauthenticated only from a direct loopback peer (`ops_access`) |
 | `/metrics` with a scoped key | No scope needed | `system:read` |
+| Admin service-account key with resource scopes (`collections:read:notes`) | Could read other collections through `?expand=` and relation filters | Refused (`insufficient_scope`; a relation path into another collection is an unknown field) |
 | Trusted `X-Forwarded-For` | First (client-written) entry | Last (proxy-appended) entry; settable as `[auth] trust_forwarded_for` |
 | Auth outbound HTTPS (OAuth/OIDC, SMS, Turnstile) | Any address | Loopback, private, link-local and metadata refused unless `[auth] allow_private_outbound` |
 | Upload declared as PNG/JPEG/GIF/WebP/PDF | Accepted with any bytes | `400 content_type_mismatch` unless the bytes match |

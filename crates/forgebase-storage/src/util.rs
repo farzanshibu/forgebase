@@ -164,7 +164,10 @@ mod tests {
         assert!(!declared_matches_bytes("image/png", b"<html><script>alert(1)</script>"));
         assert!(!declared_matches_bytes("image/jpeg", png), "a PNG is not a JPEG");
         assert!(!declared_matches_bytes("application/pdf", b""), "empty is not a PDF");
-        assert!(declared_matches_bytes("text/plain", b"anything"), "no signature to check");
+        assert!(
+            declared_matches_bytes("text/plain", b"anything"),
+            "no signature to check"
+        );
         assert!(declared_matches_bytes("application/octet-stream", png));
     }
 

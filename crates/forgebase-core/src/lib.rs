@@ -15,8 +15,8 @@ pub mod error;
 pub mod layout;
 
 pub use config::{
-    AuthSettings, BillingConfig, Config, ConfigOverrides, LoadedConfig, LogFormat, OpsAccess, QueueConfig, StorageConfig,
-    StorageDriverKind, Synchronous,
+    AuthSettings, BillingConfig, Config, ConfigOverrides, LoadedConfig, LogFormat, OpsAccess, QueueConfig,
+    StorageConfig, StorageDriverKind, Synchronous,
 };
 pub use error::{ErrorCode, ErrorKind};
 pub use layout::DataLayout;

@@ -71,7 +71,12 @@ async fn scopes_bind_privileged_callers_across_relations() {
         .unwrap();
     let scoped = admin().with_scopes(vec!["collections:read:memos".into()]);
     assert_eq!(ids(&env, &scoped, "memos").await.len(), 1, "its own collection");
-    assert!(env.data.list_records(&scoped, "vault", &ListQuery::default()).await.is_err());
+    assert!(
+        env.data
+            .list_records(&scoped, "vault", &ListQuery::default())
+            .await
+            .is_err()
+    );
     let expanded = env
         .data
         .list_records(
@@ -109,7 +114,11 @@ async fn scopes_bind_privileged_callers_across_relations() {
         "a read scope does not write, even for an admin"
     );
     let unscoped = admin();
-    assert_eq!(ids(&env, &unscoped, "vault").await.len(), 1, "unscoped admins are unaffected");
+    assert_eq!(
+        ids(&env, &unscoped, "vault").await.len(),
+        1,
+        "unscoped admins are unaffected"
+    );
 }
 
 /// #1 and #9: two organizations, a project each; records stay in their

@@ -470,10 +470,7 @@ mod tests {
         .await
         .unwrap();
         db.migrate(Some(&layout.backups_dir())).await.unwrap();
-        (
-            router(AppState::new(db, layout).await.unwrap(), opts),
-            tmp,
-        )
+        (router(AppState::new(db, layout).await.unwrap(), opts), tmp)
     }
 
     async fn call(

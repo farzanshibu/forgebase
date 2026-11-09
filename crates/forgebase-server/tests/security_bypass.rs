@@ -30,7 +30,10 @@ async fn ops_endpoints_need_an_administrator_unless_called_directly_on_loopback(
     let system = env.admin_key(&admin, &["system:read"]).await;
     for path in ["/metrics", "/api/system/info"] {
         let r = env.req("GET", path, &[], None).await;
-        assert_eq!(r.status, 200, "{path}: same-host scraper (default ops_access = loopback)");
+        assert_eq!(
+            r.status, 200,
+            "{path}: same-host scraper (default ops_access = loopback)"
+        );
         // Through a reverse proxy, the socket peer is loopback but the
         // client is not: the forwarding header closes the loopback door.
         for h in ["X-Forwarded-For", "Forwarded", "X-Real-IP"] {
@@ -64,7 +67,13 @@ async fn ops_endpoints_need_an_administrator_unless_called_directly_on_loopback(
 
 async fn org(env: &Env, token: &str, slug: &str) -> (String, String) {
     let r = env
-        .as_(token, "POST", "/api/v1/orgs", &[], Some(json!({"slug": slug, "name": slug})))
+        .as_(
+            token,
+            "POST",
+            "/api/v1/orgs",
+            &[],
+            Some(json!({"slug": slug, "name": slug})),
+        )
         .await;
     assert_eq!(r.status, 201, "org: {}", r.text());
     let id = r.json()["id"].as_str().unwrap().to_owned();
@@ -99,11 +108,23 @@ async fn realm_org_and_tenant_boundaries_hold_over_http() {
 
     // Realm: a default-realm user cannot act in another realm.
     let r = env
-        .as_(&admin, "POST", "/api/v1/realms", &[], Some(json!({"slug": "acme", "name": "Acme"})))
+        .as_(
+            &admin,
+            "POST",
+            "/api/v1/realms",
+            &[],
+            Some(json!({"slug": "acme", "name": "Acme"})),
+        )
         .await;
     assert_eq!(r.status, 201, "{}", r.text());
     let r = env
-        .as_(&alice, "GET", "/api/v1/authz/me", &[("X-ForgeBase-Realm", "acme")], None)
+        .as_(
+            &alice,
+            "GET",
+            "/api/v1/authz/me",
+            &[("X-ForgeBase-Realm", "acme")],
+            None,
+        )
         .await;
     assert_eq!(r.status, 403, "cross-realm: {}", r.text());
 
@@ -163,7 +184,10 @@ async fn realm_org_and_tenant_boundaries_hold_over_http() {
         .await;
     assert_eq!(r.status, 201, "{}", r.text());
     let note = r.json()["id"].as_str().unwrap().to_owned();
-    assert!(r.json().get("_tenant").is_none(), "the tenant column never reaches clients");
+    assert!(
+        r.json().get("_tenant").is_none(),
+        "the tenant column never reaches clients"
+    );
 
     let rec = format!("/api/v1/collections/notes/records/{note}");
     let r = env.as_(&bob, "GET", &rec, &[("X-ForgeBase-Tenant", &tb)], None).await;
@@ -294,7 +318,13 @@ async fn scoped_keys_and_pats_cannot_escalate() {
             rec["ref"] = json!(secret_row);
         }
         let r = env
-            .as_(&admin, "POST", &format!("/api/v1/collections/{name}/records"), &[], Some(rec))
+            .as_(
+                &admin,
+                "POST",
+                &format!("/api/v1/collections/{name}/records"),
+                &[],
+                Some(rec),
+            )
             .await;
         assert_eq!(r.status, 201, "{}", r.text());
         if name == "secrets" {
@@ -303,13 +333,19 @@ async fn scoped_keys_and_pats_cannot_escalate() {
     }
     // An admin service account narrowed to reading one collection.
     let key = env.admin_key(&admin, &["collections:read:notes"]).await;
-    let r = env.as_(&key, "GET", "/api/v1/collections/notes/records", &[], None).await;
+    let r = env
+        .as_(&key, "GET", "/api/v1/collections/notes/records", &[], None)
+        .await;
     assert_eq!(r.status, 200, "{}", r.text());
     // Expanding a relation must not read a collection outside the scope.
     let r = env
         .as_(&key, "GET", "/api/v1/collections/notes/records?expand=ref", &[], None)
         .await;
-    assert!(!r.text().contains("secrets-row"), "expand crossed the scope: {}", r.text());
+    assert!(
+        !r.text().contains("secrets-row"),
+        "expand crossed the scope: {}",
+        r.text()
+    );
     // A relation filter is an oracle on the target: it must not see it either.
     let r = env
         .as_(
@@ -331,7 +367,11 @@ async fn scoped_keys_and_pats_cannot_escalate() {
         ("POST", "/api/v1/collections/notes/records/query", Some(json!({}))),
         ("DELETE", "/api/v1/collections/notes", None),
         ("GET", "/api/auth/api-keys", None),
-        ("POST", "/api/auth/admins", Some(json!({"email": "evil@example.com", "password": ADMIN_PASSWORD}))),
+        (
+            "POST",
+            "/api/auth/admins",
+            Some(json!({"email": "evil@example.com", "password": ADMIN_PASSWORD})),
+        ),
         ("GET", "/api/v1/kv/_namespaces", None),
         ("GET", "/api/v1/storage/buckets", None),
         ("GET", "/api/v1/realtime/channels/x/presence", None),
@@ -342,7 +382,12 @@ async fn scoped_keys_and_pats_cannot_escalate() {
     }
     // The same key as X-API-Key behaves the same.
     let r = env
-        .req("GET", "/api/v1/collections/secrets/records", &[("X-API-Key", &key)], None)
+        .req(
+            "GET",
+            "/api/v1/collections/secrets/records",
+            &[("X-API-Key", &key)],
+            None,
+        )
         .await;
     assert_eq!(r.status, 403);
 
@@ -364,13 +409,20 @@ async fn scoped_keys_and_pats_cannot_escalate() {
     let pat = mk(user.clone(), json!(["auth:write", "collections:read:notes"])).await;
     assert_eq!(pat.status, 201, "{}", pat.text());
     let pat = pat.json()["key"].as_str().unwrap().to_owned();
-    for wider in [json!(["*"]), json!(["collections:read"]), json!(["auth:*"]), json!(["collections:*"])] {
+    for wider in [
+        json!(["*"]),
+        json!(["collections:read"]),
+        json!(["auth:*"]),
+        json!(["collections:*"]),
+    ] {
         let r = mk(pat.clone(), wider.clone()).await;
         assert_eq!(r.status, 403, "PAT mints {wider}: {}", r.text());
     }
     let r = mk(pat.clone(), json!(["collections:read:notes"])).await;
     assert_eq!(r.status, 201, "a narrower PAT is fine: {}", r.text());
-    let r = env.as_(&pat, "GET", "/api/v1/collections/secrets/records", &[], None).await;
+    let r = env
+        .as_(&pat, "GET", "/api/v1/collections/secrets/records", &[], None)
+        .await;
     assert_eq!(r.status, 403, "{}", r.text());
     // A PAT is never an admin credential, even for an endpoint it has scope for.
     let r = env.as_(&pat, "GET", "/api/auth/admins", &[], None).await;
@@ -391,20 +443,40 @@ async fn administrative_endpoints_refuse_anonymous_and_ordinary_users() {
     let (user, _) = env.user("plain@example.com").await;
     let cases: &[(&str, &str, Option<Json>)] = &[
         ("GET", "/api/auth/admins", None),
-        ("POST", "/api/auth/admins", Some(json!({"email": "x@example.com", "password": ADMIN_PASSWORD}))),
+        (
+            "POST",
+            "/api/auth/admins",
+            Some(json!({"email": "x@example.com", "password": ADMIN_PASSWORD})),
+        ),
         ("GET", "/api/auth/api-keys", None),
         ("GET", "/api/auth/service-accounts", None),
-        ("POST", "/api/auth/service-accounts", Some(json!({"name": "x", "role": "admin"}))),
+        (
+            "POST",
+            "/api/auth/service-accounts",
+            Some(json!({"name": "x", "role": "admin"})),
+        ),
         ("GET", "/api/auth/audit", None),
         ("POST", "/api/auth/keys/rotate", Some(json!({}))),
-        ("POST", "/api/auth/impersonate", Some(json!({"principal": "user:users/x", "reason": "test"}))),
+        (
+            "POST",
+            "/api/auth/impersonate",
+            Some(json!({"principal": "user:users/x", "reason": "test"})),
+        ),
         ("GET", "/api/auth/users/users/x", None),
         ("PUT", "/api/auth/realms/default", Some(json!({}))),
-        ("POST", "/api/v1/collections", Some(json!({"name": "pwn", "fields": []}))),
+        (
+            "POST",
+            "/api/v1/collections",
+            Some(json!({"name": "pwn", "fields": []})),
+        ),
         ("PUT", "/api/v1/policies/users", Some(json!({"list_rule": ""}))),
         ("POST", "/api/v1/realms", Some(json!({"slug": "evil", "name": "evil"}))),
         ("GET", "/api/v1/authz/audit", None),
-        ("POST", "/api/v1/suspensions", Some(json!({"principal": "user:users/x"}))),
+        (
+            "POST",
+            "/api/v1/suspensions",
+            Some(json!({"principal": "user:users/x"})),
+        ),
         ("POST", "/api/v1/functions", Some(json!({"name": "f", "wasm": ""}))),
         ("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"}))),
         ("POST", "/api/v1/storage/maintenance/reconcile", Some(json!({}))),
@@ -413,12 +485,26 @@ async fn administrative_endpoints_refuse_anonymous_and_ordinary_users() {
     ];
     for (method, path, body) in cases {
         let r = env.req(method, path, &[], body.clone()).await;
-        assert!(matches!(r.status, 401 | 403), "anonymous {method} {path}: {} {}", r.status, r.text());
+        assert!(
+            matches!(r.status, 401 | 403),
+            "anonymous {method} {path}: {} {}",
+            r.status,
+            r.text()
+        );
         let r = env.as_(&user, method, path, &[], body.clone()).await;
-        assert!(matches!(r.status, 403 | 404), "user {method} {path}: {} {}", r.status, r.text());
+        assert!(
+            matches!(r.status, 403 | 404),
+            "user {method} {path}: {} {}",
+            r.status,
+            r.text()
+        );
     }
     // Forged or foreign tokens are refused, never treated as anonymous.
-    for token in ["eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.", "fbk_live_not_a_key", "x.y.z"] {
+    for token in [
+        "eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.",
+        "fbk_live_not_a_key",
+        "x.y.z",
+    ] {
         let r = env.as_(token, "GET", "/api/auth/me", &[], None).await;
         assert_eq!(r.status, 401, "{token}: {}", r.text());
         assert!(!r.raw().contains(token), "the token is not echoed");
@@ -463,7 +549,13 @@ async fn outbound_clients_never_reach_internal_addresses() {
     // 1. Queue push webhooks: literal internal addresses are refused when
     //    the subscription is created ...
     let r = env
-        .as_(&admin, "POST", "/api/v1/queues/topics", &[], Some(json!({"name": "events"})))
+        .as_(
+            &admin,
+            "POST",
+            "/api/v1/queues/topics",
+            &[],
+            Some(json!({"name": "events"})),
+        )
         .await;
     assert_eq!(r.status, 201, "{}", r.text());
     for (i, url) in [
@@ -577,7 +669,12 @@ async fn outbound_clients_never_reach_internal_addresses() {
     )
     .await;
     assert!(r.status >= 400, "{}", r.text());
-    assert!(r.text().contains("refused") || r.status == 502, "{} {}", r.status, r.text());
+    assert!(
+        r.text().contains("refused") || r.status == 502,
+        "{} {}",
+        r.status,
+        r.text()
+    );
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(canary.hits(), 0, "no outbound client connected to the internal canary");
     server.shutdown().await.unwrap();
@@ -634,12 +731,7 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
     ] {
         let path = format!("/api/v1/storage/buckets/files/objects/{key}");
         let r = send(env.addr, "PUT", &path, &[a[0], ("Content-Type", "text/plain")], marker).await;
-        assert!(
-            matches!(r.status, 201 | 400 | 404),
-            "{key}: {} {}",
-            r.status,
-            r.text()
-        );
+        assert!(matches!(r.status, 201 | 400 | 404), "{key}: {} {}", r.status, r.text());
     }
     for f in files_under(env.dir.path()) {
         assert!(!f.contains("escape"), "a traversal key became a file: {f}");
@@ -648,7 +740,14 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
     for n in ["escape.txt", "escape2.txt", "escape3.txt", "escape4.txt", "escape5.txt"] {
         assert!(!outside.join(n).exists());
     }
-    let r = env.req("GET", "/api/v1/storage/buckets/files/objects/..%2F..%2Fforgebase.db", &a, None).await;
+    let r = env
+        .req(
+            "GET",
+            "/api/v1/storage/buckets/files/objects/..%2F..%2Fforgebase.db",
+            &a,
+            None,
+        )
+        .await;
     assert!(matches!(r.status, 400 | 404), "{}", r.status);
     let r = env.req("GET", "/admin/..%2F..%2FCargo.toml", &[], None).await;
     assert!(!r.text().contains("[package]"), "dashboard assets do not traverse");
@@ -671,7 +770,13 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
     };
     let r = put("img", "ok.png", "image/png", png.clone()).await;
     assert_eq!(r.status, 201, "{}", r.text());
-    let r = put("img", "evil.png", "image/png", b"<html><script>alert(document.cookie)</script>".to_vec()).await;
+    let r = put(
+        "img",
+        "evil.png",
+        "image/png",
+        b"<html><script>alert(document.cookie)</script>".to_vec(),
+    )
+    .await;
     assert_eq!(r.status, 400, "HTML under a PNG label: {}", r.text());
     assert_eq!(r.code(), "content_type_mismatch");
     let r = put("img", "evil.html", "text/html", b"<html></html>".to_vec()).await;
@@ -682,7 +787,12 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
     assert_eq!(r.status, 413, "{}", r.text());
     let r = put("img", "pdf.png", "image/png", b"%PDF-1.7 ...".to_vec()).await;
     assert_eq!(r.code(), "content_type_mismatch", "a PDF is not a PNG");
-    assert!(env.req("GET", "/api/v1/storage/buckets/img/objects/evil.png", &a, None).await.status == 404);
+    assert!(
+        env.req("GET", "/api/v1/storage/buckets/img/objects/evil.png", &a, None)
+            .await
+            .status
+            == 404
+    );
     // Active content is served inert: attachment, nosniff, sandbox.
     let r = put("files", "page.html", "text/html", b"<script>alert(1)</script>".to_vec()).await;
     assert_eq!(r.status, 201, "{}", r.text());
@@ -695,8 +805,16 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
         let r = env.req("GET", &path, &a, None).await;
         assert_eq!(r.status, 200, "{}", r.text());
         assert_eq!(r.header("x-content-type-options"), Some("nosniff"));
-        assert!(r.header("content-security-policy").unwrap_or_default().contains("sandbox"));
-        assert!(r.header("content-disposition").unwrap_or_default().starts_with("attachment"));
+        assert!(
+            r.header("content-security-policy")
+                .unwrap_or_default()
+                .contains("sandbox")
+        );
+        assert!(
+            r.header("content-disposition")
+                .unwrap_or_default()
+                .starts_with("attachment")
+        );
     }
     env.shutdown().await;
 }
@@ -709,7 +827,13 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
 async fn brute_force_is_locked_out_and_rate_limited_without_trusting_client_headers() {
     let env = Env::new().await;
     env.auth
-        .signup(&forgebase_auth::ClientInfo::default(), None, "victim@example.com", USER_PASSWORD, None)
+        .signup(
+            &forgebase_auth::ClientInfo::default(),
+            None,
+            "victim@example.com",
+            USER_PASSWORD,
+            None,
+        )
         .await
         .unwrap();
     let login = |pw: &'static str, xff: String| {
@@ -759,7 +883,12 @@ async fn brute_force_is_locked_out_and_rate_limited_without_trusting_client_head
 async fn cors_is_closed_and_cookie_writes_need_the_csrf_token() {
     let env = Env::new().await;
     env.auth
-        .create_admin("cookie@example.com", ADMIN_PASSWORD, "test", &forgebase_auth::ClientInfo::default())
+        .create_admin(
+            "cookie@example.com",
+            ADMIN_PASSWORD,
+            "test",
+            &forgebase_auth::ClientInfo::default(),
+        )
         .await
         .unwrap();
     let evil = ("Origin", "https://evil.example");
@@ -777,7 +906,11 @@ async fn cors_is_closed_and_cookie_writes_need_the_csrf_token() {
             None,
         )
         .await;
-    assert!(r.header("access-control-allow-origin").is_none(), "preflight: {:?}", r.headers);
+    assert!(
+        r.header("access-control-allow-origin").is_none(),
+        "preflight: {:?}",
+        r.headers
+    );
     assert!(r.header("access-control-allow-credentials").is_none());
 
     let r = env
@@ -789,7 +922,10 @@ async fn cors_is_closed_and_cookie_writes_need_the_csrf_token() {
         )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert!(r.json().get("access_token").is_none_or(Json::is_null), "cookie mode keeps tokens out of JS");
+    assert!(
+        r.json().get("access_token").is_none_or(Json::is_null),
+        "cookie mode keeps tokens out of JS"
+    );
     let set = r.header("set-cookie").unwrap().to_owned();
     assert!(set.contains("HttpOnly"), "{set}");
     assert!(set.to_ascii_lowercase().contains("samesite="), "{set}");
@@ -797,7 +933,12 @@ async fn cors_is_closed_and_cookie_writes_need_the_csrf_token() {
     let csrf = r.json()["csrf_token"].as_str().unwrap().to_owned();
     let body = json!({"name": "csrf_probe", "fields": []});
     let r = env
-        .req("POST", "/api/v1/collections", &[("Cookie", &cookie), evil], Some(body.clone()))
+        .req(
+            "POST",
+            "/api/v1/collections",
+            &[("Cookie", &cookie), evil],
+            Some(body.clone()),
+        )
         .await;
     assert_eq!(r.status, 403, "cookie write without X-CSRF-Token: {}", r.text());
     assert!(r.text().contains("csrf_failed"));
@@ -872,7 +1013,13 @@ async fn secrets_never_reach_logs_or_api_output() {
     let admin = env.admin("secret-admin@example.com").await;
     let (user, _) = env.user("secret-user@example.com").await;
     let key = env.admin_key(&admin, &["*"]).await;
-    let mut secrets = vec![ADMIN_PASSWORD.to_owned(), USER_PASSWORD.to_owned(), admin.clone(), user.clone(), key.clone()];
+    let mut secrets = vec![
+        ADMIN_PASSWORD.to_owned(),
+        USER_PASSWORD.to_owned(),
+        admin.clone(),
+        user.clone(),
+        key.clone(),
+    ];
     let mut outputs = Vec::new();
 
     // A failed sign-in with a password-like value, a refresh, a PAT.
@@ -898,19 +1045,31 @@ async fn secrets_never_reach_logs_or_api_output() {
     let refresh = r.json()["refresh_token"].as_str().unwrap().to_owned();
     secrets.push(refresh.clone());
     let r = env
-        .req("POST", "/api/auth/refresh", &[], Some(json!({"refresh_token": refresh})))
+        .req(
+            "POST",
+            "/api/auth/refresh",
+            &[],
+            Some(json!({"refresh_token": refresh})),
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     secrets.push(r.json()["refresh_token"].as_str().unwrap().to_owned());
     secrets.push(r.json()["access_token"].as_str().unwrap().to_owned());
     let r = env
-        .as_(&user, "POST", "/api/auth/tokens", &[], Some(json!({"name": "ci", "scopes": ["collections:read"]})))
+        .as_(
+            &user,
+            "POST",
+            "/api/auth/tokens",
+            &[],
+            Some(json!({"name": "ci", "scopes": ["collections:read"]})),
+        )
         .await;
     let pat = r.json()["key"].as_str().unwrap().to_owned();
     secrets.push(pat.clone());
 
     // A webhook signing secret and a function secret.
-    env.as_(&admin, "POST", "/api/v1/queues/topics", &[], Some(json!({"name": "t"}))).await;
+    env.as_(&admin, "POST", "/api/v1/queues/topics", &[], Some(json!({"name": "t"})))
+        .await;
     let r = env
         .as_(
             &admin,
@@ -947,7 +1106,13 @@ async fn secrets_never_reach_logs_or_api_output() {
         .await
         .unwrap();
     let r = env
-        .as_(&admin, "PUT", "/api/v1/functions/sf/secrets/API_TOKEN", &[], Some(json!({"value": fsecret})))
+        .as_(
+            &admin,
+            "PUT",
+            "/api/v1/functions/sf/secrets/API_TOKEN",
+            &[],
+            Some(json!({"value": fsecret})),
+        )
         .await;
     assert!(r.status < 300, "{}", r.text());
 
@@ -985,11 +1150,19 @@ async fn secrets_never_reach_logs_or_api_output() {
     let log = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
     assert!(log.contains("forgebase started"), "the capture works");
     for s in &secrets {
-        assert!(!log.contains(s.as_str()), "a secret reached the logs: {}…", &s[..s.len().min(12)]);
+        assert!(
+            !log.contains(s.as_str()),
+            "a secret reached the logs: {}…",
+            &s[..s.len().min(12)]
+        );
         // The user's own password and tokens are expected nowhere in output,
         // except the access token header the client sent (not echoed).
         for o in &outputs {
-            assert!(!o.raw().contains(s.as_str()), "a secret reached a response: {}…", &s[..s.len().min(12)]);
+            assert!(
+                !o.raw().contains(s.as_str()),
+                "a secret reached a response: {}…",
+                &s[..s.len().min(12)]
+            );
         }
     }
 }
@@ -1015,18 +1188,58 @@ async fn malicious_inputs_are_refused_without_errors_or_leaks() {
     let (user, _) = env.user("inputs-user@example.com").await;
     let long = "a".repeat(40 * 1024);
     let probes: Vec<(String, String, Option<Json>)> = vec![
-        ("GET".into(), "/api/v1/collections/items/records?filter=title%20%3D%20''%20OR%201%3D1%20--".into(), None),
-        ("GET".into(), "/api/v1/collections/items/records?filter=1%3D1%3B%20DROP%20TABLE%20items".into(), None),
-        ("GET".into(), "/api/v1/collections/items/records?sort=(SELECT%201)".into(), None),
-        ("GET".into(), "/api/v1/collections/items/records?fields=*,sqlite_master.sql".into(), None),
-        ("GET".into(), format!("/api/v1/collections/items/records?filter={long}"), None),
+        (
+            "GET".into(),
+            "/api/v1/collections/items/records?filter=title%20%3D%20''%20OR%201%3D1%20--".into(),
+            None,
+        ),
+        (
+            "GET".into(),
+            "/api/v1/collections/items/records?filter=1%3D1%3B%20DROP%20TABLE%20items".into(),
+            None,
+        ),
+        (
+            "GET".into(),
+            "/api/v1/collections/items/records?sort=(SELECT%201)".into(),
+            None,
+        ),
+        (
+            "GET".into(),
+            "/api/v1/collections/items/records?fields=*,sqlite_master.sql".into(),
+            None,
+        ),
+        (
+            "GET".into(),
+            format!("/api/v1/collections/items/records?filter={long}"),
+            None,
+        ),
         ("GET".into(), "/api/v1/collections/sqlite_master/records".into(), None),
-        ("GET".into(), "/api/v1/collections/_forgebase_auth_sessions/records".into(), None),
+        (
+            "GET".into(),
+            "/api/v1/collections/_forgebase_auth_sessions/records".into(),
+            None,
+        ),
         ("GET".into(), "/api/v1/collections/items%27%3B--/records".into(), None),
-        ("GET".into(), "/api/v1/collections/items/records/..%2F..%2F..%2Fetc%2Fpasswd".into(), None),
-        ("POST".into(), "/api/v1/collections/items/records".into(), Some(json!({"title": {"$gt": ""}}))),
-        ("POST".into(), "/api/v1/collections/items/records".into(), Some(json!({"id": "x' OR '1'='1", "title": "t"}))),
-        ("POST".into(), "/api/v1/collections/items/records/query".into(), Some(json!({"filter": "title ~ ?1", "params": [";"]}))),
+        (
+            "GET".into(),
+            "/api/v1/collections/items/records/..%2F..%2F..%2Fetc%2Fpasswd".into(),
+            None,
+        ),
+        (
+            "POST".into(),
+            "/api/v1/collections/items/records".into(),
+            Some(json!({"title": {"$gt": ""}})),
+        ),
+        (
+            "POST".into(),
+            "/api/v1/collections/items/records".into(),
+            Some(json!({"id": "x' OR '1'='1", "title": "t"})),
+        ),
+        (
+            "POST".into(),
+            "/api/v1/collections/items/records/query".into(),
+            Some(json!({"filter": "title ~ ?1", "params": [";"]})),
+        ),
     ];
     for (method, path, body) in probes {
         for token in [&admin, &user] {
@@ -1035,7 +1248,15 @@ async fn malicious_inputs_are_refused_without_errors_or_leaks() {
             // Echoing the attacker's own input is fine; server internals are not.
             let t = r.text().to_ascii_lowercase();
             let dir = env.dir.path().display().to_string().to_ascii_lowercase();
-            for leak in ["panicked", ".rs:", "sqlite_error", "no such table", "no such column", "near \"", &dir] {
+            for leak in [
+                "panicked",
+                ".rs:",
+                "sqlite_error",
+                "no such table",
+                "no such column",
+                "near \"",
+                &dir,
+            ] {
                 assert!(!t.contains(leak), "{method} {path} leaks {leak:?}: {t}");
             }
         }
@@ -1043,10 +1264,24 @@ async fn malicious_inputs_are_refused_without_errors_or_leaks() {
     // Oversized and malformed bodies.
     let big = vec![b'['; 5 * 1024 * 1024];
     let auth = bearer(&admin);
-    let r = send(env.addr, "POST", "/api/v1/collections/items/records", &[("Authorization", &auth)], &big).await;
+    let r = send(
+        env.addr,
+        "POST",
+        "/api/v1/collections/items/records",
+        &[("Authorization", &auth)],
+        &big,
+    )
+    .await;
     assert_eq!(r.status, 413, "{}", r.text());
     let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
-    let r = send(env.addr, "POST", "/api/v1/collections/items/records", &[("Authorization", &auth)], deep.as_bytes()).await;
+    let r = send(
+        env.addr,
+        "POST",
+        "/api/v1/collections/items/records",
+        &[("Authorization", &auth)],
+        deep.as_bytes(),
+    )
+    .await;
     assert!(matches!(r.status, 400 | 413), "deep nesting: {}", r.status);
     let r = send(env.addr, "POST", "/api/auth/login", &[], b"{\"email\":").await;
     assert_eq!(r.status, 400);

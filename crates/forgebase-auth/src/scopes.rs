@@ -226,7 +226,9 @@ mod tests {
         assert_eq!(req(Method::GET, "/api/system/info").to_string(), "system:read");
         assert!(required_scope(&Method::GET, "/health").is_none());
         assert_eq!(
-            required_scope(&Method::GET, "/metrics").map(|r| r.to_string()).as_deref(),
+            required_scope(&Method::GET, "/metrics")
+                .map(|r| r.to_string())
+                .as_deref(),
             Some("system:read"),
             "metrics need the system scope (FB-80)"
         );
