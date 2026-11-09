@@ -100,6 +100,8 @@ struct Inner {
     reader: SqlitePool,
     path: PathBuf,
     slow: sqlite_backend::SlowLog,
+    /// Bumped on every committed schema change; see `sqlite_backend::bind`.
+    schema_gen: std::sync::atomic::AtomicU64,
 }
 
 /// Result of [`Database::migrate`].
@@ -226,8 +228,17 @@ impl Database {
                 reader,
                 path: opts.path,
                 slow: sqlite_backend::SlowLog::default(),
+                schema_gen: std::sync::atomic::AtomicU64::new(0),
             }),
         })
+    }
+
+    pub(crate) fn schema_generation(&self) -> u64 {
+        self.inner.schema_gen.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn bump_schema_generation(&self) {
+        self.inner.schema_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// Database file path.
@@ -274,7 +285,10 @@ impl Database {
             backup = Some(target);
         }
 
-        let applied = migrator.run(&mut conn).await?;
+        self.bump_schema_generation();
+        let applied = migrator.run(&mut conn).await;
+        self.bump_schema_generation();
+        let applied = applied?;
         Ok(MigrateReport { applied, backup })
     }
 

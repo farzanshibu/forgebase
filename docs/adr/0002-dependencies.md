@@ -266,3 +266,20 @@ only dependencies already recorded here: `axum`, `serde`, `serde_json`,
 `tracing`, `utoipa` and `uuid`. Calendar arithmetic (months, billing-cycle
 anchors) is a 30-line civil-date conversion in the crate, not a date library.
 `Cargo.lock` gains only the `forgebase-entitlements` entry.
+
+## Addendum (MDF-52): sqlx statement cache and DDL
+
+sqlx caches prepared statements per connection, keyed by SQL text, and keeps the
+column list seen at prepare time. After `ALTER TABLE ... ADD COLUMN` through the
+writer, a pooled reader that had cached `SELECT t.*` decoded rows with the old
+columns and `sqlx-sqlite` panicked (`index out of bounds`).
+
+Fix (`forgebase-db`): the database keeps a schema generation counter, bumped
+before and after every committed `TxMode::SchemaChange` and around migrations.
+`bind` appends `/*g<N>*/` to cached statements, so a new generation is new SQL
+text and every connection prepares afresh. Cost: one atomic load per query; no
+per-acquire round trip and no loss of caching for non-DDL traffic. Rejected:
+non-persistent statements for star selects (loses caching for the hottest read
+path) and a per-acquire `PRAGMA schema_version` check (extra round trip per
+acquire). Stale entries age out of sqlx's LRU. Regression test:
+`crates/forgebase-db/tests/stale_statements.rs`.

@@ -57,8 +57,20 @@ impl SlowLog {
     }
 }
 
-fn bind(stmt: &Statement) -> sqlx::query::Query<'_, Sqlite, SqliteArguments> {
-    let mut q = sqlx::query(AssertSqlSafe(stmt.sql.clone())).persistent(stmt.cache);
+/// Binds `stmt`. Cached statements get the schema generation appended as a
+/// comment: sqlx keys its per-connection statement cache by SQL text and keeps
+/// the column list it saw at prepare time, so after DDL a pooled connection
+/// would decode `SELECT t.*` with the old columns (index out of bounds). A new
+/// generation means new text, hence a fresh prepare on every connection, with
+/// no per-acquire work. Stale entries age out of the LRU cache.
+fn bind(stmt: &Statement, schema_gen: u64) -> sqlx::query::Query<'_, Sqlite, SqliteArguments> {
+    let sql = if stmt.cache {
+        // Newline first so a trailing `--` comment cannot swallow the marker.
+        format!("{}\n/*g{schema_gen}*/", stmt.sql)
+    } else {
+        stmt.sql.clone()
+    };
+    let mut q = sqlx::query(AssertSqlSafe(sql)).persistent(stmt.cache);
     for p in &stmt.params {
         q = match p {
             Value::Null => q.bind(Option::<i64>::None),
@@ -125,7 +137,7 @@ impl Backend for Database {
     fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>> {
         Box::pin(async move {
             let started = Instant::now();
-            let rows = bind(stmt)
+            let rows = bind(stmt, self.schema_generation())
                 .fetch_all(&self.inner.reader)
                 .await
                 .map_err(|e| self.classify(e))?;
@@ -165,7 +177,7 @@ impl Backend for Database {
             explain.sql = format!("{}{}", SQLITE.explain_prefix(), stmt.sql);
             explain.cache = false;
             explain.label = None;
-            let rows = bind(&explain)
+            let rows = bind(&explain, 0)
                 .fetch_all(&self.inner.reader)
                 .await
                 .map_err(|e| self.classify(e))?;
@@ -192,7 +204,7 @@ impl Backend for Database {
             let mut explain = stmt.clone();
             explain.sql = format!("EXPLAIN {}", stmt.sql);
             explain.cache = false;
-            let rows = bind(&explain)
+            let rows = bind(&explain, 0)
                 .fetch_all(&self.inner.reader)
                 .await
                 .map_err(|e| self.classify(e))?;
@@ -264,7 +276,15 @@ impl SqliteTx {
                     });
                 }
             }
+            if sql == "COMMIT" && self.mode == TxMode::SchemaChange {
+                // Before and after: a reader between the two must not cache the
+                // old layout under the generation that is current post-commit.
+                db.bump_schema_generation();
+            }
             sqlx::query(sql).execute(&mut *conn).await.map_err(|e| db.classify(e))?;
+            if sql == "COMMIT" && self.mode == TxMode::SchemaChange {
+                db.bump_schema_generation();
+            }
             Ok(())
         }
         .await;
@@ -303,7 +323,7 @@ impl WriteTx for SqliteTx {
         Box::pin(async move {
             let db = self.db.clone();
             let started = Instant::now();
-            let done = bind(stmt)
+            let done = bind(stmt, db.schema_generation())
                 .execute(&mut **self.conn()?)
                 .await
                 .map_err(|e| db.classify(e))?;
@@ -319,7 +339,7 @@ impl WriteTx for SqliteTx {
         Box::pin(async move {
             let db = self.db.clone();
             let started = Instant::now();
-            let rows = bind(stmt)
+            let rows = bind(stmt, db.schema_generation())
                 .fetch_all(&mut **self.conn()?)
                 .await
                 .map_err(|e| db.classify(e))?;
