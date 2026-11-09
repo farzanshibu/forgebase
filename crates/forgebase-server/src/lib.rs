@@ -67,8 +67,8 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
 
     // One authorizer for the data core and the KV engine; FB-21 replaces it.
     let authorizer: Arc<dyn Authorizer> = Arc::new(DefaultAuthorizer);
-    let state = match AppState::with_authorizer(db.clone(), layout.clone(), Arc::clone(&authorizer)).await {
-        Ok(state) => state,
+    let auth = match open_auth(&db, &layout, config, Arc::clone(&authorizer)).await {
+        Ok(a) => a,
         Err(e) => {
             db.close().await;
             return Err(e.into());
@@ -86,8 +86,9 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         request_timeout: Duration::from_secs(config.server.request_timeout_secs),
         ..RouterOptions::default()
     };
-    // Until the auth layer (FB-20) is mounted here, every /api/v1 request is
-    // anonymous and the default authorizer denies it.
+    // One data service, built by the auth service with the Argon2id hasher;
+    // the auth layer turns credentials into each request's AccessContext.
+    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
     let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
 
@@ -104,7 +105,7 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     let addr = listener.local_addr().map_err(ServerError::Serve)?;
     if !addr.ip().is_loopback() {
-        tracing::warn!(%addr, "listening on a non-loopback address; admin endpoints have no authentication yet");
+        tracing::warn!(%addr, "listening on a non-loopback address; /api/system/* and /metrics are not behind admin authentication yet (FB-23)");
     }
     lock.record_owner(&LockOwner {
         pid: std::process::id(),
@@ -114,7 +115,7 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async {
                 let _ = shutdown_rx.await;
             })
@@ -148,6 +149,20 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
+}
+
+/// Opens the auth service (FB-20) and the data service it shares, with the
+/// fail-closed default authorizer until the policy engine (FB-21) lands.
+async fn open_auth(
+    db: &Database,
+    layout: &DataLayout,
+    config: &Config,
+    authorizer: Arc<dyn Authorizer>,
+) -> Result<forgebase_auth::AuthService, forgebase_auth::AuthError> {
+    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
+    cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+    forgebase_auth::AuthService::open_with_data(backend, authorizer, layout.root(), cfg, None).await
 }
 
 impl RunningServer {
@@ -300,6 +315,9 @@ pub enum ServerError {
     /// The HTTP server failed.
     #[error("http server error: {0}")]
     Serve(#[source] std::io::Error),
+    /// The auth service failed to start (master key, signing keys).
+    #[error("auth: {0}")]
+    Auth(#[from] forgebase_auth::AuthError),
 }
 
 impl ErrorCode for ServerError {
@@ -313,6 +331,7 @@ impl ErrorCode for ServerError {
             ServerError::Kv(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
+            ServerError::Auth(e) => e.code(),
         }
     }
 
@@ -323,6 +342,7 @@ impl ErrorCode for ServerError {
             ServerError::Data(e) => e.kind(),
             ServerError::Kv(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
+            ServerError::Auth(e) => e.kind(),
         }
     }
 }

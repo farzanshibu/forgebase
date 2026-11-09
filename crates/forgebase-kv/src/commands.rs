@@ -371,7 +371,7 @@ impl Store {
                 Ok(Reply::Array(out))
             }
             "MSET" => {
-                if a.len() % 2 != 0 {
+                if !a.len().is_multiple_of(2) {
                     return Err(KvError::WrongArity("mset".into()));
                 }
                 let mut pairs = Vec::new();
@@ -1018,16 +1018,14 @@ impl Store {
             i += 2;
         }
         // `count` keys are examined per call, as in Redis; matches may be fewer.
-        let mut examined = 0usize;
         let mut last: Option<String> = None;
         let mut out = Vec::new();
         let mut more = false;
-        for (id, e) in self.scan_scope(s, after.as_deref(), now) {
+        for (examined, (id, e)) in self.scan_scope(s, after.as_deref(), now).enumerate() {
             if examined == count {
                 more = true;
                 break;
             }
-            examined += 1;
             last = Some(id.key.clone());
             let kind_ok = kind.is_none_or(|k| e.data.kind() == k);
             if kind_ok && pattern.as_deref().is_none_or(|p| glob::matches(p, &id.key)) {
@@ -1118,7 +1116,7 @@ impl Store {
             i += 1;
         }
         let pairs = &a[i..];
-        if pairs.is_empty() || pairs.len() % 2 != 0 || (nx && xx) {
+        if pairs.is_empty() || !pairs.len().is_multiple_of(2) || (nx && xx) {
             return Err(KvError::Syntax("syntax error".into()));
         }
         let mut items = Vec::new();
@@ -1162,7 +1160,7 @@ impl Store {
         }
         let id_arg = a.get(i).ok_or_else(|| KvError::Syntax("syntax error".into()))?;
         let rest = &a[i + 1..];
-        if rest.is_empty() || rest.len() % 2 != 0 {
+        if rest.is_empty() || !rest.len().is_multiple_of(2) {
             return Err(KvError::WrongArity("xadd".into()));
         }
         self.check_values(rest)?;
@@ -1222,7 +1220,7 @@ impl Store {
             }
         }
         let rest = &a[i..];
-        if rest.is_empty() || rest.len() % 2 != 0 {
+        if rest.is_empty() || !rest.len().is_multiple_of(2) {
             return Err(KvError::Syntax(
                 "unbalanced list of streams: give one id per key".into(),
             ));
@@ -1367,7 +1365,7 @@ fn decode_cursor(c: &str) -> KvResult<Option<String>> {
     }
     let bad = || KvError::Syntax("invalid cursor".into());
     let hex = c.strip_prefix('k').ok_or_else(bad)?;
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(bad());
     }
     let bytes: Vec<u8> = (0..hex.len())

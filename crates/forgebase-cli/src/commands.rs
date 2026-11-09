@@ -14,7 +14,7 @@ use crate::GlobalArgs;
 use crate::probe;
 
 /// Logging for one-shot commands: quiet unless asked.
-fn quiet_logging(g: &GlobalArgs) -> anyhow::Result<()> {
+pub(crate) fn quiet_logging(g: &GlobalArgs) -> anyhow::Result<()> {
     let level = g.log_level.as_deref().unwrap_or("warn");
     forgebase_observability::init_logging(level, g.log_format.unwrap_or(forgebase_core::LogFormat::Pretty))?;
     Ok(())

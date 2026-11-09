@@ -1045,20 +1045,16 @@ async fn subscribe(
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let rx = svc.subscribe(&ctx, &ns, &channel)?;
     let events = stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(m) => {
-                    let ev = Event::default()
-                        .event("message")
-                        .json_data(json!({ "channel": m.channel, "message": Bin::of(m.payload) }))
-                        .unwrap_or_else(|_| Event::default().event("error"));
-                    return Some((Ok(ev), rx));
-                }
-                Err(RecvError::Lagged(n)) => {
-                    return Some((Ok(Event::default().event("lagged").data(n.to_string())), rx));
-                }
-                Err(RecvError::Closed) => return None,
+        match rx.recv().await {
+            Ok(m) => {
+                let ev = Event::default()
+                    .event("message")
+                    .json_data(json!({ "channel": m.channel, "message": Bin::of(m.payload) }))
+                    .unwrap_or_else(|_| Event::default().event("error"));
+                Some((Ok(ev), rx))
             }
+            Err(RecvError::Lagged(n)) => Some((Ok(Event::default().event("lagged").data(n.to_string())), rx)),
+            Err(RecvError::Closed) => None,
         }
     });
     Ok(Sse::new(events).keep_alive(KeepAlive::default()))
