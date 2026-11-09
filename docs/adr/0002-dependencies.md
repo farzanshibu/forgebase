@@ -167,3 +167,25 @@ CTEs and JSON1 functions are enough; no graph library is added.
 ## FB-61 (jobs)
 
 `forgebase-jobs` adds no third-party dependencies (uses tokio, axum, tower-http, utoipa, uuid, time, serde already listed). Cron parsing is in-crate.
+
+## Phase 3 social login and passkeys additions (FB-22, 2026-11-09)
+
+Versions checked with `cargo info` on 2026-11-09. All pure Rust, no C.
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| p256 | 0.14.0 (`ecdsa`, `arithmetic`, `pkcs8`, `pem`, `std`) | Apache-2.0 OR MIT | auth | ES256 verification (ID tokens, passkeys), Apple client-secret signing |
+| num-bigint | 0.5.1 (`std`) | MIT OR Apache-2.0 | auth | RS256 verification (`modpow` on public data) |
+| url | 2.5.8 | MIT OR Apache-2.0 | auth | provider URLs, query/form parsing (already in the tree) |
+| utoipa | 6.0.0 | MIT OR Apache-2.0 | auth | OpenAPI fragment (already in the tree) |
+| uuid | 1.29.1 | Apache-2.0 OR MIT | auth (dev) | test codes (already in the tree) |
+
+New transitive packages in `Cargo.lock`: `base16ct`, `cpubits`, `crypto-bigint`,
+`der`, `ecdsa`, `elliptic-curve`, `ff`, `group`, `num-bigint`, `num-integer`,
+`pkcs8`, `primefield`, `primeorder`, `rand_core`, `rfc6979`, `sec1`, `serdect`,
+`signature`, `spki`, `wnaf`, `zeroize` (RustCrypto, MIT/Apache-2.0).
+
+Deliberately **not** added: `webauthn-rs` (OpenSSL), `jsonwebtoken` (ring/aws-lc),
+`rsa` (RUSTSEC-2023-0071), `openidconnect`/`oauth2`/`reqwest` (TLS stack),
+a CBOR crate (a 130-line strict reader covers WebAuthn). **Open decision**:
+a TLS-capable outbound HTTP client (ADR-0009 §9).
