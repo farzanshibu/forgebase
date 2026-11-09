@@ -53,9 +53,15 @@ export class MockApi {
     this.custom.push({ method: method.toUpperCase(), template, handler });
     return this;
   }
+  /** Routes tried only after every `on` route, so a stub never shadows a test's own handler. */
+  fallback: { method: string; template: string; handler: MockHandler }[] = [];
+  onFallback(method: string, template: string, handler: MockHandler): this {
+    this.fallback.push({ method: method.toUpperCase(), template, handler });
+    return this;
+  }
   private matchCustom(method: string, pathname: string) {
     const parts = pathname.split("/");
-    for (const c of this.custom) {
+    for (const c of [...this.custom, ...this.fallback]) {
       if (c.method !== method) continue;
       const tp = c.template.split("/");
       const wild = tp[tp.length - 1]?.startsWith("{*") ?? false;

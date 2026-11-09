@@ -3,6 +3,7 @@ import { SessionProvider, useSession } from "./auth/session";
 import Layout from "./components/Layout";
 import LoginPage from "./pages/LoginPage";
 import StudioPlaceholder from "./components/StudioPlaceholder";
+import OverviewPage from "./pages/OverviewPage";
 import AccessPage from "./pages/access/AccessPage";
 import BillingPage from "./pages/billing/BillingPage";
 import AuthPage from "./pages/auth/AuthPage";
@@ -62,7 +63,7 @@ function Studios() {
           ) : s.path === "storage" ? (
             <Route key={s.path} path="storage/*" element={<StoragePage />} />
           ) : s.path === "" ? (
-            <Route key="index" index element={<StudioPlaceholder studio={s} />} />
+            <Route key="index" index element={<OverviewPage />} />
           ) : (
             <Route key={s.path} path={s.path} element={<StudioPlaceholder studio={s} />} />
           ),

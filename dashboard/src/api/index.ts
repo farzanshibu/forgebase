@@ -1,6 +1,7 @@
 export * from "./client";
 export * from "./session";
 export * from "./system";
+export * from "./metrics";
 export * from "./token";
 export * from "./types";
 export * from "./v1";
