@@ -16,7 +16,7 @@ import RedisPage from "./pages/redis/RedisPage";
 import StoragePage from "./pages/storage/StoragePage";
 import GraphPage from "./pages/graph/GraphPage";
 import VectorPage from "./pages/vector/VectorPage";
-import SystemPage from "./pages/SystemPage";
+import SystemStudio from "./pages/system/SystemStudio";
 import { STUDIOS } from "./studios";
 
 export default function App() {
@@ -40,7 +40,7 @@ function Studios() {
       <Route element={<Layout />}>
         {STUDIOS.map((s) =>
           s.path === "system" ? (
-            <Route key={s.path} path="system" element={<SystemPage />} />
+            <Route key={s.path} path="system/*" element={<SystemStudio />} />
           ) : s.path === "database" ? (
             <Route key={s.path} path="database/*" element={<DatabasePage />} />
           ) : s.path === "auth" ? (

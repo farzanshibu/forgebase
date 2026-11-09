@@ -6915,6 +6915,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lists snapshots. */
+        get: operations["list_backups"];
+        put?: never;
+        /** Takes a snapshot now (online, consistent) and applies the retention. */
+        post: operations["create_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One snapshot. */
+        get: operations["get_backup"];
+        put?: never;
+        post?: never;
+        /** Deletes a snapshot. */
+        delete: operations["delete_backup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/{id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verifies a snapshot: manifest, every file's hash, database integrity. */
+        post: operations["verify_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Applies a retention policy now. */
+        post: operations["prune_backups"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/teams/{team}": {
         parameters: {
             query?: never;
@@ -8739,6 +8809,14 @@ export interface components {
          * @enum {string}
          */
         CouponKind: "percent" | "amount";
+        /** @description Body of `POST /system/backups`. */
+        CreateSnapshot: {
+            /** @description Include derived index files (default true). */
+            include_indexes?: boolean | null;
+            /** @description Free-form label. */
+            label?: string | null;
+            retention?: components["schemas"]["Retention"] | null;
+        };
         /** @description Body of a top-up or grant. */
         CreditInput: {
             /**
@@ -9556,6 +9634,25 @@ export interface components {
             name: string;
             quantization?: components["schemas"]["Quantization"] | null;
         };
+        /** @description One file of a backup. */
+        FileEntry: {
+            /** @description Role of the file. */
+            kind: components["schemas"]["FileKind"];
+            /** @description `/`-separated path relative to the backup directory. */
+            path: string;
+            /** @description Lower-case hex SHA-256. */
+            sha256: string;
+            /**
+             * Format: int64
+             * @description Size in bytes.
+             */
+            size: number;
+        };
+        /**
+         * @description What a file is.
+         * @enum {string}
+         */
+        FileKind: "database" | "storage" | "index" | "key";
         /**
          * @description When a metadata filter is applied relative to the vector search.
          * @enum {string}
@@ -11562,6 +11659,16 @@ export interface components {
             /** @description Workflow. */
             workflow_id?: string | null;
         };
+        /** @description Master key handling recorded in a backup. */
+        KeyInfo: {
+            /**
+             * @description First 16 hex characters of the key file's SHA-256 (`None` when the
+             *     data directory had no key). Restore refuses a different key.
+             */
+            fingerprint?: string | null;
+            /** @description Whether `auth/master.key` is part of the backup. */
+            included: boolean;
+        };
         /** @description Answer of `GET .../keys/{key}`. */
         KeyValue: {
             /** @description The key. */
@@ -11869,6 +11976,35 @@ export interface components {
              * @description Counter windows opened (with rollover).
              */
             windows_opened: number;
+        };
+        /** @description The manifest. */
+        Manifest: {
+            /** @description RFC 3339 creation time (UTC). */
+            created: string;
+            /** @description Every file with size and hash. */
+            files: components["schemas"]["FileEntry"][];
+            /** @description ForgeBase version that wrote it. */
+            forgebase_version: string;
+            /**
+             * Format: int32
+             * @description Manifest format version.
+             */
+            format: number;
+            /** @description Backup id (the directory name for snapshots). */
+            id: string;
+            /** @description Whether derived index files are included. */
+            includes_indexes: boolean;
+            /** @description `backup` (explicit destination) or `snapshot` (managed, with retention). */
+            kind: string;
+            /** @description Free-form label. */
+            label?: string | null;
+            /** @description Master key handling. */
+            master_key: components["schemas"]["KeyInfo"];
+            /**
+             * Format: int64
+             * @description Highest applied system migration in the copied database.
+             */
+            schema_version: number;
         };
         /** @description Body of `POST /billing/invoices/{id}/mark-paid` (manual billing). */
         MarkPaidInput: {
@@ -13120,6 +13256,11 @@ export interface components {
             /** @description Webhook signing secret. */
             webhook_secret?: string | null;
         };
+        /** @description Snapshots removed by a prune. */
+        PruneResult: {
+            /** @description Ids of the deleted snapshots. */
+            deleted: string[];
+        };
         /** @description The public face of a realm: what dashboards and hosted pages need. */
         PublicBranding: {
             /** @description Accent colour. */
@@ -13744,6 +13885,23 @@ export interface components {
             /** @description Version id. */
             version_id: string;
         };
+        /**
+         * @description Which snapshots to keep.
+         *
+         *     `keep_last` is the number of newest snapshots that are always kept;
+         *     `max_age_days` deletes older ones beyond that. With only `keep_last`, the
+         *     rest is deleted; with only `max_age_days`, nothing younger is deleted;
+         *     with neither, nothing is deleted.
+         */
+        Retention: {
+            /** @description Newest snapshots always kept. */
+            keep_last?: number | null;
+            /**
+             * Format: int32
+             * @description Snapshots older than this many days are deleted (beyond `keep_last`).
+             */
+            max_age_days?: number | null;
+        };
         /** @description Revenue of one currency in one bucket. */
         RevenuePoint: {
             /** @description Currency. */
@@ -14129,10 +14287,17 @@ export interface components {
              */
             unacked: number;
         };
-        /** @description Snapshots. */
+        /** @description Snapshots, newest first. */
         SnapshotList: {
-            /** @description By name. */
-            items: components["schemas"]["Snapshot"][];
+            /** @description The snapshots. */
+            items: components["schemas"]["SnapshotView"][];
+        };
+        /** @description A snapshot. */
+        SnapshotView: {
+            /** @description Snapshot id (its UTC creation time). */
+            id: string;
+            /** @description Manifest with every file's size and SHA-256. */
+            manifest: components["schemas"]["Manifest"];
         };
         /** @description Body of a direct debit. */
         SpendInput: {
@@ -15450,6 +15615,23 @@ export interface components {
             record_type: string;
             /** @description Record value (`forgebase-verify=<token>`). */
             record_value: string;
+        };
+        /** @description Outcome of [`verify`]. */
+        VerifyReport: {
+            /**
+             * Format: int64
+             * @description Bytes hashed.
+             */
+            bytes_checked: number;
+            /** @description Files whose size and hash were checked. */
+            files_checked: number;
+            manifest?: components["schemas"]["Manifest"] | null;
+            /** @description No problems found. */
+            ok: boolean;
+            /** @description Reasons the backup cannot be restored. */
+            problems: string[];
+            /** @description Things worth knowing that do not block a restore. */
+            warnings: string[];
         };
         /** @description Result of a verification attempt. */
         VerifyResult: {
@@ -43912,6 +44094,324 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    list_backups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Snapshots */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    create_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSnapshot"];
+            };
+        };
+        responses: {
+            /** @description The new snapshot */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Manifest"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Snapshot id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotView"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such snapshot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Snapshot id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such snapshot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verify_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Snapshot id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verification report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyReport"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such snapshot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    prune_backups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Retention"];
+            };
+        };
+        responses: {
+            /** @description Deleted snapshots */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PruneResult"];
                 };
             };
             /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
