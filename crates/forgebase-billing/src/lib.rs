@@ -22,6 +22,7 @@
 //! product tops up FB-73 through `CreditSink`, a paid usage pack is granted
 //! through `BillingSync::grant_usage_pack`.
 
+pub mod admin;
 pub mod billing;
 pub mod catalog;
 mod error;

@@ -124,6 +124,14 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: BillingService) -> Router<S
         .route("/billing/webhook-events", get(webhook_events))
         .route("/billing/stats", get(stats))
         .route("/billing/maintenance", post(maintenance))
+        .route("/billing/subscriptions/{id}/change/preview", post(preview_plan_change))
+        .route("/billing/admin/orders", get(all_orders))
+        .route("/billing/admin/usage-meters", get(usage_meters))
+        .route("/billing/dunning", get(dunning_queue))
+        .route("/billing/products/{key}/archive", post(archive_product))
+        .route("/billing/prices/{key}/archive", post(archive_price))
+        .route("/billing/coupons/{code}/archive", post(archive_coupon))
+        .route("/billing/tax-rates/{region}/archive", post(archive_tax_rate))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .with_state(svc)
 }
@@ -149,7 +157,8 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         subscriptions, subscribe, subscription, change_plan, cancel, pause, resume, orders, create_order, order,
         invoices, invoice, pay_invoice, mark_paid, void_invoice, credit_invoice, credit_notes, payments, refunds,
         portal, payment_method, store_products, put_store_product, delete_store_product, store_verify,
-        store_checkout, store_purchases, webhook, webhook_events, stats, maintenance,
+        store_checkout, store_purchases, webhook, webhook_events, stats, maintenance, preview_plan_change,
+        all_orders, usage_meters, dunning_queue, archive_product, archive_price, archive_coupon, archive_tax_rate,
     ),
     components(schemas(
         Money, Tier, Scheme, ProductKind, PriceType, Interval, MeterBasis, TaxBehavior, SubscriptionStatus,
@@ -159,6 +168,8 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         ChangePlanInput, CancelInput, Checkout, Order, OrderInput, InvoiceLine, Invoice, Payment, Refund, CreditNote,
         CreditNoteInput, Collection, PaymentMethodInput, HostedPage, ProviderAccount, ProviderInput, WebhookEvent,
         WebhookOutcome, BillingSettings, MaintenanceReport, RecurringRevenue, RevenuePoint, BillingStats, Portal,
+        crate::admin::PreviewLine, crate::admin::ProrationPreview, crate::admin::OrderPage, crate::admin::MeterState,
+        crate::admin::UsageMeter, crate::admin::UsageMeterPage, crate::admin::DunningEntry,
         MarkPaidInput, PayInput, Items<Product>, Items<Price>, Items<Invoice>, StoreProduct, StoreProductInput,
         StoreVerifyInput, StoreCheckoutInput, StorePurchaseRecord, Items<StoreProduct>, Items<StorePurchaseRecord>,
     )),
@@ -750,4 +761,129 @@ async fn stats(State(s): State<BillingService>, Access(ctx): Access, q: Query) -
     responses((status = 200, description = "Report", body = MaintenanceReport)))]
 async fn maintenance(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     ok(s.maintenance(&ctx).await.map_err(api)?)
+}
+
+// ---------------------------------------------------------------------------
+// Administrator views and archiving (FIX-4)
+// ---------------------------------------------------------------------------
+
+/// What a plan change would do (proration lines, credit, charge, net), with
+/// no side effects. Same body and same math as `change`.
+#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/change/preview", operation_id = "billing_preview_plan_change", tag = "billing-portal", request_body = ChangePlanInput,
+    params(("id" = String, Path, description = "Subscription id")),
+    responses((status = 200, description = "Preview", body = crate::admin::ProrationPreview)))]
+async fn preview_plan_change(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    b: Body<ChangePlanInput>,
+) -> ApiResult {
+    let input = body(&s, &ctx, b)?;
+    ok(s.preview_plan_change(&ctx, &id, input).await.map_err(api)?)
+}
+
+/// Every order of the instance, newest first, with paging (billing readers).
+#[utoipa::path(get, path = "/api/v1/billing/admin/orders", operation_id = "billing_all_orders", tag = "billing",
+    params(
+        ("subject" = Option<String>, Query, description = "Only this subject"),
+        ("status" = Option<String>, Query, description = "Only this order status"),
+        ("limit" = Option<u32>, Query, description = "Page size (1-500, default 50)"),
+        ("offset" = Option<u32>, Query, description = "Rows to skip"),
+    ),
+    responses((status = 200, description = "Orders", body = crate::admin::OrderPage)))]
+async fn all_orders(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
+    ok(s.all_orders(
+        &ctx,
+        q.get("subject"),
+        q.get("status"),
+        q.u32("limit")?,
+        q.u32("offset")?,
+    )
+    .await
+    .map_err(api)?)
+}
+
+/// Usage counters of every subject in their current windows, most used
+/// first, with 70 / 90 / 100 % states (billing readers).
+#[utoipa::path(get, path = "/api/v1/billing/admin/usage-meters", operation_id = "billing_usage_meters", tag = "billing",
+    params(
+        ("subject" = Option<String>, Query, description = "Only this subject"),
+        ("feature" = Option<String>, Query, description = "Only this feature"),
+        ("min_percent" = Option<f64>, Query, description = "Only meters at or above this percentage of their limit"),
+        ("limit" = Option<u32>, Query, description = "Page size (1-500, default 50)"),
+        ("offset" = Option<u32>, Query, description = "Rows to skip"),
+    ),
+    responses((status = 200, description = "Meters", body = crate::admin::UsageMeterPage)))]
+async fn usage_meters(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
+    let min = match q.get("min_percent") {
+        None | Some("") => None,
+        Some(v) => Some(
+            v.parse::<f64>()
+                .ok()
+                .filter(|p| p.is_finite() && *p >= 0.0)
+                .ok_or_else(|| {
+                    ApiError::bad_request("invalid_parameter", "min_percent must be a non-negative number")
+                })?,
+        ),
+    };
+    ok(s.usage_meters(
+        &ctx,
+        q.get("subject"),
+        q.get("feature"),
+        min,
+        q.u32("limit")?,
+        q.u32("offset")?,
+    )
+    .await
+    .map_err(api)?)
+}
+
+/// The dunning queue: open invoices with a failed attempt or a scheduled
+/// retry, next attempt first, with the last failure and retries left
+/// (billing readers).
+#[utoipa::path(get, path = "/api/v1/billing/dunning", operation_id = "billing_dunning_queue", tag = "billing",
+    params(("limit" = Option<u32>, Query, description = "Rows (1-500, default 200)")),
+    responses((status = 200, description = "Queue", body = Items<crate::admin::DunningEntry>)))]
+async fn dunning_queue(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
+    items(s.dunning_queue(&ctx, q.u32("limit")?).await.map_err(api)?)
+}
+
+/// Archives a product (`active: false`, idempotent): it can no longer be
+/// bought; existing subscriptions continue (platform administrators).
+#[utoipa::path(post, path = "/api/v1/billing/products/{key}/archive", operation_id = "billing_archive_product", tag = "billing-catalog",
+    params(("key" = String, Path, description = "Product key")),
+    responses((status = 200, description = "Archived product", body = Product)))]
+async fn archive_product(State(s): State<BillingService>, Access(ctx): Access, Path(key): Path<String>) -> ApiResult {
+    ok(s.archive_product(&ctx, &key).await.map_err(api)?)
+}
+
+/// Archives a price (idempotent): new subscriptions and plan changes refuse
+/// it; existing subscriptions keep renewing on it (platform administrators).
+#[utoipa::path(post, path = "/api/v1/billing/prices/{key}/archive", operation_id = "billing_archive_price", tag = "billing-catalog",
+    params(("key" = String, Path, description = "Price key")),
+    responses((status = 200, description = "Archived price", body = Price)))]
+async fn archive_price(State(s): State<BillingService>, Access(ctx): Access, Path(key): Path<String>) -> ApiResult {
+    ok(s.archive_price(&ctx, &key).await.map_err(api)?)
+}
+
+/// Archives a coupon (idempotent): it cannot be redeemed again
+/// (platform administrators).
+#[utoipa::path(post, path = "/api/v1/billing/coupons/{code}/archive", operation_id = "billing_archive_coupon", tag = "billing-catalog",
+    params(("code" = String, Path, description = "Coupon code")),
+    responses((status = 200, description = "Archived coupon", body = Coupon)))]
+async fn archive_coupon(State(s): State<BillingService>, Access(ctx): Access, Path(code): Path<String>) -> ApiResult {
+    ok(s.archive_coupon(&ctx, &code).await.map_err(api)?)
+}
+
+/// Archives the tax rate of a region (idempotent): no tax is added for it
+/// afterwards (platform administrators).
+#[utoipa::path(post, path = "/api/v1/billing/tax-rates/{region}/archive", operation_id = "billing_archive_tax_rate", tag = "billing-catalog",
+    params(("region" = String, Path, description = "IN, DE, US-CA, ...")),
+    responses((status = 200, description = "Archived rate", body = TaxRate)))]
+async fn archive_tax_rate(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(region): Path<String>,
+) -> ApiResult {
+    ok(s.archive_tax_rate(&ctx, &region).await.map_err(api)?)
 }

@@ -421,7 +421,81 @@ pub struct RealmInput {
     pub config: RealmConfig,
 }
 
+/// Creates a realm record: `(caller context, realm id, display name)`.
+pub type RealmCreator = Arc<
+    dyn Fn(
+            AccessContext,
+            String,
+            String,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// `POST /api/auth/realms` body.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealmCreate {
+    /// Realm id (lowercase slug).
+    pub id: String,
+    /// Display name (defaults to the id).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Auth collection of the realm's users (default `<id>_users`).
+    #[serde(default)]
+    pub collection: Option<String>,
+    /// Identity settings (see `PUT /api/auth/realms/{realm}`).
+    #[serde(default)]
+    pub config: RealmConfig,
+}
+
 impl AuthService {
+    /// Creates a realm together with its identity settings in one call
+    /// (administrators). Settings are validated before anything is written;
+    /// if the realm record was created but the identity could not be stored,
+    /// the error says so and `PUT /api/auth/realms/{realm}` finishes it.
+    pub async fn create_realm_with_identity(
+        &self,
+        caller: &Authenticated,
+        ci: &ClientInfo,
+        input: RealmCreate,
+    ) -> Result<Arc<RealmIdentity>, AuthError> {
+        require_admin(caller)?;
+        check_realm_id(&input.id)?;
+        input.config.validate()?;
+        let name = input
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| input.id.clone());
+        let Some(create) = self.realm_creator() else {
+            return Err(AuthError::Internal(
+                "realm creation is not available on this server".into(),
+            ));
+        };
+        if self.realms().get(&input.id).is_some() {
+            return Err(AuthError::Conflict(format!("realm {:?} already exists", input.id)));
+        }
+        create(caller.access_context(None), input.id.clone(), name).await?;
+        let id = input.id.clone();
+        self.put_realm_identity(
+            caller,
+            ci,
+            &id,
+            RealmInput {
+                collection: input.collection,
+                config: input.config,
+            },
+        )
+        .await
+        .map_err(|e| match e {
+            AuthError::Conflict(m) => AuthError::Conflict(format!(
+                "realm {id} was created but its identity was not saved ({m}); finish with PUT /api/auth/realms/{id}"
+            )),
+            e => e,
+        })
+    }
+
     /// Reloads the directory from the database.
     pub async fn reload_realms(&self) -> Result<(), AuthError> {
         let r = read(

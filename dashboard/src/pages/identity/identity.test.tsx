@@ -42,7 +42,10 @@ describe("Realms and tenant settings", () => {
     await userEvent.type(screen.getByLabelText("Realm name"), "Globex");
     await userEvent.click(screen.getByRole("button", { name: "Create realm" }));
     await waitFor(() => expect(st.realms.map((r) => r.realm)).toContain("globex"));
-    expect(body(mock, "post /api/v1/realms")).toEqual({ slug: "globex", name: "Globex" });
+    // One call creates the realm with its identity settings (no separate policy-realm request).
+    expect(body(mock, "post /api/auth/realms")).toMatchObject({ id: "globex", name: "Globex", config: { signup: true, methods: { password: true } } });
+    expect(mock.bodies["post /api/v1/realms"]).toBeUndefined();
+    expect(mock.problems).toEqual([]);
 
     await userEvent.click(await screen.findByRole("button", { name: "Settings acme" }));
     const form = screen.getByRole("form", { name: "Tenant settings" });
@@ -118,11 +121,10 @@ describe("Client apps", () => {
 });
 
 describe("Identity providers", () => {
-  it("lists social providers read-only and keeps LDAP and Turnstile secrets write-only", async () => {
+  it("lists social providers and keeps LDAP and Turnstile secrets write-only", async () => {
     const { mock, st } = setup();
     renderStudio("/identity/providers");
     expect(await screen.findByText(/GitHub/)).toBeInTheDocument();
-    expect(mock.headers.some((h) => h["X-ForgeBase-Realm"] === "default")).toBe(true);
 
     const ldap = screen.getByRole("form", { name: "LDAP" });
     await userEvent.click(within(ldap).getByLabelText("LDAP sign-in enabled"));
@@ -188,19 +190,85 @@ describe("Consents and OIDC keys", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Rotate keys for default" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm rotate keys for default" }));
-    expect(await screen.findByText("kid-2")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("kid-2");
     expect(body(mock, "post /api/auth/keys/oidc/rotate")).toEqual({ realm: "default" });
+    // The key table now lists the new current key and the retired one.
+    expect(await screen.findByText("retired")).toBeInTheDocument();
+    expect(screen.getByText("kid-1")).toBeInTheDocument();
+    expect(mock.problems).toEqual([]);
   });
 });
 
-describe("Consents without a user session", () => {
-  it("explains that the server lists a signed-in user's own consents only", async () => {
-    const mock = signedIn(new MockApi().install());
-    mock.on("GET", "/api/auth/realms", () => ({ status: 200, body: { items: [] } }));
-    mock.on("GET", "/api/auth/consents", () => ({ status: 400, body: { error: { code: "invalid_request", message: "only users have consents", request_id: "r" } } }));
+describe("Admin consents by client", () => {
+  it("filters the realm's consents by client id through the admin endpoint", async () => {
+    const { mock, st } = setup();
+    st.consents.push({ id: "con3", client_id: "app_2", client_name: "Second app", realm: "default", collection: "users", user_id: "u2", scopes: ["openid"], created_at: "2026-11-09T10:00:00Z", updated_at: "2026-11-09T10:00:00Z" });
     renderStudio("/identity/consents");
-    expect(await screen.findByText(/only users have consents/)).toBeInTheDocument();
-    expect(screen.getByText(/no administrator-wide consent list yet/)).toBeInTheDocument();
+    expect(await screen.findByText("Second app")).toBeInTheDocument();
+    expect(screen.getByText("users/u2")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Filter by client id"), "app_2");
+    await waitFor(() => expect(screen.queryByText("Web app")).not.toBeInTheDocument());
+    expect(screen.getByText("Second app")).toBeInTheDocument();
+    expect(mock.problems).toEqual([]);
+  });
+});
+
+describe("Social providers CRUD and SMS gateway", () => {
+  it("creates, edits (keeping the secret) and deletes a social provider; secrets are never shown", async () => {
+    const { mock, st } = setup();
+    renderStudio("/identity/providers");
+    await screen.findByText(/GitHub/);
+    await userEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    const form = screen.getByRole("form", { name: "Social provider" });
+    await userEvent.type(within(form).getByLabelText("Provider id"), "google");
+    await userEvent.type(within(form).getByLabelText("Client id"), "g-client");
+    await userEvent.type(within(form).getByLabelText("Client secret"), "g-secret");
+    await userEvent.click(within(form).getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(st.providers.map((p) => p.id)).toContain("google"));
+    expect(body(mock, "put /api/auth/realms/{realm}/oauth-providers/{id}")).toMatchObject({ kind: "google", client_id: "g-client", client_secret: "g-secret" });
+    expect(st.providerSecrets["default/google"]).toBe("g-secret");
+    expect(document.body.textContent).not.toContain("g-secret");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit provider google" }));
+    const edit = screen.getByRole("form", { name: "Social provider" });
+    await userEvent.type(within(edit).getByLabelText("Display name"), "Google SSO");
+    await userEvent.click(within(edit).getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(st.providers.find((p) => p.id === "google")!.display_name).toBe("Google SSO"));
+    expect(body(mock, "put /api/auth/realms/{realm}/oauth-providers/{id}").client_secret).toBe("********");
+    expect(st.providerSecrets["default/google"]).toBe("g-secret");
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete provider google" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete provider google" }));
+    await waitFor(() => expect(st.providers.map((p) => p.id)).toEqual(["github"]));
+    expect(mock.problems).toEqual([]);
+  });
+
+  it("shows a read-only file provider without edit buttons", async () => {
+    const { st } = setup();
+    st.providers.push({ id: "corp", realm: "default", kind: "oidc", display_name: "Corp SSO", source: "file", read_only: true });
+    renderStudio("/identity/providers");
+    expect(await screen.findByText(/from file \(read-only\)/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit provider corp" })).not.toBeInTheDocument();
+  });
+
+  it("sets a webhook SMS gateway with a write-only token, then removes it", async () => {
+    const { mock, st } = setup();
+    renderStudio("/identity/providers");
+    const form = await screen.findByRole("form", { name: "SMS gateway" });
+    expect(form).toHaveTextContent("instance gateway is used");
+    await userEvent.selectOptions(within(form).getByLabelText("Gateway type"), "webhook");
+    await userEvent.type(within(form).getByLabelText("Webhook URL"), "https://sms.example.com/send");
+    await userEvent.type(within(form).getByLabelText("Bearer token"), "hook-token");
+    await userEvent.click(within(form).getByRole("button", { name: "Save SMS gateway" }));
+    await waitFor(() => expect(st.sms.default).toMatchObject({ provider: "webhook", url: "https://sms.example.com/send" }));
+    expect(body(mock, "put /api/auth/realms/{realm}/sms").bearer_token).toBe("hook-token");
+    await waitFor(() => expect(screen.getByLabelText("Bearer token")).toHaveAttribute("placeholder", "set (leave empty to keep)"));
+    expect(document.body.textContent).not.toContain("hook-token");
+
+    await userEvent.click(screen.getByRole("button", { name: "Remove SMS gateway" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm remove sms gateway" }));
+    await waitFor(() => expect(st.sms.default).toBeUndefined());
+    expect(mock.problems).toEqual([]);
   });
 });
 

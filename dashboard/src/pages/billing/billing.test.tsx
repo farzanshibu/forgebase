@@ -5,13 +5,18 @@ import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installBilling } from "../../test/billingMock";
 
+let current: MockApi | undefined;
 afterEach(() => {
+  // Every billing request and response matched the OpenAPI document.
+  expect(current?.problems ?? []).toEqual([]);
+  current = undefined;
   vi.unstubAllGlobals();
   localStorage.clear();
 });
 
 function setup(opts: { disabled?: boolean } = {}) {
   const mock = signedIn(new MockApi().install());
+  current = mock;
   return { mock, st: installBilling(mock, opts) };
 }
 const rows = (name: string) => within(screen.getByRole("table", { name })).getAllByRole("row");
@@ -90,6 +95,21 @@ describe("Catalog", () => {
       tiers: [{ up_to: 100, unit_amount: 10, flat_amount: 0 }, { up_to: null, unit_amount: 5, flat_amount: 0 }],
       currency_options: { EUR: { unit_amount: 9 } },
     });
+  });
+
+  it("archives a product and a price through the archive endpoints", async () => {
+    const { mock, st } = setup();
+    renderStudio("/billing/catalog");
+    await screen.findByRole("table", { name: "Products" });
+    await userEvent.click(screen.getByRole("button", { name: "Archive price team_month" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm archive price team_month" }));
+    await waitFor(() => expect(st.prices.find((p) => p.key === "team_month")!.active).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "Archive product team" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm archive product team" }));
+    await waitFor(() => expect(st.products.find((p) => p.key === "team")!.active).toBe(false));
+    expect(mock.calls).toContain("post /api/v1/billing/products/team/archive");
+    expect(mock.calls).not.toContain("put /api/v1/billing/products/team");
+    expect(screen.queryByRole("button", { name: "Archive product team" })).not.toBeInTheDocument();
   });
 
   it("rejects a malformed amount before calling the server", async () => {
@@ -174,7 +194,7 @@ describe("Subscriptions", () => {
     expect(lastBody(mock, "post /api/v1/billing/subscriptions/{id}/cancel")).toMatchObject({ at_period_end: false });
   });
 
-  it("changes plan with a proration preview", async () => {
+  it("changes plan with the server proration preview", async () => {
     const { mock, st } = setup();
     renderStudio("/billing/subscriptions");
     await screen.findByRole("table", { name: "Subscriptions" });
@@ -182,7 +202,14 @@ describe("Subscriptions", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Change plan" }));
     const group = screen.getByRole("group", { name: "Change plan of sub1" });
     await userEvent.selectOptions(within(group).getByLabelText("New price"), "team_month");
-    expect(within(group).getByLabelText("Proration preview")).toHaveTextContent(/Estimate: unused credit .* new charge .* net /);
+    const preview = await within(group).findByLabelText("Proration preview");
+    expect(preview).toHaveTextContent(/Unused credit -\$14\.50, new charge \$49\.50, net \$35\.00/);
+    expect(preview).not.toHaveTextContent(/Estimate/);
+    expect(mock.bodies["post /api/v1/billing/subscriptions/{id}/change/preview"]!.at(-1)).toEqual({ price: "team_month", proration: "create_prorations", at_period_end: false });
+    await userEvent.click(within(group).getByLabelText("At period end"));
+    expect(await within(group).findByText(/nothing is charged now/)).toBeInTheDocument();
+    await userEvent.click(within(group).getByLabelText("At period end"));
+    await within(group).findByText(/net \$35\.00/);
     await userEvent.click(within(group).getByRole("button", { name: "Apply plan change" }));
     await waitFor(() => expect(st.subscriptions.find((s) => s.id === "sub1")!.items[0]!.price).toBe("team_month"));
     expect(lastBody(mock, "post /api/v1/billing/subscriptions/{id}/change")).toEqual({ price: "team_month", proration: "create_prorations", at_period_end: false });
@@ -203,27 +230,34 @@ describe("Subscriptions", () => {
 });
 
 describe("Orders", () => {
-  it("lists the orders of a subject and creates a one-time order", async () => {
-    const { mock } = setup();
+  it("lists all orders with paging and filters, and creates a one-time order", async () => {
+    const { mock, st } = setup();
+    st.orders = Array.from({ length: 60 }, (_, i) => ({ ...st.orders[0]!, id: `ord${i + 1}`, subject: i < 59 ? "org:acme" : "usr_ana", status: i === 0 ? "paid" : "open", invoice_id: i === 0 ? "inv3" : null }));
     renderStudio("/billing/orders");
-    await userEvent.type(await screen.findByLabelText("Order subject"), "org:acme");
-    await userEvent.click(screen.getByRole("button", { name: "Show orders" }));
     const table = await screen.findByRole("table", { name: "Orders" });
+    expect(rows("Orders")).toHaveLength(51); // header + first page
     expect(await within(table).findByText("$10.00")).toBeInTheDocument();
+    const paging = screen.getByLabelText("Orders paging");
+    expect(paging).toHaveTextContent("1-50 of 60");
+    expect(mock.bodies["get /api/v1/billing/admin/orders"]).toBeDefined();
+    await userEvent.click(within(paging).getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(screen.getByLabelText("Orders paging")).toHaveTextContent("51-60 of 60"));
+    expect(rows("Orders")).toHaveLength(11);
+    await userEvent.type(screen.getByLabelText("Order subject"), "usr_ana");
+    await userEvent.click(screen.getByRole("button", { name: "Show orders" }));
+    await waitFor(() => expect(rows("Orders")).toHaveLength(2));
     const form = screen.getByRole("form", { name: "New order" });
     await userEvent.selectOptions(within(form).getByLabelText("One-time price"), "credits_once");
     await userEvent.click(within(form).getByRole("button", { name: "Create order" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Order created");
-    expect(lastBody(mock, "post /api/v1/billing/orders")).toMatchObject({ subject: "org:acme", items: [{ price: "credits_once", quantity: 1 }] });
+    expect(lastBody(mock, "post /api/v1/billing/orders")).toMatchObject({ subject: "usr_ana", items: [{ price: "credits_once", quantity: 1 }] });
   });
 });
 
 describe("Usage meters", () => {
-  it("shows 750 / 1,000 with 70, 90 and 100 percent states", async () => {
-    setup();
+  it("lists instance-wide meters (750 / 1,000) with 70, 90 and 100 percent states", async () => {
+    const { mock } = setup();
     renderStudio("/billing/usage");
-    await userEvent.type(await screen.findByLabelText("Usage subject"), "org:acme");
-    await userEvent.click(screen.getByRole("button", { name: "Show usage" }));
     const meters = await screen.findByRole("list", { name: "Usage meters" });
     expect(within(meters).getByLabelText("api_calls usage")).toHaveTextContent("750 / 1,000");
     const state = (feature: string) => within(meters).getByLabelText(`${feature} usage`).closest("li")!.getAttribute("data-state");
@@ -232,7 +266,18 @@ describe("Usage meters", () => {
     expect(state("seats")).toBe("full");
     expect(state("storage")).toBe("ok");
     expect(within(meters).getByRole("progressbar", { name: "api_calls quota" })).toHaveAttribute("aria-valuenow", "75");
-    expect(meters).toHaveTextContent("50 from usage packs");
+    expect(meters).toHaveTextContent("org:acme");
+    expect(mock.calls).not.toContain("get /api/v1/usage");
+    await userEvent.type(screen.getByLabelText("Min % used"), "90");
+    await userEvent.click(screen.getByRole("button", { name: "Show usage" }));
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Usage meters" })).getAllByRole("listitem")).toHaveLength(2));
+  });
+
+  it("shows quota alerts for a filtered subject", async () => {
+    setup();
+    renderStudio("/billing/usage");
+    await userEvent.type(await screen.findByLabelText("Usage subject"), "org:acme");
+    await userEvent.click(screen.getByRole("button", { name: "Show usage" }));
     expect(await screen.findByRole("table", { name: "Quota alerts" })).toHaveTextContent("90%");
   });
 });
@@ -311,6 +356,16 @@ describe("Payments", () => {
 });
 
 describe("Coupons", () => {
+  it("archives a coupon", async () => {
+    const { st } = setup();
+    renderStudio("/billing/coupons");
+    await screen.findByRole("table", { name: "Coupons" });
+    await userEvent.click(screen.getByRole("button", { name: "Archive coupon WELCOME15" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm archive coupon welcome15" }));
+    await waitFor(() => expect(st.coupons[0]!.active).toBe(false));
+    expect(await screen.findByRole("status")).toHaveTextContent("Coupon archived");
+  });
+
   it("lists coupons and creates a percent coupon in basis points", async () => {
     const { mock } = setup();
     renderStudio("/billing/coupons");
@@ -407,6 +462,15 @@ describe("Providers and settings", () => {
     await userEvent.click(within(stripe).getByRole("button", { name: "Remove stripe" }));
     await userEvent.click(within(stripe).getByRole("button", { name: "Confirm remove stripe" }));
     await waitFor(() => expect(st.providers).toHaveLength(0));
+  });
+
+  it("archives a tax rate", async () => {
+    const { st } = setup();
+    renderStudio("/billing/settings");
+    const list = await screen.findByRole("list", { name: "Tax rates" });
+    await userEvent.click(within(list).getByRole("button", { name: "Archive tax rate IN" }));
+    await userEvent.click(within(list).getByRole("button", { name: "Confirm archive tax rate in" }));
+    await waitFor(() => expect(st.taxRates[0]!.active).toBe(false));
   });
 
   it("edits the dunning settings, tax rates and shows webhook events", async () => {

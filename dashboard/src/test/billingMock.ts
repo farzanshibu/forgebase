@@ -1,6 +1,8 @@
 /**
  * In-memory fake of the billing, credits and entitlements REST APIs for component tests.
- * None of these routes are in the OpenAPI fixture yet (FIX-3 owns it), so they are plain handlers.
+ * Every request and response goes through MockApi, which checks it against the OpenAPI fixture (billing enabled):
+ * routes the fixture covers are contract-checked (`mock.problems` must stay empty); the credits and entitlements
+ * routes the fixture does not describe are plain handlers.
  * `installBilling(mock, { disabled: true })` answers every billing route 404, like a server with billing off.
  */
 import type {
@@ -185,6 +187,67 @@ export function installBilling(mock: MockApi, opts: { disabled?: boolean } = {})
   lifecycle("resume", (s) => { s.status = "active"; s.cancel_at_period_end = false; }, "checkout");
   lifecycle("cancel", (s, b) => { if ((b as { at_period_end: boolean }).at_period_end) s.cancel_at_period_end = true; else { s.status = "canceled"; s.ended_at = T0; } }, "checkout");
   lifecycle("change", (s, b) => { const x = b as { price: string; at_period_end: boolean }; if (x.at_period_end) s.pending_price = x.price; else s.items = [{ ...s.items[0]!, price: x.price }]; }, "checkout");
+  on("GET", `${B}/admin/orders`, ({ query }) => {
+    const rows = bySubject(st.orders, query).filter((o) => !query.get("status") || o.status === query.get("status"));
+    const limit = Number(query.get("limit") ?? 50);
+    const offset = Number(query.get("offset") ?? 0);
+    return { status: 200, body: { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset } };
+  });
+  on("GET", `${B}/admin/usage-meters`, ({ query }) => {
+    const meters = st.usage
+      .filter((u) => u.limit !== null && (!query.get("feature") || u.feature === query.get("feature")))
+      .map((u) => {
+        const pct = (u.used * 100) / (u.limit as number);
+        return { subject: "org:acme", feature: u.feature, scope_key: u.scope_key, used: u.used, reserved: u.reserved, carried_in: u.carried_in, limit: u.limit, percent: pct, state: pct >= 100 ? "over" : pct >= 90 ? "critical" : pct >= 70 ? "warn" : "ok", window_start: u.window_start, window_end: u.window_end ?? T1, updated_at: T0 };
+      })
+      .filter((m) => (!query.get("subject") || m.subject === query.get("subject")) && m.percent >= Number(query.get("min_percent") ?? 0));
+    const limit = Number(query.get("limit") ?? 50);
+    const offset = Number(query.get("offset") ?? 0);
+    return { status: 200, body: { items: meters.slice(offset, offset + limit), total: meters.length, limit, offset } };
+  });
+  on("GET", `${B}/dunning`, () => {
+    const items = st.invoices
+      .filter((i) => i.status === "open" && (i.attempt_count > 0 || i.next_attempt_at))
+      .map((i) => {
+        const failed = st.payments.find((p) => p.invoice_id === i.id && p.status === "failed");
+        return {
+          invoice_id: i.id, number: i.number, subject: i.subject, customer_id: i.customer_id, subscription_id: i.subscription_id,
+          subscription_status: st.subscriptions.find((s) => s.id === i.subscription_id)?.status ?? null, currency: i.currency, amount_due: i.amount_due,
+          attempt_count: i.attempt_count, retries_left: Math.max(0, st.settings.retry_days.length - i.attempt_count), next_attempt_at: i.next_attempt_at,
+          last_failure_code: failed?.failure_code ?? null, last_failure_message: failed?.failure_message ?? null, final_action: st.settings.final_action, created_at: i.created_at,
+        };
+      });
+    return list(items);
+  });
+  on("POST", `${B}/subscriptions/{id}/change/preview`, ({ params, body }) => {
+    const s = st.subscriptions.find((x) => x.id === params.id);
+    if (!s) return missing("subscription");
+    const b = body as { price: string; proration?: string | null; at_period_end: boolean };
+    const from = st.prices.find((p) => p.key === s.items[0]!.price)!;
+    const to = st.prices.find((p) => p.key === b.price)!;
+    const proration = b.proration ?? "create_prorations";
+    const half = (n: number) => Math.round(n / 2);
+    const now = !b.at_period_end && proration !== "none";
+    const credit = now ? -half(from.unit_amount) : 0;
+    const charge = now ? half(to.unit_amount) : 0;
+    const lines = now
+      ? [{ kind: "proration", description: `Unused time on ${from.key}`, price: from.key, quantity: 1, amount: credit }, { kind: "proration", description: `Remaining time on ${to.key}`, price: to.key, quantity: 1, amount: charge }]
+      : [];
+    return {
+      status: 200,
+      body: {
+        subscription_id: s.id, currency: s.currency, from_price: from.key, to_price: to.key, quantity: 1, proration, at_period_end: b.at_period_end,
+        effective_at: b.at_period_end ? s.current_period_end : T0, period_start: s.current_period_start, period_end: s.current_period_end, lines,
+        credit, charge, net: credit + charge, invoiced_now: proration === "always_invoice" && now, new_period_amount: to.unit_amount,
+      },
+    };
+  });
+  const archive = <T extends { active: boolean }>(template: string, find: (key: string) => T | undefined) =>
+    on("POST", template, ({ params }) => { const x = find(Object.values(params)[0]!); if (!x) return missing("item"); x.active = false; return { status: 200, body: x }; });
+  archive(`${B}/products/{key}/archive`, (k) => st.products.find((p) => p.key === k));
+  archive(`${B}/prices/{key}/archive`, (k) => st.prices.find((p) => p.key === k));
+  archive(`${B}/coupons/{code}/archive`, (k) => st.coupons.find((c) => c.code === k));
+  archive(`${B}/tax-rates/{region}/archive`, (k) => st.taxRates.find((r) => r.region === k));
   on("GET", `${B}/orders`, ({ query }) => list(bySubject(st.orders, query)));
   on("POST", `${B}/orders`, ({ body }) => {
     const b = body as { subject?: string };

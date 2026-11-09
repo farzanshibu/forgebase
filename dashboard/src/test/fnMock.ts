@@ -112,7 +112,8 @@ export function installFunctions(mock: MockApi): FnState {
 
 const job = (id: string, status: JobStatus, extra: Partial<Job> = {}): Job => ({
   id, queue: "default", kind: "email.send", payload: { to: "a@b.c" }, priority: 0, status, run_at: NOW, attempts: status === "queued" ? 0 : 1, max_attempts: 3,
-  backoff_base_ms: 1000, backoff_max_ms: 60000, visibility_timeout_ms: 30000, cancel_requested: false, created_by: "admin", created_at: NOW, updated_at: NOW, ...extra,
+  backoff_base_ms: 1000, backoff_max_ms: 60000, visibility_timeout_ms: 30000, cancel_requested: false, created_by: "admin", created_at: NOW, updated_at: NOW,
+  has_checkpoint: false, waiting_for: 0, result_stored: false, ...extra,
 });
 
 export interface JobsState { jobs: Job[]; events: Record<string, JobEvent[]> }
