@@ -11,6 +11,7 @@ license.workspace = true
 axum.workspace = true
 forgebase-api.workspace = true
 forgebase-auth.workspace = true
+forgebase-policy.workspace = true
 forgebase-data.workspace = true
 forgebase-core.workspace = true
 forgebase-db.workspace = true

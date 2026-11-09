@@ -13,6 +13,7 @@ use forgebase_query::{CompileOptions, Compiler, FieldPath, SqlBuilder, parse_fil
 use forgebase_schema::{Collection, FieldKind};
 use serde::{Deserialize, Serialize};
 
+use crate::access::{TENANT_COLUMN, is_tenant_scoped};
 use crate::catalog::CatalogSnapshot;
 use crate::ddl::{DdlLog, record_history};
 use crate::{AccessContext, Action, DataError, DataService, ListQuery, finish};
@@ -297,6 +298,12 @@ pub(crate) fn create_index_sql(
                 .zip(&def.keys)
                 .map(|(e, k)| format!("{e}{}", if k.desc { " DESC" } else { "" }))
                 .collect();
+            let mut keys = keys;
+            if def.unique && is_tenant_scoped(coll) {
+                // Uniqueness holds per tenant: other tenants' values neither
+                // collide nor leak through "already in use".
+                keys.insert(0, q(TENANT_COLUMN));
+            }
             let mut sql = format!(
                 "CREATE {}INDEX {} ON {table} ({})",
                 if def.unique { "UNIQUE " } else { "" },
@@ -478,8 +485,7 @@ impl DataService {
     /// index meets duplicate values.
     pub async fn create_index(&self, ctx: &AccessContext, mut def: IndexDefinition) -> Result<IndexInfo, DataError> {
         let _guard = self.inner.schema_lock.lock().await;
-        let coll = self.collection(&def.collection)?;
-        self.authorize(ctx, Action::ManageIndexes, Some(&coll))?;
+        let (coll, _) = self.resolve(ctx, Action::ManageIndexes, &def.collection)?;
         if coll.is_view() {
             return Err(DataError::invalid(
                 "invalid_index",
@@ -585,7 +591,9 @@ impl DataService {
         ctx: &AccessContext,
         collection: Option<&str>,
     ) -> Result<Vec<IndexInfo>, DataError> {
-        let coll = collection.map(|c| self.collection(c)).transpose()?;
+        let coll = collection
+            .map(|c| self.resolve(ctx, Action::ReadSchema, c).map(|r| r.0))
+            .transpose()?;
         self.authorize(ctx, Action::ReadSchema, coll.as_ref())?;
         let b = self.inner.backend.as_ref();
         let mut names = Vec::new();
@@ -805,7 +813,9 @@ impl DataService {
     /// Refreshes planner statistics (`ANALYZE`) for a collection or the
     /// whole database.
     pub async fn analyze(&self, ctx: &AccessContext, collection: Option<&str>) -> Result<(), DataError> {
-        let coll = collection.map(|c| self.collection(c)).transpose()?;
+        let coll = collection
+            .map(|c| self.resolve(ctx, Action::ManageIndexes, c).map(|r| r.0))
+            .transpose()?;
         self.authorize(ctx, Action::ManageIndexes, coll.as_ref())?;
         let d = self.inner.backend.dialect();
         let sql = match &coll {
@@ -828,8 +838,7 @@ impl DataService {
         collection: &str,
         q: &ListQuery,
     ) -> Result<QueryPlan, DataError> {
-        let coll = self.collection(collection)?;
-        let pred = self.authorize(ctx, Action::List, Some(&coll))?;
+        let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
         let steps = self.inner.backend.explain(&built.select).await?;

@@ -620,6 +620,7 @@ dependencies = [
  "forgebase-db",
  "forgebase-graph",
  "forgebase-observability",
+ "forgebase-policy",
  "futures-util",
  "http-body-util",
  "metrics",
@@ -824,6 +825,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-policy"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-auth",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-query",
+ "forgebase-schema",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "utoipa",
+]
+
+[[package]]
 name = "forgebase-query"
 version = "0.1.0"
 dependencies = [
@@ -861,6 +885,7 @@ dependencies = [
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",
+ "forgebase-policy",
  "forgebase-vector",
  "serde_json",
  "tempfile",

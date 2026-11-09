@@ -26,7 +26,7 @@ Four tables (migration 0012): `_forgebase_vector_collections (id, tenant, name, 
 ## 2. Tenancy and authorisation
 
 - Every collection row carries the tenant (`AccessContext::tenant`, `''` when none). The service resolves `(tenant, name)` to the collection's integer id and every item, vector, FTS and index-file access goes through that id; no id is ever taken from input. Another tenant's collection of the same name is a different collection with its own index, so an ANN search cannot even see another tenant's vectors (stronger than a post-filter).
-- New `Action` variants: `VectorRead` (list, get, search, hybrid, stats), `VectorWrite` (upsert, delete items), `VectorAdmin` (collections, fields, rebuild, recall). Each call asks `DataService::authorize_action` first; the HTTP layer asks before reading the body. A `Decision::Filter` is treated as a denial (no row-level vector policies yet). The default authorizer allows the system and administrators; anonymous gets 401. FB-21's engine plugs in behind the same trait.
+- New `Action` variants: `VectorRead` (list, get, search, hybrid, stats), `VectorWrite` (upsert, delete items), `VectorAdmin` (collections, fields, rebuild, recall). Each call asks `DataService::authorize_action` first; the HTTP layer asks before reading the body. A `Decision::Filter` is treated as a denial (no row-level vector policies yet). The default authorizer allows the system and administrators; anonymous gets 401. Under the FB-21 policy engine (ADR-0008) the three actions are grantable permissions like any engine action: `engine:vector_read`, `engine:vector_write`, `engine:vector_admin`; the tenancy layer sets `AccessContext::tenant`, which selects the collections.
 
 ## 3. The derived ANN index
 

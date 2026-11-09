@@ -54,8 +54,9 @@ pub use service::{
     ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
 };
 
-/// Collection name used for service-account principals in the data core's
-/// `Principal::User` until the principal model gains a machine variant.
+/// Collection name FB-20 used for service-account principals before the data
+/// core gained `Principal::Service` (FB-21). Kept for compatibility; no
+/// principal carries it any more.
 pub const SERVICE_ACCOUNT_COLLECTION: &str = "_service_accounts";
 
 /// Auth settings. Defaults are production-safe.
@@ -173,8 +174,7 @@ impl Subject {
         match self {
             Subject::User { collection, id } => AccessContext::user(collection, id),
             Subject::Admin { id } => AccessContext::admin(id),
-            Subject::ServiceAccount { id, admin: true } => AccessContext::admin(format!("sa:{id}")),
-            Subject::ServiceAccount { id, admin: false } => AccessContext::user(SERVICE_ACCOUNT_COLLECTION, id),
+            Subject::ServiceAccount { id, admin } => AccessContext::service(id, *admin),
         }
     }
 
@@ -251,9 +251,12 @@ pub struct Authenticated {
 }
 
 impl Authenticated {
-    /// The data core context for this identity.
+    /// The data core context for this identity (with the credential's scopes).
     pub fn access_context(&self, request_id: Option<&str>) -> AccessContext {
-        let ctx = self.subject.access_context();
+        let mut ctx = self.subject.access_context();
+        if let Some(scopes) = &self.scopes {
+            ctx = ctx.with_scopes(scopes.iter().map(|s| s.as_str().to_owned()).collect());
+        }
         match request_id {
             Some(id) => ctx.with_request_id(id),
             None => ctx,

@@ -5,6 +5,7 @@ use forgebase_schema::{Collection, Field, FieldKind, Storage};
 use serde_json::Value as Json;
 
 use crate::DataError;
+use crate::access::{TENANT_COLUMN, is_tenant_scoped};
 
 /// Prefix of the temporary table used while a table is rebuilt.
 pub(crate) const TMP_PREFIX: &str = "_forgebase_tmp_";
@@ -32,6 +33,16 @@ pub(crate) fn system_columns(d: &dyn Dialect) -> Vec<String> {
 
 /// Names of the system columns, in table order.
 pub(crate) const SYSTEM_COLUMNS: &[&str] = &["id", "created", "updated", "_version", "_data"];
+
+/// System columns of a collection's table: [`SYSTEM_COLUMNS`] plus `_tenant`
+/// for tenant-scoped collections.
+pub(crate) fn system_column_names(coll: &Collection) -> Vec<&'static str> {
+    let mut cols = SYSTEM_COLUMNS.to_vec();
+    if is_tenant_scoped(coll) {
+        cols.push(TENANT_COLUMN);
+    }
+    cols
+}
 
 /// Column definition of a field. `target_table` is the table of a relation
 /// target.
@@ -107,6 +118,15 @@ pub(crate) fn relation_table(
             format!("field {}: relations cannot point to view collections", f.name),
         ));
     }
+    if is_tenant_scoped(target) && !is_tenant_scoped(coll) {
+        return Err(DataError::invalid(
+            "invalid_relation",
+            format!(
+                "field {}: a collection shared by all tenants cannot point to the tenant-scoped {}",
+                f.name, target.name
+            ),
+        ));
+    }
     Ok(Some(target.name.clone()))
 }
 
@@ -118,6 +138,10 @@ pub(crate) fn create_table_sql(
     catalog: &crate::catalog::CatalogSnapshot,
 ) -> Result<String, DataError> {
     let mut cols = system_columns(d);
+    if is_tenant_scoped(coll) {
+        let t = d.quote_ident(TENANT_COLUMN);
+        cols.push(format!("{t} TEXT NOT NULL CHECK (length({t}) BETWEEN 1 AND 64)"));
+    }
     for f in &coll.fields {
         cols.push(column_sql(d, f, relation_table(f, coll, catalog)?.as_deref()));
     }
@@ -236,7 +260,7 @@ pub(crate) async fn verify_collections(
                 .chain(c.fields.iter().map(|f| f.name.to_ascii_lowercase()))
                 .collect()
         } else {
-            SYSTEM_COLUMNS
+            system_column_names(c)
                 .iter()
                 .map(|s| (*s).to_owned())
                 .chain(c.fields.iter().map(|f| f.name.to_ascii_lowercase()))

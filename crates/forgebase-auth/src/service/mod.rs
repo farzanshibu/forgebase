@@ -1116,7 +1116,8 @@ impl AuthService {
     }
 
     /// Mailer.
-    pub(crate) fn mailer(&self) -> &Arc<dyn Mailer> {
+    /// The mailer (also used for organization invitations, FB-21).
+    pub fn mailer(&self) -> &Arc<dyn Mailer> {
         &self.inner.mailer
     }
 }

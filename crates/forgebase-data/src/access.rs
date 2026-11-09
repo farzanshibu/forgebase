@@ -7,9 +7,16 @@
 //! in here without changing any service signature.
 //!
 //! The default, [`DefaultAuthorizer`], fails closed: only the system and
-//! administrators are allowed anything.
+//! administrators are allowed anything. The policy engine (FB-21,
+//! `forgebase-policy`, ADR-0008) implements the same trait.
+//!
+//! Tenancy (ADR-0008 §4): a collection created with the option
+//! `tenant_scoped: true` gets a `_tenant` column. The data core — not the
+//! authorizer — adds `_tenant = <AccessContext::tenant>` to every statement on
+//! such a collection, stamps it on every insert and keeps relations inside one
+//! tenant, so isolation holds whatever the authorizer answers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 use forgebase_query::Expr;
@@ -37,17 +44,68 @@ pub enum Principal {
     },
     /// No credentials.
     Anonymous,
+    /// A service account (machine identity, FB-20). With `admin` it is
+    /// privileged like an administrator; otherwise policies decide, like for a
+    /// user.
+    Service {
+        /// Service-account id.
+        id: String,
+        /// Has the `admin` role.
+        admin: bool,
+    },
+}
+
+impl Principal {
+    /// `anonymous`, `user`, `admin`, `service` or `system`: the value of
+    /// `@request.auth.type` in policy rules.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Principal::System => "system",
+            Principal::Admin { .. } => "admin",
+            Principal::User { .. } => "user",
+            Principal::Anonymous => "anonymous",
+            Principal::Service { .. } => "service",
+        }
+    }
+
+    /// Id of the caller (`None` for anonymous and the system).
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Principal::Admin { id } | Principal::User { id, .. } | Principal::Service { id, .. } => Some(id),
+            Principal::System | Principal::Anonymous => None,
+        }
+    }
 }
 
 /// Identity and request metadata passed to every service call.
+///
+/// Build it with the constructors and `with_*` methods: fields may be added
+/// (FB-21 added `scopes`, `roles` and `attributes`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessContext {
     /// Caller.
     pub principal: Principal,
-    /// Tenant the request is scoped to (multi-tenancy, FB-21).
+    /// Realm (top isolation level, ADR-0008 §3) the request acts in.
+    /// [`DEFAULT_REALM`] unless the tenancy layer selected another one;
+    /// crossing realms is denied to everyone but platform super-admins.
+    pub realm_id: String,
+    /// Active organization (B2B subject) of the request; `None` = the
+    /// caller's personal scope (B2C subject).
+    pub org_id: Option<String>,
+    /// Tenant (project environment id) the request is scoped to. Every
+    /// statement on a tenant-scoped collection is restricted to it.
     pub tenant: Option<String>,
     /// Request id, for audit and logs.
     pub request_id: Option<String>,
+    /// Scopes of an API key or personal access token (`collections:read:posts`,
+    /// ...); `None` = not restricted by scopes (sessions, the system).
+    pub scopes: Option<Vec<String>>,
+    /// RBAC roles of the caller for this request (global role bindings plus
+    /// memberships of the selected tenant), resolved before the call.
+    pub roles: Vec<String>,
+    /// ABAC attributes of the caller (`@request.auth.<name>` in rules): the
+    /// fields of a user's auth record, resolved before the call.
+    pub attributes: serde_json::Map<String, Json>,
 }
 
 impl AccessContext {
@@ -74,11 +132,21 @@ impl AccessContext {
         Self::of(Principal::Anonymous)
     }
 
+    /// A service account.
+    pub fn service(id: impl Into<String>, admin: bool) -> Self {
+        Self::of(Principal::Service { id: id.into(), admin })
+    }
+
     fn of(principal: Principal) -> Self {
         Self {
             principal,
+            realm_id: DEFAULT_REALM.to_owned(),
+            org_id: None,
             tenant: None,
             request_id: None,
+            scopes: None,
+            roles: Vec::new(),
+            attributes: serde_json::Map::new(),
         }
     }
 
@@ -88,9 +156,67 @@ impl AccessContext {
         self
     }
 
-    /// System or administrator: may see hidden fields and use admin tools.
+    /// Same context in another realm.
+    pub fn with_realm(mut self, realm: impl Into<String>) -> Self {
+        self.realm_id = realm.into();
+        self
+    }
+
+    /// Same context with an active organization.
+    pub fn with_org(mut self, org: impl Into<String>) -> Self {
+        self.org_id = Some(org.into());
+        self
+    }
+
+    /// The principal as a string (`user:<collection>/<id>`, `service:<id>`,
+    /// `admin:<id>`, `anonymous`, `system`), as stored in tenancy tables.
+    pub fn principal_key(&self) -> String {
+        match &self.principal {
+            Principal::Service { id, .. } => format!("service:{id}"),
+            _ => self.actor(),
+        }
+    }
+
+    /// Who a check is billed and metered against: the active organization,
+    /// else the caller (B2C + B2B, ADR-0008 §2).
+    pub fn subject(&self) -> SubjectRef {
+        match &self.org_id {
+            Some(org) => SubjectRef::Org(org.clone()),
+            None => SubjectRef::Principal(self.principal_key()),
+        }
+    }
+
+    /// Same context scoped to a tenant.
+    pub fn with_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.tenant = Some(tenant.into());
+        self
+    }
+
+    /// Same context restricted to scopes.
+    pub fn with_scopes(mut self, scopes: Vec<String>) -> Self {
+        self.scopes = Some(scopes);
+        self
+    }
+
+    /// Same context with RBAC roles.
+    pub fn with_roles(mut self, roles: Vec<String>) -> Self {
+        self.roles = roles;
+        self
+    }
+
+    /// Same context with ABAC attributes.
+    pub fn with_attributes(mut self, attributes: serde_json::Map<String, Json>) -> Self {
+        self.attributes = attributes;
+        self
+    }
+
+    /// System, administrator or admin service account: may see hidden fields
+    /// and use admin tools.
     pub fn is_privileged(&self) -> bool {
-        matches!(self.principal, Principal::System | Principal::Admin { .. })
+        matches!(
+            self.principal,
+            Principal::System | Principal::Admin { .. } | Principal::Service { admin: true, .. }
+        )
     }
 
     /// The system principal.
@@ -105,8 +231,21 @@ impl AccessContext {
             Principal::Admin { id } => format!("admin:{id}"),
             Principal::User { collection, id } => format!("user:{collection}/{id}"),
             Principal::Anonymous => "anonymous".into(),
+            Principal::Service { id, .. } => format!("service:{id}"),
         }
     }
+}
+
+/// The realm everything belongs to unless placed elsewhere.
+pub const DEFAULT_REALM: &str = "default";
+
+/// The subject of a check: an organization or the caller's personal scope.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubjectRef {
+    /// An organization id.
+    Org(String),
+    /// A principal key (`user:users/abc`, `service:xyz`).
+    Principal(String),
 }
 
 /// What the caller wants to do.
@@ -196,11 +335,62 @@ pub enum Decision {
     Deny,
 }
 
+/// Field-level access of one caller to one collection (lower-case field
+/// names). Fields named here are, for that caller, treated like `hidden`
+/// fields (`unreadable`: never returned, expanded, filtered, sorted, grouped,
+/// aggregated or searched) or read-only (`read_only`: a create may not set
+/// them, an update may not change them).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FieldAccess {
+    /// Fields the caller may not read.
+    pub unreadable: BTreeSet<String>,
+    /// Fields the caller may not write.
+    pub read_only: BTreeSet<String>,
+}
+
+impl FieldAccess {
+    /// Whether nothing is restricted.
+    pub fn is_empty(&self) -> bool {
+        self.unreadable.is_empty() && self.read_only.is_empty()
+    }
+}
+
 /// Decides what a caller may do. Called once per service call.
+///
+/// Methods added after FB-10 have default implementations, so existing
+/// implementations keep compiling.
 pub trait Authorizer: Send + Sync + fmt::Debug {
     /// The decision for `action` on `collection` (`None` for actions that are
     /// not about one collection, e.g. SQL and index-wide operations).
     fn authorize(&self, ctx: &AccessContext, action: Action, collection: Option<&Collection>) -> Decision;
+
+    /// Field-level rules for `collection` (FB-21). Only asked for
+    /// non-privileged callers. Default: no restriction beyond `hidden`.
+    fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {
+        let _ = (ctx, collection);
+        FieldAccess::default()
+    }
+}
+
+/// Column holding the owning tenant of each row of a tenant-scoped collection.
+pub const TENANT_COLUMN: &str = "_tenant";
+
+/// Collection option that makes a collection tenant-scoped (set at creation,
+/// immutable afterwards).
+pub const TENANT_SCOPED_OPTION: &str = "tenant_scoped";
+
+/// Computed option of view collections whose query reads a tenant-scoped
+/// table; such views are closed to non-privileged callers.
+pub const READS_TENANT_DATA_OPTION: &str = "reads_tenant_data";
+
+/// Whether rows of `collection` belong to tenants (`options.tenant_scoped`).
+pub fn is_tenant_scoped(collection: &Collection) -> bool {
+    !collection.is_view() && collection.options.get(TENANT_SCOPED_OPTION) == Some(&Json::Bool(true))
+}
+
+/// Whether a view collection reads tenant-scoped tables.
+pub fn reads_tenant_data(collection: &Collection) -> bool {
+    collection.is_view() && collection.options.get(READS_TENANT_DATA_OPTION) == Some(&Json::Bool(true))
 }
 
 /// Fail-closed default: the system and administrators may do everything,
