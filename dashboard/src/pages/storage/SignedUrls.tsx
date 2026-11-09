@@ -1,0 +1,50 @@
+import { useState } from "react";
+import { signUrl } from "../../api";
+import type { Bucket, SignedUrl } from "../../api";
+import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { when } from "../functions/util";
+import { EXPIRY_PRESETS } from "./util";
+
+/** Signed URL generator for any key (also reachable from an object's panel with `initialKey`). */
+export default function SignedUrls({ bucket, initialKey = "", initialVersion = "" }: { bucket: Bucket; initialKey?: string; initialVersion?: string }) {
+  const [key, setKey] = useState(initialKey);
+  const [method, setMethod] = useState<"GET" | "PUT">("GET");
+  const [expiry, setExpiry] = useState(3600);
+  const [downloadAs, setDownloadAs] = useState("");
+  const [version, setVersion] = useState(initialVersion);
+  const [out, setOut] = useState<SignedUrl>();
+  const [error, setError] = useState<unknown>();
+  const make = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(undefined); setOut(undefined);
+    try {
+      setOut(await signUrl(bucket.name, { key, method, expires_in: expiry, ...(downloadAs && method === "GET" ? { download_as: downloadAs } : {}), ...(version && method === "GET" ? { version_id: version } : {}) }));
+    } catch (err) { setError(err); }
+  };
+  return (
+    <Panel title="Signed URL">
+      <form onSubmit={(e) => void make(e)} className="flex flex-wrap items-end gap-3 text-sm">
+        <label>Key<input className={`${inputCls} ml-2 w-56`} value={key} onChange={(e) => setKey(e.target.value)} required /></label>
+        <label>Method
+          <select className={`${inputCls} ml-2`} value={method} onChange={(e) => setMethod(e.target.value as "GET" | "PUT")}><option>GET</option><option>PUT</option></select>
+        </label>
+        <label>Expires in
+          <select className={`${inputCls} ml-2`} value={expiry} onChange={(e) => setExpiry(Number(e.target.value))}>
+            {EXPIRY_PRESETS.map((p) => <option key={p.seconds} value={p.seconds}>{p.label}</option>)}
+          </select>
+        </label>
+        {method === "GET" && <label>Download as<input className={`${inputCls} ml-2 w-36`} placeholder="file name" value={downloadAs} onChange={(e) => setDownloadAs(e.target.value)} /></label>}
+        {method === "GET" && <label>Version<input className={`${inputCls} ml-2 w-32`} placeholder="current" value={version} onChange={(e) => setVersion(e.target.value)} /></label>}
+        <Button type="submit" tone="primary" disabled={!key}>Generate URL</Button>
+      </form>
+      <ErrorView error={error} />
+      {out && (
+        <div className="mt-3 space-y-1 text-sm">
+          <textarea readOnly aria-label="Signed URL" className={`${inputCls} block h-20 w-full font-mono text-xs`} value={out.url} />
+          <p className="text-zinc-400">{out.method} · expires {when(out.expires_at)}</p>
+          <Button onClick={() => void navigator.clipboard?.writeText(out.url)}>Copy URL</Button>
+        </div>
+      )}
+    </Panel>
+  );
+}

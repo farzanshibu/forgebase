@@ -8,6 +8,8 @@ import AuthPage from "./pages/auth/AuthPage";
 import DatabasePage from "./pages/database/DatabasePage";
 import FunctionsPage from "./pages/functions/FunctionsPage";
 import JobsPage from "./pages/jobs/JobsPage";
+import RedisPage from "./pages/redis/RedisPage";
+import StoragePage from "./pages/storage/StoragePage";
 import GraphPage from "./pages/graph/GraphPage";
 import VectorPage from "./pages/vector/VectorPage";
 import SystemPage from "./pages/SystemPage";
@@ -49,6 +51,10 @@ function Studios() {
             <Route key={s.path} path="functions/*" element={<FunctionsPage />} />
           ) : s.path === "jobs" ? (
             <Route key={s.path} path="jobs/*" element={<JobsPage />} />
+          ) : s.path === "redis" ? (
+            <Route key={s.path} path="redis/*" element={<RedisPage />} />
+          ) : s.path === "storage" ? (
+            <Route key={s.path} path="storage/*" element={<StoragePage />} />
           ) : s.path === "" ? (
             <Route key="index" index element={<StudioPlaceholder studio={s} />} />
           ) : (
