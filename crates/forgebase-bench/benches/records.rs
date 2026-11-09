@@ -23,9 +23,18 @@ fn bench(c: &mut Criterion) {
         }))
         .unwrap();
         data.create_collection(&sys, coll).await.unwrap();
-        let rows = (0..5_000).map(|i| json!({"title": format!("note {i}"), "n": i})).collect();
-        let made = data.create_records(&sys, "notes", rows).await.unwrap();
-        made.into_iter().map(|r| r["id"].as_str().unwrap().to_owned()).collect()
+        let mut ids = Vec::new();
+        for chunk in 0..5 {
+            let rows = (0..1_000)
+                .map(|j| {
+                    let i = chunk * 1_000 + j;
+                    json!({"title": format!("note {i}"), "n": i})
+                })
+                .collect();
+            let made = data.create_records(&sys, "notes", rows).await.unwrap();
+            ids.extend(made.into_iter().map(|r| r["id"].as_str().unwrap().to_owned()));
+        }
+        ids
     });
 
     let mut g = c.benchmark_group("records");
