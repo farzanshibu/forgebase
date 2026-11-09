@@ -129,7 +129,10 @@ impl StorageDriver for LocalDriver {
                 let mut buf = vec![0u8; want];
                 match file.read(&mut buf).await {
                     Ok(0) => Some((
-                        Err(io::Error::new(io::ErrorKind::UnexpectedEof, "stored blob is shorter than recorded")),
+                        Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "stored blob is shorter than recorded",
+                        )),
                         (file, 0),
                     )),
                     Ok(n) => {
@@ -233,7 +236,9 @@ impl StorageDriver for LocalDriver {
                     if meta.is_dir() {
                         stack.push(path);
                     } else if meta.is_file() {
-                        let Ok(rel) = path.strip_prefix(&self.root) else { continue };
+                        let Ok(rel) = path.strip_prefix(&self.root) else {
+                            continue;
+                        };
                         let key = rel.to_string_lossy().replace('\\', "/");
                         if key.starts_with(&prefix) {
                             out.push(DriverObject {

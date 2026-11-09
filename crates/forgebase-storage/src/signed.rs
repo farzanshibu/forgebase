@@ -52,7 +52,12 @@ pub struct SignedParams {
 
 impl SignedParams {
     /// Reads the values from a path (bucket, key) and the query pairs.
-    pub fn from_request(method: SignedMethod, bucket: &str, key: &str, query: &BTreeMap<String, String>) -> Result<Self> {
+    pub fn from_request(
+        method: SignedMethod,
+        bucket: &str,
+        key: &str,
+        query: &BTreeMap<String, String>,
+    ) -> Result<Self> {
         let expires = query
             .get("expires")
             .and_then(|e| e.parse::<i64>().ok())
@@ -88,8 +93,8 @@ impl SignedParams {
 impl StorageService {
     fn mac(&self, message: &str) -> HmacSha256 {
         #[allow(clippy::expect_used)]
-        let mut m = <HmacSha256 as KeyInit>::new_from_slice(&self.inner.signing_key)
-            .expect("HMAC accepts any key length");
+        let mut m =
+            <HmacSha256 as KeyInit>::new_from_slice(&self.inner.signing_key).expect("HMAC accepts any key length");
         m.update(message.as_bytes());
         m
     }
@@ -99,11 +104,16 @@ impl StorageService {
         validate_key(&req.key)?;
         let b = self.bucket_row(bucket).await?;
         let method = req.method.unwrap_or(SignedMethod::Get);
-        let need = if method == SignedMethod::Get { Need::Read } else { Need::Write };
+        let need = if method == SignedMethod::Get {
+            Need::Read
+        } else {
+            Need::Write
+        };
         self.authorize(ctx, &b, Some(&req.key), need).await?;
         if method == SignedMethod::Get {
             // Fails early (404) for a key or version that is not there.
-            self.head_object(ctx, bucket, &req.key, req.version_id.as_deref()).await?;
+            self.head_object(ctx, bucket, &req.key, req.version_id.as_deref())
+                .await?;
         }
         let s = &self.inner.settings;
         let ttl = req.expires_in.unwrap_or(s.default_signed_ttl_secs);
@@ -121,7 +131,9 @@ impl StorageService {
             expires,
             version: req.version_id.filter(|v| method == SignedMethod::Get && !v.is_empty()),
             download: req.download_as.filter(|d| method == SignedMethod::Get && !d.is_empty()),
-            content_type: req.content_type.filter(|c| method == SignedMethod::Put && !c.is_empty()),
+            content_type: req
+                .content_type
+                .filter(|c| method == SignedMethod::Put && !c.is_empty()),
             subject: (method == SignedMethod::Put).then(|| Self::subject_of(ctx)),
             sig: String::new(),
         };
@@ -186,7 +198,9 @@ impl StorageService {
         }
         self.verify_signed(p)?;
         if let Some(required) = &p.content_type {
-            let declared = content_type.as_deref().map(|c| c.split(';').next().unwrap_or("").trim());
+            let declared = content_type
+                .as_deref()
+                .map(|c| c.split(';').next().unwrap_or("").trim());
             if declared != Some(required.split(';').next().unwrap_or("").trim()) {
                 return Err(StorageError::invalid(
                     "content_type_mismatch",

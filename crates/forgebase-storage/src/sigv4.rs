@@ -174,7 +174,7 @@ mod tests {
     fn stamps_match_the_calendar() {
         assert_eq!(stamps(1_369_353_600), ("20130524".into(), "20130524T000000Z".into()));
         assert_eq!(stamps(0).0, "19700101");
-        assert_eq!(stamps(1_794_225_600).1, "20261110T120000Z");
+        assert_eq!(stamps(1_794_225_600).1, "20261109T120000Z");
         // Leap day.
         assert_eq!(stamps(1_709_164_800).0, "20240229");
     }
@@ -190,9 +190,7 @@ mod tests {
     /// (Signature Calculations for the Authorization Header).
     #[test]
     fn aws_documented_get_object_signature() {
-        let headers = vec![
-            ("range".to_owned(), "bytes=0-9".to_owned()),
-        ];
+        let headers = vec![("range".to_owned(), "bytes=0-9".to_owned())];
         let out = sign(
             &aws_example(),
             &SignInput {

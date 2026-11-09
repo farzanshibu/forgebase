@@ -98,7 +98,9 @@ struct Inner {
 
 impl std::fmt::Debug for S3Driver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("S3Driver").field("cfg", &self.inner.cfg).finish_non_exhaustive()
+        f.debug_struct("S3Driver")
+            .field("cfg", &self.inner.cfg)
+            .finish_non_exhaustive()
     }
 }
 
@@ -107,11 +109,15 @@ struct Query(Vec<(String, String)>);
 impl S3Driver {
     /// A driver talking to `cfg.endpoint` through `client`.
     pub fn new(cfg: S3Config, client: Arc<dyn HttpClient>) -> Result<Self> {
-        Self::with_clock(cfg, client, Arc::new(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
-        }))
+        Self::with_clock(
+            cfg,
+            client,
+            Arc::new(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+            }),
+        )
     }
 
     /// Like [`S3Driver::new`] with an injectable clock (epoch seconds).
@@ -124,12 +130,20 @@ impl S3Driver {
             .map_err(|_| StorageError::invalid("invalid_s3_endpoint", "the S3 endpoint is not a URL"))?;
         let scheme = url.scheme().to_owned();
         if scheme != "http" && scheme != "https" {
-            return Err(StorageError::invalid("invalid_s3_endpoint", "the S3 endpoint must be http or https"));
+            return Err(StorageError::invalid(
+                "invalid_s3_endpoint",
+                "the S3 endpoint must be http or https",
+            ));
         }
         let host = match (url.host_str(), url.port()) {
             (Some(h), Some(p)) => format!("{h}:{p}"),
             (Some(h), None) => h.to_owned(),
-            _ => return Err(StorageError::invalid("invalid_s3_endpoint", "the S3 endpoint has no host")),
+            _ => {
+                return Err(StorageError::invalid(
+                    "invalid_s3_endpoint",
+                    "the S3 endpoint has no host",
+                ));
+            }
         };
         let base_path = url.path().trim_end_matches('/').to_owned();
         let creds = Credentials {
@@ -237,14 +251,22 @@ impl S3Driver {
     }
 
     async fn put_single(&self, key: &str, body: Vec<u8>) -> Result<()> {
-        let r = self.call("PUT", &self.object_path(key), Query(vec![]), vec![], body).await?;
+        let r = self
+            .call("PUT", &self.object_path(key), Query(vec![]), vec![], body)
+            .await?;
         Self::check(r, "PutObject").map(|_| ())
     }
 
     async fn multipart(&self, key: &str, first: Vec<u8>, mut body: ByteStream) -> Result<u64> {
         let path = self.object_path(key);
         let r = self
-            .call("POST", &path, Query(vec![("uploads".into(), String::new())]), vec![], vec![])
+            .call(
+                "POST",
+                &path,
+                Query(vec![("uploads".into(), String::new())]),
+                vec![],
+                vec![],
+            )
             .await?;
         let r = Self::check(r, "CreateMultipartUpload")?;
         let upload_id = tag(&String::from_utf8_lossy(&r.body), "UploadId")
@@ -254,7 +276,13 @@ impl S3Driver {
             Ok(total) => Ok(total),
             Err(e) => {
                 let _ = self
-                    .call("DELETE", &path, Query(vec![("uploadId".into(), upload_id)]), vec![], vec![])
+                    .call(
+                        "DELETE",
+                        &path,
+                        Query(vec![("uploadId".into(), upload_id)]),
+                        vec![],
+                        vec![],
+                    )
                     .await;
                 Err(e)
             }
@@ -299,7 +327,10 @@ impl S3Driver {
         }
         let mut xml = String::from("<CompleteMultipartUpload>");
         for (n, etag) in &etags {
-            xml.push_str(&format!("<Part><PartNumber>{n}</PartNumber><ETag>{}</ETag></Part>", xml_escape(etag)));
+            xml.push_str(&format!(
+                "<Part><PartNumber>{n}</PartNumber><ETag>{}</ETag></Part>",
+                xml_escape(etag)
+            ));
         }
         xml.push_str("</CompleteMultipartUpload>");
         let r = self
@@ -321,7 +352,10 @@ impl S3Driver {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn xml_unescape(s: &str) -> String {
@@ -409,7 +443,9 @@ impl StorageDriver for S3Driver {
     fn head(&self, key: &str) -> BoxFuture<'_, Result<Option<DriverObject>>> {
         let key = key.to_owned();
         Box::pin(async move {
-            let r = self.call("HEAD", &self.object_path(&key), Query(vec![]), vec![], vec![]).await?;
+            let r = self
+                .call("HEAD", &self.object_path(&key), Query(vec![]), vec![], vec![])
+                .await?;
             if r.status == 404 {
                 return Ok(None);
             }
@@ -429,7 +465,9 @@ impl StorageDriver for S3Driver {
     fn delete(&self, key: &str) -> BoxFuture<'_, Result<()>> {
         let key = key.to_owned();
         Box::pin(async move {
-            let r = self.call("DELETE", &self.object_path(&key), Query(vec![]), vec![], vec![]).await?;
+            let r = self
+                .call("DELETE", &self.object_path(&key), Query(vec![]), vec![], vec![])
+                .await?;
             if r.status == 404 {
                 return Ok(());
             }
@@ -474,7 +512,10 @@ impl StorageDriver for S3Driver {
             let mut out = Vec::new();
             let mut token: Option<String> = None;
             loop {
-                let mut q = vec![("list-type".to_owned(), "2".to_owned()), ("prefix".to_owned(), full_prefix.clone())];
+                let mut q = vec![
+                    ("list-type".to_owned(), "2".to_owned()),
+                    ("prefix".to_owned(), full_prefix.clone()),
+                ];
                 if let Some(t) = &token {
                     q.push(("continuation-token".into(), t.clone()));
                 }

@@ -10,9 +10,7 @@ use forgebase_jobs::JobService;
 
 use crate::driver::StorageDriver;
 use crate::error::{Result, StorageError};
-use crate::model::{
-    Acl, AclEntry, Bucket, BucketInput, BucketPatch, Permission, Visibility,
-};
+use crate::model::{Acl, AclEntry, Bucket, BucketInput, BucketPatch, Permission, Visibility};
 use crate::util::{new_id, rfc3339, validate_bucket};
 
 /// Quota feature (a gauge, counting logical bytes) the service meters.
@@ -338,7 +336,8 @@ impl StorageService {
         let (Some(ent), Some(feature)) = (self.inner.ent.get(), self.inner.settings.quota_feature.as_deref()) else {
             return Ok(());
         };
-        if delta == 0 {
+        // Administrators and the system have no billing subject: not metered.
+        if delta == 0 || forgebase_entitlements::parse_subject(subject).is_err() {
             return Ok(());
         }
         let req = GaugeRequest {
@@ -387,7 +386,10 @@ impl StorageService {
         validate_bucket(&input.name)?;
         self.authorize_platform(ctx, Action::StorageAdmin)?;
         if input.max_object_bytes == Some(0) {
-            return Err(StorageError::invalid("invalid_limit", "max_object_bytes must be positive"));
+            return Err(StorageError::invalid(
+                "invalid_limit",
+                "max_object_bytes must be positive",
+            ));
         }
         let allowed = normalise_types(input.allowed_content_types)?;
         let now = self.now();
@@ -400,7 +402,10 @@ impl StorageService {
             .await?;
         if !exists.is_empty() {
             let _ = tx.rollback().await;
-            return Err(StorageError::conflict("bucket_exists", format!("bucket {} exists", input.name)));
+            return Err(StorageError::conflict(
+                "bucket_exists",
+                format!("bucket {} exists", input.name),
+            ));
         }
         tx.execute(&st(
             "INSERT INTO _forgebase_storage_buckets \
@@ -582,12 +587,21 @@ impl StorageService {
             ))
             .await?;
         staged.extend(parts.rows.iter().map(|r| text(r, 0)));
-        tx.execute(&st("DELETE FROM _forgebase_storage_uploads WHERE bucket = ?", vec![name.into()]))
-            .await?;
-        tx.execute(&st("DELETE FROM _forgebase_storage_objects WHERE bucket = ?", vec![name.into()]))
-            .await?;
-        tx.execute(&st("DELETE FROM _forgebase_storage_buckets WHERE name = ?", vec![name.into()]))
-            .await?;
+        tx.execute(&st(
+            "DELETE FROM _forgebase_storage_uploads WHERE bucket = ?",
+            vec![name.into()],
+        ))
+        .await?;
+        tx.execute(&st(
+            "DELETE FROM _forgebase_storage_objects WHERE bucket = ?",
+            vec![name.into()],
+        ))
+        .await?;
+        tx.execute(&st(
+            "DELETE FROM _forgebase_storage_buckets WHERE name = ?",
+            vec![name.into()],
+        ))
+        .await?;
         tx.commit().await?;
         drop(gate);
         for key in staged {
@@ -645,7 +659,10 @@ fn normalise_types(t: Option<Vec<String>>) -> Result<Option<Vec<String>>> {
     let mut out = Vec::new();
     for item in list {
         let item = item.trim().to_ascii_lowercase();
-        let ok = item.len() <= 100 && item.split_once('/').is_some_and(|(a, b)| !a.is_empty() && !b.is_empty());
+        let ok = item.len() <= 100
+            && item
+                .split_once('/')
+                .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty());
         if !ok {
             return Err(StorageError::invalid(
                 "invalid_content_type",
@@ -659,8 +676,10 @@ fn normalise_types(t: Option<Vec<String>>) -> Result<Option<Vec<String>>> {
 
 fn validate_grantee(g: &str) -> Result<()> {
     let ok = matches!(g, "public" | "authenticated")
-        || g.strip_prefix("user:").is_some_and(|r| r.contains('/') && r.len() <= 200)
-        || g.strip_prefix("service:").is_some_and(|r| !r.is_empty() && r.len() <= 200)
+        || g.strip_prefix("user:")
+            .is_some_and(|r| r.contains('/') && r.len() <= 200)
+        || g.strip_prefix("service:")
+            .is_some_and(|r| !r.is_empty() && r.len() <= 200)
         || g.strip_prefix("role:").is_some_and(|r| !r.is_empty() && r.len() <= 200);
     if ok {
         Ok(())
@@ -689,10 +708,10 @@ async fn load_signing_key(db: &dyn Backend, now: i64) -> Result<Vec<u8>> {
             vec![],
         ))
         .await?;
-    if let Some(v) = existing.scalar().and_then(Value::as_str).and_then(crate::util::unhex) {
-        if v.len() == 32 {
-            return Ok(v);
-        }
+    if let Some(v) = existing.scalar().and_then(Value::as_str).and_then(crate::util::unhex)
+        && v.len() == 32
+    {
+        return Ok(v);
     }
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|e| StorageError::Internal(format!("no randomness: {e}")))?;

@@ -53,9 +53,9 @@ pub fn parse_sha256(s: &str) -> Result<String> {
     }
 }
 
-/// Bucket names: 3-63 characters of `[a-z0-9._-]`, starting alphanumeric.
+/// Bucket names: 1-63 characters of `[a-z0-9._-]`, starting alphanumeric.
 pub fn validate_bucket(name: &str) -> Result<()> {
-    let ok = (3..=63).contains(&name.len())
+    let ok = (1..=63).contains(&name.len())
         && name.as_bytes()[0].is_ascii_alphanumeric()
         && name
             .bytes()
@@ -65,7 +65,7 @@ pub fn validate_bucket(name: &str) -> Result<()> {
     } else {
         Err(StorageError::invalid(
             "invalid_bucket_name",
-            "bucket names are 3-63 characters of a-z, 0-9, '.', '_' and '-', starting with a letter or digit",
+            "bucket names are 1-63 characters of a-z, 0-9, '.', '_' and '-', starting with a letter or digit",
         ))
     }
 }
@@ -156,7 +156,7 @@ mod tests {
     fn names_are_validated() {
         assert!(validate_bucket("photos-2026").is_ok());
         assert!(validate_bucket("Photos").is_err());
-        assert!(validate_bucket("ab").is_err());
+        assert!(validate_bucket("").is_err());
         assert!(validate_key("a/b.txt").is_ok());
         assert!(validate_key("/a").is_err());
         assert!(validate_key("").is_err());

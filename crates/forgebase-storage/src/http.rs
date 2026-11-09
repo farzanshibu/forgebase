@@ -32,9 +32,9 @@ use utoipa::{OpenApi, ToSchema};
 use crate::driver::ByteStream;
 use crate::error::StorageError;
 use crate::model::{
-    Acl, AclEntry, Bucket, BucketInput, BucketPatch, CompleteInput, CompletePart, DeleteResult, ObjectInfo,
-    ObjectPage, Permission, PartInfo, ReconcileReport, SignRequest, SignedMethod, SignedUrl, StorageStats, Upload,
-    UploadInput, Visibility,
+    Acl, AclEntry, Bucket, BucketInput, BucketPatch, CompleteInput, CompletePart, DeleteResult, ObjectInfo, ObjectPage,
+    PartInfo, Permission, ReconcileReport, SignRequest, SignedMethod, SignedUrl, StorageStats, Upload, UploadInput,
+    Visibility,
 };
 use crate::objects::{PutRequest, RangeSpec};
 use crate::service::StorageService;
@@ -59,10 +59,12 @@ pub fn api(e: StorageError) -> ApiError {
             ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "object_too_large", e.to_string())
                 .with_details(json!({"limit": limit}))
         }
-        StorageError::RangeNotSatisfiable { size } => {
-            ApiError::new(StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable", e.to_string())
-                .with_details(json!({"size": size}))
-        }
+        StorageError::RangeNotSatisfiable { size } => ApiError::new(
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "range_not_satisfiable",
+            e.to_string(),
+        )
+        .with_details(json!({"size": size})),
         StorageError::ChecksumMismatch { expected, actual } => {
             ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "checksum_mismatch", e.to_string())
                 .with_details(json!({"expected": expected, "actual": actual}))
@@ -96,7 +98,9 @@ fn content_length(h: &HeaderMap) -> Option<u64> {
 }
 
 fn checksum(h: &HeaderMap) -> Result<Option<String>, ApiError> {
-    header_str(h, H_CHECKSUM).map(|v| parse_sha256(v).map_err(api)).transpose()
+    header_str(h, H_CHECKSUM)
+        .map(|v| parse_sha256(v).map_err(api))
+        .transpose()
 }
 
 fn metadata(h: &HeaderMap) -> BTreeMap<String, String> {
@@ -111,8 +115,16 @@ fn metadata(h: &HeaderMap) -> BTreeMap<String, String> {
 /// Parses a single `Range: bytes=...`; `None` for no header, an error for
 /// anything that is not one satisfiable-looking range.
 fn parse_range(h: &HeaderMap) -> Result<Option<RangeSpec>, ApiError> {
-    let Some(v) = header_str(h, "range") else { return Ok(None) };
-    let bad = || ApiError::new(StatusCode::RANGE_NOT_SATISFIABLE, "range_not_satisfiable", "unsupported Range header");
+    let Some(v) = header_str(h, "range") else {
+        return Ok(None);
+    };
+    let bad = || {
+        ApiError::new(
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "range_not_satisfiable",
+            "unsupported Range header",
+        )
+    };
     let spec = v.trim().strip_prefix("bytes=").ok_or_else(bad)?;
     if spec.contains(',') {
         return Err(bad());
@@ -130,7 +142,13 @@ fn parse_range(h: &HeaderMap) -> Result<Option<RangeSpec>, ApiError> {
 fn disposition(name: &str) -> String {
     let safe: String = name
         .chars()
-        .map(|c| if c.is_ascii_graphic() && !matches!(c, '"' | '\\' | ';') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_graphic() && !matches!(c, '"' | '\\' | ';') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("attachment; filename=\"{safe}\"")
 }
@@ -176,7 +194,10 @@ fn object_response(
     if let Some(name) = download {
         res = res.header(header::CONTENT_DISPOSITION, disposition(name));
     } else if is_active(&info.content_type) {
-        res = res.header(header::CONTENT_DISPOSITION, disposition(info.key.rsplit('/').next().unwrap_or("download")));
+        res = res.header(
+            header::CONTENT_DISPOSITION,
+            disposition(info.key.rsplit('/').next().unwrap_or("download")),
+        );
     }
     for (k, v) in &info.metadata {
         if let (Ok(n), Ok(v)) = (
@@ -326,7 +347,11 @@ async fn list_buckets(State(s): State<StorageService>, Access(ctx): Access) -> A
 /// Creates a bucket.
 #[utoipa::path(post, path = "/api/v1/storage/buckets", tag = "storage", request_body = BucketInput,
     responses((status = 201, body = Bucket)))]
-async fn create_bucket(State(s): State<StorageService>, Access(ctx): Access, b: Result<ApiJson<BucketInput>, ApiError>) -> ApiResult {
+async fn create_bucket(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    b: Result<ApiJson<BucketInput>, ApiError>,
+) -> ApiResult {
     created(s.create_bucket(&ctx, b?.0).await.map_err(api)?)
 }
 
@@ -340,14 +365,24 @@ async fn get_bucket(State(s): State<StorageService>, Access(ctx): Access, Path(b
 /// Changes a bucket's policy.
 #[utoipa::path(patch, path = "/api/v1/storage/buckets/{bucket}", tag = "storage", request_body = BucketPatch,
     responses((status = 200, body = Bucket)))]
-async fn patch_bucket(State(s): State<StorageService>, Access(ctx): Access, Path(b): Path<String>, body: Result<ApiJson<BucketPatch>, ApiError>) -> ApiResult {
+async fn patch_bucket(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(b): Path<String>,
+    body: Result<ApiJson<BucketPatch>, ApiError>,
+) -> ApiResult {
     ok(s.update_bucket(&ctx, &b, body?.0).await.map_err(api)?)
 }
 
 /// Deletes a bucket (`?force=true` removes its objects too).
 #[utoipa::path(delete, path = "/api/v1/storage/buckets/{bucket}", tag = "storage",
     responses((status = 204, description = "Deleted")))]
-async fn delete_bucket(State(s): State<StorageService>, Access(ctx): Access, Path(b): Path<String>, q: Query) -> ApiResult {
+async fn delete_bucket(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(b): Path<String>,
+    q: Query,
+) -> ApiResult {
     s.delete_bucket(&ctx, &b, q.bool("force")?).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -362,14 +397,24 @@ async fn get_acl(State(s): State<StorageService>, Access(ctx): Access, Path(b): 
 /// Replaces the ACL of a bucket.
 #[utoipa::path(put, path = "/api/v1/storage/buckets/{bucket}/acl", tag = "storage", request_body = Acl,
     responses((status = 200, body = Acl)))]
-async fn put_acl(State(s): State<StorageService>, Access(ctx): Access, Path(b): Path<String>, body: Result<ApiJson<Acl>, ApiError>) -> ApiResult {
+async fn put_acl(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(b): Path<String>,
+    body: Result<ApiJson<Acl>, ApiError>,
+) -> ApiResult {
     ok(s.set_acl(&ctx, &b, body?.0).await.map_err(api)?)
 }
 
 /// Lists objects (`prefix`, `delimiter`, `limit`, `cursor`).
 #[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/objects", tag = "storage",
     responses((status = 200, body = ObjectPage)))]
-async fn list_objects(State(s): State<StorageService>, Access(ctx): Access, Path(b): Path<String>, q: Query) -> ApiResult {
+async fn list_objects(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(b): Path<String>,
+    q: Query,
+) -> ApiResult {
     let page = s
         .list_objects(
             &ctx,
@@ -390,7 +435,13 @@ async fn list_objects(State(s): State<StorageService>, Access(ctx): Access, Path
 #[utoipa::path(put, path = "/api/v1/storage/buckets/{bucket}/objects/{key}", tag = "storage",
     responses((status = 201, body = ObjectInfo), (status = 422, description = "Checksum mismatch"),
               (status = 429, description = "Storage quota exceeded")))]
-async fn put_object(State(s): State<StorageService>, Access(ctx): Access, Path((bucket, key)): Path<(String, String)>, headers: HeaderMap, body: Body) -> ApiResult {
+async fn put_object(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult {
     let info = s
         .put_object(
             &ctx,
@@ -414,7 +465,14 @@ async fn put_object(State(s): State<StorageService>, Access(ctx): Access, Path((
 #[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/objects/{key}", tag = "storage",
     responses((status = 200, description = "The object"), (status = 206, description = "A range"),
               (status = 416, description = "Range not satisfiable")))]
-async fn get_object(State(s): State<StorageService>, Access(ctx): Access, method: Method, Path((bucket, key)): Path<(String, String)>, headers: HeaderMap, q: Query) -> ApiResult {
+async fn get_object(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    method: Method,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    q: Query,
+) -> ApiResult {
     let range = parse_range(&headers)?;
     let read = s
         .get_object(&ctx, &bucket, &key, q.get("version"), range)
@@ -426,14 +484,26 @@ async fn get_object(State(s): State<StorageService>, Access(ctx): Access, method
 /// Deletes an object, or one version with `?version=`.
 #[utoipa::path(delete, path = "/api/v1/storage/buckets/{bucket}/objects/{key}", tag = "storage",
     responses((status = 200, body = DeleteResult)))]
-async fn delete_object(State(s): State<StorageService>, Access(ctx): Access, Path((bucket, key)): Path<(String, String)>, q: Query) -> ApiResult {
-    ok(s.delete_object(&ctx, &bucket, &key, q.get("version")).await.map_err(api)?)
+async fn delete_object(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path((bucket, key)): Path<(String, String)>,
+    q: Query,
+) -> ApiResult {
+    ok(s.delete_object(&ctx, &bucket, &key, q.get("version"))
+        .await
+        .map_err(api)?)
 }
 
 /// Copies an object (no bytes move).
 #[utoipa::path(post, path = "/api/v1/storage/buckets/{bucket}/copy", tag = "storage", request_body = CopyBody,
     responses((status = 201, body = ObjectInfo)))]
-async fn copy_object(State(s): State<StorageService>, Access(ctx): Access, Path(bucket): Path<String>, body: Result<ApiJson<CopyBody>, ApiError>) -> ApiResult {
+async fn copy_object(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(bucket): Path<String>,
+    body: Result<ApiJson<CopyBody>, ApiError>,
+) -> ApiResult {
     let b = body?.0;
     let dest = b.dest_bucket.as_deref().unwrap_or(&bucket);
     created(
@@ -446,16 +516,27 @@ async fn copy_object(State(s): State<StorageService>, Access(ctx): Access, Path(
 /// Moves (renames) an object.
 #[utoipa::path(post, path = "/api/v1/storage/buckets/{bucket}/move", tag = "storage", request_body = CopyBody,
     responses((status = 200, body = ObjectInfo)))]
-async fn move_object(State(s): State<StorageService>, Access(ctx): Access, Path(bucket): Path<String>, body: Result<ApiJson<CopyBody>, ApiError>) -> ApiResult {
+async fn move_object(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(bucket): Path<String>,
+    body: Result<ApiJson<CopyBody>, ApiError>,
+) -> ApiResult {
     let b = body?.0;
     let dest = b.dest_bucket.as_deref().unwrap_or(&bucket);
-    ok(s.move_object(&ctx, &bucket, &b.key, dest, &b.dest_key).await.map_err(api)?)
+    ok(s.move_object(&ctx, &bucket, &b.key, dest, &b.dest_key)
+        .await
+        .map_err(api)?)
 }
 
 /// Every version of a key, newest first.
 #[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/versions/{key}", tag = "storage",
     responses((status = 200, body = ObjectInfo)))]
-async fn list_versions(State(s): State<StorageService>, Access(ctx): Access, Path((bucket, key)): Path<(String, String)>) -> ApiResult {
+async fn list_versions(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path((bucket, key)): Path<(String, String)>,
+) -> ApiResult {
     ok(Items {
         items: s.list_versions(&ctx, &bucket, &key).await.map_err(api)?,
     })
@@ -464,22 +545,41 @@ async fn list_versions(State(s): State<StorageService>, Access(ctx): Access, Pat
 /// Restores an earlier version as a new current version.
 #[utoipa::path(post, path = "/api/v1/storage/buckets/{bucket}/restore", tag = "storage", request_body = RestoreBody,
     responses((status = 201, body = ObjectInfo)))]
-async fn restore_version(State(s): State<StorageService>, Access(ctx): Access, Path(bucket): Path<String>, body: Result<ApiJson<RestoreBody>, ApiError>) -> ApiResult {
+async fn restore_version(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(bucket): Path<String>,
+    body: Result<ApiJson<RestoreBody>, ApiError>,
+) -> ApiResult {
     let b = body?.0;
-    created(s.restore_version(&ctx, &bucket, &b.key, &b.version_id).await.map_err(api)?)
+    created(
+        s.restore_version(&ctx, &bucket, &b.key, &b.version_id)
+            .await
+            .map_err(api)?,
+    )
 }
 
 /// Makes a signed URL.
 #[utoipa::path(post, path = "/api/v1/storage/buckets/{bucket}/sign", tag = "storage", request_body = SignRequest,
     responses((status = 200, body = SignedUrl)))]
-async fn sign(State(s): State<StorageService>, Access(ctx): Access, Path(bucket): Path<String>, body: Result<ApiJson<SignRequest>, ApiError>) -> ApiResult {
+async fn sign(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(bucket): Path<String>,
+    body: Result<ApiJson<SignRequest>, ApiError>,
+) -> ApiResult {
     ok(s.sign_url(&ctx, &bucket, body?.0).await.map_err(api)?)
 }
 
 /// Opens a multipart or resumable upload session.
 #[utoipa::path(post, path = "/api/v1/storage/buckets/{bucket}/uploads", tag = "storage", request_body = UploadInput,
     responses((status = 201, body = Upload)))]
-async fn create_upload(State(s): State<StorageService>, Access(ctx): Access, Path(bucket): Path<String>, body: Result<ApiJson<UploadInput>, ApiError>) -> ApiResult {
+async fn create_upload(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(bucket): Path<String>,
+    body: Result<ApiJson<UploadInput>, ApiError>,
+) -> ApiResult {
     let up = s.create_upload(&ctx, &bucket, body?.0).await.map_err(api)?;
     let mut res = (StatusCode::CREATED, Json(&up)).into_response();
     upload_headers(&mut res, up.received_bytes);
@@ -500,7 +600,13 @@ async fn get_upload(State(s): State<StorageService>, Access(ctx): Access, Path(i
 #[utoipa::path(patch, path = "/api/v1/storage/uploads/{id}", tag = "storage",
     responses((status = 200, body = Upload), (status = 201, body = ObjectInfo, description = "Completed"),
               (status = 409, description = "Wrong offset")))]
-async fn append_chunk(State(s): State<StorageService>, Access(ctx): Access, Path(id): Path<String>, headers: HeaderMap, body: Body) -> ApiResult {
+async fn append_chunk(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult {
     let offset = header_str(&headers, H_OFFSET)
         .and_then(|v| v.parse::<u64>().ok())
         .ok_or_else(|| ApiError::bad_request("missing_offset", "send the Upload-Offset header"))?;
@@ -527,16 +633,29 @@ async fn abort_upload(State(s): State<StorageService>, Access(ctx): Access, Path
 /// Uploads one numbered part of a multipart session.
 #[utoipa::path(put, path = "/api/v1/storage/uploads/{id}/parts/{n}", tag = "storage",
     responses((status = 200, body = PartInfo)))]
-async fn upload_part(State(s): State<StorageService>, Access(ctx): Access, Path((id, n)): Path<(String, u32)>, headers: HeaderMap, body: Body) -> ApiResult {
-    ok(s.upload_part(&ctx, &id, n, checksum(&headers)?.as_deref(), body_stream(body))
-        .await
-        .map_err(api)?)
+async fn upload_part(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path((id, n)): Path<(String, u32)>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult {
+    ok(
+        s.upload_part(&ctx, &id, n, checksum(&headers)?.as_deref(), body_stream(body))
+            .await
+            .map_err(api)?,
+    )
 }
 
 /// Completes a multipart session.
 #[utoipa::path(post, path = "/api/v1/storage/uploads/{id}/complete", tag = "storage", request_body = CompleteInput,
     responses((status = 201, body = ObjectInfo)))]
-async fn complete_upload(State(s): State<StorageService>, Access(ctx): Access, Path(id): Path<String>, body: Option<Json<CompleteInput>>) -> ApiResult {
+async fn complete_upload(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    body: Option<Json<CompleteInput>>,
+) -> ApiResult {
     created(
         s.complete_upload(&ctx, &id, body.map(|b| b.0).unwrap_or_default())
             .await
@@ -557,7 +676,13 @@ fn signed_params(method: SignedMethod, bucket: &str, key: &str, q: &Query) -> Re
 /// Downloads through a signed URL (no credentials needed).
 #[utoipa::path(get, path = "/api/v1/storage/signed/{bucket}/{key}", tag = "storage",
     responses((status = 200, description = "The object"), (status = 403, description = "Forged or expired")))]
-async fn signed_get(State(s): State<StorageService>, method: Method, Path((bucket, key)): Path<(String, String)>, headers: HeaderMap, q: Query) -> ApiResult {
+async fn signed_get(
+    State(s): State<StorageService>,
+    method: Method,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    q: Query,
+) -> ApiResult {
     let p = signed_params(SignedMethod::Get, &bucket, &key, &q)?;
     let range = parse_range(&headers)?;
     let read = s.get_signed(&p, range).await.map_err(api)?;
@@ -567,7 +692,13 @@ async fn signed_get(State(s): State<StorageService>, method: Method, Path((bucke
 /// Uploads through a signed URL (no credentials needed).
 #[utoipa::path(put, path = "/api/v1/storage/signed/{bucket}/{key}", tag = "storage",
     responses((status = 201, body = ObjectInfo)))]
-async fn signed_put(State(s): State<StorageService>, Path((bucket, key)): Path<(String, String)>, headers: HeaderMap, q: Query, body: Body) -> ApiResult {
+async fn signed_put(
+    State(s): State<StorageService>,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    q: Query,
+    body: Body,
+) -> ApiResult {
     let p = signed_params(SignedMethod::Put, &bucket, &key, &q)?;
     let info = s
         .put_signed(

@@ -70,7 +70,10 @@ impl StorageService {
         // 3. Blobs, with uploads kept out.
         let _gate = self.inner.gate.write().await;
         let rows = self
-            .read("SELECT sha256, refcount, zero_since FROM _forgebase_storage_blobs", vec![])
+            .read(
+                "SELECT sha256, refcount, zero_since FROM _forgebase_storage_blobs",
+                vec![],
+            )
             .await?;
         let mut known: HashMap<String, (i64, Option<i64>)> = HashMap::new();
         for r in &rows.rows {

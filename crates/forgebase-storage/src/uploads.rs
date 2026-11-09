@@ -20,7 +20,7 @@ use futures_util::StreamExt;
 use crate::driver::ByteStream;
 use crate::error::{Result, StorageError};
 use crate::model::{CompleteInput, ObjectInfo, PartInfo, Upload, UploadInput};
-use crate::objects::metadata_json;
+use crate::objects::{CommitMeta, metadata_json};
 use crate::service::{BucketRow, Need, StorageService, id, int, iv, opt_int, opt_text, st, text, type_allowed, uint};
 use crate::util::{parse_sha256, rfc3339, validate_key};
 
@@ -94,7 +94,10 @@ impl StorageService {
             return Err(StorageError::NotFound(format!("upload {id}")));
         }
         if row.expires_at <= self.now() {
-            return Err(StorageError::conflict("upload_expired", "the upload session has expired"));
+            return Err(StorageError::conflict(
+                "upload_expired",
+                "the upload session has expired",
+            ));
         }
         Ok((row, bucket))
     }
@@ -238,7 +241,8 @@ impl StorageService {
                 expected.as_deref(),
             )
             .await?;
-        self.register_part(&row, part_number, &staged.key, staged.size, &staged.sha, None).await
+        self.register_part(&row, part_number, &staged.key, staged.size, &staged.sha, None)
+            .await
     }
 
     async fn register_part(
@@ -424,18 +428,15 @@ impl StorageService {
                         .find(|(p, _)| p.part_number == want.part_number)
                         .cloned()
                         .ok_or_else(|| {
-                            StorageError::invalid(
-                                "missing_part",
-                                format!("part {} was not uploaded", want.part_number),
-                            )
+                            StorageError::invalid("missing_part", format!("part {} was not uploaded", want.part_number))
                         })?;
-                    if let Some(sum) = want.checksum_sha256.as_deref().map(parse_sha256).transpose()? {
-                        if sum != info.checksum_sha256 {
-                            return Err(StorageError::ChecksumMismatch {
-                                expected: sum,
-                                actual: info.checksum_sha256,
-                            });
-                        }
+                    if let Some(sum) = want.checksum_sha256.as_deref().map(parse_sha256).transpose()?
+                        && sum != info.checksum_sha256
+                    {
+                        return Err(StorageError::ChecksumMismatch {
+                            expected: sum,
+                            actual: info.checksum_sha256,
+                        });
                     }
                     out.push((info, key));
                 }
@@ -449,7 +450,10 @@ impl StorageService {
         if row.declared_size.is_some_and(|d| d != total) {
             return Err(StorageError::invalid(
                 "size_mismatch",
-                format!("the parts hold {total} bytes, the upload declared {}", row.declared_size.unwrap_or(0)),
+                format!(
+                    "the parts hold {total} bytes, the upload declared {}",
+                    row.declared_size.unwrap_or(0)
+                ),
             ));
         }
         let expected = match input.checksum_sha256.as_deref() {
@@ -488,7 +492,17 @@ impl StorageService {
             ));
         }
         let info = self
-            .commit_staged(&row.subject, &row.created_by, bucket, &row.key, staged, content_type, row.metadata.clone())
+            .commit_staged(
+                bucket,
+                &row.key,
+                staged,
+                CommitMeta {
+                    subject: row.subject.clone(),
+                    actor: row.created_by.clone(),
+                    content_type,
+                    metadata_json: row.metadata.clone(),
+                },
+            )
             .await?;
         self.drop_session(&row.id).await?;
         Ok(info)
@@ -498,8 +512,11 @@ impl StorageService {
     pub(crate) async fn drop_session(&self, id: &str) -> Result<u64> {
         let parts = self.parts_of(id).await?;
         let mut tx = self.begin().await?;
-        tx.execute(&st("DELETE FROM _forgebase_storage_uploads WHERE id = ?", vec![id.into()]))
-            .await?;
+        tx.execute(&st(
+            "DELETE FROM _forgebase_storage_uploads WHERE id = ?",
+            vec![id.into()],
+        ))
+        .await?;
         tx.commit().await?;
         let n = parts.len() as u64;
         for (_, key) in parts {

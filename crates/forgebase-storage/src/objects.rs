@@ -24,13 +24,10 @@ use sha2::{Digest, Sha256};
 use crate::driver::ByteStream;
 use crate::error::{Result, StorageError};
 use crate::model::{DeleteResult, ObjectInfo, ObjectPage};
-use crate::service::{
-    BucketRow, Need, StorageService, blob_key, id, int, iv, opt_text, st, text, type_allowed, uint,
-};
+use crate::service::{BucketRow, Need, StorageService, blob_key, id, int, iv, opt_text, st, text, type_allowed, uint};
 use crate::util::{from_extension, hex, rfc3339, sniff, validate_key};
 
-const OBJECT_COLS: &str =
-    "id, bucket, key, blob_sha, size, content_type, metadata, is_latest, delete_marker, created_by, created_at, quota_subject";
+const OBJECT_COLS: &str = "id, bucket, key, blob_sha, size, content_type, metadata, is_latest, delete_marker, created_by, created_at, quota_subject";
 
 /// A byte range request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +155,14 @@ impl ObjectRow {
     }
 }
 
+/// Who and what a committed object is.
+pub(crate) struct CommitMeta {
+    pub subject: String,
+    pub actor: String,
+    pub content_type: String,
+    pub metadata_json: String,
+}
+
 /// A version to install as the latest of a key.
 pub(crate) struct NewVersion {
     pub id: String,
@@ -237,7 +242,9 @@ impl StorageService {
         });
         let put = self.inner.driver.put(&staging_key, Box::pin(stream)).await;
         let done = {
-            let mut s = state.lock().map_err(|_| StorageError::Internal("ingest poisoned".into()))?;
+            let mut s = state
+                .lock()
+                .map_err(|_| StorageError::Internal("ingest poisoned".into()))?;
             let sha = hex(&std::mem::take(&mut s.sha).finalize());
             (s.over, s.body_failed, s.bytes, sha, std::mem::take(&mut s.head))
         };
@@ -248,20 +255,23 @@ impl StorageService {
         }
         if body_failed {
             let _ = self.inner.driver.delete(&staging_key).await;
-            return Err(StorageError::invalid("upload_interrupted", "the request body ended early"));
+            return Err(StorageError::invalid(
+                "upload_interrupted",
+                "the request body ended early",
+            ));
         }
         if let Err(e) = put {
             let _ = self.inner.driver.delete(&staging_key).await;
             return Err(e);
         }
-        if let Some(want) = expected {
-            if want != sha {
-                let _ = self.inner.driver.delete(&staging_key).await;
-                return Err(StorageError::ChecksumMismatch {
-                    expected: want.to_owned(),
-                    actual: sha,
-                });
-            }
+        if let Some(want) = expected
+            && want != sha
+        {
+            let _ = self.inner.driver.delete(&staging_key).await;
+            return Err(StorageError::ChecksumMismatch {
+                expected: want.to_owned(),
+                actual: sha,
+            });
         }
         Ok(Staged {
             key: staging_key,
@@ -287,7 +297,8 @@ impl StorageService {
         validate_key(&req.key)?;
         let bucket = self.bucket_row(&req.bucket).await?;
         self.authorize(ctx, &bucket, Some(&req.key), Need::Write).await?;
-        self.put_inner(&Self::subject_of(ctx), &ctx.principal_key(), &bucket, req).await
+        self.put_inner(&Self::subject_of(ctx), &ctx.principal_key(), &bucket, req)
+            .await
     }
 
     /// The upload after authorisation (signed URLs authorise by signature).
@@ -304,7 +315,11 @@ impl StorageService {
             return Err(StorageError::TooLarge { limit });
         }
         let metadata = metadata_json(&req.metadata)?;
-        let expected = req.expected_sha256.as_deref().map(crate::util::parse_sha256).transpose()?;
+        let expected = req
+            .expected_sha256
+            .as_deref()
+            .map(crate::util::parse_sha256)
+            .transpose()?;
         let staged = self
             .stage(format!("staging/single/{}", id()), req.body, limit, expected.as_deref())
             .await?;
@@ -316,21 +331,29 @@ impl StorageService {
                 format!("bucket {} does not accept {content_type}", bucket.name),
             ));
         }
-        self.commit_staged(subject, actor, bucket, &req.key, staged, content_type, metadata).await
+        let meta = CommitMeta {
+            subject: subject.to_owned(),
+            actor: actor.to_owned(),
+            content_type,
+            metadata_json: metadata,
+        };
+        self.commit_staged(bucket, &req.key, staged, meta).await
     }
 
     /// Turns a staged file into the latest version of `key`.
     pub(crate) async fn commit_staged(
         &self,
-        subject: &str,
-        actor: &str,
         bucket: &BucketRow,
         key: &str,
         staged: Staged,
-        content_type: String,
-        metadata_json: String,
+        meta: CommitMeta,
     ) -> Result<ObjectInfo> {
-        let subject = subject.to_owned();
+        let CommitMeta {
+            subject,
+            actor,
+            content_type,
+            metadata_json,
+        } = meta;
         let version_id = id();
         let size = staged.size;
         let charge = i64::try_from(size).unwrap_or(i64::MAX);
@@ -348,7 +371,7 @@ impl StorageService {
                     content_type: content_type.clone(),
                     metadata_json: metadata_json.clone(),
                     subject: subject.clone(),
-                    actor: actor.to_owned(),
+                    actor: actor.clone(),
                 };
                 self.install(bucket, key, &nv).await
             }
@@ -680,7 +703,9 @@ impl StorageService {
             let mut tx = self.begin().await?;
             let found = tx
                 .fetch_all(&st(
-                    &format!("SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? AND id = ?"),
+                    &format!(
+                        "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? AND id = ?"
+                    ),
                     vec![bucket.into(), key.into(), v.into()],
                 ))
                 .await?;
@@ -688,8 +713,11 @@ impl StorageService {
                 let _ = tx.rollback().await;
                 return Err(StorageError::NotFound(format!("version {v} of {key}")));
             };
-            tx.execute(&st("DELETE FROM _forgebase_storage_objects WHERE id = ?", vec![v.into()]))
-                .await?;
+            tx.execute(&st(
+                "DELETE FROM _forgebase_storage_objects WHERE id = ?",
+                vec![v.into()],
+            ))
+            .await?;
             if let Some(sha) = &row.blob_sha {
                 dec_blob(tx.as_mut(), sha, now).await?;
             }
@@ -832,13 +860,20 @@ impl StorageService {
         self.clone_version(ctx, &row, &b, key).await
     }
 
-    async fn clone_version(&self, ctx: &AccessContext, row: &ObjectRow, dst: &BucketRow, key: &str) -> Result<ObjectInfo> {
+    async fn clone_version(
+        &self,
+        ctx: &AccessContext,
+        row: &ObjectRow,
+        dst: &BucketRow,
+        key: &str,
+    ) -> Result<ObjectInfo> {
         let (Some(sha), subject) = (row.blob_sha.clone(), Self::subject_of(ctx)) else {
             return Err(StorageError::NotFound(format!("object {}", row.key)));
         };
         let version_id = id();
         let charge = i64::try_from(row.size).unwrap_or(i64::MAX);
-        self.meter(&subject, charge, &format!("storage:{version_id}:add")).await?;
+        self.meter(&subject, charge, &format!("storage:{version_id}:add"))
+            .await?;
         let gate = self.inner.gate.read().await;
         let nv = NewVersion {
             id: version_id.clone(),
@@ -856,7 +891,9 @@ impl StorageService {
                 Ok(new.info())
             }
             Err(e) => {
-                let _ = self.meter(&subject, -charge, &format!("storage:{version_id}:undo")).await;
+                let _ = self
+                    .meter(&subject, -charge, &format!("storage:{version_id}:undo"))
+                    .await;
                 Err(e)
             }
         }
