@@ -115,7 +115,7 @@ impl IntoResponse for HttpError {
     }
 }
 
-fn request_id(headers: &HeaderMap) -> String {
+pub(crate) fn request_id(headers: &HeaderMap) -> String {
     headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
@@ -212,7 +212,15 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
     let mut ci = client_info(req.headers(), connect, auth.config().trust_forwarded_for);
     let rid_opt = ci.request_id.clone();
 
-    let cred = match credential(req.headers()) {
+    // The identity-provider protocol endpoints authenticate on their own
+    // (client credentials, OAuth access tokens, the browser session with a
+    // form CSRF token); they never see a resolved credential.
+    let cred = if req.uri().path().starts_with("/api/auth/oidc/") {
+        Ok(None)
+    } else {
+        credential(req.headers())
+    };
+    let cred = match cred {
         Ok(c) => c,
         Err(e) => return HttpError::new(e, &rid).into_response(),
     };
@@ -360,7 +368,7 @@ fn cookie(name: &str, value: &str, max_age: u64, http_only: bool, secure: bool) 
     HeaderValue::from_str(&c).ok()
 }
 
-fn clear_cookies(secure: bool) -> Vec<HeaderValue> {
+pub(crate) fn clear_cookies(secure: bool) -> Vec<HeaderValue> {
     [
         cookie(SESSION_COOKIE, "", 0, true, secure),
         cookie(CSRF_COOKIE, "", 0, false, secure),
@@ -577,7 +585,8 @@ pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> 
         .route("/keys/rotate", post(rotate_keys))
         .merge(crate::social::http::routes())
         .merge(crate::webauthn::http::routes())
-        .merge(crate::identity_http::routes());
+        .merge(crate::identity_http::routes())
+        .merge(crate::idp::http::routes());
     Router::new().nest("/api/auth", r.with_state(auth))
 }
 
