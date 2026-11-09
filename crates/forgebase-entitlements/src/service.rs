@@ -409,7 +409,10 @@ impl EntitlementService {
         let member = Self::member_of(ctx).filter(|_| !ctx.is_privileged());
         let r = self.resolved(&subject, member.as_deref());
         Ok(if r.enabled(feature) {
-            HasAnswer { has: true, reason: None }
+            HasAnswer {
+                has: true,
+                reason: None,
+            }
         } else {
             HasAnswer {
                 has: false,
@@ -445,7 +448,10 @@ impl EntitlementService {
             });
         }
         if ctx.is_privileged() {
-            return Ok(HasAnswer { has: true, reason: None });
+            return Ok(HasAnswer {
+                has: true,
+                reason: None,
+            });
         }
         let subject = subject_key(&ctx.subject());
         let cat = self.catalog();
@@ -459,7 +465,10 @@ impl EntitlementService {
                 });
             }
         }
-        Ok(HasAnswer { has: true, reason: None })
+        Ok(HasAnswer {
+            has: true,
+            reason: None,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -500,7 +509,10 @@ impl EntitlementService {
                 _ => {
                     return Err(EntitlementError::invalid(
                         "scope_key_required",
-                        format!("{feature} is counted per {}: name it in scope_key", policy.scope.as_str()),
+                        format!(
+                            "{feature} is counted per {}: name it in scope_key",
+                            policy.scope.as_str()
+                        ),
                     ));
                 }
             },
@@ -851,7 +863,14 @@ impl EntitlementService {
             });
         }
         let cat = self.catalog();
-        let q = self.quota(&cat, &AccessContext::system(), &subject, &feature, Some(&scope_key), false)?;
+        let q = self.quota(
+            &cat,
+            &AccessContext::system(),
+            &subject,
+            &feature,
+            Some(&scope_key),
+            false,
+        )?;
         let now = self.now();
         let (mut tx, seq) = self.begin().await?;
         let res: Result<(Lease, Effects)> = async {
@@ -870,7 +889,10 @@ impl EntitlementService {
             let expires_at = match renew {
                 Some(ttl) => {
                     if released.is_some() || expires <= now {
-                        return Err(EntitlementError::conflict("lease_expired", "the lease is no longer active"));
+                        return Err(EntitlementError::conflict(
+                            "lease_expired",
+                            "the lease is no longer active",
+                        ));
                     }
                     let ttl = ttl.unwrap_or(q.policy.lease_ttl_secs);
                     if !(1..=MAX_TTL_SECS).contains(&ttl) {
@@ -941,7 +963,10 @@ impl EntitlementService {
             ));
         }
         if req.value.is_some_and(|v| v < 0) {
-            return Err(EntitlementError::invalid("invalid_gauge_change", "value must not be negative"));
+            return Err(EntitlementError::invalid(
+                "invalid_gauge_change",
+                "value must not be negative",
+            ));
         }
         let cat = self.catalog();
         let q = self.quota(&cat, ctx, &subject, &req.feature, req.scope_key.as_deref(), true)?;
@@ -1186,14 +1211,24 @@ impl EntitlementService {
             let res: Result<()> = async {
                 let mut db = Db::Tx(tx.as_mut());
                 for r in rows.rows.iter().map(|r| res_row(r)) {
-                    let q = self.quota(
+                    let Ok(q) = self.quota(
                         &cat,
                         &AccessContext::system(),
                         &r.subject,
                         &r.feature,
                         Some(&r.scope_key),
                         false,
-                    )?;
+                    ) else {
+                        // The feature was deleted: no counter to correct.
+                        db.exec(
+                            "UPDATE _forgebase_usage_reservations SET status = 'expired', settled_at = ?1 WHERE id = ?2",
+                            vec![now.into(), r.id.clone().into()],
+                        )
+                        .await?;
+                        usage::return_packs(&mut db, &r.packs, r.pack_units).await?;
+                        report.reservations_expired += 1;
+                        continue;
+                    };
                     usage::settle_back(&mut db, &q, &r, "expired", now).await?;
                     let st = usage::load_state(&mut db, &q, now).await?;
                     fx.packs.push((
@@ -1360,7 +1395,10 @@ async fn consume_tx(
         )
         .await?;
     if let Some(r) = prior.rows.first() {
-        if text(r, 1) != q.key.feature || text(r, 2) != q.key.scope_key || int(r, 3) != req.units || text(r, 4) != "consume"
+        if text(r, 1) != q.key.feature
+            || text(r, 2) != q.key.scope_key
+            || int(r, 3) != req.units
+            || text(r, 4) != "consume"
         {
             return Err(EntitlementError::conflict(
                 "idempotency_conflict",
@@ -1391,7 +1429,17 @@ async fn consume_tx(
     let before = st.clone();
     usage::ensure_row(db, q, &mut st, now).await?;
     usage::take_packs(db, q, alloc.pack_units, now).await?;
-    if !usage::bump(db, q, st.window.start, alloc.window_units, 0, usage::ceiling(q, &st), now).await? {
+    if !usage::bump(
+        db,
+        q,
+        st.window.start,
+        alloc.window_units,
+        0,
+        usage::ceiling(q, &st),
+        now,
+    )
+    .await?
+    {
         return Err(EntitlementError::QuotaExceeded(Box::new(usage::decision(
             q,
             &st,
@@ -1447,7 +1495,8 @@ async fn reserve_tx(
     now: i64,
     ttl: i64,
 ) -> Result<Txn<Reservation>> {
-    let sql = format!("SELECT {RES_COLUMNS} FROM _forgebase_usage_reservations WHERE subject = ?1 AND idempotency_key = ?2");
+    let sql =
+        format!("SELECT {RES_COLUMNS} FROM _forgebase_usage_reservations WHERE subject = ?1 AND idempotency_key = ?2");
     let prior = db.fetch(&sql, vec![q.key.subject.clone().into(), idem.into()]).await?;
     if let Some(r) = prior.rows.first().map(|r| res_row(r)) {
         if r.feature != q.key.feature || r.scope_key != q.key.scope_key || r.units != req.units {
@@ -1474,7 +1523,17 @@ async fn reserve_tx(
     };
     usage::ensure_row(db, q, &mut st, now).await?;
     let packs = usage::take_packs(db, q, alloc.pack_units, now).await?;
-    if !usage::bump(db, q, st.window.start, 0, alloc.window_units, usage::ceiling(q, &st), now).await? {
+    if !usage::bump(
+        db,
+        q,
+        st.window.start,
+        0,
+        alloc.window_units,
+        usage::ceiling(q, &st),
+        now,
+    )
+    .await?
+    {
         return Err(EntitlementError::QuotaExceeded(Box::new(usage::decision(
             q,
             &st,

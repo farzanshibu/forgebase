@@ -86,7 +86,10 @@ fn validate_key(what: &str, key: &str) -> Result<()> {
 fn name_of(name: Option<&str>, key: &str) -> Result<String> {
     let n = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(key);
     if n.len() > 128 {
-        return Err(EntitlementError::invalid("invalid_name", "name is at most 128 characters"));
+        return Err(EntitlementError::invalid(
+            "invalid_name",
+            "name is at most 128 characters",
+        ));
     }
     Ok(n.to_owned())
 }
@@ -101,13 +104,18 @@ pub(crate) fn validate_grant(
     limits: &[Option<i64>],
 ) -> Result<Period> {
     if limits.iter().flatten().any(|l| *l < 0) {
-        return Err(EntitlementError::invalid("invalid_limit", "limits must not be negative"));
+        return Err(EntitlementError::invalid(
+            "invalid_limit",
+            "limits must not be negative",
+        ));
     }
     let bad = |m: String| Err(EntitlementError::invalid("invalid_period", m));
     let p = period.unwrap_or_else(|| crate::catalog::default_period(kind));
     match kind {
         FeatureKind::Metered if p == Period::None => {
-            return bad(format!("{feature} is metered: give hour, day, month, lifetime or rolling"));
+            return bad(format!(
+                "{feature} is metered: give hour, day, month, lifetime or rolling"
+            ));
         }
         FeatureKind::Rate if !matches!(p, Period::Hour | Period::Day) => {
             return bad(format!("{feature} is a rate limit: give hour or day"));
@@ -127,7 +135,10 @@ pub(crate) fn validate_grant(
 
 fn validate_permissions(perms: &[String]) -> Result<()> {
     if perms.len() > 64 {
-        return Err(EntitlementError::invalid("invalid_permission", "at most 64 permission patterns"));
+        return Err(EntitlementError::invalid(
+            "invalid_permission",
+            "at most 64 permission patterns",
+        ));
     }
     for p in perms {
         forgebase_policy::perm::validate(p).map_err(|m| EntitlementError::invalid("invalid_permission", m))?;
@@ -204,7 +215,10 @@ impl EntitlementService {
         let name = name_of(input.name.as_deref(), key)?;
         let unit = input.unit.unwrap_or_default();
         if unit.len() > 32 {
-            return Err(EntitlementError::invalid("invalid_unit", "unit is at most 32 characters"));
+            return Err(EntitlementError::invalid(
+                "invalid_unit",
+                "unit is at most 32 characters",
+            ));
         }
         if let Some(old) = self.catalog().features.get(key)
             && old.kind != input.kind
@@ -322,7 +336,10 @@ impl EntitlementService {
         }
         let metadata = input.metadata.clone().unwrap_or_else(|| json!({}));
         if !metadata.is_object() {
-            return Err(EntitlementError::invalid("invalid_metadata", "metadata must be an object"));
+            return Err(EntitlementError::invalid(
+                "invalid_metadata",
+                "metadata must be an object",
+            ));
         }
         let existing = cat.plans.get(key).map(|p| p.id.clone());
         let actor = ctx.principal_key();
@@ -644,7 +661,12 @@ impl EntitlementService {
     }
 
     /// Creates or replaces the quota policy of a feature.
-    pub async fn put_quota_policy(&self, ctx: &AccessContext, feature: &str, mut p: QuotaPolicy) -> Result<QuotaPolicy> {
+    pub async fn put_quota_policy(
+        &self,
+        ctx: &AccessContext,
+        feature: &str,
+        mut p: QuotaPolicy,
+    ) -> Result<QuotaPolicy> {
         self.require_admin(ctx)?;
         let kind = self
             .catalog()
@@ -724,7 +746,15 @@ impl EntitlementService {
             if n == 0 {
                 return Err(EntitlementError::NotFound(format!("quota policy of {feature}")));
             }
-            audit_tx(tx, now, &actor, "quota_policy_delete", None, &json!({"feature": feature})).await
+            audit_tx(
+                tx,
+                now,
+                &actor,
+                "quota_policy_delete",
+                None,
+                &json!({"feature": feature}),
+            )
+            .await
         }
         .await;
         self.wend(tx, res).await
@@ -780,7 +810,10 @@ impl EntitlementService {
         if let Some(e) = &sync.event_id
             && (e.is_empty() || e.len() > 256)
         {
-            return Err(EntitlementError::invalid("invalid_event_id", "event_id must be 1-256 characters"));
+            return Err(EntitlementError::invalid(
+                "invalid_event_id",
+                "event_id must be 1-256 characters",
+            ));
         }
         let cat = self.catalog();
         let plan = cat
@@ -796,7 +829,10 @@ impl EntitlementService {
                 .map(|x| x.id.clone())
                 .ok_or_else(|| EntitlementError::NotFound(format!("add-on {}", a.addon)))?;
             if a.quantity < 0 {
-                return Err(EntitlementError::invalid("invalid_quantity", "quantity must not be negative"));
+                return Err(EntitlementError::invalid(
+                    "invalid_quantity",
+                    "quantity must not be negative",
+                ));
             }
             addon_ids.push((id, a.quantity));
         }
@@ -806,7 +842,6 @@ impl EntitlementService {
                 "a trialing subscription needs trial_ends_at",
             ));
         }
-        let previous = cat.subscriptions.get(&sync.subject).and_then(|s| s.source_event_at);
         drop(cat);
         let actor = ctx.principal_key();
         let (mut tx, now) = self.wbegin().await?;
@@ -825,7 +860,17 @@ impl EntitlementService {
                         return Ok(o);
                     }
                 }
-                let stale = matches!((sync.event_at, previous), (Some(at), Some(prev)) if at < prev);
+            // Read inside the transaction: concurrent webhooks are ordered by the writer.
+            let previous = tx
+                .fetch_all(&Statement::new(
+                    "SELECT source_event_at FROM _forgebase_subscriptions WHERE subject = ?1",
+                    vec![sync.subject.clone().into()],
+                ))
+                .await?
+                .rows
+                .first()
+                .and_then(|r| opt_int(r, 0));
+            let stale = matches!((sync.event_at, previous), (Some(at), Some(prev)) if at < prev);
                 let outcome = if stale {
                     let cur = tx
                         .fetch_all(&Statement::new(
@@ -972,7 +1017,10 @@ impl EntitlementService {
             .map(|x| x.id.clone())
             .ok_or_else(|| EntitlementError::NotFound(format!("add-on {}", a.addon)))?;
         if a.quantity < 0 {
-            return Err(EntitlementError::invalid("invalid_quantity", "quantity must not be negative"));
+            return Err(EntitlementError::invalid(
+                "invalid_quantity",
+                "quantity must not be negative",
+            ));
         }
         drop(cat);
         let actor = ctx.principal_key();
@@ -1009,9 +1057,16 @@ impl EntitlementService {
     pub async fn grant_pack(&self, ctx: &AccessContext, input: PackGrantInput) -> Result<PackGrant> {
         self.require_admin(ctx)?;
         parse_subject(&input.subject)?;
-        let idem = input.idempotency_key.as_deref().map(|k| validate_idem(Some(k))).transpose()?;
+        let idem = input
+            .idempotency_key
+            .as_deref()
+            .map(|k| validate_idem(Some(k)))
+            .transpose()?;
         if !(1..=10_000).contains(&input.quantity) {
-            return Err(EntitlementError::invalid("invalid_quantity", "quantity must be 1-10000"));
+            return Err(EntitlementError::invalid(
+                "invalid_quantity",
+                "quantity must be 1-10000",
+            ));
         }
         let cat = self.catalog();
         let pack = cat
@@ -1135,13 +1190,21 @@ impl EntitlementService {
             parse_subject(s)?;
         }
         if let Some(m) = &input.member
-            && (parse_subject(m)? .is_some())
+            && (parse_subject(m)?.is_some())
         {
-            return Err(EntitlementError::invalid("invalid_member", "member must be a principal key"));
+            return Err(EntitlementError::invalid(
+                "invalid_member",
+                "member must be a principal key",
+            ));
         }
         let effect = match input.effect.as_str() {
             "allow" | "deny" => input.effect.clone(),
-            _ => return Err(EntitlementError::invalid("invalid_effect", "effect must be allow or deny")),
+            _ => {
+                return Err(EntitlementError::invalid(
+                    "invalid_effect",
+                    "effect must be allow or deny",
+                ));
+            }
         };
         let cat = self.catalog();
         let kind = cat
@@ -1150,7 +1213,13 @@ impl EntitlementService {
             .map(|f| f.kind)
             .ok_or_else(|| EntitlementError::NotFound(format!("feature {}", input.feature)))?;
         let period = if input.period.is_some() || input.window_secs.is_some() {
-            Some(validate_grant(kind, &input.feature, input.period, input.window_secs, &[input.limit])?)
+            Some(validate_grant(
+                kind,
+                &input.feature,
+                input.period,
+                input.window_secs,
+                &[input.limit],
+            )?)
         } else {
             validate_grant(kind, &input.feature, None, None, &[input.limit])?;
             None
@@ -1305,7 +1374,15 @@ impl EntitlementService {
             if n == 0 {
                 return Err(EntitlementError::NotFound("custom limit".into()));
             }
-            audit_tx(tx, now, &actor, "custom_limit_delete", Some(subject), &json!({"feature": feature})).await
+            audit_tx(
+                tx,
+                now,
+                &actor,
+                "custom_limit_delete",
+                Some(subject),
+                &json!({"feature": feature}),
+            )
+            .await
         }
         .await;
         self.wend(tx, res).await

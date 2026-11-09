@@ -177,3 +177,12 @@ Native code approved by god for this card because SPEC §3/§6 name USearch. Ver
 | usearch | 2.26.6 (`default-features = false`: no `numkong` SIMD library, no OpenMP) | Apache-2.0 | vector | HNSW approximate nearest-neighbour index (C++ built with `cc` through `cxx`) |
 
 New packages in `Cargo.lock` (transitive, build-time code generation and the C++ bridge): `cxx` 1.0.205, `cxx-build` 1.0.205, `cxxbridge-flags` 1.0.205, `cxxbridge-macro` 1.0.205, `cxxbridge-cmd` 1.0.205 (lock entry only, not built), `link-cplusplus` 1.0.12, `scratch` 1.0.9, `unicode-width` 0.2.3 (all `MIT OR Apache-2.0`), `codespan-reporting` 0.13.1 (`Apache-2.0`), `termcolor` 1.4.1 (`Unlicense OR MIT`, used under MIT). Building needs a C++17 compiler (Xcode clang on macOS, g++/clang++ on Linux, MSVC on Windows), which the Rust toolchain targets already assume for `cc`.
+
+## FB-24 (entitlements and quotas, ADR-0010)
+
+No new third-party crate. The new workspace crate `forgebase-entitlements` uses
+only dependencies already recorded here: `axum`, `serde`, `serde_json`,
+`thiserror`, `time` (RFC 3339 on the wire), `tokio`, `tower-http` (`limit`),
+`tracing`, `utoipa` and `uuid`. Calendar arithmetic (months, billing-cycle
+anchors) is a 30-line civil-date conversion in the crate, not a date library.
+`Cargo.lock` gains only the `forgebase-entitlements` entry.

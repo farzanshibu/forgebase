@@ -118,7 +118,8 @@ impl Env {
         env.data
             .create_collection(
                 &sys(),
-                serde_json::from_value(json!({"name": "people", "fields": [{"name": "email", "type": "text"}]})).unwrap(),
+                serde_json::from_value(json!({"name": "people", "fields": [{"name": "email", "type": "text"}]}))
+                    .unwrap(),
             )
             .await
             .unwrap();

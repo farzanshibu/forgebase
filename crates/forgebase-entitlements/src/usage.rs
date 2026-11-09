@@ -265,7 +265,9 @@ async fn carry(db: &mut Db<'_>, q: &Quota, w: Window) -> Result<i64> {
         )
         .await?;
     let Some(row) = r.rows.first() else { return Ok(0) };
-    let Some(prev_limit) = opt_int(row, 3) else { return Ok(0) };
+    let Some(prev_limit) = opt_int(row, 3) else {
+        return Ok(0);
+    };
     let unused = (prev_limit + int(row, 2) - int(row, 0) - int(row, 1)).max(0);
     let mut c = unused.min(limit.saturating_mul(q.policy.rollover_pct) / 100);
     if let Some(cap) = q.policy.rollover_cap {
@@ -551,13 +553,7 @@ pub(crate) async fn insert_event(db: &mut Db<'_>, e: NewEvent<'_>) -> Result<(St
 
 /// Raises the alerts `used` crosses in a window (once per threshold) and
 /// returns their ids. Gauges re-arm thresholds when the level drops.
-pub(crate) async fn raise_alerts(
-    db: &mut Db<'_>,
-    q: &Quota,
-    st: &State,
-    used: i64,
-    now: i64,
-) -> Result<Vec<String>> {
+pub(crate) async fn raise_alerts(db: &mut Db<'_>, q: &Quota, st: &State, used: i64, now: i64) -> Result<Vec<String>> {
     if !q.counted() {
         return Ok(Vec::new());
     }
@@ -640,7 +636,8 @@ pub(crate) struct ResRow {
     pub created_at: i64,
 }
 
-pub(crate) const RES_COLUMNS: &str = "id, feature_key, subject, scope_key, window_start, units, pack_units, overage_units,
+pub(crate) const RES_COLUMNS: &str =
+    "id, feature_key, subject, scope_key, window_start, units, pack_units, overage_units,
      packs, status, committed_units, expires_at, idempotency_key, created_at";
 
 pub(crate) fn res_row(r: &[Value]) -> ResRow {

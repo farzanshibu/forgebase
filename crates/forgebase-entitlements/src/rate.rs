@@ -109,7 +109,11 @@ impl RequestGate for RateGate {
                 continue;
             };
             let Some(limit) = g.limit else { continue };
-            let p = if g.period == Period::Day { Period::Day } else { Period::Hour };
+            let p = if g.period == Period::Day {
+                Period::Day
+            } else {
+                Period::Hour
+            };
             let w = period::window(p, None, None, now);
             let reset_secs = ((w.end - now) + 999) / 1000;
             match self.shared.rates.hit(f, &subject, w.start, limit) {

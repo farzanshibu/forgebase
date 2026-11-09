@@ -50,7 +50,9 @@ pub fn api(e: EntitlementError) -> ApiError {
         EntitlementError::FeatureDisabled { feature, .. } => {
             ApiError::from_error(&e).with_details(json!({"feature": feature, "step": "entitlement"}))
         }
-        EntitlementError::Policy(PolicyError::Denied(d)) => ApiError::from_error(&e).with_details(json!({"step": d.step})),
+        EntitlementError::Policy(PolicyError::Denied(d)) => {
+            ApiError::from_error(&e).with_details(json!({"step": d.step}))
+        }
         _ => ApiError::from_error(&e),
     }
 }
@@ -329,7 +331,11 @@ async fn add_override(State(s): State<EntitlementService>, Access(ctx): Access, 
 #[utoipa::path(delete, path = "/api/v1/entitlements/overrides/{id}", tag = "entitlements",
     params(("id" = String, Path, description = "Override id")),
     responses((status = 204, description = "Deleted")))]
-async fn delete_override(State(s): State<EntitlementService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
+async fn delete_override(
+    State(s): State<EntitlementService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+) -> ApiResult {
     s.delete_override(&ctx, &id).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -357,7 +363,10 @@ async fn put_custom_limit(State(s): State<EntitlementService>, Access(ctx): Acce
 async fn delete_custom_limit(State(s): State<EntitlementService>, Access(ctx): Access, q: Query) -> ApiResult {
     s.require_admin(&ctx).map_err(api)?;
     let (Some(subject), Some(feature)) = (q.get("subject"), q.get("feature")) else {
-        return Err(ApiError::bad_request("invalid_parameter", "subject and feature are required"));
+        return Err(ApiError::bad_request(
+            "invalid_parameter",
+            "subject and feature are required",
+        ));
     };
     s.delete_custom_limit(&ctx, subject, feature).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -399,7 +408,11 @@ async fn put_feature(
 /// Deletes a feature.
 #[utoipa::path(delete, path = "/api/v1/features/{key}", tag = "entitlements-catalog",
     params(("key" = String, Path, description = "Feature key")), responses((status = 204, description = "Deleted")))]
-async fn delete_feature(State(s): State<EntitlementService>, Access(ctx): Access, Path(key): Path<String>) -> ApiResult {
+async fn delete_feature(
+    State(s): State<EntitlementService>,
+    Access(ctx): Access,
+    Path(key): Path<String>,
+) -> ApiResult {
     s.delete_feature(&ctx, &key).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -686,10 +699,11 @@ async fn events(State(s): State<EntitlementService>, Access(ctx): Access, q: Que
     } else {
         q.get("subject").map(str::to_owned)
     };
-    ok(s
-        .events(&ctx, subject.as_deref(), q.get("feature"), after, q.u32("limit")?)
-        .await
-        .map_err(api)?)
+    ok(
+        s.events(&ctx, subject.as_deref(), q.get("feature"), after, q.u32("limit")?)
+            .await
+            .map_err(api)?,
+    )
 }
 
 /// Usage alerts of a subject (`billing:read`), newest first.

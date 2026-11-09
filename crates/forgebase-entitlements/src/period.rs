@@ -78,7 +78,10 @@ pub struct Window {
 
 impl Default for Window {
     fn default() -> Self {
-        Window { start: 0, end: i64::MAX }
+        Window {
+            start: 0,
+            end: i64::MAX,
+        }
     }
 }
 
@@ -86,7 +89,10 @@ impl Default for Window {
 /// `none` and `lifetime` give `[0, i64::MAX)`.
 pub fn window(period: Period, window_secs: Option<i64>, anchor: Option<i64>, now: i64) -> Window {
     match period {
-        Period::None | Period::Lifetime => Window { start: 0, end: i64::MAX },
+        Period::None | Period::Lifetime => Window {
+            start: 0,
+            end: i64::MAX,
+        },
         Period::Hour => fixed(HOUR_MS, now),
         Period::Day => fixed(DAY_MS, now),
         Period::Month => month(anchor, now),
@@ -110,7 +116,10 @@ pub fn previous(period: Period, anchor: Option<i64>, w: Window) -> Option<Window
 
 fn fixed(len: i64, now: i64) -> Window {
     let start = now.div_euclid(len) * len;
-    Window { start, end: start + len }
+    Window {
+        start,
+        end: start + len,
+    }
 }
 
 fn month(anchor: Option<i64>, now: i64) -> Window {
@@ -213,7 +222,13 @@ mod tests {
                 end: utc(2026, 11, 10, 0, 0)
             }
         );
-        assert_eq!(window(Period::Lifetime, None, None, t), Window { start: 0, end: i64::MAX });
+        assert_eq!(
+            window(Period::Lifetime, None, None, t),
+            Window {
+                start: 0,
+                end: i64::MAX
+            }
+        );
         let r = window(Period::Rolling, Some(60), None, t);
         assert_eq!((r.start, r.end), (t - 60_000, t + 1));
     }

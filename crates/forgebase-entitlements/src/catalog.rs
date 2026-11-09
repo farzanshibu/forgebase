@@ -145,6 +145,9 @@ impl Resolved {
 
 const RESOLVED_CACHE_MAX: usize = 50_000;
 
+/// Resolutions by (subject, member).
+type ResolvedCache = Mutex<HashMap<(String, Option<String>), Arc<Resolved>>>;
+
 /// The catalog and subject state.
 #[derive(Debug, Default)]
 pub(crate) struct Catalog {
@@ -167,7 +170,7 @@ pub(crate) struct Catalog {
     pub quota_gates: Vec<(String, String)>,
     /// Features of kind `rate`.
     pub rate_features: Vec<String>,
-    resolved: Mutex<HashMap<(String, Option<String>), Arc<Resolved>>>,
+    resolved: ResolvedCache,
 }
 
 fn text(r: &[Value], i: usize) -> String {
@@ -536,7 +539,11 @@ impl Catalog {
             enabled,
             kind,
             limit,
-            unit: if unit.is_empty() { default_unit.to_owned() } else { unit.to_owned() },
+            unit: if unit.is_empty() {
+                default_unit.to_owned()
+            } else {
+                unit.to_owned()
+            },
             period: period.unwrap_or_else(|| default_period(kind)),
             window_secs: None,
             source: GrantSource::Plan,
@@ -647,7 +654,9 @@ impl Catalog {
                 Some(l) => Some(l),
                 None => grants.get(&o.feature).filter(|g| g.enabled).and_then(|g| g.limit),
             };
-            let window = o.window_secs.or_else(|| grants.get(&o.feature).and_then(|g| g.window_secs));
+            let window = o
+                .window_secs
+                .or_else(|| grants.get(&o.feature).and_then(|g| g.window_secs));
             let mut g = self.grant_of(&o.feature, true, limit, "", period);
             g.window_secs = window;
             g.source = GrantSource::Override;

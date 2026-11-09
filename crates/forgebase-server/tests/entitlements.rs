@@ -18,7 +18,10 @@ async fn get(addr: SocketAddr, path: &str) -> (u16, String) {
     let mut out = String::new();
     s.read_to_string(&mut out).await.unwrap();
     let status = out.split(' ').nth(1).unwrap().parse().unwrap();
-    let body = out.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default();
+    let body = out
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_owned())
+        .unwrap_or_default();
     (status, body)
 }
 
@@ -34,14 +37,22 @@ async fn the_server_mounts_entitlements_and_installs_the_hooks() {
 
     let (s, body) = get(addr, "/api/openapi.json").await;
     assert_eq!(s, 200);
-    for p in ["/api/v1/usage/consume", "/api/v1/plans/{key}", "/api/v1/entitlements/has"] {
+    for p in [
+        "/api/v1/usage/consume",
+        "/api/v1/plans/{key}",
+        "/api/v1/entitlements/has",
+    ] {
         assert!(body.contains(p), "{p} not documented");
     }
     let (s, _) = get(addr, "/api/v1/entitlements").await;
     assert_eq!(s, 401, "anonymous");
 
     let schedules = server.jobs().schedules(&AccessContext::system()).await.unwrap();
-    assert!(schedules.iter().any(|s| s.name == forgebase_entitlements::MAINTENANCE_SCHEDULE));
+    assert!(
+        schedules
+            .iter()
+            .any(|s| s.name == forgebase_entitlements::MAINTENANCE_SCHEDULE)
+    );
 
     // The policy pipeline consults the entitlement hook (step 4).
     let ent = server.entitlements();

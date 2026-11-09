@@ -105,14 +105,14 @@ pub async fn start_with_jobs(
         }
     };
     // Entitlements and quotas (FB-24): pipeline steps 4 and 6.
-    let entitlements =
-        match EntitlementService::open(Arc::new(db.clone()), policy.clone(), Arc::new(SystemClock)).await {
-            Ok(e) => e,
-            Err(e) => {
-                db.close().await;
-                return Err(ServerError::Entitlements(e.to_string()));
-            }
-        };
+    let entitlements = match EntitlementService::open(Arc::new(db.clone()), policy.clone(), Arc::new(SystemClock)).await
+    {
+        Ok(e) => e,
+        Err(e) => {
+            db.close().await;
+            return Err(ServerError::Entitlements(e.to_string()));
+        }
+    };
     policy.set_hooks(entitlements.hooks());
     // One authorizer — the policy engine — for the data core and the KV engine.
     let authorizer: Arc<dyn Authorizer> = policy.authorizer();
