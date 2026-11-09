@@ -17,6 +17,7 @@ anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 forgebase-api.workspace = true
+forgebase-auth.workspace = true
 forgebase-core.workspace = true
 forgebase-db.workspace = true
 forgebase-observability.workspace = true
@@ -40,6 +41,10 @@ path = "../../tests/integration/server_lifecycle.rs"
 [[test]]
 name = "cli_e2e"
 path = "../../tests/integration/cli_e2e.rs"
+
+[[test]]
+name = "auth_e2e"
+path = "../../tests/integration/auth_e2e.rs"
 
 [lints]
 workspace = true

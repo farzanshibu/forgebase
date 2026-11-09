@@ -21,6 +21,7 @@ mod lock;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
@@ -84,16 +85,17 @@ pub async fn start_with_jobs(
     };
     let instance = db.ensure_instance().await?;
 
-    let state = match AppState::new(db.clone(), layout.clone()).await {
-        Ok(state) => state,
+    let auth = match open_auth(&db, &layout, config).await {
+        Ok(a) => a,
         Err(e) => {
             db.close().await;
             return Err(e.into());
         }
     };
+    // One data service, built by the auth service with the Argon2id hasher;
+    // the auth layer turns credentials into each request's AccessContext.
+    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
     let jobs = JobService::new(state.data().clone());
-    // Until the auth layer (FB-20) is mounted here, every /api/v1 request is
-    // anonymous and the default authorizer denies it.
     let app = forgebase_api::router(
         state,
         RouterOptions {
@@ -116,7 +118,7 @@ pub async fn start_with_jobs(
     };
     let addr = listener.local_addr().map_err(ServerError::Serve)?;
     if !addr.ip().is_loopback() {
-        tracing::warn!(%addr, "listening on a non-loopback address; admin endpoints have no authentication yet");
+        tracing::warn!(%addr, "listening on a non-loopback address; /api/system/* and /metrics are not behind admin authentication yet (FB-23)");
     }
     lock.record_owner(&LockOwner {
         pid: std::process::id(),
@@ -126,7 +128,7 @@ pub async fn start_with_jobs(
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async {
                 let _ = shutdown_rx.await;
             })
@@ -163,6 +165,26 @@ pub async fn start_with_jobs(
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
+}
+
+/// Opens the auth service (FB-20) and the data service it shares, with the
+/// fail-closed default authorizer until the policy engine (FB-21) lands.
+async fn open_auth(
+    db: &Database,
+    layout: &DataLayout,
+    config: &Config,
+) -> Result<forgebase_auth::AuthService, forgebase_auth::AuthError> {
+    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
+    cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+    forgebase_auth::AuthService::open_with_data(
+        backend,
+        Arc::new(forgebase_auth::data::DefaultAuthorizer),
+        layout.root(),
+        cfg,
+        None,
+    )
+    .await
 }
 
 impl RunningServer {
@@ -317,6 +339,9 @@ pub enum ServerError {
     /// The HTTP server failed.
     #[error("http server error: {0}")]
     Serve(#[source] std::io::Error),
+    /// The auth service failed to start (master key, signing keys).
+    #[error("auth: {0}")]
+    Auth(#[from] forgebase_auth::AuthError),
 }
 
 impl ErrorCode for ServerError {
@@ -329,6 +354,7 @@ impl ErrorCode for ServerError {
             ServerError::Data(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
+            ServerError::Auth(e) => e.code(),
         }
     }
 
@@ -338,6 +364,7 @@ impl ErrorCode for ServerError {
             ServerError::Database(e) => e.kind(),
             ServerError::Data(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
+            ServerError::Auth(e) => e.kind(),
         }
     }
 }

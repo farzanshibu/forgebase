@@ -68,12 +68,9 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "data_core",
         include_str!("../../../migrations/system/0002_data_core.sql"),
     ),
-    // 0003-0006 belong to the auth and policy packages (gaps are allowed).
-    Migration::new(
-        7,
-        "jobs",
-        include_str!("../../../migrations/system/0007_jobs.sql"),
-    ),
+    Migration::new(3, "auth", include_str!("../../../migrations/system/0003_auth.sql")),
+    // 0004-0006 belong to the policy and other packages (gaps are allowed).
+    Migration::new(7, "jobs", include_str!("../../../migrations/system/0007_jobs.sql")),
 ];
 
 /// A migration recorded as applied in the database.
