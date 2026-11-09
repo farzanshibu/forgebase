@@ -51,10 +51,10 @@ fn guard(ctx: &AccessContext) -> Result<(), ApiError> {
 /// The routes, relative to `/api/v1`, with their state applied.
 pub fn router<S: Clone + Send + Sync + 'static>(service: BackupService) -> Router<S> {
     Router::<BackupService>::new()
-        .route("/system/backups", get(list).post(create))
-        .route("/system/backups/prune", post(prune))
-        .route("/system/backups/{id}", get(get_one).delete(delete_one))
-        .route("/system/backups/{id}/verify", post(verify_one))
+        .route("/system/backups", get(list_backups).post(create_backup))
+        .route("/system/backups/prune", post(prune_backups))
+        .route("/system/backups/{id}", get(get_backup).delete(delete_backup))
+        .route("/system/backups/{id}/verify", post(verify_backup))
         .with_state(service)
 }
 
@@ -68,7 +68,7 @@ pub fn extension(service: BackupService) -> ApiExtension {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(list, create, get_one, delete_one, verify_one, prune),
+    paths(list_backups, create_backup, get_backup, delete_backup, verify_backup, prune_backups),
     components(schemas(
         SnapshotView, SnapshotList, CreateSnapshot, PruneResult, Manifest, VerifyReport, Retention,
         crate::manifest::FileEntry, crate::manifest::FileKind, crate::manifest::KeyInfo,
@@ -126,7 +126,7 @@ pub struct PruneResult {
 /// Lists snapshots.
 #[utoipa::path(get, path = "/api/v1/system/backups", tag = "backups",
     responses((status = 200, description = "Snapshots", body = SnapshotList)))]
-async fn list(State(s): State<BackupService>, Access(ctx): Access) -> ApiResult {
+async fn list_backups(State(s): State<BackupService>, Access(ctx): Access) -> ApiResult {
     guard(&ctx)?;
     let items = s
         .store()
@@ -141,7 +141,7 @@ async fn list(State(s): State<BackupService>, Access(ctx): Access) -> ApiResult 
 /// Takes a snapshot now (online, consistent) and applies the retention.
 #[utoipa::path(post, path = "/api/v1/system/backups", tag = "backups", request_body = CreateSnapshot,
     responses((status = 201, description = "The new snapshot", body = Manifest)))]
-async fn create(State(s): State<BackupService>, Access(ctx): Access, body: Body<CreateSnapshot>) -> ApiResult {
+async fn create_backup(State(s): State<BackupService>, Access(ctx): Access, body: Body<CreateSnapshot>) -> ApiResult {
     guard(&ctx)?;
     let req = body?.0;
     let opts = BackupOptions {
@@ -157,7 +157,7 @@ async fn create(State(s): State<BackupService>, Access(ctx): Access, body: Body<
 #[utoipa::path(get, path = "/api/v1/system/backups/{id}", tag = "backups",
     params(("id" = String, Path, description = "Snapshot id")),
     responses((status = 200, description = "The snapshot", body = SnapshotView), (status = 404, description = "No such snapshot")))]
-async fn get_one(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
+async fn get_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
     guard(&ctx)?;
     Ok(Json(SnapshotView::from(s.store().get(&id).map_err(api)?)).into_response())
 }
@@ -166,7 +166,7 @@ async fn get_one(State(s): State<BackupService>, Access(ctx): Access, Path(id): 
 #[utoipa::path(delete, path = "/api/v1/system/backups/{id}", tag = "backups",
     params(("id" = String, Path, description = "Snapshot id")),
     responses((status = 204, description = "Deleted"), (status = 404, description = "No such snapshot")))]
-async fn delete_one(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
+async fn delete_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
     guard(&ctx)?;
     s.store().delete(&id).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -176,7 +176,7 @@ async fn delete_one(State(s): State<BackupService>, Access(ctx): Access, Path(id
 #[utoipa::path(post, path = "/api/v1/system/backups/{id}/verify", tag = "backups",
     params(("id" = String, Path, description = "Snapshot id")),
     responses((status = 200, description = "Verification report", body = VerifyReport), (status = 404, description = "No such snapshot")))]
-async fn verify_one(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
+async fn verify_backup(State(s): State<BackupService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
     guard(&ctx)?;
     let snap = s.store().get(&id).map_err(api)?;
     Ok(Json(verify(&snap.path).await).into_response())
@@ -185,7 +185,7 @@ async fn verify_one(State(s): State<BackupService>, Access(ctx): Access, Path(id
 /// Applies a retention policy now.
 #[utoipa::path(post, path = "/api/v1/system/backups/prune", tag = "backups", request_body = Retention,
     responses((status = 200, description = "Deleted snapshots", body = PruneResult)))]
-async fn prune(State(s): State<BackupService>, Access(ctx): Access, body: Body<Retention>) -> ApiResult {
+async fn prune_backups(State(s): State<BackupService>, Access(ctx): Access, body: Body<Retention>) -> ApiResult {
     guard(&ctx)?;
     let deleted = s.store().prune(body?.0).await.map_err(api)?;
     Ok(Json(PruneResult { deleted }).into_response())
