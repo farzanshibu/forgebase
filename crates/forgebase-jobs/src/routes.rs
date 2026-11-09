@@ -330,7 +330,12 @@ async fn fail(
     b: Body<FailBody>,
 ) -> ApiResult {
     let b = body(&s, &ctx, Action::WorkJobs, b)?;
-    Ok(Json(s.fail(&ctx, &id, &b.lease_id, &b.error, b.retryable).await.map_err(api)?).into_response())
+    Ok(Json(
+        s.fail(&ctx, &id, &b.lease_id, &b.error, b.retryable)
+            .await
+            .map_err(api)?,
+    )
+    .into_response())
 }
 
 /// Lists schedules.
@@ -349,11 +354,7 @@ async fn schedules(State(s): State<JobService>, Access(ctx): Access) -> ApiResul
     request_body = NewSchedule,
     responses((status = 201, description = "Created", body = Schedule), (status = 409, description = "Name taken (`schedule_exists`)"))
 )]
-async fn create_schedule(
-    State(s): State<JobService>,
-    Access(ctx): Access,
-    new: Body<NewSchedule>,
-) -> ApiResult {
+async fn create_schedule(State(s): State<JobService>, Access(ctx): Access, new: Body<NewSchedule>) -> ApiResult {
     let new = body(&s, &ctx, Action::ManageJobs, new)?;
     let schedule = s.create_schedule(&ctx, new).await.map_err(api)?;
     Ok((StatusCode::CREATED, Json(schedule)).into_response())
@@ -413,11 +414,7 @@ async fn workers(State(s): State<JobService>, Access(ctx): Access) -> ApiResult 
     request_body = NewWorker,
     responses((status = 201, description = "Registered", body = Worker))
 )]
-async fn register_worker(
-    State(s): State<JobService>,
-    Access(ctx): Access,
-    new: Body<NewWorker>,
-) -> ApiResult {
+async fn register_worker(State(s): State<JobService>, Access(ctx): Access, new: Body<NewWorker>) -> ApiResult {
     let new = body(&s, &ctx, Action::WorkJobs, new)?;
     let worker = s.register_worker(&ctx, new).await.map_err(api)?;
     Ok((StatusCode::CREATED, Json(worker)).into_response())

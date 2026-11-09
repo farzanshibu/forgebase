@@ -16,10 +16,10 @@ use forgebase_data::AccessContext;
 use tokio::sync::{Semaphore, watch};
 use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 
+use crate::JobError;
 use crate::model::{ClaimRequest, ClaimedJob};
 use crate::registry::{HandlerError, JobContext, JobRegistry};
 use crate::service::{JobService, now_ms};
-use crate::JobError;
 
 /// Worker pool settings.
 #[derive(Debug, Clone)]
@@ -95,10 +95,7 @@ impl Drop for PoolHandle {
 pub fn start_pool(service: JobService, registry: JobRegistry, config: PoolConfig) -> PoolHandle {
     let (stop, stop_rx) = watch::channel(false);
     let task = tokio::spawn(run(service, registry, config, stop_rx));
-    PoolHandle {
-        stop,
-        task: Some(task),
-    }
+    PoolHandle { stop, task: Some(task) }
 }
 
 /// Aborts the wrapped task when dropped.
@@ -189,7 +186,9 @@ async fn run(service: JobService, registry: JobRegistry, config: PoolConfig, mut
         }
         // Idle (or saturated): wait for a wake-up, a finishing job, the next
         // maintenance round, the poll interval or shutdown.
-        let nap = config.poll_interval.min(config.maintenance_interval.max(Duration::from_millis(10)));
+        let nap = config
+            .poll_interval
+            .min(config.maintenance_interval.max(Duration::from_millis(10)));
         tokio::select! {
             () = service.work_available() => {}
             () = tokio::time::sleep(nap) => {}
@@ -208,11 +207,7 @@ async fn run(service: JobService, registry: JobRegistry, config: PoolConfig, mut
         if drained.is_err() {
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
-            let leftover: Vec<(String, String)> = in_flight
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .drain()
-                .collect();
+            let leftover: Vec<(String, String)> = in_flight.lock().unwrap_or_else(|p| p.into_inner()).drain().collect();
             for (id, lease) in leftover {
                 match service.release(&system, &id, &lease).await {
                     Ok(_) => tracing::info!(job = %id, "released unfinished job"),
@@ -231,7 +226,14 @@ async fn run_job(service: &JobService, registry: &JobRegistry, claimed: ClaimedJ
     let id = job.id.clone();
     let Some(handler) = registry.get(&job.kind) else {
         // Claimed by kind, so this is a registry race; fail it as retryable.
-        report(service, &system, &id, &lease_id, Err(HandlerError::retry("no handler registered"))).await;
+        report(
+            service,
+            &system,
+            &id,
+            &lease_id,
+            Err(HandlerError::retry("no handler registered")),
+        )
+        .await;
         in_flight.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
         return;
     };

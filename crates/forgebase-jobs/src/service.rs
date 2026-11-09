@@ -168,7 +168,9 @@ impl JobService {
                 params,
             ))
             .await?;
-        let items = (0..rows.len()).map(|i| job_from(&Row::new(&rows, i))).collect::<Result<_>>()?;
+        let items = (0..rows.len())
+            .map(|i| job_from(&Row::new(&rows, i)))
+            .collect::<Result<_>>()?;
         Ok(JobPage { items, total })
     }
 
@@ -289,11 +291,17 @@ impl JobService {
         if let Some(name) = &new.name
             && name.len() > 128
         {
-            return Err(JobError::invalid("invalid_worker", "name must be at most 128 characters"));
+            return Err(JobError::invalid(
+                "invalid_worker",
+                "name must be at most 128 characters",
+            ));
         }
         let concurrency = new.concurrency.unwrap_or(1);
         if !(1..=10_000).contains(&concurrency) {
-            return Err(JobError::invalid("invalid_worker", "concurrency must be between 1 and 10000"));
+            return Err(JobError::invalid(
+                "invalid_worker",
+                "concurrency must be between 1 and 10000",
+            ));
         }
         let now = now_ms();
         let mut tx = self.begin().await?;
@@ -364,7 +372,10 @@ impl JobService {
         }
         let max = req.max.unwrap_or(1);
         if !(1..=MAX_CLAIM).contains(&max) {
-            return Err(JobError::invalid("invalid_claim", format!("max must be between 1 and {MAX_CLAIM}")));
+            return Err(JobError::invalid(
+                "invalid_claim",
+                format!("max must be between 1 and {MAX_CLAIM}"),
+            ));
         }
         let now = now_ms();
         // Cheap read first: an idle poll must not take the single writer.
@@ -427,7 +438,14 @@ impl JobService {
     /// exponential backoff with jitter while attempts remain; otherwise the job
     /// goes to the dead-letter queue (`dead`). A job whose cancellation was
     /// requested ends `cancelled`.
-    pub async fn fail(&self, ctx: &AccessContext, id: &str, lease_id: &str, error: &str, retryable: bool) -> Result<Job> {
+    pub async fn fail(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        error: &str,
+        retryable: bool,
+    ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let mut tx = self.begin().await?;
         let r = fail_tx(&mut *tx, id, lease_id, error, retryable, now_ms()).await;
@@ -750,7 +768,8 @@ fn job_from(r: &Row<'_>) -> Result<Job> {
         kind: r.text("kind"),
         payload: r.json("payload")?,
         priority: r.int("priority"),
-        status: JobStatus::parse(&status).ok_or_else(|| JobError::Internal(format!("unknown job status {status:?}")))?,
+        status: JobStatus::parse(&status)
+            .ok_or_else(|| JobError::Internal(format!("unknown job status {status:?}")))?,
         run_at: iso(r.int("run_at")),
         attempts: r.int("attempts"),
         max_attempts: r.int("max_attempts"),
@@ -762,7 +781,11 @@ fn job_from(r: &Row<'_>) -> Result<Job> {
         worker_id: r.opt_text("worker_id"),
         visibility_until: r.opt_int("visibility_until").map(iso),
         cancel_requested: r.int("cancel_requested") == 1,
-        result: if r.value("result").is_null() { None } else { Some(r.json("result")?) },
+        result: if r.value("result").is_null() {
+            None
+        } else {
+            Some(r.json("result")?)
+        },
         last_error: r.opt_text("last_error"),
         created_by: r.text("created_by"),
         created_at: iso(r.int("created_at")),
@@ -796,7 +819,8 @@ fn schedule_from(r: &Row<'_>) -> Result<Schedule> {
 }
 
 fn worker_from(r: &Row<'_>, now: i64) -> Worker {
-    let list = |col: &str| serde_json::from_str::<Vec<String>>(r.value(col).as_str().unwrap_or("[]")).unwrap_or_default();
+    let list =
+        |col: &str| serde_json::from_str::<Vec<String>>(r.value(col).as_str().unwrap_or("[]")).unwrap_or_default();
     let seen = r.int("last_seen_at");
     Worker {
         id: r.text("id"),
@@ -976,7 +1000,12 @@ async fn claim_tx(tx: &mut dyn WriteTx, req: &ClaimRequest, max: i64, now: i64) 
             "UPDATE _forgebase_jobs SET status = 'running', attempts = attempts + 1, lease_id = ?2, worker_id = ?3, \
              visibility_until = ?4 + visibility_timeout_ms, heartbeat_at = ?4, started_at = ?4, updated_at = ?4 \
              WHERE id = ?1 AND status = 'queued'",
-            vec![id.as_str().into(), lease.as_str().into(), req.worker_id.as_str().into(), now.into()],
+            vec![
+                id.as_str().into(),
+                lease.as_str().into(),
+                req.worker_id.as_str().into(),
+                now.into(),
+            ],
         ))
         .await?;
         let job = fetch_job_tx(tx, &id).await?;
@@ -1010,7 +1039,12 @@ async fn reap_tx(tx: &mut dyn WriteTx, now: i64) -> Result<usize> {
             "UPDATE _forgebase_jobs SET status = ?2, lease_id = NULL, visibility_until = NULL, run_at = ?3, \
              last_error = 'lease expired: the worker stopped sending heartbeats', \
              finished_at = CASE WHEN ?4 = 1 THEN ?3 ELSE NULL END, updated_at = ?3 WHERE id = ?1",
-            vec![id.as_str().into(), status.into(), now.into(), i64::from(finished).into()],
+            vec![
+                id.as_str().into(),
+                status.into(),
+                now.into(),
+                i64::from(finished).into(),
+            ],
         ))
         .await?;
         event(
@@ -1077,14 +1111,7 @@ async fn complete_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, result: Option
     fetch_job_tx(tx, id).await
 }
 
-async fn fail_tx(
-    tx: &mut dyn WriteTx,
-    id: &str,
-    lease: &str,
-    error: &str,
-    retryable: bool,
-    now: i64,
-) -> Result<Job> {
+async fn fail_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, error: &str, retryable: bool, now: i64) -> Result<Job> {
     let job = leased(tx, id, lease).await?;
     let (status, ev, run_at) = if job.cancel_requested {
         ("cancelled", "cancelled", now)
@@ -1098,7 +1125,13 @@ async fn fail_tx(
     tx.execute(&Statement::new(
         "UPDATE _forgebase_jobs SET status = ?2, run_at = ?3, lease_id = NULL, visibility_until = NULL, \
          last_error = ?4, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?5 END, updated_at = ?5 WHERE id = ?1",
-        vec![id.into(), status.into(), run_at.into(), error.as_str().into(), now.into()],
+        vec![
+            id.into(),
+            status.into(),
+            run_at.into(),
+            error.as_str().into(),
+            now.into(),
+        ],
     ))
     .await?;
     let message = if status == "queued" {
@@ -1124,7 +1157,16 @@ async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> Re
         vec![id.into(), status.into(), now.into()],
     ))
     .await?;
-    event(tx, id, now, ev, job.attempts, job.worker_id.as_deref(), Some("worker shut down")).await?;
+    event(
+        tx,
+        id,
+        now,
+        ev,
+        job.attempts,
+        job.worker_id.as_deref(),
+        Some("worker shut down"),
+    )
+    .await?;
     fetch_job_tx(tx, id).await
 }
 
@@ -1146,7 +1188,16 @@ async fn cancel_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<Job> {
             ))
             .await?;
             if !job.cancel_requested {
-                event(tx, id, now, "cancel_requested", job.attempts, job.worker_id.as_deref(), None).await?;
+                event(
+                    tx,
+                    id,
+                    now,
+                    "cancel_requested",
+                    job.attempts,
+                    job.worker_id.as_deref(),
+                    None,
+                )
+                .await?;
             }
         }
         _ => {
@@ -1164,7 +1215,10 @@ async fn retry_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<Job> {
     if !matches!(job.status, JobStatus::Dead | JobStatus::Cancelled) {
         return Err(JobError::state(
             "job_not_retryable",
-            format!("only dead or cancelled jobs can be retried; this one is {}", job.status.as_str()),
+            format!(
+                "only dead or cancelled jobs can be retried; this one is {}",
+                job.status.as_str()
+            ),
         ));
     }
     tx.execute(&Statement::new(
@@ -1185,8 +1239,11 @@ async fn delete_tx(tx: &mut dyn WriteTx, id: &str) -> Result<()> {
             format!("job is {}; cancel it first", job.status.as_str()),
         ));
     }
-    tx.execute(&Statement::new("DELETE FROM _forgebase_jobs WHERE id = ?1", vec![id.into()]))
-        .await?;
+    tx.execute(&Statement::new(
+        "DELETE FROM _forgebase_jobs WHERE id = ?1",
+        vec![id.into()],
+    ))
+    .await?;
     Ok(())
 }
 

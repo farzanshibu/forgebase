@@ -188,10 +188,16 @@ mod tests {
     fn common_expressions() {
         assert_eq!(next("* * * * *", "2026-11-07T10:00:00Z"), "2026-11-07T10:01:00.000Z");
         assert_eq!(next("*/15 * * * *", "2026-11-07T10:07:30Z"), "2026-11-07T10:15:00.000Z");
-        assert_eq!(next("0 9 * * MON-FRI", "2026-11-07T10:00:00Z"), "2026-11-09T09:00:00.000Z");
+        assert_eq!(
+            next("0 9 * * MON-FRI", "2026-11-07T10:00:00Z"),
+            "2026-11-09T09:00:00.000Z"
+        );
         assert_eq!(next("30 2 1 JAN *", "2026-11-07T10:00:00Z"), "2027-01-01T02:30:00.000Z");
         assert_eq!(next("0 0 29 2 *", "2026-11-07T00:00:00Z"), "2028-02-29T00:00:00.000Z");
-        assert_eq!(next("*/10 * * * * *", "2026-11-07T10:00:05Z"), "2026-11-07T10:00:10.000Z");
+        assert_eq!(
+            next("*/10 * * * * *", "2026-11-07T10:00:05Z"),
+            "2026-11-07T10:00:10.000Z"
+        );
         assert_eq!(next("0 0 * * 7", "2026-11-07T10:00:00Z"), "2026-11-08T00:00:00.000Z");
         // Strictly after: an exact match does not return itself.
         assert_eq!(next("0 10 * * *", "2026-11-07T10:00:00Z"), "2026-11-08T10:00:00.000Z");
@@ -206,7 +212,17 @@ mod tests {
 
     #[test]
     fn rejects_bad_expressions() {
-        for bad in ["", "* * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *", "*/0 * * * *", "a b c d e", "5-1 * * * *"] {
+        for bad in [
+            "",
+            "* * * *",
+            "60 * * * *",
+            "* 24 * * *",
+            "* * 0 * *",
+            "* * * 13 *",
+            "*/0 * * * *",
+            "a b c d e",
+            "5-1 * * * *",
+        ] {
             assert!(Cron::parse(bad).is_err(), "{bad:?} should not parse");
         }
         assert_eq!(Cron::parse("0 0 30 2 *").unwrap().next_after(0), None);

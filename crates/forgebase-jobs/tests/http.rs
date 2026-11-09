@@ -32,7 +32,9 @@ impl Api {
         let dir = tempfile::tempdir().unwrap();
         let db = open_db(dir.path()).await;
         let layout = DataLayout::new(dir.path().join("data"));
-        let state = AppState::with_authorizer(db, layout, Arc::new(DefaultAuthorizer)).await.unwrap();
+        let state = AppState::with_authorizer(db, layout, Arc::new(DefaultAuthorizer))
+            .await
+            .unwrap();
         let svc = JobService::new(state.data().clone());
         let mut app = forgebase_api::router(
             state,
@@ -123,9 +125,16 @@ async fn openapi_documents_every_jobs_route_and_every_route_exists() {
         }
     }
     for (m, p) in JOBS_OPERATIONS {
-        assert!(documented.contains(&((*m).to_owned(), (*p).to_owned())), "missing in OpenAPI: {m} {p}");
+        assert!(
+            documented.contains(&((*m).to_owned(), (*p).to_owned())),
+            "missing in OpenAPI: {m} {p}"
+        );
     }
-    assert_eq!(documented.len(), JOBS_OPERATIONS.len(), "documented but not expected: {documented:?}");
+    assert_eq!(
+        documented.len(),
+        JOBS_OPERATIONS.len(),
+        "documented but not expected: {documented:?}"
+    );
 
     // The core API is still documented next to it, and error responses were added.
     assert!(doc["paths"]["/api/v1/collections"].is_object());
@@ -172,9 +181,14 @@ async fn anonymous_is_denied_everywhere_and_ordinary_users_are_forbidden() {
     for (m, p) in JOBS_OPERATIONS {
         let uri = p.replace("{id}", "x1");
         let method = Method::from_bytes(m.to_ascii_uppercase().as_bytes()).unwrap();
-        let body = json!({"kind": "k", "worker_id": "w", "lease_id": "l", "error": "e", "name": "n", "cron": "* * * * *"});
+        let body =
+            json!({"kind": "k", "worker_id": "w", "lease_id": "l", "error": "e", "name": "n", "cron": "* * * * *"});
         let (s, j) = anon.call(method.clone(), &uri, Some(body.clone())).await;
-        assert_eq!((s, code(&j)), (StatusCode::UNAUTHORIZED, "unauthenticated"), "anonymous {m} {p}");
+        assert_eq!(
+            (s, code(&j)),
+            (StatusCode::UNAUTHORIZED, "unauthenticated"),
+            "anonymous {m} {p}"
+        );
         assert!(j["error"]["request_id"].as_str().is_some_and(|r| !r.is_empty()));
         let (s, j) = user.call(method, &uri, Some(body)).await;
         assert_eq!((s, code(&j)), (StatusCode::FORBIDDEN, "forbidden"), "user {m} {p}");
@@ -192,11 +206,17 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
         .register("send_email", |ctx: forgebase_jobs::JobContext| async move {
             Ok(json!({"sent_to": ctx.payload()["recipient"]}))
         })
-        .register("nightly_report", |_ctx: forgebase_jobs::JobContext| async { Ok(json!("report built")) });
+        .register("nightly_report", |_ctx: forgebase_jobs::JobContext| async {
+            Ok(json!("report built"))
+        });
     let pool = start_pool(
         api.svc.clone(),
         registry,
-        PoolConfig { poll_interval: Duration::from_millis(20), maintenance_interval: Duration::from_millis(20), ..PoolConfig::default() },
+        PoolConfig {
+            poll_interval: Duration::from_millis(20),
+            maintenance_interval: Duration::from_millis(20),
+            ..PoolConfig::default()
+        },
     );
 
     // A delayed job, enqueued over HTTP.
@@ -209,12 +229,20 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
     assert!(job.get("lease_id").is_none(), "the lease never leaks through reads");
 
     // Same key again: the first job, 200.
-    let (s, again) = api.post("/api/v1/jobs", json!({"kind": "send_email", "payload": {}, "idempotency_key": "welcome-1"})).await;
+    let (s, again) = api
+        .post(
+            "/api/v1/jobs",
+            json!({"kind": "send_email", "payload": {}, "idempotency_key": "welcome-1"}),
+        )
+        .await;
     assert_eq!((s, again["id"].as_str()), (StatusCode::OK, Some(id.as_str())));
 
     // And a schedule that fires every second.
     let (s, sched) = api
-        .post("/api/v1/jobs/schedules", json!({"name": "report", "cron": "* * * * * *", "kind": "nightly_report", "payload": {"scope": "all"}}))
+        .post(
+            "/api/v1/jobs/schedules",
+            json!({"name": "report", "cron": "* * * * * *", "kind": "nightly_report", "payload": {"scope": "all"}}),
+        )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{sched}");
 
@@ -232,7 +260,12 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
     assert_eq!(done["attempts"], 1);
 
     let (_, events) = api.get(&format!("/api/v1/jobs/{id}/events")).await;
-    let names: Vec<_> = events["items"].as_array().unwrap().iter().map(|e| e["event"].as_str().unwrap()).collect();
+    let names: Vec<_> = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["event"].as_str().unwrap())
+        .collect();
     assert_eq!(names, ["enqueued", "claimed", "succeeded"]);
 
     // The schedule produced jobs that ran.
@@ -241,7 +274,9 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
         (l["total"].as_i64().unwrap() >= 2).then_some(())
     })
     .await;
-    let (_, sched_now) = api.get(&format!("/api/v1/jobs/schedules/{}", sched["id"].as_str().unwrap())).await;
+    let (_, sched_now) = api
+        .get(&format!("/api/v1/jobs/schedules/{}", sched["id"].as_str().unwrap()))
+        .await;
     assert!(sched_now["last_run_at"].is_string());
     let (_, stats) = api.get("/api/v1/jobs/stats").await;
     assert!(stats["totals"]["succeeded"].as_i64().unwrap() >= 3);
@@ -251,7 +286,12 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
 #[tokio::test]
 async fn external_worker_protocol() {
     let api = Api::admin().await;
-    let (s, w) = api.post("/api/v1/jobs/workers", json!({"name": "py-worker", "queues": ["mail"], "concurrency": 2})).await;
+    let (s, w) = api
+        .post(
+            "/api/v1/jobs/workers",
+            json!({"name": "py-worker", "queues": ["mail"], "concurrency": 2}),
+        )
+        .await;
     assert_eq!(s, StatusCode::CREATED, "{w}");
     let worker = w["id"].as_str().unwrap().to_owned();
 
@@ -261,49 +301,106 @@ async fn external_worker_protocol() {
     let id = job["id"].as_str().unwrap().to_owned();
 
     // Nothing for another queue.
-    let (s, none) = api.post("/api/v1/jobs/claim", json!({"worker_id": worker, "queues": ["other"]})).await;
+    let (s, none) = api
+        .post("/api/v1/jobs/claim", json!({"worker_id": worker, "queues": ["other"]}))
+        .await;
     assert_eq!((s, none["jobs"].as_array().unwrap().len()), (StatusCode::OK, 0));
 
     // Claim, heartbeat, complete.
-    let (s, claimed) = api.post("/api/v1/jobs/claim", json!({"worker_id": worker, "queues": ["mail"], "max": 5})).await;
+    let (s, claimed) = api
+        .post(
+            "/api/v1/jobs/claim",
+            json!({"worker_id": worker, "queues": ["mail"], "max": 5}),
+        )
+        .await;
     assert_eq!(s, StatusCode::OK, "{claimed}");
     let first = &claimed["jobs"][0];
     assert_eq!(first["job"]["id"], id.as_str());
     assert_eq!(first["job"]["status"], "running");
     let lease = first["lease_id"].as_str().unwrap().to_owned();
 
-    let (s, hb) = api.post(&format!("/api/v1/jobs/{id}/heartbeat"), json!({"lease_id": lease})).await;
-    assert_eq!((s, hb["cancel_requested"].as_bool()), (StatusCode::OK, Some(false)), "{hb}");
-    let (s, e) = api.post(&format!("/api/v1/jobs/{id}/heartbeat"), json!({"lease_id": "wrong"})).await;
+    let (s, hb) = api
+        .post(&format!("/api/v1/jobs/{id}/heartbeat"), json!({"lease_id": lease}))
+        .await;
+    assert_eq!(
+        (s, hb["cancel_requested"].as_bool()),
+        (StatusCode::OK, Some(false)),
+        "{hb}"
+    );
+    let (s, e) = api
+        .post(&format!("/api/v1/jobs/{id}/heartbeat"), json!({"lease_id": "wrong"}))
+        .await;
     assert_eq!((s, code(&e)), (StatusCode::CONFLICT, "lease_lost"));
 
     // First failure retries (no backoff configured), second exhausts the 2 attempts.
-    let (s, failed) = api.post(&format!("/api/v1/jobs/{id}/fail"), json!({"lease_id": lease, "error": "smtp down"})).await;
-    assert_eq!((s, failed["status"].as_str()), (StatusCode::OK, Some("queued")), "{failed}");
+    let (s, failed) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/fail"),
+            json!({"lease_id": lease, "error": "smtp down"}),
+        )
+        .await;
+    assert_eq!(
+        (s, failed["status"].as_str()),
+        (StatusCode::OK, Some("queued")),
+        "{failed}"
+    );
     let (_, again) = api.post("/api/v1/jobs/claim", json!({"worker_id": worker})).await;
     let lease2 = again["jobs"][0]["lease_id"].as_str().unwrap().to_owned();
     assert_ne!(lease, lease2);
     // The old lease is dead.
-    let (s, e) = api.post(&format!("/api/v1/jobs/{id}/complete"), json!({"lease_id": lease})).await;
+    let (s, e) = api
+        .post(&format!("/api/v1/jobs/{id}/complete"), json!({"lease_id": lease}))
+        .await;
     assert_eq!((s, code(&e)), (StatusCode::CONFLICT, "lease_lost"));
-    let (_, dead) = api.post(&format!("/api/v1/jobs/{id}/fail"), json!({"lease_id": lease2, "error": "still down"})).await;
+    let (_, dead) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/fail"),
+            json!({"lease_id": lease2, "error": "still down"}),
+        )
+        .await;
     assert_eq!(dead["status"], "dead");
     let (_, dlq) = api.get("/api/v1/jobs?status=dead").await;
-    assert_eq!((dlq["total"].as_i64(), dlq["items"][0]["last_error"].as_str()), (Some(1), Some("still down")));
+    assert_eq!(
+        (dlq["total"].as_i64(), dlq["items"][0]["last_error"].as_str()),
+        (Some(1), Some("still down"))
+    );
 
     // Back from the dead-letter queue, then complete exactly once.
     let (s, revived) = api.post(&format!("/api/v1/jobs/{id}/retry"), json!({})).await;
-    assert_eq!((s, revived["status"].as_str(), revived["attempts"].as_i64()), (StatusCode::OK, Some("queued"), Some(0)));
+    assert_eq!(
+        (s, revived["status"].as_str(), revived["attempts"].as_i64()),
+        (StatusCode::OK, Some("queued"), Some(0))
+    );
     let (_, c3) = api.post("/api/v1/jobs/claim", json!({"worker_id": worker})).await;
     let lease3 = c3["jobs"][0]["lease_id"].as_str().unwrap().to_owned();
-    let (s, done) = api.post(&format!("/api/v1/jobs/{id}/complete"), json!({"lease_id": lease3, "result": {"ok": true}})).await;
-    assert_eq!((s, done["status"].as_str(), done["result"].clone()), (StatusCode::OK, Some("succeeded"), json!({"ok": true})));
-    let (s, e) = api.post(&format!("/api/v1/jobs/{id}/complete"), json!({"lease_id": lease3})).await;
-    assert_eq!((s, code(&e)), (StatusCode::CONFLICT, "lease_lost"), "a second completion is rejected");
+    let (s, done) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/complete"),
+            json!({"lease_id": lease3, "result": {"ok": true}}),
+        )
+        .await;
+    assert_eq!(
+        (s, done["status"].as_str(), done["result"].clone()),
+        (StatusCode::OK, Some("succeeded"), json!({"ok": true}))
+    );
+    let (s, e) = api
+        .post(&format!("/api/v1/jobs/{id}/complete"), json!({"lease_id": lease3}))
+        .await;
+    assert_eq!(
+        (s, code(&e)),
+        (StatusCode::CONFLICT, "lease_lost"),
+        "a second completion is rejected"
+    );
 
     // The worker shows up as seen.
     let (_, workers) = api.get("/api/v1/jobs/workers").await;
-    assert!(workers["items"].as_array().unwrap().iter().any(|w| w["id"] == worker.as_str() && w["online"] == true));
+    assert!(
+        workers["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["id"] == worker.as_str() && w["online"] == true)
+    );
 }
 
 #[tokio::test]
@@ -329,8 +426,14 @@ async fn cancel_retry_delete_and_validation_over_http() {
         (json!({"kind": "k", "priority": 99999}), "invalid_job"),
         (json!({"kind": "k", "max_attempts": 0}), "invalid_job"),
         (json!({"kind": "k", "run_at": "tomorrow"}), "invalid_job"),
-        (json!({"kind": "k", "delay_ms": 5, "run_at": "2030-01-01T00:00:00Z"}), "invalid_job"),
-        (json!({"kind": "k", "payload": "x".repeat(300_000)}), "payload_too_large"),
+        (
+            json!({"kind": "k", "delay_ms": 5, "run_at": "2030-01-01T00:00:00Z"}),
+            "invalid_job",
+        ),
+        (
+            json!({"kind": "k", "payload": "x".repeat(300_000)}),
+            "payload_too_large",
+        ),
         (json!({"kind": "k", "typo": 1}), "invalid_body"),
         (json!({"payload": 1}), "invalid_body"),
     ] {
@@ -339,30 +442,63 @@ async fn cancel_retry_delete_and_validation_over_http() {
     }
     let (s, e) = api.get("/api/v1/jobs?status=bogus").await;
     assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_parameter"));
-    let (s, e) = api.post("/api/v1/jobs/claim", json!({"worker_id": "w", "max": 1000})).await;
+    let (s, e) = api
+        .post("/api/v1/jobs/claim", json!({"worker_id": "w", "max": 1000}))
+        .await;
     assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_claim"));
-    let (s, e) = api.post("/api/v1/jobs/claim", json!({"worker_id": "bad worker!"})).await;
+    let (s, e) = api
+        .post("/api/v1/jobs/claim", json!({"worker_id": "bad worker!"}))
+        .await;
     assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_job"));
 }
 
 #[tokio::test]
 async fn schedules_over_http() {
     let api = Api::admin().await;
-    let (s, created) = api.post("/api/v1/jobs/schedules", json!({"name": "nightly", "cron": "0 3 * * *", "kind": "report", "priority": 5})).await;
+    let (s, created) = api
+        .post(
+            "/api/v1/jobs/schedules",
+            json!({"name": "nightly", "cron": "0 3 * * *", "kind": "report", "priority": 5}),
+        )
+        .await;
     assert_eq!(s, StatusCode::CREATED, "{created}");
-    assert_eq!((created["enabled"].as_bool(), created["priority"].as_i64()), (Some(true), Some(5)));
+    assert_eq!(
+        (created["enabled"].as_bool(), created["priority"].as_i64()),
+        (Some(true), Some(5))
+    );
     let id = created["id"].as_str().unwrap().to_owned();
 
-    let (s, dup) = api.post("/api/v1/jobs/schedules", json!({"name": "nightly", "cron": "0 3 * * *", "kind": "report"})).await;
+    let (s, dup) = api
+        .post(
+            "/api/v1/jobs/schedules",
+            json!({"name": "nightly", "cron": "0 3 * * *", "kind": "report"}),
+        )
+        .await;
     assert_eq!((s, code(&dup)), (StatusCode::CONFLICT, "schedule_exists"));
-    let (s, bad) = api.post("/api/v1/jobs/schedules", json!({"name": "x", "cron": "every day", "kind": "report"})).await;
+    let (s, bad) = api
+        .post(
+            "/api/v1/jobs/schedules",
+            json!({"name": "x", "cron": "every day", "kind": "report"}),
+        )
+        .await;
     assert_eq!((s, code(&bad)), (StatusCode::BAD_REQUEST, "invalid_cron"));
 
     let (_, list) = api.get("/api/v1/jobs/schedules").await;
     assert_eq!(list["items"].as_array().unwrap().len(), 1);
-    let (s, patched) = api.call(Method::PATCH, &format!("/api/v1/jobs/schedules/{id}"), Some(json!({"enabled": false, "cron": "*/5 * * * *"}))).await;
-    assert_eq!((s, patched["enabled"].as_bool(), patched["cron"].as_str()), (StatusCode::OK, Some(false), Some("*/5 * * * *")));
-    let (s, _) = api.call(Method::DELETE, &format!("/api/v1/jobs/schedules/{id}"), None).await;
+    let (s, patched) = api
+        .call(
+            Method::PATCH,
+            &format!("/api/v1/jobs/schedules/{id}"),
+            Some(json!({"enabled": false, "cron": "*/5 * * * *"})),
+        )
+        .await;
+    assert_eq!(
+        (s, patched["enabled"].as_bool(), patched["cron"].as_str()),
+        (StatusCode::OK, Some(false), Some("*/5 * * * *"))
+    );
+    let (s, _) = api
+        .call(Method::DELETE, &format!("/api/v1/jobs/schedules/{id}"), None)
+        .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, e) = api.get(&format!("/api/v1/jobs/schedules/{id}")).await;
     assert_eq!((s, code(&e)), (StatusCode::NOT_FOUND, "schedule_not_found"));

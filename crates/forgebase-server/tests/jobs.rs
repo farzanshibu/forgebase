@@ -85,7 +85,11 @@ async fn a_job_in_flight_survives_a_server_restart_and_completes_exactly_once() 
         }
     });
     let server = start_with_jobs(&cfg, first, pool(100)).await.unwrap();
-    let (job, _) = server.jobs().enqueue(&sys, NewJob::new("report", json!({"quarter": "Q3"}))).await.unwrap();
+    let (job, _) = server
+        .jobs()
+        .enqueue(&sys, NewJob::new("report", json!({"quarter": "Q3"})))
+        .await
+        .unwrap();
     wait(5, || async { (started.load(Ordering::SeqCst) == 1).then_some(()) }).await;
     assert_eq!(status(&server, &job.id).await, JobStatus::Running);
     server.shutdown().await.unwrap(); // graceful shutdown mid-job
@@ -104,10 +108,21 @@ async fn a_job_in_flight_survives_a_server_restart_and_completes_exactly_once() 
     })
     .await;
     sleep(Duration::from_millis(300)).await; // a duplicate run would show up here
-    assert_eq!(done.result, Some(json!({"quarter": "Q3", "attempt": 1})), "released, so the attempt was not consumed");
+    assert_eq!(
+        done.result,
+        Some(json!({"quarter": "Q3", "attempt": 1})),
+        "released, so the attempt was not consumed"
+    );
     assert_eq!(completed.load(Ordering::SeqCst), 1, "completed exactly once");
     assert_eq!(finished_first.load(Ordering::SeqCst), 0);
-    let events: Vec<_> = server.jobs().events(&sys, &job.id).await.unwrap().into_iter().map(|e| e.event).collect();
+    let events: Vec<_> = server
+        .jobs()
+        .events(&sys, &job.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event)
+        .collect();
     assert_eq!(events, ["enqueued", "claimed", "released", "claimed", "succeeded"]);
     server.shutdown().await.unwrap();
 }
@@ -129,7 +144,15 @@ async fn delayed_jobs_and_schedules_survive_a_restart() {
         .unwrap();
     server
         .jobs()
-        .create_schedule(&sys, NewSchedule { name: "tick".into(), cron: "* * * * * *".into(), kind: "tick".into(), ..NewSchedule::default() })
+        .create_schedule(
+            &sys,
+            NewSchedule {
+                name: "tick".into(),
+                cron: "* * * * * *".into(),
+                kind: "tick".into(),
+                ..NewSchedule::default()
+            },
+        )
         .await
         .unwrap();
     server.shutdown().await.unwrap();
@@ -147,7 +170,10 @@ async fn delayed_jobs_and_schedules_survive_a_restart() {
             async { Ok(json!("tock")) }
         });
     let server = start_with_jobs(&cfg, registry, pool(100)).await.unwrap();
-    wait(10, || async { (status(&server, &delayed.id).await == JobStatus::Succeeded).then_some(()) }).await;
+    wait(10, || async {
+        (status(&server, &delayed.id).await == JobStatus::Succeeded).then_some(())
+    })
+    .await;
     wait(10, || async { (ticks.load(Ordering::SeqCst) >= 2).then_some(()) }).await;
     assert_eq!(ran_later.load(Ordering::SeqCst), 1);
     server.shutdown().await.unwrap();
@@ -158,7 +184,9 @@ async fn delayed_jobs_and_schedules_survive_a_restart() {
 #[tokio::test]
 async fn jobs_api_is_mounted_and_denies_anonymous_callers() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = start_with_jobs(&config(tmp.path()), JobRegistry::new(), pool(100)).await.unwrap();
+    let server = start_with_jobs(&config(tmp.path()), JobRegistry::new(), pool(100))
+        .await
+        .unwrap();
     let addr = server.local_addr();
 
     for (method, path, body) in [
@@ -175,6 +203,9 @@ async fn jobs_api_is_mounted_and_denies_anonymous_callers() {
     let (status, doc) = http(addr, "GET", "/api/openapi.json", "").await;
     assert_eq!(status, 200);
     assert!(doc.contains("/api/v1/jobs/claim") && doc.contains("/api/v1/collections"));
-    assert_eq!(server.jobs().stats(&AccessContext::system()).await.unwrap().totals["queued"], 0);
+    assert_eq!(
+        server.jobs().stats(&AccessContext::system()).await.unwrap().totals["queued"],
+        0
+    );
     server.shutdown().await.unwrap();
 }

@@ -46,7 +46,12 @@ async fn pool_runs_a_job_and_stores_the_result() {
         Ok(json!({"echo": ctx.payload().clone(), "attempt": ctx.attempt()}))
     });
     let pool = start_pool(h.svc.clone(), registry, fast());
-    let j = h.svc.enqueue(&system(), NewJob::new("echo", json!({"hello": "world"}))).await.unwrap().0;
+    let j = h
+        .svc
+        .enqueue(&system(), NewJob::new("echo", json!({"hello": "world"})))
+        .await
+        .unwrap()
+        .0;
     let done = wait_status(&h.svc, &j.id, JobStatus::Succeeded).await;
     assert_eq!(done.result, Some(json!({"echo": {"hello": "world"}, "attempt": 1})));
     assert!(done.worker_id.unwrap().starts_with("inproc-"));
@@ -71,13 +76,23 @@ async fn handler_errors_retry_with_backoff_then_succeed() {
     let pool = start_pool(h.svc.clone(), registry, fast());
     let j = h
         .svc
-        .enqueue(&system(), NewJob::new("flaky", json!(null)).retries(5, Duration::from_millis(30), Duration::from_millis(200)))
+        .enqueue(
+            &system(),
+            NewJob::new("flaky", json!(null)).retries(5, Duration::from_millis(30), Duration::from_millis(200)),
+        )
         .await
         .unwrap()
         .0;
     let done = wait_status(&h.svc, &j.id, JobStatus::Succeeded).await;
     assert_eq!((done.attempts, calls.load(Ordering::SeqCst)), (3, 3));
-    let events: Vec<_> = h.svc.events(&system(), &j.id).await.unwrap().into_iter().map(|e| e.event).collect();
+    let events: Vec<_> = h
+        .svc
+        .events(&system(), &j.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event)
+        .collect();
     assert_eq!(events.iter().filter(|e| *e == "retry_scheduled").count(), 2);
     pool.shutdown().await;
 }
@@ -105,9 +120,24 @@ async fn dead_letter_queue_after_max_attempts_and_for_fatal_and_panicking_handle
     let pool = start_pool(h.svc.clone(), registry, fast());
     let retries = |n| (n, Duration::from_millis(10), Duration::from_millis(20));
     let (n, b, m) = retries(3);
-    let j1 = h.svc.enqueue(&system(), NewJob::new("always_fails", json!(null)).retries(n, b, m)).await.unwrap().0;
-    let j2 = h.svc.enqueue(&system(), NewJob::new("fatal", json!(null))).await.unwrap().0;
-    let j3 = h.svc.enqueue(&system(), NewJob::new("panics", json!(null)).retries(2, b, m)).await.unwrap().0;
+    let j1 = h
+        .svc
+        .enqueue(&system(), NewJob::new("always_fails", json!(null)).retries(n, b, m))
+        .await
+        .unwrap()
+        .0;
+    let j2 = h
+        .svc
+        .enqueue(&system(), NewJob::new("fatal", json!(null)))
+        .await
+        .unwrap()
+        .0;
+    let j3 = h
+        .svc
+        .enqueue(&system(), NewJob::new("panics", json!(null)).retries(2, b, m))
+        .await
+        .unwrap()
+        .0;
 
     let d1 = wait_status(&h.svc, &j1.id, JobStatus::Dead).await;
     assert_eq!((d1.attempts, d1.last_error.as_deref()), (3, Some("boom")));
@@ -117,10 +147,25 @@ async fn dead_letter_queue_after_max_attempts_and_for_fatal_and_panicking_handle
     let d3 = wait_status(&h.svc, &j3.id, JobStatus::Dead).await;
     assert_eq!((d3.attempts, d3.last_error.as_deref()), (2, Some("handler panicked")));
 
-    let dlq = h.svc.list(&system(), JobFilter { status: Some(JobStatus::Dead), ..JobFilter::default() }).await.unwrap();
+    let dlq = h
+        .svc
+        .list(
+            &system(),
+            JobFilter {
+                status: Some(JobStatus::Dead),
+                ..JobFilter::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(dlq.total, 3);
     // The pool is still healthy after the panic.
-    let ok = h.svc.enqueue(&system(), NewJob::new("fatal", json!(null))).await.unwrap().0;
+    let ok = h
+        .svc
+        .enqueue(&system(), NewJob::new("fatal", json!(null)))
+        .await
+        .unwrap()
+        .0;
     wait_status(&h.svc, &ok.id, JobStatus::Dead).await;
     pool.shutdown().await;
 }
@@ -134,7 +179,9 @@ async fn priority_order_and_concurrency_limit() {
     let registry = JobRegistry::new().register("work", move |ctx: forgebase_jobs::JobContext| {
         let (o, r, p) = (o.clone(), r.clone(), p.clone());
         async move {
-            o.lock().unwrap().push(ctx.payload()["name"].as_str().unwrap().to_owned());
+            o.lock()
+                .unwrap()
+                .push(ctx.payload()["name"].as_str().unwrap().to_owned());
             let now = r.fetch_add(1, Ordering::SeqCst) + 1;
             p.fetch_max(now, Ordering::SeqCst);
             sleep(Duration::from_millis(150)).await;
@@ -144,17 +191,46 @@ async fn priority_order_and_concurrency_limit() {
     });
     // Enqueue before the pool starts, so the order is decided by priority alone.
     let mut ids = Vec::new();
-    for (name, prio) in [("low", 0), ("urgent", 100), ("normal", 10), ("low2", 0), ("normal2", 10), ("low3", 0)] {
-        ids.push(h.svc.enqueue(&system(), NewJob::new("work", json!({"name": name})).priority(prio)).await.unwrap().0.id);
+    for (name, prio) in [
+        ("low", 0),
+        ("urgent", 100),
+        ("normal", 10),
+        ("low2", 0),
+        ("normal2", 10),
+        ("low3", 0),
+    ] {
+        ids.push(
+            h.svc
+                .enqueue(&system(), NewJob::new("work", json!({"name": name})).priority(prio))
+                .await
+                .unwrap()
+                .0
+                .id,
+        );
     }
-    let pool = start_pool(h.svc.clone(), registry, PoolConfig { concurrency: 2, ..fast() });
+    let pool = start_pool(
+        h.svc.clone(),
+        registry,
+        PoolConfig {
+            concurrency: 2,
+            ..fast()
+        },
+    );
     for id in &ids {
         wait_status(&h.svc, id, JobStatus::Succeeded).await;
     }
-    assert_eq!(peak.load(Ordering::SeqCst), 2, "never more than `concurrency`, and it was used");
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        2,
+        "never more than `concurrency`, and it was used"
+    );
     let order = order.lock().unwrap().clone();
-    assert_eq!(&order[..2], ["urgent", "normal"], "highest priorities start first: {order:?}");
-    assert_eq!(order.iter().position(|n| n == "normal2").unwrap() < order.iter().position(|n| n == "low").unwrap(), true);
+    assert_eq!(
+        &order[..2],
+        ["urgent", "normal"],
+        "highest priorities start first: {order:?}"
+    );
+    assert!(order.iter().position(|n| n == "normal2").unwrap() < order.iter().position(|n| n == "low").unwrap());
     pool.shutdown().await;
 }
 
@@ -170,16 +246,46 @@ async fn cron_schedule_fires_jobs_through_the_pool() {
     let pool = start_pool(h.svc.clone(), registry, fast());
     let s = h
         .svc
-        .create_schedule(&system(), NewSchedule { name: "every-second".into(), cron: "* * * * * *".into(), kind: "tick".into(), ..NewSchedule::default() })
+        .create_schedule(
+            &system(),
+            NewSchedule {
+                name: "every-second".into(),
+                cron: "* * * * * *".into(),
+                kind: "tick".into(),
+                ..NewSchedule::default()
+            },
+        )
         .await
         .unwrap();
-    wait_for(Duration::from_secs(8), || async { (runs.load(Ordering::SeqCst) >= 3).then_some(()) }).await;
+    wait_for(Duration::from_secs(8), || async {
+        (runs.load(Ordering::SeqCst) >= 3).then_some(())
+    })
+    .await;
     pool.shutdown().await;
 
-    let jobs = h.svc.list(&system(), JobFilter { kind: Some("tick".into()), limit: Some(200), ..JobFilter::default() }).await.unwrap();
-    assert!(jobs.items.iter().all(|j| j.schedule_id.as_deref() == Some(s.id.as_str())));
+    let jobs = h
+        .svc
+        .list(
+            &system(),
+            JobFilter {
+                kind: Some("tick".into()),
+                limit: Some(200),
+                ..JobFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        jobs.items
+            .iter()
+            .all(|j| j.schedule_id.as_deref() == Some(s.id.as_str()))
+    );
     let keys: std::collections::HashSet<_> = jobs.items.iter().map(|j| j.idempotency_key.clone().unwrap()).collect();
-    assert_eq!(keys.len(), jobs.items.len(), "one job per firing, never two for the same due time");
+    assert_eq!(
+        keys.len(),
+        jobs.items.len(),
+        "one job per firing, never two for the same due time"
+    );
     assert!(jobs.items.iter().filter(|j| j.status == JobStatus::Succeeded).count() >= 3);
 }
 
@@ -188,8 +294,18 @@ async fn unregistered_kinds_are_left_for_external_workers() {
     let h = harness().await;
     let registry = JobRegistry::new().register("mine", |_c: forgebase_jobs::JobContext| async { Ok(json!(1)) });
     let pool = start_pool(h.svc.clone(), registry, fast());
-    let theirs = h.svc.enqueue(&system(), NewJob::new("external_only", json!(null))).await.unwrap().0;
-    let mine = h.svc.enqueue(&system(), NewJob::new("mine", json!(null))).await.unwrap().0;
+    let theirs = h
+        .svc
+        .enqueue(&system(), NewJob::new("external_only", json!(null)))
+        .await
+        .unwrap()
+        .0;
+    let mine = h
+        .svc
+        .enqueue(&system(), NewJob::new("mine", json!(null)))
+        .await
+        .unwrap()
+        .0;
     wait_status(&h.svc, &mine.id, JobStatus::Succeeded).await;
     sleep(Duration::from_millis(200)).await;
     assert_eq!(status_of(&h.svc, &theirs.id).await.status, JobStatus::Queued);
@@ -219,8 +335,19 @@ async fn cancelling_a_running_job_tells_the_handler_to_stop() {
         }
     });
     let pool = start_pool(h.svc.clone(), registry, fast());
-    let j = h.svc.enqueue(&system(), NewJob::new("long", json!(null)).visibility_timeout(Duration::from_millis(150))).await.unwrap().0;
-    wait_for(Duration::from_secs(5), || async { (started.load(Ordering::SeqCst) == 1).then_some(()) }).await;
+    let j = h
+        .svc
+        .enqueue(
+            &system(),
+            NewJob::new("long", json!(null)).visibility_timeout(Duration::from_millis(150)),
+        )
+        .await
+        .unwrap()
+        .0;
+    wait_for(Duration::from_secs(5), || async {
+        (started.load(Ordering::SeqCst) == 1).then_some(())
+    })
+    .await;
     h.svc.cancel(&system(), &j.id).await.unwrap();
     let end = wait_status(&h.svc, &j.id, JobStatus::Cancelled).await;
     assert_eq!(stopped.load(Ordering::SeqCst), 1);
@@ -236,8 +363,20 @@ async fn graceful_shutdown_lets_short_jobs_finish() {
         sleep(Duration::from_millis(300)).await;
         Ok(json!("done"))
     });
-    let pool = start_pool(h.svc.clone(), registry, PoolConfig { shutdown_grace: Duration::from_secs(5), ..fast() });
-    let j = h.svc.enqueue(&system(), NewJob::new("short", json!(null))).await.unwrap().0;
+    let pool = start_pool(
+        h.svc.clone(),
+        registry,
+        PoolConfig {
+            shutdown_grace: Duration::from_secs(5),
+            ..fast()
+        },
+    );
+    let j = h
+        .svc
+        .enqueue(&system(), NewJob::new("short", json!(null)))
+        .await
+        .unwrap()
+        .0;
     wait_status(&h.svc, &j.id, JobStatus::Running).await;
     pool.shutdown().await;
     assert_eq!(status_of(&h.svc, &j.id).await.status, JobStatus::Succeeded);
@@ -262,8 +401,20 @@ async fn graceful_shutdown_releases_jobs_that_outlive_the_grace_period() {
             Ok(json!(null))
         }
     });
-    let pool = start_pool(h.svc.clone(), registry, PoolConfig { shutdown_grace: Duration::from_millis(100), ..fast() });
-    let j = h.svc.enqueue(&system(), NewJob::new("forever", json!(null))).await.unwrap().0;
+    let pool = start_pool(
+        h.svc.clone(),
+        registry,
+        PoolConfig {
+            shutdown_grace: Duration::from_millis(100),
+            ..fast()
+        },
+    );
+    let j = h
+        .svc
+        .enqueue(&system(), NewJob::new("forever", json!(null)))
+        .await
+        .unwrap()
+        .0;
     wait_status(&h.svc, &j.id, JobStatus::Running).await;
     pool.shutdown().await;
 
@@ -271,7 +422,14 @@ async fn graceful_shutdown_releases_jobs_that_outlive_the_grace_period() {
     assert_eq!(after.status, JobStatus::Queued, "released, not lost");
     assert_eq!(after.attempts, 0, "a shutdown is not a failed attempt");
     assert_eq!(dropped.load(Ordering::SeqCst), 1, "the handler was stopped");
-    let events: Vec<_> = h.svc.events(&system(), &j.id).await.unwrap().into_iter().map(|e| e.event).collect();
+    let events: Vec<_> = h
+        .svc
+        .events(&system(), &j.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event)
+        .collect();
     assert_eq!(events, ["enqueued", "claimed", "released"]);
 }
 
@@ -296,13 +454,23 @@ async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
     });
     let pool1 = start_pool(svc.clone(), first, fast());
     let j = svc
-        .enqueue(&system(), NewJob::new("once", json!({"order": 7})).visibility_timeout(Duration::from_millis(400)))
+        .enqueue(
+            &system(),
+            NewJob::new("once", json!({"order": 7})).visibility_timeout(Duration::from_millis(400)),
+        )
         .await
         .unwrap()
         .0;
-    wait_for(Duration::from_secs(5), || async { (started.load(Ordering::SeqCst) == 1).then_some(()) }).await;
+    wait_for(Duration::from_secs(5), || async {
+        (started.load(Ordering::SeqCst) == 1).then_some(())
+    })
+    .await;
     pool1.crash().await; // no release, no heartbeat, nothing: like kill -9
-    assert_eq!(status_of(&svc, &j.id).await.status, JobStatus::Running, "the dead worker still 'holds' the job");
+    assert_eq!(
+        status_of(&svc, &j.id).await.status,
+        JobStatus::Running,
+        "the dead worker still 'holds' the job"
+    );
 
     // The database is reopened by a fresh process; the job is still there.
     db.close().await;
@@ -324,7 +492,13 @@ async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
     assert_eq!(done.result, Some(json!({"order": 7, "attempt": 2})));
     assert_eq!(completed.load(Ordering::SeqCst), 1, "ran to completion exactly once");
     assert_eq!(finished_by_first.load(Ordering::SeqCst), 0);
-    let events: Vec<_> = svc.events(&system(), &j.id).await.unwrap().into_iter().map(|e| e.event).collect();
+    let events: Vec<_> = svc
+        .events(&system(), &j.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.event)
+        .collect();
     assert_eq!(events, ["enqueued", "claimed", "lease_expired", "claimed", "succeeded"]);
     db.close().await;
 }
