@@ -12,3 +12,5 @@ export * from "./functions";
 export * from "./jobs";
 export * from "./storage";
 export * from "./kv";
+export * from "./identity";
+export * from "./customize";

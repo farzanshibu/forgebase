@@ -222,7 +222,7 @@ pub fn document_with<'a>(
     doc.merge(forgebase_realtime::openapi());
     add_security(&mut doc);
     for (path, item) in &mut doc.paths.paths {
-        if !path.starts_with("/api/v1/") {
+        if !(path.starts_with("/api/v1/") || path.starts_with("/api/auth/")) {
             continue;
         }
         let params = path.contains('{');
@@ -237,7 +237,9 @@ pub fn document_with<'a>(
         .flatten()
         {
             add_errors(op, params);
-            op.security = Some(api_security());
+            if path.starts_with("/api/v1/") {
+                op.security = Some(api_security());
+            }
         }
     }
     doc

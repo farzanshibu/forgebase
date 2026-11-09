@@ -222,7 +222,7 @@ async fn entry(State(s): State<CreditService>, Access(ctx): Access, Path(id): Pa
 }
 
 /// Checks that the balance, the ledger, the lots and their allocations agree.
-#[utoipa::path(get, path = "/api/v1/credits/audit", tag = "credits",
+#[utoipa::path(get, path = "/api/v1/credits/audit", operation_id = "credits_audit", tag = "credits",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Consistency report", body = AuditReport)))]
 async fn audit(State(s): State<CreditService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -397,7 +397,7 @@ async fn summary(State(s): State<CreditService>, Access(ctx): Access, q: Query) 
 
 /// Runs expiry and usage consumption now (platform administrators; the
 /// `credits.maintenance` job does it every minute).
-#[utoipa::path(post, path = "/api/v1/credits/maintenance", tag = "credits",
+#[utoipa::path(post, path = "/api/v1/credits/maintenance", operation_id = "credits_maintenance", tag = "credits",
     responses((status = 200, description = "What changed", body = MaintenanceReport)))]
 async fn maintenance(State(s): State<CreditService>, Access(ctx): Access) -> ApiResult {
     s.require_admin(&ctx).map_err(api)?;

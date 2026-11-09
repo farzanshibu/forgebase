@@ -320,7 +320,7 @@ async fn overrides(State(s): State<EntitlementService>, Access(ctx): Access, q: 
 }
 
 /// Adds an override (platform administrators). Deny always wins.
-#[utoipa::path(post, path = "/api/v1/entitlements/overrides", tag = "entitlements",
+#[utoipa::path(post, path = "/api/v1/entitlements/overrides", operation_id = "entitlements_add_override", tag = "entitlements",
     request_body = OverrideInput, responses((status = 201, description = "Override", body = Override)))]
 async fn add_override(State(s): State<EntitlementService>, Access(ctx): Access, b: Body<OverrideInput>) -> ApiResult {
     let b = admin_body(&s, &ctx, b)?;
@@ -328,7 +328,7 @@ async fn add_override(State(s): State<EntitlementService>, Access(ctx): Access, 
 }
 
 /// Deletes an override.
-#[utoipa::path(delete, path = "/api/v1/entitlements/overrides/{id}", tag = "entitlements",
+#[utoipa::path(delete, path = "/api/v1/entitlements/overrides/{id}", operation_id = "entitlements_delete_override", tag = "entitlements",
     params(("id" = String, Path, description = "Override id")),
     responses((status = 204, description = "Deleted")))]
 async fn delete_override(
@@ -553,7 +553,7 @@ async fn delete_quota_policy(
 // ---------------------------------------------------------------------------
 
 /// Would the units be granted now? No side effects.
-#[utoipa::path(post, path = "/api/v1/quotas/check", tag = "usage",
+#[utoipa::path(post, path = "/api/v1/quotas/check", operation_id = "quotas_check", tag = "usage",
     request_body = UsageRequest, responses((status = 200, description = "Decision", body = Decision)))]
 async fn check(State(s): State<EntitlementService>, Access(ctx): Access, b: Body<UsageRequest>) -> ApiResult {
     let b = caller_body(&s, &ctx, b)?;
@@ -678,7 +678,7 @@ async fn gauge(State(s): State<EntitlementService>, Access(ctx): Access, b: Body
 }
 
 /// Immutable usage events in `seq` order (`billing:read`; FB-70's feed).
-#[utoipa::path(get, path = "/api/v1/usage/events", tag = "usage",
+#[utoipa::path(get, path = "/api/v1/usage/events", operation_id = "usage_events", tag = "usage",
     params(
         ("subject" = Option<String>, Query, description = "Subject (administrators may omit it: all subjects)"),
         ("feature" = Option<String>, Query, description = "Only this feature"),
@@ -716,7 +716,7 @@ async fn alerts(State(s): State<EntitlementService>, Access(ctx): Access, q: Que
 
 /// Runs period resets and expiries now (platform administrators; the
 /// `entitlements.maintenance` job does it every minute).
-#[utoipa::path(post, path = "/api/v1/usage/maintenance", tag = "usage",
+#[utoipa::path(post, path = "/api/v1/usage/maintenance", operation_id = "usage_maintenance", tag = "usage",
     responses((status = 200, description = "What changed", body = MaintenanceReport)))]
 async fn maintenance(State(s): State<EntitlementService>, Access(ctx): Access) -> ApiResult {
     s.require_admin(&ctx).map_err(api)?;

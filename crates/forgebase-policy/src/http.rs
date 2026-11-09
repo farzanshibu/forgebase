@@ -385,6 +385,12 @@ pub struct CheckBody {
 // ---------------------------------------------------------------------------
 
 macro_rules! doc {
+    ($method:ident, $path:literal, $tag:literal, $desc:literal, $name:ident, $id:literal) => {
+        #[utoipa::path($method, path = $path, operation_id = $id, tag = $tag, description = $desc, responses((status = 200, description = "OK", body = Object)))]
+        #[allow(dead_code)]
+        #[doc = $desc]
+        pub fn $name() {}
+    };
     ($method:ident, $path:literal, $tag:literal, $desc:literal, $name:ident) => {
         #[utoipa::path($method, path = $path, tag = $tag, description = $desc, responses((status = 200, description = "OK", body = Object)))]
         #[allow(dead_code)]
@@ -612,14 +618,16 @@ pub mod docs {
         "/api/v1/overrides",
         "authorization",
         "Explicit allow/deny `{org_id, principal, permission, effect}`.",
-        add_override
+        add_override,
+        "authz_add_override"
     );
     doc!(
         delete,
         "/api/v1/overrides/{id}",
         "authorization",
         "Remove an override.",
-        delete_override
+        delete_override,
+        "authz_delete_override"
     );
     doc!(
         get,
@@ -703,7 +711,8 @@ pub mod docs {
         "/api/v1/authz/check",
         "authorization",
         "Dry-run the pipeline for `{permission, org, resource_type, resource_id}`.",
-        check
+        check,
+        "authz_check"
     );
     doc!(
         get,
@@ -752,7 +761,8 @@ pub mod docs {
         "/api/v1/authz/audit",
         "authorization",
         "Recent denials with their pipeline step (super-admins).",
-        audit
+        audit,
+        "authz_audit"
     );
 }
 

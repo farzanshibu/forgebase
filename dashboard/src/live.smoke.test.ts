@@ -23,6 +23,10 @@ import {
   vectorCollectionStats, vectorHybrid, vectorSearch, vectorStats,
 } from "./api/vector";
 import {
+  addDomain, createClient, deleteClient, getBranding, listAgreements, listClients, listDeliveries, listDomains, listRealmIdentities, listTemplates, previewEmail,
+  publishAgreement, putBranding, putRealmIdentity, putTemplate, rotateClientSecret, rotateOidcKeys, deleteDomain, listConsents, realmInfo,
+} from "./api";
+import {
   copyObject, createBucket, deleteBucket, deleteObject, downloadObject, getBucketAcl, listBuckets, listObjects, listVersions, putBucketAcl, restoreVersion,
   signUrl, storageStats, updateBucket, uploadObject, reconcileStorage,
 } from "./api/storage";
@@ -217,6 +221,44 @@ describe.skipIf(!BIN)("live server", () => {
     expect((await kvInfo()).keys).toBeGreaterThan(0);
     expect(typeof (await kvPublish(ns, "news", "x")).receivers).toBe("number");
     expect((await kvDelete(ns, "greeting")).deleted).toBe(true);
+  });
+
+  it("drives Identity Studio: realms, client apps, keys, branding, domains, email, agreements", async () => {
+    const realms = await listRealmIdentities();
+    expect(realms.map((r) => r.realm)).toContain("default");
+    await putRealmIdentity("default", { config: realms.find((r) => r.realm === "default")!.config });
+    expect((await realmInfo("default")).realm).toBe("default");
+
+    const made = await createClient({ name: "Smoke app", type: "confidential", redirect_uris: ["https://app.example.com/cb"], realm: "default" });
+    expect(made.client_secret).toBeTruthy();
+    const id = made.client.client_id;
+    expect((await listClients("default")).map((c) => c.client_id)).toContain(id);
+    const rotated = await rotateClientSecret(id, 3600);
+    expect(rotated.client_secret).not.toBe(made.client_secret);
+    expect(rotated.client.previous_secret_expires_at).toBeTruthy();
+    // Consents are per user: an administrator session has none to list (an admin-wide list is a missing endpoint).
+    await expect(listConsents()).rejects.toMatchObject({ message: "only users have consents" });
+    expect((await rotateOidcKeys("default")).kid).toBeTruthy();
+    await deleteClient(id);
+
+    expect((await getBranding("default")).realm).toBe("default");
+    expect((await putBranding({ display_name: "Smoke", primary_color: "#123456" }, "default")).primary_color).toBe("#123456");
+    const d = await addDomain("login.smoke.example.com", "default");
+    expect(d.verification?.record_type).toBe("TXT");
+    expect((await listDomains("default")).map((x) => x.host)).toContain("login.smoke.example.com");
+    await deleteDomain(d.id);
+
+    const tpls = await listTemplates("default");
+    expect(tpls.length).toBeGreaterThan(0);
+    const t = tpls[0]!;
+    const pv = await previewEmail({ draft: { subject: t.subject, text: t.text }, variables: {} }, "default");
+    expect(Array.isArray(pv.missing)).toBe(true);
+    await putTemplate(t.key, { subject: "Smoke subject", text: t.text }, "default");
+    expect(Array.isArray(await listDeliveries({ realm: "default" }))).toBe(true);
+
+    const a = await publishAgreement({ kind: "terms", title: "Smoke terms", body: "Be nice." }, "default");
+    expect(a.version).toBeGreaterThanOrEqual(1);
+    expect((await listAgreements("default")).map((x) => x.id)).toContain(a.id);
   });
 
   it("ends the session on sign-out", async () => {
