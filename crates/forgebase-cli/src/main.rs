@@ -9,6 +9,8 @@
 //! forgebase admin create   create an administrator (also reset-password, list)
 //! forgebase version        print version information
 //! forgebase functions deploy <NAME> <FILE.wasm>   deploy a function version (also: logs <NAME> [--follow])
+//! forgebase queues publish|pull|tail   publish to a topic, pull from a subscription, follow a topic
+//! forgebase jobs watch <ID>            follow a long-running job's progress until it finishes
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
@@ -19,6 +21,9 @@ mod doctor;
 mod dotenv;
 mod functions;
 mod probe;
+mod queues;
+#[cfg(test)]
+mod testserver;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -148,6 +153,10 @@ enum Command {
     },
     /// Deploy WebAssembly functions and read their logs on a running server.
     Functions(Box<functions::FunctionsCli>),
+    /// Publish to durable topics, pull from subscriptions and follow a topic on a running server.
+    Queues(Box<queues::QueuesCli>),
+    /// Follow long-running jobs on a running server.
+    Jobs(Box<queues::JobsCli>),
 }
 
 fn main() -> ExitCode {
@@ -184,5 +193,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Version { json } => commands::version(json).await,
         Command::Admin { command } => admin::run(g, command).await,
         Command::Functions(f) => functions::run(g, f.server, f.command).await,
+        Command::Queues(q) => queues::run_queues(g, q.server, q.command).await,
+        Command::Jobs(j) => queues::run_jobs(g, j.server, j.command).await,
     }
 }
