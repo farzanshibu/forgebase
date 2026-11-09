@@ -48,9 +48,7 @@ fn valid_var(name: &str) -> bool {
         && !name.starts_with('.')
         && !name.ends_with('.')
         && !name.contains("..")
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
 fn parse(tpl: &str) -> Result<Vec<Part<'_>>> {
@@ -208,8 +206,12 @@ mod tests {
 
     #[test]
     fn substitutes_and_reports_missing() {
-        let (s, m) = render("Hi {{ user.name }}, {{code}} {{nope}}", &json!({"user": {"name": "Ann"}, "code": 42}), Mode::Text)
-            .unwrap();
+        let (s, m) = render(
+            "Hi {{ user.name }}, {{code}} {{nope}}",
+            &json!({"user": {"name": "Ann"}, "code": 42}),
+            Mode::Text,
+        )
+        .unwrap();
         assert_eq!(s, "Hi Ann, 42 ");
         assert_eq!(m, vec!["nope"]);
     }
@@ -227,30 +229,55 @@ mod tests {
 
     #[test]
     fn url_variables_refuse_script_schemes() {
-        let a = render(r#"<a href="{{link}}">x</a>"#, &json!({"link": "javascript:alert(1)"}), Mode::Html)
-            .unwrap()
-            .0;
+        let a = render(
+            r#"<a href="{{link}}">x</a>"#,
+            &json!({"link": "javascript:alert(1)"}),
+            Mode::Html,
+        )
+        .unwrap()
+        .0;
         assert_eq!(a, r##"<a href="#">x</a>"##);
-        let ok = render(r#"<a href="{{ reset_url }}">x</a>"#, &json!({"reset_url": "https://a.example/r?x=1&y=2"}), Mode::Html)
-            .unwrap()
-            .0;
+        let ok = render(
+            r#"<a href="{{ reset_url }}">x</a>"#,
+            &json!({"reset_url": "https://a.example/r?x=1&y=2"}),
+            Mode::Html,
+        )
+        .unwrap()
+        .0;
         assert_eq!(ok, r#"<a href="https://a.example/r?x=1&amp;y=2">x</a>"#);
         // a quote cannot break out of the attribute
-        let q = render(r#"<a href="{{link}}">"#, &json!({"link": "https://a.example/\" onclick=\"x"}), Mode::Html)
-            .unwrap()
-            .0;
+        let q = render(
+            r#"<a href="{{link}}">"#,
+            &json!({"link": "https://a.example/\" onclick=\"x"}),
+            Mode::Html,
+        )
+        .unwrap()
+        .0;
         assert_eq!(q, r##"<a href="#">"##);
     }
 
     #[test]
     fn subject_cannot_inject_headers() {
-        let (s, _) = render("Hello {{n}}", &json!({"n": "x\r\nBcc: evil@example.com"}), Mode::Subject).unwrap();
+        let (s, _) = render(
+            "Hello {{n}}",
+            &json!({"n": "x\r\nBcc: evil@example.com"}),
+            Mode::Subject,
+        )
+        .unwrap();
         assert!(!s.contains('\r') && !s.contains('\n'));
     }
 
     #[test]
     fn rejects_malformed_templates() {
-        for bad in ["{{ a", "a }}", "{{ }}", "{{ a b }}", "{{#if x}}", "{{ ..a }}", "{{ a-b }}"] {
+        for bad in [
+            "{{ a",
+            "a }}",
+            "{{ }}",
+            "{{ a b }}",
+            "{{#if x}}",
+            "{{ ..a }}",
+            "{{ a-b }}",
+        ] {
             assert!(validate(bad).is_err(), "{bad}");
         }
         assert_eq!(variables("{{b}} {{a}} {{b}}").unwrap(), vec!["a", "b"]);

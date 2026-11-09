@@ -65,7 +65,9 @@ pub fn normalize_host(h: &str) -> Result<String> {
             && !l.ends_with('-')
             && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
         if !ok {
-            return bad("labels are 1-63 characters of a-z, 0-9 and `-`, not starting or ending with `-` (no scheme, port, path or wildcard)");
+            return bad(
+                "labels are 1-63 characters of a-z, 0-9 and `-`, not starting or ending with `-` (no scheme, port, path or wildcard)",
+            );
         }
     }
     // An IPv4 literal is not a domain.
@@ -86,7 +88,10 @@ impl CustomizeService {
     /// Reloads the routing table (verified domains) from the database.
     pub async fn reload_hosts(&self) -> Result<()> {
         let rows = self
-            .query("SELECT host, realm FROM _forgebase_domains WHERE status = 'verified'", vec![])
+            .query(
+                "SELECT host, realm FROM _forgebase_domains WHERE status = 'verified'",
+                vec![],
+            )
             .await?;
         let map = rows.rows.iter().map(|r| (text(r, 0), text(r, 1))).collect();
         if let Ok(mut c) = self.inner.cache.write() {
@@ -110,7 +115,10 @@ impl CustomizeService {
         let mut tx = self.begin().await?;
         let res = async {
             let existing = tx
-                .fetch(&format!("SELECT {COLUMNS} FROM _forgebase_domains WHERE host = ?1"), vec![host.clone().into()])
+                .fetch(
+                    &format!("SELECT {COLUMNS} FROM _forgebase_domains WHERE host = ?1"),
+                    vec![host.clone().into()],
+                )
                 .await?;
             if let Some(row) = existing.rows.first() {
                 let d = domain_row(row);
@@ -125,7 +133,8 @@ impl CustomizeService {
                         },
                     ));
                 }
-                tx.exec("DELETE FROM _forgebase_domains WHERE id = ?1", vec![d.id.into()]).await?;
+                tx.exec("DELETE FROM _forgebase_domains WHERE id = ?1", vec![d.id.into()])
+                    .await?;
             }
             let id = new_id("dom");
             tx.exec(
@@ -159,7 +168,10 @@ impl CustomizeService {
 
     async fn domain_unchecked(&self, id: &str) -> Result<Domain> {
         let rows = self
-            .query(&format!("SELECT {COLUMNS} FROM _forgebase_domains WHERE id = ?1"), vec![id.into()])
+            .query(
+                &format!("SELECT {COLUMNS} FROM _forgebase_domains WHERE id = ?1"),
+                vec![id.into()],
+            )
             .await?;
         rows.rows
             .first()
@@ -171,7 +183,8 @@ impl CustomizeService {
     pub async fn domain(&self, ctx: &AccessContext, id: &str) -> Result<Domain> {
         self.require_caller(ctx)?;
         let d = self.domain_unchecked(id).await?;
-        self.can_read(ctx, &d.realm).map_err(|_| CustomizeError::NotFound("domain".into()))?;
+        self.can_read(ctx, &d.realm)
+            .map_err(|_| CustomizeError::NotFound("domain".into()))?;
         Ok(d)
     }
 
@@ -191,9 +204,13 @@ impl CustomizeService {
     /// Issues a new token for a pending domain (after the old one expired).
     pub async fn reissue_domain(&self, ctx: &AccessContext, id: &str) -> Result<Domain> {
         let d = self.domain_unchecked(id).await?;
-        self.can_write(ctx, &d.realm).map_err(|_| CustomizeError::NotFound("domain".into()))?;
+        self.can_write(ctx, &d.realm)
+            .map_err(|_| CustomizeError::NotFound("domain".into()))?;
         if d.status == DomainStatus::Verified {
-            return Err(CustomizeError::conflict("already_verified", "the domain is already verified"));
+            return Err(CustomizeError::conflict(
+                "already_verified",
+                "the domain is already verified",
+            ));
         }
         let now = self.now();
         let mut tx = self.begin().await?;
@@ -211,7 +228,8 @@ impl CustomizeService {
     /// `verified: false` with the reason.
     pub async fn verify_domain(&self, ctx: &AccessContext, id: &str) -> Result<VerifyResult> {
         let d = self.domain_unchecked(id).await?;
-        self.can_write(ctx, &d.realm).map_err(|_| CustomizeError::NotFound("domain".into()))?;
+        self.can_write(ctx, &d.realm)
+            .map_err(|_| CustomizeError::NotFound("domain".into()))?;
         if d.status == DomainStatus::Verified {
             return Ok(VerifyResult {
                 verified: true,
@@ -232,10 +250,7 @@ impl CustomizeService {
         let (verified, reason) = match self.dns().txt(&v.record_name).await {
             Err(e) => (false, Some(format!("DNS lookup failed: {e}"))),
             Ok(records) if records.iter().any(|r| r.trim() == v.record_value) => (true, None),
-            Ok(records) if records.is_empty() => (
-                false,
-                Some(format!("no TXT record found at {}", v.record_name)),
-            ),
+            Ok(records) if records.is_empty() => (false, Some(format!("no TXT record found at {}", v.record_name))),
             Ok(_) => (
                 false,
                 Some(format!(
@@ -280,9 +295,11 @@ impl CustomizeService {
     /// Removes a domain; requests for its host stop routing to the realm.
     pub async fn delete_domain(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         let d = self.domain_unchecked(id).await?;
-        self.can_write(ctx, &d.realm).map_err(|_| CustomizeError::NotFound("domain".into()))?;
+        self.can_write(ctx, &d.realm)
+            .map_err(|_| CustomizeError::NotFound("domain".into()))?;
         let mut tx = self.begin().await?;
-        tx.exec("DELETE FROM _forgebase_domains WHERE id = ?1", vec![id.into()]).await?;
+        tx.exec("DELETE FROM _forgebase_domains WHERE id = ?1", vec![id.into()])
+            .await?;
         tx.commit().await?;
         self.reload_hosts().await
     }
@@ -294,10 +311,23 @@ mod tests {
 
     #[test]
     fn host_validation() {
-        assert_eq!(normalize_host(" Login.Example.COM. ").unwrap_or_default(), "login.example.com");
+        assert_eq!(
+            normalize_host(" Login.Example.COM. ").unwrap_or_default(),
+            "login.example.com"
+        );
         for bad in [
-            "localhost", "example", "a.b..c", "-a.example.com", "a_b.example.com", "http://a.example.com",
-            "a.example.com:8080", "*.example.com", "10.0.0.1", "a.example.com/x", "x.local", "a b.example.com",
+            "localhost",
+            "example",
+            "a.b..c",
+            "-a.example.com",
+            "a_b.example.com",
+            "http://a.example.com",
+            "a.example.com:8080",
+            "*.example.com",
+            "10.0.0.1",
+            "a.example.com/x",
+            "x.local",
+            "a b.example.com",
         ] {
             assert!(normalize_host(bad).is_err(), "{bad}");
         }

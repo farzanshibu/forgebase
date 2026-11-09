@@ -81,10 +81,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: CustomizeService) -> Router
         .route("/customize/domains/{id}/verify", post(verify_domain))
         .route("/customize/domains/{id}/reissue", post(reissue_domain))
         .route("/customize/branding", get(branding).put(put_branding))
-        .route(
-            "/customize/branding/assets/{kind}",
-            put(put_asset).delete(delete_asset),
-        )
+        .route("/customize/branding/assets/{kind}", put(put_asset).delete(delete_asset))
         .route("/customize/email/templates", get(templates))
         .route(
             "/customize/email/templates/{key}",
@@ -211,7 +208,12 @@ async fn branding(State(s): State<CustomizeService>, Access(ctx): Access, q: Que
 #[utoipa::path(put, path = "/api/v1/customize/branding", tag = "customize", request_body = BrandingInput,
     params(("realm" = Option<String>, Query, description = REALM)),
     responses((status = 200, description = "Branding", body = Branding)))]
-async fn put_branding(State(s): State<CustomizeService>, Access(ctx): Access, q: Query, b: Body<BrandingInput>) -> ApiResult {
+async fn put_branding(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    q: Query,
+    b: Body<BrandingInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
     ok(s.put_branding(&ctx, q.get("realm"), input).await.map_err(api)?)
 }
@@ -237,9 +239,16 @@ async fn put_asset(
 ) -> ApiResult {
     s.require_caller(&ctx).map_err(api)?;
     let kind = asset_kind(&kind)?;
-    let ct = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
     if data.len() > MAX_ASSET_BYTES {
-        return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large", "an image is at most 256 KiB"));
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "an image is at most 256 KiB",
+        ));
     }
     ok(s.put_asset(&ctx, q.get("realm"), kind, ct, &data).await.map_err(api)?)
 }
@@ -249,9 +258,16 @@ async fn put_asset(
     params(("kind" = String, Path, description = "logo or favicon"),
            ("realm" = Option<String>, Query, description = REALM)),
     responses((status = 200, description = "Branding", body = Branding)))]
-async fn delete_asset(State(s): State<CustomizeService>, Access(ctx): Access, Path(kind): Path<String>, q: Query) -> ApiResult {
+async fn delete_asset(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    Path(kind): Path<String>,
+    q: Query,
+) -> ApiResult {
     s.require_caller(&ctx).map_err(api)?;
-    ok(s.delete_asset(&ctx, q.get("realm"), asset_kind(&kind)?).await.map_err(api)?)
+    ok(s.delete_asset(&ctx, q.get("realm"), asset_kind(&kind)?)
+        .await
+        .map_err(api)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +287,12 @@ async fn templates(State(s): State<CustomizeService>, Access(ctx): Access, q: Qu
     params(("key" = String, Path, description = "template key"),
            ("realm" = Option<String>, Query, description = REALM)),
     responses((status = 200, description = "Template", body = EmailTemplate)))]
-async fn template(State(s): State<CustomizeService>, Access(ctx): Access, Path(key): Path<String>, q: Query) -> ApiResult {
+async fn template(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    Path(key): Path<String>,
+    q: Query,
+) -> ApiResult {
     ok(s.template(&ctx, q.get("realm"), &key).await.map_err(api)?)
 }
 
@@ -298,7 +319,12 @@ async fn put_template(
     params(("key" = String, Path, description = "template key"),
            ("realm" = Option<String>, Query, description = REALM)),
     responses((status = 204, description = "Removed")))]
-async fn delete_template(State(s): State<CustomizeService>, Access(ctx): Access, Path(key): Path<String>, q: Query) -> ApiResult {
+async fn delete_template(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    Path(key): Path<String>,
+    q: Query,
+) -> ApiResult {
     s.delete_template(&ctx, q.get("realm"), &key).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -318,7 +344,11 @@ async fn preview(State(s): State<CustomizeService>, Access(ctx): Access, q: Quer
     responses((status = 202, description = "Queued", body = Delivery)))]
 async fn send(State(s): State<CustomizeService>, Access(ctx): Access, q: Query, b: Body<SendInput>) -> ApiResult {
     let input = body(&s, &ctx, b)?;
-    Ok((StatusCode::ACCEPTED, Json(s.send(&ctx, q.get("realm"), input).await.map_err(api)?)).into_response())
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(s.send(&ctx, q.get("realm"), input).await.map_err(api)?),
+    )
+        .into_response())
 }
 
 /// The delivery log, newest first.
@@ -337,7 +367,9 @@ async fn deliveries(State(s): State<CustomizeService>, Access(ctx): Access, q: Q
             ["queued", "retrying", "sent", "failed"]
                 .contains(&v)
                 .then(|| DeliveryStatus::parse(v))
-                .ok_or_else(|| ApiError::bad_request("invalid_parameter", "status must be queued, retrying, sent or failed"))?,
+                .ok_or_else(|| {
+                    ApiError::bad_request("invalid_parameter", "status must be queued, retrying, sent or failed")
+                })?,
         ),
     };
     let num = |name: &str| -> Result<Option<i64>, ApiError> {
@@ -370,7 +402,11 @@ async fn delivery(State(s): State<CustomizeService>, Access(ctx): Access, Path(i
 #[utoipa::path(post, path = "/api/v1/customize/email/deliveries/{id}/retry", tag = "customize",
     responses((status = 202, description = "Queued", body = Delivery)))]
 async fn retry_delivery(State(s): State<CustomizeService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
-    Ok((StatusCode::ACCEPTED, Json(s.retry_delivery(&ctx, &id).await.map_err(api)?)).into_response())
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(s.retry_delivery(&ctx, &id).await.map_err(api)?),
+    )
+        .into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +427,12 @@ async fn agreements(State(s): State<CustomizeService>, Access(ctx): Access, q: Q
 #[utoipa::path(post, path = "/api/v1/customize/agreements", tag = "customize", request_body = AgreementInput,
     params(("realm" = Option<String>, Query, description = REALM)),
     responses((status = 201, description = "Published version", body = Agreement)))]
-async fn publish_agreement(State(s): State<CustomizeService>, Access(ctx): Access, q: Query, b: Body<AgreementInput>) -> ApiResult {
+async fn publish_agreement(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    q: Query,
+    b: Body<AgreementInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
     created(s.publish_agreement(&ctx, q.get("realm"), input).await.map_err(api)?)
 }
@@ -423,11 +464,20 @@ fn client_ip(parts: &Parts, trust_proxy: bool) -> Option<String> {
 #[utoipa::path(post, path = "/api/v1/customize/agreements/accept", tag = "customize", request_body = AcceptInput,
     responses((status = 200, description = "Acceptance records", body = Items<Acceptance>),
               (status = 409, description = "agreement_outdated")))]
-async fn accept(State(s): State<CustomizeService>, Access(ctx): Access, parts: Parts, b: Body<AcceptInput>) -> ApiResult {
+async fn accept(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    parts: Parts,
+    b: Body<AcceptInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
     let from = AcceptSource {
         ip: client_ip(&parts, s.config().trust_forwarded_host),
-        user_agent: parts.headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(str::to_owned),
+        user_agent: parts
+            .headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
     };
     items(s.accept(&ctx, input, from).await.map_err(api)?)
 }
@@ -493,7 +543,10 @@ async fn public_branding(State(s): State<CustomizeService>, Access(ctx): Access,
 
 fn nosniff() -> [(HeaderName, HeaderValue); 2] {
     [
-        (HeaderName::from_static("x-content-type-options"), HeaderValue::from_static("nosniff")),
+        (
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ),
         (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300")),
     ]
 }
@@ -541,7 +594,12 @@ async fn public_asset(
 async fn public_theme(State(s): State<CustomizeService>, Access(ctx): Access, parts: Parts, q: Query) -> ApiResult {
     let realm = public_realm(&s, &ctx, &parts, &q).await?;
     let b = s.public_branding(&realm).await.map_err(api)?;
-    let mut res = (StatusCode::OK, [(header::CONTENT_TYPE, "text/css; charset=utf-8")], theme_css(&b)).into_response();
+    let mut res = (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        theme_css(&b),
+    )
+        .into_response();
     for (k, v) in nosniff() {
         res.headers_mut().insert(k, v);
     }
@@ -552,7 +610,12 @@ async fn public_theme(State(s): State<CustomizeService>, Access(ctx): Access, pa
 #[utoipa::path(get, path = "/api/v1/customize/public/agreements", tag = "customize",
     params(("realm" = Option<String>, Query, description = "realm id; ignored on a verified custom domain")),
     responses((status = 200, description = "Current versions", body = Items<Agreement>)))]
-async fn public_agreements(State(s): State<CustomizeService>, Access(ctx): Access, parts: Parts, q: Query) -> ApiResult {
+async fn public_agreements(
+    State(s): State<CustomizeService>,
+    Access(ctx): Access,
+    parts: Parts,
+    q: Query,
+) -> ApiResult {
     let realm = public_realm(&s, &ctx, &parts, &q).await?;
     items(s.current_agreements(&realm).await.map_err(api)?)
 }
@@ -635,7 +698,12 @@ fn docs_page(b: &PublicBranding) -> String {
     let logo = b
         .logo_url
         .as_ref()
-        .map(|u| format!("<img class=\"logo\" src=\"{}?realm={realm_q}\" alt=\"\">", escape_html(u)))
+        .map(|u| {
+            format!(
+                "<img class=\"logo\" src=\"{}?realm={realm_q}\" alt=\"\">",
+                escape_html(u)
+            )
+        })
         .unwrap_or_default();
     let favicon = b
         .favicon_url
@@ -674,7 +742,12 @@ details.op{{border:1px solid #8884;border-radius:6px;margin:6px 0;padding:6px 10
 async fn docs(State(s): State<CustomizeService>, Access(ctx): Access, parts: Parts, q: Query) -> ApiResult {
     let realm = public_realm(&s, &ctx, &parts, &q).await?;
     let b = s.public_branding(&realm).await.map_err(api)?;
-    let mut res = (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], docs_page(&b)).into_response();
+    let mut res = (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        docs_page(&b),
+    )
+        .into_response();
     let h = res.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -682,7 +755,10 @@ async fn docs(State(s): State<CustomizeService>, Access(ctx): Access, parts: Par
             "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         ),
     );
-    h.insert(HeaderName::from_static("x-content-type-options"), HeaderValue::from_static("nosniff"));
+    h.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     Ok(res)
 }

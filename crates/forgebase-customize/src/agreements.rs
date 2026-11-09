@@ -140,16 +140,28 @@ impl CustomizeService {
         self.require_realm(&realm).await?;
         let title = input.title.trim().to_owned();
         if title.is_empty() || title.chars().count() > 200 {
-            return Err(CustomizeError::invalid("invalid_agreement", "a title of 1-200 characters is required"));
+            return Err(CustomizeError::invalid(
+                "invalid_agreement",
+                "a title of 1-200 characters is required",
+            ));
         }
         if input.body.trim().is_empty() || input.body.len() > 200 * 1024 {
-            return Err(CustomizeError::invalid("invalid_agreement", "a body of 1 byte to 200 KiB is required"));
+            return Err(CustomizeError::invalid(
+                "invalid_agreement",
+                "a body of 1 byte to 200 KiB is required",
+            ));
         }
         let url = input.url.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty());
         if let Some(u) = &url {
             let l = u.to_ascii_lowercase();
-            if !(l.starts_with("https://") || l.starts_with("http://")) || l.chars().any(|c| c.is_control() || c.is_whitespace()) || u.len() > 2000 {
-                return Err(CustomizeError::invalid("invalid_agreement", "url must be an http(s) URL"));
+            if !(l.starts_with("https://") || l.starts_with("http://"))
+                || l.chars().any(|c| c.is_control() || c.is_whitespace())
+                || u.len() > 2000
+            {
+                return Err(CustomizeError::invalid(
+                    "invalid_agreement",
+                    "url must be an http(s) URL",
+                ));
             }
         }
         let now = self.now();
@@ -198,7 +210,12 @@ impl CustomizeService {
     }
 
     /// Every published version of a realm (newest first), optionally of one kind.
-    pub async fn agreements(&self, ctx: &AccessContext, realm: Option<&str>, kind: Option<&str>) -> Result<Vec<Agreement>> {
+    pub async fn agreements(
+        &self,
+        ctx: &AccessContext,
+        realm: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Vec<Agreement>> {
         let realm = self.realm_for(ctx, realm)?;
         self.can_read(ctx, &realm)?;
         let mut sql = format!("SELECT {COLUMNS} FROM _forgebase_agreements WHERE realm = ?1");
@@ -208,7 +225,13 @@ impl CustomizeService {
             sql.push_str(" AND kind = ?2");
         }
         sql.push_str(" ORDER BY kind, version DESC");
-        Ok(self.query(&sql, params).await?.rows.iter().map(|r| agreement_row(r)).collect())
+        Ok(self
+            .query(&sql, params)
+            .await?
+            .rows
+            .iter()
+            .map(|r| agreement_row(r))
+            .collect())
     }
 
     /// The current version of every agreement kind of a realm, with text (public).
@@ -243,10 +266,15 @@ impl CustomizeService {
             return Err(CustomizeError::Forbidden("only user accounts accept agreements".into()));
         }
         if ctx.impersonator.is_some() {
-            return Err(CustomizeError::Forbidden("an impersonating administrator cannot accept on behalf of a user".into()));
+            return Err(CustomizeError::Forbidden(
+                "an impersonating administrator cannot accept on behalf of a user".into(),
+            ));
         }
         if input.items.is_empty() || input.items.len() > 50 {
-            return Err(CustomizeError::invalid("invalid_acceptance", "name 1-50 agreement versions"));
+            return Err(CustomizeError::invalid(
+                "invalid_acceptance",
+                "name 1-50 agreement versions",
+            ));
         }
         let realm = ctx.realm_id.clone();
         let principal = ctx.principal_key();
@@ -270,7 +298,10 @@ impl CustomizeService {
                 tx.rollback().await;
                 return Err(CustomizeError::conflict(
                     "agreement_outdated",
-                    format!("{} version {} is not the current version ({current})", item.kind, item.version),
+                    format!(
+                        "{} version {} is not the current version ({current})",
+                        item.kind, item.version
+                    ),
                 ));
             }
             tx.exec(
@@ -294,7 +325,12 @@ impl CustomizeService {
                         "SELECT {ACCEPT_COLUMNS} FROM _forgebase_agreement_acceptances
                          WHERE realm = ?1 AND principal = ?2 AND kind = ?3 AND version = ?4"
                     ),
-                    vec![realm.clone().into(), principal.clone().into(), item.kind.clone().into(), item.version.into()],
+                    vec![
+                        realm.clone().into(),
+                        principal.clone().into(),
+                        item.kind.clone().into(),
+                        item.version.into(),
+                    ],
                 )
                 .await?;
             if let Some(r) = row.rows.first() {
@@ -313,7 +349,12 @@ impl CustomizeService {
     }
 
     /// Acceptance records of a realm (administrators).
-    pub async fn acceptances(&self, ctx: &AccessContext, realm: Option<&str>, q: AcceptanceQuery) -> Result<Vec<Acceptance>> {
+    pub async fn acceptances(
+        &self,
+        ctx: &AccessContext,
+        realm: Option<&str>,
+        q: AcceptanceQuery,
+    ) -> Result<Vec<Acceptance>> {
         let realm = self.realm_for(ctx, realm)?;
         self.can_read(ctx, &realm)?;
         let mut sql = format!("SELECT {ACCEPT_COLUMNS} FROM _forgebase_agreement_acceptances WHERE realm = ?1");
@@ -328,7 +369,13 @@ impl CustomizeService {
         }
         params.push(q.limit.unwrap_or(100).clamp(1, 500).into());
         sql.push_str(&format!(" ORDER BY accepted_at DESC, id DESC LIMIT ?{}", params.len()));
-        Ok(self.query(&sql, params).await?.rows.iter().map(|r| acceptance_row(r)).collect())
+        Ok(self
+            .query(&sql, params)
+            .await?
+            .rows
+            .iter()
+            .map(|r| acceptance_row(r))
+            .collect())
     }
 
     /// The caller's own acceptance records.

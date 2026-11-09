@@ -610,7 +610,10 @@ impl ErrorCode for ServerError {
             ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
-            ServerError::Policy(_) | ServerError::Entitlements(_) | ServerError::Credits(_) | ServerError::Customize(_) => ErrorKind::Internal,
+            ServerError::Policy(_)
+            | ServerError::Entitlements(_)
+            | ServerError::Credits(_)
+            | ServerError::Customize(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }

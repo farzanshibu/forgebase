@@ -24,10 +24,16 @@ fn plain(name: &str, v: Option<String>, max: usize) -> Result<Option<String>> {
         return Ok(None);
     };
     if v.chars().count() > max {
-        return Err(CustomizeError::invalid("invalid_branding", format!("{name} is longer than {max} characters")));
+        return Err(CustomizeError::invalid(
+            "invalid_branding",
+            format!("{name} is longer than {max} characters"),
+        ));
     }
     if v.chars().any(|c| c.is_control() && c != '\n') {
-        return Err(CustomizeError::invalid("invalid_branding", format!("{name} contains control characters")));
+        return Err(CustomizeError::invalid(
+            "invalid_branding",
+            format!("{name} contains control characters"),
+        ));
     }
     Ok(Some(v))
 }
@@ -48,7 +54,12 @@ fn color(name: &str, v: Option<String>) -> Result<Option<String>> {
 
 /// The image type of `bytes` when it matches `content_type`.
 fn sniff(content_type: &str, bytes: &[u8]) -> Option<&'static str> {
-    let ct = content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     let ok = match ct.as_str() {
         "image/png" => bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
         "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
@@ -89,7 +100,10 @@ impl CustomizeService {
             )
             .await?;
         let assets = self
-            .query("SELECT kind FROM _forgebase_branding_assets WHERE realm = ?1", vec![realm.into()])
+            .query(
+                "SELECT kind FROM _forgebase_branding_assets WHERE realm = ?1",
+                vec![realm.into()],
+            )
             .await?;
         let has = |k: &str| assets.rows.iter().any(|r| text(r, 0) == k);
         let mut b = Branding {
@@ -114,7 +128,12 @@ impl CustomizeService {
     }
 
     /// Replaces the branding of a realm; fields left out are cleared.
-    pub async fn put_branding(&self, ctx: &AccessContext, realm: Option<&str>, input: BrandingInput) -> Result<Branding> {
+    pub async fn put_branding(
+        &self,
+        ctx: &AccessContext,
+        realm: Option<&str>,
+        input: BrandingInput,
+    ) -> Result<Branding> {
         let realm = self.realm_for(ctx, realm)?;
         self.can_write(ctx, &realm)?;
         self.require_realm(&realm).await?;
@@ -122,7 +141,10 @@ impl CustomizeService {
         if let Some(s) = &support
             && !valid_address(s)
         {
-            return Err(CustomizeError::invalid("invalid_branding", "support_email is not a valid address"));
+            return Err(CustomizeError::invalid(
+                "invalid_branding",
+                "support_email is not a valid address",
+            ));
         }
         let params: Vec<Value> = vec![
             realm.clone().into(),
@@ -180,7 +202,11 @@ impl CustomizeService {
                 "the content does not match its Content-Type (png, jpeg, gif, webp, x-icon, svg+xml)",
             ));
         };
-        let etag = Sha256::digest(bytes).iter().take(12).map(|b| format!("{b:02x}")).collect::<String>();
+        let etag = Sha256::digest(bytes)
+            .iter()
+            .take(12)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let mut tx = self.begin().await?;
         tx.exec(
             "INSERT INTO _forgebase_branding_assets (realm, kind, content_type, bytes, etag, updated_at)
@@ -223,7 +249,10 @@ impl CustomizeService {
                 vec![realm.into(), kind.as_str().into()],
             )
             .await?;
-        let r = rows.rows.first().ok_or_else(|| CustomizeError::NotFound(kind.as_str().into()))?;
+        let r = rows
+            .rows
+            .first()
+            .ok_or_else(|| CustomizeError::NotFound(kind.as_str().into()))?;
         let bytes = match r.get(1) {
             Some(Value::Blob(b)) => b.clone(),
             _ => Vec::new(),
@@ -273,7 +302,10 @@ pub fn theme_css(b: &PublicBranding) -> String {
         ("--fb-text", &b.text_color),
         ("--fb-accent", &b.accent_color),
     ] {
-        if let Some(v) = v.as_deref().filter(|v| v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit())) {
+        if let Some(v) = v
+            .as_deref()
+            .filter(|v| v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit()))
+        {
             css.push_str(&format!("{name}:{v};"));
         }
     }

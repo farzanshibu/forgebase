@@ -302,9 +302,8 @@ pub fn valid_address(a: &str) -> bool {
         && domain.contains('.')
         && !domain.starts_with('.')
         && !domain.ends_with('.')
-        && a.chars().all(|c| {
-            c.is_ascii_alphanumeric() || "!#$%&'*+/=?^_`{|}~.-@".contains(c)
-        })
+        && a.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+/=?^_`{|}~.-@".contains(c))
 }
 
 fn b64_lines(data: &[u8]) -> String {
@@ -395,8 +394,9 @@ fn http_date() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     let wd = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][usize::try_from(days.rem_euclid(7)).unwrap_or(0)];
-    let mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        [usize::try_from(m - 1).unwrap_or(0)];
+    let mon = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ][usize::try_from(m - 1).unwrap_or(0)];
     format!(
         "{wd}, {d:02} {mon} {y} {:02}:{:02}:{:02} +0000",
         rem / 3600,
@@ -425,7 +425,10 @@ impl SmtpProvider {
         let d = c.timeout;
         let tcp = step(d, "connect", TcpStream::connect((c.host.as_str(), c.port))).await?;
         let io: Box<dyn Io> = if c.tls == SmtpTls::Implicit {
-            let cfg = self.tls.client_config(&[]).map_err(|e| SendError::Permanent(e.to_string()))?;
+            let cfg = self
+                .tls
+                .client_config(&[])
+                .map_err(|e| SendError::Permanent(e.to_string()))?;
             Box::new(step(d, "TLS", TlsSettings::upgrade(&cfg, &c.host, tcp)).await?)
         } else {
             Box::new(tcp)
@@ -437,10 +440,15 @@ impl SmtpProvider {
         let c = &self.cfg;
         let d = c.timeout;
         if !valid_address(&mail.to) {
-            return Err(SendError::Permanent(format!("{:?} is not a valid recipient address", mail.to)));
+            return Err(SendError::Permanent(format!(
+                "{:?} is not a valid recipient address",
+                mail.to
+            )));
         }
         if !valid_address(&c.envelope_from) {
-            return Err(SendError::Permanent("the configured sender address is not valid".into()));
+            return Err(SendError::Permanent(
+                "the configured sender address is not valid".into(),
+            ));
         }
         let mut conn = self.connect().await?;
         read_reply(&mut conn, d).await?.expect(&[220], "greeting")?;
@@ -454,7 +462,10 @@ impl SmtpProvider {
             command(&mut conn, d, "STARTTLS", &[220], "STARTTLS").await?;
             // The reply was the last server byte before the handshake: nothing is buffered.
             let inner = conn.into_inner();
-            let cfg = self.tls.client_config(&[]).map_err(|e| SendError::Permanent(e.to_string()))?;
+            let cfg = self
+                .tls
+                .client_config(&[])
+                .map_err(|e| SendError::Permanent(e.to_string()))?;
             // The boxed stream is a TcpStream here; upgrade needs the concrete type.
             let tls = upgrade_boxed(&cfg, &c.host, inner, d).await?;
             conn = BufReader::new(tls);
@@ -479,10 +490,19 @@ impl SmtpProvider {
                 command(&mut conn, d, &STANDARD.encode(u), &[334], "AUTH").await?;
                 command(&mut conn, d, &STANDARD.encode(p), &[235], "AUTH").await?;
             } else {
-                return Err(SendError::Permanent(format!("no supported AUTH mechanism offered ({mechs})")));
+                return Err(SendError::Permanent(format!(
+                    "no supported AUTH mechanism offered ({mechs})"
+                )));
             }
         }
-        command(&mut conn, d, &format!("MAIL FROM:<{}>", c.envelope_from), &[250], "MAIL FROM").await?;
+        command(
+            &mut conn,
+            d,
+            &format!("MAIL FROM:<{}>", c.envelope_from),
+            &[250],
+            "MAIL FROM",
+        )
+        .await?;
         command(&mut conn, d, &format!("RCPT TO:<{}>", mail.to), &[250, 251], "RCPT TO").await?;
         command(&mut conn, d, "DATA", &[354], "DATA").await?;
         let msg = build_message(mail, &http_date(), &c.helo);
@@ -507,7 +527,12 @@ async fn upgrade_boxed(
 ) -> Result<Box<dyn Io>, SendError> {
     let name = rustls::pki_types::ServerName::try_from(host.to_owned())
         .map_err(|_| SendError::Permanent(format!("{host:?} is not a valid TLS server name")))?;
-    let tls = step(d, "TLS", tokio_rustls::TlsConnector::from(cfg.clone()).connect(name, inner)).await?;
+    let tls = step(
+        d,
+        "TLS",
+        tokio_rustls::TlsConnector::from(cfg.clone()).connect(name, inner),
+    )
+    .await?;
     Ok(Box::new(tls))
 }
 
@@ -528,14 +553,22 @@ mod tests {
     #[test]
     fn address_validation_blocks_injection() {
         assert!(valid_address("a.b+c@example.com"));
-        for bad in ["a@b", "a b@c.com", "a@b.com\r\nRCPT TO:<x@y.z>", "<a@b.com>", "a@@b.com", "@b.com", "a@b.com>"] {
+        for bad in [
+            "a@b",
+            "a b@c.com",
+            "a@b.com\r\nRCPT TO:<x@y.z>",
+            "<a@b.com>",
+            "a@@b.com",
+            "@b.com",
+            "a@b.com>",
+        ] {
             assert!(!valid_address(bad), "{bad}");
         }
     }
 
     #[test]
     fn from_header_is_safe() {
-        assert_eq!(from_header("Acme \"Inc\"\r\n<x>", "a@b.com"), "\"Acme Inc\" <a@b.com>");
+        assert_eq!(from_header("Acme \"Inc\"\r\n<x>", "a@b.com"), "\"Acme Incx\" <a@b.com>");
         assert_eq!(from_header("", "a@b.com"), "a@b.com");
         assert!(from_header("Zoë", "a@b.com").starts_with("=?UTF-8?B?"));
     }

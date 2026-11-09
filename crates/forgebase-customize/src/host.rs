@@ -36,14 +36,20 @@ const FORWARDED_HOST: HeaderName = HeaderName::from_static("x-forwarded-host");
 pub fn host_of(value: &str) -> String {
     let v = value.trim();
     // `[::1]:8080` style hosts are never custom domains.
-    let v = if v.starts_with('[') { v } else { v.rsplit_once(':').map_or(v, |(h, _)| h) };
+    let v = if v.starts_with('[') {
+        v
+    } else {
+        v.rsplit_once(':').map_or(v, |(h, _)| h)
+    };
     v.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// The middleware; install with `axum::middleware::from_fn_with_state(svc, route)`.
 pub async fn route(State(svc): State<CustomizeService>, mut req: Request, next: Next) -> Response {
     let raw = if svc.config().trust_forwarded_host {
-        req.headers().get(&FORWARDED_HOST).or_else(|| req.headers().get(header::HOST))
+        req.headers()
+            .get(&FORWARDED_HOST)
+            .or_else(|| req.headers().get(header::HOST))
     } else {
         req.headers().get(header::HOST)
     };

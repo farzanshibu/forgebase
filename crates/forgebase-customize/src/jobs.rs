@@ -14,7 +14,12 @@ pub fn register_jobs(registry: JobRegistry, svc: CustomizeService) -> JobRegistr
     registry.register(EMAIL_JOB, move |ctx: JobContext| {
         let svc = svc.clone();
         async move {
-            let Some(id) = ctx.payload().get("delivery_id").and_then(|v| v.as_str()).map(str::to_owned) else {
+            let Some(id) = ctx
+                .payload()
+                .get("delivery_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+            else {
                 return Err(HandlerError::fatal("payload has no delivery_id"));
             };
             match svc

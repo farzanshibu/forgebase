@@ -17,9 +17,7 @@ use serde_json::{Value as Json, json};
 
 use crate::error::{CustomizeError, Result};
 use crate::mail::{OutMail, SendError, from_header, valid_address};
-use crate::model::{
-    Attempt, Delivery, DeliveryStatus, EmailTemplate, Preview, PreviewInput, SendInput, TemplateInput,
-};
+use crate::model::{Attempt, Delivery, DeliveryStatus, EmailTemplate, Preview, PreviewInput, SendInput, TemplateInput};
 use crate::render::{self, MAX_HTML, MAX_SUBJECT, MAX_TEXT, Mode};
 use crate::service::{CustomizeService, EMAIL_JOB, check_key, int, new_id, opt_int, opt_text, text};
 
@@ -59,9 +57,23 @@ pub fn builtin(key: &str) -> Option<(&'static str, &'static str, &'static str)> 
 }
 
 /// Keys of the built-in templates.
-pub const BUILTIN_KEYS: [&str; 5] = ["verify_email", "password_reset", "magic_link", "email_otp", "invitation"];
+pub const BUILTIN_KEYS: [&str; 5] = [
+    "verify_email",
+    "password_reset",
+    "magic_link",
+    "email_otp",
+    "invitation",
+];
 
-fn template_of(realm: &str, key: &str, subject: &str, text_t: &str, html: Option<&str>, customized: bool, at: Option<i64>) -> Result<EmailTemplate> {
+fn template_of(
+    realm: &str,
+    key: &str,
+    subject: &str,
+    text_t: &str,
+    html: Option<&str>,
+    customized: bool,
+    at: Option<i64>,
+) -> Result<EmailTemplate> {
     let mut vars = render::variables(subject)?;
     vars.extend(render::variables(text_t)?);
     if let Some(h) = html {
@@ -82,7 +94,9 @@ fn template_of(realm: &str, key: &str, subject: &str, text_t: &str, html: Option
 }
 
 fn validate_input(i: &TemplateInput) -> Result<()> {
-    let too_long = |what: &str, max: usize| CustomizeError::invalid("invalid_template", format!("{what} is longer than {max} bytes"));
+    let too_long = |what: &str, max: usize| {
+        CustomizeError::invalid("invalid_template", format!("{what} is longer than {max} bytes"))
+    };
     if i.subject.trim().is_empty() {
         return Err(CustomizeError::invalid("invalid_template", "a subject is required"));
     }
@@ -106,8 +120,7 @@ fn validate_input(i: &TemplateInput) -> Result<()> {
     Ok(())
 }
 
-const DELIVERY_COLUMNS: &str =
-    "id, realm, template, recipient, subject, status, attempts, last_error, provider, job_id, created_at, updated_at, sent_at";
+const DELIVERY_COLUMNS: &str = "id, realm, template, recipient, subject, status, attempts, last_error, provider, job_id, created_at, updated_at, sent_at";
 
 fn delivery_row(r: &[Value]) -> Delivery {
     Delivery {
@@ -156,7 +169,17 @@ impl CustomizeService {
             .await?;
         rows.rows
             .first()
-            .map(|r| template_of(realm, key, &text(r, 0), &text(r, 1), opt_text(r, 2).as_deref(), true, opt_int(r, 3)))
+            .map(|r| {
+                template_of(
+                    realm,
+                    key,
+                    &text(r, 0),
+                    &text(r, 1),
+                    opt_text(r, 2).as_deref(),
+                    true,
+                    opt_int(r, 3),
+                )
+            })
             .transpose()
     }
 
@@ -176,7 +199,10 @@ impl CustomizeService {
         let realm = self.realm_for(ctx, realm)?;
         self.can_read(ctx, &realm)?;
         let rows = self
-            .query("SELECT key FROM _forgebase_email_templates WHERE realm = ?1 ORDER BY key", vec![realm.clone().into()])
+            .query(
+                "SELECT key FROM _forgebase_email_templates WHERE realm = ?1 ORDER BY key",
+                vec![realm.clone().into()],
+            )
             .await?;
         let mut keys: Vec<String> = rows.rows.iter().map(|r| text(r, 0)).collect();
         for k in BUILTIN_KEYS {
@@ -260,7 +286,10 @@ impl CustomizeService {
         let b = self.branding_of(realm).await?;
         let mut m = serde_json::Map::new();
         m.insert("realm".into(), json!(realm));
-        m.insert("app_name".into(), json!(b.display_name.unwrap_or_else(|| realm.to_owned())));
+        m.insert(
+            "app_name".into(),
+            json!(b.display_name.unwrap_or_else(|| realm.to_owned())),
+        );
         if let Some(s) = b.support_email {
             m.insert("support_email".into(), json!(s));
         }
@@ -271,10 +300,18 @@ impl CustomizeService {
         let mut m = match vars {
             Json::Null => serde_json::Map::new(),
             Json::Object(o) => o.clone(),
-            _ => return Err(CustomizeError::invalid("invalid_variables", "variables must be a JSON object")),
+            _ => {
+                return Err(CustomizeError::invalid(
+                    "invalid_variables",
+                    "variables must be a JSON object",
+                ));
+            }
         };
         if vars.to_string().len() > MAX_VARIABLES {
-            return Err(CustomizeError::invalid("invalid_variables", "variables are larger than 16 KiB"));
+            return Err(CustomizeError::invalid(
+                "invalid_variables",
+                "variables are larger than 16 KiB",
+            ));
         }
         for (k, v) in self.system_vars(realm).await? {
             m.insert(k, v);
@@ -338,7 +375,10 @@ impl CustomizeService {
         self.require_realm(&realm).await?;
         let to = input.to.trim().to_owned();
         if !valid_address(&to) {
-            return Err(CustomizeError::invalid("invalid_recipient", "`to` is not a valid email address"));
+            return Err(CustomizeError::invalid(
+                "invalid_recipient",
+                "`to` is not a valid email address",
+            ));
         }
         let t = self.resolve_template(&realm, &input.template).await?;
         let vars = self.merged_vars(&realm, &input.variables).await?;
@@ -384,7 +424,7 @@ impl CustomizeService {
         let mut new = NewJob::new(EMAIL_JOB, json!({"delivery_id": delivery_id}));
         new.max_attempts = Some(self.inner.cfg.email_max_attempts);
         new.backoff_base_ms = Some(self.inner.cfg.email_backoff_base_ms);
-        new.idempotency_key = Some(format!("email:{delivery_id}:{}", self.now()));
+        new.idempotency_key = Some(format!("email:{delivery_id}:{}", new_id("n")));
         let (job, _) = jobs
             .enqueue(&AccessContext::system(), new)
             .await
@@ -415,8 +455,14 @@ impl CustomizeService {
         }
         let realm = text(r, 0);
         let (Some(body), html) = (opt_text(r, 4), opt_text(r, 5)) else {
-            self.finish(delivery_id, DeliveryStatus::Failed, attempt, Some("the message body is no longer stored"), "none")
-                .await?;
+            self.finish(
+                delivery_id,
+                DeliveryStatus::Failed,
+                attempt,
+                Some("the message body is no longer stored"),
+                "none",
+            )
+            .await?;
             return Ok(Attempt::Failed("the message body is no longer stored".into()));
         };
         let display = self.branding_of(&realm).await?.display_name.unwrap_or_default();
@@ -433,21 +479,31 @@ impl CustomizeService {
         let name = provider.name();
         match provider.send(&mail).await {
             Ok(()) => {
-                self.finish(delivery_id, DeliveryStatus::Sent, attempt, None, name).await?;
+                self.finish(delivery_id, DeliveryStatus::Sent, attempt, None, name)
+                    .await?;
                 Ok(Attempt::Sent)
             }
             Err(SendError::Transient(m)) if !last => {
-                self.finish(delivery_id, DeliveryStatus::Retrying, attempt, Some(&m), name).await?;
+                self.finish(delivery_id, DeliveryStatus::Retrying, attempt, Some(&m), name)
+                    .await?;
                 Ok(Attempt::Retry(m))
             }
             Err(SendError::Transient(m) | SendError::Permanent(m)) => {
-                self.finish(delivery_id, DeliveryStatus::Failed, attempt, Some(&m), name).await?;
+                self.finish(delivery_id, DeliveryStatus::Failed, attempt, Some(&m), name)
+                    .await?;
                 Ok(Attempt::Failed(m))
             }
         }
     }
 
-    async fn finish(&self, id: &str, status: DeliveryStatus, attempt: i64, error: Option<&str>, provider: &str) -> Result<()> {
+    async fn finish(
+        &self,
+        id: &str,
+        status: DeliveryStatus,
+        attempt: i64,
+        error: Option<&str>,
+        provider: &str,
+    ) -> Result<()> {
         let now = self.now();
         let mut tx = self.begin().await?;
         let sql = if status == DeliveryStatus::Sent {
@@ -488,12 +544,18 @@ impl CustomizeService {
     /// One delivery-log row.
     pub async fn delivery(&self, ctx: &AccessContext, id: &str) -> Result<Delivery> {
         let d = self.delivery_unchecked(id).await?;
-        self.can_read(ctx, &d.realm).map_err(|_| CustomizeError::NotFound("delivery".into()))?;
+        self.can_read(ctx, &d.realm)
+            .map_err(|_| CustomizeError::NotFound("delivery".into()))?;
         Ok(d)
     }
 
     /// The delivery log of a realm, newest first.
-    pub async fn deliveries(&self, ctx: &AccessContext, realm: Option<&str>, q: DeliveryQuery) -> Result<Vec<Delivery>> {
+    pub async fn deliveries(
+        &self,
+        ctx: &AccessContext,
+        realm: Option<&str>,
+        q: DeliveryQuery,
+    ) -> Result<Vec<Delivery>> {
         let realm = self.realm_for(ctx, realm)?;
         self.can_read(ctx, &realm)?;
         let mut sql = format!("SELECT {DELIVERY_COLUMNS} FROM _forgebase_email_deliveries WHERE realm = ?1");
@@ -524,9 +586,13 @@ impl CustomizeService {
     /// still stored.
     pub async fn retry_delivery(&self, ctx: &AccessContext, id: &str) -> Result<Delivery> {
         let d = self.delivery_unchecked(id).await?;
-        self.can_write(ctx, &d.realm).map_err(|_| CustomizeError::NotFound("delivery".into()))?;
+        self.can_write(ctx, &d.realm)
+            .map_err(|_| CustomizeError::NotFound("delivery".into()))?;
         if d.status != DeliveryStatus::Failed {
-            return Err(CustomizeError::conflict("not_failed", "only failed deliveries can be retried"));
+            return Err(CustomizeError::conflict(
+                "not_failed",
+                "only failed deliveries can be retried",
+            ));
         }
         let rows = self
             .query(
@@ -535,7 +601,10 @@ impl CustomizeService {
             )
             .await?;
         if rows.rows.first().map(|r| int(r, 0)).unwrap_or(0) == 0 {
-            return Err(CustomizeError::conflict("body_expired", "the message body is no longer stored; send it again"));
+            return Err(CustomizeError::conflict(
+                "body_expired",
+                "the message body is no longer stored; send it again",
+            ));
         }
         let mut tx = self.begin().await?;
         tx.exec(

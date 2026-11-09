@@ -276,7 +276,8 @@ impl CustomizeService {
         if realm != ctx.realm_id {
             return Err(CustomizeError::Forbidden("another realm".into()));
         }
-        self.check(ctx, READ_PERMISSION).or_else(|_| self.check(ctx, WRITE_PERMISSION))
+        self.check(ctx, READ_PERMISSION)
+            .or_else(|_| self.check(ctx, WRITE_PERMISSION))
     }
 
     /// The realm exists.
@@ -300,9 +301,13 @@ impl CustomizeService {
 pub(crate) fn check_key(what: &str, v: &str, allow_upper: bool) -> Result<()> {
     let ok = !v.is_empty()
         && v.len() <= 64
-        && v
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || (allow_upper && c.is_ascii_uppercase()));
+        && v.chars().all(|c| {
+            c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || c == '_'
+                || c == '-'
+                || (allow_upper && c.is_ascii_uppercase())
+        });
     if ok {
         Ok(())
     } else {
