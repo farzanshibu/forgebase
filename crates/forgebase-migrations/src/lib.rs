@@ -125,6 +125,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0019_customize.sql"),
     ),
     Migration::new(
+        20,
+        "billing",
+        include_str!("../../../migrations/system/0020_billing.sql"),
+    ),
+    Migration::new(
         22,
         "jobs_long_tasks",
         include_str!("../../../migrations/system/0022_jobs_long_tasks.sql"),
