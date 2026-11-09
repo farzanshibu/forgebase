@@ -106,6 +106,9 @@ pub struct AccessContext {
     /// ABAC attributes of the caller (`@request.auth.<name>` in rules): the
     /// fields of a user's auth record, resolved before the call.
     pub attributes: serde_json::Map<String, Json>,
+    /// Id of the administrator acting as this principal (ADR-0014): set only
+    /// for an impersonation session; copied into every audit row.
+    pub impersonator: Option<String>,
 }
 
 impl AccessContext {
@@ -147,6 +150,7 @@ impl AccessContext {
             scopes: None,
             roles: Vec::new(),
             attributes: serde_json::Map::new(),
+            impersonator: None,
         }
     }
 
@@ -201,6 +205,12 @@ impl AccessContext {
     /// Same context with RBAC roles.
     pub fn with_roles(mut self, roles: Vec<String>) -> Self {
         self.roles = roles;
+        self
+    }
+
+    /// Same context acting on behalf of an impersonating administrator.
+    pub fn with_impersonator(mut self, admin_id: impl Into<String>) -> Self {
+        self.impersonator = Some(admin_id.into());
         self
     }
 

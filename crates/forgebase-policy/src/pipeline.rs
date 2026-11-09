@@ -214,6 +214,8 @@ pub struct AuditRecord {
     pub reason: String,
     /// Request id.
     pub request_id: Option<String>,
+    /// Administrator acting as the principal (impersonation), if any.
+    pub impersonator: Option<String>,
 }
 
 /// Writes audit records from synchronous code: a bounded channel drained by
@@ -265,8 +267,8 @@ async fn write_batch(db: &dyn Backend, batch: &[AuditRecord]) -> Result<(), forg
     let mut tx = db.begin(forgebase_db::TxMode::Normal).await?;
     for r in batch {
         tx.execute(&Statement::new(
-            "INSERT INTO _forgebase_authz_audit (at, realm_id, principal, tenant, org_id, permission, resource, step, reason, request_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO _forgebase_authz_audit (at, realm_id, principal, tenant, org_id, permission, resource, step, reason, request_id, impersonator)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             vec![
                 r.at.into(),
                 r.realm_id.clone().into(),
@@ -278,6 +280,7 @@ async fn write_batch(db: &dyn Backend, batch: &[AuditRecord]) -> Result<(), forg
                 r.step.as_str().into(),
                 r.reason.clone().into(),
                 r.request_id.clone().into(),
+                r.impersonator.clone().into(),
             ],
         ))
         .await?;
@@ -301,5 +304,6 @@ pub(crate) fn audit_record(ctx: &AccessContext, permission: &str, resource: Opti
         step: d.step,
         reason: d.reason.clone(),
         request_id: ctx.request_id.clone(),
+        impersonator: ctx.impersonator.clone(),
     }
 }

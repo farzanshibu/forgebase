@@ -50,8 +50,8 @@ pub use mailer::{DevMailer, Mail, MailKind, Mailer};
 pub use password::{Argon2Config, PasswordHasher};
 pub use scopes::Scope;
 pub use service::{
-    AdminView, ApiKeyView, AuditEntry, AuditQuery, AuthService, ClientInfo, CreatedKey, LoginOptions, LoginOutcome,
-    ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
+    AdminView, ApiKeyView, AuditEntry, AuditQuery, AuthService, ClientInfo, CreatedKey, ImpersonationGrant,
+    ImpersonationView, LoginOptions, LoginOutcome, ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
 };
 
 /// Collection name FB-20 used for service-account principals before the data
@@ -222,6 +222,8 @@ pub enum AuthMethod {
     MagicLink,
     /// Email one-time code.
     EmailOtp,
+    /// Administrator impersonation (ADR-0014).
+    Impersonation,
 }
 
 impl AuthMethod {
@@ -230,6 +232,7 @@ impl AuthMethod {
             AuthMethod::Password => "password",
             AuthMethod::MagicLink => "magic_link",
             AuthMethod::EmailOtp => "email_otp",
+            AuthMethod::Impersonation => "impersonation",
         }
     }
 }
@@ -248,12 +251,17 @@ pub struct Authenticated {
     pub scopes: Option<Vec<Scope>>,
     /// Whether the session passed a second factor.
     pub mfa: bool,
+    /// Administrator acting as this subject (impersonation session, ADR-0014).
+    pub impersonator: Option<String>,
 }
 
 impl Authenticated {
     /// The data core context for this identity (with the credential's scopes).
     pub fn access_context(&self, request_id: Option<&str>) -> AccessContext {
         let mut ctx = self.subject.access_context();
+        if let Some(admin) = &self.impersonator {
+            ctx = ctx.with_impersonator(admin.clone());
+        }
         if let Some(scopes) = &self.scopes {
             ctx = ctx.with_scopes(scopes.iter().map(|s| s.as_str().to_owned()).collect());
         }

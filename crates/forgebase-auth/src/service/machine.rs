@@ -93,7 +93,7 @@ pub struct CreatedKey {
     pub info: ApiKeyView,
 }
 
-fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
+pub(super) fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
     ApiKeyView {
         id: row.str("id"),
         kind: row.str("kind"),
@@ -109,7 +109,7 @@ fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
     }
 }
 
-const KEY_COLS: &str =
+pub(super) const KEY_COLS: &str =
     "id, kind, name, owner_type, collection, owner_id, scopes, created_at, expires_at, last_used_at, revoked_at";
 
 fn sa_view(row: crate::store::Row<'_>) -> ServiceAccountView {
@@ -507,6 +507,7 @@ impl AuthService {
     /// Revokes an API key or PAT. Owners may revoke their own PATs;
     /// administrators any key.
     pub async fn revoke_key(&self, caller: &Authenticated, ci: &ClientInfo, key_id: &str) -> Result<(), AuthError> {
+        super::reject_impersonated(caller)?;
         let (st, coll, id) = subject_cols(&caller.subject);
         let admin = caller.subject.is_admin();
         let mut tx = Tx::begin(self.data().backend()).await?;
@@ -549,6 +550,7 @@ impl AuthService {
         scopes: &[String],
         expires_in_days: Option<u32>,
     ) -> Result<CreatedKey, AuthError> {
+        super::reject_impersonated(caller)?;
         if !matches!(caller.subject, Subject::User { .. } | Subject::Admin { .. }) {
             return Err(AuthError::Forbidden("service accounts use API keys".into()));
         }
@@ -671,6 +673,7 @@ impl AuthService {
             credential_id: id.to_owned(),
             scopes: Some(scopes),
             mfa: false,
+            impersonator: None,
         })
     }
 
@@ -688,6 +691,19 @@ impl AuthService {
         });
         if let Some(sid) = caller.session_id() {
             out["session_id"] = json!(sid);
+        }
+        if let Some(admin) = &caller.impersonator {
+            out["impersonator"] = json!(admin);
+            let r = read(
+                self.db(),
+                "SELECT expires_at, impersonation_reason FROM _forgebase_auth_sessions WHERE id = ?1",
+                vec![t(caller.credential_id.clone())],
+            )
+            .await?;
+            if let Some(row) = first(&r) {
+                out["impersonation_expires_at"] = json!(rfc3339(row.i64("expires_at")));
+                out["impersonation_reason"] = json!(row.opt_str("impersonation_reason"));
+            }
         }
         if let Some(s) = &caller.scopes {
             out["scopes"] = json!(s.iter().map(Scope::as_str).collect::<Vec<_>>());
