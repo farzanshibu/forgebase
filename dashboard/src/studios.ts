@@ -13,7 +13,7 @@ export const STUDIOS: Studio[] = [
     path: "",
     label: "Dashboard",
     summary: "Live metrics overview",
-    phase: 9,
+    phase: null,
     features: ["Requests per second", "Query latency", "Active and realtime connections", "Memory and CPU usage", "Storage and vector index statistics", "Background job status", "Error statistics"],
   },
   {
