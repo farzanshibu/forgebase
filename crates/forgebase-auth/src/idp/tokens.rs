@@ -307,6 +307,13 @@ impl AuthService {
             collection: user.0.clone(),
             id: user.1.clone(),
         };
+        let scopes = json_list(&row.str("scopes"));
+        let narrowed = match param(form, "scope").map(parse_scope_param) {
+            None => scopes.clone(),
+            Some(Err(e)) => return Err(e),
+            Some(Ok(want)) if scopes_within(&want, &scopes) && !want.is_empty() => want,
+            Some(Ok(_)) => return Err(OAuthError::invalid_scope("scope exceeds the original grant")),
+        };
         let claimed = row.opt_i64("used_at").is_none()
             && tx
                 .exec(
@@ -342,7 +349,6 @@ impl AuthService {
             tx.commit().await?;
             return Err(OAuthError::invalid_grant("refresh token expired"));
         }
-        let scopes = json_list(&row.str("scopes"));
         let offline = scopes.iter().any(|s| s == "offline_access");
         let session_id = row.opt_str("session_id");
         let session_ended = match (&session_id, offline) {
@@ -354,18 +360,6 @@ impl AuthService {
             tx.commit().await?;
             return Err(OAuthError::invalid_grant("the session behind this grant has ended"));
         }
-        let narrowed = match param(form, "scope").map(parse_scope_param) {
-            None => scopes.clone(),
-            Some(Err(e)) => {
-                tx.commit().await?;
-                return Err(e);
-            }
-            Some(Ok(want)) if scopes_within(&want, &scopes) && !want.is_empty() => want,
-            Some(Ok(_)) => {
-                tx.commit().await?;
-                return Err(OAuthError::invalid_scope("scope exceeds the original grant"));
-            }
-        };
         let next = crypto::random_token(32)?;
         let generation = row.i64("generation") + 1;
         tx.exec(
