@@ -372,3 +372,17 @@ secrets, Razorpay Basic auth), `url` (form bodies, URL checks), and FB-25's
 outbound HTTPS client for provider APIs. No Stripe or Razorpay SDK crate: the
 drivers speak their REST APIs directly (a handful of endpoints each), which
 keeps the tree small and lets tests run against a mock HTTP client.
+
+## FB-72 (more payment providers, ADR-0021 §9, 2026-11-10)
+
+**No new crates in `Cargo.lock`.** Three crates already in the tree through
+`rustls` become direct workspace dependencies of `forgebase-billing`:
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| ring | 0.17.14 (`default-features = false`, `alloc`) | Apache-2.0 AND ISC | billing | ES256 (App Store JWS and API JWT), RS256 (Google service account and push tokens), RSA-SHA256 (WeChat Pay API v3), AES-256-GCM (WeChat Pay notification resources) |
+| rustls-webpki (as `webpki`) | 0.103.16 (`default-features = false`, `alloc`, `ring`) | ISC | billing | X.509 chain of App Store `x5c` headers to the pinned Apple Root CA - G3; WeChat Pay platform certificates |
+| rustls-pki-types | 1.15.1 (`default-features = false`, `alloc`) | MIT OR Apache-2.0 | billing | certificate and time types for webpki |
+
+No App Store, Google or WeChat SDK crate: the drivers speak the few REST
+endpoints they need directly, and tests run against mock HTTP clients.
