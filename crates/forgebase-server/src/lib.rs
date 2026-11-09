@@ -56,6 +56,7 @@ pub struct RunningServer {
     kv: KvService,
     vector: VectorService,
     resp: Option<forgebase_resp::RespHandle>,
+    realtime: forgebase_realtime::RealtimeService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -120,10 +121,25 @@ pub async fn start_with_jobs(
     // and the policy engine as its authorizer; the auth layer turns
     // credentials into each request's AccessContext, the tenancy layer adds
     // realm, organization, tenant, roles and attributes.
+    let realtime = match forgebase_realtime::RealtimeService::start(
+        auth.data().clone(),
+        Some(auth.clone()),
+        forgebase_realtime::RealtimeConfig::default(),
+        None,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
-        .with_policy(policy);
+        .with_policy(policy)
+        .with_realtime(realtime.clone());
     let jobs = JobService::new(state.data().clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
@@ -228,6 +244,7 @@ pub async fn start_with_jobs(
         kv,
         vector,
         resp,
+        realtime,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -319,6 +336,9 @@ impl RunningServer {
     /// Stops accepting connections, drains in-flight requests (bounded by the
     /// shutdown timeout), checkpoints and closes the database, releases the lock.
     pub async fn shutdown(mut self) -> Result<(), ServerError> {
+        // Realtime connections (upgraded sockets, SSE streams) are not
+        // in-flight requests: close them first so graceful shutdown can finish.
+        self.realtime.shutdown();
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -343,6 +363,7 @@ impl RunningServer {
     }
 
     async fn finish(&mut self) {
+        self.realtime.shutdown();
         self.upkeep.abort();
         if let Some(resp) = self.resp.take() {
             resp.shutdown().await;
@@ -438,6 +459,9 @@ pub enum ServerError {
     /// The policy service failed to load its model.
     #[error("policy: {0}")]
     Policy(String),
+    /// The realtime service failed to start.
+    #[error("realtime: {0}")]
+    Realtime(#[from] forgebase_realtime::RealtimeError),
 }
 
 impl ErrorCode for ServerError {
@@ -454,6 +478,7 @@ impl ErrorCode for ServerError {
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
             ServerError::Policy(_) => "policy_unavailable",
+            ServerError::Realtime(e) => e.code(),
         }
     }
 
@@ -467,6 +492,7 @@ impl ErrorCode for ServerError {
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
             ServerError::Policy(_) => ErrorKind::Internal,
+            ServerError::Realtime(e) => e.kind(),
         }
     }
 }

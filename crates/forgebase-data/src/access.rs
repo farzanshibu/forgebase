@@ -310,6 +310,12 @@ pub enum Action {
     /// Create and drop vector collections and fields, rebuild indexes, run
     /// recall checks (FB-50).
     VectorAdmin,
+    /// Receive messages and presence of a realtime channel (FB-40). Asked
+    /// through [`Authorizer::authorize_channel`]; a `Decision::Filter` is a
+    /// denial.
+    ChannelSubscribe,
+    /// Publish to a realtime channel and join its presence (FB-40).
+    ChannelPublish,
 }
 
 /// A row-level predicate in the filter language, with its parameters.
@@ -374,6 +380,13 @@ pub trait Authorizer: Send + Sync + fmt::Debug {
     /// not about one collection, e.g. SQL and index-wide operations).
     fn authorize(&self, ctx: &AccessContext, action: Action, collection: Option<&Collection>) -> Decision;
 
+    /// The decision for `action` on the realtime channel `channel` (FB-40).
+    /// Defaults to `authorize(ctx, action, None)`; a policy engine overrides
+    /// it to write rules per channel name.
+    fn authorize_channel(&self, ctx: &AccessContext, action: Action, channel: &str) -> Decision {
+        let _ = channel;
+        self.authorize(ctx, action, None)
+    }
     /// Field-level rules for `collection` (FB-21). Only asked for
     /// non-privileged callers. Default: no restriction beyond `hidden`.
     fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {

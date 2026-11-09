@@ -28,6 +28,7 @@ forgebase-policy = { path = "crates/forgebase-policy" }
 forgebase-kv = { path = "crates/forgebase-kv" }
 forgebase-vector = { path = "crates/forgebase-vector" }
 forgebase-resp = { path = "crates/forgebase-resp" }
+forgebase-realtime = { path = "crates/forgebase-realtime" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
@@ -58,6 +59,7 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting", "parsing"] }
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "net", "fs", "time", "sync", "io-util"] }
 toml = "1.2.1"
 tower = { version = "0.5.3", default-features = false, features = ["util"] }

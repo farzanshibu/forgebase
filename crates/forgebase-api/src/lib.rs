@@ -9,6 +9,7 @@
 //! | `GET /metrics` | Prometheus metrics |
 //! | `GET /api/system/info` | instance information |
 //! | `/api/auth/*` | authentication (forgebase-auth, ADR-0004) |
+//! | `/api/v1/realtime/*` | WebSocket, SSE, channels (forgebase-realtime, ADR-0011) |
 //! | `/admin/` | embedded admin dashboard |
 //!
 //! Versioning: management endpoints live under `/api/system/*`. Data APIs
@@ -72,6 +73,7 @@ struct StateInner {
     metrics: &'static PrometheusHandle,
     auth: Option<AuthService>,
     policy: Option<PolicyService>,
+    realtime: Option<forgebase_realtime::RealtimeService>,
 }
 
 /// Size limits the handlers enforce themselves (see [`RouterOptions`]).
@@ -108,6 +110,7 @@ impl AppState {
                 metrics: forgebase_observability::metrics_handle(),
                 auth: None,
                 policy: None,
+                realtime: None,
             }),
         })
     }
@@ -145,6 +148,7 @@ impl AppState {
                 metrics: forgebase_observability::metrics_handle(),
                 auth: None,
                 policy: None,
+                realtime: None,
             }),
         }
     }
@@ -175,6 +179,18 @@ impl AppState {
     /// The auth service, when configured.
     pub fn auth(&self) -> Option<&AuthService> {
         self.inner.auth.as_ref()
+    }
+
+    /// Same state with realtime (FB-40): mounts `/api/v1/realtime/*`. The
+    /// service must run on this state's data service.
+    pub fn with_realtime(mut self, realtime: forgebase_realtime::RealtimeService) -> Self {
+        Arc::make_mut(&mut self.inner).realtime = Some(realtime);
+        self
+    }
+
+    /// The realtime service, when configured.
+    pub fn realtime(&self) -> Option<&forgebase_realtime::RealtimeService> {
+        self.inner.realtime.as_ref()
     }
 
     /// The primary database.
@@ -337,6 +353,7 @@ pub fn router_with(
             forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
         )
         .merge(extra)
+        .nest_service("/api/v1/realtime", realtime_router(state.realtime()))
         .route("/admin", get(admin::redirect))
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))
@@ -371,6 +388,21 @@ pub fn router_with(
         None => app,
     };
     app.layer(middleware::from_fn(context::request_context))
+}
+
+/// `/api/v1/realtime/*`: the realtime router, or `503 realtime_unavailable`
+/// when the state has no realtime service.
+fn realtime_router(rt: Option<&forgebase_realtime::RealtimeService>) -> Router {
+    match rt {
+        Some(rt) => forgebase_realtime::router(rt.clone()),
+        None => Router::new().fallback(|| async {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "realtime_unavailable",
+                "realtime is not running on this server",
+            )
+        }),
+    }
 }
 
 /// Mounts the policy and tenancy routes and installs the tenancy layer, which

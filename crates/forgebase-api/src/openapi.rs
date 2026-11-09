@@ -219,6 +219,7 @@ pub fn document_with<'a>(
     for ext in extensions {
         doc.merge(ext.clone());
     }
+    doc.merge(forgebase_realtime::openapi());
     add_security(&mut doc);
     for (path, item) in &mut doc.paths.paths {
         if !path.starts_with("/api/v1/") {

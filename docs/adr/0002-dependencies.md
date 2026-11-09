@@ -236,3 +236,24 @@ New crate `forgebase-resp`. Its default build adds **no third-party crates** to 
 New packages in `Cargo.lock` (all via `redis`): `combine` 4.6.9 (MIT), `backon` 1.6.0 (Apache-2.0), `arc-swap` 1.9.4, `num-bigint` 0.4.8, `num-integer` 0.1.47 (MIT OR Apache-2.0), `tokio-util` 0.7.20 (MIT), `ryu` 1.0.23 (Apache-2.0 OR BSL-1.0; taken under Apache-2.0). `cargo deny check licenses` passes.
 
 `redis` is pinned to 0.32.7 on purpose: 1.x depends on `xxhash-rust` (BSL-1.0, not on the allow list). Revisit if BSL-1.0 is approved.
+
+## Phase 5 realtime (FB-40, 2026-11-09)
+
+New crate `forgebase-realtime` (ADR-0011). One feature and one dev-dependency:
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| axum feature `ws` | 0.8.9 | MIT | realtime | WebSocket upgrade (pulls `tokio-tungstenite`) |
+| futures-util feature `sink` | 0.3.34 | MIT OR Apache-2.0 | realtime | split a WebSocket into reader and writer |
+| tokio-tungstenite | 0.29.0 (no default features; `connect`, `handshake`) | MIT | realtime (dev) | WebSocket client in tests; same version axum's `ws` uses |
+
+New packages in `Cargo.lock` (transitive, via axum `ws`): `tokio-tungstenite`
+0.29.0 (MIT), `tungstenite` 0.29.0 (MIT OR Apache-2.0), `data-encoding`
+2.11.0 (MIT), `sha1` 0.10.7 (MIT OR Apache-2.0; tungstenite's handshake hash,
+next to the 0.11 used by auth). `rand`, `httparse`, `bytes` and `http` were
+already in the tree. No TLS stack, no native code. Also uses `time` and `url`
+(already workspace dependencies).
+
+Deliberately **not** added: a Redis client (`RedisFanOut` speaks the few RESP2
+commands pub/sub needs over `tokio::net::TcpStream`), `tokio-stream` /
+`tokio-util` (bounded `mpsc` + `futures_util::stream::unfold` cover SSE).

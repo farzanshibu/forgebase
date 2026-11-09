@@ -121,6 +121,11 @@ const EXPECTED: &[(&str, &str)] = &[
     ("post", "/api/v1/graph/traverse"),
     ("post", "/api/v1/graph/shortest-path"),
     ("get", "/api/v1/graph/stats"),
+    ("get", "/api/v1/realtime/ws"),
+    ("get", "/api/v1/realtime/sse"),
+    ("post", "/api/v1/realtime/channels/{channel}/messages"),
+    ("get", "/api/v1/realtime/channels/{channel}/presence"),
+    ("get", "/api/v1/realtime/stats"),
 ];
 
 fn operations(doc: &Json) -> Vec<(String, String)> {

@@ -1,0 +1,36 @@
+[package]
+name = "forgebase-realtime"
+description = "ForgeBase realtime: transactional outbox, event bus, WebSocket and SSE subscriptions filtered by the authorizer, replay, presence, channels."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["ws"] }
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
+metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+forgebase-core.workspace = true
+http-body-util.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

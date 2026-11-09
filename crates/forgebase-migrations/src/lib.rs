@@ -78,6 +78,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "oauth_webauthn",
         include_str!("../../../migrations/system/0008_oauth_webauthn.sql"),
     ),
+    Migration::new(
+        11,
+        "realtime",
+        include_str!("../../../migrations/system/0011_realtime.sql"),
+    ),
     Migration::new(12, "vector", include_str!("../../../migrations/system/0012_vector.sql")),
     Migration::new(
         13,

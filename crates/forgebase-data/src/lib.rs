@@ -24,6 +24,7 @@
 
 pub mod access;
 mod catalog;
+pub mod changes;
 pub mod collections;
 mod ddl;
 mod error;
@@ -33,7 +34,7 @@ pub mod list;
 pub mod records;
 pub mod sql;
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use forgebase_db::{Backend, TxMode, WriteTx};
 use forgebase_query::CompileOptions;
@@ -44,6 +45,7 @@ pub use access::{
     READS_TENANT_DATA_OPTION, SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped,
     reads_tenant_data,
 };
+pub use changes::{ChangeHook, ChangeOp, RecordChange, RowSnapshot};
 pub use collections::SchemaChange;
 pub use error::DataError;
 pub use indexes::{IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexRecommendation, QueryPlan};
@@ -81,6 +83,8 @@ struct Inner {
     /// Serialises schema changes and catalog reloads in this process (the
     /// single writer already serialises them in the database).
     schema_lock: tokio::sync::Mutex<()>,
+    /// Transactional outbox hook (FB-40), installed once at startup.
+    change_hook: OnceLock<Arc<dyn changes::ChangeHook>>,
 }
 
 impl DataService {
@@ -103,6 +107,7 @@ impl DataService {
                 hasher,
                 catalog: RwLock::new(Arc::new(snapshot)),
                 schema_lock: tokio::sync::Mutex::new(()),
+                change_hook: OnceLock::new(),
             }),
         })
     }
@@ -159,6 +164,21 @@ impl DataService {
                     )))
                 }
             }
+        }
+    }
+
+    /// Asks the authorizer about realtime channel `channel` (FB-40). Channels
+    /// have no row-level rules: a `Decision::Filter` is a denial.
+    pub fn authorize_channel(&self, ctx: &AccessContext, action: Action, channel: &str) -> Result<(), DataError> {
+        if ctx.is_system() {
+            return Ok(());
+        }
+        match self.inner.authorizer.authorize_channel(ctx, action, channel) {
+            Decision::Allow => Ok(()),
+            _ if ctx.principal == Principal::Anonymous => Err(DataError::Unauthenticated),
+            _ => Err(DataError::Forbidden(format!(
+                "{action:?} on channel {channel} is not allowed"
+            ))),
         }
     }
 
