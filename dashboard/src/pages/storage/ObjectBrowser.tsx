@@ -47,6 +47,7 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
 
   // Uploads.
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [uploaded, setUploaded] = useState(0);
   const seq = useRef(0);
   const upload = async (files: FileList | null) => {
     if (!files) return;
@@ -57,6 +58,7 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
       try {
         await uploadObject(bucket.name, prefix + f.name, f, { onProgress: (sent, total) => patch({ sent, total }) });
         patch({ done: true });
+        setUploaded((n) => n + 1); // a selected object's panel (versions) is stale now
         reload();
       } catch (e) { patch({ error: e }); }
     }
@@ -123,7 +125,7 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
           )}
         </Panel>
       </div>
-      {selected && <ObjectPanel key={selected} bucket={bucket} objectKey={selected} onClose={() => nav({ key: null })} onChanged={reload} />}
+      {selected && <ObjectPanel key={`${selected}#${uploaded}`} bucket={bucket} objectKey={selected} onClose={() => nav({ key: null })} onChanged={reload} />}
     </div>
   );
 }

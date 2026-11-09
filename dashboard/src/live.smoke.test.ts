@@ -22,6 +22,11 @@ import {
   createVectorCollection, deleteVectorCollection, listVectorCollections, measureRecall, rebuildVectorIndex, upsertVectors,
   vectorCollectionStats, vectorHybrid, vectorSearch, vectorStats,
 } from "./api/vector";
+import {
+  copyObject, createBucket, deleteBucket, deleteObject, downloadObject, getBucketAcl, listBuckets, listObjects, listVersions, putBucketAcl, restoreVersion,
+  signUrl, storageStats, updateBucket, uploadObject, reconcileStorage,
+} from "./api/storage";
+import { kvDelete, kvExec, kvGet, kvHashSet, kvInfo, kvListPush, kvNamespaces, kvScan, kvSetString, kvSetTtl, kvStreamAdd, kvZAdd, kvSetAdd, kvPublish } from "./api/kv";
 import { createEdge, createNode, graphStats, listEdges, listNodes, neighbors, shortestPath, traverse } from "./api/graph";
 
 const BIN = process.env.FB_LIVE_BIN;
@@ -158,6 +163,60 @@ describe.skipIf(!BIN)("live server", () => {
     const st = await graphStats();
     expect(st.nodes).toBe(3);
     expect(st.edge_types[0]).toMatchObject({ type: "KNOWS", count: 2 });
+  });
+
+  it("drives Storage Studio: buckets, upload, folders, versions, copy, signed URL, ACL, reconcile", async () => {
+    await createBucket({ name: "smoke-files", versioning: true });
+    expect((await listBuckets()).map((b) => b.name)).toContain("smoke-files");
+    await updateBucket("smoke-files", { visibility: "authenticated" });
+    await uploadObject("smoke-files", "docs/a.txt", new Blob(["one"], { type: "text/plain" }));
+    await uploadObject("smoke-files", "docs/a.txt", new Blob(["two!"], { type: "text/plain" }));
+    const big = new Uint8Array(300);
+    await uploadObject("smoke-files", "docs/big.bin", new Blob([big]), { threshold: 100, chunkSize: 128 });
+    const root = await listObjects("smoke-files", { delimiter: "/" });
+    expect(root.prefixes).toEqual(["docs/"]);
+    const docs = await listObjects("smoke-files", { prefix: "docs/", delimiter: "/" });
+    expect(docs.objects.map((o) => o.key).sort()).toEqual(["docs/a.txt", "docs/big.bin"]);
+    expect(docs.objects.find((o) => o.key === "docs/big.bin")!.size).toBe(300);
+    const versions = await listVersions("smoke-files", "docs/a.txt");
+    expect(versions).toHaveLength(2);
+    const old = versions.find((v) => !v.is_latest)!;
+    expect(await (await downloadObject("smoke-files", "docs/a.txt", old.version_id)).text()).toBe("one");
+    await restoreVersion("smoke-files", "docs/a.txt", old.version_id);
+    expect(await (await downloadObject("smoke-files", "docs/a.txt")).text()).toBe("one");
+    await copyObject("smoke-files", "docs/a.txt", "copy/a.txt");
+    expect((await listObjects("smoke-files", { prefix: "copy/" })).objects).toHaveLength(1);
+    const signed = await signUrl("smoke-files", { key: "docs/a.txt", expires_in: 300 });
+    expect(signed.url).toContain("/signed/smoke-files/docs/a.txt");
+    await putBucketAcl("smoke-files", { entries: [{ prefix: "docs/", grantee: "role:viewer", permission: "read" }] });
+    expect((await getBucketAcl("smoke-files")).entries).toHaveLength(1);
+    expect((await storageStats()).buckets).toBeGreaterThan(0);
+    expect((await reconcileStorage()).missing_blobs).toEqual([]);
+    await deleteObject("smoke-files", "copy/a.txt");
+    await deleteBucket("smoke-files", true);
+    expect((await listBuckets()).map((b) => b.name)).not.toContain("smoke-files");
+  });
+
+  it("drives Redis Studio: keys of every type, TTL, scan, console, stats", async () => {
+    const ns = "smoke";
+    await kvSetString(ns, "greeting", "hello");
+    await kvHashSet(ns, "user:1", { name: "Ann" });
+    await kvListPush(ns, "todo", "right", ["a", "b"]);
+    await kvSetAdd(ns, "tags", ["red"]);
+    await kvZAdd(ns, "board", [{ member: "ann", score: 10 }]);
+    await kvStreamAdd(ns, "events", { kind: "login" });
+    const all = await kvScan(ns, { count: 100 });
+    expect(all.keys.sort()).toEqual(["board", "events", "greeting", "tags", "todo", "user:1"]);
+    expect((await kvScan(ns, { match: "user:*" })).keys).toEqual(["user:1"]);
+    expect((await kvScan(ns, { type: "zset" })).keys).toEqual(["board"]);
+    for (const [k, t] of [["greeting", "string"], ["user:1", "hash"], ["todo", "list"], ["tags", "set"], ["board", "zset"], ["events", "stream"]] as const) expect((await kvGet(ns, k)).type).toBe(t);
+    await kvSetTtl(ns, "greeting", 60_000);
+    expect((await kvGet(ns, "greeting")).ttl_ms).toBeGreaterThan(0);
+    expect(await kvExec(ns, ["GET", "greeting"])).toBe("hello");
+    expect((await kvNamespaces()).map((n) => n.name)).toContain(ns);
+    expect((await kvInfo()).keys).toBeGreaterThan(0);
+    expect(typeof (await kvPublish(ns, "news", "x")).receivers).toBe("number");
+    expect((await kvDelete(ns, "greeting")).deleted).toBe(true);
   });
 
   it("ends the session on sign-out", async () => {

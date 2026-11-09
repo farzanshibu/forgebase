@@ -132,7 +132,7 @@ export function installKv(mock: MockApi): KvState {
     if (it === "wrong") return wrong();
     it ??= (space(params.ns!)[params.key!] = { type: "stream", value: [], ttl_ms: null });
     const l = it.value as { id: string; fields: Record<string, string> }[];
-    const id = `${l.length + 2}-0`;
+    const id = `${l.length + 1}-0`;
     l.push({ id, fields: (body as { fields: Record<string, string> }).fields });
     return { status: 201, body: { id } };
   });
