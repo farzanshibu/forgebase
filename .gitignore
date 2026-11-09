@@ -7,3 +7,6 @@
 *.db-shm
 .env
 .DS_Store
+
+# stray SQLite session file written by a test opening ":memory:"
+/:memory:*
