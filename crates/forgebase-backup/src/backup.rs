@@ -156,7 +156,7 @@ pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: Backu
         };
         let json = serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Internal(e.to_string()))?;
         fsutil::write_atomic(&partial.join(MANIFEST), &json)?;
-        std::fs::rename(&partial, &dest_of(&partial)).map_err(io(&partial))?;
+        std::fs::rename(&partial, dest_of(&partial)).map_err(io(&partial))?;
         if let Some(parent) = partial.parent() {
             fsutil::sync_dir(parent);
         }

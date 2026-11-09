@@ -159,13 +159,13 @@ pub async fn export_bundle(data: &DataService, dest: &Path, opts: ExportOptions)
             )));
         }
         for f in &c.fields {
-            if let Some(t) = f.kind.relation_target() {
-                if !names.contains(t) {
-                    warnings.push(format!(
-                        "{}.{} relates to a collection that is not part of this export",
-                        c.name, f.name
-                    ));
-                }
+            if let Some(t) = f.kind.relation_target()
+                && !names.contains(t)
+            {
+                warnings.push(format!(
+                    "{}.{} relates to a collection that is not part of this export",
+                    c.name, f.name
+                ));
             }
         }
         let schema = serde_json::to_vec_pretty(c).map_err(|e| BackupError::Internal(e.to_string()))?;

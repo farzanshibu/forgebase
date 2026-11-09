@@ -217,17 +217,17 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, deep
     if layout.database_path().is_file() {
         let opts = DbOptions::from_config(&config.database, layout.database_path()).read_only();
         if let Ok(db) = Database::open(opts).await {
-            if let Ok(info) = db.info().await {
-                if info.wal_size_bytes > WAL_WARN_BYTES {
-                    r.push(
-                        "wal",
-                        Level::Warn,
-                        format!(
-                            "write-ahead log is {} MiB; a checkpoint runs at clean shutdown (a long-running reader may be holding it)",
-                            info.wal_size_bytes / (1024 * 1024)
-                        ),
-                    );
-                }
+            if let Ok(info) = db.info().await
+                && info.wal_size_bytes > WAL_WARN_BYTES
+            {
+                r.push(
+                    "wal",
+                    Level::Warn,
+                    format!(
+                        "write-ahead log is {} MiB; a checkpoint runs at clean shutdown (a long-running reader may be holding it)",
+                        info.wal_size_bytes / (1024 * 1024)
+                    ),
+                );
             }
             if config.storage.driver == forgebase_core::StorageDriverKind::Local {
                 check_blobs(r, &db, layout).await;
