@@ -119,6 +119,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "customize",
         include_str!("../../../migrations/system/0019_customize.sql"),
     ),
+    Migration::new(
+        21,
+        "queue",
+        include_str!("../../../migrations/system/0021_queue.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
