@@ -560,15 +560,15 @@ async fn background(
     mut stop: watch::Receiver<bool>,
     every: Duration,
 ) {
-    let mut last_maintenance = tokio::time::Instant::now() - every;
+    let mut last_maintenance: Option<tokio::time::Instant> = None;
     loop {
         let Some(inner) = weak.upgrade() else { return };
         let svc = QueueService { inner };
-        if last_maintenance.elapsed() >= every {
+        if last_maintenance.is_none_or(|t| t.elapsed() >= every) {
             if let Err(e) = svc.run_maintenance().await {
                 tracing::warn!(error = %e, "queue maintenance failed");
             }
-            last_maintenance = tokio::time::Instant::now();
+            last_maintenance = Some(tokio::time::Instant::now());
         }
         if let Err(e) = svc.deliver_push().await {
             tracing::warn!(error = %e, "queue push delivery failed");
