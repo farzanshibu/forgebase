@@ -464,17 +464,37 @@ fn decide_engine(
         }
         _ => format!("engine:{name}"),
     };
-    let org = ctx.org_id.clone().or_else(|| {
-        ctx.tenant
-            .as_ref()
-            .and_then(|t| snap.tenant(t))
-            .and_then(|(_, p)| p.org_id.clone())
-    });
-    let owner = ctx
-        .tenant
-        .as_ref()
-        .and_then(|t| snap.tenant(t))
-        .and_then(|(_, p)| p.owner_user.clone());
+    // Engines (KV, graph, jobs) scope their data by `ctx.tenant`, so the
+    // tenant is validated here as strictly as for records: it must exist in
+    // the caller's realm, belong to the active organization if one is set,
+    // and be the caller's (membership via step 2, or personal ownership, or
+    // an ACL grant on the environment / project).
+    let fail = |why: &str| (Denial::at(Step::Tenant, why), key.clone());
+    let (org, owner) = match &ctx.tenant {
+        None => (ctx.org_id.clone(), None),
+        Some(t) => {
+            let Some((env, p)) = snap.tenant(t) else {
+                return Err(fail("unknown tenant"));
+            };
+            if p.realm_id != ctx.realm_id {
+                return Err(fail("cross-realm access is denied"));
+            }
+            if ctx.org_id.is_some() && ctx.org_id != p.org_id {
+                return Err(fail("the tenant belongs to another organization"));
+            }
+            if let Some(u) = &p.owner_user {
+                let principal = ctx.principal_key();
+                if *u != principal {
+                    let eff = snap.effective(&principal, &ctx.realm_id, None);
+                    let shared = acl_chain(snap, ctx, &ResourceRef::new("environment", &env.id), &key, &eff);
+                    if shared != Grant::Granted {
+                        return Err(fail("this tenant is not yours"));
+                    }
+                }
+            }
+            (p.org_id.clone(), p.owner_user.clone())
+        }
+    };
     let check = Check {
         permission: key.clone(),
         org: if owner.is_some() { None } else { org },

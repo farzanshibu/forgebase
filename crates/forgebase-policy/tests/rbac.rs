@@ -526,3 +526,91 @@ async fn the_pipeline_runs_in_order_and_stops_at_the_first_failure() {
     let steps = env.audit_steps(&pk("bob"), 4).await;
     assert_eq!(steps, ["permission", "entitlement", "resource", "quota"]);
 }
+
+/// KV, graph and jobs reach the authorizer with no collection; their actions
+/// are permissions `engine:<action>`, and their tenant is validated as for
+/// records (they scope data by `ctx.tenant`).
+#[tokio::test]
+async fn engine_actions_follow_roles_tenants_and_realms() {
+    use forgebase_data::{Action, Authorizer, Decision};
+    let env = Env::new().await;
+    let a = env.org("alice", "a").await;
+    let b = env.org("bob", "b").await;
+    let (_, ta) = env.project("alice", &a, "app").await;
+    env.member("alice", &a, "dev", &["developer"]).await;
+    env.member("alice", &a, "view", &["viewer"]).await;
+    env.member("alice", &a, "bill", &["billing_manager"]).await;
+    env.member("bob", &b, "dev", &["developer"]).await;
+    let personal = env
+        .policy
+        .create_project(&user("carl"), None, "mine", "Mine")
+        .await
+        .unwrap();
+    let tp = personal["environments"][0]["id"].as_str().unwrap().to_owned();
+    let authz = env.policy.authorizer();
+    let allowed = |ctx: &AccessContext, act: Action| authz.authorize(ctx, act, None) == Decision::Allow;
+
+    let dev = user("dev").with_tenant(&ta);
+    for act in [
+        Action::KvRead,
+        Action::KvWrite,
+        Action::KvAdmin,
+        Action::GraphRead,
+        Action::GraphWrite,
+        Action::ReadJobs,
+        Action::EnqueueJob,
+        Action::ManageJobs,
+        Action::WorkJobs,
+    ] {
+        assert!(allowed(&dev, act), "developer: {act:?}");
+        assert!(allowed(&admin().with_tenant(&ta), act), "super-admin: {act:?}");
+        assert!(
+            !allowed(&user("bill").with_tenant(&ta), act),
+            "billing manager: {act:?}"
+        );
+        assert!(
+            !allowed(&AccessContext::anonymous().with_tenant(&ta), act),
+            "anonymous: {act:?}"
+        );
+    }
+    let view = user("view").with_tenant(&ta);
+    assert!(allowed(&view, Action::KvRead) && allowed(&view, Action::GraphRead) && allowed(&view, Action::ReadJobs));
+    assert!(
+        !allowed(&view, Action::KvWrite) && !allowed(&view, Action::GraphWrite) && !allowed(&view, Action::EnqueueJob)
+    );
+    // Deny wins for engines too.
+    env.policy
+        .add_override(&user("alice"), Some(&a), &pk("dev"), "engine:kv_admin", Effect::Deny)
+        .await
+        .unwrap();
+    assert!(!allowed(&dev, Action::KvAdmin));
+    assert!(allowed(&dev, Action::KvWrite));
+    // Tenant isolation: not a member, a tenant of another org than the
+    // active one, an unknown tenant, someone else's personal tenant, another realm.
+    assert!(!allowed(&user("mallory").with_tenant(&ta), Action::KvRead));
+    assert!(
+        !allowed(&user("dev").with_org(&b).with_tenant(&ta), Action::KvRead),
+        "active org B, tenant of A"
+    );
+    assert!(!allowed(&user("dev").with_tenant("no-such-env"), Action::KvRead));
+    assert!(
+        !allowed(&user("dev").with_tenant(&tp), Action::KvRead),
+        "carl's personal tenant"
+    );
+    assert!(
+        allowed(&user("carl").with_tenant(&tp), Action::KvWrite),
+        "the owner of a personal tenant"
+    );
+    assert!(!allowed(&dev.clone().with_realm("other"), Action::KvRead));
+    // Schema and SQL tools stay with administrators.
+    for act in [
+        Action::ManageSchema,
+        Action::ReadSql,
+        Action::WriteSql,
+        Action::ManageIndexes,
+    ] {
+        assert!(!allowed(&user("alice").with_tenant(&ta), act), "{act:?}");
+    }
+    let steps = env.audit_steps(&pk("mallory"), 1).await;
+    assert_eq!(steps, ["tenant"]);
+}
