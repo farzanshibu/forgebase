@@ -545,6 +545,7 @@ dependencies = [
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-graph",
  "forgebase-observability",
  "futures-util",
  "http-body-util",
@@ -652,6 +653,28 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "forgebase-graph"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "utoipa",
  "uuid",
 ]
 

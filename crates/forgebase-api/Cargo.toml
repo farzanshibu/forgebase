@@ -14,6 +14,7 @@ forgebase-auth.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true
+forgebase-graph.workspace = true
 forgebase-observability.workspace = true
 futures-util.workspace = true
 http-body-util.workspace = true

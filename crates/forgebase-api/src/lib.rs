@@ -266,6 +266,10 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
         .route("/api/system/info", get(routes::system_info))
         .route("/api/openapi.json", get(openapi::serve))
         .nest("/api/v1", v1::router(&opts))
+        .nest_service(
+            "/api/v1/graph",
+            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
+        )
         .route("/admin", get(admin::redirect))
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))

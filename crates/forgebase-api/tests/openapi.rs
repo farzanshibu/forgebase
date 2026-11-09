@@ -58,6 +58,21 @@ const EXPECTED: &[(&str, &str)] = &[
     ("get", "/api/v1/sql/tables/{name}"),
     ("get", "/api/v1/collections/{collection}/export"),
     ("post", "/api/v1/collections/{collection}/import"),
+    ("get", "/api/v1/graph/nodes"),
+    ("post", "/api/v1/graph/nodes"),
+    ("get", "/api/v1/graph/nodes/{id}"),
+    ("put", "/api/v1/graph/nodes/{id}"),
+    ("patch", "/api/v1/graph/nodes/{id}"),
+    ("delete", "/api/v1/graph/nodes/{id}"),
+    ("get", "/api/v1/graph/nodes/{id}/neighbors"),
+    ("get", "/api/v1/graph/edges"),
+    ("post", "/api/v1/graph/edges"),
+    ("get", "/api/v1/graph/edges/{id}"),
+    ("patch", "/api/v1/graph/edges/{id}"),
+    ("delete", "/api/v1/graph/edges/{id}"),
+    ("post", "/api/v1/graph/traverse"),
+    ("post", "/api/v1/graph/shortest-path"),
+    ("get", "/api/v1/graph/stats"),
 ];
 
 fn operations(doc: &Json) -> Vec<(String, String)> {

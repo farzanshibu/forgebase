@@ -69,6 +69,7 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0002_data_core.sql"),
     ),
     Migration::new(3, "auth", include_str!("../../../migrations/system/0003_auth.sql")),
+    Migration::new(6, "graph", include_str!("../../../migrations/system/0006_graph.sql")),
 ];
 
 /// A migration recorded as applied in the database.
