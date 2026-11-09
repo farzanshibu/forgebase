@@ -119,6 +119,8 @@ interface Sub {
   handler: RealtimeHandler<never>;
   cursor?: number;
   active: boolean;
+  /** Set when the server refused the subscription while it was being (re)established. */
+  error?: Error;
 }
 
 interface Pending {
@@ -223,6 +225,7 @@ export class RealtimeClient {
         await this.restartSse(sub);
       } else {
         await this.connect();
+        if (sub.error) throw sub.error;
         if (!sub.active) await this.until(sub);
       }
     } catch (err) {
@@ -431,6 +434,7 @@ export class RealtimeClient {
       [...this.subs.values()].map((s) =>
         this.activate(s).catch((err: Error) => {
           // A subscription the server now refuses (rule changed while offline) is dropped and reported.
+          s.error = err;
           this.subs.delete(s.id);
           this.emit("error", err);
         }),
