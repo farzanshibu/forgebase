@@ -138,6 +138,14 @@ pub enum Action {
     GraphRead,
     /// Create, change or delete graph nodes and edges (FB-51).
     GraphWrite,
+    /// Read jobs, job history, schedules, workers and queue statistics (FB-61).
+    ReadJobs,
+    /// Enqueue a background job (FB-61).
+    EnqueueJob,
+    /// Cancel, retry or delete jobs; create, change or delete schedules (FB-61).
+    ManageJobs,
+    /// Act as a job worker: register, claim, heartbeat, complete, fail (FB-61).
+    WorkJobs,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

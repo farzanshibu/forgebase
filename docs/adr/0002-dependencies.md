@@ -154,3 +154,7 @@ shortest path, REST under `/api/v1/graph`). **No new third-party crates.** It
 uses packages already in the tree: axum, serde, serde_json, thiserror,
 tower-http (`limit`), tracing, url, utoipa, uuid. The bundled SQLite's recursive
 CTEs and JSON1 functions are enough; no graph library is added.
+
+## FB-61 (jobs)
+
+`forgebase-jobs` adds no third-party dependencies (uses tokio, axum, tower-http, utoipa, uuid, time, serde already listed). Cron parsing is in-crate.
