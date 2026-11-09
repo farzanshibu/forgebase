@@ -15,10 +15,16 @@ describe("App shell", () => {
     for (const s of STUDIOS) expect(await screen.findByRole("link", { name: new RegExp(s.label) })).toBeInTheDocument();
   });
 
-  it("shows an honest arrives-in-phase panel for unbuilt studios", async () => {
-    signedIn(new MockApi().install());
+  it("opens on the live overview, not a placeholder", async () => {
+    const mock = signedIn(new MockApi().install());
+    mock.on("GET", "/metrics", () => ({ status: 200, body: undefined }));
     render(<MemoryRouter initialEntries={["/"]}><App /></MemoryRouter>);
-    expect(await screen.findByText("Arrives in phase 9")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.queryByText(/Arrives in phase/)).not.toBeInTheDocument();
+  });
+
+  it("builds every studio: none is left as a placeholder", () => {
+    for (const s of STUDIOS) expect(s.phase).toBeNull();
   });
 
   it("shows the sign-in form when nobody is signed in", async () => {
