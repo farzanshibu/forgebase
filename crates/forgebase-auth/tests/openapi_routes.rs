@@ -81,7 +81,10 @@ fn every_routed_auth_operation_is_documented_and_vice_versa() {
     let documented = documented();
     let missing: Vec<_> = routed.difference(&documented).collect();
     let extra: Vec<_> = documented.difference(&routed).collect();
-    assert!(missing.is_empty(), "routed but not in the OpenAPI fragment: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "routed but not in the OpenAPI fragment: {missing:?}"
+    );
     assert!(extra.is_empty(), "in the OpenAPI fragment but not routed: {extra:?}");
 }
 
@@ -91,8 +94,13 @@ fn auth_operation_ids_are_unique() {
     let mut seen = BTreeSet::new();
     for (path, item) in doc["paths"].as_object().unwrap() {
         for (method, op) in item.as_object().unwrap() {
-            let id = op["operationId"].as_str().unwrap_or_else(|| panic!("{method} {path} has no operationId"));
-            assert!(seen.insert(id.to_owned()), "duplicate operationId {id} ({method} {path})");
+            let id = op["operationId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} has no operationId"));
+            assert!(
+                seen.insert(id.to_owned()),
+                "duplicate operationId {id} ({method} {path})"
+            );
         }
     }
 }

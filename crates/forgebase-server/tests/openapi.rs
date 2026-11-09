@@ -41,7 +41,12 @@ async fn full_document_has_unique_operation_ids() {
         }
     }
     assert!(count > 200, "suspiciously small document: {count} operations");
-    for p in ["/api/auth/login", "/api/auth/signup", "/api/v1/kv/{ns}/batch", "/api/v1/jobs"] {
+    for p in [
+        "/api/auth/login",
+        "/api/auth/signup",
+        "/api/v1/kv/{ns}/batch",
+        "/api/v1/jobs",
+    ] {
         assert!(doc["paths"][p].is_object(), "missing {p}");
     }
     server.shutdown().await.unwrap();

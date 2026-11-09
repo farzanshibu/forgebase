@@ -306,7 +306,6 @@ pub(super) fn auth_audit_list() {}
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_keys_rotate() {}
 
-
 /// `POST /api/auth/signup` body.
 #[derive(ToSchema)]
 #[allow(dead_code)]
