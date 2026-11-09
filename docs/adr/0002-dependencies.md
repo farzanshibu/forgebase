@@ -266,3 +266,25 @@ only dependencies already recorded here: `axum`, `serde`, `serde_json`,
 `tracing`, `utoipa` and `uuid`. Calendar arithmetic (months, billing-cycle
 anchors) is a 30-line civil-date conversion in the crate, not a date library.
 `Cargo.lock` gains only the `forgebase-entitlements` entry.
+
+## Addendum (MDF-52): stale statements after DDL
+
+Two caches go stale on a pooled reader after another connection runs DDL:
+sqlx's per-connection statement cache (it keeps the column list seen at prepare
+time; `sqlx-sqlite` then panics `index out of bounds` decoding `SELECT t.*`
+after `ADD COLUMN`) and SQLite's own in-memory schema, which is reloaded only
+when a transaction starts, so even a fresh prepare sees the old columns.
+Appending a version marker to the SQL text fixes only the first (tried, test
+still failed).
+
+Fix (`forgebase-db`): a shared schema generation counter, bumped before and
+after every committed `TxMode::SchemaChange` and around migrations. The reader
+pool's `before_acquire` hook compares it with the generation that connection
+last saw; if behind it calls `clear_cached_statements()` and runs
+`SELECT 1 FROM sqlite_schema LIMIT 1` to make SQLite reload the schema. Cost
+when nothing changed: one atomic load and a map lookup per acquire, no database
+round trip, and statement caching stays on for normal traffic. Rejected:
+non-persistent star selects (does not fix SQLite's schema cache, loses caching)
+and `PRAGMA schema_version` per acquire (round trip on every acquire).
+The writer needs nothing: it runs the DDL itself. Regression test:
+`crates/forgebase-db/tests/stale_statements.rs`.

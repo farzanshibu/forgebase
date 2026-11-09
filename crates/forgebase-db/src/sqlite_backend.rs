@@ -57,6 +57,42 @@ impl SlowLog {
     }
 }
 
+/// Per-connection record of the schema generation last seen, so a reader that
+/// is behind a schema change drops its cached statements and reloads the schema.
+///
+/// Why both: sqlx keeps the column list of a cached statement (stale after
+/// `ALTER TABLE ... ADD COLUMN`, then `row.rs` panics with index out of bounds),
+/// and SQLite itself prepares against the connection's in-memory schema, which
+/// only reloads when a transaction starts. Both are fixed by clearing sqlx's
+/// cache and then touching `sqlite_schema` before the connection is handed out.
+#[derive(Debug, Default)]
+pub(crate) struct SeenGenerations(Mutex<std::collections::HashMap<usize, u64>>);
+
+impl SeenGenerations {
+    /// Pool `before_acquire` hook body. Cost when nothing changed: one atomic
+    /// load and a short mutex-guarded map lookup, no database round trip.
+    pub(crate) async fn refresh_if_behind(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        current: u64,
+    ) -> Result<(), sqlx::Error> {
+        use sqlx::Connection;
+        let key = conn.lock_handle().await?.as_raw_handle().as_ptr() as usize;
+        let seen = self.0.lock().unwrap_or_else(|p| p.into_inner()).get(&key).copied();
+        if seen == Some(current) {
+            return Ok(());
+        }
+        conn.clear_cached_statements().await?;
+        // Starts a read transaction, which makes SQLite reload a changed schema.
+        sqlx::query("SELECT 1 FROM sqlite_schema LIMIT 1")
+            .persistent(false)
+            .execute(&mut *conn)
+            .await?;
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).insert(key, current);
+        Ok(())
+    }
+}
+
 fn bind(stmt: &Statement) -> sqlx::query::Query<'_, Sqlite, SqliteArguments> {
     let mut q = sqlx::query(AssertSqlSafe(stmt.sql.clone())).persistent(stmt.cache);
     for p in &stmt.params {
@@ -264,7 +300,15 @@ impl SqliteTx {
                     });
                 }
             }
+            if sql == "COMMIT" && self.mode == TxMode::SchemaChange {
+                // Before and after: a reader acquired between the two is
+                // refreshed again once the commit is visible.
+                db.bump_schema_generation();
+            }
             sqlx::query(sql).execute(&mut *conn).await.map_err(|e| db.classify(e))?;
+            if sql == "COMMIT" && self.mode == TxMode::SchemaChange {
+                db.bump_schema_generation();
+            }
             Ok(())
         }
         .await;
