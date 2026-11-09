@@ -1111,6 +1111,7 @@ dependencies = [
  "forgebase-api",
  "forgebase-auth",
  "forgebase-core",
+ "forgebase-credits",
  "forgebase-data",
  "forgebase-db",
  "forgebase-entitlements",
