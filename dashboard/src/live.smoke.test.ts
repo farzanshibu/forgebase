@@ -18,6 +18,11 @@ import { searchUsers, listAdmins, listSuspensions } from "./api/authAdmin";
 import { setCsrfToken } from "./api/token";
 import { isMfaChallenge, login, logout, me } from "./api/session";
 import { listCollections, createCollection } from "./api/v1";
+import {
+  createVectorCollection, deleteVectorCollection, listVectorCollections, measureRecall, rebuildVectorIndex, upsertVectors,
+  vectorCollectionStats, vectorHybrid, vectorSearch, vectorStats,
+} from "./api/vector";
+import { createEdge, createNode, graphStats, listEdges, listNodes, neighbors, shortestPath, traverse } from "./api/graph";
 
 const BIN = process.env.FB_LIVE_BIN;
 const EMAIL = "smoke-admin@example.com";
@@ -113,6 +118,46 @@ describe.skipIf(!BIN)("live server", () => {
     const roles = await listRoles();
     expect(roles.length).toBeGreaterThan(0);
     expect(Array.isArray(await listRealms())).toBe(true);
+  });
+
+  it("drives Vector Studio: collections, records, search, hybrid, index", async () => {
+    await createVectorCollection({ name: "smoke_vec", description: "live", fields: [{ name: "embedding", dimension: 3, metric: "l2" }] });
+    expect((await listVectorCollections()).map((c) => c.name)).toContain("smoke_vec");
+    const up = await upsertVectors("smoke_vec", [
+      { id: "a", vectors: { embedding: [1, 0, 0] }, metadata: { tag: "x" }, text: "red apple" },
+      { id: "b", vectors: { embedding: [0, 1, 0] }, metadata: { tag: "y" }, text: "green pear" },
+      { id: "c", vectors: { embedding: [0.9, 0.1, 0] }, metadata: { tag: "x" }, text: "red cherry" },
+    ]);
+    expect(up.created).toBe(3);
+    const hits = await vectorSearch("smoke_vec", { field: "embedding", vector: [1, 0, 0], k: 5, filter: 'tag = "x"' });
+    expect(hits.hits.map((h) => h.id)).toEqual(["a", "c"]);
+    const hyb = await vectorHybrid("smoke_vec", { field: "embedding", vector: [1, 0, 0], text: "red", k: 5 });
+    expect(hyb.hits.length).toBeGreaterThan(0);
+    expect(hyb.hits[0]).toHaveProperty("score");
+    const rebuilt = await rebuildVectorIndex("smoke_vec", "embedding");
+    expect(rebuilt.indexes[0]?.field).toBe("embedding");
+    expect((await vectorCollectionStats("smoke_vec")).items).toBe(3);
+    expect((await vectorStats()).collections).toBeGreaterThan(0);
+    expect((await measureRecall("smoke_vec", { field: "embedding", samples: 3, k: 2 })).samples).toBeGreaterThan(0);
+    await deleteVectorCollection("smoke_vec");
+    expect((await listVectorCollections()).map((c) => c.name)).not.toContain("smoke_vec");
+  });
+
+  it("drives Graph Studio: nodes, edges, neighbours, traversal, path", async () => {
+    for (const id of ["alice", "bob", "carol"]) await createNode({ id, label: "Person", properties: { name: id } });
+    await createEdge({ type: "KNOWS", source: "alice", target: "bob" });
+    await createEdge({ type: "KNOWS", source: "bob", target: "carol" });
+    expect((await listNodes({ label: "Person" })).items).toHaveLength(3);
+    expect((await listEdges({ type: "KNOWS" })).items).toHaveLength(2);
+    expect((await neighbors("bob", { direction: "both" })).items).toHaveLength(2);
+    const t = await traverse({ start: "alice", direction: "out", max_depth: 2, include_start: true });
+    expect(t.nodes.map((n) => n.node.id).sort()).toEqual(["alice", "bob", "carol"]);
+    const p = await shortestPath({ from: "alice", to: "carol" });
+    expect(p.found).toBe(true);
+    expect(p.nodes.map((n) => n.id)).toEqual(["alice", "bob", "carol"]);
+    const st = await graphStats();
+    expect(st.nodes).toBe(3);
+    expect(st.edge_types[0]).toMatchObject({ type: "KNOWS", count: 2 });
   });
 
   it("ends the session on sign-out", async () => {

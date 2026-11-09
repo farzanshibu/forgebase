@@ -8,7 +8,7 @@ import VectorSearch from "./VectorSearch";
 
 export default function VectorCollectionView() {
   const { name = "" } = useParams();
-  const { data, error, loading, reload } = useLoad((s) => getVectorCollection(name, s), `vc/${name}`);
+  const { data, error, reload } = useLoad((s) => getVectorCollection(name, s), `vc/${name}`);
   const base = `/vector/c/${encodeURIComponent(name)}`;
   const tabs = [
     { to: base, label: "Records", end: true },
@@ -16,7 +16,7 @@ export default function VectorCollectionView() {
     { to: `${base}/index`, label: "Index", end: false },
   ];
   if (error) return <ErrorView error={error} />;
-  if (loading || !data) return <Loading what="Loading collection" />;
+  if (!data) return <Loading what="Loading collection" />;
   return (
     <div>
       <h2 className="text-lg font-medium">{data.name}</h2>

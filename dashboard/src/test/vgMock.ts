@@ -97,7 +97,7 @@ export function installVector(mock: MockApi): VectorState {
     if (!col(params.name!)) return nf();
     const rows = filtered(params.name!, b.filter);
     if (!rows) return envelope(400, "invalid_filter", `cannot parse filter ${b.filter}`);
-    const hits = rows.map((r) => ({ id: r.id, distance: dist(b.vector, r.vectors.embedding!), score: 1 / (1 + dist(b.vector, r.vectors.embedding!)), metadata: r.metadata, text: r.text ?? undefined }))
+    const hits = rows.map((r) => ({ id: r.id, distance: dist(b.vector, r.vectors.embedding!), score: 1 / (1 + dist(b.vector, r.vectors.embedding!)), metadata: r.metadata, ...(r.text ? { text: r.text } : {}) }))
       .sort((x, y) => x.distance - y.distance).slice(0, b.k ?? 10);
     return { status: 200, body: { hits, strategy: b.exact ? "exact" : b.filter ? "filtered_ann" : "ann", candidates: rows.length, took_ms: 0.42 } };
   });

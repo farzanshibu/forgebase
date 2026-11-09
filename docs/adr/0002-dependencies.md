@@ -236,3 +236,17 @@ New crate `forgebase-resp`. Its default build adds **no third-party crates** to 
 New packages in `Cargo.lock` (all via `redis`): `combine` 4.6.9 (MIT), `backon` 1.6.0 (Apache-2.0), `arc-swap` 1.9.4, `num-bigint` 0.4.8, `num-integer` 0.1.47 (MIT OR Apache-2.0), `tokio-util` 0.7.20 (MIT), `ryu` 1.0.23 (Apache-2.0 OR BSL-1.0; taken under Apache-2.0). `cargo deny check licenses` passes.
 
 `redis` is pinned to 0.32.7 on purpose: 1.x depends on `xxhash-rust` (BSL-1.0, not on the allow list). Revisit if BSL-1.0 is approved.
+
+## FB-52 (Vector Studio + Graph Studio, 2026-11-09)
+
+Dashboard only. **No new npm or Rust dependencies.** The graph explorer draws an
+inline SVG with a small in-house force-directed layout
+(`dashboard/src/pages/graph/layout.ts`, ~70 lines, deterministic), so no
+graph-drawing library (cytoscape, d3-force, sigma, ...) was added and no licence
+review was needed. Revisit if graphs of more than a few hundred on-screen nodes
+are needed; the likely pick then is `d3-force` (ISC).
+
+Rust: one rename, no new crates. `forgebase-vector` named a response schema
+`CollectionList`, which collided with the data API's `CollectionList` in the
+merged `/api/openapi.json` (the vector list route was documented with the data
+schema). It is now `VectorCollectionList`.
