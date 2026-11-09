@@ -1,11 +1,9 @@
 import { render } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
-import { vi } from "vitest";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { ApiKeyView, AuditEntry, AuthzAuditRow, ServiceAccountView, SessionView, Suspension } from "../../api";
 import { MockApi, makeCollection } from "../../test/mockApi";
 import AuthPage from "./AuthPage";
 
-export const startImpersonation = vi.fn(async () => {});
 
 /** In-memory fake of the `/api/auth/*` admin routes (outside the OpenAPI document). */
 export class AuthFake {
@@ -116,11 +114,9 @@ export class AuthFake {
 export function renderAuth(path = "/auth") {
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <AuthPage />
+      <Routes>
+        <Route path="auth/*" element={<AuthPage />} />
+      </Routes>
     </MemoryRouter>,
   );
 }
-
-export const sessionMock = () => ({
-  useSession: () => ({ admin: { id: "adm1", email: "root@example.com" }, impersonation: null, startImpersonation }),
-});

@@ -1,9 +1,12 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthFake, renderAuth, sessionMock, startImpersonation } from "./authMock";
+import { AuthFake, renderAuth } from "./authMock";
 
-vi.mock("../../auth/session", () => sessionMock());
+const { startImpersonation } = vi.hoisted(() => ({ startImpersonation: vi.fn(async () => {}) }));
+vi.mock("../../auth/session", () => ({
+  useSession: () => ({ admin: { id: "adm1", email: "root@example.com" }, impersonation: null, startImpersonation }),
+}));
 
 let fake: AuthFake;
 beforeEach(() => {
