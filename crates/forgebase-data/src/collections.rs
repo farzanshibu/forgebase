@@ -16,9 +16,10 @@ use forgebase_schema::{Collection, CollectionType, Field, FieldKind, generate_id
 use serde::Serialize;
 use serde_json::Value as Json;
 
+use crate::access::{READS_TENANT_DATA_OPTION, TENANT_COLUMN, is_tenant_scoped};
 use crate::catalog::CatalogSnapshot;
 use crate::ddl::{
-    DdlLog, SYSTEM_COLUMNS, TMP_PREFIX, column_signature, column_sql, create_table_sql, object_exists, record_history,
+    DdlLog, SYSTEM_COLUMNS, TMP_PREFIX, system_column_names, column_signature, column_sql, create_table_sql, object_exists, record_history,
     relation_table, verify_collections,
 };
 use crate::indexes::{
@@ -61,9 +62,7 @@ impl DataService {
 
     /// One collection by name or id.
     pub async fn get_collection(&self, ctx: &AccessContext, name_or_id: &str) -> Result<Collection, DataError> {
-        let c = self.collection(name_or_id)?;
-        self.authorize(ctx, Action::ReadSchema, Some(&c))?;
-        Ok(c)
+        Ok(self.resolve(ctx, Action::ReadSchema, name_or_id)?.0)
     }
 
     /// Schema history, newest last (optionally for one collection).
@@ -73,11 +72,7 @@ impl DataService {
         collection: Option<&str>,
     ) -> Result<Vec<SchemaChange>, DataError> {
         let id = match collection {
-            Some(c) => {
-                let c = self.collection(c)?;
-                self.authorize(ctx, Action::ReadSchema, Some(&c))?;
-                Some(c.id)
-            }
+            Some(c) => Some(self.resolve(ctx, Action::ReadSchema, c)?.0.id),
             None => {
                 self.authorize(ctx, Action::ReadSchema, None)?;
                 None
@@ -151,6 +146,9 @@ impl DataService {
             ),
             _ => None,
         };
+        if let Some(q) = &view_sql {
+            self.mark_tenant_reads(&mut def, q)?;
+        }
 
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
@@ -168,6 +166,15 @@ impl DataService {
                 def.fields = infer_view_fields(log.tx, d, &def.name).await?;
             } else {
                 log.run(create_table_sql(d, &def.name, &def, &cat)?).await?;
+                if is_tenant_scoped(&def) {
+                    log.run(format!(
+                        "CREATE INDEX {} ON {} ({})",
+                        d.quote_ident(&format!("auto_{}_tenant", def.id)),
+                        d.quote_ident(&def.name),
+                        d.quote_ident(TENANT_COLUMN)
+                    ))
+                    .await?;
+                }
                 for ix in auto_indexes(&def) {
                     for sql in create_index_sql(d, &cat, &def, &ix)? {
                         log.run(sql).await?;
@@ -214,8 +221,7 @@ impl DataService {
     ) -> Result<Collection, DataError> {
         let _guard = self.inner.schema_lock.lock().await;
         let d = self.inner.backend.dialect();
-        let current = self.collection(name_or_id)?;
-        self.authorize(ctx, Action::ManageSchema, Some(&current))?;
+        let (current, _) = self.resolve(ctx, Action::ManageSchema, name_or_id)?;
         if current.system && !ctx.is_system() {
             return Err(DataError::Forbidden(format!("{} is a system collection", current.name)));
         }
@@ -223,6 +229,12 @@ impl DataService {
             return Err(DataError::invalid(
                 "type_change",
                 "the type of a collection cannot change",
+            ));
+        }
+        if is_tenant_scoped(&def) != is_tenant_scoped(&current) {
+            return Err(DataError::invalid(
+                "tenant_scope_immutable",
+                "tenant_scoped is set when a collection is created and cannot change",
             ));
         }
         def.id = current.id.clone();
@@ -269,6 +281,9 @@ impl DataService {
             ),
             _ => None,
         };
+        if let Some(q) = &view_sql {
+            self.mark_tenant_reads(&mut def, q)?;
+        }
 
         let mut tx = self.begin(TxMode::SchemaChange).await?;
         let result = async {
@@ -425,7 +440,7 @@ impl DataService {
 
             let tmp = format!("{TMP_PREFIX}{}", new.id);
             log.run(create_table_sql(d, &tmp, new, &new_cat)?).await?;
-            let mut cols: Vec<String> = SYSTEM_COLUMNS.iter().map(|c| q(c)).collect();
+            let mut cols: Vec<String> = system_column_names(new).iter().map(|c| q(c)).collect();
             let mut src: Vec<String> = cols.clone();
             for f in &new.fields {
                 if old_by_id.contains_key(f.id.as_str()) {
@@ -516,8 +531,7 @@ impl DataService {
     pub async fn delete_collection(&self, ctx: &AccessContext, name_or_id: &str) -> Result<(), DataError> {
         let _guard = self.inner.schema_lock.lock().await;
         let d = self.inner.backend.dialect();
-        let coll = self.collection(name_or_id)?;
-        self.authorize(ctx, Action::ManageSchema, Some(&coll))?;
+        let (coll, _) = self.resolve(ctx, Action::ManageSchema, name_or_id)?;
         if coll.system && !ctx.is_system() {
             return Err(DataError::Forbidden(format!("{} is a system collection", coll.name)));
         }
@@ -581,6 +595,27 @@ impl DataService {
 
     /// Validates a view query: one read-only statement, no system tables
     /// (except for the system principal).
+    /// Sets the computed `reads_tenant_data` option of a view: whether its
+    /// query names a tenant-scoped collection (such views are closed to
+    /// callers who are not privileged; ADR-0008 §4).
+    fn mark_tenant_reads(&self, def: &mut Collection, query: &str) -> Result<(), DataError> {
+        let scoped: Vec<String> = self
+            .catalog()
+            .all()
+            .into_iter()
+            .filter(|c| is_tenant_scoped(c))
+            .map(|c| c.name.to_ascii_lowercase())
+            .collect();
+        let reads = forgebase_query::sql::tokenize(query)?.iter().any(|t| {
+            matches!(
+                t.kind,
+                forgebase_query::sql::TokenKind::Word | forgebase_query::sql::TokenKind::QuotedIdent
+            ) && scoped.contains(&t.text.to_ascii_lowercase())
+        });
+        def.options.insert(READS_TENANT_DATA_OPTION.into(), Json::Bool(reads));
+        Ok(())
+    }
+
     async fn checked_view_query(&self, ctx: &AccessContext, q: &str) -> Result<String, DataError> {
         let parts = split_statements(q)?;
         let [stmt] = parts.as_slice() else {

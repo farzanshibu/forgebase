@@ -14,7 +14,7 @@ pub mod compile;
 pub mod filter;
 pub mod sql;
 
-pub use compile::{Catalog, CompileOptions, Compiler, SqlBuilder, filter_keys, query_label};
+pub use compile::{Catalog, CompileOptions, Compiler, FieldGuard, SqlBuilder, filter_keys, query_label};
 pub use filter::{
     Compare, Expr, FieldPath, Literal, Modifier, Op, Operand, PathSeg, SortKey, parse_filter, parse_sort,
 };
