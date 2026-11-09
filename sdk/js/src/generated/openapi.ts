@@ -2369,8 +2369,10 @@ export interface paths {
         };
         get?: never;
         /**
-         * Saves a provider account: `stripe`, `razorpay` or `manual`. Test-mode
-         *     keys only; secrets are sealed and never returned.
+         * Saves a provider account: `stripe`, `razorpay`, `wechat_pay`, `manual`,
+         *     or a store (`app_store`, `google_play`, `creem`) with its `config`.
+         *     Test-mode keys and test environments only; secrets and config are sealed
+         *     and never returned.
          */
         put: operations["billing_put_provider"];
         post?: never;
@@ -2430,6 +2432,104 @@ export interface paths {
         get: operations["billing_stats"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/store-products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Store products and the prices they are sold as. */
+        get: operations["billing_store_products"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/store-products/{provider}/{product_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Maps a store product to a price (recurring for subscriptions, one-time
+         *     otherwise; platform administrators).
+         */
+        put: operations["billing_put_store_product"];
+        post?: never;
+        /** Removes a store product mapping (platform administrators). */
+        delete: operations["billing_delete_store_product"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/store-purchases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Store purchases of a subject. */
+        get: operations["billing_store_purchases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/store/{provider}/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A hosted checkout at a store that sells on the web (Creem) for a price
+         *     mapped to one of its products.
+         */
+        post: operations["billing_store_checkout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/store/{provider}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verifies a purchase a mobile app (or the Creem success page) received,
+         *     server side with the store, and applies it: the subscription or order,
+         *     a paid invoice per store transaction, entitlements. Forged or foreign
+         *     receipts are refused (`400`); a purchase bound to another account is
+         *     `409 purchase_owned`. Idempotent.
+         */
+        post: operations["billing_store_verify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8027,6 +8127,60 @@ export interface components {
             /** @description Window end. */
             to: string;
         };
+        /** @description A store product (App Store, Google Play, Creem) sold as a billing price. */
+        BillingStoreProduct: {
+            /** @description `subscription` (recurring price) or `one_time`. */
+            kind: string;
+            /** @description Price key. */
+            price: string;
+            /** @description Product id at the store. */
+            product_id: string;
+            /** @description `app_store`, `google_play` or `creem`. */
+            provider: string;
+            /** @description Changed. */
+            updated_at: string;
+        };
+        /** @description A store purchase bound to a subject. */
+        BillingStorePurchase: {
+            /** @description Renews at the period end. */
+            auto_renew: boolean;
+            /** @description Created. */
+            created_at: string;
+            /** @description `test` (sandbox, licence tester, Creem test mode). */
+            environment: string;
+            /** @description End of the current period. */
+            expires_at?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description `subscription` or `one_time`. */
+            kind: string;
+            /** @description Newest store transaction. */
+            last_transaction_id?: string | null;
+            /** @description The billing order (one-time purchases). */
+            order_id?: string | null;
+            /** @description Price key. */
+            price: string;
+            /** @description Store product id. */
+            product_id: string;
+            /** @description Store. */
+            provider: string;
+            /**
+             * @description Stable purchase id at the store (original transaction id, purchase
+             *     token, Creem subscription or order).
+             */
+            purchase_id: string;
+            /**
+             * @description Store state: `active`, `trialing`, `grace`, `on_hold`, `paused`,
+             *     `expired`, `refunded`, `revoked`, `pending`, `replaced`.
+             */
+            status: string;
+            /** @description Subject. */
+            subject: string;
+            /** @description The billing subscription it drives. */
+            subscription_id?: string | null;
+            /** @description Changed. */
+            updated_at: string;
+        };
         /** @description A subscription. */
         BillingSubscription: {
             /** @description Ends at the period end. */
@@ -10095,6 +10249,66 @@ export interface components {
                  * @description Version (1, 2, ...).
                  */
                 version: number;
+            }[];
+        };
+        /** @description A list. */
+        Items_BillingStoreProduct: {
+            /** @description Entries. */
+            items: {
+                /** @description `subscription` (recurring price) or `one_time`. */
+                kind: string;
+                /** @description Price key. */
+                price: string;
+                /** @description Product id at the store. */
+                product_id: string;
+                /** @description `app_store`, `google_play` or `creem`. */
+                provider: string;
+                /** @description Changed. */
+                updated_at: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_BillingStorePurchase: {
+            /** @description Entries. */
+            items: {
+                /** @description Renews at the period end. */
+                auto_renew: boolean;
+                /** @description Created. */
+                created_at: string;
+                /** @description `test` (sandbox, licence tester, Creem test mode). */
+                environment: string;
+                /** @description End of the current period. */
+                expires_at?: string | null;
+                /** @description Id. */
+                id: string;
+                /** @description `subscription` or `one_time`. */
+                kind: string;
+                /** @description Newest store transaction. */
+                last_transaction_id?: string | null;
+                /** @description The billing order (one-time purchases). */
+                order_id?: string | null;
+                /** @description Price key. */
+                price: string;
+                /** @description Store product id. */
+                product_id: string;
+                /** @description Store. */
+                provider: string;
+                /**
+                 * @description Stable purchase id at the store (original transaction id, purchase
+                 *     token, Creem subscription or order).
+                 */
+                purchase_id: string;
+                /**
+                 * @description Store state: `active`, `trialing`, `grace`, `on_hold`, `paused`,
+                 *     `expired`, `refunded`, `revoked`, `pending`, `replaced`.
+                 */
+                status: string;
+                /** @description Subject. */
+                subject: string;
+                /** @description The billing subscription it drives. */
+                subscription_id?: string | null;
+                /** @description Changed. */
+                updated_at: string;
             }[];
         };
         /** @description A list. */
@@ -12891,6 +13105,14 @@ export interface components {
             api_base?: string | null;
             /** @description Stripe secret key (`sk_test_…`) or Razorpay key secret. */
             api_key?: string | null;
+            /**
+             * @description Provider-specific settings, sealed with the secrets (FB-72): App Store
+             *     `issuer_id`, `key_id`, `private_key`, `bundle_id`, `environment`;
+             *     Google Play `package_name`, `service_account`, `push_audience`,
+             *     `push_service_account`; WeChat Pay `appid`, `merchant_serial`,
+             *     `private_key`, `platform_keys`, `notify_url`.
+             */
+            config?: Record<string, never> | null;
             /** @description In use (default true). */
             enabled?: boolean;
             /** @description Razorpay key id (`rzp_test_…`). */
@@ -13999,6 +14221,42 @@ export interface components {
              * @description Object versions, including deleted and older ones.
              */
             versions: number;
+        };
+        /** @description Body of `POST /billing/store/{provider}/checkout` (Creem). */
+        StoreCheckoutInput: {
+            /** @description Sent to the store as the request id. */
+            idempotency_key: string;
+            /** @description Price key mapped to a store product. */
+            price: string;
+            /** @description Subject (default: the caller's). */
+            subject?: string | null;
+            /** @description Where the store returns to (`?checkout_id=` is appended by the store). */
+            success_url: string;
+        };
+        /** @description Body of `PUT /billing/store-products/{provider}/{product_id}`. */
+        StoreProductInput: {
+            /** @description Price key: recurring for a store subscription, one-time otherwise. */
+            price: string;
+        };
+        /**
+         * @description Body of `POST /billing/store/{provider}/verify`: what the app received
+         *     from the store. Each store reads its own fields.
+         */
+        StoreVerifyInput: {
+            /** @description Creem: the checkout id of the success redirect. */
+            checkout_id?: string | null;
+            /** @description Google Play: `subscription` (default) or `one_time`. */
+            kind?: string | null;
+            /** @description Google Play: the product id. */
+            product_id?: string | null;
+            /** @description Google Play: the purchase token. */
+            purchase_token?: string | null;
+            /** @description App Store: the StoreKit 2 signed transaction (JWS). */
+            signed_transaction?: string | null;
+            /** @description Subject the purchase is for (default: the caller's). */
+            subject?: string | null;
+            /** @description App Store: the transaction id (read back with the App Store Server API). */
+            transaction_id?: string | null;
         };
         /**
          * @description How a search was answered.
@@ -24585,7 +24843,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description stripe, razorpay or manual */
+                /** @description stripe, razorpay, wechat_pay, manual, app_store, google_play or creem */
                 provider: string;
             };
             cookie?: never;
@@ -24897,6 +25155,358 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    billing_store_products: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mappings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_BillingStoreProduct"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_store_product: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Product id at the store */
+                product_id: string;
+                /** @description app_store, google_play or creem */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoreProductInput"];
+            };
+        };
+        responses: {
+            /** @description Saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStoreProduct"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_delete_store_product: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Product id at the store */
+                product_id: string;
+                /** @description Store */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_store_purchases: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Purchases */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_BillingStorePurchase"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_store_checkout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description creem */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoreCheckoutInput"];
+            };
+        };
+        responses: {
+            /** @description The checkout page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_store_verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description app_store, google_play or creem */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoreVerifyInput"];
+            };
+        };
+        responses: {
+            /** @description Applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStorePurchase"];
+                };
+            };
+            /** @description Forged, foreign, live or unmapped purchase */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Bound to another account */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -25607,7 +26217,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description stripe or razorpay */
+                /** @description stripe, razorpay, wechat_pay, app_store, google_play or creem */
                 provider: string;
             };
             cookie?: never;
