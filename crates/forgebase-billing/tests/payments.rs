@@ -424,8 +424,10 @@ async fn manual_billing_and_voiding() {
         .await
         .unwrap();
     env.customer("ann", "USD").await;
-    let mut cust = forgebase_billing::CustomerInput::default();
-    cust.provider = Some("manual".into());
+    let cust = forgebase_billing::CustomerInput {
+        provider: Some("manual".into()),
+        ..forgebase_billing::CustomerInput::default()
+    };
     env.billing.put_customer(&user("ann"), cust).await.unwrap();
     // Manual billing: the invoice stays open until an operator records the payment.
     let c = env.subscribe("ann", &["pro-m"], "k").await;
