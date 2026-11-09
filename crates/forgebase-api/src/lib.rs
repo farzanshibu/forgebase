@@ -241,6 +241,8 @@ pub struct RouterOptions {
     /// Admission checks run on every request after authentication and
     /// tenancy, before the handler (plan-based API rate limits, FB-24).
     pub gates: Vec<Arc<dyn RequestGate>>,
+    /// Who may read `/metrics` and `/api/system/*` ([`routes::ops_gate`]).
+    pub ops_access: forgebase_core::OpsAccess,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -270,6 +272,7 @@ impl Default for RouterOptions {
             cors_allowed_origins: Vec::new(),
             extensions: Vec::new(),
             gates: Vec::new(),
+            ops_access: forgebase_core::OpsAccess::default(),
         }
     }
 }
@@ -350,8 +353,12 @@ pub fn router_with(
     let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
-        .route("/metrics", get(routes::metrics))
-        .route("/api/system/info", get(routes::system_info))
+        .merge(
+            Router::new()
+                .route("/metrics", get(routes::metrics))
+                .route("/api/system/info", get(routes::system_info))
+                .route_layer(middleware::from_fn_with_state(opts.ops_access, routes::ops_gate)),
+        )
         .route("/api/openapi.json", get(move || openapi::serve(doc.clone())))
         .nest("/api/v1", v1)
         .nest_service(
@@ -448,6 +455,10 @@ mod tests {
     use tower::ServiceExt;
 
     async fn app() -> (Router, tempfile::TempDir) {
+        app_with(RouterOptions::default()).await
+    }
+
+    async fn app_with(opts: RouterOptions) -> (Router, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let layout = DataLayout::new(tmp.path().join("data"));
         layout.ensure().unwrap();
@@ -460,7 +471,7 @@ mod tests {
         .unwrap();
         db.migrate(Some(&layout.backups_dir())).await.unwrap();
         (
-            router(AppState::new(db, layout).await.unwrap(), RouterOptions::default()),
+            router(AppState::new(db, layout).await.unwrap(), opts),
             tmp,
         )
     }
@@ -471,7 +482,12 @@ mod tests {
         uri: &str,
         headers: &[(&str, &str)],
     ) -> (StatusCode, header::HeaderMap, serde_json::Value, String) {
-        let mut req = axum::http::Request::builder().method(method).uri(uri);
+        // A direct loopback client, as the server's `ConnectInfo` reports it.
+        let peer = std::net::SocketAddr::from(([127, 0, 0, 1], 40000));
+        let mut req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .extension(axum::extract::ConnectInfo(peer));
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
@@ -545,6 +561,36 @@ mod tests {
         let rid = j["error"]["request_id"].as_str().unwrap();
         assert_ne!(rid, "bad id\twith tab", "unsafe ids are replaced");
         assert_eq!(h["x-request-id"], rid);
+    }
+
+    #[tokio::test]
+    async fn ops_endpoints_refuse_proxied_and_remote_anonymous_callers() {
+        let (app, _tmp) = app().await;
+        for path in ["/metrics", "/api/system/info"] {
+            let (s, _, _, _) = call(&app, Method::GET, path, &[]).await;
+            assert_eq!(s, StatusCode::OK, "{path}: direct loopback client");
+            for h in ["x-forwarded-for", "forwarded", "x-real-ip"] {
+                let (s, _, j, _) = call(&app, Method::GET, path, &[(h, "203.0.113.9")]).await;
+                assert_eq!(s, StatusCode::UNAUTHORIZED, "{path} behind a proxy ({h})");
+                assert_eq!(j["error"]["code"], "unauthenticated");
+            }
+            // No socket address at all (an in-process call): not loopback.
+            let res = app
+                .clone()
+                .oneshot(axum::http::Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{path} without a peer");
+        }
+        let (admin_only, _tmp2) = app_with(RouterOptions {
+            ops_access: forgebase_core::OpsAccess::Admin,
+            ..RouterOptions::default()
+        })
+        .await;
+        let (s, _, _, _) = call(&admin_only, Method::GET, "/metrics", &[]).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "admin mode: loopback is not enough");
+        let (s, _, _, _) = call(&app, Method::GET, "/health", &[("x-forwarded-for", "203.0.113.9")]).await;
+        assert_eq!(s, StatusCode::OK, "health stays open");
     }
 
     #[tokio::test]

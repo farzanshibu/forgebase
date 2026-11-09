@@ -128,11 +128,19 @@ pub(crate) fn request_id(headers: &HeaderMap) -> String {
 // ---------------------------------------------------------------------------
 
 fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: bool) -> ClientInfo {
+    // The last entry: the one the trusted proxy appended. Earlier entries
+    // come from the client and are not evidence of anything (FB-80).
     let forwarded = trust_xff
-        .then(|| req_headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()))
+        .then(|| {
+            req_headers
+                .get_all("x-forwarded-for")
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .flat_map(|v| v.split(','))
+                .map(str::trim)
+                .rfind(|s| !s.is_empty())
+        })
         .flatten()
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
         .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
         .map(str::to_owned);
     ClientInfo {
@@ -1060,6 +1068,21 @@ async fn rotate_keys(State(a): State<AuthService>, Client(ci, rid): Client, Call
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forwarded_for_uses_the_entry_the_proxy_appended() {
+        let peer = Some(SocketAddr::from(([127, 0, 0, 1], 5000)));
+        let mut h = HeaderMap::new();
+        // The client sent "1.2.3.4"; the proxy appended the real address.
+        h.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4, 198.51.100.7"));
+        assert_eq!(client_info(&h, peer, true).ip.as_deref(), Some("198.51.100.7"));
+        assert_eq!(client_info(&h, peer, false).ip.as_deref(), Some("127.0.0.1"), "untrusted: socket");
+        h.append("x-forwarded-for", HeaderValue::from_static("203.0.113.5"));
+        assert_eq!(client_info(&h, peer, true).ip.as_deref(), Some("203.0.113.5"), "last header line");
+        let mut bad = HeaderMap::new();
+        bad.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4, not-an-ip"));
+        assert_eq!(client_info(&bad, peer, true).ip.as_deref(), Some("127.0.0.1"), "garbage: socket");
+    }
 
     #[test]
     fn cookies_and_queries() {

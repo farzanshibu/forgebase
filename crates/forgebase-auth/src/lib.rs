@@ -120,8 +120,13 @@ pub struct AuthConfig {
     pub public_url: String,
     /// `Secure` attribute on cookies (turn off only for plain-HTTP development).
     pub cookie_secure: bool,
-    /// Trust `X-Forwarded-For` for the client IP (only behind a proxy you run).
+    /// Trust `X-Forwarded-For` for the client IP (only behind a proxy you
+    /// run): the last entry, the one the proxy appended, is the client.
     pub trust_forwarded_for: bool,
+    /// Let the default outbound HTTPS client reach loopback, private and
+    /// link-local addresses. Off (the default), requests to them are refused
+    /// before connecting (SSRF guard, FB-80).
+    pub allow_private_outbound: bool,
     /// TOTP issuer shown in authenticator apps.
     pub totp_issuer: String,
     /// Extra trust anchors (PEM) for outbound HTTPS and LDAPS, added to the
@@ -160,6 +165,7 @@ impl AuthConfig {
             public_url: "http://127.0.0.1:8090".into(),
             cookie_secure: true,
             trust_forwarded_for: false,
+            allow_private_outbound: false,
             totp_issuer: "ForgeBase".into(),
             tls_ca_file: None,
             clock: Arc::new(SystemClock),

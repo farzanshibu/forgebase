@@ -303,7 +303,8 @@ impl AuthService {
     fn install_default_http_client(&self) -> Result<(), AuthError> {
         #[cfg(feature = "https")]
         {
-            let client = crate::net::HttpsClient::new(&self.tls_settings()?)?;
+            let client = crate::net::HttpsClient::new(&self.tls_settings()?)?
+                .public_only(!self.inner.cfg.allow_private_outbound);
             self.set_http_client(Arc::new(client));
         }
         Ok(())

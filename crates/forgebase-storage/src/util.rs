@@ -104,6 +104,21 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Types whose files start with a fixed signature that [`sniff`] knows.
+const SIGNED_TYPES: [&str; 5] = ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"];
+
+/// Whether a declared content type agrees with the bytes (FB-80): a type
+/// with a known file signature (PNG, JPEG, GIF, WebP, PDF) must start with
+/// it, so a bucket limited to `image/*` cannot be fed HTML or a script under
+/// a false `Content-Type`. Other types are not checked (no reliable signature).
+pub fn declared_matches_bytes(content_type: &str, head: &[u8]) -> bool {
+    let base = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if !SIGNED_TYPES.contains(&base.as_str()) {
+        return true;
+    }
+    sniff(head) == Some(base.as_str())
+}
+
 /// Content type from a key's extension (used when the client sent none and
 /// the bytes are not recognised).
 pub fn from_extension(key: &str) -> Option<&'static str> {
@@ -140,6 +155,18 @@ pub fn rfc3339(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_types_with_a_signature_must_match_the_bytes() {
+        let png = b"\x89PNG\r\n\x1a\n....";
+        assert!(declared_matches_bytes("image/png", png));
+        assert!(declared_matches_bytes("IMAGE/PNG; charset=binary", png));
+        assert!(!declared_matches_bytes("image/png", b"<html><script>alert(1)</script>"));
+        assert!(!declared_matches_bytes("image/jpeg", png), "a PNG is not a JPEG");
+        assert!(!declared_matches_bytes("application/pdf", b""), "empty is not a PDF");
+        assert!(declared_matches_bytes("text/plain", b"anything"), "no signature to check");
+        assert!(declared_matches_bytes("application/octet-stream", png));
+    }
 
     #[test]
     fn hex_round_trip_and_known_digest() {

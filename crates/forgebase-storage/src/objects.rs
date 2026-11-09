@@ -331,6 +331,13 @@ impl StorageService {
                 format!("bucket {} does not accept {content_type}", bucket.name),
             ));
         }
+        if !crate::util::declared_matches_bytes(&content_type, &staged.head) {
+            let _ = self.inner.driver.delete(&staged.key).await;
+            return Err(StorageError::invalid(
+                "content_type_mismatch",
+                format!("the content does not match its declared type {content_type}"),
+            ));
+        }
         let meta = CommitMeta {
             subject: subject.to_owned(),
             actor: actor.to_owned(),

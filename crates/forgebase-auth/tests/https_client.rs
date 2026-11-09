@@ -178,7 +178,11 @@ async fn the_auth_service_installs_the_https_client_by_default() {
     let ca_dir = tempfile::tempdir().unwrap();
     let ca = ca_dir.path().join("ca.pem");
     std::fs::write(&ca, CA).unwrap();
-    let h = common::harness(|cfg| cfg.tls_ca_file = Some(ca)).await;
+    let h = common::harness(|cfg| {
+        cfg.tls_ca_file = Some(ca);
+        cfg.allow_private_outbound = true;
+    })
+    .await;
     let auth = &h.auth;
     assert!(format!("{:?}", auth.http_client()).contains("HttpsClient"));
     let r = auth
@@ -189,6 +193,42 @@ async fn the_auth_service_installs_the_https_client_by_default() {
         .await
         .unwrap();
     assert_eq!(r.json().unwrap()["issuer"], "x");
+}
+
+/// FB-80: by default the auth service's client refuses loopback, private,
+/// link-local and metadata addresses before connecting (SSRF through an
+/// OAuth/OIDC discovery document, SMS gateway or Turnstile URL).
+#[tokio::test]
+async fn the_default_auth_client_refuses_private_addresses() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = accepted.clone();
+    tokio::spawn(async move {
+        while let Ok((_s, _)) = listener.accept().await {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    let h = common::harness(|_| {}).await;
+    let client = h.auth.http_client();
+    assert!(format!("{client:?}").contains("public_only: true"));
+    for url in [
+        format!("http://127.0.0.1:{port}/token"),
+        format!("http://localhost:{port}/.well-known/openid-configuration"),
+        format!("https://[::1]:{port}/jwks"),
+        format!("http://[::ffff:127.0.0.1]:{port}/"),
+        "http://169.254.169.254/latest/meta-data/".to_owned(),
+        "http://10.0.0.1/".to_owned(),
+        "http://192.168.1.1/".to_owned(),
+        "http://0.0.0.0/".to_owned(),
+    ] {
+        let err = client.send(HttpRequest::get(url.clone())).await.unwrap_err().to_string();
+        assert!(err.contains("refused"), "{url}: {err}");
+    }
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0, "never connected");
+    // Storage drivers and tests build their own client without the guard.
+    let open = HttpsClient::new(&TlsSettings::new()).unwrap();
+    assert!(format!("{open:?}").contains("public_only: false"));
 }
 
 /// Real-world check against public HTTPS endpoints (network required):

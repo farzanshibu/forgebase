@@ -28,7 +28,7 @@ pub const ENV_CONFIG_FILE: &str = "FORGEBASE_CONFIG";
 pub const DEFAULT_CONFIG_FILE: &str = "forgebase.toml";
 /// Default data directory name.
 pub const DEFAULT_DATA_DIR: &str = "forgebase-data";
-/// Default bind host: loopback only until admin authentication lands.
+/// Default bind host: loopback (a reverse proxy terminates TLS in front).
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 /// Default HTTP port.
 pub const DEFAULT_PORT: u16 = 8090;
@@ -44,11 +44,15 @@ pub const CONFIG_TEMPLATE: &str = r#"# ForgeBase configuration.
 data_dir = "forgebase-data"
 
 [server]
-# Loopback by default: admin endpoints are unauthenticated until admin login ships.
+# Loopback by default: put a TLS-terminating reverse proxy in front.
 host = "127.0.0.1"          # FORGEBASE_HOST
 port = 8090                 # FORGEBASE_PORT
 request_timeout_secs = 30   # FORGEBASE_REQUEST_TIMEOUT_SECS
 shutdown_timeout_secs = 30  # FORGEBASE_SHUTDOWN_TIMEOUT_SECS
+# Who may read /metrics and /api/system/*: "loopback" (administrators, plus
+# unauthenticated callers on this host that are not behind a proxy),
+# "admin" (administrators only) or "public".
+ops_access = "loopback"     # FORGEBASE_OPS_ACCESS
 
 [database]
 # "full" fsyncs the WAL on every commit (durable across power loss).
@@ -76,6 +80,14 @@ idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
 # PUT /api/v1/billing/providers/{provider} (test-mode keys only, sealed).
 [billing]
 enabled = false             # FORGEBASE_BILLING_ENABLED
+
+[auth]
+# Client address from the last X-Forwarded-For entry. Only behind a reverse
+# proxy you run (it must append the real address); off, the socket address.
+trust_forwarded_for = false     # FORGEBASE_AUTH_TRUST_FORWARDED_FOR
+# Let OAuth/OIDC, SMS and Turnstile requests reach loopback, private and
+# link-local addresses (an identity provider on your own network).
+allow_private_outbound = false  # FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND
 "#;
 
 /// SQLite `synchronous` setting for the primary database.
@@ -153,6 +165,67 @@ impl FromStr for LogFormat {
     }
 }
 
+/// Who may read the operational endpoints `/metrics` and `/api/system/*`
+/// (FB-80, docs/security.md §4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpsAccess {
+    /// Administrators (and admin service accounts) from anywhere, plus
+    /// unauthenticated requests whose socket peer is a loopback address and
+    /// that carry no forwarding header (`Forwarded`, `X-Forwarded-For`,
+    /// `X-Real-IP`), such as a Prometheus on the same host. The default.
+    #[default]
+    Loopback,
+    /// Administrators only.
+    Admin,
+    /// Anyone (the behaviour before FB-80). Only behind a proxy that
+    /// restricts these paths itself.
+    Public,
+}
+
+impl OpsAccess {
+    /// Lowercase name as used in config files.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OpsAccess::Loopback => "loopback",
+            OpsAccess::Admin => "admin",
+            OpsAccess::Public => "public",
+        }
+    }
+}
+
+impl fmt::Display for OpsAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for OpsAccess {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "loopback" => Ok(OpsAccess::Loopback),
+            "admin" => Ok(OpsAccess::Admin),
+            "public" => Ok(OpsAccess::Public),
+            other => Err(format!("expected \"loopback\", \"admin\" or \"public\", got {other:?}")),
+        }
+    }
+}
+
+/// Authentication settings that belong to the deployment (FB-80), from
+/// `[auth]`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct AuthSettings {
+    /// Take the client address from the last `X-Forwarded-For` entry (the
+    /// one your reverse proxy appended). Only behind a proxy you run;
+    /// otherwise clients choose their own address for rate limits.
+    pub trust_forwarded_for: bool,
+    /// Let the auth service's outbound HTTPS client (OAuth and OIDC
+    /// providers, SMS gateways, Turnstile) reach loopback, private and
+    /// link-local addresses. Off: those are refused (SSRF guard).
+    pub allow_private_outbound: bool,
+}
+
 /// Fully resolved configuration.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Config {
@@ -172,6 +245,8 @@ pub struct Config {
     pub queue: QueueConfig,
     /// Billing settings.
     pub billing: BillingConfig,
+    /// Authentication deployment settings.
+    pub auth: AuthSettings,
 }
 
 /// Durable topics and queues settings (FB-63, ADR-0022), from `[queue]`.
@@ -273,6 +348,8 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     /// How long graceful shutdown waits for in-flight requests.
     pub shutdown_timeout_secs: u64,
+    /// Who may read `/metrics` and `/api/system/*`.
+    pub ops_access: OpsAccess,
 }
 
 /// Primary database settings.
@@ -305,6 +382,7 @@ impl Config {
                 port: DEFAULT_PORT,
                 request_timeout_secs: 30,
                 shutdown_timeout_secs: 30,
+                ops_access: OpsAccess::Loopback,
             },
             database: DatabaseConfig {
                 synchronous: Synchronous::Full,
@@ -348,6 +426,7 @@ impl Config {
                 dead_letter_retention_days: 14,
             },
             billing: BillingConfig { enabled: false },
+            auth: AuthSettings::default(),
         }
     }
 
@@ -448,6 +527,15 @@ impl Config {
         }
         if let Some(v) = o.shutdown_timeout_secs {
             self.server.shutdown_timeout_secs = v;
+        }
+        if let Some(v) = o.ops_access {
+            self.server.ops_access = v;
+        }
+        if let Some(v) = o.auth_trust_forwarded_for {
+            self.auth.trust_forwarded_for = v;
+        }
+        if let Some(v) = o.auth_allow_private_outbound {
+            self.auth.allow_private_outbound = v;
         }
         if let Some(v) = o.synchronous {
             self.database.synchronous = v;
@@ -568,6 +656,12 @@ pub struct ConfigOverrides {
     pub request_timeout_secs: Option<u64>,
     /// Graceful shutdown timeout in seconds.
     pub shutdown_timeout_secs: Option<u64>,
+    /// Who may read `/metrics` and `/api/system/*`.
+    pub ops_access: Option<OpsAccess>,
+    /// `[auth] trust_forwarded_for`.
+    pub auth_trust_forwarded_for: Option<bool>,
+    /// `[auth] allow_private_outbound`.
+    pub auth_allow_private_outbound: Option<bool>,
     /// SQLite `synchronous` mode.
     pub synchronous: Option<Synchronous>,
     /// SQLite busy timeout in milliseconds.
@@ -621,6 +715,11 @@ impl ConfigOverrides {
                 "PORT" => o.port = Some(parse_num(&value).map_err(bad)?),
                 "REQUEST_TIMEOUT_SECS" => o.request_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "SHUTDOWN_TIMEOUT_SECS" => o.shutdown_timeout_secs = Some(parse_num(&value).map_err(bad)?),
+                "OPS_ACCESS" => o.ops_access = Some(value.parse().map_err(bad)?),
+                "AUTH_TRUST_FORWARDED_FOR" => o.auth_trust_forwarded_for = Some(parse_bool(&value).map_err(bad)?),
+                "AUTH_ALLOW_PRIVATE_OUTBOUND" => {
+                    o.auth_allow_private_outbound = Some(parse_bool(&value).map_err(bad)?);
+                }
                 "DB_SYNCHRONOUS" => o.synchronous = Some(value.parse().map_err(bad)?),
                 "DB_BUSY_TIMEOUT_MS" => o.busy_timeout_ms = Some(parse_num(&value).map_err(bad)?),
                 "DB_READ_POOL_SIZE" => o.read_pool_size = Some(parse_num(&value).map_err(bad)?),
@@ -724,6 +823,15 @@ struct FileConfig {
     queue: Option<QueueOverrides>,
     #[serde(default)]
     billing: FileBilling,
+    #[serde(default)]
+    auth: FileAuth,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileAuth {
+    trust_forwarded_for: Option<bool>,
+    allow_private_outbound: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -750,6 +858,7 @@ struct FileServer {
     port: Option<u16>,
     request_timeout_secs: Option<u64>,
     shutdown_timeout_secs: Option<u64>,
+    ops_access: Option<OpsAccess>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -776,6 +885,9 @@ impl From<FileConfig> for ConfigOverrides {
             port: f.server.port,
             request_timeout_secs: f.server.request_timeout_secs,
             shutdown_timeout_secs: f.server.shutdown_timeout_secs,
+            ops_access: f.server.ops_access,
+            auth_trust_forwarded_for: f.auth.trust_forwarded_for,
+            auth_allow_private_outbound: f.auth.allow_private_outbound,
             synchronous: f.database.synchronous,
             busy_timeout_ms: f.database.busy_timeout_ms,
             read_pool_size: f.database.read_pool_size,
@@ -1113,6 +1225,35 @@ mod tests {
         std::fs::write(tmp.path().join("forgebase.toml"), CONFIG_TEMPLATE).unwrap();
         let c = ConfigLoader::new(tmp.path()).load().unwrap().config;
         assert_eq!(c, Config::defaults(tmp.path()));
+    }
+
+    #[test]
+    fn ops_access_and_auth_settings_load_from_file_and_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = Config::defaults(tmp.path());
+        assert_eq!(d.server.ops_access, OpsAccess::Loopback, "secure default");
+        assert!(!d.auth.trust_forwarded_for && !d.auth.allow_private_outbound);
+        std::fs::write(
+            tmp.path().join("forgebase.toml"),
+            "[server]\nops_access = \"admin\"\n[auth]\ntrust_forwarded_for = true\n",
+        )
+        .unwrap();
+        let c = ConfigLoader::new(tmp.path()).load().unwrap().config;
+        assert_eq!(c.server.ops_access, OpsAccess::Admin);
+        assert!(c.auth.trust_forwarded_for);
+        assert!(!c.auth.allow_private_outbound);
+        let o = env(&[
+            ("FORGEBASE_OPS_ACCESS", "public"),
+            ("FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND", "true"),
+        ]);
+        assert_eq!(o.ops_access, Some(OpsAccess::Public));
+        assert_eq!(o.auth_allow_private_outbound, Some(true));
+        assert!(
+            ConfigOverrides::from_env([("FORGEBASE_OPS_ACCESS".to_owned(), "everyone".to_owned())]).is_err(),
+            "unknown values are refused"
+        );
+        std::fs::write(tmp.path().join("forgebase.toml"), "[auth]\ntrust_forwarded = true\n").unwrap();
+        assert!(ConfigLoader::new(tmp.path()).load().is_err(), "unknown [auth] keys are refused");
     }
 
     #[test]

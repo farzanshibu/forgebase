@@ -1,12 +1,19 @@
 //! Health, readiness, metrics and system-info handlers.
 //!
 //! Response shapes follow the Phase 1 interface contract (docs/PLAN.md §5).
+//! `/metrics` and `/api/system/*` sit behind [`ops_gate`] (`[server]
+//! ops_access`, FB-80); `/health*` stays open for load balancers.
+
+use std::net::{IpAddr, SocketAddr};
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, Request, State};
+use axum::middleware::Next;
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use axum::response::{IntoResponse, Response};
+use forgebase_core::OpsAccess;
+use forgebase_data::{AccessContext, Principal};
 use forgebase_observability::names;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -149,6 +156,55 @@ pub async fn metrics(State(state): State<AppState>) -> Response {
         handle.render(),
     )
         .into_response()
+}
+
+/// Admission of `/metrics` and `/api/system/*` (FB-80): administrators and
+/// admin service accounts always; unauthenticated callers only under
+/// [`OpsAccess::Public`], or under [`OpsAccess::Loopback`] when the socket
+/// peer is a loopback address and the request carries no forwarding header
+/// (a reverse proxy on the same host forwards remote clients).
+pub async fn ops_gate(State(access): State<OpsAccess>, req: Request, next: Next) -> Response {
+    let open = match access {
+        OpsAccess::Public => true,
+        OpsAccess::Loopback => direct_loopback(&req),
+        OpsAccess::Admin => false,
+    };
+    if !open {
+        match req.extensions().get::<AccessContext>() {
+            Some(ctx) if ctx.is_privileged() => {}
+            Some(ctx) if ctx.principal != Principal::Anonymous => {
+                return ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "operational endpoints are for administrators",
+                )
+                .into_response();
+            }
+            _ => {
+                return ApiError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthenticated",
+                    "operational endpoints need an administrator's credentials",
+                )
+                .into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
+/// Headers a reverse proxy adds; their presence means the socket peer is a
+/// proxy, not the client.
+const FORWARDING_HEADERS: [&str; 3] = ["forwarded", "x-forwarded-for", "x-real-ip"];
+
+fn direct_loopback(req: &Request) -> bool {
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let loopback = match peer {
+        Some(IpAddr::V4(a)) => a.is_loopback(),
+        Some(IpAddr::V6(a)) => a.is_loopback() || a.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
+        None => false,
+    };
+    loopback && !FORWARDING_HEADERS.iter().any(|h| req.headers().contains_key(*h))
 }
 
 /// Fallback for unknown routes.
