@@ -13,7 +13,7 @@
   `ApiExtension`), ADR-0015 (FB-25 outbound HTTPS), ADR-0001 (one writer, error model).
 - Leaves to later cards: the Billing Studio screens (FB-71); SDK helpers (FB-41/FB-82).
 - Amended 2026-11-10 by FB-72 (MDF-50): Creem, WeChat Pay, App Store and Google Play (§9, migration
-  `0023_billing_stores.sql`).
+  `0024_billing_stores.sql`).
 
 ## 1. Crate and changes elsewhere
 
