@@ -117,10 +117,11 @@ service account), **Owner** (`*`), **Admin** (all but `org:delete`),
 **Manager**, **Developer**, **Billing Manager**, **Analyst**, **Member**,
 **Viewer**, **Guest** (`org:read` only; shared resources come from the ACL).
 Engine permissions (`engine:kv_read|kv_write|kv_admin`, `engine:graph_read|graph_write`,
-`engine:read_jobs|enqueue_job|manage_jobs|work_jobs`): Owner, Admin, Manager and
-Developer hold `engine:*`; Member reads and writes KV and graph, reads and
-enqueues jobs; Analyst and Viewer read KV, graph and jobs. The exact patterns
-are in `migrations/system/0004_policy.sql`.
+`engine:read_jobs|enqueue_job|manage_jobs|work_jobs`): of the seeded roles only
+Owner (`*`) and Developer (`engine:*`) hold them; other roles get them through
+custom roles or a super-admin edit of the seeded role (extending the seed is a
+follow-up migration, since 0004 has shipped). The exact patterns are in
+`migrations/system/0004_policy.sql`.
 
 Engine actions reach the authorizer with no collection; because KV and graph
 scope their data by `ctx.tenant`, the tenant is validated as strictly as for

@@ -573,7 +573,27 @@ async fn engine_actions_follow_roles_tenants_and_realms() {
             "anonymous: {act:?}"
         );
     }
+    // Seeded roles other than Owner and Developer hold no engine permission;
+    // a custom role grants exactly what it names.
     let view = user("view").with_tenant(&ta);
+    assert!(!allowed(&view, Action::KvRead));
+    env.policy
+        .put_role(
+            &user("alice"),
+            Some(&a),
+            &RoleInput {
+                key: "reader".into(),
+                allow: vec![
+                    "engine:kv_read".into(),
+                    "engine:graph_read".into(),
+                    "engine:read_jobs".into(),
+                ],
+                ..RoleInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    env.member("alice", &a, "view", &["viewer", "reader"]).await;
     assert!(allowed(&view, Action::KvRead) && allowed(&view, Action::GraphRead) && allowed(&view, Action::ReadJobs));
     assert!(
         !allowed(&view, Action::KvWrite) && !allowed(&view, Action::GraphWrite) && !allowed(&view, Action::EnqueueJob)
