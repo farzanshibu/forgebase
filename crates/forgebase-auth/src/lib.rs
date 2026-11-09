@@ -32,6 +32,7 @@ pub mod clock;
 pub mod crypto;
 mod error;
 pub mod http;
+mod identity_admin;
 mod identity_http;
 pub mod idp;
 pub mod ldap;

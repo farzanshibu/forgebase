@@ -1,22 +1,20 @@
 import { Link } from "react-router-dom";
-import { getBillingSettings, listInvoices, listPayments, listSubscriptions, payInvoice, runBillingMaintenance } from "../../api";
+import { getBillingSettings, listDunning, listSubscriptions, payInvoice, runBillingMaintenance } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Badge, BillingError, Empty, Money, Th, SubjectLink } from "./shared";
 import { ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
 
-/** Dunning queue: open invoices that failed collection plus past-due subscriptions, with the retry schedule from the settings. */
+/** Dunning queue from the server (open invoices with a failed attempt or a scheduled retry) plus past-due subscriptions. */
 export default function Dunning() {
-  const invoices = useLoad((s) => listInvoices({ status: "open", limit: 500 }, s), "dunning-invoices");
+  const invoices = useLoad((s) => listDunning(500, s), "dunning-queue");
   const subs = useLoad((s) => listSubscriptions(undefined, s), "dunning-subs");
-  const payments = useLoad((s) => listPayments(undefined, 500, s), "dunning-payments");
   const settings = useLoad(getBillingSettings, "dunning-settings");
-  const reload = () => { invoices.reload(); subs.reload(); payments.reload(); };
+  const reload = () => { invoices.reload(); subs.reload(); };
   const act = useAct(reload);
-  const queue = (invoices.data ?? []).filter((i) => i.attempt_count > 0 || i.next_attempt_at);
+  const queue = invoices.data ?? [];
   const pastDue = (subs.data ?? []).filter((s) => s.status === "past_due");
-  const lastFailure = (invoiceId: string) => (payments.data ?? []).find((p) => p.invoice_id === invoiceId && p.status === "failed");
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-400">
@@ -31,17 +29,17 @@ export default function Dunning() {
       {invoices.data && queue.length === 0 && <Empty>The dunning queue is empty: no invoice is waiting on a retry.</Empty>}
       {queue.length > 0 && (
         <table aria-label="Dunning queue" className={TABLE}>
-          <thead className={THEAD}><tr><Th>Invoice</Th><Th>Subject</Th><Th>Due</Th><Th>Attempts</Th><Th>Next attempt</Th><Th>Last failure</Th><Th /></tr></thead>
+          <thead className={THEAD}><tr><Th>Invoice</Th><Th>Subject</Th><Th>Due</Th><Th>Attempts</Th><Th>Next attempt</Th><Th>Retries left</Th><Th>Last failure</Th><Th /></tr></thead>
           <tbody>
             {queue.map((i) => {
-              const f = lastFailure(i.id);
               return (
-                <tr key={i.id} className={ROW}>
-                  <td className="py-2 pr-3"><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/billing/invoices/${encodeURIComponent(i.id)}`}>{i.number ?? i.id}</Link></td>
+                <tr key={i.invoice_id} className={ROW}>
+                  <td className="py-2 pr-3"><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/billing/invoices/${encodeURIComponent(i.invoice_id)}`}>{i.number ?? i.invoice_id}</Link></td>
                   <td><SubjectLink subject={i.subject} /></td><td><Money amount={i.amount_due} currency={i.currency} /></td><td>{i.attempt_count}</td>
                   <td className="text-zinc-400">{i.next_attempt_at ? when_(i.next_attempt_at) : "none scheduled"}</td>
-                  <td className="text-red-300">{f?.failure_code ?? ""}</td>
-                  <td><Button disabled={act.busy} aria-label={`Retry ${i.number ?? i.id}`} onClick={() => act.run(() => payInvoice(i.id), "Retry attempted")}>Retry now</Button></td>
+                  <td>{i.retries_left}</td>
+                  <td className="text-red-300" title={i.last_failure_message ?? undefined}>{i.last_failure_code ?? ""}</td>
+                  <td><Button disabled={act.busy} aria-label={`Retry ${i.number ?? i.invoice_id}`} onClick={() => act.run(() => payInvoice(i.invoice_id), "Retry attempted")}>Retry now</Button></td>
                 </tr>
               );
             })}

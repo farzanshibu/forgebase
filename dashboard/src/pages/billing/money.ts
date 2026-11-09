@@ -71,13 +71,3 @@ export function percent(used: number, limit: number | null): number {
   if (limit === null || limit <= 0) return 0;
   return Math.min(100, Math.floor((used * 100) / limit));
 }
-
-/** Integer proration of `amount` over the unused part of a period (round half away from zero, like the server). */
-export function prorate(amount: number, remainingMs: number, periodMs: number): number {
-  if (periodMs <= 0) return 0;
-  const num = BigInt(amount) * BigInt(Math.max(0, remainingMs));
-  const den = BigInt(periodMs);
-  const neg = num < 0n;
-  const q = ((neg ? -num : num) * 2n + den) / (2n * den);
-  return Number(neg ? -q : q);
-}

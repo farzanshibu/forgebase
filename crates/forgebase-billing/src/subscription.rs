@@ -23,6 +23,17 @@ use crate::service::{
 
 const MAX_QUANTITY: i64 = 1_000_000;
 
+/// The validated outcome of a plan change: nothing written yet.
+pub(crate) struct ChangeCalc {
+    pub s: SubRow,
+    pub new: Price,
+    pub old: Option<(String, Price, i64)>,
+    pub quantity: i64,
+    pub now: i64,
+    pub mode: Proration,
+    pub lines: Vec<LineDraft>,
+}
+
 impl BillingService {
     /// Prices of `items`, validated for `currency` and `allowed` types.
     async fn resolve_items(
@@ -390,7 +401,7 @@ impl BillingService {
         Ok(s.sub)
     }
 
-    async fn managed_sub(&self, ctx: &AccessContext, id: &str) -> Result<SubRow> {
+    pub(crate) async fn managed_sub(&self, ctx: &AccessContext, id: &str) -> Result<SubRow> {
         let s = self.load_sub(id).await?;
         self.can_read(ctx, &s.sub.subject)
             .map_err(|_| BillingError::NotFound("subscription".into()))?;
@@ -408,15 +419,9 @@ impl BillingService {
     // Plan changes
     // -----------------------------------------------------------------------
 
-    /// Moves a subscription to another plan price (upgrade or downgrade).
-    /// Mid-cycle the unused time of the old price is credited and the rest of
-    /// the period of the new one charged: `always_invoice` (default) invoices
-    /// both lines now (a net charge is collected, a net credit goes to the
-    /// customer balance); `create_prorations` adds them to the next renewal;
-    /// `none` switches without proration. `at_period_end` schedules the
-    /// switch for the renewal instead. Trials switch without proration.
-    pub async fn change_plan(&self, ctx: &AccessContext, id: &str, input: ChangePlanInput) -> Result<Checkout> {
-        let s = self.managed_sub(ctx, id).await?;
+    /// Validates a plan change and computes its proration lines (no writes);
+    /// shared by [`Self::change_plan`] and [`Self::preview_plan_change`].
+    pub(crate) async fn plan_change_calc(&self, s: SubRow, input: &ChangePlanInput) -> Result<ChangeCalc> {
         if !matches!(
             s.sub.status,
             SubscriptionStatus::Active | SubscriptionStatus::Trialing | SubscriptionStatus::PastDue
@@ -466,7 +471,6 @@ impl BillingService {
             ));
         }
         let now = self.now();
-        let actor = ctx.principal_key();
         if input.at_period_end {
             if input.quantity.is_some_and(|q| Some(q) != old.as_ref().map(|o| o.2)) {
                 return Err(BillingError::invalid(
@@ -474,30 +478,15 @@ impl BillingService {
                     "a change at period end keeps the quantity",
                 ));
             }
-            let mut tx = self.begin().await?;
-            let res = async {
-                let mut t = Tx(tx.as_mut());
-                t.exec(
-                    "UPDATE _forgebase_billing_subscriptions SET pending_price_id = ?2, version = version + 1,
-                         updated_at = MAX(?3, updated_at + 1) WHERE id = ?1",
-                    vec![id.into(), new.id.clone().into(), now.into()],
-                )
-                .await?;
-                t.audit(
-                    &actor,
-                    "subscription.schedule_change",
-                    "subscription",
-                    id,
-                    json!({"price": new.key}),
-                    now,
-                )
-                .await?;
-                Ok(((), true))
-            }
-            .await;
-            self.end(tx, res).await?;
-            self.sync_logged(id).await;
-            return self.checkout(id, None, None, false).await;
+            return Ok(ChangeCalc {
+                s,
+                new,
+                old,
+                quantity,
+                now,
+                mode: Proration::None,
+                lines: Vec::new(),
+            });
         }
         let mode = if s.sub.status == SubscriptionStatus::Trialing {
             Proration::None
@@ -530,6 +519,63 @@ impl BillingService {
                 l.description = format!("Remaining time on {} × {}", quantity, new.product);
                 lines.push(l);
             }
+        }
+        Ok(ChangeCalc {
+            s,
+            new,
+            old,
+            quantity,
+            now,
+            mode,
+            lines,
+        })
+    }
+
+    /// Moves a subscription to another plan price (upgrade or downgrade).
+    /// Mid-cycle the unused time of the old price is credited and the rest of
+    /// the period of the new one charged: `always_invoice` (default) invoices
+    /// both lines now (a net charge is collected, a net credit goes to the
+    /// customer balance); `create_prorations` adds them to the next renewal;
+    /// `none` switches without proration. `at_period_end` schedules the
+    /// switch for the renewal instead. Trials switch without proration.
+    pub async fn change_plan(&self, ctx: &AccessContext, id: &str, input: ChangePlanInput) -> Result<Checkout> {
+        let s = self.managed_sub(ctx, id).await?;
+        let ChangeCalc {
+            s,
+            new,
+            old,
+            quantity,
+            now,
+            mode,
+            lines,
+        } = self.plan_change_calc(s, &input).await?;
+        let actor = ctx.principal_key();
+        let end = s.sub.current_period_end;
+        if input.at_period_end {
+            let mut tx = self.begin().await?;
+            let res = async {
+                let mut t = Tx(tx.as_mut());
+                t.exec(
+                    "UPDATE _forgebase_billing_subscriptions SET pending_price_id = ?2, version = version + 1,
+                         updated_at = MAX(?3, updated_at + 1) WHERE id = ?1",
+                    vec![id.into(), new.id.clone().into(), now.into()],
+                )
+                .await?;
+                t.audit(
+                    &actor,
+                    "subscription.schedule_change",
+                    "subscription",
+                    id,
+                    json!({"price": new.key}),
+                    now,
+                )
+                .await?;
+                Ok(((), true))
+            }
+            .await;
+            self.end(tx, res).await?;
+            self.sync_logged(id).await;
+            return self.checkout(id, None, None, false).await;
         }
         let mut tx = self.begin().await?;
         let res = async {
@@ -787,7 +833,7 @@ impl BillingService {
     // Orders
     // -----------------------------------------------------------------------
 
-    fn order_row(r: &[forgebase_db::Value]) -> Order {
+    pub(crate) fn order_row(r: &[forgebase_db::Value]) -> Order {
         Order {
             id: text(r, 0),
             customer_id: text(r, 1),

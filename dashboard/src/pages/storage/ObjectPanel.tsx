@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { copyObject, deleteObject, downloadObject, listObjects, listVersions, moveObject, restoreVersion } from "../../api";
+import { copyObject, deleteObject, downloadObject, listVersions, moveObject, objectMeta, restoreVersion } from "../../api";
 import type { Bucket, ObjectInfo } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { formatBytes } from "../../format";
@@ -9,7 +9,7 @@ import SignedUrls from "./SignedUrls";
 import { saveBlob } from "./util";
 
 export default function ObjectPanel({ bucket, objectKey, onClose, onChanged }: { bucket: Bucket; objectKey: string; onClose: () => void; onChanged: () => void }) {
-  const info = useLoad<ObjectInfo | undefined>(async (s) => (await listObjects(bucket.name, { prefix: objectKey, limit: 1 }, s)).objects.find((o) => o.key === objectKey), `obj:${bucket.name}:${objectKey}`);
+  const info = useLoad<ObjectInfo | undefined>((s) => objectMeta(bucket.name, objectKey, undefined, s), `obj:${bucket.name}:${objectKey}`);
   const versions = useLoad((s) => listVersions(bucket.name, objectKey, s), `versions:${bucket.name}:${objectKey}`);
   const [error, setError] = useState<unknown>();
   const [dest, setDest] = useState(objectKey);
