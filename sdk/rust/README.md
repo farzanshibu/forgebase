@@ -200,19 +200,20 @@ caused by an exhausted **quota** is never retried.
 ## Generated models
 
 `src/generated.rs` holds structs and enums for every schema of the OpenAPI document, produced by
-[`scripts/generate_models.py`](scripts/generate_models.py) from `../js/openapi/openapi.json`. The
+[`scripts/generate_models.py`](scripts/generate_models.py) from [`openapi/openapi.json`](openapi/openapi.json) (a copy of the server's `/api/openapi.json`). The
 client code, auth, retries, realtime and the ergonomic API are hand-written; the generated models are
 the typed responses (`Job`, `ObjectInfo`, `Entitlements`, ...). Regenerate after the API changes:
 
 ```sh
-python3 scripts/generate_models.py ../js/openapi/openapi.json src/generated.rs
+python3 scripts/generate_models.py openapi/openapi.json src/generated.rs
 git diff --exit-code src/generated.rs     # drift check
 ```
 
 ## Known gaps
 
-* **Queues and topics** (FB-63) and **job progress / checkpoints** (FB-64) are not on the server yet, so
-  there is no `queues()` API or progress helper; `jobs().events(id)` and `wait` cover status.
+* **Message queues and topics** (FB-63: publish, pull, ack) are not on the server yet, so the SDK has
+  no such API. Job progress, checkpoints, attempts, results, job queues and workflows (FB-64) are covered
+  by `jobs()`: `report_progress`, `checkpoint`, `watch`, `queues`, `create_workflow`, ...
 * Two schemas share a name in the OpenAPI document (`NewCollection`, `DeleteResult`), so the generated
   model is the wrong one for those endpoints: collection definitions are passed as JSON and
   `storage().delete_object` returns a hand-written `DeleteOutcome`.
