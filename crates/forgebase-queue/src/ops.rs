@@ -26,11 +26,14 @@ const RELAY_CURSOR: &str = "outbox_cursor";
 impl QueueService {
     // ------------------------------------------------------------ metrics
 
+    /// `(count in the last minute, rate/s over 5 min)`. Counters are per-minute
+    /// buckets, so "last minute" counts every bucket overlapping the last 60 s
+    /// (stable across a bucket boundary).
     async fn rate(&self, scope: &str, name: &str, metric: &str, now: i64) -> Result<(i64, f64)> {
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT coalesce(sum(CASE WHEN minute = ?4 THEN count ELSE 0 END), 0) AS last, \
+                "SELECT coalesce(sum(CASE WHEN minute > ?4 - 120000 THEN count ELSE 0 END), 0) AS last, \
                         coalesce(sum(count), 0) AS window FROM _forgebase_queue_rates \
                  WHERE scope = ?1 AND name = ?2 AND metric = ?3 AND minute > ?4 - 300000",
                 vec![scope.into(), name.into(), metric.into(), minute(now).into()],
