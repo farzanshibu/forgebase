@@ -69,8 +69,15 @@ export const STUDIOS: Studio[] = [
     path: "functions",
     label: "Functions Studio",
     summary: "WASM functions and schedules",
-    phase: 7,
-    features: ["Function editor and WASM upload", "Deployment, environment variables and secrets", "Trigger configuration and scheduled tasks", "Logs and execution metrics"],
+    phase: null,
+    features: ["WASM upload and deployment", "Version history and rollback", "Environment variables and secrets (names only)", "Live execution logs"],
+  },
+  {
+    path: "jobs",
+    label: "Jobs",
+    summary: "Queues, jobs, schedules",
+    phase: null,
+    features: ["Queue statistics", "Job list with status filter and job detail", "Retry and cancel", "Schedules"],
   },
   {
     path: "billing",

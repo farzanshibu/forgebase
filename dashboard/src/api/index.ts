@@ -8,3 +8,5 @@ export * from "./authAdmin";
 export * from "./access";
 export * from "./vector";
 export * from "./graph";
+export * from "./functions";
+export * from "./jobs";
