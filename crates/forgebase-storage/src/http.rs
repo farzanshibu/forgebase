@@ -395,7 +395,7 @@ async fn get_acl(State(s): State<StorageService>, Access(ctx): Access, Path(b): 
 }
 
 /// Replaces the ACL of a bucket.
-#[utoipa::path(put, path = "/api/v1/storage/buckets/{bucket}/acl", tag = "storage", request_body = Acl,
+#[utoipa::path(put, path = "/api/v1/storage/buckets/{bucket}/acl", operation_id = "storage_put_bucket_acl", tag = "storage", request_body = Acl,
     responses((status = 200, body = Acl)))]
 async fn put_acl(
     State(s): State<StorageService>,

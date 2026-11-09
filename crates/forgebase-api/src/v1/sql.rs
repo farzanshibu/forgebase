@@ -40,7 +40,7 @@ pub struct BatchRequest {
 
 /// Runs 1 to 1000 statements in one all-or-nothing transaction.
 #[utoipa::path(
-    post, path = "/api/v1/sql/batch", tag = "sql",
+    post, path = "/api/v1/sql/batch", operation_id = "sql_batch", tag = "sql",
     request_body = SqlBatchBody,
     responses((status = 200, description = "One result per statement", body = SqlBatchResult))
 )]
@@ -55,7 +55,7 @@ pub async fn batch(
 
 /// The query plan of a statement (`EXPLAIN QUERY PLAN`), without running it.
 #[utoipa::path(
-    post, path = "/api/v1/sql/explain", tag = "sql",
+    post, path = "/api/v1/sql/explain", operation_id = "sql_explain", tag = "sql",
     request_body = SqlStatementBody,
     responses((status = 200, description = "Query plan", body = QueryPlanSchema))
 )]
