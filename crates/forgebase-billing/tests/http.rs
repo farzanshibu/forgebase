@@ -363,7 +363,8 @@ async fn openapi_documents_every_route() {
         assert!(!schemas.contains_key(n), "{n} collides with another crate's schema");
     }
     // Every route of the router is documented.
-    let src = include_str!("../src/http.rs");
+    // Whitespace is dropped first: rustfmt may wrap a long `.route(` call.
+    let src: String = include_str!("../src/http.rs").split_whitespace().collect();
     let routes = src.matches(".route(\"").count();
     assert_eq!(routes, paths.len(), "routes and documented paths differ");
 }
