@@ -19,8 +19,8 @@ use serde_json::Value as Json;
 use crate::access::{READS_TENANT_DATA_OPTION, TENANT_COLUMN, is_tenant_scoped};
 use crate::catalog::CatalogSnapshot;
 use crate::ddl::{
-    DdlLog, SYSTEM_COLUMNS, TMP_PREFIX, system_column_names, column_signature, column_sql, create_table_sql, object_exists, record_history,
-    relation_table, verify_collections,
+    DdlLog, SYSTEM_COLUMNS, TMP_PREFIX, column_signature, column_sql, create_table_sql, object_exists, record_history,
+    relation_table, system_column_names, verify_collections,
 };
 use crate::indexes::{
     IndexDefinition, IndexKind, auto_indexes, create_index_sql, drop_index_sql, fields_used, fts_trigger_sql,

@@ -278,7 +278,11 @@ impl DataService {
                     );
                     continue;
                 };
-                sql.push_str(&format!(" AND {} = {}", d.quote_ident(TENANT_COLUMN), b.bind(t.to_owned())));
+                sql.push_str(&format!(
+                    " AND {} = {}",
+                    d.quote_ident(TENANT_COLUMN),
+                    b.bind(t.to_owned())
+                ));
             }
             let rows = tx.fetch_all(&Statement::new(sql, b.into_params())).await?;
             if rows.scalar().and_then(Value::as_i64) != Some(ids.len() as i64) {
@@ -331,10 +335,12 @@ impl DataService {
         let cat = self.catalog();
         // A rule that no longer compiles (e.g. it names a dropped field) must
         // not turn into a client error that leaks schema: fail closed.
-        Compiler::new(&*cat, &opts).filter(b, coll, "t", &p.filter).map_err(|e| {
-            tracing::warn!(collection = %coll.name, error = %e, "access rule cannot be evaluated; denying");
-            DataError::Forbidden("the access rule cannot be evaluated".into())
-        })
+        Compiler::new(&*cat, &opts)
+            .filter(b, coll, "t", &p.filter)
+            .map_err(|e| {
+                tracing::warn!(collection = %coll.name, error = %e, "access rule cannot be evaluated; denying");
+                DataError::Forbidden("the access rule cannot be evaluated".into())
+            })
     }
 
     async fn insert_one(

@@ -30,11 +30,15 @@ pub const INVITATION_TTL_SECS: i64 = 7 * 24 * 3600;
 fn check_slug(s: &str, what: &str) -> Result<(), PolicyError> {
     let ok = !s.is_empty()
         && s.len() <= 64
-        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     if ok {
         Ok(())
     } else {
-        Err(PolicyError::invalid("invalid_key", format!("{what} must be 1-64 of [a-z0-9_-]")))
+        Err(PolicyError::invalid(
+            "invalid_key",
+            format!("{what} must be 1-64 of [a-z0-9_-]"),
+        ))
     }
 }
 
@@ -56,7 +60,9 @@ fn check_patterns(list: &[String]) -> Result<(), PolicyError> {
 /// A principal key as accepted from clients.
 pub fn check_principal(p: &str) -> Result<(), PolicyError> {
     let ok = match p.split_once(':') {
-        Some(("user", rest)) => rest.split_once('/').is_some_and(|(c, id)| !c.is_empty() && !id.is_empty()),
+        Some(("user", rest)) => rest
+            .split_once('/')
+            .is_some_and(|(c, id)| !c.is_empty() && !id.is_empty()),
         Some(("service", id)) => !id.is_empty(),
         _ => false,
     };
@@ -145,8 +151,12 @@ impl PolicyService {
             return Ok(());
         }
         let d = Denial::at(Step::Permission, format!("{what} needs a platform super-admin"));
-        self.audit()
-            .record(crate::pipeline::audit_record(ctx, &format!("platform:{what}"), None, &d));
+        self.audit().record(crate::pipeline::audit_record(
+            ctx,
+            &format!("platform:{what}"),
+            None,
+            &d,
+        ));
         Err(PolicyError::Denied(d))
     }
 
@@ -172,7 +182,13 @@ impl PolicyService {
     }
 
     /// The caller may grant every pattern in `patterns` (escalation guard).
-    fn guard_grant(&self, ctx: &AccessContext, snap: &Snapshot, org: Option<&str>, patterns: &[String]) -> Result<(), PolicyError> {
+    fn guard_grant(
+        &self,
+        ctx: &AccessContext,
+        snap: &Snapshot,
+        org: Option<&str>,
+        patterns: &[String],
+    ) -> Result<(), PolicyError> {
         if ctx.is_privileged() {
             return Ok(());
         }
@@ -189,7 +205,13 @@ impl PolicyService {
 
     /// Allow patterns of role (and role-set) keys usable in `org`; unknown
     /// or non-assignable roles are refused.
-    fn role_patterns(snap: &Snapshot, realm: &str, org: Option<&str>, roles: &[String], sets: &[String]) -> Result<Vec<String>, PolicyError> {
+    fn role_patterns(
+        snap: &Snapshot,
+        realm: &str,
+        org: Option<&str>,
+        roles: &[String],
+        sets: &[String],
+    ) -> Result<Vec<String>, PolicyError> {
         let mut out = Vec::new();
         let mut keys = roles.to_vec();
         for s in sets {
@@ -247,10 +269,18 @@ impl PolicyService {
         if !ctx.is_privileged() {
             step_authentication(&snap, ctx, false).map_err(|d| self.deny(ctx, "orgs:create", d))?;
             if !matches!(ctx.principal, Principal::User { .. }) {
-                return Err(self.deny(ctx, "orgs:create", Denial::at(Step::Permission, "only users create organizations")));
+                return Err(self.deny(
+                    ctx,
+                    "orgs:create",
+                    Denial::at(Step::Permission, "only users create organizations"),
+                ));
             }
             if ctx.realm_id != home_realm(ctx) {
-                return Err(self.deny(ctx, "orgs:create", Denial::at(Step::Tenant, "cross-realm access is denied")));
+                return Err(self.deny(
+                    ctx,
+                    "orgs:create",
+                    Denial::at(Step::Tenant, "cross-realm access is denied"),
+                ));
             }
         }
         if !snap.realms.contains_key(&ctx.realm_id) {
@@ -320,15 +350,24 @@ impl PolicyService {
     /// (`org:delete`; tenant data rows are not deleted).
     pub async fn delete_org(&self, ctx: &AccessContext, org: &str) -> Result<(), PolicyError> {
         self.org_check(ctx, org, "org:delete")?;
-        self.write(vec![Statement::new("DELETE FROM _forgebase_orgs WHERE id = ?1", vec![org.into()])])
-            .await
+        self.write(vec![Statement::new(
+            "DELETE FROM _forgebase_orgs WHERE id = ?1",
+            vec![org.into()],
+        )])
+        .await
     }
 
     // ----- projects and environments --------------------------------------
 
     /// Creates a project in an organization (`projects:create`) or, without
     /// one, in the caller's personal scope, with the default environments.
-    pub async fn create_project(&self, ctx: &AccessContext, org: Option<&str>, slug: &str, name: &str) -> Result<Json, PolicyError> {
+    pub async fn create_project(
+        &self,
+        ctx: &AccessContext,
+        org: Option<&str>,
+        slug: &str,
+        name: &str,
+    ) -> Result<Json, PolicyError> {
         check_slug(slug, "slug")?;
         check_name(name)?;
         let (org_id, owner) = match org {
@@ -397,7 +436,12 @@ impl PolicyService {
     pub fn get_project(&self, ctx: &AccessContext, project: &str) -> Result<Json, PolicyError> {
         self.project_check(ctx, project, "projects:read")?;
         let snap = self.snapshot();
-        let mut envs: Vec<_> = snap.envs.values().filter(|e| e.project_id == project).cloned().collect();
+        let mut envs: Vec<_> = snap
+            .envs
+            .values()
+            .filter(|e| e.project_id == project)
+            .cloned()
+            .collect();
         envs.sort_by(|a, b| a.name.cmp(&b.name));
         let mut v = json!(snap.projects.get(project));
         v["environments"] = json!(envs);
@@ -436,7 +480,12 @@ impl PolicyService {
     }
 
     /// Adds an environment (`projects:update`).
-    pub async fn create_environment(&self, ctx: &AccessContext, project: &str, name: &str) -> Result<Json, PolicyError> {
+    pub async fn create_environment(
+        &self,
+        ctx: &AccessContext,
+        project: &str,
+        name: &str,
+    ) -> Result<Json, PolicyError> {
         self.project_check(ctx, project, "projects:update")?;
         check_slug(name, "environment name")?;
         let id = generate_id();
@@ -472,11 +521,21 @@ impl PolicyService {
     }
 
     /// Suspends or reactivates a membership (`users:update`).
-    pub async fn set_member_status(&self, ctx: &AccessContext, org: &str, principal: &str, active: bool) -> Result<(), PolicyError> {
+    pub async fn set_member_status(
+        &self,
+        ctx: &AccessContext,
+        org: &str,
+        principal: &str,
+        active: bool,
+    ) -> Result<(), PolicyError> {
         self.org_check(ctx, org, "users:update")?;
         self.write(vec![Statement::new(
             "UPDATE _forgebase_memberships SET status = ?1 WHERE org_id = ?2 AND principal = ?3",
-            vec![if active { "active" } else { "suspended" }.into(), org.into(), principal.into()],
+            vec![
+                if active { "active" } else { "suspended" }.into(),
+                org.into(),
+                principal.into(),
+            ],
         )])
         .await
     }
@@ -500,7 +559,13 @@ impl PolicyService {
     /// Members of an organization (`users:read`).
     pub fn list_members(&self, ctx: &AccessContext, org: &str) -> Result<Json, PolicyError> {
         let s = self.org_check(ctx, org, "users:read")?;
-        let mut v: Vec<_> = s.snap.memberships.values().filter(|m| m.scope_id == org).cloned().collect();
+        let mut v: Vec<_> = s
+            .snap
+            .memberships
+            .values()
+            .filter(|m| m.scope_id == org)
+            .cloned()
+            .collect();
         v.sort_by(|a, b| a.principal.cmp(&b.principal));
         Ok(json!(v))
     }
@@ -526,7 +591,10 @@ impl PolicyService {
         if let Some(p) = parent
             && s.snap.teams.get(p).is_none_or(|t| t.org_id != org)
         {
-            return Err(PolicyError::invalid("invalid_parent", "the parent team is not in this organization"));
+            return Err(PolicyError::invalid(
+                "invalid_parent",
+                "the parent team is not in this organization",
+            ));
         }
         let patterns = Self::role_patterns(&s.snap, &s.realm, Some(org), roles, &[])?;
         self.guard_grant(ctx, &s.snap, Some(org), &patterns)?;
@@ -545,7 +613,9 @@ impl PolicyService {
             ],
         )])
         .await?;
-        Ok(json!({"id": id, "org_id": org, "parent_id": parent, "key": key, "name": name, "roles": roles, "deny": deny}))
+        Ok(
+            json!({"id": id, "org_id": org, "parent_id": parent, "key": key, "name": name, "roles": roles, "deny": deny}),
+        )
     }
 
     fn team_org(&self, team: &str) -> Result<String, PolicyError> {
@@ -560,8 +630,11 @@ impl PolicyService {
     pub async fn delete_team(&self, ctx: &AccessContext, team: &str) -> Result<(), PolicyError> {
         let org = self.team_org(team)?;
         self.org_check(ctx, &org, "teams:delete")?;
-        self.write(vec![Statement::new("DELETE FROM _forgebase_teams WHERE id = ?1", vec![team.into()])])
-            .await
+        self.write(vec![Statement::new(
+            "DELETE FROM _forgebase_teams WHERE id = ?1",
+            vec![team.into()],
+        )])
+        .await
     }
 
     /// Adds a member of the organization to a team (`teams:members:manage`).
@@ -569,7 +642,10 @@ impl PolicyService {
         let org = self.team_org(team)?;
         let s = self.org_check(ctx, &org, "teams:members:manage")?;
         if s.snap.membership(&org, principal).is_none() {
-            return Err(PolicyError::invalid("not_a_member", "add the principal to the organization first"));
+            return Err(PolicyError::invalid(
+                "not_a_member",
+                "add the principal to the organization first",
+            ));
         }
         let mut patterns = Vec::new();
         for t in s.snap.team_chain(team) {
@@ -584,7 +660,12 @@ impl PolicyService {
     }
 
     /// Removes a team member (`teams:members:manage`).
-    pub async fn remove_team_member(&self, ctx: &AccessContext, team: &str, principal: &str) -> Result<(), PolicyError> {
+    pub async fn remove_team_member(
+        &self,
+        ctx: &AccessContext,
+        team: &str,
+        principal: &str,
+    ) -> Result<(), PolicyError> {
         let org = self.team_org(team)?;
         self.org_check(ctx, &org, "teams:members:manage")?;
         self.write(vec![Statement::new(
@@ -607,7 +688,12 @@ impl PolicyService {
     /// Creates or replaces a role: at org scope (`roles:manage`, within the
     /// caller's own permissions) or, with `org = None`, at realm scope
     /// (super-admins). Seeded roles can be edited only by super-admins.
-    pub async fn put_role(&self, ctx: &AccessContext, org: Option<&str>, input: &RoleInput) -> Result<Json, PolicyError> {
+    pub async fn put_role(
+        &self,
+        ctx: &AccessContext,
+        org: Option<&str>,
+        input: &RoleInput,
+    ) -> Result<Json, PolicyError> {
         check_slug(&input.key, "role key")?;
         check_patterns(&input.allow)?;
         check_patterns(&input.deny)?;
@@ -628,10 +714,16 @@ impl PolicyService {
             .find(|r| r.realm_id == realm && r.org_id.as_deref() == org && r.key == input.key)
             .cloned();
         if existing.as_ref().is_some_and(|r| r.system) && !ctx.is_privileged() {
-            return Err(PolicyError::invalid("system_role", "seeded roles are changed by super-admins only"));
+            return Err(PolicyError::invalid(
+                "system_role",
+                "seeded roles are changed by super-admins only",
+            ));
         }
         if existing.as_ref().is_some_and(|r| !r.assignable) {
-            return Err(PolicyError::invalid("system_role", "the super-admin role cannot be edited"));
+            return Err(PolicyError::invalid(
+                "system_role",
+                "the super-admin role cannot be edited",
+            ));
         }
         let id = existing.as_ref().map_or_else(generate_id, |r| r.id.clone());
         let name = input.name.clone().unwrap_or_else(|| input.key.clone());
@@ -673,8 +765,11 @@ impl PolicyService {
         if role.system {
             return Err(PolicyError::invalid("system_role", "seeded roles cannot be deleted"));
         }
-        self.write(vec![Statement::new("DELETE FROM _forgebase_roles WHERE id = ?1", vec![role.id.clone().into()])])
-            .await
+        self.write(vec![Statement::new(
+            "DELETE FROM _forgebase_roles WHERE id = ?1",
+            vec![role.id.clone().into()],
+        )])
+        .await
     }
 
     /// Roles usable in an organization (`roles:read`) or the realm's roles.
@@ -693,7 +788,14 @@ impl PolicyService {
     }
 
     /// Creates or replaces a role set (org: `roles:manage`; realm: super-admin).
-    pub async fn put_role_set(&self, ctx: &AccessContext, org: Option<&str>, key: &str, name: &str, roles: &[String]) -> Result<Json, PolicyError> {
+    pub async fn put_role_set(
+        &self,
+        ctx: &AccessContext,
+        org: Option<&str>,
+        key: &str,
+        name: &str,
+        roles: &[String],
+    ) -> Result<Json, PolicyError> {
         check_slug(key, "role set key")?;
         let (snap, realm) = match org {
             Some(o) => {
@@ -723,7 +825,13 @@ impl PolicyService {
     }
 
     /// Binds realm-level roles to a principal (super-admins).
-    pub async fn put_realm_binding(&self, ctx: &AccessContext, principal: &str, roles: &[String], role_sets: &[String]) -> Result<Json, PolicyError> {
+    pub async fn put_realm_binding(
+        &self,
+        ctx: &AccessContext,
+        principal: &str,
+        roles: &[String],
+        role_sets: &[String],
+    ) -> Result<Json, PolicyError> {
         self.require_super_admin(ctx, "realm_bindings:manage")?;
         check_principal(principal)?;
         Self::role_patterns(&self.snapshot(), &ctx.realm_id, None, roles, role_sets)?;
@@ -751,7 +859,14 @@ impl PolicyService {
     /// Adds an explicit allow or deny for one principal: org-wide
     /// (`roles:manage`; allows within the caller's permissions) or
     /// realm-wide (super-admins).
-    pub async fn add_override(&self, ctx: &AccessContext, org: Option<&str>, principal: &str, permission: &str, effect: Effect) -> Result<Json, PolicyError> {
+    pub async fn add_override(
+        &self,
+        ctx: &AccessContext,
+        org: Option<&str>,
+        principal: &str,
+        permission: &str,
+        effect: Effect,
+    ) -> Result<Json, PolicyError> {
         check_principal(principal)?;
         check_patterns(&[permission.to_owned()])?;
         match org {
@@ -803,7 +918,12 @@ impl PolicyService {
 
     /// The organization (or personal owner) a resource belongs to, for ACL
     /// management.
-    fn resource_scope(&self, ctx: &AccessContext, rtype: &str, rid: &str) -> Result<(Option<String>, Option<String>), PolicyError> {
+    fn resource_scope(
+        &self,
+        ctx: &AccessContext,
+        rtype: &str,
+        rid: &str,
+    ) -> Result<(Option<String>, Option<String>), PolicyError> {
         let snap = self.snapshot();
         let project = match rtype {
             "project" => snap.projects.get(rid),
@@ -834,7 +954,10 @@ impl PolicyService {
     ) -> Result<Json, PolicyError> {
         check_slug(rtype, "resource type")?;
         if rid.is_empty() || rid.len() > 200 {
-            return Err(PolicyError::invalid("invalid_resource", "resource ids are 1-200 characters"));
+            return Err(PolicyError::invalid(
+                "invalid_resource",
+                "resource ids are 1-200 characters",
+            ));
         }
         if !(grantee.starts_with("team:") || grantee.starts_with("role:")) {
             check_principal(grantee)?;
@@ -850,7 +973,11 @@ impl PolicyService {
                 allow_anonymous: false,
             };
             if org.is_none() && owner.is_none() {
-                return Err(self.deny(ctx, "acl:manage", Denial::at(Step::Tenant, "select an organization (X-ForgeBase-Org)")));
+                return Err(self.deny(
+                    ctx,
+                    "acl:manage",
+                    Denial::at(Step::Tenant, "select an organization (X-ForgeBase-Org)"),
+                ));
             }
             self.check(ctx, &check)?;
             if effect == Effect::Allow && owner.as_deref() != Some(ctx.principal_key().as_str()) {
@@ -874,7 +1001,9 @@ impl PolicyService {
             ],
         )])
         .await?;
-        Ok(json!({"id": id, "resource_type": rtype, "resource_id": rid, "grantee": grantee, "permission": permission, "effect": effect}))
+        Ok(
+            json!({"id": id, "resource_type": rtype, "resource_id": rid, "grantee": grantee, "permission": permission, "effect": effect}),
+        )
     }
 
     /// Removes an ACL entry (same permission as adding it).
@@ -935,7 +1064,13 @@ impl PolicyService {
     // ----- suspension ----------------------------------------------------------------
 
     /// Suspends an account everywhere (super-admins). `until`: Unix seconds.
-    pub async fn suspend(&self, ctx: &AccessContext, principal: &str, reason: &str, until: Option<i64>) -> Result<(), PolicyError> {
+    pub async fn suspend(
+        &self,
+        ctx: &AccessContext,
+        principal: &str,
+        reason: &str,
+        until: Option<i64>,
+    ) -> Result<(), PolicyError> {
         self.require_super_admin(ctx, "suspensions:manage")?;
         check_principal(principal)?;
         self.write(vec![Statement::new(
@@ -960,7 +1095,12 @@ impl PolicyService {
     /// Sets the rules of a collection (super-admins). Every rule is parsed and
     /// compiled against the collection's schema; field rules must not read
     /// records.
-    pub async fn put_policy(&self, ctx: &AccessContext, collection: &str, input: &PolicyInput) -> Result<Json, PolicyError> {
+    pub async fn put_policy(
+        &self,
+        ctx: &AccessContext,
+        collection: &str,
+        input: &PolicyInput,
+    ) -> Result<Json, PolicyError> {
         self.require_super_admin(ctx, "policies:manage")?;
         let data = self.data()?;
         let coll = data.get_collection(&AccessContext::system(), collection).await?;
@@ -979,7 +1119,10 @@ impl PolicyService {
         }
         for (name, f) in &input.fields {
             if coll.field(name).is_none() {
-                return Err(PolicyError::invalid("unknown_field", format!("{} has no field {name}", coll.name)));
+                return Err(PolicyError::invalid(
+                    "unknown_field",
+                    format!("{} has no field {name}", coll.name),
+                ));
             }
             for r in [&f.read, &f.write].into_iter().flatten() {
                 if let Some(crate::snapshot::RuleSpec::Expr(rule)) = rule_spec(Some(r))?
@@ -1020,7 +1163,10 @@ impl PolicyService {
     /// The rules of a collection (super-admins).
     pub async fn get_policy(&self, ctx: &AccessContext, collection: &str) -> Result<Json, PolicyError> {
         self.require_super_admin(ctx, "policies:read")?;
-        let coll = self.data()?.get_collection(&AccessContext::system(), collection).await?;
+        let coll = self
+            .data()?
+            .get_collection(&AccessContext::system(), collection)
+            .await?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -1030,7 +1176,9 @@ impl PolicyService {
             .await?;
         let r = rows.rows.first();
         let col = |i: usize| r.and_then(|r| r[i].as_str()).map(str::to_owned);
-        let fields: Json = col(5).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({}));
+        let fields: Json = col(5)
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| json!({}));
         Ok(json!({
             "collection": coll.name, "list_rule": col(0), "view_rule": col(1), "create_rule": col(2),
             "update_rule": col(3), "delete_rule": col(4), "fields": fields,
@@ -1040,7 +1188,10 @@ impl PolicyService {
     /// Removes the rules of a collection (back to locked; super-admins).
     pub async fn delete_policy(&self, ctx: &AccessContext, collection: &str) -> Result<(), PolicyError> {
         self.require_super_admin(ctx, "policies:manage")?;
-        let coll = self.data()?.get_collection(&AccessContext::system(), collection).await?;
+        let coll = self
+            .data()?
+            .get_collection(&AccessContext::system(), collection)
+            .await?;
         self.write(vec![Statement::new(
             "DELETE FROM _forgebase_collection_policies WHERE collection_id = ?1",
             vec![coll.id.into()],
@@ -1053,11 +1204,20 @@ impl PolicyService {
     /// Invites an email address to an organization (`users:invite`; roles
     /// within the caller's permissions). Returns the one-time token, which is
     /// also mailed when a mailer is attached; only its SHA-256 is stored.
-    pub async fn invite(&self, ctx: &AccessContext, org: &str, email: &str, roles: &[String]) -> Result<(Json, String), PolicyError> {
+    pub async fn invite(
+        &self,
+        ctx: &AccessContext,
+        org: &str,
+        email: &str,
+        roles: &[String],
+    ) -> Result<(Json, String), PolicyError> {
         let s = self.org_check(ctx, org, "users:invite")?;
         let email = email.trim().to_ascii_lowercase();
         if !(3..=254).contains(&email.len()) || !email.contains('@') {
-            return Err(PolicyError::invalid("invalid_email", "a valid email address is required"));
+            return Err(PolicyError::invalid(
+                "invalid_email",
+                "a valid email address is required",
+            ));
         }
         let patterns = Self::role_patterns(&s.snap, &s.realm, Some(org), roles, &[])?;
         self.guard_grant(ctx, &s.snap, Some(org), &patterns)?;
@@ -1104,13 +1264,19 @@ impl PolicyService {
                 vec![token_hash(token).into(), now().into()],
             ))
             .await?;
-        let r = rows.rows.first().ok_or_else(|| PolicyError::NotFound("invitation".into()))?;
+        let r = rows
+            .rows
+            .first()
+            .ok_or_else(|| PolicyError::NotFound("invitation".into()))?;
         let (inv, org, email) = (
             r[0].as_str().unwrap_or_default().to_owned(),
             r[1].as_str().unwrap_or_default().to_owned(),
             r[2].as_str().unwrap_or_default().to_owned(),
         );
-        let roles: Vec<String> = r[3].as_str().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+        let roles: Vec<String> = r[3]
+            .as_str()
+            .and_then(|t| serde_json::from_str(t).ok())
+            .unwrap_or_default();
         let me = self
             .data()?
             .get_record(&AccessContext::system(), collection, id, &GetOptions::default())
@@ -1134,7 +1300,8 @@ impl PolicyService {
             vec![org.clone().into(), ctx.principal_key().into()],
         ))
         .await?;
-        tx.execute(&member_stmt(&org, &ctx.principal_key(), &roles, &[])).await?;
+        tx.execute(&member_stmt(&org, &ctx.principal_key(), &roles, &[]))
+            .await?;
         tx.commit().await?;
         self.reload().await?;
         Ok(json!({"org_id": org, "principal": ctx.principal_key(), "roles": roles}))
@@ -1171,7 +1338,16 @@ impl PolicyService {
             ))
             .await?;
         let names = [
-            "at", "realm_id", "principal", "tenant", "org_id", "permission", "resource", "step", "reason", "request_id",
+            "at",
+            "realm_id",
+            "principal",
+            "tenant",
+            "org_id",
+            "permission",
+            "resource",
+            "step",
+            "reason",
+            "request_id",
         ];
         Ok(Json::Array(
             rows.rows

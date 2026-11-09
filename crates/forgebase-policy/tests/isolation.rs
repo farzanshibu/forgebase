@@ -30,7 +30,14 @@ fn open_rules() -> PolicyInput {
 
 async fn ids(env: &Env, ctx: &AccessContext, coll: &str) -> BTreeSet<String> {
     env.data
-        .list_records(ctx, coll, &ListQuery { per_page: Some(500), ..ListQuery::default() })
+        .list_records(
+            ctx,
+            coll,
+            &ListQuery {
+                per_page: Some(500),
+                ..ListQuery::default()
+            },
+        )
         .await
         .unwrap()
         .items
@@ -48,10 +55,12 @@ async fn tenants_are_isolated_even_with_known_ids() {
     let b = env.org("bob", "b").await;
     let (_, ta) = env.project("alice", &a, "app").await;
     let (_, tb) = env.project("bob", &b, "app").await;
-    env.collection(json!({"id": "notes_self", "name": "notes", "options": {"tenant_scoped": true}, "fields": [
-        {"name": "title", "type": "text"}, {"name": "code", "type": "text", "unique": true},
-        {"name": "parent", "type": "relation", "collection_id": "notes_self"}
-    ]}))
+    env.collection(
+        json!({"id": "notes_self", "name": "notes", "options": {"tenant_scoped": true}, "fields": [
+            {"name": "title", "type": "text"}, {"name": "code", "type": "text", "unique": true},
+            {"name": "parent", "type": "relation", "collection_id": "notes_self"}
+        ]}),
+    )
     .await;
     env.policy.put_policy(&admin(), "notes", &open_rules()).await.unwrap();
     let alice = user("alice").with_tenant(&ta);
@@ -68,23 +77,42 @@ async fn tenants_are_isolated_even_with_known_ids() {
         .create_record(&bob, "notes", json!({"title": "bob's", "code": "X1"}))
         .await
         .expect("unique per tenant: same code in another tenant is fine");
-    let dup = env.data.create_record(&alice, "notes", json!({"code": "X1"})).await.unwrap_err();
+    let dup = env
+        .data
+        .create_record(&alice, "notes", json!({"code": "X1"}))
+        .await
+        .unwrap_err();
     assert!(matches!(dup, DataError::Validation(_)), "{dup:?}");
 
     // Known id from another tenant: indistinguishable from a missing record.
-    let get = env.data.get_record(&bob, "notes", nid, &GetOptions::default()).await.unwrap_err();
-    let missing = env.data.get_record(&bob, "notes", "nope", &GetOptions::default()).await.unwrap_err();
+    let get = env
+        .data
+        .get_record(&bob, "notes", nid, &GetOptions::default())
+        .await
+        .unwrap_err();
+    let missing = env
+        .data
+        .get_record(&bob, "notes", "nope", &GetOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(std::mem::discriminant(&get), std::mem::discriminant(&missing));
     assert!(matches!(get, DataError::RecordNotFound { .. }));
-    assert!(env
-        .data
-        .update_record(&bob, "notes", nid, json!({"title": "pwned"}), UpdateOptions::default())
-        .await
-        .is_err());
+    assert!(
+        env.data
+            .update_record(&bob, "notes", nid, json!({"title": "pwned"}), UpdateOptions::default())
+            .await
+            .is_err()
+    );
     assert!(env.data.delete_record(&bob, "notes", nid, None).await.is_err());
     assert!(env.data.record_versions(&bob, "notes", nid).await.is_err());
     assert_eq!(ids(&env, &bob, "notes").await.len(), 1);
-    assert_eq!(env.data.count_records(&bob, "notes", None, HashMap::new()).await.unwrap(), 1);
+    assert_eq!(
+        env.data
+            .count_records(&bob, "notes", None, HashMap::new())
+            .await
+            .unwrap(),
+        1
+    );
     let agg = env
         .data
         .aggregate(&bob, "notes", &AggregateQuery::default())
@@ -111,7 +139,12 @@ async fn tenants_are_isolated_even_with_known_ids() {
         Err(DataError::Forbidden(_))
     ));
     // No tenant at all: refused.
-    assert!(env.data.list_records(&user("bob"), "notes", &ListQuery::default()).await.is_err());
+    assert!(
+        env.data
+            .list_records(&user("bob"), "notes", &ListQuery::default())
+            .await
+            .is_err()
+    );
     // Super-admins see every tenant without one, and one tenant with one.
     assert_eq!(ids(&env, &admin(), "notes").await.len(), 2);
     assert_eq!(ids(&env, &admin().with_tenant(&ta), "notes").await.len(), 1);
@@ -143,14 +176,24 @@ async fn personal_projects_belong_to_their_owner() {
         .await
         .unwrap();
     let t = p["environments"][0]["id"].as_str().unwrap().to_owned();
-    env.collection(json!({"name": "diary", "options": {"tenant_scoped": true}, "fields": [{"name": "t", "type": "text"}]}))
-        .await;
+    env.collection(
+        json!({"name": "diary", "options": {"tenant_scoped": true}, "fields": [{"name": "t", "type": "text"}]}),
+    )
+    .await;
     // No rule at all: the owner still has every permission on their tenant.
     let mine = user("alice").with_tenant(&t);
-    env.data.create_record(&mine, "diary", json!({"t": "dear diary"})).await.unwrap();
+    env.data
+        .create_record(&mine, "diary", json!({"t": "dear diary"}))
+        .await
+        .unwrap();
     assert_eq!(ids(&env, &mine, "diary").await.len(), 1);
     let other = user("bob").with_tenant(&t);
-    assert!(env.data.list_records(&other, "diary", &ListQuery::default()).await.is_err());
+    assert!(
+        env.data
+            .list_records(&other, "diary", &ListQuery::default())
+            .await
+            .is_err()
+    );
     assert!(env.policy.get_project(&user("bob"), p["id"].as_str().unwrap()).is_err());
 }
 
@@ -186,8 +229,20 @@ async fn hidden_fields_do_not_leak() {
         .unwrap();
     let hr_only = Some("@request.auth.roles ?= 'hr'".to_owned());
     let mut fields = HashMap::new();
-    fields.insert("salary".to_owned(), FieldRuleText { read: hr_only.clone(), write: hr_only.clone() });
-    fields.insert("bio".to_owned(), FieldRuleText { read: hr_only.clone(), write: None });
+    fields.insert(
+        "salary".to_owned(),
+        FieldRuleText {
+            read: hr_only.clone(),
+            write: hr_only.clone(),
+        },
+    );
+    fields.insert(
+        "bio".to_owned(),
+        FieldRuleText {
+            read: hr_only.clone(),
+            write: None,
+        },
+    );
     env.policy
         .put_policy(&admin(), "staff", &PolicyInput { fields, ..open_rules() })
         .await
@@ -195,7 +250,11 @@ async fn hidden_fields_do_not_leak() {
     env.policy.put_policy(&admin(), "tasks", &open_rules()).await.unwrap();
     let s = env
         .data
-        .create_record(&AccessContext::system(), "staff", json!({"name": "Ann", "salary": 9000, "bio": "likes chess"}))
+        .create_record(
+            &AccessContext::system(),
+            "staff",
+            json!({"name": "Ann", "salary": 9000, "bio": "likes chess"}),
+        )
         .await
         .unwrap();
     let sid = s["id"].as_str().unwrap().to_owned();
@@ -205,39 +264,70 @@ async fn hidden_fields_do_not_leak() {
         .unwrap();
 
     let u = user("eve");
-    let rec = env.data.get_record(&u, "staff", &sid, &GetOptions::default()).await.unwrap();
+    let rec = env
+        .data
+        .get_record(&u, "staff", &sid, &GetOptions::default())
+        .await
+        .unwrap();
     assert!(rec.get("salary").is_none() && rec.get("bio").is_none() && rec["name"] == "Ann");
     let probes = [
-        ListQuery { filter: Some("salary > 1000".into()), ..ListQuery::default() },
-        ListQuery { sort: Some("-salary".into()), ..ListQuery::default() },
-        ListQuery { search: Some("chess".into()), ..ListQuery::default() },
+        ListQuery {
+            filter: Some("salary > 1000".into()),
+            ..ListQuery::default()
+        },
+        ListQuery {
+            sort: Some("-salary".into()),
+            ..ListQuery::default()
+        },
+        ListQuery {
+            search: Some("chess".into()),
+            ..ListQuery::default()
+        },
     ];
     for q in &probes {
         assert!(env.data.list_records(&u, "staff", q).await.is_err(), "{q:?} must fail");
     }
-    let proj = ListQuery { fields: Some(vec!["salary".into(), "id".into()]), ..ListQuery::default() };
+    let proj = ListQuery {
+        fields: Some(vec!["salary".into(), "id".into()]),
+        ..ListQuery::default()
+    };
     let r = env.data.list_records(&u, "staff", &proj).await.unwrap();
     assert!(r.items[0].get("salary").is_none());
     for agg in [
-        AggregateQuery { group_by: vec!["salary".into()], ..AggregateQuery::default() },
         AggregateQuery {
-            aggregates: vec![AggregateSpec { function: AggregateFunction::Max, field: Some("salary".into()), alias: None }],
+            group_by: vec!["salary".into()],
+            ..AggregateQuery::default()
+        },
+        AggregateQuery {
+            aggregates: vec![AggregateSpec {
+                function: AggregateFunction::Max,
+                field: Some("salary".into()),
+                alias: None,
+            }],
             ..AggregateQuery::default()
         },
     ] {
         assert!(env.data.aggregate(&u, "staff", &agg).await.is_err());
     }
     // Through another collection: relation paths and expand.
-    let q = ListQuery { filter: Some("owner.salary > 1".into()), ..ListQuery::default() };
+    let q = ListQuery {
+        filter: Some("owner.salary > 1".into()),
+        ..ListQuery::default()
+    };
     assert!(env.data.list_records(&u, "tasks", &q).await.is_err());
-    let q = ListQuery { expand: vec!["owner".into()], ..ListQuery::default() };
+    let q = ListQuery {
+        expand: vec!["owner".into()],
+        ..ListQuery::default()
+    };
     let t = env.data.list_records(&u, "tasks", &q).await.unwrap();
     let expanded = &t.items[0]["expand"]["owner"];
     assert_eq!(expanded["name"], "Ann");
     assert!(expanded.get("salary").is_none());
     // Writes: read-only for this caller.
     assert!(matches!(
-        env.data.create_record(&u, "staff", json!({"name": "Bo", "salary": 1})).await,
+        env.data
+            .create_record(&u, "staff", json!({"name": "Bo", "salary": 1}))
+            .await,
         Err(DataError::Forbidden(_))
     ));
     assert!(matches!(
@@ -248,22 +338,57 @@ async fn hidden_fields_do_not_leak() {
     ));
     let renamed = env
         .data
-        .update_record(&u, "staff", &sid, json!({"name": "Anna"}), UpdateOptions { replace: true, ..UpdateOptions::default() })
+        .update_record(
+            &u,
+            "staff",
+            &sid,
+            json!({"name": "Anna"}),
+            UpdateOptions {
+                replace: true,
+                ..UpdateOptions::default()
+            },
+        )
         .await
         .unwrap();
     assert!(renamed.get("salary").is_none());
-    let stored = env.data.get_record(&admin(), "staff", &sid, &GetOptions::default()).await.unwrap();
-    assert_eq!(stored["salary"].as_f64(), Some(9000.0), "a replacing update keeps the read-only field");
-    // HR sees and writes it.
-    env.policy
-        .put_role(&admin(), None, &RoleInput { key: "hr".into(), allow: vec!["hr:*".into()], ..RoleInput::default() })
+    let stored = env
+        .data
+        .get_record(&admin(), "staff", &sid, &GetOptions::default())
         .await
         .unwrap();
-    env.policy.put_realm_binding(&admin(), &pk("hank"), &["hr".into()], &[]).await.unwrap();
+    assert_eq!(
+        stored["salary"].as_f64(),
+        Some(9000.0),
+        "a replacing update keeps the read-only field"
+    );
+    // HR sees and writes it.
+    env.policy
+        .put_role(
+            &admin(),
+            None,
+            &RoleInput {
+                key: "hr".into(),
+                allow: vec!["hr:*".into()],
+                ..RoleInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    env.policy
+        .put_realm_binding(&admin(), &pk("hank"), &["hr".into()], &[])
+        .await
+        .unwrap();
     let hr = user("hank");
-    let rec = env.data.get_record(&hr, "staff", &sid, &GetOptions::default()).await.unwrap();
+    let rec = env
+        .data
+        .get_record(&hr, "staff", &sid, &GetOptions::default())
+        .await
+        .unwrap();
     assert_eq!(rec["salary"].as_f64(), Some(9000.0));
-    let q = ListQuery { filter: Some("salary > 1000".into()), ..ListQuery::default() };
+    let q = ListQuery {
+        filter: Some("salary > 1000".into()),
+        ..ListQuery::default()
+    };
     assert_eq!(env.data.list_records(&hr, "staff", &q).await.unwrap().items.len(), 1);
 }
 
@@ -272,8 +397,10 @@ async fn hidden_fields_do_not_leak() {
 #[tokio::test]
 async fn injection_and_existence_oracles_fail() {
     let env = Env::new().await;
-    env.collection(json!({"name": "docs", "fields": [{"name": "owner", "type": "text"}, {"name": "t", "type": "text"}]}))
-        .await;
+    env.collection(
+        json!({"name": "docs", "fields": [{"name": "owner", "type": "text"}, {"name": "t", "type": "text"}]}),
+    )
+    .await;
     for bad in [
         "owner = @request.auth.id; DROP TABLE docs",
         "owner = {:x}",
@@ -283,7 +410,14 @@ async fn injection_and_existence_oracles_fail() {
     ] {
         let r = env
             .policy
-            .put_policy(&admin(), "docs", &PolicyInput { list_rule: Some(bad.into()), ..PolicyInput::default() })
+            .put_policy(
+                &admin(),
+                "docs",
+                &PolicyInput {
+                    list_rule: Some(bad.into()),
+                    ..PolicyInput::default()
+                },
+            )
             .await;
         assert!(r.is_err(), "{bad} must be refused");
     }
@@ -292,7 +426,11 @@ async fn injection_and_existence_oracles_fail() {
         .put_policy(
             &admin(),
             "docs",
-            &PolicyInput { list_rule: owner_rule.clone(), view_rule: owner_rule, ..PolicyInput::default() },
+            &PolicyInput {
+                list_rule: owner_rule.clone(),
+                view_rule: owner_rule,
+                ..PolicyInput::default()
+            },
         )
         .await
         .unwrap();
@@ -308,24 +446,47 @@ async fn injection_and_existence_oracles_fail() {
     assert!(ids(&env, &evil, "docs").await.is_empty());
     // Anonymous never matches the empty owner.
     assert!(matches!(
-        env.data.list_records(&AccessContext::anonymous(), "docs", &ListQuery::default()).await,
+        env.data
+            .list_records(&AccessContext::anonymous(), "docs", &ListQuery::default())
+            .await,
         Err(DataError::Unauthenticated)
     ));
     // The caller's filter is ANDed with the rule: it can only narrow.
-    let q = ListQuery { filter: Some("owner != 'u1' || 1 = 1".into()), ..ListQuery::default() };
+    let q = ListQuery {
+        filter: Some("owner != 'u1' || 1 = 1".into()),
+        ..ListQuery::default()
+    };
     let r = env.data.list_records(&user("u1"), "docs", &q).await.unwrap();
     assert_eq!(r.items.len(), 1);
-    let q = ListQuery { filter: Some("1=1) OR (1=1".into()), ..ListQuery::default() };
+    let q = ListQuery {
+        filter: Some("1=1) OR (1=1".into()),
+        ..ListQuery::default()
+    };
     assert!(env.data.list_records(&user("u1"), "docs", &q).await.is_err());
     // Existence oracle: a locked collection and a missing one look the same.
-    env.collection(json!({"name": "vault", "fields": [{"name": "t", "type": "text"}]})).await;
+    env.collection(json!({"name": "vault", "fields": [{"name": "t", "type": "text"}]}))
+        .await;
     for ctx in [user("u1"), AccessContext::anonymous()] {
-        let real = env.data.list_records(&ctx, "vault", &ListQuery::default()).await.unwrap_err();
-        let fake = env.data.list_records(&ctx, "vaulx", &ListQuery::default()).await.unwrap_err();
-        assert_eq!(real.to_string().replace("vault", "X"), fake.to_string().replace("vaulx", "X"));
+        let real = env
+            .data
+            .list_records(&ctx, "vault", &ListQuery::default())
+            .await
+            .unwrap_err();
+        let fake = env
+            .data
+            .list_records(&ctx, "vaulx", &ListQuery::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            real.to_string().replace("vault", "X"),
+            fake.to_string().replace("vaulx", "X")
+        );
         let real = env.data.get_collection(&ctx, "VAULT").await.unwrap_err();
         let fake = env.data.get_collection(&ctx, "VAULX").await.unwrap_err();
-        assert_eq!(real.to_string().replace("VAULT", "X"), fake.to_string().replace("VAULX", "X"));
+        assert_eq!(
+            real.to_string().replace("VAULT", "X"),
+            fake.to_string().replace("VAULX", "X")
+        );
     }
     // A rule that stops compiling (its field was dropped) fails closed.
     let mut def = env.data.get_collection(&admin(), "docs").await.unwrap();
@@ -503,10 +664,19 @@ async fn random_rules_never_widen_access() {
     // Callers: anonymous, users with and without an ABAC attribute.
     let callers: Vec<(AccessContext, Caller)> = vec![
         (AccessContext::anonymous(), Caller { id: None, level: None }),
-        (user("u1"), Caller { id: Some("u1"), level: None }),
+        (
+            user("u1"),
+            Caller {
+                id: Some("u1"),
+                level: None,
+            },
+        ),
         (
             user("u2").with_attributes(json!({"level": 2}).as_object().unwrap().clone()),
-            Caller { id: Some("u2"), level: Some(2) },
+            Caller {
+                id: Some("u2"),
+                level: Some(2),
+            },
         ),
     ];
     let mut checked = 0;
@@ -517,7 +687,11 @@ async fn random_rules_never_widen_access() {
             .put_policy(
                 &admin(),
                 "items",
-                &PolicyInput { list_rule: Some(rule.clone()), view_rule: Some(rule.clone()), ..PolicyInput::default() },
+                &PolicyInput {
+                    list_rule: Some(rule.clone()),
+                    view_rule: Some(rule.clone()),
+                    ..PolicyInput::default()
+                },
             )
             .await
             .unwrap_or_else(|e| panic!("case {case}: {rule}: {e}"));
@@ -529,18 +703,33 @@ async fn random_rules_never_widen_access() {
                 .collect();
             let got = match env
                 .data
-                .list_records(ctx, "items", &ListQuery { per_page: Some(500), ..ListQuery::default() })
+                .list_records(
+                    ctx,
+                    "items",
+                    &ListQuery {
+                        per_page: Some(500),
+                        ..ListQuery::default()
+                    },
+                )
                 .await
             {
                 Ok(l) => l.items.iter().map(|x| x["id"].as_str().unwrap().to_owned()).collect(),
                 Err(DataError::Forbidden(_) | DataError::Unauthenticated) => BTreeSet::new(),
                 Err(e) => panic!("case {case}: {rule}: {e}"),
             };
-            assert!(got.is_subset(&expected), "case {case}: {rule} widened access for {:?}: {:?}", c.id, got.difference(&expected));
+            assert!(
+                got.is_subset(&expected),
+                "case {case}: {rule} widened access for {:?}: {:?}",
+                c.id,
+                got.difference(&expected)
+            );
             assert_eq!(got, expected, "case {case}: {rule} for {:?}", c.id);
             // Records outside the rule are not found one by one either.
             if let Some(outside) = rows.iter().find(|row| !expected.contains(&row.id)) {
-                let res = env.data.get_record(ctx, "items", &outside.id, &GetOptions::default()).await;
+                let res = env
+                    .data
+                    .get_record(ctx, "items", &outside.id, &GetOptions::default())
+                    .await;
                 assert!(res.is_err(), "case {case}: {rule}: {} visible by id", outside.id);
             }
             checked += 1;

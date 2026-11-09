@@ -99,7 +99,9 @@ fn header(h: &HeaderMap, name: &str) -> Result<Option<String>, PolicyError> {
         .to_str()
         .ok()
         .map(str::trim)
-        .filter(|v| !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+        .filter(|v| {
+            !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
         .ok_or_else(|| PolicyError::invalid("invalid_header", format!("{name} must be 1-64 of [A-Za-z0-9_-]")))?;
     Ok(Some(v.to_owned()))
 }
@@ -145,7 +147,10 @@ async fn resolve(svc: &PolicyService, ctx: &mut AccessContext, h: &HeaderMap) ->
         let ok = snap.orgs.get(o).is_some_and(|x| x.realm_id == ctx.realm_id)
             && (privileged || snap.membership(o, &principal).is_some_and(|m| m.status == "active"));
         if !ok {
-            return Err(deny(ctx, Denial::at(Step::Tenant, "not an active member of this organization")));
+            return Err(deny(
+                ctx,
+                Denial::at(Step::Tenant, "not an active member of this organization"),
+            ));
         }
         ctx.org_id = Some(o.clone());
     }
@@ -167,14 +172,17 @@ async fn resolve(svc: &PolicyService, ctx: &mut AccessContext, h: &HeaderMap) ->
                     }
                     || {
                         let eff = snap.effective(&principal, &ctx.realm_id, p.org_id.as_deref());
-                        snap.acl(&ctx.realm_id, "environment", &env.id, "*", &principal, &eff) != crate::perm::Grant::None
+                        snap.acl(&ctx.realm_id, "environment", &env.id, "*", &principal, &eff)
+                            != crate::perm::Grant::None
                             || snap
                                 .acl
                                 .get(&("environment".to_owned(), env.id.to_ascii_lowercase()))
                                 .into_iter()
                                 .chain(snap.acl.get(&("project".to_owned(), p.id.to_ascii_lowercase())))
                                 .flatten()
-                                .any(|e| e.effect == Effect::Allow && snap.grantee_matches(&e.grantee, &principal, &eff))
+                                .any(|e| {
+                                    e.effect == Effect::Allow && snap.grantee_matches(&e.grantee, &principal, &eff)
+                                })
                     };
                 if !same_realm || !org_ok || !member {
                     return Err(deny(ctx, Denial::at(Step::Tenant, "this tenant is not yours")));
@@ -376,7 +384,7 @@ pub struct CheckBody {
 macro_rules! doc {
     ($method:ident, $path:literal, $tag:literal, $desc:literal, $name:ident) => {
         #[utoipa::path($method, path = $path, tag = $tag, description = $desc,
-            responses((status = 200, description = "OK", body = Object)))]
+                            responses((status = 200, description = "OK", body = Object)))]
         #[allow(dead_code)]
         #[doc = $desc]
         pub fn $name() {}
@@ -386,52 +394,322 @@ macro_rules! doc {
 /// OpenAPI stubs for the routes of this module (one per operation).
 pub mod docs {
     doc!(get, "/api/v1/realms", "tenancy", "Realms (super-admins).", list_realms);
-    doc!(post, "/api/v1/realms", "tenancy", "Create a realm `{id, name}` (super-admins).", create_realm);
-    doc!(get, "/api/v1/orgs", "tenancy", "Organizations the caller belongs to.", list_orgs);
-    doc!(post, "/api/v1/orgs", "tenancy", "Create an organization `{slug, name}`; the caller becomes owner.", create_org);
-    doc!(get, "/api/v1/orgs/{org}", "tenancy", "One organization (`org:read`).", get_org);
-    doc!(patch, "/api/v1/orgs/{org}", "tenancy", "Rename `{name}` (`org:update`).", update_org);
-    doc!(delete, "/api/v1/orgs/{org}", "tenancy", "Delete (`org:delete`).", delete_org);
-    doc!(get, "/api/v1/orgs/{org}/projects", "tenancy", "Projects (`projects:read`).", list_org_projects);
-    doc!(post, "/api/v1/orgs/{org}/projects", "tenancy", "Create `{slug, name}` with development/staging/production (`projects:create`).", create_org_project);
-    doc!(get, "/api/v1/projects", "tenancy", "The caller's personal projects.", list_personal_projects);
-    doc!(post, "/api/v1/projects", "tenancy", "Create a personal project `{slug, name}`.", create_personal_project);
-    doc!(get, "/api/v1/projects/{project}", "tenancy", "A project with its environments (`projects:read`).", get_project);
-    doc!(delete, "/api/v1/projects/{project}", "tenancy", "Delete (`projects:delete`).", delete_project);
-    doc!(post, "/api/v1/projects/{project}/environments", "tenancy", "Add an environment `{name}` (`projects:update`).", create_environment);
-    doc!(get, "/api/v1/orgs/{org}/members", "tenancy", "Members (`users:read`).", list_members);
-    doc!(put, "/api/v1/orgs/{org}/members", "tenancy", "Add or change `{principal, roles, role_sets}` (`users:update`).", put_member);
-    doc!(post, "/api/v1/orgs/{org}/members/remove", "tenancy", "Remove `{principal}` (`users:delete`).", remove_member);
-    doc!(post, "/api/v1/orgs/{org}/members/status", "tenancy", "Suspend or reactivate `{principal, active}` (`users:update`).", member_status);
-    doc!(get, "/api/v1/orgs/{org}/teams", "tenancy", "Teams (`teams:read`).", list_teams);
-    doc!(post, "/api/v1/orgs/{org}/teams", "tenancy", "Create `{key, name, parent_id, roles, deny}` (`teams:create`).", create_team);
-    doc!(delete, "/api/v1/teams/{team}", "tenancy", "Delete with sub-teams (`teams:delete`).", delete_team);
-    doc!(post, "/api/v1/teams/{team}/members", "tenancy", "Add `{principal}` (`teams:members:manage`).", add_team_member);
-    doc!(post, "/api/v1/teams/{team}/members/remove", "tenancy", "Remove `{principal}` (`teams:members:manage`).", remove_team_member);
-    doc!(get, "/api/v1/orgs/{org}/roles", "authorization", "Roles usable in the org (`roles:read`).", list_org_roles);
-    doc!(put, "/api/v1/orgs/{org}/roles", "authorization", "Create or replace an org role `{key, name, allow, deny}` (`roles:manage`).", put_org_role);
-    doc!(delete, "/api/v1/orgs/{org}/roles/{key}", "authorization", "Delete a custom org role (`roles:manage`).", delete_org_role);
-    doc!(put, "/api/v1/orgs/{org}/role-sets", "authorization", "Create or replace a role set `{key, name, roles}`.", put_org_role_set);
+    doc!(
+        post,
+        "/api/v1/realms",
+        "tenancy",
+        "Create a realm `{id, name}` (super-admins).",
+        create_realm
+    );
+    doc!(
+        get,
+        "/api/v1/orgs",
+        "tenancy",
+        "Organizations the caller belongs to.",
+        list_orgs
+    );
+    doc!(
+        post,
+        "/api/v1/orgs",
+        "tenancy",
+        "Create an organization `{slug, name}`; the caller becomes owner.",
+        create_org
+    );
+    doc!(
+        get,
+        "/api/v1/orgs/{org}",
+        "tenancy",
+        "One organization (`org:read`).",
+        get_org
+    );
+    doc!(
+        patch,
+        "/api/v1/orgs/{org}",
+        "tenancy",
+        "Rename `{name}` (`org:update`).",
+        update_org
+    );
+    doc!(
+        delete,
+        "/api/v1/orgs/{org}",
+        "tenancy",
+        "Delete (`org:delete`).",
+        delete_org
+    );
+    doc!(
+        get,
+        "/api/v1/orgs/{org}/projects",
+        "tenancy",
+        "Projects (`projects:read`).",
+        list_org_projects
+    );
+    doc!(
+        post,
+        "/api/v1/orgs/{org}/projects",
+        "tenancy",
+        "Create `{slug, name}` with development/staging/production (`projects:create`).",
+        create_org_project
+    );
+    doc!(
+        get,
+        "/api/v1/projects",
+        "tenancy",
+        "The caller's personal projects.",
+        list_personal_projects
+    );
+    doc!(
+        post,
+        "/api/v1/projects",
+        "tenancy",
+        "Create a personal project `{slug, name}`.",
+        create_personal_project
+    );
+    doc!(
+        get,
+        "/api/v1/projects/{project}",
+        "tenancy",
+        "A project with its environments (`projects:read`).",
+        get_project
+    );
+    doc!(
+        delete,
+        "/api/v1/projects/{project}",
+        "tenancy",
+        "Delete (`projects:delete`).",
+        delete_project
+    );
+    doc!(
+        post,
+        "/api/v1/projects/{project}/environments",
+        "tenancy",
+        "Add an environment `{name}` (`projects:update`).",
+        create_environment
+    );
+    doc!(
+        get,
+        "/api/v1/orgs/{org}/members",
+        "tenancy",
+        "Members (`users:read`).",
+        list_members
+    );
+    doc!(
+        put,
+        "/api/v1/orgs/{org}/members",
+        "tenancy",
+        "Add or change `{principal, roles, role_sets}` (`users:update`).",
+        put_member
+    );
+    doc!(
+        post,
+        "/api/v1/orgs/{org}/members/remove",
+        "tenancy",
+        "Remove `{principal}` (`users:delete`).",
+        remove_member
+    );
+    doc!(
+        post,
+        "/api/v1/orgs/{org}/members/status",
+        "tenancy",
+        "Suspend or reactivate `{principal, active}` (`users:update`).",
+        member_status
+    );
+    doc!(
+        get,
+        "/api/v1/orgs/{org}/teams",
+        "tenancy",
+        "Teams (`teams:read`).",
+        list_teams
+    );
+    doc!(
+        post,
+        "/api/v1/orgs/{org}/teams",
+        "tenancy",
+        "Create `{key, name, parent_id, roles, deny}` (`teams:create`).",
+        create_team
+    );
+    doc!(
+        delete,
+        "/api/v1/teams/{team}",
+        "tenancy",
+        "Delete with sub-teams (`teams:delete`).",
+        delete_team
+    );
+    doc!(
+        post,
+        "/api/v1/teams/{team}/members",
+        "tenancy",
+        "Add `{principal}` (`teams:members:manage`).",
+        add_team_member
+    );
+    doc!(
+        post,
+        "/api/v1/teams/{team}/members/remove",
+        "tenancy",
+        "Remove `{principal}` (`teams:members:manage`).",
+        remove_team_member
+    );
+    doc!(
+        get,
+        "/api/v1/orgs/{org}/roles",
+        "authorization",
+        "Roles usable in the org (`roles:read`).",
+        list_org_roles
+    );
+    doc!(
+        put,
+        "/api/v1/orgs/{org}/roles",
+        "authorization",
+        "Create or replace an org role `{key, name, allow, deny}` (`roles:manage`).",
+        put_org_role
+    );
+    doc!(
+        delete,
+        "/api/v1/orgs/{org}/roles/{key}",
+        "authorization",
+        "Delete a custom org role (`roles:manage`).",
+        delete_org_role
+    );
+    doc!(
+        put,
+        "/api/v1/orgs/{org}/role-sets",
+        "authorization",
+        "Create or replace a role set `{key, name, roles}`.",
+        put_org_role_set
+    );
     doc!(get, "/api/v1/roles", "authorization", "Realm roles.", list_realm_roles);
-    doc!(put, "/api/v1/roles", "authorization", "Create or replace a realm role (super-admins).", put_realm_role);
-    doc!(delete, "/api/v1/roles/{key}", "authorization", "Delete a custom realm role (super-admins).", delete_realm_role);
-    doc!(put, "/api/v1/role-sets", "authorization", "Create or replace a realm role set (super-admins).", put_realm_role_set);
-    doc!(put, "/api/v1/realm-bindings", "authorization", "Bind realm roles `{principal, roles, role_sets}` (super-admins).", put_realm_binding);
-    doc!(post, "/api/v1/overrides", "authorization", "Explicit allow/deny `{org_id, principal, permission, effect}`.", add_override);
-    doc!(delete, "/api/v1/overrides/{id}", "authorization", "Remove an override.", delete_override);
-    doc!(get, "/api/v1/acl", "authorization", "ACL of `?resource_type=&resource_id=` (`acl:manage`).", list_acl);
-    doc!(post, "/api/v1/acl", "authorization", "Add `{resource_type, resource_id, grantee, permission, effect}` (`acl:manage`).", put_acl);
-    doc!(delete, "/api/v1/acl/{id}", "authorization", "Remove an ACL entry (`acl:manage`).", delete_acl);
-    doc!(post, "/api/v1/suspensions", "authorization", "Suspend `{principal, reason, until}` everywhere (super-admins).", suspend);
-    doc!(post, "/api/v1/suspensions/lift", "authorization", "Lift `{principal}` (super-admins).", unsuspend);
-    doc!(get, "/api/v1/policies/{collection}", "authorization", "Collection rules (super-admins).", get_policy);
-    doc!(put, "/api/v1/policies/{collection}", "authorization", "Set `{list_rule, view_rule, create_rule, update_rule, delete_rule, fields}`; `null` locks, `\"\"` opens (super-admins).", put_policy);
-    doc!(delete, "/api/v1/policies/{collection}", "authorization", "Remove all rules (locked).", delete_policy);
-    doc!(post, "/api/v1/orgs/{org}/invitations", "tenancy", "Invite `{email, roles}` (`users:invite`); returns the one-time token.", invite);
-    doc!(post, "/api/v1/invitations/accept", "tenancy", "Accept `{token}` as the invited user.", accept);
-    doc!(get, "/api/v1/authz/me", "authorization", "The caller's effective roles and permissions (`?org=`).", me);
-    doc!(post, "/api/v1/authz/check", "authorization", "Dry-run the pipeline for `{permission, org, resource_type, resource_id}`.", check);
-    doc!(get, "/api/v1/authz/audit", "authorization", "Recent denials with their pipeline step (super-admins).", audit);
+    doc!(
+        put,
+        "/api/v1/roles",
+        "authorization",
+        "Create or replace a realm role (super-admins).",
+        put_realm_role
+    );
+    doc!(
+        delete,
+        "/api/v1/roles/{key}",
+        "authorization",
+        "Delete a custom realm role (super-admins).",
+        delete_realm_role
+    );
+    doc!(
+        put,
+        "/api/v1/role-sets",
+        "authorization",
+        "Create or replace a realm role set (super-admins).",
+        put_realm_role_set
+    );
+    doc!(
+        put,
+        "/api/v1/realm-bindings",
+        "authorization",
+        "Bind realm roles `{principal, roles, role_sets}` (super-admins).",
+        put_realm_binding
+    );
+    doc!(
+        post,
+        "/api/v1/overrides",
+        "authorization",
+        "Explicit allow/deny `{org_id, principal, permission, effect}`.",
+        add_override
+    );
+    doc!(
+        delete,
+        "/api/v1/overrides/{id}",
+        "authorization",
+        "Remove an override.",
+        delete_override
+    );
+    doc!(
+        get,
+        "/api/v1/acl",
+        "authorization",
+        "ACL of `?resource_type=&resource_id=` (`acl:manage`).",
+        list_acl
+    );
+    doc!(
+        post,
+        "/api/v1/acl",
+        "authorization",
+        "Add `{resource_type, resource_id, grantee, permission, effect}` (`acl:manage`).",
+        put_acl
+    );
+    doc!(
+        delete,
+        "/api/v1/acl/{id}",
+        "authorization",
+        "Remove an ACL entry (`acl:manage`).",
+        delete_acl
+    );
+    doc!(
+        post,
+        "/api/v1/suspensions",
+        "authorization",
+        "Suspend `{principal, reason, until}` everywhere (super-admins).",
+        suspend
+    );
+    doc!(
+        post,
+        "/api/v1/suspensions/lift",
+        "authorization",
+        "Lift `{principal}` (super-admins).",
+        unsuspend
+    );
+    doc!(
+        get,
+        "/api/v1/policies/{collection}",
+        "authorization",
+        "Collection rules (super-admins).",
+        get_policy
+    );
+    doc!(
+        put,
+        "/api/v1/policies/{collection}",
+        "authorization",
+        "Set `{list_rule, view_rule, create_rule, update_rule, delete_rule, fields}`; `null` locks, `\"\"` opens (super-admins).",
+        put_policy
+    );
+    doc!(
+        delete,
+        "/api/v1/policies/{collection}",
+        "authorization",
+        "Remove all rules (locked).",
+        delete_policy
+    );
+    doc!(
+        post,
+        "/api/v1/orgs/{org}/invitations",
+        "tenancy",
+        "Invite `{email, roles}` (`users:invite`); returns the one-time token.",
+        invite
+    );
+    doc!(
+        post,
+        "/api/v1/invitations/accept",
+        "tenancy",
+        "Accept `{token}` as the invited user.",
+        accept
+    );
+    doc!(
+        get,
+        "/api/v1/authz/me",
+        "authorization",
+        "The caller's effective roles and permissions (`?org=`).",
+        me
+    );
+    doc!(
+        post,
+        "/api/v1/authz/check",
+        "authorization",
+        "Dry-run the pipeline for `{permission, org, resource_type, resource_id}`.",
+        check
+    );
+    doc!(
+        get,
+        "/api/v1/authz/audit",
+        "authorization",
+        "Recent denials with their pipeline step (super-admins).",
+        audit
+    );
 }
 
 /// The routes, with the service as state. Merge into the `/api` router.
@@ -440,8 +718,14 @@ pub fn router(svc: PolicyService) -> Router {
         .route("/api/v1/realms", get(list_realms).post(create_realm))
         .route("/api/v1/orgs", get(list_orgs).post(create_org))
         .route("/api/v1/orgs/{org}", get(get_org).patch(update_org).delete(delete_org))
-        .route("/api/v1/orgs/{org}/projects", get(list_org_projects).post(create_org_project))
-        .route("/api/v1/projects", get(list_personal_projects).post(create_personal_project))
+        .route(
+            "/api/v1/orgs/{org}/projects",
+            get(list_org_projects).post(create_org_project),
+        )
+        .route(
+            "/api/v1/projects",
+            get(list_personal_projects).post(create_personal_project),
+        )
         .route("/api/v1/projects/{project}", get(get_project).delete(delete_project))
         .route("/api/v1/projects/{project}/environments", post(create_environment))
         .route("/api/v1/orgs/{org}/members", get(list_members).put(put_member))
@@ -530,7 +814,12 @@ async fn create_org(State(s): S, Caller(c): Caller, Json(b): Json<NameBody>) -> 
 async fn get_org(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
     ok(s.get_org(&c, &o).ctx(&c)?)
 }
-async fn update_org(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<NameBody>) -> ApiResult<Response> {
+async fn update_org(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<NameBody>,
+) -> ApiResult<Response> {
     ok(s.update_org(&c, &o, &b.name).await.ctx(&c)?)
 }
 async fn delete_org(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
@@ -540,7 +829,12 @@ async fn delete_org(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> Ap
 async fn list_org_projects(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
     ok(s.list_projects(&c, Some(&o)).ctx(&c)?)
 }
-async fn create_org_project(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<NameBody>) -> ApiResult<Response> {
+async fn create_org_project(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<NameBody>,
+) -> ApiResult<Response> {
     created(s.create_project(&c, Some(&o), &b.slug, &b.name).await.ctx(&c)?)
 }
 async fn list_personal_projects(State(s): S, Caller(c): Caller) -> ApiResult<Response> {
@@ -556,20 +850,42 @@ async fn delete_project(State(s): S, Caller(c): Caller, Path(p): Path<String>) -
     s.delete_project(&c, &p).await.ctx(&c)?;
     done()
 }
-async fn create_environment(State(s): S, Caller(c): Caller, Path(p): Path<String>, Json(b): Json<EnvBody>) -> ApiResult<Response> {
+async fn create_environment(
+    State(s): S,
+    Caller(c): Caller,
+    Path(p): Path<String>,
+    Json(b): Json<EnvBody>,
+) -> ApiResult<Response> {
     created(s.create_environment(&c, &p, &b.name).await.ctx(&c)?)
 }
 async fn list_members(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
     ok(s.list_members(&c, &o).ctx(&c)?)
 }
-async fn put_member(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<MemberBody>) -> ApiResult<Response> {
-    ok(s.set_member(&c, &o, &b.principal, &b.roles, &b.role_sets).await.ctx(&c)?)
+async fn put_member(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> ApiResult<Response> {
+    ok(s.set_member(&c, &o, &b.principal, &b.roles, &b.role_sets)
+        .await
+        .ctx(&c)?)
 }
-async fn remove_member(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<MemberBody>) -> ApiResult<Response> {
+async fn remove_member(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> ApiResult<Response> {
     s.remove_member(&c, &o, &b.principal).await.ctx(&c)?;
     done()
 }
-async fn member_status(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<MemberBody>) -> ApiResult<Response> {
+async fn member_status(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> ApiResult<Response> {
     s.set_member_status(&c, &o, &b.principal, b.active.unwrap_or(true))
         .await
         .ctx(&c)?;
@@ -578,7 +894,12 @@ async fn member_status(State(s): S, Caller(c): Caller, Path(o): Path<String>, Js
 async fn list_teams(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
     ok(s.list_teams(&c, &o).ctx(&c)?)
 }
-async fn create_team(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<TeamBody>) -> ApiResult<Response> {
+async fn create_team(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<TeamBody>,
+) -> ApiResult<Response> {
     created(
         s.create_team(&c, &o, &b.key, &b.name, b.parent_id.as_deref(), &b.roles, &b.deny)
             .await
@@ -589,25 +910,45 @@ async fn delete_team(State(s): S, Caller(c): Caller, Path(t): Path<String>) -> A
     s.delete_team(&c, &t).await.ctx(&c)?;
     done()
 }
-async fn add_team_member(State(s): S, Caller(c): Caller, Path(t): Path<String>, Json(b): Json<MemberBody>) -> ApiResult<Response> {
+async fn add_team_member(
+    State(s): S,
+    Caller(c): Caller,
+    Path(t): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> ApiResult<Response> {
     s.add_team_member(&c, &t, &b.principal).await.ctx(&c)?;
     done()
 }
-async fn remove_team_member(State(s): S, Caller(c): Caller, Path(t): Path<String>, Json(b): Json<MemberBody>) -> ApiResult<Response> {
+async fn remove_team_member(
+    State(s): S,
+    Caller(c): Caller,
+    Path(t): Path<String>,
+    Json(b): Json<MemberBody>,
+) -> ApiResult<Response> {
     s.remove_team_member(&c, &t, &b.principal).await.ctx(&c)?;
     done()
 }
 async fn list_org_roles(State(s): S, Caller(c): Caller, Path(o): Path<String>) -> ApiResult<Response> {
     ok(s.list_roles(&c, Some(&o)).ctx(&c)?)
 }
-async fn put_org_role(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<RoleInput>) -> ApiResult<Response> {
+async fn put_org_role(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<RoleInput>,
+) -> ApiResult<Response> {
     ok(s.put_role(&c, Some(&o), &b).await.ctx(&c)?)
 }
 async fn delete_org_role(State(s): S, Caller(c): Caller, Path((o, k)): Path<(String, String)>) -> ApiResult<Response> {
     s.delete_role(&c, Some(&o), &k).await.ctx(&c)?;
     done()
 }
-async fn put_org_role_set(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<RoleSetBody>) -> ApiResult<Response> {
+async fn put_org_role_set(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<RoleSetBody>,
+) -> ApiResult<Response> {
     ok(s.put_role_set(&c, Some(&o), &b.key, &b.name, &b.roles).await.ctx(&c)?)
 }
 async fn list_realm_roles(State(s): S, Caller(c): Caller) -> ApiResult<Response> {
@@ -624,7 +965,9 @@ async fn put_realm_role_set(State(s): S, Caller(c): Caller, Json(b): Json<RoleSe
     ok(s.put_role_set(&c, None, &b.key, &b.name, &b.roles).await.ctx(&c)?)
 }
 async fn put_realm_binding(State(s): S, Caller(c): Caller, Json(b): Json<MemberBody>) -> ApiResult<Response> {
-    ok(s.put_realm_binding(&c, &b.principal, &b.roles, &b.role_sets).await.ctx(&c)?)
+    ok(s.put_realm_binding(&c, &b.principal, &b.roles, &b.role_sets)
+        .await
+        .ctx(&c)?)
 }
 async fn add_override(State(s): S, Caller(c): Caller, Json(b): Json<OverrideBody>) -> ApiResult<Response> {
     created(
@@ -642,9 +985,16 @@ async fn list_acl(State(s): S, Caller(c): Caller, Query(q): Query<AclQuery>) -> 
 }
 async fn put_acl(State(s): S, Caller(c): Caller, Json(b): Json<AclBody>) -> ApiResult<Response> {
     created(
-        s.put_acl(&c, &b.resource_type, &b.resource_id, &b.grantee, &b.permission, b.effect)
-            .await
-            .ctx(&c)?,
+        s.put_acl(
+            &c,
+            &b.resource_type,
+            &b.resource_id,
+            &b.grantee,
+            &b.permission,
+            b.effect,
+        )
+        .await
+        .ctx(&c)?,
     )
 }
 async fn delete_acl(State(s): S, Caller(c): Caller, Path(id): Path<String>) -> ApiResult<Response> {
@@ -662,14 +1012,24 @@ async fn unsuspend(State(s): S, Caller(c): Caller, Json(b): Json<SuspendBody>) -
 async fn get_policy(State(s): S, Caller(c): Caller, Path(coll): Path<String>) -> ApiResult<Response> {
     ok(s.get_policy(&c, &coll).await.ctx(&c)?)
 }
-async fn put_policy(State(s): S, Caller(c): Caller, Path(coll): Path<String>, Json(b): Json<PolicyInput>) -> ApiResult<Response> {
+async fn put_policy(
+    State(s): S,
+    Caller(c): Caller,
+    Path(coll): Path<String>,
+    Json(b): Json<PolicyInput>,
+) -> ApiResult<Response> {
     ok(s.put_policy(&c, &coll, &b).await.ctx(&c)?)
 }
 async fn delete_policy(State(s): S, Caller(c): Caller, Path(coll): Path<String>) -> ApiResult<Response> {
     s.delete_policy(&c, &coll).await.ctx(&c)?;
     done()
 }
-async fn invite(State(s): S, Caller(c): Caller, Path(o): Path<String>, Json(b): Json<InviteBody>) -> ApiResult<Response> {
+async fn invite(
+    State(s): S,
+    Caller(c): Caller,
+    Path(o): Path<String>,
+    Json(b): Json<InviteBody>,
+) -> ApiResult<Response> {
     let (mut v, token) = s.invite(&c, &o, &b.email, &b.roles).await.ctx(&c)?;
     s.mail_invitation(&b.email, &o, &token).await;
     v["token"] = Json2::String(token);

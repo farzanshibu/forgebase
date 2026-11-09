@@ -246,6 +246,9 @@ pub struct Effective {
     pub teams: BTreeSet<String>,
 }
 
+/// (principal, realm, org) of a cached effective permission set.
+type CacheKey = (String, String, Option<String>);
+
 /// The whole model, immutable once loaded.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -263,7 +266,7 @@ pub struct Snapshot {
     pub(crate) acl: HashMap<(String, String), Vec<AclEntry>>,
     pub(crate) suspended: HashMap<String, Option<i64>>,
     pub(crate) policies: HashMap<String, CollectionPolicy>,
-    cache: Mutex<HashMap<(String, String, Option<String>), Arc<Effective>>>,
+    cache: Mutex<HashMap<CacheKey, Arc<Effective>>>,
 }
 
 fn s(r: &[Value], i: usize) -> String {
@@ -298,9 +301,18 @@ impl Snapshot {
     pub async fn load(db: &dyn Backend) -> Result<Self, PolicyError> {
         let mut snap = Snapshot::default();
         for r in rows(db, "SELECT id, name FROM _forgebase_realms").await?.rows {
-            snap.realms.insert(s(&r, 0), Realm { id: s(&r, 0), name: s(&r, 1) });
+            snap.realms.insert(
+                s(&r, 0),
+                Realm {
+                    id: s(&r, 0),
+                    name: s(&r, 1),
+                },
+            );
         }
-        for r in rows(db, "SELECT id, realm_id, slug, name FROM _forgebase_orgs").await?.rows {
+        for r in rows(db, "SELECT id, realm_id, slug, name FROM _forgebase_orgs")
+            .await?
+            .rows
+        {
             snap.orgs.insert(
                 s(&r, 0),
                 Org {
@@ -311,9 +323,12 @@ impl Snapshot {
                 },
             );
         }
-        for r in rows(db, "SELECT id, realm_id, org_id, owner_user, slug, name FROM _forgebase_projects")
-            .await?
-            .rows
+        for r in rows(
+            db,
+            "SELECT id, realm_id, org_id, owner_user, slug, name FROM _forgebase_projects",
+        )
+        .await?
+        .rows
         {
             snap.projects.insert(
                 s(&r, 0),
@@ -327,7 +342,10 @@ impl Snapshot {
                 },
             );
         }
-        for r in rows(db, "SELECT id, project_id, name FROM _forgebase_environments").await?.rows {
+        for r in rows(db, "SELECT id, project_id, name FROM _forgebase_environments")
+            .await?
+            .rows
+        {
             snap.envs.insert(
                 s(&r, 0),
                 Environment {
@@ -357,9 +375,12 @@ impl Snapshot {
                 assignable: r[9].as_i64() == Some(1),
             });
         }
-        for r in rows(db, "SELECT id, realm_id, org_id, key, name, roles FROM _forgebase_role_sets")
-            .await?
-            .rows
+        for r in rows(
+            db,
+            "SELECT id, realm_id, org_id, key, name, roles FROM _forgebase_role_sets",
+        )
+        .await?
+        .rows
         {
             snap.role_sets.push(RoleSet {
                 id: s(&r, 0),
@@ -370,9 +391,12 @@ impl Snapshot {
                 roles: list(&r, 5),
             });
         }
-        for r in rows(db, "SELECT id, realm_id, principal, roles, role_sets FROM _forgebase_realm_bindings")
-            .await?
-            .rows
+        for r in rows(
+            db,
+            "SELECT id, realm_id, principal, roles, role_sets FROM _forgebase_realm_bindings",
+        )
+        .await?
+        .rows
         {
             let g = Grantee {
                 id: s(&r, 0),
@@ -384,9 +408,12 @@ impl Snapshot {
             };
             snap.realm_bindings.insert((g.scope_id.clone(), g.principal.clone()), g);
         }
-        for r in rows(db, "SELECT id, org_id, principal, roles, role_sets, status FROM _forgebase_memberships")
-            .await?
-            .rows
+        for r in rows(
+            db,
+            "SELECT id, org_id, principal, roles, role_sets, status FROM _forgebase_memberships",
+        )
+        .await?
+        .rows
         {
             let g = Grantee {
                 id: s(&r, 0),
@@ -398,9 +425,12 @@ impl Snapshot {
             };
             snap.memberships.insert((g.scope_id.clone(), g.principal.clone()), g);
         }
-        for r in rows(db, "SELECT id, org_id, parent_id, key, name, roles, deny FROM _forgebase_teams")
-            .await?
-            .rows
+        for r in rows(
+            db,
+            "SELECT id, org_id, parent_id, key, name, roles, deny FROM _forgebase_teams",
+        )
+        .await?
+        .rows
         {
             snap.teams.insert(
                 s(&r, 0),
@@ -416,9 +446,12 @@ impl Snapshot {
                 },
             );
         }
-        for r in rows(db, "SELECT team_id, principal FROM _forgebase_team_members ORDER BY principal")
-            .await?
-            .rows
+        for r in rows(
+            db,
+            "SELECT team_id, principal FROM _forgebase_team_members ORDER BY principal",
+        )
+        .await?
+        .rows
         {
             if let Some(t) = snap.teams.get_mut(&s(&r, 0)) {
                 t.members.push(s(&r, 1));
@@ -462,7 +495,10 @@ impl Snapshot {
                 .or_default()
                 .push(e);
         }
-        for r in rows(db, "SELECT principal, until_at FROM _forgebase_suspensions").await?.rows {
+        for r in rows(db, "SELECT principal, until_at FROM _forgebase_suspensions")
+            .await?
+            .rows
+        {
             snap.suspended.insert(s(&r, 0), r[1].as_i64());
         }
         for r in rows(
@@ -588,9 +624,7 @@ impl Snapshot {
             }
         }
         for ov in self.overrides.iter().filter(|ov| {
-            ov.principal == principal
-                && ov.realm_id == realm
-                && ov.org_id.as_deref().is_none_or(|x| Some(x) == org)
+            ov.principal == principal && ov.realm_id == realm && ov.org_id.as_deref().is_none_or(|x| Some(x) == org)
         }) {
             match ov.effect {
                 Effect::Allow => eff.perms.allow.insert(ov.permission.clone()),
@@ -630,7 +664,11 @@ impl Snapshot {
                 }
             }
         }
-        if granted { perm::Grant::Granted } else { perm::Grant::None }
+        if granted {
+            perm::Grant::Granted
+        } else {
+            perm::Grant::None
+        }
     }
 
     /// Record ids of `collection` with an ACL entry for `key` naming this
@@ -650,7 +688,10 @@ impl Snapshot {
                 continue;
             };
             for e in entries {
-                if e.realm_id == realm && perm::matches(&e.permission, key) && self.grantee_matches(&e.grantee, principal, eff) {
+                if e.realm_id == realm
+                    && perm::matches(&e.permission, key)
+                    && self.grantee_matches(&e.grantee, principal, eff)
+                {
                     // Ids are stored as given; keep the original case.
                     let original = e.resource_id[prefix.len()..].to_owned();
                     debug_assert_eq!(original.to_ascii_lowercase(), rec);

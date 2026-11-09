@@ -156,7 +156,8 @@ async fn open_auth(
     let policy = forgebase_policy::PolicyService::open(backend.clone())
         .await
         .map_err(|e| ServerError::Policy(e.to_string()))?;
-    let auth = forgebase_auth::AuthService::open_with_data(backend, policy.authorizer(), layout.root(), cfg, None).await?;
+    let auth =
+        forgebase_auth::AuthService::open_with_data(backend, policy.authorizer(), layout.root(), cfg, None).await?;
     policy.attach_data(auth.data().clone());
     policy.attach_mailer(auth.mailer().clone(), public_url);
     Ok((auth, policy))

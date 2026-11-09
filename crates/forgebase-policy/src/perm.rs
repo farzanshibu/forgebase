@@ -22,11 +22,8 @@ pub fn validate(pattern: &str) -> Result<(), String> {
         return Err(format!("permission {pattern:?} must be 1-{MAX_KEY_LEN} characters"));
     }
     for seg in pattern.split(':') {
-        let ok = !seg.is_empty()
-            && (seg == "*"
-                || seg
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+        let ok =
+            !seg.is_empty() && (seg == "*" || seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
         if !ok {
             return Err(format!(
                 "invalid permission {pattern:?}: segments are letters, digits, _ or -, or a lone *"
@@ -142,7 +139,10 @@ mod tests {
         assert!(!matches("projects:read", "projects:readx"));
         assert!(!matches("org:*:manage", "org:billing:view"));
         assert!(matches("org:*:manage", "org:billing:manage"));
-        assert!(!matches("read", "data:x:list"), "aliases only in the action of data keys");
+        assert!(
+            !matches("read", "data:x:list"),
+            "aliases only in the action of data keys"
+        );
     }
 
     #[test]

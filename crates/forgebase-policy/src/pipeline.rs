@@ -286,12 +286,7 @@ async fn write_batch(db: &dyn Backend, batch: &[AuditRecord]) -> Result<(), forg
 }
 
 /// Builds the audit record of a denial.
-pub(crate) fn audit_record(
-    ctx: &AccessContext,
-    permission: &str,
-    resource: Option<String>,
-    d: &Denial,
-) -> AuditRecord {
+pub(crate) fn audit_record(ctx: &AccessContext, permission: &str, resource: Option<String>, d: &Denial) -> AuditRecord {
     AuditRecord {
         at: crate::now(),
         realm_id: ctx.realm_id.clone(),

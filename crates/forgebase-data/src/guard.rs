@@ -77,7 +77,10 @@ impl DataGuard {
             .entry(coll.id.clone())
             .or_insert_with(|| {
                 if coll.id != self.root {
-                    let open = matches!(self.authorizer.authorize(&self.ctx, Action::List, Some(coll)), Decision::Allow);
+                    let open = matches!(
+                        self.authorizer.authorize(&self.ctx, Action::List, Some(coll)),
+                        Decision::Allow
+                    );
                     if !open || reads_tenant_data(coll) {
                         return None;
                     }
@@ -192,7 +195,11 @@ impl DataService {
     }
 
     /// The tenant stamped on a new row of `coll` (`None` if not scoped).
-    pub(crate) fn tenant_for_insert(&self, ctx: &AccessContext, coll: &Collection) -> Result<Option<String>, DataError> {
+    pub(crate) fn tenant_for_insert(
+        &self,
+        ctx: &AccessContext,
+        coll: &Collection,
+    ) -> Result<Option<String>, DataError> {
         if !is_tenant_scoped(coll) {
             return Ok(None);
         }

@@ -166,7 +166,9 @@ fn substitute(src: &str) -> Result<(String, Vec<RequestRef>), RuleError> {
                 j = e;
             }
             let r = match segs.split_first() {
-                Some((h, rest)) if h == "auth" && !rest.is_empty() && rest.len() <= 4 => RequestRef::Auth(rest.to_vec()),
+                Some((h, rest)) if h == "auth" && !rest.is_empty() && rest.len() <= 4 => {
+                    RequestRef::Auth(rest.to_vec())
+                }
                 Some((h, [])) if h == "tenant" => RequestRef::Tenant,
                 Some((h, [])) if h == "realm" => RequestRef::Realm,
                 Some((h, [])) if h == "org" => RequestRef::Org,
@@ -671,6 +673,9 @@ mod tests {
         assert_eq!(static_compare(&Null, Op::Eq, &Int(1)), Eval::Unknown);
         assert_eq!(static_compare(&Null, Op::Ne, &Int(1)), Eval::True);
         assert_eq!(static_compare(&Null, Op::NotLike, &Text("a".into())), Eval::True);
-        assert_eq!(static_compare(&Text("ABC".into()), Op::Like, &Text("b".into())), Eval::True);
+        assert_eq!(
+            static_compare(&Text("ABC".into()), Op::Like, &Text("b".into())),
+            Eval::True
+        );
     }
 }

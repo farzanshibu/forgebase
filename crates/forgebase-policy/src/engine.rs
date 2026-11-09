@@ -133,7 +133,10 @@ pub(crate) fn run_check(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, c: &Che
         return Err(Denial::at(Step::Permission, format!("{} is denied", c.permission)));
     }
     if perm == Grant::None && c.resource.is_none() {
-        return Err(Denial::at(Step::Permission, format!("missing permission {}", c.permission)));
+        return Err(Denial::at(
+            Step::Permission,
+            format!("missing permission {}", c.permission),
+        ));
     }
     let subject = subject_of(ctx, c.org.as_deref());
     hooks(h, ctx, &subject, &c.permission, c.resource.as_ref(), Step::Entitlement)?;
@@ -211,7 +214,9 @@ fn scopes_allow(ctx: &AccessContext, coll: &str, write: bool) -> bool {
             ["*"] => true,
             [area, "*"] => matches!(*area, "collections" | "documents"),
             [area, a] => matches!(*area, "collections" | "documents") && *a == access,
-            [area, a, r] => matches!(*area, "collections" | "documents") && *a == access && r.eq_ignore_ascii_case(coll),
+            [area, a, r] => {
+                matches!(*area, "collections" | "documents") && *a == access && r.eq_ignore_ascii_case(coll)
+            }
             _ => false,
         }
     })
@@ -301,9 +306,14 @@ fn ids_expr(ids: &[String], params: &mut HashMap<String, Json>, tag: &str) -> Ex
     )
 }
 
+/// (owning organization, personal owner, environment) of a tenant.
+type TenantScope = (Option<String>, Option<String>, Option<String>);
+
 /// The organization owning a tenant, and its personal owner.
-fn tenant_scope(snap: &Snapshot, ctx: &AccessContext) -> Result<(Option<String>, Option<String>, Option<String>), Denial> {
-    let Some(t) = &ctx.tenant else { return Ok((None, None, None)) };
+fn tenant_scope(snap: &Snapshot, ctx: &AccessContext) -> Result<TenantScope, Denial> {
+    let Some(t) = &ctx.tenant else {
+        return Ok((None, None, None));
+    };
     let Some((env, project)) = snap.tenant(t) else {
         if ctx.principal == Principal::Anonymous {
             return Ok((None, None, None)); // no rows carry an unknown tenant
@@ -360,7 +370,10 @@ pub(crate) fn decide(
             acl_chain(snap, ctx, &ResourceRef::new("environment", e), &key, &eff) == Grant::Granted
         });
         if !member && !shared {
-            return Err(fail(Denial::at(Step::Tenant, "not a member of the tenant's organization")));
+            return Err(fail(Denial::at(
+                Step::Tenant,
+                "not a member of the tenant's organization",
+            )));
         }
     }
     // Org roles reach only tenant-scoped data of that org's tenants;
@@ -378,7 +391,10 @@ pub(crate) fn decide(
     hooks(h, ctx, &subject, &key, None, Step::Entitlement).map_err(fail)?;
     let coll_acl = snap.acl(&ctx.realm_id, "collection", &coll.name, &key, &principal, &eff);
     if coll_acl == Grant::Denied {
-        return Err(fail(Denial::at(Step::Resource, format!("{key} is denied on this collection"))));
+        return Err(fail(Denial::at(
+            Step::Resource,
+            format!("{key} is denied on this collection"),
+        )));
     }
     let (acl_allow, acl_deny) = if matches!(action, Action::Create) {
         (Vec::new(), Vec::new())
@@ -406,7 +422,11 @@ pub(crate) fn decide(
             (Some(Some(e)), false) => Some(Expr::Or(vec![e, ids_expr(&acl_allow, &mut params, "a")])),
             (None, false) => Some(ids_expr(&acl_allow, &mut params, "a")),
             (None, true) => {
-                let why = if rule.is_some() { "the collection rule does not match" } else { "no rule grants this" };
+                let why = if rule.is_some() {
+                    "the collection rule does not match"
+                } else {
+                    "no rule grants this"
+                };
                 return Err(fail(Denial::at(Step::Resource, why)));
             }
         }
@@ -427,7 +447,13 @@ pub(crate) fn decide(
 
 /// Engine and schema actions (`engine:kv_read`, `schema:read_schema`): a
 /// granted permission is required. SQL and schema changes stay privileged.
-fn decide_engine(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, action: Action, name: &str) -> Result<(), (Denial, String)> {
+fn decide_engine(
+    snap: &Snapshot,
+    h: &Hooks,
+    ctx: &AccessContext,
+    action: Action,
+    name: &str,
+) -> Result<(), (Denial, String)> {
     let key = match action {
         Action::ReadSchema => "schema:read".to_owned(),
         Action::ManageSchema | Action::ManageIndexes | Action::ReadSql | Action::WriteSql => {
@@ -462,7 +488,9 @@ fn decide_engine(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, action: Action
 /// Field-level access from static field rules.
 pub(crate) fn field_access(snap: &Snapshot, ctx: &AccessContext, coll: &Collection) -> FieldAccess {
     let mut out = FieldAccess::default();
-    let Some(policy) = snap.policies.get(&coll.id) else { return out };
+    let Some(policy) = snap.policies.get(&coll.id) else {
+        return out;
+    };
     if policy.fields.is_empty() {
         return out;
     }

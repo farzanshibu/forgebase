@@ -32,8 +32,8 @@ use forgebase_schema::Collection;
 
 pub use engine::Check;
 pub use pipeline::{
-    AllowAll, AuditRecord, AuditSink, Denial, EntitlementHook, HookOutcome, HookRequest, Hooks, QuotaHook,
-    ResourceRef, Step,
+    AllowAll, AuditRecord, AuditSink, Denial, EntitlementHook, HookOutcome, HookRequest, Hooks, QuotaHook, ResourceRef,
+    Step,
 };
 pub use rules::{Rule, RuleError};
 pub use snapshot::Snapshot;
@@ -181,8 +181,15 @@ impl PolicyService {
     /// Mails an invitation link (`<public_url>/auth/accept-invitation?token=`);
     /// failures are logged, the invitation stays valid.
     pub async fn mail_invitation(&self, email: &str, org: &str, token: &str) {
-        let Some((mailer, url)) = self.inner.mailer.get() else { return };
-        let name = self.snapshot().orgs.get(org).map(|o| o.name.clone()).unwrap_or_default();
+        let Some((mailer, url)) = self.inner.mailer.get() else {
+            return;
+        };
+        let name = self
+            .snapshot()
+            .orgs
+            .get(org)
+            .map(|o| o.name.clone())
+            .unwrap_or_default();
         let link = format!("{}/auth/accept-invitation?token={token}", url.trim_end_matches('/'));
         let mail = forgebase_auth::Mail {
             to: email.to_owned(),
@@ -255,7 +262,10 @@ impl PolicyService {
         let snap = self.snapshot();
         engine::step_authentication(&snap, ctx, false).is_ok()
             && engine::step_tenant(&snap, ctx, org).is_ok()
-            && snap.effective(&ctx.principal_key(), &ctx.realm_id, org).perms.has(permission)
+            && snap
+                .effective(&ctx.principal_key(), &ctx.realm_id, org)
+                .perms
+                .has(permission)
     }
 
     pub(crate) fn audit(&self) -> &AuditSink {
