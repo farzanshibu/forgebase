@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 use utoipa::ToSchema;
 
 use crate::JobError;
+use crate::tasks::{MAX_DEPENDENCIES, ParentResult, Progress, check_timeout};
 
 /// Default attempts before a job is dead-lettered.
 pub const DEFAULT_MAX_ATTEMPTS: i64 = 5;
@@ -125,6 +126,34 @@ pub struct Job {
     pub started_at: Option<String>,
     /// When it reached a terminal state (RFC 3339).
     pub finished_at: Option<String>,
+    /// Latest progress report.
+    pub progress: Option<Progress>,
+    /// A checkpoint is saved (`GET /api/v1/jobs/{id}/checkpoint`).
+    pub has_checkpoint: bool,
+    /// When the checkpoint was saved (RFC 3339).
+    pub checkpoint_at: Option<String>,
+    /// Longest run of one attempt in ms (`null`: no limit).
+    pub timeout_ms: Option<i64>,
+    /// While running with a timeout: when the attempt times out (RFC 3339).
+    pub deadline_at: Option<String>,
+    /// Last heartbeat of the current attempt (RFC 3339).
+    pub heartbeat_at: Option<String>,
+    /// Workflow the job belongs to.
+    pub workflow_id: Option<String>,
+    /// Step name inside the workflow.
+    pub step: Option<String>,
+    /// The job that spawned this one (child jobs).
+    pub parent_id: Option<String>,
+    /// The step this job compensates (saga compensation).
+    pub compensates: Option<String>,
+    /// Parents (dependencies) that have not succeeded yet; the job is not
+    /// claimed before this is 0.
+    pub waiting_for: i64,
+    /// The result is kept in object storage (`GET /api/v1/jobs/{id}/result`);
+    /// `result` is `null` then.
+    pub result_stored: bool,
+    /// Size of the stored result in bytes.
+    pub result_size: Option<i64>,
 }
 
 /// A claimed job with the lease that fences it.
@@ -134,10 +163,15 @@ pub struct ClaimedJob {
     pub lease_id: String,
     /// The job (already `running`).
     pub job: Job,
+    /// The last checkpoint of an earlier attempt: resume from it.
+    #[schema(value_type = Option<Object>)]
+    pub checkpoint: Option<Json>,
+    /// The parents (dependencies) with their results.
+    pub parents: Vec<ParentResult>,
 }
 
 /// Retry and visibility settings shared by jobs and schedules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Policy {
     pub priority: i64,
     pub max_attempts: i64,
@@ -252,6 +286,13 @@ pub struct NewJob {
     /// Enqueueing the same key twice in a queue returns the first job.
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// Longest run of one attempt in ms (1 s to 30 days; default: the queue's,
+    /// else none). A timed-out attempt is retried like a failure.
+    #[serde(default)]
+    pub timeout_ms: Option<i64>,
+    /// Ids of jobs that must succeed first; the job waits for all of them.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 impl NewJob {
@@ -307,17 +348,45 @@ impl NewJob {
         self.visibility_timeout_ms = Some(i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX));
         self
     }
+
+    /// Same job with a per-attempt timeout.
+    #[must_use]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout_ms = Some(i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX));
+        self
+    }
+
+    /// Same job, running after the jobs `ids` succeeded.
+    #[must_use]
+    pub fn depends_on<I, S>(mut self, ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.depends_on.extend(ids.into_iter().map(Into::into));
+        self
+    }
 }
 
 /// A validated [`NewJob`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Resolved {
     pub queue: String,
     pub kind: String,
     pub payload: String,
     pub policy: Policy,
+    /// The caller chose the priority (otherwise the queue default applies).
+    pub priority_given: bool,
     pub run_at: i64,
     pub idempotency_key: Option<String>,
+    pub timeout_ms: Option<i64>,
+    pub depends_on: Vec<String>,
+    pub workflow_id: Option<String>,
+    pub step: Option<String>,
+    pub parent_id: Option<String>,
+    pub compensates: Option<String>,
+    /// Serialised [`crate::tasks::Compensation`].
+    pub compensate: Option<String>,
 }
 
 impl NewJob {
@@ -358,8 +427,37 @@ impl NewJob {
                 self.backoff_max_ms,
                 self.visibility_timeout_ms,
             )?,
+            priority_given: self.priority.is_some(),
             run_at,
             idempotency_key: self.idempotency_key.clone(),
+            timeout_ms: match self.timeout_ms {
+                Some(t) => {
+                    check_timeout("timeout_ms", t)?;
+                    Some(t)
+                }
+                None => None,
+            },
+            depends_on: {
+                if self.depends_on.len() > MAX_DEPENDENCIES {
+                    return Err(JobError::invalid(
+                        "invalid_job",
+                        format!("at most {MAX_DEPENDENCIES} dependencies"),
+                    ));
+                }
+                let mut ids: Vec<String> = Vec::with_capacity(self.depends_on.len());
+                for id in &self.depends_on {
+                    check_name("depends_on id", id, 64)?;
+                    if !ids.contains(id) {
+                        ids.push(id.clone());
+                    }
+                }
+                ids
+            },
+            workflow_id: None,
+            step: None,
+            parent_id: None,
+            compensates: None,
+            compensate: None,
         })
     }
 }
@@ -439,6 +537,10 @@ pub struct JobFilter {
     pub limit: Option<i64>,
     /// Rows to skip.
     pub offset: Option<i64>,
+    /// Only jobs of this workflow.
+    pub workflow_id: Option<String>,
+    /// Only children of this job.
+    pub parent_id: Option<String>,
 }
 
 /// A page of jobs, newest first.
@@ -640,6 +742,8 @@ pub struct Heartbeat {
     pub visibility_until: String,
     /// The job was cancelled: stop and call `fail`.
     pub cancel_requested: bool,
+    /// When the attempt times out (RFC 3339), if the job has a timeout.
+    pub deadline_at: Option<String>,
 }
 
 #[cfg(test)]

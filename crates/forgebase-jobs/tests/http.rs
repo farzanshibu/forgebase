@@ -115,6 +115,34 @@ const JOBS_OPERATIONS: &[(&str, &str)] = &[
     ("post", "/api/v1/jobs/{id}/heartbeat"),
     ("post", "/api/v1/jobs/{id}/complete"),
     ("post", "/api/v1/jobs/{id}/fail"),
+    // FB-64
+    ("get", "/api/v1/jobs/queues"),
+    ("get", "/api/v1/jobs/queues/{name}"),
+    ("put", "/api/v1/jobs/queues/{name}"),
+    ("delete", "/api/v1/jobs/queues/{name}"),
+    ("post", "/api/v1/jobs/queues/{name}/pause"),
+    ("post", "/api/v1/jobs/queues/{name}/resume"),
+    ("get", "/api/v1/jobs/workflows"),
+    ("post", "/api/v1/jobs/workflows"),
+    ("get", "/api/v1/jobs/workflows/{id}"),
+    ("post", "/api/v1/jobs/workflows/{id}/cancel"),
+    ("post", "/api/v1/jobs/{id}/progress"),
+    ("get", "/api/v1/jobs/{id}/checkpoint"),
+    ("post", "/api/v1/jobs/{id}/checkpoint"),
+    ("get", "/api/v1/jobs/{id}/result"),
+    ("get", "/api/v1/jobs/{id}/attempts"),
+    ("post", "/api/v1/jobs/{id}/children"),
+];
+
+/// Operations added by FB-64: their operationIds carry the `jobs_` prefix.
+const FB64_PATHS: &[&str] = &[
+    "/api/v1/jobs/queues",
+    "/api/v1/jobs/workflows",
+    "/progress",
+    "/checkpoint",
+    "/result",
+    "/attempts",
+    "/children",
 ];
 
 #[tokio::test]
@@ -163,12 +191,16 @@ async fn openapi_documents_every_jobs_route_and_every_route_exists() {
     for (m, p) in &documented {
         let op = &doc["paths"][p][m];
         assert_eq!(op["tags"][0], "jobs", "{m} {p}");
+        if FB64_PATHS.iter().any(|f| p.starts_with(f) || p.ends_with(f)) {
+            let id = op["operationId"].as_str().unwrap_or_default();
+            assert!(id.starts_with("jobs_"), "{m} {p} has operationId {id:?}");
+        }
         assert!(op["responses"].as_object().is_some_and(|r| !r.is_empty()), "{m} {p}");
     }
 
     // Documented means routed: no request gets the router's 404/405.
     for (m, p) in JOBS_OPERATIONS {
-        let uri = p.replace("{id}", "x1");
+        let uri = p.replace("{id}", "x1").replace("{name}", "x1");
         let method = Method::from_bytes(m.to_ascii_uppercase().as_bytes()).unwrap();
         let (status, body) = api.call(method, &uri, Some(json!({}))).await;
         assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{m} {p}");
@@ -186,7 +218,7 @@ async fn anonymous_is_denied_everywhere_and_ordinary_users_are_forbidden() {
     // A signed-in user the default (fail-closed) authorizer knows nothing about.
     let user = Api::new(Some(AccessContext::user("users", "u1"))).await;
     for (m, p) in JOBS_OPERATIONS {
-        let uri = p.replace("{id}", "x1");
+        let uri = p.replace("{id}", "x1").replace("{name}", "x1");
         let method = Method::from_bytes(m.to_ascii_uppercase().as_bytes()).unwrap();
         let body =
             json!({"kind": "k", "worker_id": "w", "lease_id": "l", "error": "e", "name": "n", "cron": "* * * * *"});
@@ -511,4 +543,147 @@ async fn schedules_over_http() {
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, e) = api.get(&format!("/api/v1/jobs/schedules/{id}")).await;
     assert_eq!((s, code(&e)), (StatusCode::NOT_FOUND, "schedule_not_found"));
+}
+
+/// FB-64 over HTTP: an external worker reports progress, saves a
+/// checkpoint, spawns a child and completes; queue settings, workflows,
+/// attempts and results are served.
+#[tokio::test]
+async fn long_running_tasks_over_http() {
+    let api = Api::admin().await;
+    let (s, q) = api
+        .call(
+            Method::PUT,
+            "/api/v1/jobs/queues/media",
+            Some(json!({"concurrency": 1, "rate_limit": 10, "rate_period": "minute", "default_timeout_ms": 3600000})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert_eq!(
+        (q["concurrency"].as_i64(), q["rate_period"].as_str()),
+        (Some(1), Some("minute"))
+    );
+    let (s, _) = api
+        .call(
+            Method::PUT,
+            "/api/v1/jobs/queues/media",
+            Some(json!({"concurrency": 0})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, job) = api
+        .post(
+            "/api/v1/jobs",
+            json!({"kind": "transcode", "queue": "media", "payload": {"file": "a.mov"}}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(job["timeout_ms"], 3_600_000);
+    assert_eq!(job["waiting_for"], 0);
+    let id = job["id"].as_str().unwrap().to_owned();
+    let (_, claimed) = api
+        .post("/api/v1/jobs/claim", json!({"worker_id": "ext-1", "max": 5}))
+        .await;
+    let lease = claimed["jobs"][0]["lease_id"].as_str().unwrap().to_owned();
+    assert!(claimed["jobs"][0]["checkpoint"].is_null());
+    assert!(claimed["jobs"][0]["job"]["deadline_at"].is_string());
+
+    let (s, hb) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/progress"),
+            json!({"lease_id": lease, "percent": 25.0, "stage": "audio", "message": "1 of 4"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{hb}");
+    assert_eq!(hb["cancel_requested"], false);
+    let (s, _) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/progress"),
+            json!({"lease_id": "nope", "percent": 30}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/checkpoint"),
+            json!({"lease_id": lease, "checkpoint": {"segment": 2}}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, cp) = api.get(&format!("/api/v1/jobs/{id}/checkpoint")).await;
+    assert_eq!(cp["checkpoint"], json!({"segment": 2}));
+    let (_, j) = api.get(&format!("/api/v1/jobs/{id}")).await;
+    assert_eq!(j["progress"]["stage"], "audio");
+    assert_eq!(j["has_checkpoint"], true);
+
+    let (s, kids) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/children"),
+            json!({"lease_id": lease, "jobs": [{"kind": "thumb", "payload": 1}]}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{kids}");
+    assert_eq!(kids["items"][0]["parent_id"], id.as_str());
+    let (_, listed) = api.get(&format!("/api/v1/jobs?parent_id={id}")).await;
+    assert_eq!(listed["total"], 1);
+
+    let (s, _) = api.get(&format!("/api/v1/jobs/{id}/result")).await;
+    assert_eq!(s, StatusCode::CONFLICT, "no result before success");
+    let (s, _) = api
+        .post(
+            &format!("/api/v1/jobs/{id}/complete"),
+            json!({"lease_id": lease, "result": {"out": "a.mp4"}}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, r) = api.get(&format!("/api/v1/jobs/{id}/result")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (r["result"]["out"].as_str(), r["stored"].as_bool()),
+        (Some("a.mp4"), Some(false))
+    );
+    let (_, attempts) = api.get(&format!("/api/v1/jobs/{id}/attempts")).await;
+    assert_eq!(attempts["items"][0]["outcome"], "succeeded");
+    assert_eq!(attempts["items"][0]["worker_id"], "ext-1");
+
+    let (s, p) = api.post("/api/v1/jobs/queues/media/pause", json!({})).await;
+    assert_eq!((s, p["paused"].as_bool()), (StatusCode::OK, Some(true)));
+    let (_, p) = api.post("/api/v1/jobs/queues/media/resume", json!({})).await;
+    assert_eq!(p["paused"], false);
+    let (_, all) = api.get("/api/v1/jobs/queues").await;
+    assert!(all["items"].as_array().unwrap().iter().any(|q| q["name"] == "media"));
+    let (s, _) = api.call(Method::DELETE, "/api/v1/jobs/queues/media", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    let (s, wf) = api
+        .post(
+            "/api/v1/jobs/workflows",
+            json!({"name": "pipeline", "on_failure": "compensate", "steps": [
+                {"name": "a", "kind": "k"},
+                {"name": "b", "kind": "k", "depends_on": ["a"], "compensate": {"kind": "undo"}}
+            ]}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{wf}");
+    assert_eq!(wf["status"], "running");
+    assert_eq!(wf["steps"][1]["depends_on"][0], wf["steps"][0]["job"]["id"]);
+    let wid = wf["id"].as_str().unwrap().to_owned();
+    let (_, got) = api.get(&format!("/api/v1/jobs/workflows/{wid}")).await;
+    assert_eq!(got["on_failure"], "compensate");
+    let (_, page) = api.get("/api/v1/jobs/workflows?status=running").await;
+    assert_eq!(page["total"], 1);
+    let (s, c) = api
+        .post(&format!("/api/v1/jobs/workflows/{wid}/cancel"), json!({}))
+        .await;
+    assert_eq!((s, c["status"].as_str()), (StatusCode::OK, Some("cancelled")));
+    let (s, e) = api
+        .post(
+            "/api/v1/jobs/workflows",
+            json!({"name": "bad", "steps": [{"name": "a", "kind": "k", "depends_on": ["a"]}]}),
+        )
+        .await;
+    assert_eq!((s, code(&e)), (StatusCode::BAD_REQUEST, "invalid_workflow"));
+    let (s, _) = api.get("/api/v1/jobs/workflows/wf-missing").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

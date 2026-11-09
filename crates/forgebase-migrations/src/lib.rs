@@ -129,7 +129,12 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "billing",
         include_str!("../../../migrations/system/0020_billing.sql"),
     ),
-    // 21 and 22 are reserved for FB-63 (queues) and FB-64 (jobs).
+    // 21 is reserved for FB-63 (queues).
+    Migration::new(
+        22,
+        "jobs_long_tasks",
+        include_str!("../../../migrations/system/0022_jobs_long_tasks.sql"),
+    ),
     Migration::new(
         23,
         "identity_admin",

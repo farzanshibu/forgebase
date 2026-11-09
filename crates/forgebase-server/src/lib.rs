@@ -25,6 +25,7 @@
 //! writes changed vector indexes to disk, checkpoints the WAL into the main database file, closes the pools and
 //! releases the lock.
 
+mod job_results;
 mod lock;
 
 use std::net::SocketAddr;
@@ -47,6 +48,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use forgebase_jobs::{JobRegistry, JobService, PoolConfig};
+pub use job_results::{RESULTS_BUCKET, StorageResults};
 pub use lock::{DataDirLock, LockOwner};
 
 /// A started server.
@@ -215,6 +217,8 @@ pub async fn start_with_jobs(
         .with_policy(policy)
         .with_realtime(realtime.clone());
     let jobs = JobService::new(state.data().clone());
+    // FB-64: live progress and state on the realtime channels `jobs:<id>`.
+    jobs.attach_realtime(realtime.clone());
     entitlements.attach_jobs(jobs.clone());
     if let Err(e) = entitlements.ensure_schedule().await {
         tracing::warn!(error = %e, "entitlement maintenance schedule not created");
@@ -230,6 +234,11 @@ pub async fn start_with_jobs(
         }
     };
     storage.attach_jobs(jobs.clone());
+    // FB-64: results too large for the job row go to object storage.
+    match StorageResults::open(storage.clone()).await {
+        Ok(store) => jobs.attach_result_store(Arc::new(store)),
+        Err(e) => tracing::warn!(error = %e, "job results bucket not available; large results are rejected"),
+    }
     if let Err(e) = storage.ensure_schedule().await {
         tracing::warn!(error = %e, "storage reconcile schedule not created");
     }
@@ -446,8 +455,10 @@ async fn open_auth(
     let policy = forgebase_policy::PolicyService::open(backend.clone())
         .await
         .map_err(|e| ServerError::Policy(e.to_string()))?;
-    let auth =
-        forgebase_auth::AuthService::open_with_data(backend, policy.authorizer(), layout.root(), cfg, None).await?;
+    // FB-64: subscribing to the job channels (`jobs:<id>`) needs permission
+    // to read jobs, and only the system publishes there.
+    let authorizer: Arc<dyn Authorizer> = Arc::new(forgebase_jobs::JobChannelAuthorizer::new(policy.authorizer()));
+    let auth = forgebase_auth::AuthService::open_with_data(backend, authorizer, layout.root(), cfg, None).await?;
     policy.attach_data(auth.data().clone());
     policy.attach_mailer(auth.mailer().clone(), public_url);
     // FB-25: identities act in their own realm; suspensions set through the
