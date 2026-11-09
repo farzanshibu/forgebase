@@ -70,6 +70,12 @@ port = 6380                 # FORGEBASE_RESP_PORT, flag --resp-port
 max_connections = 1024      # FORGEBASE_RESP_MAX_CONNECTIONS
 max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
 idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
+
+# Billing (subscriptions, orders, invoices, Stripe and Razorpay webhooks).
+# Off by default. Provider keys are configured at runtime through
+# PUT /api/v1/billing/providers/{provider} (test-mode keys only, sealed).
+[billing]
+enabled = false             # FORGEBASE_BILLING_ENABLED
 "#;
 
 /// SQLite `synchronous` setting for the primary database.
@@ -162,6 +168,15 @@ pub struct Config {
     pub resp: RespConfig,
     /// Object storage settings (FB-30).
     pub storage: StorageConfig,
+    /// Billing settings.
+    pub billing: BillingConfig,
+}
+
+/// Settings of the billing application (FB-70, ADR-0021).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BillingConfig {
+    /// Whether billing is mounted and its maintenance job runs. Off by default.
+    pub enabled: bool,
 }
 
 /// Which driver keeps object bytes.
@@ -290,6 +305,7 @@ impl Config {
                 s3_prefix: String::new(),
                 s3_part_size: 8 * 1024 * 1024,
             },
+            billing: BillingConfig { enabled: false },
         }
     }
 
@@ -425,6 +441,9 @@ impl Config {
         if let Some(v) = o.resp_idle_timeout_secs {
             self.resp.idle_timeout_secs = v;
         }
+        if let Some(v) = o.billing_enabled {
+            self.billing.enabled = v;
+        }
     }
 }
 
@@ -467,6 +486,8 @@ pub struct ConfigOverrides {
     pub resp_idle_timeout_secs: Option<u64>,
     /// `[storage]` section of the config file.
     pub storage: Option<StorageOverrides>,
+    /// Mount billing.
+    pub billing_enabled: Option<bool>,
 }
 
 impl ConfigOverrides {
@@ -503,6 +524,7 @@ impl ConfigOverrides {
                 "RESP_MAX_CONNECTIONS" => o.resp_max_connections = Some(parse_num(&value).map_err(bad)?),
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
+                "BILLING_ENABLED" => o.billing_enabled = Some(parse_bool(&value).map_err(bad)?),
                 _ => return Err(bad("unknown ForgeBase environment variable".into())),
             }
         }
@@ -563,6 +585,14 @@ struct FileConfig {
     #[serde(default)]
     resp: FileResp,
     storage: Option<StorageOverrides>,
+    #[serde(default)]
+    billing: FileBilling,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBilling {
+    enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -621,6 +651,7 @@ impl From<FileConfig> for ConfigOverrides {
             resp_max_bulk_bytes: f.resp.max_bulk_bytes,
             resp_idle_timeout_secs: f.resp.idle_timeout_secs,
             storage: f.storage,
+            billing_enabled: f.billing.enabled,
         }
     }
 }

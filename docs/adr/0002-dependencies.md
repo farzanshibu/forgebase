@@ -362,3 +362,13 @@ Rust: one rename, no new crates. `forgebase-vector` named a response schema
 `CollectionList`, which collided with the data API's `CollectionList` in the
 merged `/api/openapi.json` (the vector list route was documented with the data
 schema). It is now `VectorCollectionList`.
+
+## FB-70 (billing, ADR-0021, 2026-11-09)
+
+**No new third-party dependencies.** `forgebase-billing` uses workspace crates
+already recorded above: `hmac` + `sha2` (webhook signatures, HMAC-SHA256),
+`subtle` (constant-time signature comparison), `base64` (sealed provider
+secrets, Razorpay Basic auth), `url` (form bodies, URL checks), and FB-25's
+outbound HTTPS client for provider APIs. No Stripe or Razorpay SDK crate: the
+drivers speak their REST APIs directly (a handful of endpoints each), which
+keeps the tree small and lets tests run against a mock HTTP client.
