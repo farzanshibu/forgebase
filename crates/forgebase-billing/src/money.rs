@@ -200,8 +200,12 @@ pub fn prorate(amount: i64, start: i64, end: i64, at: i64) -> i64 {
 
 /// Tax of a line of `amount` at `rate_bp` basis points: exclusive tax is
 /// added on top; inclusive tax is the part of `amount` that is tax.
+/// Signed: a credit line (negative amount) carries negative tax.
 pub fn tax(amount: i64, rate_bp: i64, inclusive: bool) -> i64 {
-    if amount <= 0 || rate_bp <= 0 {
+    if amount < 0 {
+        return -tax(-amount, rate_bp, inclusive);
+    }
+    if amount == 0 || rate_bp <= 0 {
         return 0;
     }
     if inclusive {
@@ -297,7 +301,7 @@ mod tests {
         assert_eq!(tax(10_000, 1800, false), 1800);
         // 118.00 including 18 % holds 18.00 of tax.
         assert_eq!(tax(11_800, 1800, true), 1800);
-        assert_eq!(tax(-100, 1800, false), 0);
+        assert_eq!(tax(-10_000, 1800, false), -1800);
         let parts = allocate(100, &[1, 1, 1]);
         assert_eq!(parts.iter().sum::<i64>(), 100);
         assert_eq!(allocate(50, &[0, 10]), vec![0, 50]);

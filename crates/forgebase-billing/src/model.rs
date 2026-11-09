@@ -1299,3 +1299,36 @@ pub struct BillingStats {
     /// Payments that failed in the window.
     pub failed_payments: i64,
 }
+
+/// The customer portal: what a customer sees of its billing.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Portal {
+    /// The customer (`null`: never billed).
+    pub customer: Option<Customer>,
+    /// Subscriptions that have not ended.
+    pub subscriptions: Vec<Subscription>,
+    /// Newest invoices.
+    pub invoices: Vec<Invoice>,
+    /// Newest payments.
+    pub payments: Vec<Payment>,
+    /// Newest credit notes.
+    pub credit_notes: Vec<CreditNote>,
+}
+
+/// Body of `POST /billing/invoices/{id}/mark-paid` (manual billing).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MarkPaidInput {
+    /// Bank transfer or cheque reference.
+    #[serde(default)]
+    pub reference: Option<String>,
+}
+
+/// Body of `POST /billing/invoices/{id}/pay`.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PayInput {
+    /// Where the hosted payment page returns to.
+    #[serde(default)]
+    pub return_url: Option<String>,
+}
