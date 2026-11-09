@@ -39,6 +39,7 @@ wat.workspace = true
 redis = { workspace = true, features = ["tokio-comp"] }
 serde_json.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
