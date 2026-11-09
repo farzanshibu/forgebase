@@ -1,4 +1,4 @@
--- FB-72 (ADR-0021 §10): merchant-of-record stores (App Store, Google Play,
+-- FB-72 (ADR-0021 §9): merchant-of-record stores (App Store, Google Play,
 -- Creem). The store owns the payment and its renewals; ForgeBase verifies
 -- what the store reports and mirrors it as subscriptions, orders, paid
 -- invoices, refunds and FB-24 entitlements. WeChat Pay is an ordinary

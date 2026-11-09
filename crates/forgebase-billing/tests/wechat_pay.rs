@@ -12,11 +12,10 @@ use base64::Engine as _;
 use common::*;
 use forgebase_auth::AuthError;
 use forgebase_auth::social::http_client::{BoxFuture, HttpClient, HttpRequest, HttpResponse};
-use forgebase_billing::provider::{HostedPaymentRequest, jws};
 use forgebase_billing::provider::wechat_pay::{self, WechatPayConfig, WechatPayProvider};
+use forgebase_billing::provider::{HostedPaymentRequest, jws};
 use forgebase_billing::{
-    BillingError, CreditNoteInput, PaymentProvider as _, ProviderInput, RefundStatus,
-    SubscriptionStatus,
+    BillingError, CreditNoteInput, PaymentProvider as _, ProviderInput, RefundStatus, SubscriptionStatus,
 };
 use forgebase_entitlements::{Clock as _, ManualClock};
 use serde_json::{Value as Json, json};
@@ -43,7 +42,10 @@ fn platform_headers(key: &str, serial: &str, ts: i64, body: &[u8]) -> Vec<(Strin
     vec![
         ("wechatpay-timestamp".into(), ts.to_string()),
         ("wechatpay-nonce".into(), nonce.into()),
-        ("wechatpay-signature".into(), wechat_pay::sign_message(&fixture(key), &msg).unwrap()),
+        (
+            "wechatpay-signature".into(),
+            wechat_pay::sign_message(&fixture(key), &msg).unwrap(),
+        ),
         ("wechatpay-serial".into(), serial.into()),
     ]
 }
@@ -62,7 +64,13 @@ impl Mock {
     }
 
     fn calls(&self, needle: &str) -> Vec<HttpRequest> {
-        self.calls.lock().unwrap().iter().filter(|r| r.url.contains(needle)).cloned().collect()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.contains(needle))
+            .cloned()
+            .collect()
     }
 }
 
@@ -116,8 +124,18 @@ fn install(env: &Env) -> (Arc<Mock>, WechatPayProvider) {
         calls: Mutex::new(Vec::new()),
         unsigned: Mutex::new(false),
     });
-    mock.on("POST /v3/pay/transactions/native", 200, json!({"code_url": "weixin://wxpay/bizpayurl?pr=fb72Test"}));
-    let p = WechatPayProvider::new(config(), Some("http://wechat.test"), mock.clone(), Arc::new(env.clock.clone())).unwrap();
+    mock.on(
+        "POST /v3/pay/transactions/native",
+        200,
+        json!({"code_url": "weixin://wxpay/bizpayurl?pr=fb72Test"}),
+    );
+    let p = WechatPayProvider::new(
+        config(),
+        Some("http://wechat.test"),
+        mock.clone(),
+        Arc::new(env.clock.clone()),
+    )
+    .unwrap();
     env.billing.register_provider(Arc::new(p.clone()));
     (mock, p)
 }
@@ -169,7 +187,13 @@ async fn wechat_pay_native_payment_signed_notification_and_refund() {
 
     // The order request is signed with the merchant key.
     let req = &mock.calls("/v3/pay/transactions/native")[0];
-    let auth = req.headers.iter().find(|(k, _)| k == "authorization").unwrap().1.clone();
+    let auth = req
+        .headers
+        .iter()
+        .find(|(k, _)| k == "authorization")
+        .unwrap()
+        .1
+        .clone();
     assert!(auth.starts_with("WECHATPAY2-SHA256-RSA2048 "), "{auth}");
     let field = |name: &str| {
         let start = auth.find(&format!("{name}=\"")).unwrap() + name.len() + 2;
@@ -182,23 +206,45 @@ async fn wechat_pay_native_payment_signed_notification_and_refund() {
         field("nonce_str"),
         String::from_utf8_lossy(&req.body)
     );
-    let sig = base64::engine::general_purpose::STANDARD.decode(field("signature")).unwrap();
+    let sig = base64::engine::general_purpose::STANDARD
+        .decode(field("signature"))
+        .unwrap();
     let merchant_pub = jws::rsa_public(&der(&fixture("wechat-merchant.key"))).unwrap();
     assert!(jws::rsa_verify(&merchant_pub, msg.as_bytes(), &sig));
     let body: Json = serde_json::from_slice(&req.body).unwrap();
-    assert_eq!((body["amount"]["total"].as_i64(), body["attach"].as_str()), (Some(19_900), Some(inv.id.as_str())));
+    assert_eq!(
+        (body["amount"]["total"].as_i64(), body["attach"].as_str()),
+        (Some(19_900), Some(inv.id.as_str()))
+    );
 
     // TRANSACTION.SUCCESS, signed by the platform certificate.
     let ts = env.clock.now_ms() / 1000;
-    let raw = notice("EV-2018022511", "TRANSACTION.SUCCESS", "2026-11-01T08:00:06+08:00", "transaction", &paid(&inv.id, "4200000001202611010000000001", 19_900));
+    let raw = notice(
+        "EV-2018022511",
+        "TRANSACTION.SUCCESS",
+        "2026-11-01T08:00:06+08:00",
+        "transaction",
+        &paid(&inv.id, "4200000001202611010000000001", 19_900),
+    );
     let h = platform_headers("wechat-platform.key", CERT_SERIAL, ts, &raw);
     let out = env.billing.handle_webhook("wechat_pay", &h, &raw).await.unwrap();
-    assert_eq!((out.result.as_str(), out.detail.as_deref()), ("processed", Some("invoice_paid")), "{out:?}");
-    let sub = env.billing.subscription(&user("ann"), &co.subscription.unwrap().id).await.unwrap();
+    assert_eq!(
+        (out.result.as_str(), out.detail.as_deref()),
+        ("processed", Some("invoice_paid")),
+        "{out:?}"
+    );
+    let sub = env
+        .billing
+        .subscription(&user("ann"), &co.subscription.unwrap().id)
+        .await
+        .unwrap();
     assert_eq!(sub.status, SubscriptionStatus::Active);
     assert_eq!(env.plan_of(&pk("ann")).0.as_deref(), Some("pro"));
     // Replay.
-    assert_eq!(env.billing.handle_webhook("wechat_pay", &h, &raw).await.unwrap().result, "duplicate");
+    assert_eq!(
+        env.billing.handle_webhook("wechat_pay", &h, &raw).await.unwrap().result,
+        "duplicate"
+    );
 
     // Refund: the original amount is read back, then the refund requested.
     mock.on(
@@ -229,8 +275,15 @@ async fn wechat_pay_native_payment_signed_notification_and_refund() {
         .unwrap();
     assert_eq!(note.refund_amount, 5_000);
     let refund_req: Json = serde_json::from_slice(&mock.calls("/v3/refund/domestic/refunds")[0].body).unwrap();
-    assert_eq!(refund_req["amount"], json!({"refund": 5_000, "total": 19_900, "currency": "CNY"}));
-    assert!(mock.calls("/v3/pay/transactions/id/4200000001202611010000000001")[0].url.contains("mchid=1900000109"));
+    assert_eq!(
+        refund_req["amount"],
+        json!({"refund": 5_000, "total": 19_900, "currency": "CNY"})
+    );
+    assert!(
+        mock.calls("/v3/pay/transactions/id/4200000001202611010000000001")[0]
+            .url
+            .contains("mchid=1900000109")
+    );
     let r = &env.billing.refunds(&user("ann"), None, None).await.unwrap()[0];
     assert_eq!(r.status, RefundStatus::Pending);
 
@@ -248,7 +301,10 @@ async fn wechat_pay_native_payment_signed_notification_and_refund() {
     let h = platform_headers("wechat-platform.key", PUBKEY_SERIAL, ts, &raw);
     let out = env.billing.handle_webhook("wechat_pay", &h, &raw).await.unwrap();
     assert_eq!(out.detail.as_deref(), Some("refund_succeeded"), "{out:?}");
-    assert_eq!(env.billing.refunds(&user("ann"), None, None).await.unwrap()[0].status, RefundStatus::Succeeded);
+    assert_eq!(
+        env.billing.refunds(&user("ann"), None, None).await.unwrap()[0].status,
+        RefundStatus::Succeeded
+    );
 }
 
 #[tokio::test]
@@ -257,7 +313,13 @@ async fn wechat_pay_rejects_forged_stale_and_foreign_notifications() {
     let co = env.subscribe("ann", &["pro-cny"], "sub-wx-2").await;
     let inv = co.invoice.unwrap();
     let ts = env.clock.now_ms() / 1000;
-    let raw = notice("EV-1", "TRANSACTION.SUCCESS", "2026-11-01T08:00:00+08:00", "transaction", &paid(&inv.id, "4200000002", 19_900));
+    let raw = notice(
+        "EV-1",
+        "TRANSACTION.SUCCESS",
+        "2026-11-01T08:00:00+08:00",
+        "transaction",
+        &paid(&inv.id, "4200000002", 19_900),
+    );
     let deliver = |h: Vec<(String, String)>, b: Vec<u8>| {
         let bill = env.billing.clone();
         async move { bill.handle_webhook("wechat_pay", &h, &b).await }
@@ -288,11 +350,25 @@ async fn wechat_pay_rejects_forged_stale_and_foreign_notifications() {
     // Another merchant's payment.
     let mut foreign = paid(&inv.id, "4200000003", 19_900);
     foreign["mchid"] = json!("1230000109");
-    let raw2 = notice("EV-2", "TRANSACTION.SUCCESS", "2026-11-01T08:00:00+08:00", "transaction", &foreign);
+    let raw2 = notice(
+        "EV-2",
+        "TRANSACTION.SUCCESS",
+        "2026-11-01T08:00:00+08:00",
+        "transaction",
+        &foreign,
+    );
     let h = platform_headers("wechat-platform.key", CERT_SERIAL, ts, &raw2);
     assert_eq!(code(&deliver(h, raw2).await.unwrap_err()), "invalid_signature");
-    assert_eq!(env.count("SELECT COUNT(*) FROM _forgebase_billing_webhook_events").await, 0);
-    assert_eq!(env.count("SELECT COUNT(*) FROM _forgebase_billing_invoices WHERE status = 'paid'").await, 0);
+    assert_eq!(
+        env.count("SELECT COUNT(*) FROM _forgebase_billing_webhook_events")
+            .await,
+        0
+    );
+    assert_eq!(
+        env.count("SELECT COUNT(*) FROM _forgebase_billing_invoices WHERE status = 'paid'")
+            .await,
+        0
+    );
 
     // An unsigned API response is not trusted.
     *mock.unsigned.lock().unwrap() = true;
@@ -338,10 +414,21 @@ async fn wechat_pay_accounts_refuse_production_and_bad_keys() {
     };
     assert_eq!(code(&put(input(None, APIV3)).await.unwrap_err()), "live_mode_refused");
     assert_eq!(
-        code(&put(input(Some("https://api.mch.weixin.qq.com"), APIV3)).await.unwrap_err()),
+        code(
+            &put(input(Some("https://api.mch.weixin.qq.com"), APIV3))
+                .await
+                .unwrap_err()
+        ),
         "live_mode_refused"
     );
-    assert_eq!(code(&put(input(Some("https://wechat-sandbox.test"), "short")).await.unwrap_err()), "invalid_key");
+    assert_eq!(
+        code(
+            &put(input(Some("https://wechat-sandbox.test"), "short"))
+                .await
+                .unwrap_err()
+        ),
+        "invalid_key"
+    );
     // A certificate whose serial is not the one given.
     let mut wrong = input(Some("https://wechat-sandbox.test"), APIV3);
     wrong.config.as_mut().unwrap()["platform_keys"][0]["serial"] = json!("0123");

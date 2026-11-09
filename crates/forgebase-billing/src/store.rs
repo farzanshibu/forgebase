@@ -1,4 +1,4 @@
-//! Store purchases (FB-72, ADR-0021 §10): App Store, Google Play and Creem.
+//! Store purchases (FB-72, ADR-0021 §9): App Store, Google Play and Creem.
 //!
 //! The store is the merchant of record: it took the money and renews the
 //! subscription. ForgeBase verifies what the store reports, server side, and
