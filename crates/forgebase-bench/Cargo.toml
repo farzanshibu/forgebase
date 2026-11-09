@@ -1,0 +1,59 @@
+[package]
+name = "forgebase-bench"
+description = "ForgeBase benchmarks (Criterion), the HTTP load harness (fb-load) and shared rig. Dev tooling only: nothing in the server depends on it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-kv.workspace = true
+forgebase-policy.workspace = true
+forgebase-queue.workspace = true
+forgebase-jobs.workspace = true
+forgebase-vector.workspace = true
+forgebase-server.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "async_tokio"] }
+
+[[bin]]
+name = "fb-load"
+path = "src/bin/fb-load.rs"
+
+[[bench]]
+name = "db"
+harness = false
+
+[[bench]]
+name = "records"
+harness = false
+
+[[bench]]
+name = "auth_policy"
+harness = false
+
+[[bench]]
+name = "kv"
+harness = false
+
+[[bench]]
+name = "vector"
+harness = false
+
+[[bench]]
+name = "queue_jobs"
+harness = false
+
+[lints]
+workspace = true

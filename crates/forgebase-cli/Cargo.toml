@@ -68,5 +68,9 @@ path = "../../tests/integration/functions_e2e.rs"
 name = "queues_e2e"
 path = "../../tests/integration/queues_e2e.rs"
 
+[[test]]
+name = "recovery"
+path = "../../tests/integration/recovery.rs"
+
 [lints]
 workspace = true
