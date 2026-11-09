@@ -181,7 +181,7 @@ async fn scenario_18_execute_a_sandboxed_server_function() {
     )
     .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", String::from_utf8_lossy(&r.body));
-    assert_eq!(r.json()["body"]["code"], "forbidden");
+    assert_eq!(r.json()["code"], "forbidden");
 
     h.grant("notes", "data:notes:write").await;
     h.grant("notes", "data:notes:read").await;

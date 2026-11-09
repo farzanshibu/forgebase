@@ -134,7 +134,11 @@ pub struct Wat {
 impl Wat {
     pub fn new(imports: &[&'static str]) -> Self {
         let mut all = vec!["input_len", "input_read", "output", "result_read"];
-        all.extend(imports.iter().copied().filter(|i| !all.contains(i)));
+        for i in imports {
+            if !all.contains(i) {
+                all.push(i);
+            }
+        }
         Self {
             imports: all,
             data: Vec::new(),

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::{Wat, admin, constant, harness, out_json, req, wat_b64};
 use forgebase_core::ErrorCode;
-use forgebase_data::db::{Statement, Value};
+use forgebase_data::db::{Backend, Statement, Value};
 use forgebase_functions::{ExecError, FunctionError, LimitsInput, Trigger};
 use serde_json::json;
 
