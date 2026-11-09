@@ -6,8 +6,8 @@
 use forgebase_db::backend::BoxFuture;
 
 use super::{
-    ChargeRequest, ChargeResult, CustomerRef, HostedPaymentRequest, HostedSetupRequest, PaymentProvider,
-    ProviderEvent, RefundRequest, RefundResult,
+    ChargeRequest, ChargeResult, CustomerRef, HostedPaymentRequest, HostedSetupRequest, PaymentProvider, ProviderEvent,
+    RefundRequest, RefundResult,
 };
 use crate::error::{BillingError, Result};
 use crate::model::{HostedPage, PaymentStatus, RefundStatus};
@@ -64,6 +64,8 @@ impl PaymentProvider for ManualProvider {
     }
 
     fn verify_webhook(&self, _h: &[(String, String)], _b: &[u8], _n: i64, _t: i64) -> Result<ProviderEvent> {
-        Err(BillingError::NotConfigured("manual billing receives no webhooks".into()))
+        Err(BillingError::NotConfigured(
+            "manual billing receives no webhooks".into(),
+        ))
     }
 }

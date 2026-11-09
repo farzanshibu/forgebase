@@ -281,7 +281,10 @@ mod tests {
         let tiers = vec![t(Some(1000), 0, 0), t(Some(5000), 2, 0), t(None, 1, 500)];
         check_tiers(&tiers).unwrap();
         // 1000 free, 4000 × 2, 1000 × 1 + 500 flat.
-        assert_eq!(price_amount(Scheme::Graduated, 0, &tiers, 6000).unwrap(), 8000 + 1000 + 500);
+        assert_eq!(
+            price_amount(Scheme::Graduated, 0, &tiers, 6000).unwrap(),
+            8000 + 1000 + 500
+        );
         assert_eq!(price_amount(Scheme::Graduated, 0, &tiers, 800).unwrap(), 0);
         // Volume: all 6000 at the third tier.
         assert_eq!(price_amount(Scheme::Volume, 0, &tiers, 6000).unwrap(), 6000 + 500);

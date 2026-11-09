@@ -37,8 +37,14 @@ async fn full_lifecycle_subscribe_renew_cancel_at_period_end() {
     let charges = env.http.calls("/v1/payment_intents");
     assert_eq!(charges.len(), 1);
     assert_eq!(MockHttp::field(&charges[0], "amount").as_deref(), Some("3000"));
-    assert_eq!(MockHttp::field(&charges[0], "payment_method").as_deref(), Some("pm_card_ann"));
-    assert_eq!(env.plan_of(&pk("ann")), (Some("pro".into()), Some(EntStatus::Active), true));
+    assert_eq!(
+        MockHttp::field(&charges[0], "payment_method").as_deref(),
+        Some("pm_card_ann")
+    );
+    assert_eq!(
+        env.plan_of(&pk("ann")),
+        (Some("pro".into()), Some(EntStatus::Active), true)
+    );
 
     // Idempotent subscribe; one plan per subject.
     let again = env.subscribe("ann", &["pro-m"], "sub-1").await;
@@ -57,7 +63,16 @@ async fn full_lifecycle_subscribe_renew_cancel_at_period_end() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(dup, BillingError::Conflict { code: "already_subscribed", .. }), "{dup:?}");
+    assert!(
+        matches!(
+            dup,
+            BillingError::Conflict {
+                code: "already_subscribed",
+                ..
+            }
+        ),
+        "{dup:?}"
+    );
 
     // Renewal on 1 December.
     let rep = env.advance(30 * DAY).await;
@@ -74,7 +89,14 @@ async fn full_lifecycle_subscribe_renew_cancel_at_period_end() {
     // Cancel at period end: entitled until then.
     let c = env
         .billing
-        .cancel(&user("ann"), &sub.id, CancelInput { at_period_end: true, reason: None })
+        .cancel(
+            &user("ann"),
+            &sub.id,
+            CancelInput {
+                at_period_end: true,
+                reason: None,
+            },
+        )
         .await
         .unwrap();
     let s = c.subscription.unwrap();
@@ -89,7 +111,11 @@ async fn full_lifecycle_subscribe_renew_cancel_at_period_end() {
     let (plan, status, _) = env.plan_of(&pk("ann"));
     assert_eq!(status, Some(EntStatus::Canceled));
     assert_ne!(plan.as_deref(), Some("pro"));
-    assert_eq!(env.http.calls("/v1/payment_intents").len(), 2, "no charge after cancellation");
+    assert_eq!(
+        env.http.calls("/v1/payment_intents").len(),
+        2,
+        "no charge after cancellation"
+    );
     // Every row of the audit trail stays.
     assert!(env.count("SELECT COUNT(*) FROM _forgebase_billing_audit").await >= 5);
 }
@@ -118,7 +144,14 @@ async fn cancel_now_and_pause_resume() {
     assert!(matches!(e, BillingError::NotFound(_)), "{e:?}");
     let c = env
         .billing
-        .cancel(&user("ann"), &sub.id, CancelInput { at_period_end: false, reason: Some("too expensive".into()) })
+        .cancel(
+            &user("ann"),
+            &sub.id,
+            CancelInput {
+                at_period_end: false,
+                reason: Some("too expensive".into()),
+            },
+        )
         .await
         .unwrap();
     let s = c.subscription.unwrap();
@@ -139,12 +172,18 @@ async fn trial_then_conversion() {
     assert_eq!(sub.trial_ends_at, Some(T0 + 14 * DAY));
     assert!(c.invoice.is_none());
     assert!(env.http.calls("/v1/payment_intents").is_empty());
-    assert_eq!(env.plan_of(&pk("ann")), (Some("pro".into()), Some(EntStatus::Trialing), true));
+    assert_eq!(
+        env.plan_of(&pk("ann")),
+        (Some("pro".into()), Some(EntStatus::Trialing), true)
+    );
     let rep = env.advance(14 * DAY).await;
     assert_eq!(rep.trials_ended, 1);
     let s = env.billing.subscription(&user("ann"), &sub.id).await.unwrap();
     assert_eq!(s.status, SubscriptionStatus::Active);
-    assert_eq!((s.current_period_start, s.current_period_end), (T0 + 14 * DAY, T0 + 44 * DAY));
+    assert_eq!(
+        (s.current_period_start, s.current_period_end),
+        (T0 + 14 * DAY, T0 + 44 * DAY)
+    );
     let inv = env.billing.invoices(&user("ann"), None, None, None).await.unwrap();
     assert_eq!((inv.len(), inv[0].total, inv[0].status), (1, 3000, InvoiceStatus::Paid));
     assert_eq!(env.plan_of(&pk("ann")).1, Some(EntStatus::Active));
@@ -175,7 +214,10 @@ async fn proration_upgrade_mid_cycle_charges_the_difference_now() {
     assert_eq!(amounts, vec![(LineKind::Proration, -500), (LineKind::Proration, 1500)]);
     assert_eq!((inv.total, inv.status), (1000, InvoiceStatus::Paid));
     let charges = env.http.calls("/v1/payment_intents");
-    assert_eq!(MockHttp::field(charges.last().unwrap(), "amount").as_deref(), Some("1000"));
+    assert_eq!(
+        MockHttp::field(charges.last().unwrap(), "amount").as_deref(),
+        Some("1000")
+    );
     assert_eq!(c.subscription.unwrap().items[0].price, "pro-m");
     assert_eq!(env.plan_of(&pk("ann")).0.as_deref(), Some("pro"));
     // The renewal charges the new price in full.
@@ -241,8 +283,14 @@ async fn downgrade_at_period_end_and_prorations_on_next_invoice() {
     assert_eq!(env.plan_of(&pk("ann")).0.as_deref(), Some("pro"));
     env.advance(30 * DAY).await;
     let s = env.billing.subscription(&user("ann"), &sub.id).await.unwrap();
-    assert_eq!((s.items[0].price.as_str(), s.pending_price.as_deref()), ("basic-m", None));
-    assert_eq!(env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0].total, 1000);
+    assert_eq!(
+        (s.items[0].price.as_str(), s.pending_price.as_deref()),
+        ("basic-m", None)
+    );
+    assert_eq!(
+        env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0].total,
+        1000
+    );
     assert_eq!(env.plan_of(&pk("ann")).0.as_deref(), Some("basic"));
 
     // create_prorations: the lines wait for the renewal.
@@ -261,12 +309,19 @@ async fn downgrade_at_period_end_and_prorations_on_next_invoice() {
         )
         .await
         .unwrap();
-    assert!(c.invoice.as_ref().is_none_or(|i| i.billing_reason != "subscription_update"));
+    assert!(
+        c.invoice
+            .as_ref()
+            .is_none_or(|i| i.billing_reason != "subscription_update")
+    );
     let rep = env.advance(31 * DAY / 2 + 1).await;
     assert_eq!(rep.renewed, 1);
     let inv = &env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0];
     let kinds: Vec<LineKind> = inv.lines.iter().map(|l| l.kind).collect();
-    assert_eq!(kinds, vec![LineKind::Proration, LineKind::Proration, LineKind::Subscription]);
+    assert_eq!(
+        kinds,
+        vec![LineKind::Proration, LineKind::Proration, LineKind::Subscription]
+    );
     // -500 (half of basic) + 1500 (half of pro) + 3000 for January.
     assert_eq!(inv.total, 4000);
 }
@@ -289,7 +344,11 @@ async fn metered_env(scheme: Scheme, tiers: Option<Vec<Tier>>, basis: MeterBasis
 #[tokio::test]
 async fn metered_invoice_from_usage_events() {
     let env = metered_env(Scheme::PerUnit, None, MeterBasis::Units).await;
-    let sub = env.subscribe("ann", &["basic-m", "api-m"], "k").await.subscription.unwrap();
+    let sub = env
+        .subscribe("ann", &["basic-m", "api-m"], "k")
+        .await
+        .subscription
+        .unwrap();
     let first = &env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0];
     assert_eq!(first.total, 1000, "metered prices are billed in arrears");
     env.clock.advance(HOUR);
@@ -300,17 +359,24 @@ async fn metered_invoice_from_usage_events() {
     // Re-reading the feed from the start stores nothing twice.
     env.exec("UPDATE _forgebase_billing_cursors SET seq = 0").await;
     assert_eq!(env.advance(MIN).await.usage_recorded, 0);
-    assert_eq!(env.count("SELECT COUNT(*) FROM _forgebase_billing_usage_records").await, 2);
+    assert_eq!(
+        env.count("SELECT COUNT(*) FROM _forgebase_billing_usage_records").await,
+        2
+    );
     env.clock.set(T0 + 30 * DAY);
     env.billing.run_maintenance().await.unwrap();
     let inv = &env.billing.invoices(&user("ann"), None, None, None).await.unwrap()[0];
     let usage: Vec<_> = inv.lines.iter().filter(|l| l.kind == LineKind::Usage).collect();
     assert_eq!(usage.len(), 1);
     assert_eq!((usage[0].quantity, usage[0].amount), (500, 1000));
-    assert_eq!((usage[0].period_start, usage[0].period_end), (Some(T0), Some(T0 + 30 * DAY)));
+    assert_eq!(
+        (usage[0].period_start, usage[0].period_end),
+        (Some(T0), Some(T0 + 30 * DAY))
+    );
     assert_eq!(inv.total, 1000 + 1000);
     assert_eq!(
-        env.count("SELECT COUNT(*) FROM _forgebase_billing_usage_records WHERE invoice_id IS NULL").await,
+        env.count("SELECT COUNT(*) FROM _forgebase_billing_usage_records WHERE invoice_id IS NULL")
+            .await,
         0
     );
     // The next period has no usage yet.
@@ -323,9 +389,21 @@ async fn metered_invoice_from_usage_events() {
 #[tokio::test]
 async fn tiered_pricing_graduated_and_volume() {
     let tiers = vec![
-        Tier { up_to: Some(1000), unit_amount: 0, flat_amount: 0 },
-        Tier { up_to: Some(5000), unit_amount: 2, flat_amount: 0 },
-        Tier { up_to: None, unit_amount: 1, flat_amount: 500 },
+        Tier {
+            up_to: Some(1000),
+            unit_amount: 0,
+            flat_amount: 0,
+        },
+        Tier {
+            up_to: Some(5000),
+            unit_amount: 2,
+            flat_amount: 0,
+        },
+        Tier {
+            up_to: None,
+            unit_amount: 1,
+            flat_amount: 500,
+        },
     ];
     for (scheme, expected) in [(Scheme::Graduated, 8000 + 1000 + 500), (Scheme::Volume, 6000 + 500)] {
         let env = metered_env(scheme, Some(tiers.clone()), MeterBasis::Units).await;
@@ -343,9 +421,22 @@ async fn tiered_pricing_graduated_and_volume() {
     p.price_type = PriceType::Metered;
     p.feature = Some("api_calls".into());
     p.scheme = Some(Scheme::Graduated);
-    p.tiers = Some(vec![Tier { up_to: Some(10), unit_amount: 1, flat_amount: 0 }]);
+    p.tiers = Some(vec![Tier {
+        up_to: Some(10),
+        unit_amount: 1,
+        flat_amount: 0,
+    }]);
     let e = env.billing.put_price(&admin(), "bad", p).await.unwrap_err();
-    assert!(matches!(e, BillingError::Invalid { code: "invalid_tiers", .. }), "{e:?}");
+    assert!(
+        matches!(
+            e,
+            BillingError::Invalid {
+                code: "invalid_tiers",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
 }
 
 #[tokio::test]
@@ -391,7 +482,11 @@ async fn coupons_percent_repeating_and_amount_once() {
     env.advance(31 * DAY).await;
     let invs = env.billing.invoices(&user("ann"), None, None, None).await.unwrap();
     let totals: Vec<i64> = invs.iter().rev().map(|i| i.total).collect();
-    assert_eq!(totals, vec![2400, 2400, 3000], "two discounted invoices, then the full price");
+    assert_eq!(
+        totals,
+        vec![2400, 2400, 3000],
+        "two discounted invoices, then the full price"
+    );
     // The coupon was redeemed once and is capped at one redemption.
     env.customer("bob", "USD").await;
     let e = env
@@ -407,7 +502,16 @@ async fn coupons_percent_repeating_and_amount_once() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(e, BillingError::Invalid { code: "coupon_exhausted", .. }), "{e:?}");
+    assert!(
+        matches!(
+            e,
+            BillingError::Invalid {
+                code: "coupon_exhausted",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
 
     // An amount coupon on a one-time order.
     env.billing
@@ -435,7 +539,10 @@ async fn coupons_percent_repeating_and_amount_once() {
         .create_order(
             &user("ann"),
             forgebase_billing::OrderInput {
-                items: vec![ItemInput { price: "credits-100".into(), quantity: 2 }],
+                items: vec![ItemInput {
+                    price: "credits-100".into(),
+                    quantity: 2,
+                }],
                 coupon: Some("TENOFF".into()),
                 idempotency_key: "o1".into(),
                 ..Default::default()
@@ -453,11 +560,27 @@ async fn tax_exclusive_and_inclusive_by_region() {
     env.catalog().await;
     env.stripe().await;
     env.billing
-        .put_tax_rate(&admin(), "IN", TaxRateInput { name: "GST".into(), rate_bp: 1800, active: true })
+        .put_tax_rate(
+            &admin(),
+            "IN",
+            TaxRateInput {
+                name: "GST".into(),
+                rate_bp: 1800,
+                active: true,
+            },
+        )
         .await
         .unwrap();
     env.billing
-        .put_tax_rate(&admin(), "DE", TaxRateInput { name: "MwSt".into(), rate_bp: 1900, active: true })
+        .put_tax_rate(
+            &admin(),
+            "DE",
+            TaxRateInput {
+                name: "MwSt".into(),
+                rate_bp: 1900,
+                active: true,
+            },
+        )
         .await
         .unwrap();
     let mut incl = recurring("pro", "EUR", 11_900);
@@ -479,7 +602,10 @@ async fn tax_exclusive_and_inclusive_by_region() {
     }
     // Exclusive: 18 % on top (the country rate applies to IN-KA).
     let inv = env.subscribe("ravi", &["pro-m"], "k").await.invoice.unwrap();
-    assert_eq!((inv.currency.as_str(), inv.subtotal, inv.tax, inv.total), ("INR", 250_000, 45_000, 295_000));
+    assert_eq!(
+        (inv.currency.as_str(), inv.subtotal, inv.tax, inv.total),
+        ("INR", 250_000, 45_000, 295_000)
+    );
     assert_eq!(inv.tax_region.as_deref(), Some("IN"));
     assert_eq!(inv.lines[0].tax_rate_bp, 1800);
     // Inclusive: 19 % inside the price.
@@ -512,7 +638,16 @@ async fn multi_currency_price_sets() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(e, BillingError::Invalid { code: "currency_not_supported", .. }), "{e:?}");
+    assert!(
+        matches!(
+            e,
+            BillingError::Invalid {
+                code: "currency_not_supported",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
     // The currency is fixed once invoiced.
     let e = env
         .billing
@@ -525,7 +660,16 @@ async fn multi_currency_price_sets() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(e, BillingError::Conflict { code: "currency_locked", .. }), "{e:?}");
+    assert!(
+        matches!(
+            e,
+            BillingError::Conflict {
+                code: "currency_locked",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
 }
 
 #[tokio::test]
@@ -534,7 +678,11 @@ async fn statistics_mrr_arr_churn_revenue() {
     env.customer("bob", "USD").await;
     env.save_card("bob").await;
     env.subscribe("ann", &["pro-m"], "k").await;
-    let b = env.subscribe("bob", &["basic-m", "seat-m"], "k").await.subscription.unwrap();
+    let b = env
+        .subscribe("bob", &["basic-m", "seat-m"], "k")
+        .await
+        .subscription
+        .unwrap();
     let s = env
         .billing
         .stats(&admin(), T0 - DAY, T0 + DAY, forgebase_billing::Bucket::Day)
@@ -547,7 +695,14 @@ async fn statistics_mrr_arr_churn_revenue() {
     assert_eq!(rev, 4500);
     env.clock.advance(2 * HOUR);
     env.billing
-        .cancel(&user("bob"), &b.id, CancelInput { at_period_end: false, reason: None })
+        .cancel(
+            &user("bob"),
+            &b.id,
+            CancelInput {
+                at_period_end: false,
+                reason: None,
+            },
+        )
         .await
         .unwrap();
     let s = env
@@ -558,9 +713,10 @@ async fn statistics_mrr_arr_churn_revenue() {
     assert_eq!((s.active_at_start, s.churned, s.churn_rate_bp), (2, 1, Some(5000)));
     assert_eq!(s.recurring[0].mrr, 3000);
     // Members cannot read instance-wide statistics.
-    assert!(env
-        .billing
-        .stats(&user("ann"), T0, T0 + DAY, forgebase_billing::Bucket::Day)
-        .await
-        .is_err());
+    assert!(
+        env.billing
+            .stats(&user("ann"), T0, T0 + DAY, forgebase_billing::Bucket::Day)
+            .await
+            .is_err()
+    );
 }

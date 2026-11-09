@@ -120,22 +120,37 @@ impl MockHttp {
                     json!({"error": {"type": "card_error", "code": "card_declined", "decline_code": "insufficient_funds",
                         "message": "Your card has insufficient funds.", "payment_intent": {"id": format!("pi_test_{n}")}}}),
                 ),
-                ChargeMode::Unreachable => return Err(AuthError::Provider("request to the remote server timed out".into())),
+                ChargeMode::Unreachable => {
+                    return Err(AuthError::Provider("request to the remote server timed out".into()));
+                }
             },
-            "/v1/refunds" => resp(200, json!({"id": format!("re_test_{n}"), "status": *self.refund_status.lock().unwrap()})),
+            "/v1/refunds" => resp(
+                200,
+                json!({"id": format!("re_test_{n}"), "status": *self.refund_status.lock().unwrap()}),
+            ),
             "/v1/checkout/sessions" => resp(
                 200,
                 json!({"id": format!("cs_test_{n}"), "url": format!("https://checkout.stripe.test/c/pay/cs_test_{n}")}),
             ),
             "/v1/orders" => resp(200, json!({"id": format!("order_test_{n}")})),
             "/v1/payments/create/recurring" => match mode {
-                ChargeMode::Decline => resp(400, json!({"error": {"code": "BAD_REQUEST_ERROR", "description": "Payment failed"}})),
-                _ => resp(200, json!({"razorpay_payment_id": format!("pay_test_{n}"), "razorpay_order_id": "order"})),
+                ChargeMode::Decline => resp(
+                    400,
+                    json!({"error": {"code": "BAD_REQUEST_ERROR", "description": "Payment failed"}}),
+                ),
+                _ => resp(
+                    200,
+                    json!({"razorpay_payment_id": format!("pay_test_{n}"), "razorpay_order_id": "order"}),
+                ),
             },
-            "/v1/payment_links" => resp(200, json!({"id": format!("plink_{n}"), "short_url": format!("https://rzp.test/{n}")})),
-            "/v1/subscription_registration/auth_links" => {
-                resp(200, json!({"id": format!("inv_{n}"), "short_url": format!("https://rzp.test/auth/{n}")}))
-            }
+            "/v1/payment_links" => resp(
+                200,
+                json!({"id": format!("plink_{n}"), "short_url": format!("https://rzp.test/{n}")}),
+            ),
+            "/v1/subscription_registration/auth_links" => resp(
+                200,
+                json!({"id": format!("inv_{n}"), "short_url": format!("https://rzp.test/auth/{n}")}),
+            ),
             p if p.starts_with("/v1/payments/") && p.ends_with("/refund") => {
                 resp(200, json!({"id": format!("rfnd_test_{n}"), "status": "processed"}))
             }
@@ -421,7 +436,9 @@ impl Env {
         let mut seats = product("Extra projects", ProductKind::Addon);
         seats.addon_key = Some("extra_projects".into());
         b.put_product(&a, "seats", seats).await.unwrap();
-        b.put_product(&a, "api", product("API calls", ProductKind::Service)).await.unwrap();
+        b.put_product(&a, "api", product("API calls", ProductKind::Service))
+            .await
+            .unwrap();
         let mut credits = product("Credits", ProductKind::Credits);
         credits.credits = Some(100);
         b.put_product(&a, "credits", credits).await.unwrap();
@@ -429,7 +446,9 @@ impl Env {
         pack.pack_key = Some("api_1k".into());
         b.put_product(&a, "pack", pack).await.unwrap();
 
-        b.put_price(&a, "basic-m", recurring("basic", "USD", 1000)).await.unwrap();
+        b.put_price(&a, "basic-m", recurring("basic", "USD", 1000))
+            .await
+            .unwrap();
         let mut pro = recurring("pro", "USD", 3000);
         pro.currency_options = serde_json::from_value(json!({
             "EUR": {"unit_amount": 2800},
@@ -482,17 +501,31 @@ impl Env {
     }
 
     /// Delivers a signed Stripe webhook.
-    pub async fn stripe_webhook(&self, body: &Json, t_secs: i64) -> forgebase_billing::Result<forgebase_billing::WebhookOutcome> {
+    pub async fn stripe_webhook(
+        &self,
+        body: &Json,
+        t_secs: i64,
+    ) -> forgebase_billing::Result<forgebase_billing::WebhookOutcome> {
         let raw = body.to_string();
-        let headers = vec![("stripe-signature".to_owned(), stripe::sign(STRIPE_WHSEC, t_secs, raw.as_bytes()))];
+        let headers = vec![(
+            "stripe-signature".to_owned(),
+            stripe::sign(STRIPE_WHSEC, t_secs, raw.as_bytes()),
+        )];
         self.billing.handle_webhook("stripe", &headers, raw.as_bytes()).await
     }
 
     /// Delivers a signed Razorpay webhook.
-    pub async fn razorpay_webhook(&self, id: &str, body: &Json) -> forgebase_billing::Result<forgebase_billing::WebhookOutcome> {
+    pub async fn razorpay_webhook(
+        &self,
+        id: &str,
+        body: &Json,
+    ) -> forgebase_billing::Result<forgebase_billing::WebhookOutcome> {
         let raw = body.to_string();
         let headers = vec![
-            ("x-razorpay-signature".to_owned(), razorpay::sign(RZP_WHSEC, raw.as_bytes())),
+            (
+                "x-razorpay-signature".to_owned(),
+                razorpay::sign(RZP_WHSEC, raw.as_bytes()),
+            ),
             ("x-razorpay-event-id".to_owned(), id.to_owned()),
         ];
         self.billing.handle_webhook("razorpay", &headers, raw.as_bytes()).await

@@ -79,7 +79,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: BillingService) -> Router<S
     Router::<BillingService>::new()
         .route("/billing/settings", get(get_settings).put(put_settings))
         .route("/billing/providers", get(providers))
-        .route("/billing/providers/{provider}", put(put_provider).delete(delete_provider))
+        .route(
+            "/billing/providers/{provider}",
+            put(put_provider).delete(delete_provider),
+        )
         .route("/billing/products", get(products))
         .route("/billing/products/{key}", get(product).put(put_product))
         .route("/billing/prices", get(prices))
@@ -206,7 +209,11 @@ async fn put_provider(
 #[utoipa::path(delete, path = "/api/v1/billing/providers/{provider}", tag = "billing-catalog",
     params(("provider" = String, Path, description = "Provider")),
     responses((status = 204, description = "Removed")))]
-async fn delete_provider(State(s): State<BillingService>, Access(ctx): Access, Path(provider): Path<String>) -> ApiResult {
+async fn delete_provider(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(provider): Path<String>,
+) -> ApiResult {
     s.delete_provider(&ctx, &provider).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -394,7 +401,12 @@ async fn change_plan(
 #[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/cancel", tag = "billing-portal", request_body = CancelInput,
     params(("id" = String, Path, description = "Subscription id")),
     responses((status = 200, description = "Cancelled", body = Checkout)))]
-async fn cancel(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>, b: Body<CancelInput>) -> ApiResult {
+async fn cancel(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    b: Body<CancelInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
     ok(s.cancel(&ctx, &id, input).await.map_err(api)?)
 }
@@ -456,9 +468,15 @@ async fn order(State(s): State<BillingService>, Access(ctx): Access, Path(id): P
 async fn invoices(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
     let status = match q.get("status") {
         None | Some("") => None,
-        Some(v) => Some(InvoiceStatus::parse(v).ok_or_else(|| ApiError::bad_request("invalid_parameter", "unknown status"))?),
+        Some(v) => {
+            Some(InvoiceStatus::parse(v).ok_or_else(|| ApiError::bad_request("invalid_parameter", "unknown status"))?)
+        }
     };
-    items(s.invoices(&ctx, q.get("subject"), status, q.u32("limit")?).await.map_err(api)?)
+    items(
+        s.invoices(&ctx, q.get("subject"), status, q.u32("limit")?)
+            .await
+            .map_err(api)?,
+    )
 }
 
 /// One invoice with its lines.
@@ -473,16 +491,28 @@ async fn invoice(State(s): State<BillingService>, Access(ctx): Access, Path(id):
 #[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/pay", tag = "billing-portal", request_body = PayInput,
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 200, description = "Attempted", body = Collection)))]
-async fn pay_invoice(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>, b: Body<PayInput>) -> ApiResult {
+async fn pay_invoice(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    b: Body<PayInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
-    ok(s.pay_invoice(&ctx, &id, input.return_url.as_deref()).await.map_err(api)?)
+    ok(s.pay_invoice(&ctx, &id, input.return_url.as_deref())
+        .await
+        .map_err(api)?)
 }
 
 /// Records an out-of-band payment (operators; manual billing).
 #[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/mark-paid", tag = "billing", request_body = MarkPaidInput,
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 200, description = "Paid", body = Invoice)))]
-async fn mark_paid(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>, b: Body<MarkPaidInput>) -> ApiResult {
+async fn mark_paid(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(id): Path<String>,
+    b: Body<MarkPaidInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
     ok(s.mark_paid(&ctx, &id, input).await.map_err(api)?)
 }
@@ -515,7 +545,11 @@ async fn credit_invoice(
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Credit notes", body = Items<CreditNote>)))]
 async fn credit_notes(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
-    items(s.credit_notes(&ctx, q.get("subject"), q.u32("limit")?).await.map_err(api)?)
+    items(
+        s.credit_notes(&ctx, q.get("subject"), q.u32("limit")?)
+            .await
+            .map_err(api)?,
+    )
 }
 
 /// Payments of a subject (payment history).
@@ -546,7 +580,11 @@ async fn portal(State(s): State<BillingService>, Access(ctx): Access, q: Query) 
 /// A provider-hosted page that saves or replaces the payment method.
 #[utoipa::path(post, path = "/api/v1/billing/portal/payment-method", tag = "billing-portal", request_body = PaymentMethodInput,
     responses((status = 200, description = "Hosted page", body = HostedPage)))]
-async fn payment_method(State(s): State<BillingService>, Access(ctx): Access, b: Body<PaymentMethodInput>) -> ApiResult {
+async fn payment_method(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    b: Body<PaymentMethodInput>,
+) -> ApiResult {
     let input = body(&s, &ctx, b)?;
     ok(s.payment_method_page(&ctx, input).await.map_err(api)?)
 }
@@ -562,7 +600,12 @@ async fn payment_method(State(s): State<BillingService>, Access(ctx): Access, b:
     params(("provider" = String, Path, description = "stripe or razorpay")),
     responses((status = 200, description = "Handled", body = WebhookOutcome), (status = 400, description = "Signature refused"),
         (status = 404, description = "Provider not configured")))]
-async fn webhook(State(s): State<BillingService>, Path(provider): Path<String>, headers: HeaderMap, raw: Bytes) -> ApiResult {
+async fn webhook(
+    State(s): State<BillingService>,
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    raw: Bytes,
+) -> ApiResult {
     let hs: Vec<(String, String)> = headers
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_ascii_lowercase(), v.to_owned())))
@@ -592,7 +635,8 @@ async fn stats(State(s): State<BillingService>, Access(ctx): Access, q: Query) -
     let from = time_param(&q, "from")?.unwrap_or(to - 30 * DAY);
     let bucket = match q.get("interval") {
         None | Some("") => Bucket::Day,
-        Some(v) => Bucket::parse(v).ok_or_else(|| ApiError::bad_request("invalid_parameter", "interval must be day or month"))?,
+        Some(v) => Bucket::parse(v)
+            .ok_or_else(|| ApiError::bad_request("invalid_parameter", "interval must be day or month"))?,
     };
     ok(s.stats(&ctx, from, to, bucket).await.map_err(api)?)
 }

@@ -14,8 +14,8 @@ use serde_json::json;
 use crate::error::{BillingError, Result};
 use crate::model::{
     Collection, Coupon, CouponKind, CreditNote, CreditNoteInput, FinalAction, Invoice, InvoiceLine, InvoiceStatus,
-    LineKind, MarkPaidInput, Payment, PaymentStatus, Portal, Price, ProductKind, Refund, RefundStatus,
-    Subscription, SubscriptionItem, SubscriptionStatus, TaxBehavior,
+    LineKind, MarkPaidInput, Payment, PaymentStatus, Portal, Price, ProductKind, Refund, RefundStatus, Subscription,
+    SubscriptionItem, SubscriptionStatus, TaxBehavior,
 };
 use crate::money::{allocate, mul_div, price_amount, tax};
 use crate::provider::{ChargeRequest, ChargeResult, HostedPaymentRequest, RefundRequest};
@@ -84,8 +84,7 @@ const INVOICE_COLUMNS: &str = "i.id, i.number, i.customer_id, i.subject, i.subsc
     i.amount_refunded, c.code, i.tax_region, i.period_start, i.period_end, i.attempt_count, i.next_attempt_at,
     i.hosted_url, i.finalized_at, i.paid_at, i.fulfilled_at, i.created_at";
 
-const INVOICE_FROM: &str =
-    "_forgebase_billing_invoices i LEFT JOIN _forgebase_billing_coupons c ON c.id = i.coupon_id";
+const INVOICE_FROM: &str = "_forgebase_billing_invoices i LEFT JOIN _forgebase_billing_coupons c ON c.id = i.coupon_id";
 
 fn invoice_row(r: &[Value]) -> Invoice {
     Invoice {
@@ -144,7 +143,8 @@ fn line_row(r: &[Value]) -> InvoiceLine {
     }
 }
 
-const PAYMENT_COLUMNS: &str = "id, invoice_id, subject, provider, provider_ref, status, amount, currency, amount_refunded,
+const PAYMENT_COLUMNS: &str =
+    "id, invoice_id, subject, provider, provider_ref, status, amount, currency, amount_refunded,
     failure_code, failure_message, attempt, created_at, updated_at";
 
 pub(crate) fn payment_row(r: &[Value]) -> Payment {
@@ -241,7 +241,13 @@ pub(crate) fn item_amount(price: &Price, currency: &str, quantity: i64) -> Resul
 
 impl LineDraft {
     /// A line for `quantity` units of a price.
-    pub fn for_price(kind: LineKind, price: &Price, currency: &str, quantity: i64, period: Option<(i64, i64)>) -> Result<Self> {
+    pub fn for_price(
+        kind: LineKind,
+        price: &Price,
+        currency: &str,
+        quantity: i64,
+        period: Option<(i64, i64)>,
+    ) -> Result<Self> {
         let amount = item_amount(price, currency, quantity)?;
         let unit = (price.scheme == crate::money::Scheme::PerUnit)
             .then(|| price.amounts(currency).map(|(u, _)| u))
@@ -249,7 +255,12 @@ impl LineDraft {
         Ok(Self {
             kind,
             description: match kind {
-                LineKind::Usage => format!("{} × {} ({})", quantity, price.product, price.feature.clone().unwrap_or_default()),
+                LineKind::Usage => format!(
+                    "{} × {} ({})",
+                    quantity,
+                    price.product,
+                    price.feature.clone().unwrap_or_default()
+                ),
                 _ if quantity == 1 => price.product.clone(),
                 _ => format!("{} × {}", quantity, price.product),
             },
@@ -428,7 +439,12 @@ impl BillingService {
         if applied > 0 || credit > 0 {
             t.exec(
                 "UPDATE _forgebase_billing_customers SET balance = balance - ?2 + ?3, updated_at = ?4 WHERE id = ?1",
-                vec![spec.customer_id.clone().into(), applied.into(), credit.into(), now.into()],
+                vec![
+                    spec.customer_id.clone().into(),
+                    applied.into(),
+                    credit.into(),
+                    now.into(),
+                ],
             )
             .await?;
         }
@@ -481,7 +497,13 @@ impl BillingService {
 
     /// Adds lines to the subscription's draft invoice (pending prorations,
     /// billed with the next renewal).
-    pub(crate) async fn add_pending_lines(&self, t: &mut Tx<'_>, sub: &Subscription, lines: &[LineDraft], now: i64) -> Result<()> {
+    pub(crate) async fn add_pending_lines(
+        &self,
+        t: &mut Tx<'_>,
+        sub: &Subscription,
+        lines: &[LineDraft],
+        now: i64,
+    ) -> Result<()> {
         let draft = t
             .fetch(
                 "SELECT id FROM _forgebase_billing_invoices WHERE subscription_id = ?1 AND status = 'draft'",
@@ -557,7 +579,11 @@ impl BillingService {
             .first()
             .map(|r| (opt_text(r, 0), int(r, 1) != 0))
             .unwrap_or_default();
-        let (bp, _) = if exempt { (0, None) } else { self.tax_rate_for(region.as_deref()).await? };
+        let (bp, _) = if exempt {
+            (0, None)
+        } else {
+            self.tax_rate_for(region.as_deref()).await?
+        };
         let lines = t
             .fetch(
                 "SELECT id, amount, discount_amount, tax_inclusive FROM _forgebase_billing_invoice_lines WHERE invoice_id = ?1",
@@ -598,7 +624,9 @@ pub(crate) async fn load_invoice_tx(t: &mut Tx<'_>, id: &str) -> Result<Invoice>
         .ok_or_else(|| BillingError::NotFound("invoice".into()))?;
     let lines = t
         .fetch(
-            &format!("SELECT {LINE_COLUMNS} FROM _forgebase_billing_invoice_lines WHERE invoice_id = ?1 ORDER BY position"),
+            &format!(
+                "SELECT {LINE_COLUMNS} FROM _forgebase_billing_invoice_lines WHERE invoice_id = ?1 ORDER BY position"
+            ),
             vec![id.into()],
         )
         .await?;
@@ -635,7 +663,10 @@ impl BillingService {
 
     pub(crate) async fn load_sub(&self, id: &str) -> Result<SubRow> {
         let rows = self
-            .fetch(&format!("SELECT {SUB_COLUMNS} FROM {SUB_FROM} WHERE s.id = ?1"), vec![id.into()])
+            .fetch(
+                &format!("SELECT {SUB_COLUMNS} FROM {SUB_FROM} WHERE s.id = ?1"),
+                vec![id.into()],
+            )
             .await?;
         let mut s = rows
             .rows
@@ -689,7 +720,12 @@ impl BillingService {
     /// method it counts as a failed attempt (the subscription goes `past_due`
     /// and dunning runs), while a customer-initiated payment only returns the
     /// hosted page.
-    pub(crate) async fn collect(&self, invoice_id: &str, return_url: Option<&str>, automatic: bool) -> Result<Collection> {
+    pub(crate) async fn collect(
+        &self,
+        invoice_id: &str,
+        return_url: Option<&str>,
+        automatic: bool,
+    ) -> Result<Collection> {
         let inv = self.load_invoice(invoice_id).await?;
         if inv.status != InvoiceStatus::Open || inv.amount_due == 0 {
             return Ok(Collection {
@@ -983,8 +1019,15 @@ impl BillingService {
             )
             .await?;
         }
-        t.audit("system", "invoice.paid", "invoice", &inv.id, json!({"amount": amount}), now)
-            .await?;
+        t.audit(
+            "system",
+            "invoice.paid",
+            "invoice",
+            &inv.id,
+            json!({"amount": amount}),
+            now,
+        )
+        .await?;
         Ok(true)
     }
 
@@ -1005,7 +1048,10 @@ impl BillingService {
         let attempts = inv.attempt_count.max(1);
         let base = inv.finalized_at.unwrap_or(now);
         let sub = inv.subscription_id.clone().unwrap_or_default();
-        if let Some(days) = settings.retry_days.get(usize::try_from(attempts - 1).unwrap_or(usize::MAX)) {
+        if let Some(days) = settings
+            .retry_days
+            .get(usize::try_from(attempts - 1).unwrap_or(usize::MAX))
+        {
             let next = (base + days * DAY).max(now + 1);
             t.exec(
                 "UPDATE _forgebase_billing_invoices SET next_attempt_at = ?2, updated_at = ?3 WHERE id = ?1",
@@ -1036,8 +1082,15 @@ impl BillingService {
                 vec![sub.clone().into(), now.into()],
             )
             .await?;
-            t.audit("system", "subscription.dunning_canceled", "subscription", &sub, json!({"invoice": inv.id}), now)
-                .await?;
+            t.audit(
+                "system",
+                "subscription.dunning_canceled",
+                "subscription",
+                &sub,
+                json!({"invoice": inv.id}),
+                now,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1258,7 +1311,12 @@ impl BillingService {
     }
 
     /// Payments of a subject (newest first).
-    pub async fn payments(&self, ctx: &AccessContext, subject: Option<&str>, limit: Option<u32>) -> Result<Vec<Payment>> {
+    pub async fn payments(
+        &self,
+        ctx: &AccessContext,
+        subject: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Payment>> {
         let subject = self.list_subject(ctx, subject)?;
         let limit = i64::from(limit.unwrap_or(50).clamp(1, 500));
         let rows = self
@@ -1290,7 +1348,12 @@ impl BillingService {
     }
 
     /// Credit notes of a subject (newest first).
-    pub async fn credit_notes(&self, ctx: &AccessContext, subject: Option<&str>, limit: Option<u32>) -> Result<Vec<CreditNote>> {
+    pub async fn credit_notes(
+        &self,
+        ctx: &AccessContext,
+        subject: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Vec<CreditNote>> {
         let subject = self.list_subject(ctx, subject)?;
         let limit = i64::from(limit.unwrap_or(50).clamp(1, 500));
         let rows = self
@@ -1355,7 +1418,10 @@ impl BillingService {
         self.can_manage(ctx, &inv.subject)?;
         let url = return_url.map(crate::service::check_url).transpose()?;
         if inv.status != InvoiceStatus::Open {
-            return Err(BillingError::conflict("invoice_not_open", "only open invoices can be paid"));
+            return Err(BillingError::conflict(
+                "invoice_not_open",
+                "only open invoices can be paid",
+            ));
         }
         self.collect(id, url.as_deref(), false).await
     }
@@ -1392,8 +1458,15 @@ impl BillingService {
             )
             .await?;
             self.mark_paid_tx(&mut t, &inv, inv.amount_due, now).await?;
-            t.audit(&ctx.principal_key(), "invoice.mark_paid", "invoice", id, json!({"reference": reference}), now)
-                .await?;
+            t.audit(
+                &ctx.principal_key(),
+                "invoice.mark_paid",
+                "invoice",
+                id,
+                json!({"reference": reference}),
+                now,
+            )
+            .await?;
             Ok(((), true))
         }
         .await;
@@ -1635,12 +1708,18 @@ impl BillingService {
         let mut reversed = 0;
         for l in &inv.lines {
             let Some(pk) = &l.product else { continue };
-            let Ok(product) = self.product_by("key", pk).await else { continue };
+            let Ok(product) = self.product_by("key", pk).await else {
+                continue;
+            };
             if product.kind != ProductKind::Credits {
                 continue;
             }
             let bought = product.credits.unwrap_or_default().saturating_mul(l.quantity.max(1));
-            let take = if amount >= base { bought } else { mul_div(bought, amount, base.max(1)) };
+            let take = if amount >= base {
+                bought
+            } else {
+                mul_div(bought, amount, base.max(1))
+            };
             if take <= 0 {
                 continue;
             }
@@ -1689,7 +1768,10 @@ impl BillingService {
 
     async fn refund_amount(&self, id: &str) -> Result<i64> {
         let rows = self
-            .fetch("SELECT amount FROM _forgebase_billing_refunds WHERE id = ?1", vec![id.into()])
+            .fetch(
+                "SELECT amount FROM _forgebase_billing_refunds WHERE id = ?1",
+                vec![id.into()],
+            )
             .await?;
         Ok(rows.rows.first().map(|r| int(r, 0)).unwrap_or_default())
     }
@@ -1707,7 +1789,9 @@ impl BillingService {
         let mut tx = self.begin().await?;
         let res = async {
             let mut t = Tx(tx.as_mut());
-            let changed = self.set_refund_tx(&mut t, id, status, provider_ref, event_at, now).await?;
+            let changed = self
+                .set_refund_tx(&mut t, id, status, provider_ref, event_at, now)
+                .await?;
             Ok((changed, true))
         }
         .await;
@@ -1739,7 +1823,13 @@ impl BillingService {
         t.exec(
             "UPDATE _forgebase_billing_refunds SET status = ?2, provider_ref = COALESCE(?3, provider_ref),
                  provider_event_at = COALESCE(?4, provider_event_at), updated_at = ?5 WHERE id = ?1",
-            vec![id.into(), status.as_str().into(), provider_ref.into(), event_at.into(), now.into()],
+            vec![
+                id.into(),
+                status.as_str().into(),
+                provider_ref.into(),
+                event_at.into(),
+                now.into(),
+            ],
         )
         .await?;
         if status == RefundStatus::Failed {
@@ -1763,8 +1853,15 @@ impl BillingService {
                 vec![id.into(), amount.into(), now.into()],
             )
             .await?;
-            t.audit("system", "refund.failed", "refund", id, json!({"amount": amount, "to_balance": true}), now)
-                .await?;
+            t.audit(
+                "system",
+                "refund.failed",
+                "refund",
+                id,
+                json!({"amount": amount, "to_balance": true}),
+                now,
+            )
+            .await?;
         }
         Ok(true)
     }

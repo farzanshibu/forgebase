@@ -51,7 +51,10 @@ pub fn check_keys(key_id: &str, key_secret: &str, webhook_secret: &str) -> Resul
         ));
     }
     if !key_id.starts_with("rzp_test_") || key_id.len() < 12 {
-        return Err(BillingError::invalid("invalid_key", "the Razorpay key id must start with rzp_test_"));
+        return Err(BillingError::invalid(
+            "invalid_key",
+            "the Razorpay key id must start with rzp_test_",
+        ));
     }
     if key_secret.len() < 8 || webhook_secret.len() < 8 {
         return Err(BillingError::invalid(
@@ -279,7 +282,10 @@ impl PaymentProvider for RazorpayProvider {
             .ok_or_else(|| BillingError::webhook("invalid_signature", "missing X-Razorpay-Signature header"))?;
         let expected = hmac_hex(self.webhook_secret.as_bytes(), body);
         if !same_signature(&expected, sig) {
-            return Err(BillingError::webhook("invalid_signature", "the webhook signature does not match"));
+            return Err(BillingError::webhook(
+                "invalid_signature",
+                "the webhook signature does not match",
+            ));
         }
         let id = header(headers, "x-razorpay-event-id")
             .filter(|s| !s.trim().is_empty())
@@ -294,12 +300,12 @@ pub fn parse_event(id: &str, ev: &Json) -> Result<ProviderEvent> {
     let event_type = str_at(ev, &["event"]).unwrap_or_default().to_owned();
     let created = int_at(ev, &["created_at"])
         .ok_or_else(|| BillingError::webhook("invalid_payload", "the event has no created_at"))?;
-    let payment = ev
-        .pointer("/payload/payment/entity")
-        .cloned()
-        .unwrap_or(Json::Null);
+    let payment = ev.pointer("/payload/payment/entity").cloned().unwrap_or(Json::Null);
     let invoice_id = str_at(&payment, &["notes", "forgebase_invoice"])
-        .or_else(|| ev.pointer("/payload/payment_link/entity/notes/forgebase_invoice").and_then(Json::as_str))
+        .or_else(|| {
+            ev.pointer("/payload/payment_link/entity/notes/forgebase_invoice")
+                .and_then(Json::as_str)
+        })
         .map(str::to_owned);
     let action = match event_type.as_str() {
         "payment.captured" | "payment_link.paid" | "order.paid" => match str_at(&payment, &["id"]) {

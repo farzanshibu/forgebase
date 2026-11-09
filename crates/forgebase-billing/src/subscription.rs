@@ -17,15 +17,20 @@ use crate::model::{
 };
 use crate::money::prorate;
 use crate::service::{
-    BillingService, DAY, Tx, add_months, check_idem, check_metadata, check_url, int, new_id, next_boundary,
-    opt_text, period_months, text,
+    BillingService, DAY, Tx, add_months, check_idem, check_metadata, check_url, int, new_id, next_boundary, opt_text,
+    period_months, text,
 };
 
 const MAX_QUANTITY: i64 = 1_000_000;
 
 impl BillingService {
     /// Prices of `items`, validated for `currency` and `allowed` types.
-    async fn resolve_items(&self, items: &[ItemInput], currency: &str, allowed: &[PriceType]) -> Result<Vec<(Price, i64)>> {
+    async fn resolve_items(
+        &self,
+        items: &[ItemInput],
+        currency: &str,
+        allowed: &[PriceType],
+    ) -> Result<Vec<(Price, i64)>> {
         if items.is_empty() || items.len() > 20 {
             return Err(BillingError::invalid("invalid_items", "name 1 to 20 prices"));
         }
@@ -33,14 +38,20 @@ impl BillingService {
         let mut out = Vec::new();
         for it in items {
             if !(1..=MAX_QUANTITY).contains(&it.quantity) {
-                return Err(BillingError::invalid("invalid_quantity", "quantity must be between 1 and 10^6"));
+                return Err(BillingError::invalid(
+                    "invalid_quantity",
+                    "quantity must be between 1 and 10^6",
+                ));
             }
             let p = self.price_by("key", it.price.trim()).await?;
             if !seen.insert(p.id.clone()) {
                 return Err(BillingError::invalid("invalid_items", "a price is listed twice"));
             }
             if !p.active {
-                return Err(BillingError::invalid("price_inactive", format!("price {} is not sold", p.key)));
+                return Err(BillingError::invalid(
+                    "price_inactive",
+                    format!("price {} is not sold", p.key),
+                ));
             }
             if !allowed.contains(&p.price_type) {
                 return Err(BillingError::invalid(
@@ -51,11 +62,18 @@ impl BillingService {
             if p.amounts(currency).is_none() {
                 return Err(BillingError::invalid(
                     "currency_not_supported",
-                    format!("price {} is not sold in {currency} (sold in {})", p.key, p.currencies().join(", ")),
+                    format!(
+                        "price {} is not sold in {currency} (sold in {})",
+                        p.key,
+                        p.currencies().join(", ")
+                    ),
                 ));
             }
             if p.price_type == PriceType::Metered && it.quantity != 1 {
-                return Err(BillingError::invalid("invalid_quantity", "metered prices take no quantity"));
+                return Err(BillingError::invalid(
+                    "invalid_quantity",
+                    "metered prices take no quantity",
+                ));
             }
             out.push((p, it.quantity));
         }
@@ -123,7 +141,13 @@ impl BillingService {
         }
     }
 
-    async fn checkout(&self, sub_id: &str, invoice_id: Option<&str>, payment_url: Option<String>, replayed: bool) -> Result<Checkout> {
+    async fn checkout(
+        &self,
+        sub_id: &str,
+        invoice_id: Option<&str>,
+        payment_url: Option<String>,
+        replayed: bool,
+    ) -> Result<Checkout> {
         let sub = self.load_sub(sub_id).await?.sub;
         let invoice = match invoice_id.or(sub.latest_invoice_id.as_deref()) {
             Some(i) => Some(self.load_invoice(i).await?),
@@ -140,7 +164,13 @@ impl BillingService {
 
     /// After a transaction that produced an invoice: sync, then collect an
     /// open invoice (or deliver one that is already paid).
-    async fn settle(&self, sub_id: Option<&str>, invoice: Option<&crate::model::Invoice>, return_url: Option<&str>, automatic: bool) -> Result<Option<String>> {
+    async fn settle(
+        &self,
+        sub_id: Option<&str>,
+        invoice: Option<&crate::model::Invoice>,
+        return_url: Option<&str>,
+        automatic: bool,
+    ) -> Result<Option<String>> {
         if let Some(s) = sub_id {
             self.sync_logged(s).await;
         }
@@ -184,7 +214,11 @@ impl BillingService {
             return self.checkout(&text(r, 0), None, None, true).await;
         }
         let prices = self
-            .resolve_items(&input.items, &cust.currency, &[PriceType::Recurring, PriceType::Metered])
+            .resolve_items(
+                &input.items,
+                &cust.currency,
+                &[PriceType::Recurring, PriceType::Metered],
+            )
             .await?;
         let (interval, count) = {
             let (p, _) = &prices[0];
@@ -228,7 +262,10 @@ impl BillingService {
         }
         let trial_days = match input.trial_days {
             Some(d) if !(0..=730).contains(&d) => {
-                return Err(BillingError::invalid("invalid_trial", "trial_days must be between 0 and 730"));
+                return Err(BillingError::invalid(
+                    "invalid_trial",
+                    "trial_days must be between 0 and 730",
+                ));
             }
             Some(d) => d,
             None => plan_price.as_ref().map(|p| p.trial_days).unwrap_or_default(),
@@ -322,15 +359,19 @@ impl BillingService {
         }
         .await;
         let invoice = self.end(tx, res).await?;
-        let url = self.settle(Some(&id), invoice.as_ref(), return_url.as_deref(), false).await?;
-        self.checkout(&id, invoice.as_ref().map(|i| i.id.as_str()), url, false).await
+        let url = self
+            .settle(Some(&id), invoice.as_ref(), return_url.as_deref(), false)
+            .await?;
+        self.checkout(&id, invoice.as_ref().map(|i| i.id.as_str()), url, false)
+            .await
     }
 
     /// Subscriptions of a subject (newest first; instance-wide readers may
     /// omit the subject).
     pub async fn subscriptions(&self, ctx: &AccessContext, subject: Option<&str>) -> Result<Vec<Subscription>> {
         let subs = if subject.is_none() && self.can_read_all(ctx).is_ok() {
-            self.subs_where("1 = 1 ORDER BY s.created_at DESC LIMIT 500", Vec::new()).await?
+            self.subs_where("1 = 1 ORDER BY s.created_at DESC LIMIT 500", Vec::new())
+                .await?
         } else {
             let s = self.subject_for(ctx, subject)?;
             self.can_read(ctx, &s)?;
@@ -380,7 +421,10 @@ impl BillingService {
         }
         let new = self.price_by("key", input.price.trim()).await?;
         if !new.active || new.price_type != PriceType::Recurring || self.kind_of(&new).await? != ProductKind::Plan {
-            return Err(BillingError::invalid("invalid_price", "plan changes need an active recurring plan price"));
+            return Err(BillingError::invalid(
+                "invalid_price",
+                "plan changes need an active recurring plan price",
+            ));
         }
         if new.interval != Some(s.sub.interval) || new.interval_count != s.sub.interval_count {
             return Err(BillingError::invalid(
@@ -403,10 +447,16 @@ impl BillingService {
         }
         let quantity = input.quantity.unwrap_or_else(|| old.as_ref().map_or(1, |o| o.2));
         if !(1..=MAX_QUANTITY).contains(&quantity) {
-            return Err(BillingError::invalid("invalid_quantity", "quantity must be between 1 and 10^6"));
+            return Err(BillingError::invalid(
+                "invalid_quantity",
+                "quantity must be between 1 and 10^6",
+            ));
         }
         if old.as_ref().is_some_and(|(_, p, q)| p.id == new.id && *q == quantity) {
-            return Err(BillingError::conflict("no_change", "the subscription already has this price"));
+            return Err(BillingError::conflict(
+                "no_change",
+                "the subscription already has this price",
+            ));
         }
         let now = self.now();
         let actor = ctx.principal_key();
@@ -426,8 +476,15 @@ impl BillingService {
                     vec![id.into(), new.id.clone().into(), now.into()],
                 )
                 .await?;
-                t.audit(&actor, "subscription.schedule_change", "subscription", id, json!({"price": new.key}), now)
-                    .await?;
+                t.audit(
+                    &actor,
+                    "subscription.schedule_change",
+                    "subscription",
+                    id,
+                    json!({"price": new.key}),
+                    now,
+                )
+                .await?;
                 Ok(((), true))
             }
             .await;
@@ -458,7 +515,8 @@ impl BillingService {
             let full = item_amount(&new, &s.sub.currency, quantity)?;
             let charge = prorate(full, start, end, now);
             if charge > 0 {
-                let mut l = LineDraft::for_price(LineKind::Proration, &new, &s.sub.currency, quantity, Some((now, end)))?;
+                let mut l =
+                    LineDraft::for_price(LineKind::Proration, &new, &s.sub.currency, quantity, Some((now, end)))?;
                 l.amount = charge;
                 l.unit_amount = None;
                 l.discountable = false;
@@ -533,7 +591,8 @@ impl BillingService {
         .await;
         let invoice = self.end(tx, res).await?;
         let url = self.settle(Some(id), invoice.as_ref(), None, false).await?;
-        self.checkout(id, invoice.as_ref().map(|i| i.id.as_str()), url, false).await
+        self.checkout(id, invoice.as_ref().map(|i| i.id.as_str()), url, false)
+            .await
     }
 
     // -----------------------------------------------------------------------
@@ -545,7 +604,10 @@ impl BillingService {
     pub async fn cancel(&self, ctx: &AccessContext, id: &str, input: CancelInput) -> Result<Checkout> {
         let s = self.managed_sub(ctx, id).await?;
         if s.sub.status == SubscriptionStatus::Canceled {
-            return Err(BillingError::conflict("subscription_canceled", "the subscription has ended"));
+            return Err(BillingError::conflict(
+                "subscription_canceled",
+                "the subscription has ended",
+            ));
         }
         let reason = crate::service::check_text(input.reason, "reason", 200)?.unwrap_or_else(|| "requested".into());
         let now = self.now();
@@ -615,14 +677,18 @@ impl BillingService {
         .await;
         let invoice = self.end(tx, res).await?;
         let url = self.settle(Some(id), invoice.as_ref(), None, false).await?;
-        self.checkout(id, invoice.as_ref().map(|i| i.id.as_str()), url, false).await
+        self.checkout(id, invoice.as_ref().map(|i| i.id.as_str()), url, false)
+            .await
     }
 
     /// Pauses an active subscription: no invoices, not entitled.
     pub async fn pause(&self, ctx: &AccessContext, id: &str) -> Result<Subscription> {
         let s = self.managed_sub(ctx, id).await?;
         if s.sub.status != SubscriptionStatus::Active {
-            return Err(BillingError::conflict("subscription_not_active", "only active subscriptions pause"));
+            return Err(BillingError::conflict(
+                "subscription_not_active",
+                "only active subscriptions pause",
+            ));
         }
         let now = self.now();
         let actor = ctx.principal_key();
@@ -635,7 +701,8 @@ impl BillingService {
                 vec![id.into(), now.into()],
             )
             .await?;
-            t.audit(&actor, "subscription.pause", "subscription", id, json!({}), now).await?;
+            t.audit(&actor, "subscription.pause", "subscription", id, json!({}), now)
+                .await?;
             Ok(((), true))
         }
         .await;
@@ -705,7 +772,8 @@ impl BillingService {
         .await;
         let invoice = self.end(tx, res).await?;
         let url = self.settle(Some(id), invoice.as_ref(), None, true).await?;
-        self.checkout(id, invoice.as_ref().map(|i| i.id.as_str()), url, false).await
+        self.checkout(id, invoice.as_ref().map(|i| i.id.as_str()), url, false)
+            .await
     }
 
     // -----------------------------------------------------------------------
@@ -770,7 +838,9 @@ impl BillingService {
         if let Some(r) = prior.rows.first() {
             return self.order_checkout(&text(r, 0), None, true).await;
         }
-        let prices = self.resolve_items(&input.items, &cust.currency, &[PriceType::OneTime]).await?;
+        let prices = self
+            .resolve_items(&input.items, &cust.currency, &[PriceType::OneTime])
+            .await?;
         let lines = prices
             .iter()
             .map(|(p, q)| LineDraft::for_price(LineKind::OneTime, p, &cust.currency, *q, None))
@@ -819,12 +889,24 @@ impl BillingService {
                 vec![
                     id.clone().into(),
                     inv.id.clone().into(),
-                    if inv.status == crate::model::InvoiceStatus::Paid { "paid" } else { "open" }.into(),
+                    if inv.status == crate::model::InvoiceStatus::Paid {
+                        "paid"
+                    } else {
+                        "open"
+                    }
+                    .into(),
                 ],
             )
             .await?;
-            t.audit(&ctx.principal_key(), "order.create", "order", &id, json!({"subject": subject, "total": inv.total}), now)
-                .await?;
+            t.audit(
+                &ctx.principal_key(),
+                "order.create",
+                "order",
+                &id,
+                json!({"subject": subject, "total": inv.total}),
+                now,
+            )
+            .await?;
             Ok((inv, true))
         }
         .await;

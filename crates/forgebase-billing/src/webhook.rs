@@ -56,7 +56,12 @@ impl Applied {
 impl BillingService {
     /// Handles one webhook delivery of `provider` (anonymous: the signature
     /// is the authentication).
-    pub async fn handle_webhook(&self, provider: &str, headers: &[(String, String)], body: &[u8]) -> Result<WebhookOutcome> {
+    pub async fn handle_webhook(
+        &self,
+        provider: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<WebhookOutcome> {
         let driver = self.provider(provider)?;
         let settings = self.settings().await?;
         let now = self.now();
@@ -98,7 +103,16 @@ impl BillingService {
             } else {
                 self.apply_event(&mut t, provider, &ev, now).await?
             };
-            record(&mut t, provider, &ev, &hash, applied.status, applied.detail.as_deref(), now).await?;
+            record(
+                &mut t,
+                provider,
+                &ev,
+                &hash,
+                applied.status,
+                applied.detail.as_deref(),
+                now,
+            )
+            .await?;
             Ok((applied, true))
         }
         .await;
@@ -161,14 +175,26 @@ impl BillingService {
                 code,
                 message,
             } => {
-                self.on_payment_failed(t, provider, ev, invoice_id.as_deref(), payment_ref, code.clone(), message.clone(), now)
-                    .await
+                self.on_payment_failed(
+                    t,
+                    provider,
+                    ev,
+                    invoice_id.as_deref(),
+                    payment_ref,
+                    code.clone(),
+                    message.clone(),
+                    now,
+                )
+                .await
             }
             EventAction::RefundUpdated {
                 refund_ref,
                 payment_ref,
                 status,
-            } => self.on_refund(t, provider, ev, refund_ref, payment_ref.as_deref(), *status, now).await,
+            } => {
+                self.on_refund(t, provider, ev, refund_ref, payment_ref.as_deref(), *status, now)
+                    .await
+            }
             EventAction::PaymentMethodSaved {
                 customer_id,
                 provider_customer,
@@ -356,7 +382,8 @@ impl BillingService {
         message: Option<String>,
         now: i64,
     ) -> Result<Applied> {
-        let Some((payment_id, inv_id, status, last)) = self.find_payment(t, provider, invoice_id, payment_ref).await? else {
+        let Some((payment_id, inv_id, status, last)) = self.find_payment(t, provider, invoice_id, payment_ref).await?
+        else {
             return Ok(Applied::ignored("unknown_payment"));
         };
         if last.is_some_and(|l| ev.created_at < l) {

@@ -14,8 +14,8 @@ use forgebase_auth::AuthError;
 use forgebase_auth::social::http_client::{BoxFuture, HttpClient, HttpRequest, HttpResponse};
 use forgebase_billing::provider::{StripeProvider, stripe};
 use forgebase_billing::{
-    CustomerInput, Interval, InvoiceStatus, ItemInput, PriceInput, PriceType, ProductInput, ProductKind,
-    ProviderInput, SubscribeInput, SubscriptionStatus,
+    CustomerInput, Interval, InvoiceStatus, ItemInput, PriceInput, PriceType, ProductInput, ProductKind, ProviderInput,
+    SubscribeInput, SubscriptionStatus,
 };
 use forgebase_core::Config;
 use forgebase_data::AccessContext;
@@ -50,7 +50,10 @@ impl HttpClient for Mock {
 
 async fn http(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, String)], body: &str) -> (u16, String) {
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: forgebase\r\nConnection: close\r\nContent-Length: {}\r\n", body.len());
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: forgebase\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body.len()
+    );
     for (k, v) in headers {
         req.push_str(&format!("{k}: {v}\r\n"));
     }
@@ -60,7 +63,10 @@ async fn http(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, Stri
     let mut out = String::new();
     s.read_to_string(&mut out).await.unwrap();
     let status = out.split(' ').nth(1).unwrap().parse().unwrap();
-    let body = out.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default();
+    let body = out
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_owned())
+        .unwrap_or_default();
     (status, body)
 }
 
@@ -91,7 +97,14 @@ async fn billing_is_off_by_default() {
     let (s, body) = http(server.local_addr(), "GET", "/api/openapi.json", &[], "").await;
     assert_eq!(s, 200);
     assert!(!body.contains("/api/v1/billing/"), "billing is not documented when off");
-    let (s, _) = http(server.local_addr(), "POST", "/api/v1/billing/webhooks/stripe", &[], "{}").await;
+    let (s, _) = http(
+        server.local_addr(),
+        "POST",
+        "/api/v1/billing/webhooks/stripe",
+        &[],
+        "{}",
+    )
+    .await;
     assert_eq!(s, 404);
     server.shutdown().await.unwrap();
 }
@@ -234,9 +247,15 @@ async fn scenario_20_billing_webhook_is_processed_idempotently() {
     })
     .to_string();
     let sig = stripe::sign(WHSEC, t, body.as_bytes());
-    let headers = [("Content-Type", "application/json".to_owned()), ("Stripe-Signature", sig.clone())];
+    let headers = [
+        ("Content-Type", "application/json".to_owned()),
+        ("Stripe-Signature", sig.clone()),
+    ];
     // A forged delivery is refused and changes nothing.
-    let forged = [("Stripe-Signature", stripe::sign("whsec_not_the_secret", t, body.as_bytes()))];
+    let forged = [(
+        "Stripe-Signature",
+        stripe::sign("whsec_not_the_secret", t, body.as_bytes()),
+    )];
     let (s, b) = http(addr, "POST", "/api/v1/billing/webhooks/stripe", &forged, &body).await;
     assert_eq!(s, 400, "{b}");
     assert!(b.contains("invalid_signature"));
@@ -251,10 +270,17 @@ async fn scenario_20_billing_webhook_is_processed_idempotently() {
     let invoice = billing.invoice(&admin, &inv).await.unwrap();
     assert_eq!((invoice.status, invoice.amount_paid), (InvoiceStatus::Paid, 2900));
     assert_eq!(billing.payments(&admin, Some(subject), None).await.unwrap().len(), 1);
-    assert_eq!(billing.subscription(&admin, &sub).await.unwrap().status, SubscriptionStatus::Active);
+    assert_eq!(
+        billing.subscription(&admin, &sub).await.unwrap().status,
+        SubscriptionStatus::Active
+    );
     assert_eq!(ent.entitlements_of(subject, None).plan.as_deref(), Some("pro"));
     let schedules = server.jobs().schedules(&AccessContext::system()).await.unwrap();
-    assert!(schedules.iter().any(|s| s.name == forgebase_billing::MAINTENANCE_SCHEDULE));
+    assert!(
+        schedules
+            .iter()
+            .any(|s| s.name == forgebase_billing::MAINTENANCE_SCHEDULE)
+    );
     server.shutdown().await.unwrap();
 
     // Restart: the event, the payment and the provider account persisted.
@@ -266,7 +292,13 @@ async fn scenario_20_billing_webhook_is_processed_idempotently() {
     let billing = server.billing().unwrap();
     assert_eq!(billing.payments(&admin, Some(subject), None).await.unwrap().len(), 1);
     let events = billing.webhook_events(&admin, None).await.unwrap();
-    assert_eq!((events.len(), events[0].attempts, events[0].status.as_str()), (1, 3, "processed"));
-    assert_eq!(server.entitlements().entitlements_of(subject, None).plan.as_deref(), Some("pro"));
+    assert_eq!(
+        (events.len(), events[0].attempts, events[0].status.as_str()),
+        (1, 3, "processed")
+    );
+    assert_eq!(
+        server.entitlements().entitlements_of(subject, None).plan.as_deref(),
+        Some("pro")
+    );
     server.shutdown().await.unwrap();
 }

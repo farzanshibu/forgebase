@@ -54,7 +54,10 @@ impl BillingService {
     pub async fn stats(&self, ctx: &AccessContext, from: i64, to: i64, bucket: Bucket) -> Result<BillingStats> {
         self.can_read_all(ctx)?;
         if to <= from || to - from > 3 * 366 * DAY {
-            return Err(BillingError::invalid("invalid_window", "the window must be 1 ms to 3 years"));
+            return Err(BillingError::invalid(
+                "invalid_window",
+                "the window must be 1 ms to 3 years",
+            ));
         }
         // MRR: active and past-due subscriptions, recurring prices, normalised
         // to a month, after percent coupons and amount coupons.
@@ -92,7 +95,9 @@ impl BillingService {
         let mut recurring: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         for (currency, mrr, months, coupon) in per_sub.into_values() {
             let mrr = match coupon {
-                Some((kind, bp, _)) if CouponKind::parse(&kind) == Some(CouponKind::Percent) => mrr - mul_div(mrr, bp, 10_000),
+                Some((kind, bp, _)) if CouponKind::parse(&kind) == Some(CouponKind::Percent) => {
+                    mrr - mul_div(mrr, bp, 10_000)
+                }
                 Some((_, _, off)) => (mrr - mul_div(off, 1, months)).max(0),
                 None => mrr,
             };

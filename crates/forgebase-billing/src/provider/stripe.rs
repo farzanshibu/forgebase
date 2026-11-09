@@ -74,7 +74,10 @@ pub fn check_keys(secret_key: &str, webhook_secret: &str) -> Result<()> {
         ));
     }
     if !(secret_key.starts_with("sk_test_") || secret_key.starts_with("rk_test_")) || secret_key.len() < 12 {
-        return Err(BillingError::invalid("invalid_key", "the Stripe secret key must start with sk_test_"));
+        return Err(BillingError::invalid(
+            "invalid_key",
+            "the Stripe secret key must start with sk_test_",
+        ));
     }
     if !webhook_secret.starts_with("whsec_") || webhook_secret.len() < 12 {
         return Err(BillingError::invalid(
@@ -206,7 +209,10 @@ impl PaymentProvider for StripeProvider {
                 ("line_items[0][price_data][unit_amount]", amount.as_str()),
                 ("line_items[0][price_data][product_data][name]", r.description.as_str()),
                 ("payment_intent_data[setup_future_usage]", "off_session"),
-                ("payment_intent_data[metadata][forgebase_invoice]", r.invoice_id.as_str()),
+                (
+                    "payment_intent_data[metadata][forgebase_invoice]",
+                    r.invoice_id.as_str(),
+                ),
                 ("metadata[forgebase_invoice]", r.invoice_id.as_str()),
             ];
             if let Some(c) = &r.customer.provider_customer_id {
@@ -225,7 +231,10 @@ impl PaymentProvider for StripeProvider {
                 ("currency", currency.as_str()),
                 ("success_url", r.return_url.as_str()),
                 ("cancel_url", r.return_url.as_str()),
-                ("setup_intent_data[metadata][forgebase_customer]", r.customer.customer_id.as_str()),
+                (
+                    "setup_intent_data[metadata][forgebase_customer]",
+                    r.customer.customer_id.as_str(),
+                ),
             ];
             if let Some(c) = &r.customer.provider_customer_id {
                 f.push(("customer", c));
@@ -258,7 +267,10 @@ impl PaymentProvider for StripeProvider {
         signed.extend_from_slice(body);
         let expected = hmac_hex(self.webhook_secret.as_bytes(), &signed);
         if !v1.iter().any(|s| same_signature(&expected, s)) {
-            return Err(BillingError::webhook("invalid_signature", "the webhook signature does not match"));
+            return Err(BillingError::webhook(
+                "invalid_signature",
+                "the webhook signature does not match",
+            ));
         }
         if (now_ms / 1000 - t).abs() > tolerance_secs {
             return Err(BillingError::webhook(
@@ -310,7 +322,11 @@ pub fn parse_event(ev: &Json) -> Result<ProviderEvent> {
     let event_type = str_at(ev, &["type"]).unwrap_or_default().to_owned();
     let created = int_at(ev, &["created"])
         .ok_or_else(|| BillingError::webhook("invalid_payload", "the event has no created time"))?;
-    let o = ev.get("data").and_then(|d| d.get("object")).cloned().unwrap_or(Json::Null);
+    let o = ev
+        .get("data")
+        .and_then(|d| d.get("object"))
+        .cloned()
+        .unwrap_or(Json::Null);
     let invoice_id = str_at(&o, &["metadata", "forgebase_invoice"]).map(str::to_owned);
     let action = match event_type.as_str() {
         "payment_intent.succeeded" => match str_at(&o, &["id"]) {

@@ -110,7 +110,15 @@ impl Tx<'_> {
     }
 
     /// Appends an audit row.
-    pub async fn audit(&mut self, actor: &str, action: &str, object: &str, id: &str, detail: Json, now: i64) -> Result<()> {
+    pub async fn audit(
+        &mut self,
+        actor: &str,
+        action: &str,
+        object: &str,
+        id: &str,
+        detail: Json,
+        now: i64,
+    ) -> Result<()> {
         self.exec(
             "INSERT INTO _forgebase_billing_audit (at, actor, action, object, object_id, detail)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -206,8 +214,8 @@ pub(crate) fn check_metadata(v: Option<Json>) -> Result<Json> {
 }
 
 pub(crate) fn check_url(v: &str) -> Result<String> {
-    let u = url::Url::parse(v.trim())
-        .map_err(|_| BillingError::invalid("invalid_url", format!("{v:?} is not a URL")))?;
+    let u =
+        url::Url::parse(v.trim()).map_err(|_| BillingError::invalid("invalid_url", format!("{v:?} is not a URL")))?;
     let local = matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     if u.scheme() == "https" || (u.scheme() == "http" && local) {
         Ok(u.to_string())
@@ -473,13 +481,19 @@ impl BillingService {
         self.require_admin(ctx)?;
         let mut s = s;
         s.default_currency = currency(&s.default_currency)?;
-        if s.retry_days.len() > 10 || s.retry_days.windows(2).any(|w| w[1] <= w[0]) || s.retry_days.iter().any(|d| !(1..=60).contains(d)) {
+        if s.retry_days.len() > 10
+            || s.retry_days.windows(2).any(|w| w[1] <= w[0])
+            || s.retry_days.iter().any(|d| !(1..=60).contains(d))
+        {
             return Err(BillingError::invalid(
                 "invalid_settings",
                 "retry_days: at most 10 increasing days between 1 and 60",
             ));
         }
-        for (p, name) in [(&s.invoice_prefix, "invoice_prefix"), (&s.credit_note_prefix, "credit_note_prefix")] {
+        for (p, name) in [
+            (&s.invoice_prefix, "invoice_prefix"),
+            (&s.credit_note_prefix, "credit_note_prefix"),
+        ] {
             if p.is_empty() || p.len() > 12 || !p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
                 return Err(BillingError::invalid(
                     "invalid_settings",
@@ -512,8 +526,15 @@ impl BillingService {
                 vec![serde_json::to_string(&s)?.into(), now.into()],
             )
             .await?;
-            t.audit(&ctx.principal_key(), "settings.put", "settings", "settings", json!(s), now)
-                .await?;
+            t.audit(
+                &ctx.principal_key(),
+                "settings.put",
+                "settings",
+                "settings",
+                json!(s),
+                now,
+            )
+            .await?;
             Ok((s.clone(), true))
         }
         .await;
@@ -659,7 +680,12 @@ impl BillingService {
     /// Saves a provider account (platform administrators). Test-mode keys
     /// only; the secrets are sealed with the instance keyring and never
     /// returned.
-    pub async fn put_provider(&self, ctx: &AccessContext, provider: &str, input: ProviderInput) -> Result<ProviderAccount> {
+    pub async fn put_provider(
+        &self,
+        ctx: &AccessContext,
+        provider: &str,
+        input: ProviderInput,
+    ) -> Result<ProviderAccount> {
         self.require_admin(ctx)?;
         let api_base = match input.api_base.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(u) => Some(check_url(u)?.trim_end_matches('/').to_owned()),
@@ -737,13 +763,23 @@ impl BillingService {
         let res = async {
             let mut t = Tx(tx.as_mut());
             let n = t
-                .exec("DELETE FROM _forgebase_billing_providers WHERE provider = ?1", vec![provider.into()])
+                .exec(
+                    "DELETE FROM _forgebase_billing_providers WHERE provider = ?1",
+                    vec![provider.into()],
+                )
                 .await?;
             if n == 0 {
                 return Err(BillingError::NotFound("provider".into()));
             }
-            t.audit(&ctx.principal_key(), "provider.delete", "provider", provider, json!({}), now)
-                .await?;
+            t.audit(
+                &ctx.principal_key(),
+                "provider.delete",
+                "provider",
+                provider,
+                json!({}),
+                now,
+            )
+            .await?;
             Ok(((), true))
         }
         .await;
@@ -758,7 +794,8 @@ impl BillingService {
     // Customers
     // -----------------------------------------------------------------------
 
-    pub(crate) const CUSTOMER_COLUMNS: &'static str = "id, subject, email, name, currency, region, tax_exempt, provider,
+    pub(crate) const CUSTOMER_COLUMNS: &'static str =
+        "id, subject, email, name, currency, region, tax_exempt, provider,
         provider_customer_id, payment_method, payment_method_label, balance, metadata, created_at";
 
     pub(crate) fn customer_row(r: &[Value]) -> Customer {
@@ -796,7 +833,10 @@ impl BillingService {
     pub(crate) async fn customer_by_id(&self, id: &str) -> Result<Customer> {
         let rows = self
             .fetch(
-                &format!("SELECT {} FROM _forgebase_billing_customers WHERE id = ?1", Self::CUSTOMER_COLUMNS),
+                &format!(
+                    "SELECT {} FROM _forgebase_billing_customers WHERE id = ?1",
+                    Self::CUSTOMER_COLUMNS
+                ),
                 vec![id.into()],
             )
             .await?;
@@ -964,7 +1004,12 @@ impl BillingService {
             t.exec(
                 "INSERT INTO _forgebase_billing_customers (id, subject, currency, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?4) ON CONFLICT (subject) DO NOTHING",
-                vec![new_id("cus").into(), subject.into(), default_currency.into(), now.into()],
+                vec![
+                    new_id("cus").into(),
+                    subject.into(),
+                    default_currency.into(),
+                    now.into(),
+                ],
             )
             .await?;
             Ok(((), true))
@@ -992,7 +1037,10 @@ impl BillingService {
             subject: c.subject.clone(),
             email: c.email.clone(),
             name: c.name.clone(),
-            provider_customer_id: c.provider_customer_id.clone().filter(|_| c.provider.as_deref() == Some(name.as_str())),
+            provider_customer_id: c
+                .provider_customer_id
+                .clone()
+                .filter(|_| c.provider.as_deref() == Some(name.as_str())),
         };
         if r.provider_customer_id.is_none() {
             let pid = p.create_customer(&r).await?;

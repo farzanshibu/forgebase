@@ -15,10 +15,11 @@ use crate::model::{
     PriceType, Product, ProductInput, ProductKind, TaxBehavior, TaxRate, TaxRateInput,
 };
 use crate::money::{MAX_AMOUNT, Scheme, Tier, check_tiers, currency};
-use crate::service::{BillingService, Tx, check_key, check_metadata, check_text, int, json_col, new_id, opt_int, opt_text, text};
+use crate::service::{
+    BillingService, Tx, check_key, check_metadata, check_text, int, json_col, new_id, opt_int, opt_text, text,
+};
 
-const PRODUCT_COLUMNS: &str =
-    "id, key, name, description, kind, plan_key, addon_key, pack_key, credits, active, metadata, created_at, updated_at";
+const PRODUCT_COLUMNS: &str = "id, key, name, description, kind, plan_key, addon_key, pack_key, credits, active, metadata, created_at, updated_at";
 
 fn product_row(r: &[Value]) -> Product {
     Product {
@@ -38,7 +39,8 @@ fn product_row(r: &[Value]) -> Product {
     }
 }
 
-pub(crate) const PRICE_COLUMNS: &str = "p.id, p.key, p.product_id, pr.key, p.type, p.interval, p.interval_count, p.scheme,
+pub(crate) const PRICE_COLUMNS: &str =
+    "p.id, p.key, p.product_id, pr.key, p.type, p.interval, p.interval_count, p.scheme,
     p.currency, p.unit_amount, p.tiers, p.currency_options, p.feature_key, p.meter_basis, p.trial_days, p.tax_behavior,
     p.active, p.metadata, p.created_at";
 
@@ -90,7 +92,10 @@ pub(crate) fn coupon_row(r: &[Value]) -> Coupon {
 
 fn check_option_amounts(scheme: Scheme, unit_amount: i64, tiers: &Option<Vec<Tier>>) -> Result<()> {
     if !(0..=MAX_AMOUNT).contains(&unit_amount) {
-        return Err(BillingError::invalid("invalid_amount", "unit_amount must be between 0 and 10^13"));
+        return Err(BillingError::invalid(
+            "invalid_amount",
+            "unit_amount must be between 0 and 10^13",
+        ));
     }
     match (scheme, tiers) {
         (Scheme::PerUnit, None) => Ok(()),
@@ -99,7 +104,10 @@ fn check_option_amounts(scheme: Scheme, unit_amount: i64, tiers: &Option<Vec<Tie
             "per_unit prices take unit_amount, not tiers",
         )),
         (_, Some(t)) => check_tiers(t),
-        (_, None) => Err(BillingError::invalid("invalid_tiers", "graduated and volume prices need tiers")),
+        (_, None) => Err(BillingError::invalid(
+            "invalid_tiers",
+            "graduated and volume prices need tiers",
+        )),
     }
 }
 
@@ -157,9 +165,10 @@ impl BillingService {
         match input.kind {
             ProductKind::Plan => {
                 let k = need(input.plan_key, "plan")?;
-                self.inner.ent.plan(&sys, &k).map_err(|_| {
-                    BillingError::invalid("unknown_plan", format!("no FB-24 plan {k:?}"))
-                })?;
+                self.inner
+                    .ent
+                    .plan(&sys, &k)
+                    .map_err(|_| BillingError::invalid("unknown_plan", format!("no FB-24 plan {k:?}")))?;
                 plan = Some(k);
             }
             ProductKind::Addon => {
@@ -172,7 +181,10 @@ impl BillingService {
             ProductKind::UsagePack => {
                 let k = need(input.pack_key, "pack")?;
                 if !self.inner.ent.usage_packs(&sys)?.iter().any(|p| p.key == k) {
-                    return Err(BillingError::invalid("unknown_pack", format!("no FB-24 usage pack {k:?}")));
+                    return Err(BillingError::invalid(
+                        "unknown_pack",
+                        format!("no FB-24 usage pack {k:?}"),
+                    ));
                 }
                 pack = Some(k);
             }
@@ -287,7 +299,13 @@ impl BillingService {
                 ));
             }
             check_option_amounts(scheme, o.unit_amount, &o.tiers)?;
-            options.insert(c, CurrencyOption { unit_amount: o.unit_amount, tiers: o.tiers });
+            options.insert(
+                c,
+                CurrencyOption {
+                    unit_amount: o.unit_amount,
+                    tiers: o.tiers,
+                },
+            );
         }
         let (interval, feature) = match input.price_type {
             PriceType::OneTime => {
@@ -307,7 +325,10 @@ impl BillingService {
             }
             PriceType::Recurring => {
                 if input.feature.is_some() {
-                    return Err(BillingError::invalid("invalid_price", "recurring prices have no feature"));
+                    return Err(BillingError::invalid(
+                        "invalid_price",
+                        "recurring prices have no feature",
+                    ));
                 }
                 if matches!(product.kind, ProductKind::Credits | ProductKind::UsagePack) {
                     return Err(BillingError::invalid(
@@ -322,7 +343,9 @@ impl BillingService {
                     .feature
                     .map(|f| f.trim().to_owned())
                     .filter(|f| !f.is_empty())
-                    .ok_or_else(|| BillingError::invalid("invalid_price", "metered prices need the FB-24 feature they bill"))?;
+                    .ok_or_else(|| {
+                        BillingError::invalid("invalid_price", "metered prices need the FB-24 feature they bill")
+                    })?;
                 if product.kind != ProductKind::Service && product.kind != ProductKind::Plan {
                     return Err(BillingError::invalid(
                         "invalid_price",
@@ -333,10 +356,16 @@ impl BillingService {
             }
         };
         if !(1..=36).contains(&input.interval_count) {
-            return Err(BillingError::invalid("invalid_price", "interval_count must be between 1 and 36"));
+            return Err(BillingError::invalid(
+                "invalid_price",
+                "interval_count must be between 1 and 36",
+            ));
         }
         if !(0..=730).contains(&input.trial_days) {
-            return Err(BillingError::invalid("invalid_price", "trial_days must be between 0 and 730"));
+            return Err(BillingError::invalid(
+                "invalid_price",
+                "trial_days must be between 0 and 730",
+            ));
         }
         let metadata = check_metadata(input.metadata)?;
         let now = self.now();
@@ -471,10 +500,16 @@ impl BillingService {
         self.require_admin(ctx)?;
         let region = region.trim().to_ascii_uppercase();
         if region.is_empty() || region.len() > 16 || !region.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-            return Err(BillingError::invalid("invalid_region", "region: 1 to 16 letters, digits or -"));
+            return Err(BillingError::invalid(
+                "invalid_region",
+                "region: 1 to 16 letters, digits or -",
+            ));
         }
         if !(0..=10_000).contains(&input.rate_bp) {
-            return Err(BillingError::invalid("invalid_rate", "rate_bp must be between 0 and 10000"));
+            return Err(BillingError::invalid(
+                "invalid_rate",
+                "rate_bp must be between 0 and 10000",
+            ));
         }
         let name = check_text(Some(input.name), "name", 64)?
             .ok_or_else(|| BillingError::invalid("invalid_field", "name is required"))?;
@@ -497,8 +532,15 @@ impl BillingService {
                 ],
             )
             .await?;
-            t.audit(&ctx.principal_key(), "tax_rate.put", "tax_rate", &region, json!({"rate_bp": input.rate_bp}), now)
-                .await?;
+            t.audit(
+                &ctx.principal_key(),
+                "tax_rate.put",
+                "tax_rate",
+                &region,
+                json!({"rate_bp": input.rate_bp}),
+                now,
+            )
+            .await?;
             Ok(((), true))
         }
         .await;
@@ -524,10 +566,7 @@ impl BillingService {
                 vec![region.into(), country.into()],
             )
             .await?;
-        Ok(rows
-            .rows
-            .first()
-            .map_or((0, None), |r| (int(r, 1), Some(text(r, 0)))))
+        Ok(rows.rows.first().map_or((0, None), |r| (int(r, 1), Some(text(r, 0)))))
     }
 
     // -----------------------------------------------------------------------
@@ -603,7 +642,10 @@ impl BillingService {
             }
         };
         if input.max_redemptions.is_some_and(|m| m < 1) {
-            return Err(BillingError::invalid("invalid_coupon", "max_redemptions must be at least 1"));
+            return Err(BillingError::invalid(
+                "invalid_coupon",
+                "max_redemptions must be at least 1",
+            ));
         }
         for p in &input.products {
             self.product_by("key", p).await?;
@@ -677,7 +719,10 @@ impl BillingService {
         if c.kind == CouponKind::Amount && c.currency.as_deref() != Some(currency) {
             return Err(BillingError::invalid(
                 "coupon_currency",
-                format!("the coupon is in {}, the invoice in {currency}", c.currency.clone().unwrap_or_default()),
+                format!(
+                    "the coupon is in {}, the invoice in {currency}",
+                    c.currency.clone().unwrap_or_default()
+                ),
             ));
         }
         let n = t
@@ -688,7 +733,10 @@ impl BillingService {
             )
             .await?;
         if n == 0 {
-            return Err(BillingError::invalid("coupon_exhausted", "the coupon was redeemed too often"));
+            return Err(BillingError::invalid(
+                "coupon_exhausted",
+                "the coupon was redeemed too often",
+            ));
         }
         let cycles = match c.duration {
             CouponDuration::Once => Some(1),
