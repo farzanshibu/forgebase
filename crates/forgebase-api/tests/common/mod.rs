@@ -66,7 +66,16 @@ impl Api {
         Self::with(None, Arc::new(DefaultAuthorizer), RouterOptions::default()).await
     }
 
+    /// The policy engine (FB-21) as authorizer, its routes and tenancy layer.
+    pub async fn with_policy_engine(ctx: Option<AccessContext>) -> Self {
+        Self::build(ctx, None, RouterOptions::default()).await
+    }
+
     pub async fn with(ctx: Option<AccessContext>, authorizer: Arc<dyn Authorizer>, opts: RouterOptions) -> Self {
+        Self::build(ctx, Some(authorizer), opts).await
+    }
+
+    async fn build(ctx: Option<AccessContext>, authorizer: Option<Arc<dyn Authorizer>>, opts: RouterOptions) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let layout = DataLayout::new(tmp.path().join("data"));
         layout.ensure().unwrap();
@@ -75,7 +84,18 @@ impl Api {
             .await
             .unwrap();
         db.migrate(Some(&layout.backups_dir())).await.unwrap();
-        let state = AppState::with_authorizer(db.clone(), layout, authorizer).await.unwrap();
+        let state = match authorizer {
+            Some(a) => AppState::with_authorizer(db.clone(), layout, a).await.unwrap(),
+            None => {
+                let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+                let policy = forgebase_policy::PolicyService::open(backend).await.unwrap();
+                let state = AppState::with_authorizer(db.clone(), layout, policy.authorizer())
+                    .await
+                    .unwrap();
+                policy.attach_data(state.data().clone());
+                state.with_policy(policy)
+            }
+        };
         let mut app = forgebase_api::router(state, opts);
         if let Some(ctx) = ctx {
             // Outside the router's own layers, like the auth layer will be.
