@@ -383,8 +383,7 @@ pub struct CheckBody {
 
 macro_rules! doc {
     ($method:ident, $path:literal, $tag:literal, $desc:literal, $name:ident) => {
-        #[utoipa::path($method, path = $path, tag = $tag, description = $desc,
-                            responses((status = 200, description = "OK", body = Object)))]
+        #[utoipa::path($method, path = $path, tag = $tag, description = $desc, responses((status = 200, description = "OK", body = Object)))]
         #[allow(dead_code)]
         #[doc = $desc]
         pub fn $name() {}
