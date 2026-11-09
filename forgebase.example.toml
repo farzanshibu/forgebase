@@ -80,3 +80,26 @@ max_bulk_bytes = 16777216
 # Close a connection idle this long, seconds (0 = never; subscribed
 # connections are exempt). Env: FORGEBASE_RESP_IDLE_TIMEOUT_SECS
 idle_timeout_secs = 300
+
+[storage]
+# Object storage (ADR-0018). "local" keeps blobs under <data_dir>/storage;
+# "s3" uses an S3-compatible service. S3 credentials come from the
+# environment only: FORGEBASE_STORAGE_S3_ACCESS_KEY, FORGEBASE_STORAGE_S3_SECRET_KEY
+# (and optionally FORGEBASE_STORAGE_S3_SESSION_TOKEN).
+driver = "local"
+
+# Largest object in bytes (a bucket may set a lower limit). Default 5 GiB.
+max_object_bytes = 5368709120
+
+# Seconds a multipart/resumable upload session lives. Default 86400.
+upload_ttl_secs = 86400
+
+# Seconds before the reconciler removes unreferenced blobs and stale staged files.
+reconcile_grace_secs = 3600
+
+# S3 only:
+# s3_endpoint = "https://s3.eu-central-1.amazonaws.com"
+# s3_region = "eu-central-1"
+# s3_bucket = "forgebase-blobs"
+# s3_prefix = ""
+# s3_part_size = 8388608

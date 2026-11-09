@@ -30,8 +30,10 @@ forgebase-vector = { path = "crates/forgebase-vector" }
 forgebase-resp = { path = "crates/forgebase-resp" }
 forgebase-realtime = { path = "crates/forgebase-realtime" }
 forgebase-entitlements = { path = "crates/forgebase-entitlements" }
+forgebase-storage = { path = "crates/forgebase-storage" }
 forgebase-credits = { path = "crates/forgebase-credits" }
 forgebase-functions = { path = "crates/forgebase-functions" }
+forgebase-customize = { path = "crates/forgebase-customize" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
