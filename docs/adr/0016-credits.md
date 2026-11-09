@@ -19,7 +19,7 @@ Nothing below it depends on it.
 
 | Crate | Change | Compatibility |
 |---|---|---|
-| `forgebase-migrations` | migration 15 `credits` (listed after 13; the migrator applies gaps) | append-only |
+| `forgebase-migrations` | migration 15 `credits` (after 14 `identity`, FB-25) | append-only |
 | `forgebase-server` | opens `CreditService` after the entitlement service, attaches the job queue, creates the schedule, registers the handler, mounts the extension; `RunningServer::credits()`; `ServerError::Credits` | additive |
 
 No new third-party dependencies.

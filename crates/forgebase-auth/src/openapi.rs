@@ -1,4 +1,5 @@
-//! OpenAPI fragment for the social login and passkey routes (FB-22).
+//! OpenAPI fragment for the social login and passkey routes (FB-22) and the
+//! realm, phone, LDAP and account lifecycle routes (FB-25).
 //! Merged into `GET /api/openapi.json` by `forgebase-api` when auth is on.
 
 use utoipa::OpenApi;
@@ -99,14 +100,151 @@ fn webauthn_credentials() {}
 #[allow(dead_code, clippy::missing_const_for_fn)]
 fn webauthn_delete() {}
 
+/// Public sign-in options of the realm selected by `X-ForgeBase-Realm`: methods, signup, Turnstile site key, providers.
+#[utoipa::path(get, path = "/api/auth/realm", tag = "realms",
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn realm_info() {}
+
+/// Every realm identity configuration (administrators; secrets shown as `********`).
+#[utoipa::path(get, path = "/api/auth/realms", tag = "realms",
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn realms_list() {}
+
+/// One realm identity configuration (administrators).
+#[utoipa::path(get, path = "/api/auth/realms/{realm}", tag = "realms", params(("realm" = String, Path, description = "Realm id")),
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn realm_get() {}
+
+/// Create or replace a realm's identity: `{collection?, config: {signup, methods, require_verified_email, phone, ldap, turnstile}}` (administrators; the realm must exist).
+#[utoipa::path(put, path = "/api/auth/realms/{realm}", tag = "realms", params(("realm" = String, Path, description = "Realm id")), request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn realm_put() {}
+
+/// Send a sign-in code by SMS: `{phone, collection?}` (same answer whether or not the number can sign in; Turnstile action `otp`).
+#[utoipa::path(post, path = "/api/auth/phone/request", tag = "phone", request_body = Object,
+    responses((status = 202, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn phone_request() {}
+
+/// Sign in with `{phone, code, cookie?, device_name?}`; first use creates the account when the realm allows phone signup.
+#[utoipa::path(post, path = "/api/auth/phone/verify", tag = "phone", request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn phone_verify() {}
+
+/// The caller's phone number.
+#[utoipa::path(get, path = "/api/auth/phone", tag = "phone",
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn phone_get() {}
+
+/// Remove the caller's phone number (refused when it is the only way in).
+#[utoipa::path(delete, path = "/api/auth/phone", tag = "phone",
+    responses((status = 204, description = "Done"), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn phone_delete() {}
+
+/// Send a code confirming `{phone}` for the signed-in caller.
+#[utoipa::path(post, path = "/api/auth/phone/add", tag = "phone", request_body = Object,
+    responses((status = 202, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn phone_add() {}
+
+/// Confirm `{phone, code}` and set it as the caller's number.
+#[utoipa::path(post, path = "/api/auth/phone/confirm", tag = "phone", request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn phone_confirm() {}
+
+/// Sign in with a directory account: `{username, password, cookie?, device_name?}` (Turnstile action `login`).
+#[utoipa::path(post, path = "/api/auth/ldap/login", tag = "ldap", request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn ldap_login() {}
+
+/// Deactivate the caller's account: `{current_password?}` (or a sign-in in the last 10 minutes).
+#[utoipa::path(post, path = "/api/auth/account/deactivate", tag = "account", request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn account_deactivate() {}
+
+/// Delete the caller's account, or anonymise it with `{anonymise: true}`; `{current_password?}`.
+#[utoipa::path(post, path = "/api/auth/account/delete", tag = "account", request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn account_delete() {}
+
+/// The caller's data export (JSON).
+#[utoipa::path(get, path = "/api/auth/account/export", tag = "account",
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn account_export() {}
+
+/// Lifecycle state of a user (administrators).
+#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}/status", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_status() {}
+
+/// Suspend `{reason, until?}` (Unix seconds); revokes sessions (administrators).
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/suspend", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")), request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_suspend() {}
+
+/// Lift a suspension (administrators).
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/unsuspend", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_unsuspend() {}
+
+/// Deactivate `{reason?}` (administrators).
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/deactivate", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")), request_body = Object,
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_deactivate() {}
+
+/// Reactivate a deactivated user (administrators).
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/reactivate", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_reactivate() {}
+
+/// Anonymise: personal data replaced, credentials removed, id kept (administrators).
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/anonymise", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_anonymise() {}
+
+/// Delete the user and every auth row (administrators).
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/delete", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+    responses((status = 204, description = "Done"), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_delete() {}
+
+/// A user's data export (administrators).
+#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}/export", tag = "account", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+    responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Not signed in or invalid credentials", body = Object), (status = 403, description = "Forbidden (method disabled, Turnstile, suspended, not an administrator)", body = Object), (status = 409, description = "Conflict", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn user_export() {}
+
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        oauth_providers, oauth_start_redirect, oauth_start, oauth_link, oauth_callback_get, oauth_callback_post, oauth_identities, oauth_unlink, webauthn_register_options, webauthn_register_verify, webauthn_login_options, webauthn_login_verify, webauthn_mfa_options, webauthn_mfa_verify, webauthn_credentials, webauthn_delete
+        oauth_providers, oauth_start_redirect, oauth_start, oauth_link, oauth_callback_get, oauth_callback_post, oauth_identities, oauth_unlink, webauthn_register_options, webauthn_register_verify, webauthn_login_options, webauthn_login_verify, webauthn_mfa_options, webauthn_mfa_verify, webauthn_credentials, webauthn_delete,
+        realm_info, realms_list, realm_get, realm_put, phone_request, phone_verify, phone_get, phone_delete, phone_add, phone_confirm, ldap_login, account_deactivate, account_delete, account_export, user_status, user_suspend, user_unsuspend, user_deactivate, user_reactivate, user_anonymise, user_delete, user_export
     ),
     tags(
         (name = "oauth", description = "Social login: OAuth 2.0 / OpenID Connect providers (ADR-0009)"),
         (name = "webauthn", description = "Passkeys: WebAuthn registration and authentication (ADR-0009)"),
+        (name = "realms", description = "Realm-scoped identity configuration (ADR-0015)"),
+        (name = "phone", description = "Phone-number sign-in with SMS codes (ADR-0015)"),
+        (name = "ldap", description = "LDAP directory sign-in (ADR-0015)"),
+        (name = "account", description = "Account lifecycle: suspend, deactivate, delete, anonymise, export (ADR-0015)"),
     )
 )]
 struct AuthApiDoc;

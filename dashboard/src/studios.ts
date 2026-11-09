@@ -41,14 +41,14 @@ export const STUDIOS: Studio[] = [
     path: "vector",
     label: "Vector Studio",
     summary: "Collections and similarity search",
-    phase: 6,
+    phase: null,
     features: ["Vector collections and metadata viewer", "Similarity search playground and filter builder", "Index configuration and rebuilding", "Search performance"],
   },
   {
     path: "graph",
     label: "Graph Studio",
     summary: "Nodes, edges, traversals",
-    phase: 6,
+    phase: null,
     features: ["Node and edge browsers", "Graph visualization", "Traversal query builder and path search"],
   },
   {

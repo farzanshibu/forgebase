@@ -177,7 +177,7 @@ pub struct VectorCollection {
 
 /// Collections of the caller's tenant.
 #[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct CollectionList {
+pub struct VectorCollectionList {
     /// By name.
     pub items: Vec<VectorCollection>,
 }

@@ -316,6 +316,21 @@ async fn open_auth(
         forgebase_auth::AuthService::open_with_data(backend, policy.authorizer(), layout.root(), cfg, None).await?;
     policy.attach_data(auth.data().clone());
     policy.attach_mailer(auth.mailer().clone(), public_url);
+    // FB-25: identities act in their own realm; suspensions set through the
+    // auth API reach the policy engine's cached model.
+    policy
+        .attach_realms(auth.realms().clone())
+        .await
+        .map_err(|e| ServerError::Policy(e.to_string()))?;
+    let p = policy.clone();
+    auth.set_change_hook(Arc::new(move || {
+        let p = p.clone();
+        tokio::spawn(async move {
+            if let Err(e) = p.reload().await {
+                tracing::warn!(error = %e, "policy reload after an auth change failed");
+            }
+        });
+    }));
     Ok((auth, policy))
 }
 

@@ -95,6 +95,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0013_impersonation.sql"),
     ),
     Migration::new(
+        14,
+        "identity",
+        include_str!("../../../migrations/system/0014_identity.sql"),
+    ),
+    Migration::new(
         15,
         "credits",
         include_str!("../../../migrations/system/0015_credits.sql"),

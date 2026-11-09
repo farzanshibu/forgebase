@@ -128,6 +128,10 @@ existing `login`, `signup`, `mfa.verify` (factor `passkey`).
 
 ## 9. Outbound HTTPS: decision needed
 
+**Decided (2026-11-09, god): option (b), built in FB-25.** `HttpsClient`
+(rustls + ring, webpki-roots, optional extra CA file) is the default client of
+the auth service; see ADR-0015 §2. The text below records the situation before.
+
 The tree has no HTTP client and no TLS stack (ADR-0002 deliberately avoided
 reqwest: rustls pulls aws-lc-rs or ring, C code). Provider calls go through
 the `HttpClient` trait. The built-in `PlainHttpClient` speaks HTTP/1.1 over
