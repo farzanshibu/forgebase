@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-billing"
-description = "ForgeBase billing: catalog, multi-currency prices, customers, subscriptions, one-time orders, metered usage billing, proration, coupons, tax, invoices, credit notes, refunds, dunning, a customer portal, payment statistics, and Stripe and Razorpay drivers with signed idempotent webhooks."
+description = "ForgeBase billing: catalog, multi-currency prices, customers, subscriptions, one-time orders, metered usage billing, proration, coupons, tax, invoices, credit notes, refunds, dunning, a customer portal, payment statistics, Stripe, Razorpay and WeChat Pay drivers with signed idempotent webhooks, and App Store, Google Play and Creem purchase verification."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,8 @@ forgebase-entitlements.workspace = true
 forgebase-jobs.workspace = true
 forgebase-policy.workspace = true
 hmac.workspace = true
+ring.workspace = true
+rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -31,6 +33,7 @@ tracing.workspace = true
 url.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
+webpki.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

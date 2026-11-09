@@ -1539,6 +1539,19 @@ impl BillingService {
     /// `reverse_purchase`). Idempotent by key.
     pub async fn credit_invoice(&self, ctx: &AccessContext, id: &str, input: CreditNoteInput) -> Result<CreditNote> {
         self.can_operate(ctx)?;
+        self.issue_credit_note(&ctx.principal_key(), id, input, None).await
+    }
+
+    /// Issues a credit note as `actor`. `external` is a refund the provider
+    /// already made (a store refund, FB-72): it is recorded as succeeded
+    /// with that reference instead of being asked of the provider.
+    pub(crate) async fn issue_credit_note(
+        &self,
+        actor: &str,
+        id: &str,
+        input: CreditNoteInput,
+        external: Option<&str>,
+    ) -> Result<CreditNote> {
         let idem = check_idem(&input.idempotency_key)?;
         let reason = check_text(input.reason, "reason", 500)?;
         let settings = self.settings().await?;
@@ -1634,8 +1647,8 @@ impl BillingService {
                 let rid = new_id("re");
                 t.exec(
                     "INSERT INTO _forgebase_billing_refunds (id, payment_id, invoice_id, credit_note_id, provider, status,
-                         amount, currency, reason, idempotency_key, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10)",
+                         amount, currency, reason, idempotency_key, created_at, updated_at, provider_ref)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?11, ?6, ?7, ?8, ?9, ?10, ?10, ?12)",
                     vec![
                         rid.clone().into(),
                         text(p, 0).into(),
@@ -1647,6 +1660,8 @@ impl BillingService {
                         reason.clone().into(),
                         format!("refund:{note_id}").into(),
                         now.into(),
+                        if external.is_some() { "succeeded" } else { "pending" }.into(),
+                        external.map(str::to_owned).into(),
                     ],
                 )
                 .await?;
@@ -1667,11 +1682,11 @@ impl BillingService {
                 .await?;
             }
             t.audit(
-                &ctx.principal_key(),
+                actor,
                 "credit_note.issue",
                 "invoice",
                 id,
-                json!({"credit_note": note_id, "amount": amount, "refund": refund_amount}),
+                json!({"credit_note": note_id, "amount": amount, "refund": refund_amount, "external": external}),
                 now,
             )
             .await?;
@@ -1680,7 +1695,7 @@ impl BillingService {
         .await;
         let (note_id, inv, amount, refund) = self.end(tx, res).await?;
         // The provider refund, outside the transaction.
-        if let Some((rid, provider, Some(payment_ref))) = refund {
+        if let Some((rid, provider, Some(payment_ref))) = refund.filter(|_| external.is_none()) {
             let result = match self.provider(&provider) {
                 Ok(p) => {
                     p.refund(&RefundRequest {

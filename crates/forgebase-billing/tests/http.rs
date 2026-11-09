@@ -324,6 +324,113 @@ async fn webhooks_are_anonymous_and_signed() {
 }
 
 #[tokio::test]
+async fn store_routes_map_products_verify_and_take_signed_notifications() {
+    use forgebase_billing::provider::creem::{self, CreemProvider};
+    let api = Api::new().await;
+    let (s, _) = api
+        .put(
+            user("ann"),
+            "/api/v1/billing/store-products/creem/prod_pro",
+            json!({"price": "pro-m"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, j) = api
+        .put(
+            admin(),
+            "/api/v1/billing/store-products/creem/prod_pro",
+            json!({"price": "pro-m"}),
+        )
+        .await;
+    assert_eq!((s, j["kind"].as_str()), (StatusCode::OK, Some("subscription")));
+    let (s, j) = api.get(user("ann"), "/api/v1/billing/store-products").await;
+    assert_eq!((s, j["items"].as_array().unwrap().len()), (StatusCode::OK, 1));
+    // A store that is not configured.
+    let (s, j) = api
+        .post(
+            user("ann"),
+            "/api/v1/billing/store/app_store/verify",
+            json!({"transaction_id": "1"}),
+        )
+        .await;
+    assert_eq!((s, code(&j)), (StatusCode::NOT_FOUND, "billing_not_configured"));
+    let (s, _) = api
+        .call(
+            None,
+            Method::POST,
+            "/api/v1/billing/store/creem/verify",
+            Some(json!({"checkout_id": "ch_1"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    // Creem notifications are anonymous and signed.
+    let secret = "whsec_creem_http_test";
+    let creem = CreemProvider::new(
+        "creem_test_0123456789abcdef",
+        secret,
+        Some("http://creem.test"),
+        api.env.http.clone(),
+        std::sync::Arc::new(api.env.clock.clone()),
+    )
+    .unwrap();
+    api.env.billing.register_store(std::sync::Arc::new(creem));
+    let sub = json!({"id": "sub_h1", "product": {"id": "prod_pro", "price": 2900, "currency": "USD"}, "status": "active",
+        "current_period_start_date": "2026-11-01T00:00:00Z", "current_period_end_date": "2026-12-01T00:00:00Z",
+        "mode": "test", "metadata": {"forgebase_subject": pk("ann")}});
+    let body = json!({"id": "evt_h1", "eventType": "checkout.completed", "created_at": T0,
+        "object": {"id": "ch_h1", "status": "completed", "mode": "test", "subscription": sub,
+                   "order": {"id": "ord_h1", "transaction": "tran_h1", "amount": 2900, "currency": "USD", "status": "paid"},
+                   "metadata": {"forgebase_subject": pk("ann")}}})
+    .to_string()
+    .into_bytes();
+    let (s, j) = api
+        .raw(
+            None,
+            Method::POST,
+            "/api/v1/billing/webhooks/creem",
+            &[("creem-signature", "00".repeat(32))],
+            body.clone(),
+        )
+        .await;
+    assert_eq!((s, code(&j)), (StatusCode::BAD_REQUEST, "invalid_signature"));
+    let sig = creem::sign(secret, &body);
+    let (s, j) = api
+        .raw(
+            None,
+            Method::POST,
+            "/api/v1/billing/webhooks/creem",
+            &[("creem-signature", sig.clone())],
+            body.clone(),
+        )
+        .await;
+    assert_eq!((s, j["result"].as_str()), (StatusCode::OK, Some("processed")), "{j}");
+    let (_, j) = api
+        .raw(
+            None,
+            Method::POST,
+            "/api/v1/billing/webhooks/creem",
+            &[("creem-signature", sig)],
+            body,
+        )
+        .await;
+    assert_eq!(j["result"], "duplicate");
+    let (s, j) = api.get(user("ann"), "/api/v1/billing/store-purchases").await;
+    assert_eq!((s, j["items"][0]["status"].as_str()), (StatusCode::OK, Some("active")));
+    let (_, j) = api.get(user("bob"), "/api/v1/billing/store-purchases").await;
+    assert_eq!(j["items"].as_array().unwrap().len(), 0);
+    let (s, _) = api
+        .call(
+            Some(admin()),
+            Method::DELETE,
+            "/api/v1/billing/store-products/creem/prod_pro",
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn openapi_documents_every_route() {
     let doc = serde_json::to_value(forgebase_billing::openapi()).unwrap();
     let paths = doc["paths"].as_object().unwrap();
@@ -339,6 +446,11 @@ async fn openapi_documents_every_route() {
         "/api/v1/billing/portal/payment-method",
         "/api/v1/billing/webhooks/{provider}",
         "/api/v1/billing/stats",
+        "/api/v1/billing/store-products",
+        "/api/v1/billing/store-products/{provider}/{product_id}",
+        "/api/v1/billing/store/{provider}/verify",
+        "/api/v1/billing/store/{provider}/checkout",
+        "/api/v1/billing/store-purchases",
     ] {
         assert!(paths.contains_key(p), "{p} not documented");
     }
