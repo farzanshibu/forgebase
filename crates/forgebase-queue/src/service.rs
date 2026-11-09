@@ -627,6 +627,15 @@ impl QueueService {
             } else {
                 0
             };
+            if source_collection.is_some() {
+                // The relay starts here unless it already runs.
+                tx.execute(&Statement::new(
+                    "INSERT INTO _forgebase_queue_state (key, value) VALUES ('outbox_cursor', ?1) \
+                     ON CONFLICT (key) DO NOTHING",
+                    vec![after.into()],
+                ))
+                .await?;
+            }
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_topics (name, retention_ms, retention_bytes, max_message_bytes, \
                  dedup_window_ms, message_schema, source_collection, source_ops, source_after_seq, labels, \
@@ -884,6 +893,41 @@ impl QueueService {
         Ok(())
     }
 
+    /// Messages and bytes of a batch that are not duplicates as far as a read
+    /// shows now (duplicates use no quota).
+    async fn expected_fresh(&self, t: &TopicRow, prepared: &[Prepared], now: i64) -> Result<(i64, i64)> {
+        let ids: Vec<&str> = prepared.iter().filter_map(|p| p.dedup_id.as_deref()).collect();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        if !ids.is_empty() {
+            let marks: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 3)).collect();
+            let mut params: Vec<Value> = vec![t.name.as_str().into(), now.into()];
+            params.extend(ids.iter().map(|d| Value::from(*d)));
+            let rows = self
+                .backend()
+                .fetch_all(&Statement::new(
+                    format!(
+                        "SELECT dedup_id FROM _forgebase_queue_dedup WHERE topic = ?1 AND expires_at > ?2 \
+                         AND dedup_id IN ({})",
+                        marks.join(", ")
+                    ),
+                    params,
+                ))
+                .await?;
+            seen.extend(Row::all(&rows).map(|r| r.text("dedup_id")));
+        }
+        let (mut count, mut bytes) = (0, 0);
+        for p in prepared {
+            if let Some(d) = &p.dedup_id
+                && !seen.insert(d.clone())
+            {
+                continue;
+            }
+            count += 1;
+            bytes += p.bytes;
+        }
+        Ok((count, bytes))
+    }
+
     fn prepare_all(topic: &TopicRow, messages: &[NewMessage]) -> Result<Vec<Prepared>> {
         if topic.source.is_some() {
             return Err(QueueError::conflict(
@@ -903,13 +947,15 @@ impl QueueService {
         self.check_batch(&messages)?;
         let t = self.topic_internal(topic).await?;
         let prepared = Self::prepare_all(&t, &messages)?;
-        let total: i64 = prepared.iter().map(|p| p.bytes).sum();
         let subject = self.billable(ctx);
+        let now = self.now();
         let holds = match &subject {
-            Some(s) => self.hold(s, i64::try_from(prepared.len()).unwrap_or(i64::MAX), total).await?,
+            Some(s) => {
+                let (count, bytes) = self.expected_fresh(&t, &prepared, now).await?;
+                if count > 0 { self.hold(s, count, bytes).await? } else { Vec::new() }
+            }
             None => Vec::new(),
         };
-        let now = self.now();
         let actor = ctx.actor();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {

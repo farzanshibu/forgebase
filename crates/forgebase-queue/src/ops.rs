@@ -353,12 +353,25 @@ impl QueueService {
             match Row::all(&rows).next() {
                 Some(r) => r.int("value"),
                 None => {
-                    // First run: start at the head; source topics record their own start.
-                    let (_, head) = forgebase_realtime::outbox::bounds(backend)
-                        .await
-                        .map_err(|e| QueueError::Internal(e.to_string()))?;
-                    self.set_relay_cursor(head).await?;
-                    head
+                    // First run: from the oldest source topic's start, else the head.
+                    let start = scalar(
+                        &backend
+                            .fetch_all(&Statement::raw(
+                                "SELECT min(source_after_seq) FROM _forgebase_queue_topics \
+                                 WHERE source_collection IS NOT NULL",
+                            ))
+                            .await?,
+                    );
+                    let start = if start > 0 {
+                        start
+                    } else {
+                        forgebase_realtime::outbox::bounds(backend)
+                            .await
+                            .map_err(|e| QueueError::Internal(e.to_string()))?
+                            .1
+                    };
+                    self.set_relay_cursor(start).await?;
+                    start
                 }
             }
         };
