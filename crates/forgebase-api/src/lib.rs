@@ -19,7 +19,8 @@
 //! Middleware, outermost first: request context (request id, error
 //! envelope, security headers) → tracing span → metrics → panic catcher →
 //! request timeout → authentication (credential → `AccessContext`
-//! extension) → handler.
+//! extension) → tenancy (realm, organization, tenant, roles; FB-21) →
+//! handler.
 
 pub mod admin;
 pub mod context;
@@ -42,6 +43,7 @@ use forgebase_auth::AuthService;
 use forgebase_core::DataLayout;
 use forgebase_data::{Authorizer, DataError, DataService, DefaultAuthorizer};
 use forgebase_db::Database;
+use forgebase_policy::PolicyService;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -69,6 +71,7 @@ struct StateInner {
     started: Instant,
     metrics: &'static PrometheusHandle,
     auth: Option<AuthService>,
+    policy: Option<PolicyService>,
 }
 
 /// Size limits the handlers enforce themselves (see [`RouterOptions`]).
@@ -104,6 +107,7 @@ impl AppState {
                 started: Instant::now(),
                 metrics: forgebase_observability::metrics_handle(),
                 auth: None,
+                policy: None,
             }),
         })
     }
@@ -140,6 +144,7 @@ impl AppState {
                 started: Instant::now(),
                 metrics: forgebase_observability::metrics_handle(),
                 auth: None,
+                policy: None,
             }),
         }
     }
@@ -152,6 +157,19 @@ impl AppState {
         inner.data = auth.data().clone();
         inner.auth = Some(auth);
         self
+    }
+
+    /// Same state with the policy engine (FB-21): mounts the policy and
+    /// tenancy routes and installs the tenancy layer. The data service must
+    /// have been built with [`PolicyService::authorizer`].
+    pub fn with_policy(mut self, policy: PolicyService) -> Self {
+        Arc::make_mut(&mut self.inner).policy = Some(policy);
+        self
+    }
+
+    /// The policy service, when configured.
+    pub fn policy(&self) -> Option<&PolicyService> {
+        self.inner.policy.as_ref()
     }
 
     /// The auth service, when configured.
@@ -291,6 +309,7 @@ pub fn router_with(
     extra_openapi: Option<utoipa::openapi::OpenApi>,
 ) -> Router {
     let auth = state.auth().cloned();
+    let policy = state.policy().cloned();
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,
     });
@@ -318,8 +337,8 @@ pub fn router_with(
         .route("/admin/{*path}", get(admin::asset))
         .fallback(routes::not_found)
         .with_state(state)
-        .layer(middleware::from_fn(principal::hide_collection_existence))
         .layer(middleware::from_fn(principal::install_anonymous));
+    let app = with_policy_layer(app, policy);
     let app = with_auth_layer(app, auth)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -347,6 +366,17 @@ pub fn router_with(
         None => app,
     };
     app.layer(middleware::from_fn(context::request_context))
+}
+
+/// Mounts the policy and tenancy routes and installs the tenancy layer, which
+/// runs after authentication and before [`principal::install_anonymous`].
+fn with_policy_layer(app: Router, policy: Option<PolicyService>) -> Router {
+    match policy {
+        Some(p) => app
+            .merge(forgebase_policy::http::router(p.clone()))
+            .layer(middleware::from_fn_with_state(p, forgebase_policy::http::tenancy)),
+        None => app,
+    }
 }
 
 /// Mounts `/api/auth/*` and installs the authentication layer, which must run

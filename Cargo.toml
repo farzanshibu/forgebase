@@ -24,6 +24,7 @@ forgebase-data = { path = "crates/forgebase-data" }
 forgebase-graph = { path = "crates/forgebase-graph" }
 forgebase-jobs = { path = "crates/forgebase-jobs" }
 forgebase-auth = { path = "crates/forgebase-auth" }
+forgebase-policy = { path = "crates/forgebase-policy" }
 forgebase-kv = { path = "crates/forgebase-kv" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)

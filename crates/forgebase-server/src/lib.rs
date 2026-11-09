@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
-use forgebase_data::{Authorizer, DefaultAuthorizer};
+use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_kv::{KvConfig, KvError, KvService};
 use tokio::net::TcpListener;
@@ -88,15 +88,15 @@ pub async fn start_with_jobs(
     };
     let instance = db.ensure_instance().await?;
 
-    // One authorizer for the data core and the KV engine; FB-21 replaces it.
-    let authorizer: Arc<dyn Authorizer> = Arc::new(DefaultAuthorizer);
-    let auth = match open_auth(&db, &layout, config, Arc::clone(&authorizer)).await {
+    let (auth, policy) = match open_auth(&db, &layout, config).await {
         Ok(a) => a,
         Err(e) => {
             db.close().await;
-            return Err(e.into());
+            return Err(e);
         }
     };
+    // One authorizer — the policy engine — for the data core and the KV engine.
+    let authorizer: Arc<dyn Authorizer> = policy.authorizer();
     let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
         Ok(kv) => kv,
         Err(e) => {
@@ -109,9 +109,13 @@ pub async fn start_with_jobs(
         request_timeout: Duration::from_secs(config.server.request_timeout_secs),
         ..RouterOptions::default()
     };
-    // One data service, built by the auth service with the Argon2id hasher;
-    // the auth layer turns credentials into each request's AccessContext.
-    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
+    // One data service, built by the auth service with the Argon2id hasher
+    // and the policy engine as its authorizer; the auth layer turns
+    // credentials into each request's AccessContext, the tenancy layer adds
+    // realm, organization, tenant, roles and attributes.
+    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
+        .with_auth(auth)
+        .with_policy(policy);
     let jobs = JobService::new(state.data().clone());
     let opts = RouterOptions {
         extensions: vec![forgebase_jobs::extension(jobs.clone())],
@@ -183,18 +187,25 @@ pub async fn start_with_jobs(
     })
 }
 
-/// Opens the auth service (FB-20) and the data service it shares, with the
-/// fail-closed default authorizer until the policy engine (FB-21) lands.
+/// Opens the policy service (FB-21), then the auth service (FB-20) and the
+/// data service they share, with the policy engine as the authorizer.
 async fn open_auth(
     db: &Database,
     layout: &DataLayout,
     config: &Config,
-    authorizer: Arc<dyn Authorizer>,
-) -> Result<forgebase_auth::AuthService, forgebase_auth::AuthError> {
+) -> Result<(forgebase_auth::AuthService, forgebase_policy::PolicyService), ServerError> {
     let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
     cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let public_url = cfg.public_url.clone();
     let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
-    forgebase_auth::AuthService::open_with_data(backend, authorizer, layout.root(), cfg, None).await
+    let policy = forgebase_policy::PolicyService::open(backend.clone())
+        .await
+        .map_err(|e| ServerError::Policy(e.to_string()))?;
+    let auth =
+        forgebase_auth::AuthService::open_with_data(backend, policy.authorizer(), layout.root(), cfg, None).await?;
+    policy.attach_data(auth.data().clone());
+    policy.attach_mailer(auth.mailer().clone(), public_url);
+    Ok((auth, policy))
 }
 
 impl RunningServer {
@@ -359,6 +370,9 @@ pub enum ServerError {
     /// The auth service failed to start (master key, signing keys).
     #[error("auth: {0}")]
     Auth(#[from] forgebase_auth::AuthError),
+    /// The policy service failed to load its model.
+    #[error("policy: {0}")]
+    Policy(String),
 }
 
 impl ErrorCode for ServerError {
@@ -373,6 +387,7 @@ impl ErrorCode for ServerError {
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
+            ServerError::Policy(_) => "policy_unavailable",
         }
     }
 
@@ -384,6 +399,7 @@ impl ErrorCode for ServerError {
             ServerError::Kv(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
+            ServerError::Policy(_) => ErrorKind::Internal,
         }
     }
 }

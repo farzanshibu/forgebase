@@ -27,6 +27,8 @@ pub enum MailKind {
     MagicLink,
     /// One-time sign-in code.
     EmailOtp,
+    /// Invitation to an organization (FB-21).
+    Invitation,
 }
 
 /// One outgoing message.

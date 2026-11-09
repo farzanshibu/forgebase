@@ -19,13 +19,15 @@
 //! * **SQL editor backend** ([`sql`]): raw parameterised SQL with statement
 //!   classification; reads run on connections that cannot write.
 //!
-//! Every call takes an [`AccessContext`] and asks the [`Authorizer`] first.
+//! Every call takes an [`AccessContext`] and asks the [`Authorizer`] first;
+//! tenant scoping and field-level rules are enforced here too (ADR-0008).
 
 pub mod access;
 mod catalog;
 pub mod collections;
 mod ddl;
 mod error;
+mod guard;
 pub mod indexes;
 pub mod list;
 pub mod records;
@@ -37,7 +39,11 @@ use forgebase_db::{Backend, TxMode, WriteTx};
 use forgebase_query::CompileOptions;
 use forgebase_schema::Collection;
 
-pub use access::{AccessContext, Action, Authorizer, Decision, DefaultAuthorizer, Predicate, Principal, SecretHasher};
+pub use access::{
+    AccessContext, Action, Authorizer, DEFAULT_REALM, Decision, DefaultAuthorizer, FieldAccess, Predicate, Principal,
+    READS_TENANT_DATA_OPTION, SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped,
+    reads_tenant_data,
+};
 pub use collections::SchemaChange;
 pub use error::DataError;
 pub use indexes::{IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexRecommendation, QueryPlan};
