@@ -28,6 +28,7 @@
 //! through [`AuthService::issue_session`]; the policy engine (FB-21) reads
 //! [`Authenticated`] (scopes, method, MFA) next to the `AccessContext`.
 
+pub mod clock;
 pub mod crypto;
 mod error;
 pub mod http;
@@ -42,11 +43,13 @@ pub mod store;
 pub mod webauthn;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_data::AccessContext;
 use serde::Serialize;
 
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::AuthError;
 pub use forgebase_data as data;
 pub use mailer::{DevMailer, Mail, MailKind, Mailer};
@@ -54,8 +57,8 @@ pub use openapi::openapi;
 pub use password::{Argon2Config, PasswordHasher};
 pub use scopes::Scope;
 pub use service::{
-    AdminView, ApiKeyView, AuditEntry, AuditQuery, AuthService, ClientInfo, CreatedKey, LoginOptions, LoginOutcome,
-    ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
+    AdminView, ApiKeyView, AuditEntry, AuditQuery, AuthService, ClientInfo, CreatedKey, ImpersonationGrant,
+    ImpersonationView, LoginOptions, LoginOutcome, ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
 };
 
 /// Collection name FB-20 used for service-account principals before the data
@@ -112,6 +115,8 @@ pub struct AuthConfig {
     pub trust_forwarded_for: bool,
     /// TOTP issuer shown in authenticator apps.
     pub totp_issuer: String,
+    /// Time source (tests replace it with a [`ManualClock`]).
+    pub clock: Arc<dyn Clock>,
 }
 
 impl AuthConfig {
@@ -142,6 +147,7 @@ impl AuthConfig {
             cookie_secure: true,
             trust_forwarded_for: false,
             totp_issuer: "ForgeBase".into(),
+            clock: Arc::new(SystemClock),
         }
     }
 }
@@ -230,6 +236,8 @@ pub enum AuthMethod {
     Oauth,
     /// Passkey (WebAuthn).
     Passkey,
+    /// Administrator impersonation (ADR-0014).
+    Impersonation,
 }
 
 impl AuthMethod {
@@ -240,6 +248,7 @@ impl AuthMethod {
             AuthMethod::EmailOtp => "email_otp",
             AuthMethod::Oauth => "oauth",
             AuthMethod::Passkey => "passkey",
+            AuthMethod::Impersonation => "impersonation",
         }
     }
 }
@@ -258,12 +267,17 @@ pub struct Authenticated {
     pub scopes: Option<Vec<Scope>>,
     /// Whether the session passed a second factor.
     pub mfa: bool,
+    /// Administrator acting as this subject (impersonation session, ADR-0014).
+    pub impersonator: Option<String>,
 }
 
 impl Authenticated {
     /// The data core context for this identity (with the credential's scopes).
     pub fn access_context(&self, request_id: Option<&str>) -> AccessContext {
         let mut ctx = self.subject.access_context();
+        if let Some(admin) = &self.impersonator {
+            ctx = ctx.with_impersonator(admin.clone());
+        }
         if let Some(scopes) = &self.scopes {
             ctx = ctx.with_scopes(scopes.iter().map(|s| s.as_str().to_owned()).collect());
         }

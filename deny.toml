@@ -16,7 +16,9 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0459", reason = "Bundled SQLite < 3.54 in libsqlite3-sys 0.37; sqlx-sqlite 0.9.0 requires libsqlite3-sys < 0.38 so it cannot be upgraded yet. Mitigated in forgebase-db (a database whose -wal file has another page size than the header is refused before opening). Review by 2026-12-09; remove when sqlx-sqlite allows libsqlite3-sys >= 0.39. See ADR-0002." },
+]
 
 [licenses]
 version = 2

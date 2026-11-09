@@ -46,6 +46,7 @@ async fn stack(tweak: impl FnOnce(&mut RespConfig)) -> Stack {
         credential_id: "t".into(),
         scopes: None,
         mfa: false,
+        impersonator: None,
     };
     let kv = KvService::open(
         KvConfig {

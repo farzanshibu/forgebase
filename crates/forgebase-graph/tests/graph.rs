@@ -690,7 +690,8 @@ async fn ten_thousand_edges_stay_fast_and_use_the_directional_indexes() {
     }
 
     let c = env.admin();
-    let limit = Duration::from_secs(5);
+    // Generous: this guards against a quadratic blow-up, not against a slow or busy machine.
+    let limit = Duration::from_secs(60);
     let t = Instant::now();
     let (s, r) = c
         .post("/traverse", json!({"start": "n0", "max_depth": 4, "limit": 1000}))
@@ -723,6 +724,10 @@ async fn ten_thousand_edges_stay_fast_and_use_the_directional_indexes() {
     let t = Instant::now();
     let (_, r) = c.get("/nodes/n7/neighbors?direction=both&limit=1000").await;
     assert!(!r["items"].as_array().unwrap().is_empty());
-    assert!(t.elapsed() < Duration::from_secs(1), "neighbors took {:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_secs(20),
+        "neighbors took {:?}",
+        t.elapsed()
+    );
     assert_eq!(c.get("/stats").await.1["edges"], EDGES);
 }

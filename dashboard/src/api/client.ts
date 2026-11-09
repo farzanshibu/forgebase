@@ -1,4 +1,4 @@
-import { authHeaders } from "./token";
+import { authHeaders, csrfHeaders, notifyUnauthorized } from "./token";
 import type { ApiErrorBody, FieldError } from "./types";
 
 /** Error model of PLAN section 5: `{"error":{"code","message","request_id"}}`. */
@@ -33,7 +33,7 @@ export class ApiError extends Error {
     return out;
   }
 
-  /** 401/403: the server wants credentials the dashboard does not have (sign-in is FB-23). */
+  /** 401/403: the server wants credentials the dashboard does not have (the session layer handles 401). */
   get isAuth(): boolean {
     return this.status === 401 || this.status === 403;
   }
@@ -59,11 +59,20 @@ export interface RequestOptions {
   rawBody?: BodyInit;
   /** Return the response text instead of parsing JSON (export). */
   text?: boolean;
+  /** A 401 is an expected answer (sign-in, whoami): do not tell the session layer it expired. */
+  quiet401?: boolean;
 }
 
 /** Fetch JSON from the server; throws `ApiError` for every failure mode. */
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json", ...(await authHeaders()), ...opts.headers };
+  const method = opts.method ?? "GET";
+  const unsafe = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...(await authHeaders()),
+    ...(unsafe ? csrfHeaders() : {}),
+    ...opts.headers,
+  };
   let body: BodyInit | undefined;
   if (opts.rawBody !== undefined) {
     body = opts.rawBody;
@@ -74,7 +83,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
   let res: Response;
   try {
-    res = await fetch(path, { method: opts.method ?? "GET", headers, body, signal: opts.signal });
+    res = await fetch(path, { method, headers, body, signal: opts.signal, credentials: "same-origin" });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") throw err;
     throw new ApiError({
@@ -98,6 +107,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
 
   if (!res.ok) {
+    if (res.status === 401 && !opts.quiet401) notifyUnauthorized();
     if (isErrorBody(parsed)) {
       const { code, message, request_id } = parsed.error;
       throw new ApiError({ status: res.status, code, message: message ?? res.statusText, requestId: request_id, body: parsed });

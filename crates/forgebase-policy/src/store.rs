@@ -1326,13 +1326,147 @@ impl PolicyService {
         }))
     }
 
+    // ----- read endpoints of the admin studio (ADR-0014 §3) -----------------------
+
+    /// Role sets usable in the org (`roles:read`), or the realm's.
+    pub fn list_role_sets(&self, ctx: &AccessContext, org: Option<&str>) -> Result<Json, PolicyError> {
+        let snap = match org {
+            Some(o) => self.org_check(ctx, o, "roles:read")?.snap,
+            None => self.snapshot(),
+        };
+        let v: Vec<_> = snap
+            .role_sets
+            .iter()
+            .filter(|r| r.realm_id == ctx.realm_id && (r.org_id.is_none() || r.org_id.as_deref() == org))
+            .cloned()
+            .collect();
+        Ok(json!(v))
+    }
+
+    /// Realm role bindings (super-admins).
+    pub fn list_realm_bindings(&self, ctx: &AccessContext) -> Result<Json, PolicyError> {
+        self.require_super_admin(ctx, "realm_bindings:read")?;
+        let mut v: Vec<_> = self
+            .snapshot()
+            .realm_bindings
+            .values()
+            .filter(|g| g.scope_id == ctx.realm_id)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| a.principal.cmp(&b.principal));
+        Ok(json!(v))
+    }
+
+    /// Explicit allow/deny overrides of an org (`roles:read`) or of the
+    /// realm (super-admins).
+    pub fn list_overrides(&self, ctx: &AccessContext, org: Option<&str>) -> Result<Json, PolicyError> {
+        let snap = match org {
+            Some(o) => self.org_check(ctx, o, "roles:read")?.snap,
+            None => {
+                self.require_super_admin(ctx, "overrides:read")?;
+                self.snapshot()
+            }
+        };
+        let v: Vec<_> = snap
+            .overrides
+            .iter()
+            .filter(|o| o.realm_id == ctx.realm_id && o.org_id.as_deref() == org)
+            .cloned()
+            .collect();
+        Ok(json!(v))
+    }
+
+    /// Active account suspensions (super-admins).
+    pub async fn list_suspensions(&self, ctx: &AccessContext) -> Result<Json, PolicyError> {
+        self.require_super_admin(ctx, "suspensions:read")?;
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT principal, reason, suspended_by, suspended_at, until_at FROM _forgebase_suspensions
+                 WHERE until_at IS NULL OR until_at > ?1 ORDER BY suspended_at DESC",
+                vec![now().into()],
+            ))
+            .await?;
+        Ok(Json::Array(
+            rows.rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "principal": r[0].as_str(), "reason": r[1].as_str(), "suspended_by": r[2].as_str(),
+                        "created_at": r[3].as_i64(), "until": r[4].as_i64(),
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// Invitations of an org, newest first (`users:read`); never the token.
+    pub async fn list_invitations(&self, ctx: &AccessContext, org: &str) -> Result<Json, PolicyError> {
+        self.org_check(ctx, org, "users:read")?;
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT id, email, roles, invited_by, created_at, expires_at, accepted_at, accepted_by
+                 FROM _forgebase_invitations WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 500",
+                vec![org.into()],
+            ))
+            .await?;
+        let t = now();
+        Ok(Json::Array(
+            rows.rows
+                .iter()
+                .map(|r| {
+                    let accepted = r[6].as_i64();
+                    let expires = r[5].as_i64().unwrap_or(0);
+                    let status = if accepted.is_some() {
+                        "accepted"
+                    } else if expires <= t {
+                        "expired"
+                    } else {
+                        "pending"
+                    };
+                    json!({
+                        "id": r[0].as_str(), "org_id": org, "email": r[1].as_str(),
+                        "roles": r[2].as_str().and_then(|s| serde_json::from_str::<Json>(s).ok()).unwrap_or(json!([])),
+                        "invited_by": r[3].as_str(), "created_at": r[4].as_i64(), "expires_at": expires,
+                        "accepted_at": accepted, "accepted_by": r[7].as_str(), "status": status,
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// The context of `principal` (`user:<collection>/<id>` or `service:<id>`)
+    /// for dry runs by a super-admin ("would this user be allowed?").
+    pub fn context_for(&self, ctx: &AccessContext, principal: &str) -> Result<AccessContext, PolicyError> {
+        self.require_super_admin(ctx, "authz:check_as")?;
+        check_principal(principal)?;
+        let mut c = match principal.split_once(':') {
+            Some(("user", rest)) => {
+                let (coll, id) = rest.split_once('/').unwrap_or_default();
+                AccessContext::user(coll, id)
+            }
+            Some((_, id)) => AccessContext::service(id, false),
+            None => AccessContext::anonymous(),
+        }
+        .with_realm(ctx.realm_id.clone());
+        if let Some(o) = &ctx.org_id {
+            c = c.with_org(o.clone());
+        }
+        let eff = self
+            .snapshot()
+            .effective(&c.principal_key(), &c.realm_id, c.org_id.as_deref());
+        c.roles = eff.roles.iter().cloned().collect();
+        Ok(c)
+    }
+
     /// Recent denials (super-admins).
     pub async fn audit_log(&self, ctx: &AccessContext, limit: u32) -> Result<Json, PolicyError> {
         self.require_super_admin(ctx, "audit:read")?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT at, realm_id, principal, tenant, org_id, permission, resource, step, reason, request_id
+                "SELECT at, realm_id, principal, tenant, org_id, permission, resource, step, reason, request_id, impersonator
                  FROM _forgebase_authz_audit ORDER BY id DESC LIMIT ?1",
                 vec![i64::from(limit.clamp(1, 1000)).into()],
             ))
@@ -1348,6 +1482,7 @@ impl PolicyService {
             "step",
             "reason",
             "request_id",
+            "impersonator",
         ];
         Ok(Json::Array(
             rows.rows

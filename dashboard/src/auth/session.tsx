@@ -1,0 +1,182 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  ApiError, endImpersonation as apiEndImpersonation, impersonate as apiImpersonate, isMfaChallenge, login, logout, me, mfaVerify,
+  setCsrfToken, setTokenSource, setUnauthorizedHandler, type AdminInfo, type LoginSession, type MeResponse,
+} from "../api";
+
+export interface ImpersonationState {
+  /** `user:<collection>/<id>` */
+  target: string;
+  reason: string;
+  sessionId: string;
+  /** ISO time the impersonation token stops working. */
+  expiresAt: string;
+}
+
+export interface Session {
+  status: "loading" | "anonymous" | "authenticated";
+  admin: AdminInfo | null;
+  /** A second factor is needed to finish `signIn`. */
+  mfaRequired?: boolean;
+  /** True after a 401 ended a signed-in session. */
+  expiredNotice: boolean;
+  signIn: (email: string, password: string) => Promise<void>;
+  submitMfa: (code: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  impersonation: ImpersonationState | null;
+  startImpersonation: (principal: string, reason: string, ttlMinutes?: number) => Promise<void>;
+  endImpersonation: () => Promise<void>;
+}
+
+const Ctx = createContext<Session | null>(null);
+
+export function useSession(): Session {
+  const v = useContext(Ctx);
+  if (!v) throw new Error("useSession must be used inside <SessionProvider>");
+  return v;
+}
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const [status, setStatus] = useState<Session["status"]>("loading");
+  const [admin, setAdmin] = useState<AdminInfo | null>(null);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [expiredNotice, setExpiredNotice] = useState(false);
+  const [impersonation, setImpersonation] = useState<ImpersonationState | null>(null);
+  const token = useRef<string | null>(null);
+  const impRef = useRef<ImpersonationState | null>(null);
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  });
+
+  const clearImpersonation = useCallback(() => {
+    token.current = null;
+    impRef.current = null;
+    setImpersonation(null);
+  }, []);
+
+  const applyMe = useCallback((m: MeResponse | null): boolean => {
+    if (m && m.subject.type === "admin") {
+      setAdmin({ id: m.admin?.id ?? m.subject.id ?? "", email: m.admin?.email ?? "" });
+      setStatus("authenticated");
+      return true;
+    }
+    setAdmin(null);
+    setStatus("anonymous");
+    return false;
+  }, []);
+
+  const loadAdmin = useCallback(async (): Promise<boolean> => {
+    try {
+      return applyMe(await me());
+    } catch {
+      return applyMe(null);
+    }
+  }, [applyMe]);
+
+  useEffect(() => {
+    setTokenSource(() => token.current);
+    setUnauthorizedHandler(() => {
+      if (impRef.current) {
+        // The impersonation token stopped working: fall back to the admin session.
+        clearImpersonation();
+        return;
+      }
+      if (statusRef.current === "authenticated") {
+        setExpiredNotice(true);
+        setAdmin(null);
+        setStatus("anonymous");
+      }
+    });
+    let live = true;
+    me().then(
+      (m) => live && applyMe(m),
+      () => live && applyMe(null),
+    );
+    return () => {
+      live = false;
+      setUnauthorizedHandler(null);
+      setTokenSource(() => null);
+    };
+  }, [applyMe, clearImpersonation]);
+
+  // Impersonation expires by itself.
+  useEffect(() => {
+    if (!impersonation) return;
+    const ms = Math.max(0, new Date(impersonation.expiresAt).getTime() - Date.now());
+    const t = setTimeout(clearImpersonation, ms);
+    return () => clearTimeout(t);
+  }, [impersonation, clearImpersonation]);
+
+  const finish = useCallback(
+    async (s: LoginSession) => {
+      setCsrfToken(s.csrf_token ?? null);
+      setMfaToken(null);
+      setExpiredNotice(false);
+      if (!(await loadAdmin())) throw new ApiError({ status: 403, code: "forbidden", message: "This account is not an administrator" });
+    },
+    [loadAdmin],
+  );
+
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const r = await login(email, password);
+      if (isMfaChallenge(r)) {
+        setMfaToken(r.mfa_token);
+        return;
+      }
+      await finish(r);
+    },
+    [finish],
+  );
+
+  const submitMfa = useCallback(
+    async (code: string) => {
+      if (!mfaToken) throw new Error("No sign-in is waiting for a code");
+      await finish(await mfaVerify(mfaToken, code));
+    },
+    [finish, mfaToken],
+  );
+
+  const signOut = useCallback(async () => {
+    clearImpersonation();
+    try {
+      await logout();
+    } catch {
+      /* already gone */
+    }
+    setCsrfToken(null);
+    setAdmin(null);
+    setMfaToken(null);
+    setExpiredNotice(false);
+    setStatus("anonymous");
+  }, [clearImpersonation]);
+
+  const startImpersonation = useCallback(async (principal: string, reason: string, ttlMinutes?: number) => {
+    if (impRef.current) throw new Error("Already impersonating: end the current impersonation first");
+    const g = await apiImpersonate(principal, reason, ttlMinutes);
+    token.current = g.access_token;
+    const st = { target: principal, reason: g.reason ?? reason, sessionId: g.session_id, expiresAt: g.expires_at };
+    impRef.current = st;
+    setImpersonation(st);
+  }, []);
+
+  const endImpersonation = useCallback(async () => {
+    if (!impRef.current) return;
+    try {
+      await apiEndImpersonation();
+    } catch {
+      /* expired or revoked: ending locally is the same outcome */
+    }
+    clearImpersonation();
+  }, [clearImpersonation]);
+
+  const value = useMemo<Session>(
+    () => ({
+      status, admin, mfaRequired: mfaToken !== null, expiredNotice, signIn, submitMfa, signOut,
+      impersonation, startImpersonation, endImpersonation,
+    }),
+    [status, admin, mfaToken, expiredNotice, signIn, submitMfa, signOut, impersonation, startImpersonation, endImpersonation],
+  );
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}

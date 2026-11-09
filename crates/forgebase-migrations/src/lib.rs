@@ -84,6 +84,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0009_entitlements.sql"),
     ),
     Migration::new(12, "vector", include_str!("../../../migrations/system/0012_vector.sql")),
+    Migration::new(
+        13,
+        "impersonation",
+        include_str!("../../../migrations/system/0013_impersonation.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
