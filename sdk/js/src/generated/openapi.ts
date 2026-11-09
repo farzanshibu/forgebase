@@ -1008,7 +1008,8 @@ export interface paths {
         /** Every realm identity configuration (administrators; secrets shown as `********`). */
         get: operations["realms_list"];
         put?: never;
-        post?: never;
+        /** Create a realm and its identity settings in one call: `{id, name?, collection?, config?}` (same `config` as `PUT /api/auth/realms/{realm}`). Answers the realm identity. Settings are validated before anything is written (administrators). */
+        post: operations["identity_realm_create"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1028,6 +1029,112 @@ export interface paths {
         put: operations["realm_put"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/realms/{realm}/consents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Remembered consents of a realm, newest first, optionally for one client: `{items:[{id, client_id, client_name, realm, collection, user_id, scopes, created_at, updated_at}], limit, offset}` (administrators). */
+        get: operations["identity_realm_consents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/realms/{realm}/consents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke any consent of the realm and the token families the client holds for that user (administrators). */
+        delete: operations["identity_realm_consent_revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/realms/{realm}/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Current and retired OIDC signing key ids of a realm: `{realm, current, items:[{kid, alg, status: active|retired, created_at, verify_until, verifying}]}` (administrators; no key material). */
+        get: operations["identity_realm_keys"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/realms/{realm}/oauth-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Social login providers of a realm: `{items}`; secrets show as `********`; `source` is `admin` or `file` (read-only, from oauth-providers.json) (administrators). */
+        get: operations["identity_provider_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/realms/{realm}/oauth-providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One social login provider (administrators). */
+        get: operations["identity_provider_get"];
+        /** Create or replace a provider: `{kind, client_id, client_secret?, scopes?, issuer?, authorize_url?, token_url?, userinfo_url?, jwks_url?, emails_url?, redirect_uri?, apple?: {team_id, key_id, private_key_pem?}, allow_signup?, auto_link_verified_email?, display_name?}`. Secrets are write-only and sealed: a string sets, `""` clears, `"********"`/null/absent keep. Providers defined in oauth-providers.json answer 409 (administrators). */
+        put: operations["identity_provider_put"];
+        post?: never;
+        /** Delete a provider created over REST (administrators). */
+        delete: operations["identity_provider_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/realms/{realm}/sms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** SMS gateway of a realm, secrets masked: `{realm, configured, config}`; `configured: false` means the instance gateway is used (administrators). */
+        get: operations["identity_sms_get"];
+        /** Set the realm's SMS gateway: `{provider: dev}`, `{provider: twilio, account_sid, auth_token, from?, messaging_service_sid?, base_url?}` or `{provider: webhook, url, bearer_token?}`. Secrets are write-only (as for providers). Takes effect at once (administrators). */
+        put: operations["identity_sms_put"];
+        post?: never;
+        /** Remove the realm's SMS gateway; the instance gateway applies again (administrators). */
+        delete: operations["identity_sms_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1731,6 +1838,813 @@ export interface paths {
         get: operations["me"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/admin/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every order of the instance, newest first, with paging (billing readers). */
+        get: operations["billing_all_orders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/admin/usage-meters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Usage counters of every subject in their current windows, most used
+         *     first, with 70 / 90 / 100 % states (billing readers).
+         */
+        get: operations["billing_usage_meters"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/coupons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Coupons (platform administrators). */
+        get: operations["billing_coupons"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/coupons/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Creates or replaces a coupon (platform administrators). */
+        put: operations["billing_put_coupon"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/coupons/{code}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archives a coupon (idempotent): it cannot be redeemed again
+         *     (platform administrators).
+         */
+        post: operations["billing_archive_coupon"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/credit-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Credit notes of a subject. */
+        get: operations["billing_credit_notes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/customer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The customer of a subject. */
+        get: operations["billing_customer"];
+        /**
+         * Creates or updates the customer of a subject (billing email, currency,
+         *     tax region, provider).
+         */
+        put: operations["billing_put_customer"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/customers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every customer (realm-level `billing:read`). */
+        get: operations["billing_customers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/dunning": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The dunning queue: open invoices with a failed attempt or a scheduled
+         *     retry, next attempt first, with the last failure and retries left
+         *     (billing readers).
+         */
+        get: operations["billing_dunning_queue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/invoices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Invoices of a subject (customer portal), newest first. */
+        get: operations["billing_invoices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/invoices/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One invoice with its lines. */
+        get: operations["billing_invoice"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/invoices/{id}/credit-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issues a credit note: a refund or a credit to the customer balance
+         *     (operators). Idempotent by key.
+         */
+        post: operations["billing_credit_invoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/invoices/{id}/mark-paid": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Records an out-of-band payment (operators; manual billing). */
+        post: operations["billing_mark_paid"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/invoices/{id}/pay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pays an open invoice now (saved method, else the hosted page URL). */
+        post: operations["billing_pay_invoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/invoices/{id}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Voids an unpaid invoice (operators). */
+        post: operations["billing_void_invoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs maintenance now (platform administrators): usage, renewals,
+         *     dunning, fulfillment, entitlement syncs.
+         */
+        post: operations["billing_maintenance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Orders of a subject. */
+        get: operations["billing_orders"];
+        put?: never;
+        /** A one-time purchase (credit top-ups, usage packs). Idempotent by key. */
+        post: operations["billing_create_order"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/orders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One order. */
+        get: operations["billing_order"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Payments of a subject (payment history). */
+        get: operations["billing_payments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The customer portal: customer, live subscriptions, recent invoices,
+         *     payments and credit notes.
+         */
+        get: operations["billing_portal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/portal/payment-method": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A provider-hosted page that saves or replaces the payment method. */
+        post: operations["billing_payment_method"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Prices, optionally of one product. */
+        get: operations["billing_prices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/prices/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One price. */
+        get: operations["billing_price"];
+        /**
+         * Creates or replaces a price (platform administrators): recurring monthly
+         *     or yearly, one-time or metered; per unit, graduated or volume tiers; the
+         *     same price in several currencies.
+         */
+        put: operations["billing_put_price"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/prices/{key}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archives a price (idempotent): new subscriptions and plan changes refuse
+         *     it; existing subscriptions keep renewing on it (platform administrators).
+         */
+        post: operations["billing_archive_price"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Products. */
+        get: operations["billing_products"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/products/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One product. */
+        get: operations["billing_product"];
+        /**
+         * Creates or replaces a product (platform administrators). Its kind maps a
+         *     payment to entitlements: a FB-24 plan, add-on or usage pack, or FB-73
+         *     credits.
+         */
+        put: operations["billing_put_product"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/products/{key}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archives a product (`active: false`, idempotent): it can no longer be
+         *     bought; existing subscriptions continue (platform administrators).
+         */
+        post: operations["billing_archive_product"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Configured payment providers (no secrets). */
+        get: operations["billing_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/providers/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Saves a provider account: `stripe`, `razorpay` or `manual`. Test-mode
+         *     keys only; secrets are sealed and never returned.
+         */
+        put: operations["billing_put_provider"];
+        post?: never;
+        /** Removes a provider account. */
+        delete: operations["billing_delete_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/refunds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Refunds of a subject. */
+        get: operations["billing_refunds"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Operator settings (dunning schedule, number prefixes, webhook windows). */
+        get: operations["billing_get_settings"];
+        /** Replaces the settings (platform administrators). */
+        put: operations["billing_put_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Payment statistics: MRR, ARR, churn, revenue by currency (default: the
+         *     last 30 days by day).
+         */
+        get: operations["billing_stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Subscriptions of a subject. */
+        get: operations["billing_subscriptions"];
+        put?: never;
+        /** Subscribes (trial, or the first invoice collected). Idempotent by key. */
+        post: operations["billing_subscribe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One subscription. */
+        get: operations["billing_subscription"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancels at the period end (default) or now (customer portal). */
+        post: operations["billing_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions/{id}/change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Changes the plan (upgrade or downgrade) with proration (customer portal). */
+        post: operations["billing_change_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions/{id}/change/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * What a plan change would do (proration lines, credit, charge, net), with
+         *     no side effects. Same body and same math as `change`.
+         */
+        post: operations["billing_preview_plan_change"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pauses an active subscription. */
+        post: operations["billing_pause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscriptions/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resumes a paused subscription or withdraws a scheduled cancellation. */
+        post: operations["billing_resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/tax-rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tax rates per region. */
+        get: operations["billing_tax_rates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/tax-rates/{region}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Sets the tax rate of a region (platform administrators). */
+        put: operations["billing_put_tax_rate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/tax-rates/{region}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archives the tax rate of a region (idempotent): no tax is added for it
+         *     afterwards (platform administrators).
+         */
+        post: operations["billing_archive_tax_rate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/webhook-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Webhook events received (platform administrators). */
+        get: operations["billing_webhook_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/webhooks/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A provider webhook delivery. Verified by signature (forged: `400
+         *     invalid_signature`; replayed old delivery: `400 stale_signature`),
+         *     idempotent by event id (`duplicate`), out-of-order safe.
+         */
+        post: operations["billing_webhook"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3721,6 +4635,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/kv/{ns}/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live pub/sub channels of a namespace (those with at least one subscriber). */
+        get: operations["kv_channels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/kv/{ns}/exec": {
         parameters: {
             query?: never;
@@ -3882,6 +4813,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/kv/{ns}/lists/{key}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Removes occurrences of a value from a list (`LREM`). */
+        post: operations["kv_list_remove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/kv/{ns}/lists/{key}/set": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replaces the list element at an index (`LSET`); `400` when out of range. */
+        post: operations["kv_list_set"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/kv/{ns}/mget": {
         parameters: {
             query?: never;
@@ -3978,6 +4943,23 @@ export interface paths {
         put?: never;
         /** Appends an entry to a stream. */
         post: operations["stream_add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/kv/{ns}/streams/{key}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deletes entries from a stream by id (`XDEL`). */
+        post: operations["kv_stream_delete"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4974,6 +5956,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/buckets/{bucket}/meta/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Metadata of an object as JSON, without reading its bytes (`?version=` for one version). */
+        get: operations["storage_object_meta"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /**
+         * Metadata of an object as headers only (`Content-Type`, `Content-Length`, `ETag`,
+         *     `X-ForgeBase-Version-Id`, checksum and `X-ForgeBase-Meta-*`), without reading its bytes.
+         */
+        head: operations["storage_object_meta_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/buckets/{bucket}/move": {
         parameters: {
             query?: never;
@@ -5079,6 +6082,23 @@ export interface paths {
         put?: never;
         /** Opens a multipart or resumable upload session. */
         post: operations["create_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage/buckets/{bucket}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Space used by a bucket: current objects, versions and bytes (bucket admins). */
+        get: operations["storage_bucket_usage"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6284,6 +7304,198 @@ export interface components {
             /** @description Commands run in order with no other command in between. */
             commands: components["schemas"]["Bin"][][];
         };
+        /** @description The result of a collection attempt. */
+        BillingCollection: {
+            /** @description The invoice after the attempt. */
+            invoice: components["schemas"]["Invoice"];
+            payment?: components["schemas"]["Payment"] | null;
+            /** @description The hosted page where the customer must pay. */
+            payment_url?: string | null;
+        };
+        /**
+         * @description Billing interval.
+         * @enum {string}
+         */
+        BillingInterval: "month" | "year";
+        /** @description What a maintenance run did. */
+        BillingMaintenanceReport: {
+            /**
+             * Format: int64
+             * @description Subscriptions ended (cancel at period end, dunning, incomplete).
+             */
+            ended: number;
+            /**
+             * Format: int64
+             * @description Invoices fulfilled (late fulfillment).
+             */
+            fulfilled: number;
+            /**
+             * Format: int64
+             * @description Subscriptions renewed (invoice raised).
+             */
+            renewed: number;
+            /**
+             * Format: int64
+             * @description Dunning retries attempted.
+             */
+            retries: number;
+            /**
+             * Format: int64
+             * @description Entitlement syncs applied.
+             */
+            synced: number;
+            /**
+             * Format: int64
+             * @description Trials converted or ended.
+             */
+            trials_ended: number;
+            /**
+             * Format: int64
+             * @description Usage events read.
+             */
+            usage_events_read: number;
+            /**
+             * Format: int64
+             * @description Usage records stored for metered prices.
+             */
+            usage_recorded: number;
+        };
+        /** @description Operator settings. */
+        BillingSettings: {
+            /** @description Credit note number prefix. */
+            credit_note_prefix: string;
+            /** @description Currency of new customers. */
+            default_currency: string;
+            /** @description After the last retry. */
+            final_action: components["schemas"]["FinalAction"];
+            /**
+             * Format: int64
+             * @description Days an unpaid first invoice keeps an `incomplete` subscription.
+             */
+            incomplete_days: number;
+            /** @description Invoice number prefix. */
+            invoice_prefix: string;
+            /**
+             * @description Days after the first failed attempt at which payment is retried
+             *     (`[1, 3, 5]`: retries 1, 3 and 5 days after the failure).
+             */
+            retry_days: number[];
+            /**
+             * Format: int64
+             * @description Webhooks older than this are ignored (replay window).
+             */
+            webhook_max_age_secs: number;
+            /**
+             * Format: int64
+             * @description Seconds a signed webhook timestamp may differ from now (Stripe).
+             */
+            webhook_tolerance_secs: number;
+        };
+        /** @description Payment statistics over a window. */
+        BillingStats: {
+            /**
+             * Format: int64
+             * @description Subscriptions active at the window start.
+             */
+            active_at_start: number;
+            /** @description Subscriptions per status, now. */
+            by_status: {
+                [key: string]: number;
+            };
+            /**
+             * Format: int64
+             * @description churned / active_at_start in basis points (`null`: none at start).
+             */
+            churn_rate_bp?: number | null;
+            /**
+             * Format: int64
+             * @description Subscriptions that ended in the window.
+             */
+            churned: number;
+            /**
+             * Format: int64
+             * @description Payments that failed in the window.
+             */
+            failed_payments: number;
+            /** @description Window start. */
+            from: string;
+            /**
+             * Format: int64
+             * @description Subscriptions started in the window.
+             */
+            new_subscriptions: number;
+            /** @description MRR and ARR per currency, now. */
+            recurring: components["schemas"]["RecurringRevenue"][];
+            /** @description Revenue per currency and bucket. */
+            revenue: components["schemas"]["RevenuePoint"][];
+            /** @description Window end. */
+            to: string;
+        };
+        /** @description A subscription. */
+        BillingSubscription: {
+            /** @description Ends at the period end. */
+            cancel_at_period_end: boolean;
+            /** @description Why it was cancelled (`requested`, `payment_failed`, ...). */
+            cancel_reason?: string | null;
+            /** @description When cancellation was asked for. */
+            canceled_at?: string | null;
+            /** @description Coupon code in force. */
+            coupon?: string | null;
+            /**
+             * Format: int64
+             * @description Discounted invoices left (repeating coupons).
+             */
+            coupon_cycles_left?: number | null;
+            /** @description Created. */
+            created_at: string;
+            /** @description Currency. */
+            currency: string;
+            /** @description Current period end. */
+            current_period_end: string;
+            /** @description Current period start. */
+            current_period_start: string;
+            /** @description Customer id. */
+            customer_id: string;
+            /** @description Cycle anchor (renewals keep its day of month and time). */
+            cycle_anchor: string;
+            /** @description When it ended. */
+            ended_at?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Interval. */
+            interval: components["schemas"]["BillingInterval"];
+            /**
+             * Format: int64
+             * @description Intervals per period.
+             */
+            interval_count: number;
+            /** @description Prices. */
+            items: components["schemas"]["SubscriptionItem"][];
+            /** @description Newest invoice. */
+            latest_invoice_id?: string | null;
+            /** @description Caller data. */
+            metadata: Record<string, never>;
+            /** @description Price scheduled for the next period (downgrade at period end). */
+            pending_price?: string | null;
+            /** @description Payment provider. */
+            provider?: string | null;
+            /** @description Lifecycle state. */
+            status: components["schemas"]["BillingSubscriptionStatus"];
+            /** @description Subject billed. */
+            subject: string;
+            /** @description End of the trial. */
+            trial_ends_at?: string | null;
+            /**
+             * Format: int64
+             * @description Changes so far.
+             */
+            version: number;
+        };
+        /**
+         * @description Subscription lifecycle.
+         * @enum {string}
+         */
+        BillingSubscriptionStatus: "incomplete" | "trialing" | "active" | "past_due" | "paused" | "canceled";
         /**
          * @description A binary-safe value: a string, or `{"base64": "..."}` for bytes that are
          *     not UTF-8.
@@ -6395,6 +7607,64 @@ export interface components {
             /** @description Turn versioning on or off (earlier versions are kept). */
             versioning?: boolean | null;
             visibility?: components["schemas"]["Visibility"] | null;
+        };
+        /** @description Space used by one bucket. */
+        BucketUsage: {
+            /** @description Bucket name. */
+            bucket: string;
+            /**
+             * Format: int64
+             * @description Logical bytes of current objects.
+             */
+            logical_bytes: number;
+            /**
+             * Format: int64
+             * @description Current (non-deleted) objects.
+             */
+            objects: number;
+            /**
+             * Format: int64
+             * @description Logical bytes of every version (before deduplication).
+             */
+            version_bytes: number;
+            /**
+             * Format: int64
+             * @description Object versions, including older ones and delete markers.
+             */
+            versions: number;
+        };
+        /** @description Body of `POST /billing/subscriptions/{id}/cancel`. */
+        CancelInput: {
+            /** @description End at the period end (default) or now. */
+            at_period_end?: boolean;
+            /** @description Why. */
+            reason?: string | null;
+        };
+        /** @description Body of `POST /billing/subscriptions/{id}/change`. */
+        ChangePlanInput: {
+            /** @description Switch at the end of the period instead (no proration). */
+            at_period_end?: boolean;
+            /** @description New plan price key (replaces the subscription's recurring plan price). */
+            price: string;
+            proration?: components["schemas"]["Proration"] | null;
+            /**
+             * Format: int64
+             * @description Units (default: unchanged).
+             */
+            quantity?: number | null;
+        };
+        /**
+         * @description What a subscription, order or plan change returned: the object, the
+         *     invoice it produced, and where to pay when no payment method is saved.
+         */
+        Checkout: {
+            invoice?: components["schemas"]["Invoice"] | null;
+            order?: components["schemas"]["Order"] | null;
+            /** @description The provider's hosted payment page, when the customer must pay there. */
+            payment_url?: string | null;
+            /** @description The idempotency key was seen before: this is the first result. */
+            replayed: boolean;
+            subscription?: components["schemas"]["BillingSubscription"] | null;
         };
         /** @description A claimed job with the lease that fences it. */
         ClaimedJob: {
@@ -6586,6 +7856,98 @@ export interface components {
             /** Format: int64 */
             count: number;
         };
+        /** @description A coupon. */
+        Coupon: {
+            /** @description Redeemable. */
+            active: boolean;
+            /**
+             * Format: int64
+             * @description Amount off, minor units of `currency`.
+             */
+            amount_off?: number | null;
+            /** @description Code customers enter. */
+            code: string;
+            /** @description Currency of `amount_off`. */
+            currency?: string | null;
+            /** @description How long it applies. */
+            duration: components["schemas"]["CouponDuration"];
+            /**
+             * Format: int64
+             * @description Invoices (repeating).
+             */
+            duration_cycles?: number | null;
+            /** @description Last day it can be redeemed. */
+            expires_at?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Percent or amount. */
+            kind: components["schemas"]["CouponKind"];
+            /**
+             * Format: int64
+             * @description Redemption cap.
+             */
+            max_redemptions?: number | null;
+            /** @description Name. */
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description Percent off in basis points.
+             */
+            percent_bp?: number | null;
+            /** @description Product keys it applies to (empty: all). */
+            products: string[];
+            /**
+             * Format: int64
+             * @description Times redeemed.
+             */
+            redeemed: number;
+        };
+        /**
+         * @description How long a coupon applies to a subscription.
+         * @enum {string}
+         */
+        CouponDuration: "once" | "repeating" | "forever";
+        /** @description Body of `PUT /billing/coupons/{code}`. */
+        CouponInput: {
+            /** @description Redeemable (default true). */
+            active?: boolean;
+            /**
+             * Format: int64
+             * @description Amount off (kind `amount`).
+             */
+            amount_off?: number | null;
+            /** @description Currency of `amount_off`. */
+            currency?: string | null;
+            duration?: components["schemas"]["CouponDuration"] | null;
+            /**
+             * Format: int64
+             * @description Invoices (repeating).
+             */
+            duration_cycles?: number | null;
+            /** @description Last moment it can be redeemed. */
+            expires_at?: string | null;
+            /** @description Percent or amount. */
+            kind: components["schemas"]["CouponKind"];
+            /**
+             * Format: int64
+             * @description Redemption cap.
+             */
+            max_redemptions?: number | null;
+            /** @description Name. */
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description Percent off in basis points (kind `percent`).
+             */
+            percent_bp?: number | null;
+            /** @description Product keys it applies to (default: all). */
+            products?: string[];
+        };
+        /**
+         * @description Coupon type.
+         * @enum {string}
+         */
+        CouponKind: "percent" | "amount";
         /** @description Body of a top-up or grant. */
         CreditInput: {
             /**
@@ -6605,6 +7967,58 @@ export interface components {
             reason?: string | null;
             /** @description Subject (`org:<id>` or a principal key). */
             subject: string;
+        };
+        /** @description A credit note. */
+        CreditNote: {
+            /**
+             * Format: int64
+             * @description Amount credited.
+             */
+            amount: number;
+            /**
+             * Format: int64
+             * @description Of which credited to the customer balance.
+             */
+            balance_amount: number;
+            /** @description Created. */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description FB-73 credits taken back (credit top-ups refunded).
+             */
+            credits_reversed: number;
+            /** @description Currency. */
+            currency: string;
+            /** @description Id. */
+            id: string;
+            /** @description Invoice credited. */
+            invoice_id: string;
+            /** @description Number. */
+            number: string;
+            /** @description Why. */
+            reason?: string | null;
+            refund?: components["schemas"]["Refund"] | null;
+            /**
+             * Format: int64
+             * @description Of which refunded to the payment method.
+             */
+            refund_amount: number;
+            /** @description Subject. */
+            subject: string;
+        };
+        /** @description Body of `POST /billing/invoices/{id}/credit-notes`. */
+        CreditNoteInput: {
+            /**
+             * Format: int64
+             * @description Amount (default: all that is left to credit).
+             */
+            amount?: number | null;
+            /** @description A replay with the same key returns the first credit note. */
+            idempotency_key: string;
+            /** @description Why. */
+            reason?: string | null;
+            /** @description Credit the customer balance instead of refunding the payment method. */
+            to_balance?: boolean;
         };
         /** @description Totals by entry kind over a period. */
         CreditSummary: {
@@ -6665,6 +8079,16 @@ export interface components {
              */
             top_up: number;
         };
+        /** @description The amounts of a price in one more currency. */
+        CurrencyOption: {
+            /** @description Tiers (tiered schemes). */
+            tiers?: components["schemas"]["Tier"][] | null;
+            /**
+             * Format: int64
+             * @description Price per unit, minor units.
+             */
+            unit_amount?: number;
+        };
         /** @description The consumer cursor. */
         Cursor: {
             /**
@@ -6672,6 +8096,62 @@ export interface components {
              * @description Last usage event `seq` read.
              */
             seq: number;
+        };
+        /** @description A customer: one billing subject (`org:<id>` or a principal key). */
+        Customer: {
+            /**
+             * Format: int64
+             * @description Credit owed to the customer, minor units of `currency`.
+             */
+            balance: number;
+            /** @description Created. */
+            created_at: string;
+            /** @description Currency of invoices. */
+            currency: string;
+            /** @description Billing email. */
+            email?: string | null;
+            /** @description A saved payment method is on file (a provider reference, never card data). */
+            has_payment_method: boolean;
+            /** @description Id. */
+            id: string;
+            /** @description Caller data. */
+            metadata: Record<string, never>;
+            /** @description Billing name. */
+            name?: string | null;
+            /** @description Its label (`visa ••4242`). */
+            payment_method_label?: string | null;
+            /** @description Payment provider (`stripe`, `razorpay`, `manual`). */
+            provider?: string | null;
+            /** @description The customer at the provider. */
+            provider_customer_id?: string | null;
+            /** @description Tax region. */
+            region?: string | null;
+            /** @description Subject billed. */
+            subject: string;
+            /** @description No tax is charged. */
+            tax_exempt: boolean;
+        };
+        /** @description Body of `PUT /billing/customers`. */
+        CustomerInput: {
+            /**
+             * @description Currency of invoices (default: the settings' default currency; fixed
+             *     once a subscription or order exists).
+             */
+            currency?: string | null;
+            /** @description Billing email. */
+            email?: string | null;
+            /** @description Caller data. */
+            metadata?: Record<string, never> | null;
+            /** @description Billing name. */
+            name?: string | null;
+            /** @description Payment provider (default: the only configured one). */
+            provider?: string | null;
+            /** @description Tax region (`IN`, `US-CA`). */
+            region?: string | null;
+            /** @description Subject (default: the caller's). */
+            subject?: string | null;
+            /** @description Operators: tax exempt. */
+            tax_exempt?: boolean | null;
         };
         /** @description An enterprise contract limit. */
         CustomLimit: {
@@ -6894,6 +8374,47 @@ export interface components {
          * @enum {string}
          */
         DomainStatus: "pending" | "verified";
+        /** @description An unpaid invoice that dunning is working on. */
+        DunningEntry: {
+            /**
+             * Format: int64
+             * @description Amount still due.
+             */
+            amount_due: number;
+            /**
+             * Format: int64
+             * @description Payment attempts so far.
+             */
+            attempt_count: number;
+            /** @description Invoice created. */
+            created_at: string;
+            /** @description Currency. */
+            currency: string;
+            /** @description Customer id. */
+            customer_id: string;
+            /** @description What happens after the last retry. */
+            final_action: components["schemas"]["FinalAction"];
+            /** @description Invoice id. */
+            invoice_id: string;
+            /** @description Code of the last failed payment. */
+            last_failure_code?: string | null;
+            /** @description Message of the last failed payment. */
+            last_failure_message?: string | null;
+            /** @description Next automatic attempt. */
+            next_attempt_at?: string | null;
+            /** @description Invoice number. */
+            number?: string | null;
+            /**
+             * Format: int64
+             * @description Retries left on the dunning schedule.
+             */
+            retries_left: number;
+            /** @description Subject. */
+            subject: string;
+            /** @description Subscription id. */
+            subscription_id?: string | null;
+            subscription_status?: components["schemas"]["BillingSubscriptionStatus"] | null;
+        };
         /** @description A typed edge between two nodes. */
         Edge: {
             /** @description RFC 3339 creation time. */
@@ -7184,6 +8705,11 @@ export interface components {
          * @enum {string}
          */
         FilterMode: "auto" | "pre" | "post";
+        /**
+         * @description What dunning does after the last failed retry.
+         * @enum {string}
+         */
+        FinalAction: "cancel" | "leave_past_due";
         /** @description A function. */
         FunctionInfo: {
             /** @description HTTP access mode. */
@@ -7334,6 +8860,13 @@ export interface components {
             collection: string;
             /** @description Events. */
             events: components["schemas"]["HookEvent"][];
+        };
+        /** @description A provider-hosted page. */
+        HostedPage: {
+            /** @description Provider session id. */
+            session_id: string;
+            /** @description Open this URL. */
+            url: string;
         };
         /** @description One hybrid search result. */
         HybridHit: {
@@ -7605,6 +9138,150 @@ export interface components {
          * @enum {string}
          */
         Interval: "hour" | "day" | "month";
+        /** @description An invoice. */
+        Invoice: {
+            /**
+             * Format: int64
+             * @description Left to collect.
+             */
+            amount_due: number;
+            /**
+             * Format: int64
+             * @description Collected.
+             */
+            amount_paid: number;
+            /**
+             * Format: int64
+             * @description Given back by credit notes.
+             */
+            amount_refunded: number;
+            /**
+             * Format: int64
+             * @description Collection attempts.
+             */
+            attempt_count: number;
+            /**
+             * Format: int64
+             * @description Customer credit applied.
+             */
+            balance_applied: number;
+            /** @description `subscription_create`, `subscription_cycle`, `subscription_update`, `order`. */
+            billing_reason: string;
+            /** @description Coupon code applied. */
+            coupon?: string | null;
+            /** @description Created. */
+            created_at: string;
+            /** @description Currency. */
+            currency: string;
+            /** @description Customer id. */
+            customer_id: string;
+            /**
+             * Format: int64
+             * @description Discount.
+             */
+            discount: number;
+            /** @description Finalized. */
+            finalized_at?: string | null;
+            /** @description What was paid for was delivered. */
+            fulfilled_at?: string | null;
+            /** @description Hosted payment page. */
+            hosted_url?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Lines. */
+            lines: components["schemas"]["InvoiceLine"][];
+            /** @description Next dunning retry. */
+            next_attempt_at?: string | null;
+            /** @description Number (set when finalized). */
+            number?: string | null;
+            /** @description Order. */
+            order_id?: string | null;
+            /** @description Paid. */
+            paid_at?: string | null;
+            /** @description Period end. */
+            period_end?: string | null;
+            /** @description Period start. */
+            period_start?: string | null;
+            /** @description State. */
+            status: components["schemas"]["InvoiceStatus"];
+            /** @description Subject. */
+            subject: string;
+            /** @description Subscription. */
+            subscription_id?: string | null;
+            /**
+             * Format: int64
+             * @description Sum of the lines before discount (exclusive of added tax).
+             */
+            subtotal: number;
+            /**
+             * Format: int64
+             * @description Tax (added and included).
+             */
+            tax: number;
+            /** @description Tax region. */
+            tax_region?: string | null;
+            /**
+             * Format: int64
+             * @description subtotal − discount + exclusive tax.
+             */
+            total: number;
+        };
+        /** @description An invoice line. */
+        InvoiceLine: {
+            /**
+             * Format: int64
+             * @description Signed amount before discount (credits are negative).
+             */
+            amount: number;
+            /** @description Text on the invoice. */
+            description: string;
+            /**
+             * Format: int64
+             * @description Discount on the line.
+             */
+            discount_amount: number;
+            /** @description Metered feature. */
+            feature?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Type. */
+            kind: components["schemas"]["LineKind"];
+            /** @description Service period end. */
+            period_end?: string | null;
+            /** @description Service period start. */
+            period_start?: string | null;
+            /** @description Price key. */
+            price?: string | null;
+            /** @description Product key. */
+            product?: string | null;
+            /**
+             * Format: int64
+             * @description Units.
+             */
+            quantity: number;
+            /**
+             * Format: int64
+             * @description Tax of the line.
+             */
+            tax_amount: number;
+            /** @description Tax is part of `amount`. */
+            tax_inclusive: boolean;
+            /**
+             * Format: int64
+             * @description Tax rate in basis points.
+             */
+            tax_rate_bp: number;
+            /**
+             * Format: int64
+             * @description Price per unit (per-unit prices).
+             */
+            unit_amount?: number | null;
+        };
+        /**
+         * @description Invoice lifecycle.
+         * @enum {string}
+         */
+        InvoiceStatus: "draft" | "open" | "paid" | "void" | "uncollectible";
         /**
          * @description Who may invoke a function over HTTP.
          * @enum {string}
@@ -7631,6 +9308,16 @@ export interface components {
              * @description Incremented by every replace.
              */
             version: number;
+        };
+        /** @description A price and a quantity. */
+        ItemInput: {
+            /** @description Price key. */
+            price: string;
+            /**
+             * Format: int64
+             * @description Units (default 1).
+             */
+            quantity?: number;
         };
         /** @description A list. */
         Items_Acceptance: {
@@ -7704,6 +9391,196 @@ export interface components {
                  * @description Version (1, 2, ...).
                  */
                 version: number;
+            }[];
+        };
+        /** @description A list. */
+        Items_BillingSubscription: {
+            /** @description Entries. */
+            items: {
+                /** @description Ends at the period end. */
+                cancel_at_period_end: boolean;
+                /** @description Why it was cancelled (`requested`, `payment_failed`, ...). */
+                cancel_reason?: string | null;
+                /** @description When cancellation was asked for. */
+                canceled_at?: string | null;
+                /** @description Coupon code in force. */
+                coupon?: string | null;
+                /**
+                 * Format: int64
+                 * @description Discounted invoices left (repeating coupons).
+                 */
+                coupon_cycles_left?: number | null;
+                /** @description Created. */
+                created_at: string;
+                /** @description Currency. */
+                currency: string;
+                /** @description Current period end. */
+                current_period_end: string;
+                /** @description Current period start. */
+                current_period_start: string;
+                /** @description Customer id. */
+                customer_id: string;
+                /** @description Cycle anchor (renewals keep its day of month and time). */
+                cycle_anchor: string;
+                /** @description When it ended. */
+                ended_at?: string | null;
+                /** @description Id. */
+                id: string;
+                /** @description Interval. */
+                interval: components["schemas"]["BillingInterval"];
+                /**
+                 * Format: int64
+                 * @description Intervals per period.
+                 */
+                interval_count: number;
+                /** @description Prices. */
+                items: components["schemas"]["SubscriptionItem"][];
+                /** @description Newest invoice. */
+                latest_invoice_id?: string | null;
+                /** @description Caller data. */
+                metadata: Record<string, never>;
+                /** @description Price scheduled for the next period (downgrade at period end). */
+                pending_price?: string | null;
+                /** @description Payment provider. */
+                provider?: string | null;
+                /** @description Lifecycle state. */
+                status: components["schemas"]["BillingSubscriptionStatus"];
+                /** @description Subject billed. */
+                subject: string;
+                /** @description End of the trial. */
+                trial_ends_at?: string | null;
+                /**
+                 * Format: int64
+                 * @description Changes so far.
+                 */
+                version: number;
+            }[];
+        };
+        /** @description A list. */
+        Items_Coupon: {
+            /** @description Entries. */
+            items: {
+                /** @description Redeemable. */
+                active: boolean;
+                /**
+                 * Format: int64
+                 * @description Amount off, minor units of `currency`.
+                 */
+                amount_off?: number | null;
+                /** @description Code customers enter. */
+                code: string;
+                /** @description Currency of `amount_off`. */
+                currency?: string | null;
+                /** @description How long it applies. */
+                duration: components["schemas"]["CouponDuration"];
+                /**
+                 * Format: int64
+                 * @description Invoices (repeating).
+                 */
+                duration_cycles?: number | null;
+                /** @description Last day it can be redeemed. */
+                expires_at?: string | null;
+                /** @description Id. */
+                id: string;
+                /** @description Percent or amount. */
+                kind: components["schemas"]["CouponKind"];
+                /**
+                 * Format: int64
+                 * @description Redemption cap.
+                 */
+                max_redemptions?: number | null;
+                /** @description Name. */
+                name?: string | null;
+                /**
+                 * Format: int64
+                 * @description Percent off in basis points.
+                 */
+                percent_bp?: number | null;
+                /** @description Product keys it applies to (empty: all). */
+                products: string[];
+                /**
+                 * Format: int64
+                 * @description Times redeemed.
+                 */
+                redeemed: number;
+            }[];
+        };
+        /** @description A list. */
+        Items_CreditNote: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Amount credited.
+                 */
+                amount: number;
+                /**
+                 * Format: int64
+                 * @description Of which credited to the customer balance.
+                 */
+                balance_amount: number;
+                /** @description Created. */
+                created_at: string;
+                /**
+                 * Format: int64
+                 * @description FB-73 credits taken back (credit top-ups refunded).
+                 */
+                credits_reversed: number;
+                /** @description Currency. */
+                currency: string;
+                /** @description Id. */
+                id: string;
+                /** @description Invoice credited. */
+                invoice_id: string;
+                /** @description Number. */
+                number: string;
+                /** @description Why. */
+                reason?: string | null;
+                refund?: components["schemas"]["Refund"] | null;
+                /**
+                 * Format: int64
+                 * @description Of which refunded to the payment method.
+                 */
+                refund_amount: number;
+                /** @description Subject. */
+                subject: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_Customer: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Credit owed to the customer, minor units of `currency`.
+                 */
+                balance: number;
+                /** @description Created. */
+                created_at: string;
+                /** @description Currency of invoices. */
+                currency: string;
+                /** @description Billing email. */
+                email?: string | null;
+                /** @description A saved payment method is on file (a provider reference, never card data). */
+                has_payment_method: boolean;
+                /** @description Id. */
+                id: string;
+                /** @description Caller data. */
+                metadata: Record<string, never>;
+                /** @description Billing name. */
+                name?: string | null;
+                /** @description Its label (`visa ••4242`). */
+                payment_method_label?: string | null;
+                /** @description Payment provider (`stripe`, `razorpay`, `manual`). */
+                provider?: string | null;
+                /** @description The customer at the provider. */
+                provider_customer_id?: string | null;
+                /** @description Tax region. */
+                region?: string | null;
+                /** @description Subject billed. */
+                subject: string;
+                /** @description No tax is charged. */
+                tax_exempt: boolean;
             }[];
         };
         /** @description A list. */
@@ -7810,6 +9687,50 @@ export interface components {
             }[];
         };
         /** @description A list. */
+        Items_DunningEntry: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Amount still due.
+                 */
+                amount_due: number;
+                /**
+                 * Format: int64
+                 * @description Payment attempts so far.
+                 */
+                attempt_count: number;
+                /** @description Invoice created. */
+                created_at: string;
+                /** @description Currency. */
+                currency: string;
+                /** @description Customer id. */
+                customer_id: string;
+                /** @description What happens after the last retry. */
+                final_action: components["schemas"]["FinalAction"];
+                /** @description Invoice id. */
+                invoice_id: string;
+                /** @description Code of the last failed payment. */
+                last_failure_code?: string | null;
+                /** @description Message of the last failed payment. */
+                last_failure_message?: string | null;
+                /** @description Next automatic attempt. */
+                next_attempt_at?: string | null;
+                /** @description Invoice number. */
+                number?: string | null;
+                /**
+                 * Format: int64
+                 * @description Retries left on the dunning schedule.
+                 */
+                retries_left: number;
+                /** @description Subject. */
+                subject: string;
+                /** @description Subscription id. */
+                subscription_id?: string | null;
+                subscription_status?: components["schemas"]["BillingSubscriptionStatus"] | null;
+            }[];
+        };
+        /** @description A list. */
         Items_EmailTemplate: {
             /** @description Entries. */
             items: {
@@ -7861,6 +9782,97 @@ export interface components {
             }[];
         };
         /** @description A list. */
+        Items_Invoice: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Left to collect.
+                 */
+                amount_due: number;
+                /**
+                 * Format: int64
+                 * @description Collected.
+                 */
+                amount_paid: number;
+                /**
+                 * Format: int64
+                 * @description Given back by credit notes.
+                 */
+                amount_refunded: number;
+                /**
+                 * Format: int64
+                 * @description Collection attempts.
+                 */
+                attempt_count: number;
+                /**
+                 * Format: int64
+                 * @description Customer credit applied.
+                 */
+                balance_applied: number;
+                /** @description `subscription_create`, `subscription_cycle`, `subscription_update`, `order`. */
+                billing_reason: string;
+                /** @description Coupon code applied. */
+                coupon?: string | null;
+                /** @description Created. */
+                created_at: string;
+                /** @description Currency. */
+                currency: string;
+                /** @description Customer id. */
+                customer_id: string;
+                /**
+                 * Format: int64
+                 * @description Discount.
+                 */
+                discount: number;
+                /** @description Finalized. */
+                finalized_at?: string | null;
+                /** @description What was paid for was delivered. */
+                fulfilled_at?: string | null;
+                /** @description Hosted payment page. */
+                hosted_url?: string | null;
+                /** @description Id. */
+                id: string;
+                /** @description Lines. */
+                lines: components["schemas"]["InvoiceLine"][];
+                /** @description Next dunning retry. */
+                next_attempt_at?: string | null;
+                /** @description Number (set when finalized). */
+                number?: string | null;
+                /** @description Order. */
+                order_id?: string | null;
+                /** @description Paid. */
+                paid_at?: string | null;
+                /** @description Period end. */
+                period_end?: string | null;
+                /** @description Period start. */
+                period_start?: string | null;
+                /** @description State. */
+                status: components["schemas"]["InvoiceStatus"];
+                /** @description Subject. */
+                subject: string;
+                /** @description Subscription. */
+                subscription_id?: string | null;
+                /**
+                 * Format: int64
+                 * @description Sum of the lines before discount (exclusive of added tax).
+                 */
+                subtotal: number;
+                /**
+                 * Format: int64
+                 * @description Tax (added and included).
+                 */
+                tax: number;
+                /** @description Tax region. */
+                tax_region?: string | null;
+                /**
+                 * Format: int64
+                 * @description subtotal − discount + exclusive tax.
+                 */
+                total: number;
+            }[];
+        };
+        /** @description A list. */
         Items_Lot: {
             /** @description Entries. */
             items: {
@@ -7884,6 +9896,26 @@ export interface components {
                  * @description Credits left.
                  */
                 remaining: number;
+                /** @description Subject. */
+                subject: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_Order: {
+            /** @description Entries. */
+            items: {
+                /** @description Created. */
+                created_at: string;
+                /** @description Currency. */
+                currency: string;
+                /** @description Customer id. */
+                customer_id: string;
+                /** @description Id. */
+                id: string;
+                /** @description Invoice. */
+                invoice_id?: string | null;
+                /** @description State. */
+                status: components["schemas"]["OrderStatus"];
                 /** @description Subject. */
                 subject: string;
             }[];
@@ -7952,6 +9984,49 @@ export interface components {
             }[];
         };
         /** @description A list. */
+        Items_Payment: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Amount.
+                 */
+                amount: number;
+                /**
+                 * Format: int64
+                 * @description Refunded so far.
+                 */
+                amount_refunded: number;
+                /**
+                 * Format: int64
+                 * @description Attempt number of the invoice.
+                 */
+                attempt: number;
+                /** @description Created. */
+                created_at: string;
+                /** @description Currency. */
+                currency: string;
+                /** @description Decline code. */
+                failure_code?: string | null;
+                /** @description Decline message. */
+                failure_message?: string | null;
+                /** @description Id. */
+                id: string;
+                /** @description Invoice. */
+                invoice_id: string;
+                /** @description Provider. */
+                provider: string;
+                /** @description Payment id at the provider. */
+                provider_ref?: string | null;
+                /** @description State. */
+                status: components["schemas"]["PaymentStatus"];
+                /** @description Subject. */
+                subject: string;
+                /** @description Changed. */
+                updated_at: string;
+            }[];
+        };
+        /** @description A list. */
         Items_Plan: {
             /** @description Entries. */
             items: {
@@ -7978,6 +10053,115 @@ export interface components {
                 trial_days: number;
                 /** @description Last change. */
                 updated_at: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_Price: {
+            /** @description Entries. */
+            items: {
+                /** @description Sellable. */
+                active: boolean;
+                /** @description Created. */
+                created_at: string;
+                /** @description Primary currency. */
+                currency: string;
+                /** @description The same price in other currencies. */
+                currency_options: {
+                    [key: string]: components["schemas"]["CurrencyOption"];
+                };
+                /** @description Metered: the FB-24 feature whose usage events are billed. */
+                feature?: string | null;
+                /** @description Id. */
+                id: string;
+                interval?: components["schemas"]["BillingInterval"] | null;
+                /**
+                 * Format: int64
+                 * @description Intervals per period.
+                 */
+                interval_count: number;
+                /** @description Stable key. */
+                key: string;
+                /** @description Caller data. */
+                metadata: Record<string, never>;
+                /** @description Metered: all units or only overage. */
+                meter_basis: components["schemas"]["MeterBasis"];
+                /** @description Product key. */
+                product: string;
+                /** @description Product id. */
+                product_id: string;
+                /** @description Quantity to amount. */
+                scheme: components["schemas"]["Scheme"];
+                /** @description Whether the amounts include tax. */
+                tax_behavior: components["schemas"]["TaxBehavior"];
+                /** @description Tiers in the primary currency. */
+                tiers?: components["schemas"]["Tier"][] | null;
+                /**
+                 * Format: int64
+                 * @description Free trial days when subscribing.
+                 */
+                trial_days: number;
+                /** @description How it is charged. */
+                type: components["schemas"]["PriceType"];
+                /**
+                 * Format: int64
+                 * @description Price per unit in the primary currency (per-unit scheme).
+                 */
+                unit_amount: number;
+            }[];
+        };
+        /** @description A list. */
+        Items_Product: {
+            /** @description Entries. */
+            items: {
+                /** @description Sellable. */
+                active: boolean;
+                /** @description FB-24 add-on (kind `addon`). */
+                addon_key?: string | null;
+                /** @description Created. */
+                created_at: string;
+                /**
+                 * Format: int64
+                 * @description Credits per unit (kind `credits`).
+                 */
+                credits?: number | null;
+                /** @description Description. */
+                description?: string | null;
+                /** @description Id. */
+                id: string;
+                /** @description Stable key. */
+                key: string;
+                /** @description What a paid line delivers. */
+                kind: components["schemas"]["ProductKind"];
+                /** @description Caller data. */
+                metadata: Record<string, never>;
+                /** @description Display name. */
+                name: string;
+                /** @description FB-24 usage pack (kind `usage_pack`). */
+                pack_key?: string | null;
+                /** @description FB-24 plan (kind `plan`). */
+                plan_key?: string | null;
+                /** @description Changed. */
+                updated_at: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_ProviderAccount: {
+            /** @description Entries. */
+            items: {
+                /** @description API base URL override. */
+                api_base?: string | null;
+                /** @description In use. */
+                enabled: boolean;
+                /** @description Last characters of the API secret. */
+                hint?: string | null;
+                /** @description Public key id (Razorpay). */
+                key_id?: string | null;
+                /** @description `stripe`, `razorpay` or `manual`. */
+                provider: string;
+                /** @description Changed. */
+                updated_at: string;
+                /** @description Webhook URL to register at the provider (relative to the public URL). */
+                webhook_path: string;
             }[];
         };
         /** @description A list. */
@@ -8042,6 +10226,56 @@ export interface components {
                 per_units: number;
                 /** @description Updated. */
                 updated_at: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_Refund: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Amount.
+                 */
+                amount: number;
+                /** @description Created. */
+                created_at: string;
+                /** @description Credit note. */
+                credit_note_id?: string | null;
+                /** @description Currency. */
+                currency: string;
+                /** @description Id. */
+                id: string;
+                /** @description Invoice. */
+                invoice_id: string;
+                /** @description Payment refunded. */
+                payment_id: string;
+                /** @description Provider. */
+                provider: string;
+                /** @description Refund id at the provider. */
+                provider_ref?: string | null;
+                /** @description Why. */
+                reason?: string | null;
+                /** @description State. */
+                status: components["schemas"]["RefundStatus"];
+            }[];
+        };
+        /** @description A list. */
+        Items_TaxRate: {
+            /** @description Entries. */
+            items: {
+                /** @description In use. */
+                active: boolean;
+                /** @description Id. */
+                id: string;
+                /** @description Name on invoices (`GST`, `VAT`). */
+                name: string;
+                /**
+                 * Format: int64
+                 * @description Rate in basis points (1800 = 18 %).
+                 */
+                rate_bp: number;
+                /** @description Region (`IN`, `DE`, `US-CA`). */
+                region: string;
             }[];
         };
         /** @description A list. */
@@ -8158,6 +10392,33 @@ export interface components {
                 window_end?: string | null;
                 /** @description Window start. */
                 window_start: string;
+            }[];
+        };
+        /** @description A list. */
+        Items_WebhookEvent: {
+            /** @description Entries. */
+            items: {
+                /**
+                 * Format: int64
+                 * @description Deliveries seen.
+                 */
+                attempts: number;
+                /** @description Provider time of the event. */
+                event_at: string;
+                /** @description Event id at the provider. */
+                event_id: string;
+                /** @description Event type. */
+                event_type: string;
+                /** @description Id. */
+                id: string;
+                /** @description Provider. */
+                provider: string;
+                /** @description Received. */
+                received_at: string;
+                /** @description What happened. */
+                result?: string | null;
+                /** @description `processed`, `ignored` or `failed`. */
+                status: string;
             }[];
         };
         /** @description Buckets. */
@@ -8479,6 +10740,11 @@ export interface components {
              */
             timeout_ms?: number | null;
         };
+        /**
+         * @description Invoice line type.
+         * @enum {string}
+         */
+        LineKind: "subscription" | "proration" | "usage" | "one_time" | "adjustment";
         ListQueryBody: {
             cursor?: string | null;
             expand?: string[] | null;
@@ -8495,6 +10761,16 @@ export interface components {
             /** @description e.g. `-created,name` */
             sort?: string | null;
         };
+        /** @description Body of `POST .../lists/{key}/remove` (`LREM`). */
+        ListRemoveBody: {
+            /**
+             * Format: int64
+             * @description `0` (default) removes every match; `n > 0` the first `n` from the head; `n < 0` the first `|n|` from the tail.
+             */
+            count?: number | null;
+            /** @description Value to remove. */
+            value: components["schemas"]["Bin"];
+        };
         ListResponse: {
             items: Record<string, never>[];
             /** @description Pass as `cursor` to get the next page; absent on the last page. */
@@ -8507,6 +10783,16 @@ export interface components {
             total_items?: number | null;
             /** Format: int64 */
             total_pages?: number | null;
+        };
+        /** @description Body of `POST .../lists/{key}/set` (`LSET`). */
+        ListSetBody: {
+            /**
+             * Format: int64
+             * @description Index (negative counts from the tail).
+             */
+            index: number;
+            /** @description New value. */
+            value: components["schemas"]["Bin"];
         };
         /** @description A line the function logged. */
         LogLine: {
@@ -8568,6 +10854,11 @@ export interface components {
              */
             windows_opened: number;
         };
+        /** @description Body of `POST /billing/invoices/{id}/mark-paid` (manual billing). */
+        MarkPaidInput: {
+            /** @description Bank transfer or cheque reference. */
+            reference?: string | null;
+        };
         /** @description A member of a channel's presence. */
         Member: {
             /** @description Who: `user:<collection>/<id>`, `admin:<id>` or `anonymous`. */
@@ -8587,6 +10878,16 @@ export interface components {
             members: components["schemas"]["Bin"][];
         };
         /**
+         * @description Which usage units a metered price bills.
+         * @enum {string}
+         */
+        MeterBasis: "units" | "overage";
+        /**
+         * @description Where a meter stands against its limit.
+         * @enum {string}
+         */
+        MeterState: "ok" | "warn" | "critical" | "over";
+        /**
          * @description Distance function of a vector field.
          * @enum {string}
          */
@@ -8595,6 +10896,16 @@ export interface components {
         MgetBody: {
             /** @description Keys to read. */
             keys: string[];
+        };
+        /** @description An amount in minor units of an ISO 4217 currency. */
+        Money: {
+            /**
+             * Format: int64
+             * @description Minor units (cents for USD, paise for INR, yen for JPY).
+             */
+            amount: number;
+            /** @description ISO 4217 code, upper case. */
+            currency: string;
         };
         /** @description Body of `POST /mset`. */
         MsetBody: {
@@ -8857,6 +11168,61 @@ export interface components {
             /** @description "Directories" when a delimiter was given. */
             prefixes: string[];
         };
+        /** @description A one-time order. */
+        Order: {
+            /** @description Created. */
+            created_at: string;
+            /** @description Currency. */
+            currency: string;
+            /** @description Customer id. */
+            customer_id: string;
+            /** @description Id. */
+            id: string;
+            /** @description Invoice. */
+            invoice_id?: string | null;
+            /** @description State. */
+            status: components["schemas"]["OrderStatus"];
+            /** @description Subject. */
+            subject: string;
+        };
+        /** @description Body of `POST /billing/orders`. */
+        OrderInput: {
+            /** @description Coupon code. */
+            coupon?: string | null;
+            /** @description A replay with the same key returns the first order. */
+            idempotency_key: string;
+            /** @description One-time prices. */
+            items: components["schemas"]["ItemInput"][];
+            /** @description Where the hosted payment page returns to. */
+            return_url?: string | null;
+            /** @description Subject (default: the caller's). */
+            subject?: string | null;
+        };
+        /** @description A page of orders. */
+        OrderPage: {
+            /** @description Orders, newest first. */
+            items: components["schemas"]["Order"][];
+            /**
+             * Format: int64
+             * @description Page size.
+             */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Rows skipped.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description All orders matching the filters.
+             */
+            total: number;
+        };
+        /**
+         * @description Order lifecycle.
+         * @enum {string}
+         */
+        OrderStatus: "open" | "paid" | "canceled" | "refunded";
         /** @description An exception for a subject, a member or a user everywhere. */
         Override: {
             /** @description When. */
@@ -8999,6 +11365,63 @@ export interface components {
             /** @description Nodes from `from` to `to`. */
             nodes: components["schemas"]["Node"][];
         };
+        /** @description Body of `POST /billing/invoices/{id}/pay`. */
+        PayInput: {
+            /** @description Where the hosted payment page returns to. */
+            return_url?: string | null;
+        };
+        /** @description A payment attempt. */
+        Payment: {
+            /**
+             * Format: int64
+             * @description Amount.
+             */
+            amount: number;
+            /**
+             * Format: int64
+             * @description Refunded so far.
+             */
+            amount_refunded: number;
+            /**
+             * Format: int64
+             * @description Attempt number of the invoice.
+             */
+            attempt: number;
+            /** @description Created. */
+            created_at: string;
+            /** @description Currency. */
+            currency: string;
+            /** @description Decline code. */
+            failure_code?: string | null;
+            /** @description Decline message. */
+            failure_message?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Invoice. */
+            invoice_id: string;
+            /** @description Provider. */
+            provider: string;
+            /** @description Payment id at the provider. */
+            provider_ref?: string | null;
+            /** @description State. */
+            status: components["schemas"]["PaymentStatus"];
+            /** @description Subject. */
+            subject: string;
+            /** @description Changed. */
+            updated_at: string;
+        };
+        /** @description Body of `POST /billing/portal/payment-method`. */
+        PaymentMethodInput: {
+            /** @description Where the provider page returns to. */
+            return_url?: string | null;
+            /** @description Subject (default: the caller's). */
+            subject?: string | null;
+        };
+        /**
+         * @description One collection attempt.
+         * @enum {string}
+         */
+        PaymentStatus: "pending" | "succeeded" | "failed" | "canceled";
         /** @description What a caller still has to accept. */
         Pending: {
             /** @description Current versions not yet accepted. */
@@ -9102,6 +11525,18 @@ export interface components {
             /** @description Head or tail. */
             side: components["schemas"]["Side"];
         };
+        /** @description The customer portal: what a customer sees of its billing. */
+        Portal: {
+            /** @description Newest credit notes. */
+            credit_notes: components["schemas"]["CreditNote"][];
+            customer?: components["schemas"]["Customer"] | null;
+            /** @description Newest invoices. */
+            invoices: components["schemas"]["Invoice"][];
+            /** @description Newest payments. */
+            payments: components["schemas"]["Payment"][];
+            /** @description Subscriptions that have not ended. */
+            subscriptions: components["schemas"]["BillingSubscription"][];
+        };
         /** @description Result of a ledger write. */
         Posted: {
             /** @description The entry. */
@@ -9135,6 +11570,182 @@ export interface components {
             /** @description Variables. */
             variables?: Record<string, never>;
         };
+        /** @description One line of a plan-change preview (the same lines the change would invoice). */
+        PreviewLine: {
+            /**
+             * Format: int64
+             * @description Minor units; negative for a credit.
+             */
+            amount: number;
+            /** @description What the line is for. */
+            description: string;
+            /** @description `proration`. */
+            kind: components["schemas"]["LineKind"];
+            /** @description Price key. */
+            price?: string | null;
+            /**
+             * Format: int64
+             * @description Units.
+             */
+            quantity: number;
+        };
+        /** @description A price of a product. */
+        Price: {
+            /** @description Sellable. */
+            active: boolean;
+            /** @description Created. */
+            created_at: string;
+            /** @description Primary currency. */
+            currency: string;
+            /** @description The same price in other currencies. */
+            currency_options: {
+                [key: string]: components["schemas"]["CurrencyOption"];
+            };
+            /** @description Metered: the FB-24 feature whose usage events are billed. */
+            feature?: string | null;
+            /** @description Id. */
+            id: string;
+            interval?: components["schemas"]["BillingInterval"] | null;
+            /**
+             * Format: int64
+             * @description Intervals per period.
+             */
+            interval_count: number;
+            /** @description Stable key. */
+            key: string;
+            /** @description Caller data. */
+            metadata: Record<string, never>;
+            /** @description Metered: all units or only overage. */
+            meter_basis: components["schemas"]["MeterBasis"];
+            /** @description Product key. */
+            product: string;
+            /** @description Product id. */
+            product_id: string;
+            /** @description Quantity to amount. */
+            scheme: components["schemas"]["Scheme"];
+            /** @description Whether the amounts include tax. */
+            tax_behavior: components["schemas"]["TaxBehavior"];
+            /** @description Tiers in the primary currency. */
+            tiers?: components["schemas"]["Tier"][] | null;
+            /**
+             * Format: int64
+             * @description Free trial days when subscribing.
+             */
+            trial_days: number;
+            /** @description How it is charged. */
+            type: components["schemas"]["PriceType"];
+            /**
+             * Format: int64
+             * @description Price per unit in the primary currency (per-unit scheme).
+             */
+            unit_amount: number;
+        };
+        /** @description Body of `PUT /billing/prices/{key}`. */
+        PriceInput: {
+            /** @description Sellable (default true). */
+            active?: boolean;
+            /** @description Primary currency. */
+            currency: string;
+            /** @description The same price in other currencies. */
+            currency_options?: {
+                [key: string]: components["schemas"]["CurrencyOption"];
+            };
+            /** @description Metered: FB-24 feature key. */
+            feature?: string | null;
+            interval?: components["schemas"]["BillingInterval"] | null;
+            /**
+             * Format: int64
+             * @description Intervals per period (default 1).
+             */
+            interval_count?: number;
+            /** @description Caller data. */
+            metadata?: Record<string, never> | null;
+            meter_basis?: components["schemas"]["MeterBasis"] | null;
+            /** @description Product key. */
+            product: string;
+            scheme?: components["schemas"]["Scheme"] | null;
+            tax_behavior?: components["schemas"]["TaxBehavior"] | null;
+            /** @description Tiers (graduated and volume). */
+            tiers?: components["schemas"]["Tier"][] | null;
+            /**
+             * Format: int64
+             * @description Free trial days.
+             */
+            trial_days?: number;
+            /** @description How it is charged. */
+            type: components["schemas"]["PriceType"];
+            /**
+             * Format: int64
+             * @description Price per unit, minor units.
+             */
+            unit_amount?: number;
+        };
+        /**
+         * @description How a price is charged.
+         * @enum {string}
+         */
+        PriceType: "recurring" | "one_time" | "metered";
+        /** @description A product. */
+        Product: {
+            /** @description Sellable. */
+            active: boolean;
+            /** @description FB-24 add-on (kind `addon`). */
+            addon_key?: string | null;
+            /** @description Created. */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description Credits per unit (kind `credits`).
+             */
+            credits?: number | null;
+            /** @description Description. */
+            description?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Stable key. */
+            key: string;
+            /** @description What a paid line delivers. */
+            kind: components["schemas"]["ProductKind"];
+            /** @description Caller data. */
+            metadata: Record<string, never>;
+            /** @description Display name. */
+            name: string;
+            /** @description FB-24 usage pack (kind `usage_pack`). */
+            pack_key?: string | null;
+            /** @description FB-24 plan (kind `plan`). */
+            plan_key?: string | null;
+            /** @description Changed. */
+            updated_at: string;
+        };
+        /** @description Body of `PUT /billing/products/{key}`. */
+        ProductInput: {
+            /** @description Sellable (default true). */
+            active?: boolean;
+            /** @description FB-24 add-on key (kind `addon`). */
+            addon_key?: string | null;
+            /**
+             * Format: int64
+             * @description Credits per unit (kind `credits`).
+             */
+            credits?: number | null;
+            /** @description Description. */
+            description?: string | null;
+            /** @description What a paid line delivers. */
+            kind: components["schemas"]["ProductKind"];
+            /** @description Caller data. */
+            metadata?: Record<string, never> | null;
+            /** @description Display name. */
+            name: string;
+            /** @description FB-24 pack key (kind `usage_pack`). */
+            pack_key?: string | null;
+            /** @description FB-24 plan key (kind `plan`). */
+            plan_key?: string | null;
+        };
+        /**
+         * @description What a paid line of a product delivers.
+         * @enum {string}
+         */
+        ProductKind: "plan" | "addon" | "usage_pack" | "credits" | "service";
         /** @description Progress of a rebuild. */
         Progress: {
             /**
@@ -9147,6 +11758,92 @@ export interface components {
              * @description Vectors to add.
              */
             total: number;
+        };
+        /**
+         * @description How to bill a plan change.
+         * @enum {string}
+         */
+        Proration: "always_invoice" | "create_prorations" | "none";
+        /** @description What `POST /billing/subscriptions/{id}/change` would do, without doing it. */
+        ProrationPreview: {
+            /** @description The change is scheduled for the period end. */
+            at_period_end: boolean;
+            /**
+             * Format: int64
+             * @description Charge for the remaining time (minor units).
+             */
+            charge: number;
+            /**
+             * Format: int64
+             * @description Credit for unused time (positive number, minor units).
+             */
+            credit: number;
+            /** @description Currency of every amount. */
+            currency: string;
+            /** @description When the change takes effect. */
+            effective_at: string;
+            /** @description Current plan price key. */
+            from_price?: string | null;
+            /** @description An invoice is raised immediately. */
+            invoiced_now: boolean;
+            /** @description Proration lines (credit for unused time, charge for the rest). */
+            lines: components["schemas"]["PreviewLine"][];
+            /**
+             * Format: int64
+             * @description `charge - credit`: positive is collected now (`always_invoice`) or at
+             *     renewal (`create_prorations`); negative goes to the customer balance.
+             */
+            net: number;
+            /**
+             * Format: int64
+             * @description Amount of the plan price for a whole period at the new price.
+             */
+            new_period_amount: number;
+            /** @description Current period end. */
+            period_end: string;
+            /** @description Current period start. */
+            period_start: string;
+            /** @description Proration mode that applies (`none` for trials and period-end changes). */
+            proration: components["schemas"]["Proration"];
+            /**
+             * Format: int64
+             * @description Units after the change.
+             */
+            quantity: number;
+            /** @description Subscription id. */
+            subscription_id: string;
+            /** @description New plan price key. */
+            to_price: string;
+        };
+        /** @description A configured payment provider (secrets are never returned). */
+        ProviderAccount: {
+            /** @description API base URL override. */
+            api_base?: string | null;
+            /** @description In use. */
+            enabled: boolean;
+            /** @description Last characters of the API secret. */
+            hint?: string | null;
+            /** @description Public key id (Razorpay). */
+            key_id?: string | null;
+            /** @description `stripe`, `razorpay` or `manual`. */
+            provider: string;
+            /** @description Changed. */
+            updated_at: string;
+            /** @description Webhook URL to register at the provider (relative to the public URL). */
+            webhook_path: string;
+        };
+        /** @description Body of `PUT /billing/providers/{provider}`. Test-mode credentials only. */
+        ProviderInput: {
+            /** @description API base URL (default: the provider's). */
+            api_base?: string | null;
+            /** @description Stripe secret key (`sk_test_…`) or Razorpay key secret. */
+            api_key?: string | null;
+            /** @description In use (default true). */
+            enabled?: boolean;
+            /** @description Razorpay key id (`rzp_test_…`). */
+            key_id?: string | null;
+            /** @description Webhook signing secret. */
+            webhook_secret?: string | null;
         };
         /** @description The public face of a realm: what dashboards and hosted pages need. */
         PublicBranding: {
@@ -9478,6 +12175,59 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        /** @description Monthly and annual recurring revenue of one currency. */
+        RecurringRevenue: {
+            /**
+             * Format: int64
+             * @description MRR × 12.
+             */
+            arr: number;
+            /** @description Currency. */
+            currency: string;
+            /**
+             * Format: int64
+             * @description Monthly recurring revenue (yearly prices / 12, after coupons).
+             */
+            mrr: number;
+            /**
+             * Format: int64
+             * @description Subscriptions counted (active and past due).
+             */
+            subscriptions: number;
+        };
+        /** @description A refund. */
+        Refund: {
+            /**
+             * Format: int64
+             * @description Amount.
+             */
+            amount: number;
+            /** @description Created. */
+            created_at: string;
+            /** @description Credit note. */
+            credit_note_id?: string | null;
+            /** @description Currency. */
+            currency: string;
+            /** @description Id. */
+            id: string;
+            /** @description Invoice. */
+            invoice_id: string;
+            /** @description Payment refunded. */
+            payment_id: string;
+            /** @description Provider. */
+            provider: string;
+            /** @description Refund id at the provider. */
+            provider_ref?: string | null;
+            /** @description Why. */
+            reason?: string | null;
+            /** @description State. */
+            status: components["schemas"]["RefundStatus"];
+        };
+        /**
+         * @description Refund state.
+         * @enum {string}
+         */
+        RefundStatus: "pending" | "succeeded" | "failed";
         /** @description Body of a lease renewal. */
         RenewBody: {
             /**
@@ -9536,6 +12286,33 @@ export interface components {
             key: string;
             /** @description Version id. */
             version_id: string;
+        };
+        /** @description Revenue of one currency in one bucket. */
+        RevenuePoint: {
+            /** @description Currency. */
+            currency: string;
+            /**
+             * Format: int64
+             * @description Payments collected.
+             */
+            gross: number;
+            /**
+             * Format: int64
+             * @description gross − refunded.
+             */
+            net: number;
+            /**
+             * Format: int64
+             * @description Successful payments.
+             */
+            payments: number;
+            /**
+             * Format: int64
+             * @description Refunds.
+             */
+            refunded: number;
+            /** @description Bucket start. */
+            start: string;
         };
         /**
          * @description Result of a reversal: takes back what is left of the top-up or grant, up
@@ -9662,6 +12439,11 @@ export interface components {
         SchemaHistory: {
             items: components["schemas"]["SchemaChangeSchema"][];
         };
+        /**
+         * @description How quantity becomes an amount.
+         * @enum {string}
+         */
+        Scheme: "per_unit" | "graduated" | "volume";
         /** @description One scored member. */
         ScoredMember: {
             /** @description Member. */
@@ -9947,6 +12729,11 @@ export interface components {
              */
             maxlen?: number | null;
         };
+        /** @description Body of `POST .../streams/{key}/delete` (`XDEL`). */
+        StreamDeleteBody: {
+            /** @description Entry ids (`<ms>-<seq>`). */
+            ids: string[];
+        };
         /** @description Body of `PUT /entitlements/addons`. */
         SubjectAddon: {
             /** @description Add-on key. */
@@ -9958,6 +12745,26 @@ export interface components {
             quantity: number;
             /** @description Subject. */
             subject: string;
+        };
+        /** @description Body of `POST /billing/subscriptions`. */
+        SubscribeInput: {
+            /** @description Coupon code. */
+            coupon?: string | null;
+            /** @description A replay with the same key returns the first subscription. */
+            idempotency_key: string;
+            /** @description Prices (one recurring plan price, add-ons, metered prices). */
+            items: components["schemas"]["ItemInput"][];
+            /** @description Caller data. */
+            metadata?: Record<string, never> | null;
+            /** @description Where the hosted payment page returns to (no saved payment method). */
+            return_url?: string | null;
+            /** @description Subject (default: the caller's). */
+            subject?: string | null;
+            /**
+             * Format: int64
+             * @description Trial days (default: the plan price's `trial_days`; 0 = none).
+             */
+            trial_days?: number | null;
         };
         /** @description What a subscription listens to. */
         SubscribeSpec: {
@@ -10011,6 +12818,20 @@ export interface components {
             trial_ends_at?: string | null;
             /** @description Last change. */
             updated_at: string;
+        };
+        /** @description One price on a subscription. */
+        SubscriptionItem: {
+            /** @description Id. */
+            id: string;
+            /** @description Price key. */
+            price: string;
+            /** @description Product key. */
+            product: string;
+            /**
+             * Format: int64
+             * @description Units (seats).
+             */
+            quantity: number;
         };
         /**
          * @description Subscription lifecycle (set by billing, FB-70).
@@ -10076,6 +12897,39 @@ export interface components {
         TableList: {
             items: components["schemas"]["TableInfoSchema"][];
         };
+        /**
+         * @description Whether prices include tax.
+         * @enum {string}
+         */
+        TaxBehavior: "exclusive" | "inclusive";
+        /** @description A tax rate of a region. */
+        TaxRate: {
+            /** @description In use. */
+            active: boolean;
+            /** @description Id. */
+            id: string;
+            /** @description Name on invoices (`GST`, `VAT`). */
+            name: string;
+            /**
+             * Format: int64
+             * @description Rate in basis points (1800 = 18 %).
+             */
+            rate_bp: number;
+            /** @description Region (`IN`, `DE`, `US-CA`). */
+            region: string;
+        };
+        /** @description Body of `PUT /billing/tax-rates/{region}`. */
+        TaxRateInput: {
+            /** @description In use (default true). */
+            active?: boolean;
+            /** @description Name on invoices. */
+            name: string;
+            /**
+             * Format: int64
+             * @description Basis points (0..=10000).
+             */
+            rate_bp: number;
+        };
         /** @description Saves a template. */
         TemplateInput: {
             /** @description HTML body template (max 128 KiB). */
@@ -10096,6 +12950,27 @@ export interface components {
              * @description Statements slower than this are logged; `0` logs every statement.
              */
             threshold_ms: number;
+        };
+        /**
+         * @description One pricing tier: units up to `up_to` (inclusive; `None`: no upper
+         *     bound) cost `unit_amount` each plus `flat_amount` once.
+         */
+        Tier: {
+            /**
+             * Format: int64
+             * @description Fixed fee when the tier is reached, minor units.
+             */
+            flat_amount?: number;
+            /**
+             * Format: int64
+             * @description Price per unit, minor units.
+             */
+            unit_amount?: number;
+            /**
+             * Format: int64
+             * @description Last unit of the tier (`null`: the rest).
+             */
+            up_to?: number | null;
         };
         /** @description A node reached by a traversal. */
         TraversedNode: {
@@ -10412,6 +13287,68 @@ export interface components {
              */
             next?: number | null;
         };
+        /** @description The counter of one feature of one subject in its current window. */
+        UsageMeter: {
+            /**
+             * Format: int64
+             * @description Rolled over from the previous window.
+             */
+            carried_in: number;
+            /** @description Feature key. */
+            feature: string;
+            /**
+             * Format: int64
+             * @description Limit of the window (`null`: unlimited).
+             */
+            limit?: number | null;
+            /**
+             * Format: double
+             * @description `used` as a percentage of `limit`.
+             */
+            percent?: number | null;
+            /**
+             * Format: int64
+             * @description Held by reservations.
+             */
+            reserved: number;
+            /** @description Counter scope (`""` for the subject itself). */
+            scope_key: string;
+            /** @description 70 / 90 / 100 % state. */
+            state: components["schemas"]["MeterState"];
+            /** @description Subject (`org:<id>` or a principal key). */
+            subject: string;
+            /** @description Last change. */
+            updated_at: string;
+            /**
+             * Format: int64
+             * @description Committed usage.
+             */
+            used: number;
+            /** @description Window end. */
+            window_end: string;
+            /** @description Window start. */
+            window_start: string;
+        };
+        /** @description A page of usage meters. */
+        UsageMeterPage: {
+            /** @description Meters, most used first. */
+            items: components["schemas"]["UsageMeter"][];
+            /**
+             * Format: int64
+             * @description Page size.
+             */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Rows skipped.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description All meters matching the filters.
+             */
+            total: number;
+        };
         /** @description A usage pack of the catalog. */
         UsagePack: {
             /** @description Can be granted. */
@@ -10726,6 +13663,39 @@ export interface components {
          * @enum {string}
          */
         Visibility: "private" | "authenticated" | "public";
+        /** @description A webhook event received. */
+        WebhookEvent: {
+            /**
+             * Format: int64
+             * @description Deliveries seen.
+             */
+            attempts: number;
+            /** @description Provider time of the event. */
+            event_at: string;
+            /** @description Event id at the provider. */
+            event_id: string;
+            /** @description Event type. */
+            event_type: string;
+            /** @description Id. */
+            id: string;
+            /** @description Provider. */
+            provider: string;
+            /** @description Received. */
+            received_at: string;
+            /** @description What happened. */
+            result?: string | null;
+            /** @description `processed`, `ignored` or `failed`. */
+            status: string;
+        };
+        /** @description What a webhook delivery did. */
+        WebhookOutcome: {
+            /** @description Details (`stale`, `unknown_payment`, ...). */
+            detail?: string | null;
+            /** @description Event id. */
+            event_id: string;
+            /** @description `processed`, `ignored`, `duplicate` (already handled) or `failed`. */
+            result: string;
+        };
         /** @description A worker that registered or claimed jobs. */
         Worker: {
             /**
@@ -14697,6 +17667,66 @@ export interface operations {
             };
         };
     };
+    identity_realm_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Created; the realm identity */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Realm or collection already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
     realm_get: {
         parameters: {
             query?: never;
@@ -14824,6 +17854,703 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_realm_consents: {
+        parameters: {
+            query?: {
+                /** @description Only this client */
+                client_id?: string;
+                /** @description 1-500, default 100 */
+                limit?: number;
+                /** @description Default 0 */
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_realm_consent_revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Consent id */
+                id: string;
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_realm_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_provider_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_provider_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider id */
+                id: string;
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_provider_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider id */
+                id: string;
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_provider_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider id */
+                id: string;
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_sms_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_sms_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    identity_sms_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Realm id */
+                realm: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Administrator access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Conflict */
@@ -17423,6 +21150,2858 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    billing_all_orders: {
+        parameters: {
+            query?: {
+                /** @description Page size (1-500, default 50) */
+                limit?: number;
+                /** @description Rows to skip */
+                offset?: number;
+                /** @description Only this order status */
+                status?: string;
+                /** @description Only this subject */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Orders */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_usage_meters: {
+        parameters: {
+            query?: {
+                /** @description Only this feature */
+                feature?: string;
+                /** @description Page size (1-500, default 50) */
+                limit?: number;
+                /** @description Only meters at or above this percentage of their limit */
+                min_percent?: number;
+                /** @description Rows to skip */
+                offset?: number;
+                /** @description Only this subject */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Meters */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageMeterPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_coupons: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Coupons */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Coupon"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_coupon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Coupon code */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CouponInput"];
+            };
+        };
+        responses: {
+            /** @description Coupon */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Coupon"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_archive_coupon: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Coupon code */
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Archived coupon */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Coupon"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_credit_notes: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credit notes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_CreditNote"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_customer: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Customer"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_customer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomerInput"];
+            };
+        };
+        responses: {
+            /** @description Customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Customer"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_customers: {
+        parameters: {
+            query?: {
+                /** @description At most 1000 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Customers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Customer"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_dunning_queue: {
+        parameters: {
+            query?: {
+                /** @description Rows (1-500, default 200) */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_DunningEntry"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_invoices: {
+        parameters: {
+            query?: {
+                /** @description At most 500 */
+                limit?: number;
+                /** @description Only this status */
+                status?: components["schemas"]["InvoiceStatus"];
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invoices */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Invoice"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_invoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Invoice id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invoice */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invoice"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_credit_invoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Invoice id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreditNoteInput"];
+            };
+        };
+        responses: {
+            /** @description Issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditNote"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_mark_paid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Invoice id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkPaidInput"];
+            };
+        };
+        responses: {
+            /** @description Paid */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invoice"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_pay_invoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Invoice id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayInput"];
+            };
+        };
+        responses: {
+            /** @description Attempted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingCollection"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_void_invoice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Invoice id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Voided */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invoice"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_maintenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingMaintenanceReport"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_orders: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Orders */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Order"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_create_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrderInput"];
+            };
+        };
+        responses: {
+            /** @description Replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Order id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Order"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_payments: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Payment"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_portal: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Portal */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Portal"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_payment_method: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaymentMethodInput"];
+            };
+        };
+        responses: {
+            /** @description Hosted page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_prices: {
+        parameters: {
+            query?: {
+                /** @description Product key */
+                product?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prices */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Price"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_price: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Price key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Price */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Price"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_price: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Price key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PriceInput"];
+            };
+        };
+        responses: {
+            /** @description Price */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Price"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Amounts of a price in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    billing_archive_price: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Price key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Archived price */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Price"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_products: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Products */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Product"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_product: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Product key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Product */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Product"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_product: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Product key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductInput"];
+            };
+        };
+        responses: {
+            /** @description Product */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Product"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_archive_product: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Product key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Archived product */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Product"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accounts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ProviderAccount"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description stripe, razorpay or manual */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderInput"];
+            };
+        };
+        responses: {
+            /** @description Saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderAccount"];
+                };
+            };
+            /** @description Live or malformed keys */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_delete_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_refunds: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Refunds */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Refund"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingSettings"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BillingSettings"];
+            };
+        };
+        responses: {
+            /** @description Settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingSettings"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_stats: {
+        parameters: {
+            query?: {
+                /** @description Window start (RFC 3339) */
+                from?: string;
+                /** @description day (default) or month */
+                interval?: string;
+                /** @description Window end (RFC 3339, default now) */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statistics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStats"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_subscriptions: {
+        parameters: {
+            query?: {
+                /** @description org:<id> or a principal key (default: the caller's subject) */
+                subject?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subscriptions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_BillingSubscription"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_subscribe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscribeInput"];
+            };
+        };
+        responses: {
+            /** @description Replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Already subscribed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    billing_subscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subscription */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingSubscription"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelInput"];
+            };
+        };
+        responses: {
+            /** @description Cancelled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_change_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePlanInput"];
+            };
+        };
+        responses: {
+            /** @description Changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_preview_plan_change: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePlanInput"];
+            };
+        };
+        responses: {
+            /** @description Preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProrationPreview"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paused */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingSubscription"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Subscription id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resumed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkout"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_tax_rates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_TaxRate"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_put_tax_rate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description IN, DE, US-CA, ... */
+                region: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaxRateInput"];
+            };
+        };
+        responses: {
+            /** @description Rate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxRate"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_archive_tax_rate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description IN, DE, US-CA, ... */
+                region: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Archived rate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxRate"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_webhook_events: {
+        parameters: {
+            query?: {
+                /** @description At most 1000 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_WebhookEvent"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    billing_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description stripe or razorpay */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Handled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookOutcome"];
+                };
+            };
+            /** @description Signature refused */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Provider not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -26090,6 +32669,65 @@ export interface operations {
             };
         };
     };
+    kv_channels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Namespace */
+                ns: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `{channels: [{name, subscribers}]}` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     exec: {
         parameters: {
             query?: never;
@@ -26779,6 +33417,136 @@ export interface operations {
             };
         };
     };
+    kv_list_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Key */
+                key: string;
+                /** @description Namespace */
+                ns: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListRemoveBody"];
+            };
+        };
+        responses: {
+            /** @description `{removed: n}` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    kv_list_set: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Key */
+                key: string;
+                /** @description Namespace */
+                ns: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListSetBody"];
+            };
+        };
+        responses: {
+            /** @description `{ok: true}` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     mget: {
         parameters: {
             query?: never;
@@ -27120,6 +33888,71 @@ export interface operations {
         responses: {
             /** @description `{id}` of the new entry */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    kv_stream_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Key */
+                key: string;
+                /** @description Namespace */
+                ns: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StreamDeleteBody"];
+            };
+        };
+        responses: {
+            /** @description `{removed: n}` */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -31042,6 +37875,84 @@ export interface operations {
             };
         };
     };
+    storage_object_meta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObjectInfo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such object */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    storage_object_meta_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Headers only */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such object */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     move_object: {
         parameters: {
             query?: never;
@@ -31522,6 +38433,59 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    storage_bucket_usage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BucketUsage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such bucket */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
