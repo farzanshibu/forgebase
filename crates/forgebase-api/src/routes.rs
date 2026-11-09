@@ -135,8 +135,23 @@ pub async fn metrics(State(state): State<AppState>) -> Response {
         }
         Err(e) => tracing::warn!(error = %e, "could not read database stats for /metrics"),
     }
+    let pools = state.db().pool_stats();
+    for (pool, u) in [("writer", pools.writer), ("reader", pools.reader)] {
+        metrics::gauge!(names::DB_POOL_IN_USE, "pool" => pool).set(f64::from(u.in_use));
+        metrics::gauge!(names::DB_POOL_IDLE, "pool" => pool).set(f64::from(u.idle));
+    }
+    for collect in state.collectors() {
+        if tokio::time::timeout(std::time::Duration::from_secs(2), collect.run())
+            .await
+            .is_err()
+        {
+            tracing::warn!("a metrics collector timed out; its gauges keep their last values");
+        }
+    }
     let handle = state.metrics();
     handle.run_upkeep();
+    let mut body = handle.render();
+    body.push_str(&forgebase_observability::render_process_metrics());
     (
         StatusCode::OK,
         [
@@ -146,7 +161,7 @@ pub async fn metrics(State(state): State<AppState>) -> Response {
             ),
             (CACHE_CONTROL, HeaderValue::from_static("no-store")),
         ],
-        handle.render(),
+        body,
     )
         .into_response()
 }

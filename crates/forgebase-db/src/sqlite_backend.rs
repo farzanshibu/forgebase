@@ -18,6 +18,9 @@ pub const DEFAULT_SLOW_QUERY_THRESHOLD: Duration = Duration::from_millis(200);
 /// Entries kept in the slow-query ring buffer.
 pub const SLOW_QUERY_LOG_CAPACITY: usize = 256;
 
+/// Statement latency histogram; the name matches `forgebase_observability::names`.
+const QUERY_DURATION_METRIC: &str = "forgebase_db_query_duration_seconds";
+
 static SQLITE: SqliteDialect = SqliteDialect;
 
 /// Bounded in-memory slow-query log shared by all connections of a database.
@@ -37,7 +40,11 @@ impl Default for SlowLog {
 }
 
 impl SlowLog {
-    fn record(&self, stmt: &Statement, elapsed: Duration, rows: u64) {
+    /// Observes the statement latency (histogram `forgebase_db_query_duration_seconds`, label
+    /// `mode`), then logs it when it passed the slow threshold.
+    fn record(&self, stmt: &Statement, elapsed: Duration, rows: u64, write: bool) {
+        metrics::histogram!(QUERY_DURATION_METRIC, "mode" => if write { "write" } else { "read" })
+            .record(elapsed.as_secs_f64());
         if elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed) {
             let entry = SlowQuery {
                 sql: stmt.sql.clone(),
@@ -166,7 +173,9 @@ impl Backend for Database {
                 .await
                 .map_err(|e| self.classify(e))?;
             let rows = decode_rows(rows).map_err(|e| self.classify(e))?;
-            self.inner.slow.record(stmt, started.elapsed(), rows.len() as u64);
+            self.inner
+                .slow
+                .record(stmt, started.elapsed(), rows.len() as u64, false);
             Ok(rows)
         })
     }
@@ -351,7 +360,9 @@ impl WriteTx for SqliteTx {
                 .execute(&mut **self.conn()?)
                 .await
                 .map_err(|e| db.classify(e))?;
-            db.inner.slow.record(stmt, started.elapsed(), done.rows_affected());
+            db.inner
+                .slow
+                .record(stmt, started.elapsed(), done.rows_affected(), true);
             Ok(ExecResult {
                 rows_affected: done.rows_affected(),
                 last_insert_id: done.last_insert_rowid(),
@@ -368,7 +379,7 @@ impl WriteTx for SqliteTx {
                 .await
                 .map_err(|e| db.classify(e))?;
             let rows = decode_rows(rows).map_err(|e| db.classify(e))?;
-            db.inner.slow.record(stmt, started.elapsed(), rows.len() as u64);
+            db.inner.slow.record(stmt, started.elapsed(), rows.len() as u64, true);
             Ok(rows)
         })
     }

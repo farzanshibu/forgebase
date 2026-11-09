@@ -33,6 +33,8 @@ pub mod principal;
 pub mod routes;
 pub mod v1;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -76,6 +78,24 @@ struct StateInner {
     auth: Option<AuthService>,
     policy: Option<PolicyService>,
     realtime: Option<forgebase_realtime::RealtimeService>,
+    collectors: Vec<MetricsCollector>,
+}
+
+/// An async hook that refreshes gauges just before `/metrics` renders.
+#[derive(Clone)]
+pub struct MetricsCollector(Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>);
+
+impl std::fmt::Debug for MetricsCollector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MetricsCollector")
+    }
+}
+
+impl MetricsCollector {
+    /// Runs the collector once.
+    pub(crate) fn run(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        (self.0)()
+    }
 }
 
 /// Size limits the handlers enforce themselves (see [`RouterOptions`]).
@@ -113,6 +133,7 @@ impl AppState {
                 auth: None,
                 policy: None,
                 realtime: None,
+                collectors: Vec::new(),
             }),
         })
     }
@@ -151,6 +172,7 @@ impl AppState {
                 auth: None,
                 policy: None,
                 realtime: None,
+                collectors: Vec::new(),
             }),
         }
     }
@@ -188,6 +210,25 @@ impl AppState {
     pub fn with_realtime(mut self, realtime: forgebase_realtime::RealtimeService) -> Self {
         Arc::make_mut(&mut self.inner).realtime = Some(realtime);
         self
+    }
+
+    /// Same state with a collector run on every `/metrics` scrape (each is cut
+    /// off after two seconds so a slow subsystem cannot stall the scrape).
+    /// Collectors set gauges through the `metrics` macros.
+    pub fn with_metrics_collector<F, Fut>(mut self, f: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        Arc::make_mut(&mut self.inner)
+            .collectors
+            .push(MetricsCollector(Arc::new(move || Box::pin(f()))));
+        self
+    }
+
+    /// Registered metrics collectors.
+    pub(crate) fn collectors(&self) -> &[MetricsCollector] {
+        &self.inner.collectors
     }
 
     /// The realtime service, when configured.

@@ -122,6 +122,28 @@ pub struct InstanceInfo {
     pub initialized_at: String,
 }
 
+/// Connections of one pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolUsage {
+    /// Connections open (idle plus in use).
+    pub open: u32,
+    /// Open connections waiting in the pool.
+    pub idle: u32,
+    /// Open connections checked out.
+    pub in_use: u32,
+    /// Configured maximum.
+    pub max: u32,
+}
+
+/// Usage of both database pools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// The single-connection writer pool.
+    pub writer: PoolUsage,
+    /// The read pool.
+    pub reader: PoolUsage,
+}
+
 /// File and engine statistics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DatabaseInfo {
@@ -321,6 +343,24 @@ impl Database {
             .map_err(|e| self.classify(e))?;
         debug_assert_eq!(one, 1);
         Ok(())
+    }
+
+    /// Connections of the writer and reader pools right now.
+    pub fn pool_stats(&self) -> PoolStats {
+        let one = |p: &SqlitePool| {
+            let open = p.size();
+            let idle = u32::try_from(p.num_idle()).unwrap_or(u32::MAX).min(open);
+            PoolUsage {
+                open,
+                idle,
+                in_use: open - idle,
+                max: p.options().get_max_connections(),
+            }
+        };
+        PoolStats {
+            writer: one(&self.inner.writer),
+            reader: one(&self.inner.reader),
+        }
     }
 
     /// File sizes and engine statistics.

@@ -238,6 +238,52 @@ read `X-Forwarded-For` until an `[auth]` section can set `trust_forwarded_for`
 (see [security.md §6](security.md#6-open-items)). Behind a proxy, all clients
 currently share the proxy's rate-limit bucket.
 
+### 5.1 Metrics (`/metrics`)
+
+`GET /metrics` serves Prometheus text format 0.0.4 (`Cache-Control: no-store`).
+The route is always on and needs no token: it is **not** behind authentication
+or the admin check (open item in [security.md §6](security.md#6-open-items)).
+Treat it as an internal endpoint: keep `server.host` on loopback, or block
+`/metrics` at the reverse proxy and scrape it on the private interface. Every
+label comes from a fixed list (method, route template, status, state); there
+is no per-user or per-record label.
+
+Scrape every 15 s or so; each scrape refreshes the gauges below.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `forgebase_http_requests_total` | counter | `method`, `route`, `status` |
+| `forgebase_http_request_duration_seconds` | histogram | `method`, `route` |
+| `forgebase_http_requests_in_flight` | gauge | none |
+| `forgebase_build_info` | gauge | `version`, `os`, `arch` |
+| `forgebase_uptime_seconds` | gauge | none |
+| `forgebase_db_size_bytes`, `forgebase_db_wal_size_bytes`, `forgebase_db_schema_version` | gauge | none |
+| `process_resident_memory_bytes` | gauge | none |
+| `process_cpu_seconds_total` | counter | none |
+| `forgebase_db_query_duration_seconds` | histogram | `mode` = `read` or `write` |
+| `forgebase_db_pool_connections_in_use` | gauge | `pool` = `writer` or `reader` |
+| `forgebase_db_pool_connections_idle` | gauge | `pool` = `writer` or `reader` |
+| `forgebase_jobs` | gauge | `status` = `queued`, `running`, `succeeded`, `dead`, `cancelled` |
+| `forgebase_storage_bytes` | gauge | `kind` = `logical` (current objects) or `stored` (after deduplication) |
+| `forgebase_storage_objects` | gauge | `kind` = `current` or `versions` |
+| `forgebase_vector_indexes` | gauge | `state` = `ready` or `building` |
+| `forgebase_vector_indexed_vectors`, `forgebase_vector_index_memory_bytes` | gauge | none |
+| `forgebase_kv_keys`, `forgebase_kv_memory_bytes` | gauge | none |
+| `forgebase_queue_deliveries` | gauge | `state` = `ready`, `delayed`, `in_flight` (only when `[queue]` is enabled) |
+| `forgebase_queue_messages` | gauge | none (only when `[queue]` is enabled) |
+
+Notes:
+
+* `process_*` come from the operating system. A platform that cannot report
+  one omits it, and the dashboard overview then shows "not reported".
+* The `forgebase_db_query_duration_seconds` histogram times each statement
+  inside the database layer (queueing for a pool connection is not included).
+  Buckets run from 1 ms to 10 s, like the HTTP histogram.
+* Subsystem gauges are read when scraped, each with a two-second cut-off. If a
+  read fails the gauge keeps its last value and the error is logged at debug.
+* Series appear once the subsystem has something to report. Counters and
+  histograms (HTTP, database, functions, RESP) appear after their first event.
+
 ## 6. Upgrades
 
 Migrations run automatically on `serve`. Before you upgrade:

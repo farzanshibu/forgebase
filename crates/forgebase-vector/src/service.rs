@@ -1536,6 +1536,18 @@ impl VectorService {
     pub async fn tenant_stats(&self, ctx: &AccessContext) -> Result<VectorStats> {
         self.authorize(ctx, Action::VectorRead)?;
         let tenant = Self::tenant(ctx);
+        Ok(Self::sum_stats(
+            self.all_collections().into_iter().filter(|c| c.row.tenant == tenant),
+        ))
+    }
+
+    /// Totals over every tenant, for server metrics. No authorisation: it
+    /// reveals counts only and is meant for the process itself.
+    pub fn totals(&self) -> VectorStats {
+        Self::sum_stats(self.all_collections().into_iter())
+    }
+
+    fn sum_stats(collections: impl Iterator<Item = Arc<Coll>>) -> VectorStats {
         let mut s = VectorStats {
             collections: 0,
             indexes: 0,
@@ -1543,7 +1555,7 @@ impl VectorService {
             indexed_vectors: 0,
             memory_bytes: 0,
         };
-        for c in self.all_collections().into_iter().filter(|c| c.row.tenant == tenant) {
+        for c in collections {
             s.collections += 1;
             for f in c.fields() {
                 s.indexes += 1;
@@ -1557,7 +1569,7 @@ impl VectorService {
                 }
             }
         }
-        Ok(s)
+        s
     }
 
     /// Waits until every index of the collection serves from an ANN index

@@ -23,6 +23,7 @@ forgebase-customize.workspace = true
 forgebase-jobs.workspace = true
 forgebase-kv.workspace = true
 forgebase-observability.workspace = true
+metrics.workspace = true
 forgebase-vector.workspace = true
 forgebase-resp.workspace = true
 forgebase-storage.workspace = true

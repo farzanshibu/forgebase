@@ -9,6 +9,8 @@ license.workspace = true
 
 [dependencies]
 forgebase-core.workspace = true
+cpu-time.workspace = true
+memory-stats.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 thiserror.workspace = true
