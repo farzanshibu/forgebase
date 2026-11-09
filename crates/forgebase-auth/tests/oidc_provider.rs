@@ -47,7 +47,12 @@ impl Raw {
     /// Query parameters of the `Location` header.
     fn loc_params(&self) -> HashMap<String, String> {
         let loc = self.location();
-        assert!(!loc.is_empty(), "no Location; status {} body {}", self.status, self.text);
+        assert!(
+            !loc.is_empty(),
+            "no Location; status {} body {}",
+            self.status,
+            self.text
+        );
         url::Url::parse(&loc).unwrap().query_pairs().into_owned().collect()
     }
 }
@@ -87,7 +92,10 @@ fn enc(pairs: &[(&str, &str)]) -> String {
 }
 
 fn basic(id: &str, secret: &str) -> (&'static str, String) {
-    ("authorization", format!("Basic {}", STANDARD.encode(format!("{id}:{secret}"))))
+    (
+        "authorization",
+        format!("Basic {}", STANDARD.encode(format!("{id}:{secret}"))),
+    )
 }
 
 fn challenge(verifier: &str) -> String {
@@ -324,7 +332,10 @@ async fn discovery_and_jwks_are_published_per_realm() {
     assert_eq!(d["authorization_endpoint"], format!("{iss}/authorize"));
     assert_eq!(d["token_endpoint"], format!("{iss}/token"));
     assert_eq!(d["jwks_uri"], format!("{iss}/jwks"));
-    assert_eq!(d["device_authorization_endpoint"], format!("{iss}/device_authorization"));
+    assert_eq!(
+        d["device_authorization_endpoint"],
+        format!("{iss}/device_authorization")
+    );
     assert_eq!(d["end_session_endpoint"], format!("{iss}/logout"));
     assert_eq!(d["code_challenge_methods_supported"], json!(["S256"]));
     assert_eq!(d["id_token_signing_alg_values_supported"], json!(["ES256"]));
@@ -392,10 +403,12 @@ async fn authorization_code_flow_with_pkce_issues_verified_tokens() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text);
     assert!(page.text.contains("Acme Web") && page.text.contains("Allow"));
     assert_eq!(page.headers["x-frame-options"], "DENY");
-    assert!(page.headers["content-security-policy"]
-        .to_str()
-        .unwrap()
-        .contains("frame-ancestors 'none'"));
+    assert!(
+        page.headers["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
 
     // A consent POST without the CSRF token is refused.
     let rid = page.text.split("name=\"request_id\" value=\"").nth(1).unwrap();
@@ -540,12 +553,20 @@ async fn pkce_wrong_or_missing_verifier_is_refused() {
         &h,
         "default",
         &b,
-        &authorize_url("default", &id, &[("code_challenge", &ch), ("code_challenge_method", "plain")]),
+        &authorize_url(
+            "default",
+            &id,
+            &[("code_challenge", &ch), ("code_challenge_method", "plain")],
+        ),
     )
     .await;
     assert_eq!(p["error"], "invalid_request", "plain is not supported: {p:?}");
 
-    let url = authorize_url("default", &id, &[("code_challenge", &ch), ("code_challenge_method", "S256")]);
+    let url = authorize_url(
+        "default",
+        &id,
+        &[("code_challenge", &ch), ("code_challenge_method", "S256")],
+    );
     let p = browser_authorize(&h, "default", &b, &url).await;
     let r = token(
         &h,
@@ -612,7 +633,12 @@ async fn pkce_wrong_or_missing_verifier_is_refused() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "authorization_code"), ("client_id", &id), ("client_secret", "x"), ("code", "c")],
+        &[
+            ("grant_type", "authorization_code"),
+            ("client_id", &id),
+            ("client_secret", "x"),
+            ("code", "c"),
+        ],
         None,
     )
     .await;
@@ -735,7 +761,11 @@ async fn code_replay_is_refused_and_revokes_the_family() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "authorization_code"), ("code", &p["code"]), ("redirect_uri", CB)],
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &p["code"]),
+            ("redirect_uri", CB),
+        ],
         Some((&id2, &secret2)),
     )
     .await;
@@ -770,7 +800,11 @@ async fn refresh_rotation_and_reuse_revokes_the_family() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "refresh_token"), ("refresh_token", &r2), ("scope", "openid profile")],
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &r2),
+            ("scope", "openid profile"),
+        ],
         Some((&id, &secret)),
     )
     .await;
@@ -801,7 +835,10 @@ async fn refresh_rotation_and_reuse_revokes_the_family() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "refresh_token"), ("refresh_token", t["refresh_token"].as_str().unwrap())],
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", t["refresh_token"].as_str().unwrap()),
+        ],
         Some((&id2, &secret2)),
     )
     .await;
@@ -871,12 +908,20 @@ async fn device_flow_with_slow_down_denial_and_expiry() {
     assert_eq!(d["verification_uri"], format!("{}/device", issuer("default")));
     assert!(d["verification_uri_complete"].as_str().unwrap().contains("user_code="));
 
-    assert_oauth_error(&poll(dc.clone()).await, StatusCode::BAD_REQUEST, "authorization_pending");
+    assert_oauth_error(
+        &poll(dc.clone()).await,
+        StatusCode::BAD_REQUEST,
+        "authorization_pending",
+    );
     assert_oauth_error(&poll(dc.clone()).await, StatusCode::BAD_REQUEST, "slow_down");
     clock.advance(Duration::from_secs(6));
     assert_oauth_error(&poll(dc.clone()).await, StatusCode::BAD_REQUEST, "slow_down");
     clock.advance(Duration::from_secs(16));
-    assert_oauth_error(&poll(dc.clone()).await, StatusCode::BAD_REQUEST, "authorization_pending");
+    assert_oauth_error(
+        &poll(dc.clone()).await,
+        StatusCode::BAD_REQUEST,
+        "authorization_pending",
+    );
 
     // The verification page: sign in first.
     let r = call(
@@ -917,7 +962,11 @@ async fn device_flow_with_slow_down_denial_and_expiry() {
         &[b.header()],
         Some((
             "application/x-www-form-urlencoded",
-            enc(&[("user_code", &user_code), ("csrf_token", &b.csrf), ("decision", "allow")]),
+            enc(&[
+                ("user_code", &user_code),
+                ("csrf_token", &b.csrf),
+                ("decision", "allow"),
+            ]),
         )),
     )
     .await;
@@ -1025,7 +1074,11 @@ async fn prompt_none_without_session_is_login_required() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "authorization_code"), ("code", &p["code"]), ("redirect_uri", CB)],
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &p["code"]),
+            ("redirect_uri", CB),
+        ],
         Some((&id, &secret)),
     )
     .await;
@@ -1037,7 +1090,11 @@ async fn prompt_none_without_session_is_login_required() {
     let r = call(
         &h,
         Method::GET,
-        &authorize_url("default", &id, &[("prompt", "none"), ("scope", "openid offline_access")]),
+        &authorize_url(
+            "default",
+            &id,
+            &[("prompt", "none"), ("scope", "openid offline_access")],
+        ),
         &[b.header()],
         None,
     )
@@ -1107,7 +1164,14 @@ async fn max_age_and_prompt_login_demand_a_fresh_sign_in() {
     assert!(r.loc_params().contains_key("code"), "recent enough");
 
     for extra in [[("max_age", "60")], [("prompt", "login")]] {
-        let r = call(&h, Method::GET, &authorize_url("default", &id, &extra), &[b.header()], None).await;
+        let r = call(
+            &h,
+            Method::GET,
+            &authorize_url("default", &id, &extra),
+            &[b.header()],
+            None,
+        )
+        .await;
         assert_eq!(r.status, StatusCode::FOUND);
         let back = r.loc_params()["return_to"].clone();
         assert!(back.contains("request_id="), "{extra:?}: {}", r.location());
@@ -1122,7 +1186,11 @@ async fn max_age_and_prompt_login_demand_a_fresh_sign_in() {
         let r = token(
             &h,
             "default",
-            &[("grant_type", "authorization_code"), ("code", &p["code"]), ("redirect_uri", CB)],
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &p["code"]),
+                ("redirect_uri", CB),
+            ],
             Some((&id, &secret)),
         )
         .await;
@@ -1175,7 +1243,11 @@ async fn cross_realm_client_is_refused() {
     let r = token(
         &h,
         "acme",
-        &[("grant_type", "authorization_code"), ("code", "x"), ("redirect_uri", CB)],
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", "x"),
+            ("redirect_uri", CB),
+        ],
         Some((&default_id, &default_secret)),
     )
     .await;
@@ -1184,7 +1256,11 @@ async fn cross_realm_client_is_refused() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "authorization_code"), ("code", "x"), ("redirect_uri", CB)],
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", "x"),
+            ("redirect_uri", CB),
+        ],
         Some((&acme_id, &acme_secret)),
     )
     .await;
@@ -1209,13 +1285,18 @@ async fn cross_realm_client_is_refused() {
         &h,
         Method::GET,
         "/api/auth/oidc/acme/userinfo",
-        &[("authorization", format!("Bearer {}", t["access_token"].as_str().unwrap()))],
+        &[(
+            "authorization",
+            format!("Bearer {}", t["access_token"].as_str().unwrap()),
+        )],
         None,
     )
     .await;
     assert_oauth_error(&r, StatusCode::UNAUTHORIZED, "invalid_token");
     // Each realm signs with its own keys.
-    let k1 = call(&h, Method::GET, "/api/auth/oidc/default/jwks", &[], None).await.json;
+    let k1 = call(&h, Method::GET, "/api/auth/oidc/default/jwks", &[], None)
+        .await
+        .json;
     let k2 = call(&h, Method::GET, "/api/auth/oidc/acme/jwks", &[], None).await.json;
     assert_ne!(k1["keys"][0]["kid"], k2["keys"][0]["kid"]);
 }
@@ -1232,7 +1313,13 @@ async fn client_credentials_introspection_and_revocation() {
     .await;
     let secret = secret.unwrap();
 
-    let r = token(&h, "default", &[("grant_type", "client_credentials")], Some((&id, &secret))).await;
+    let r = token(
+        &h,
+        "default",
+        &[("grant_type", "client_credentials")],
+        Some((&id, &secret)),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text);
     assert!(r.json.get("refresh_token").is_none() && r.json.get("id_token").is_none());
     assert_eq!(r.json["scope"], "collections:read kv:write");
@@ -1257,15 +1344,30 @@ async fn client_credentials_introspection_and_revocation() {
     assert_eq!(r.json["scope"], "kv:write");
 
     for (form, code) in [
-        (vec![("grant_type", "client_credentials"), ("scope", "openid")], "invalid_scope"),
-        (vec![("grant_type", "client_credentials"), ("scope", "kv:read")], "invalid_scope"),
+        (
+            vec![("grant_type", "client_credentials"), ("scope", "openid")],
+            "invalid_scope",
+        ),
+        (
+            vec![("grant_type", "client_credentials"), ("scope", "kv:read")],
+            "invalid_scope",
+        ),
         (vec![("grant_type", "password")], "unsupported_grant_type"),
-        (vec![("grant_type", "authorization_code"), ("code", "x")], "unauthorized_client"),
+        (
+            vec![("grant_type", "authorization_code"), ("code", "x")],
+            "unauthorized_client",
+        ),
     ] {
         let r = token(&h, "default", &form, Some((&id, &secret))).await;
         assert_oauth_error(&r, StatusCode::BAD_REQUEST, code);
     }
-    let r = token(&h, "default", &[("grant_type", "client_credentials")], Some((&id, "wrong"))).await;
+    let r = token(
+        &h,
+        "default",
+        &[("grant_type", "client_credentials")],
+        Some((&id, "wrong")),
+    )
+    .await;
     assert_oauth_error(&r, StatusCode::UNAUTHORIZED, "invalid_client");
     assert!(r.headers.get("www-authenticate").is_some());
     let r = call(
@@ -1273,7 +1375,10 @@ async fn client_credentials_introspection_and_revocation() {
         Method::POST,
         "/api/auth/oidc/default/token",
         &[basic(&id, &secret)],
-        Some(("application/json", json!({"grant_type": "client_credentials"}).to_string())),
+        Some((
+            "application/json",
+            json!({"grant_type": "client_credentials"}).to_string(),
+        )),
     )
     .await;
     assert_oauth_error(&r, StatusCode::BAD_REQUEST, "invalid_request");
@@ -1281,7 +1386,10 @@ async fn client_credentials_introspection_and_revocation() {
     let i = introspect(&h, "default", &id, &secret, &at).await;
     assert_eq!(i["active"], true);
     assert_eq!(i["client_id"], id.as_str());
-    assert_eq!(introspect(&h, "default", &id, &secret, "garbage").await, json!({"active": false}));
+    assert_eq!(
+        introspect(&h, "default", &id, &secret, "garbage").await,
+        json!({"active": false})
+    );
     let r = call(
         &h,
         Method::POST,
@@ -1358,7 +1466,10 @@ async fn consent_is_remembered_revocable_and_never_granted_by_impersonation() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "refresh_token"), ("refresh_token", t["refresh_token"].as_str().unwrap())],
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", t["refresh_token"].as_str().unwrap()),
+        ],
         Some((&id, &secret)),
     )
     .await;
@@ -1376,9 +1487,8 @@ async fn consent_is_remembered_revocable_and_never_granted_by_impersonation() {
     // An impersonated session (ADR-0014) may not grant consent.
     let session_hash = {
         use forgebase_db::Backend;
-        let rows = h
-            .db
-            .fetch_all(&forgebase_db::Statement::raw(
+        let rows =
+            h.db.fetch_all(&forgebase_db::Statement::raw(
                 "SELECT id FROM _forgebase_auth_sessions WHERE cookie_hash IS NOT NULL",
             ))
             .await
@@ -1423,7 +1533,14 @@ async fn rp_initiated_logout_ends_the_sso_session() {
     let (id, secret) = confidential(&h, &admin).await;
     let b = browser_login(&h, "jo@example.com", None).await;
     let t = code_flow(&h, &b, &id, &secret, &[]).await;
-    let offline = code_flow(&h, &b, &id, &secret, &[("scope", "openid offline_access"), ("prompt", "consent")]).await;
+    let offline = code_flow(
+        &h,
+        &b,
+        &id,
+        &secret,
+        &[("scope", "openid offline_access"), ("prompt", "consent")],
+    )
+    .await;
     let id_token = t["id_token"].as_str().unwrap();
 
     // Without a hint the user confirms first.
@@ -1433,7 +1550,10 @@ async fn rp_initiated_logout_ends_the_sso_session() {
     // A post_logout_redirect_uri that is not registered is refused.
     let url = format!(
         "/api/auth/oidc/default/logout?{}",
-        enc(&[("id_token_hint", id_token), ("post_logout_redirect_uri", "https://evil.example.com/")])
+        enc(&[
+            ("id_token_hint", id_token),
+            ("post_logout_redirect_uri", "https://evil.example.com/")
+        ])
     );
     let r = call(&h, Method::GET, &url, &[b.header()], None).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
@@ -1441,17 +1561,22 @@ async fn rp_initiated_logout_ends_the_sso_session() {
 
     let url = format!(
         "/api/auth/oidc/default/logout?{}",
-        enc(&[("id_token_hint", id_token), ("post_logout_redirect_uri", LOGOUT_CB), ("state", "bye-1")])
+        enc(&[
+            ("id_token_hint", id_token),
+            ("post_logout_redirect_uri", LOGOUT_CB),
+            ("state", "bye-1")
+        ])
     );
     let r = call(&h, Method::GET, &url, &[b.header()], None).await;
     assert_eq!(r.status, StatusCode::FOUND, "{}", r.text);
     assert!(r.location().starts_with(LOGOUT_CB));
     assert_eq!(r.loc_params()["state"], "bye-1");
-    assert!(r
-        .headers
-        .get_all(SET_COOKIE)
-        .iter()
-        .any(|c| c.to_str().unwrap().starts_with("fb_session=;")));
+    assert!(
+        r.headers
+            .get_all(SET_COOKIE)
+            .iter()
+            .any(|c| c.to_str().unwrap().starts_with("fb_session=;"))
+    );
 
     // The session is gone for every app of the realm.
     let r = call(
@@ -1467,7 +1592,10 @@ async fn rp_initiated_logout_ends_the_sso_session() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "refresh_token"), ("refresh_token", t["refresh_token"].as_str().unwrap())],
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", t["refresh_token"].as_str().unwrap()),
+        ],
         Some((&id, &secret)),
     )
     .await;
@@ -1479,7 +1607,10 @@ async fn rp_initiated_logout_ends_the_sso_session() {
     let r = token(
         &h,
         "default",
-        &[("grant_type", "refresh_token"), ("refresh_token", offline["refresh_token"].as_str().unwrap())],
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", offline["refresh_token"].as_str().unwrap()),
+        ],
         Some((&id, &secret)),
     )
     .await;
@@ -1514,7 +1645,11 @@ async fn client_management_and_secret_rotation() {
     let (_, user_token) = h.verified_user("kim@example.com").await;
 
     let r = h
-        .post("/api/auth/clients", Some(&user_token), json!({"name": "x", "redirect_uris": [CB]}))
+        .post(
+            "/api/auth/clients",
+            Some(&user_token),
+            json!({"name": "x", "redirect_uris": [CB]}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     for bad in [
@@ -1561,7 +1696,11 @@ async fn client_management_and_secret_rotation() {
     assert_eq!(cc(s1.clone()).await.json["error"], "invalid_grant");
     // Rotate with a grace period: both work.
     let r = h
-        .post(&format!("/api/auth/clients/{id}/secret"), Some(&admin), json!({"grace_seconds": 3600}))
+        .post(
+            &format!("/api/auth/clients/{id}/secret"),
+            Some(&admin),
+            json!({"grace_seconds": 3600}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let s2 = r.json["client_secret"].as_str().unwrap().to_owned();
