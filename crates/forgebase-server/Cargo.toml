@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 axum.workspace = true
 forgebase-api.workspace = true
+forgebase-backup.workspace = true
 forgebase-auth.workspace = true
 forgebase-policy.workspace = true
 forgebase-data.workspace = true
@@ -23,6 +24,7 @@ forgebase-customize.workspace = true
 forgebase-jobs.workspace = true
 forgebase-kv.workspace = true
 forgebase-observability.workspace = true
+metrics.workspace = true
 forgebase-vector.workspace = true
 forgebase-resp.workspace = true
 forgebase-storage.workspace = true

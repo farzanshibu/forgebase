@@ -508,3 +508,93 @@ async fn rejects_bad_base_urls() {
     assert!(ForgeBase::new("ftp://example.com").is_err());
     assert!(ForgeBase::new("https://example.com/").is_ok());
 }
+
+fn store_purchase(provider: &str) -> Value {
+    json!({"id": "sp1", "provider": provider, "purchase_id": "orig1", "subject": "usr_1", "status": "active",
+        "kind": "subscription", "price": "pro_month", "product_id": "com.x.pro", "environment": "test",
+        "auto_renew": true, "created_at": "t", "updated_at": "t"})
+}
+
+#[tokio::test]
+async fn billing_store_verify_checkout_and_purchases() {
+    use forgebase_sdk::{StoreCheckout, StoreProvider, StoreReceipt};
+    let m = Mock::start(vec![
+        ok(store_purchase("app_store")),
+        ok(json!({"session_id": "co_1", "url": "https://pay.creem.io/x"})),
+        ok(json!({"items": [store_purchase("creem")]})),
+        ok(json!({"items": []})),
+    ])
+    .await;
+    let store = m.client().billing().store();
+
+    let p = store
+        .verify(
+            StoreProvider::AppStore,
+            &StoreReceipt {
+                signed_transaction: Some("jws".into()),
+                subject: Some("org:1".into()),
+                ..StoreReceipt::default()
+            },
+        )
+        .await
+        .expect("verify");
+    assert_eq!(
+        (p.provider.as_str(), p.status.as_str(), p.auto_renew),
+        ("app_store", "active", true)
+    );
+    let c = &m.calls()[0];
+    assert_eq!(
+        (c.method.as_str(), c.path.as_str()),
+        ("POST", "/api/v1/billing/store/app_store/verify")
+    );
+    let body: Value = serde_json::from_str(&c.body).expect("json body");
+    assert_eq!(body, json!({"signed_transaction": "jws", "subject": "org:1"}));
+
+    let page = store
+        .checkout(
+            StoreProvider::Creem,
+            &StoreCheckout {
+                price: "pro_month".into(),
+                success_url: "https://app/ok".into(),
+                idempotency_key: "k1".into(),
+                subject: None,
+            },
+        )
+        .await
+        .expect("checkout");
+    assert_eq!(page.url, "https://pay.creem.io/x");
+    let c = &m.calls()[1];
+    assert_eq!(c.path, "/api/v1/billing/store/creem/checkout");
+    let body: Value = serde_json::from_str(&c.body).expect("json body");
+    assert_eq!(
+        body,
+        json!({"price": "pro_month", "success_url": "https://app/ok", "idempotency_key": "k1"})
+    );
+
+    assert_eq!(store.purchases(None).await.expect("purchases").len(), 1);
+    assert!(store.purchases(Some("org:9")).await.expect("purchases").is_empty());
+    let calls = m.calls();
+    assert_eq!(calls[2].path, "/api/v1/billing/store-purchases");
+    assert_eq!(calls[3].path, "/api/v1/billing/store-purchases?subject=org%3A9");
+}
+
+#[tokio::test]
+async fn billing_store_verify_surfaces_a_conflict() {
+    use forgebase_sdk::{StoreProvider, StoreReceipt};
+    let m = Mock::start(vec![err(409, "purchase_owned")]).await;
+    let e = m
+        .client()
+        .billing()
+        .store()
+        .verify(
+            StoreProvider::GooglePlay,
+            &StoreReceipt {
+                purchase_token: Some("t".into()),
+                product_id: Some("p".into()),
+                ..StoreReceipt::default()
+            },
+        )
+        .await
+        .expect_err("owned");
+    assert_eq!(e.kind(), Some(ErrorKind::Conflict));
+}

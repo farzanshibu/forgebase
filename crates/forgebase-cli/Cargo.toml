@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-cli"
-description = "The `forgebase` command: init, serve, migrate, status, doctor, version, admin, functions."
+description = "The `forgebase` command: init, serve, migrate, status, doctor, backup, restore, export, import, version, admin, functions."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,13 +19,16 @@ clap.workspace = true
 dotenvy.workspace = true
 forgebase-api.workspace = true
 forgebase-auth.workspace = true
+forgebase-backup.workspace = true
 forgebase-core.workspace = true
+forgebase-data.workspace = true
 forgebase-db.workspace = true
 forgebase-observability.workspace = true
 forgebase-server.workspace = true
 fs4.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -54,8 +57,20 @@ name = "realtime_e2e"
 path = "../../tests/integration/realtime_e2e.rs"
 
 [[test]]
+name = "backup_e2e"
+path = "../../tests/integration/backup_e2e.rs"
+
+[[test]]
 name = "functions_e2e"
 path = "../../tests/integration/functions_e2e.rs"
+
+[[test]]
+name = "queues_e2e"
+path = "../../tests/integration/queues_e2e.rs"
+
+[[test]]
+name = "recovery"
+path = "../../tests/integration/recovery.rs"
 
 [lints]
 workspace = true

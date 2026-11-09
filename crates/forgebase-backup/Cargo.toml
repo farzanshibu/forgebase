@@ -1,0 +1,31 @@
+[package]
+name = "forgebase-backup"
+description = "ForgeBase backup, verified restore, point-in-time snapshots with retention, and collection/config export and import (FB-83)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+forgebase-api.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

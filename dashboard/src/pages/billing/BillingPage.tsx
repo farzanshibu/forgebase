@@ -13,6 +13,7 @@ import Payments from "./Payments";
 import Revenue from "./Revenue";
 import Settings from "./Settings";
 import { Disabled } from "./shared";
+import Stores from "./Stores";
 import Subscriptions from "./Subscriptions";
 import Usage from "./Usage";
 
@@ -27,6 +28,7 @@ const TABS: { to: string; label: string; end?: boolean }[] = [
   { to: "/billing/usage", label: "Usage meters" },
   { to: "/billing/invoices", label: "Invoices" },
   { to: "/billing/payments", label: "Payments" },
+  { to: "/billing/stores", label: "Stores" },
   { to: "/billing/coupons", label: "Coupons" },
   { to: "/billing/dunning", label: "Dunning" },
   { to: "/billing/credits", label: "Credits" },
@@ -57,6 +59,7 @@ export default function BillingPage() {
               <Route path="usage" element={<Usage />} />
               <Route path="invoices/*" element={<Invoices />} />
               <Route path="payments" element={<Payments />} />
+              <Route path="stores" element={<Stores />} />
               <Route path="coupons" element={<Coupons />} />
               <Route path="dunning" element={<Dunning />} />
               <Route path="credits" element={<Credits />} />

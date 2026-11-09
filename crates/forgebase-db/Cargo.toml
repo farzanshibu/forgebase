@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 forgebase-core.workspace = true
 forgebase-migrations.workspace = true
+metrics.workspace = true
 serde.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true

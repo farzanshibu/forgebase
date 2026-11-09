@@ -122,6 +122,28 @@ pub struct InstanceInfo {
     pub initialized_at: String,
 }
 
+/// Connections of one pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolUsage {
+    /// Connections open (idle plus in use).
+    pub open: u32,
+    /// Open connections waiting in the pool.
+    pub idle: u32,
+    /// Open connections checked out.
+    pub in_use: u32,
+    /// Configured maximum.
+    pub max: u32,
+}
+
+/// Usage of both database pools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// The single-connection writer pool.
+    pub writer: PoolUsage,
+    /// The read pool.
+    pub reader: PoolUsage,
+}
+
 /// File and engine statistics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DatabaseInfo {
@@ -323,6 +345,24 @@ impl Database {
         Ok(())
     }
 
+    /// Connections of the writer and reader pools right now.
+    pub fn pool_stats(&self) -> PoolStats {
+        let one = |p: &SqlitePool| {
+            let open = p.size();
+            let idle = u32::try_from(p.num_idle()).unwrap_or(u32::MAX).min(open);
+            PoolUsage {
+                open,
+                idle,
+                in_use: open - idle,
+                max: p.options().get_max_connections(),
+            }
+        };
+        PoolStats {
+            writer: one(&self.inner.writer),
+            reader: one(&self.inner.reader),
+        }
+    }
+
     /// File sizes and engine statistics.
     pub async fn info(&self) -> Result<DatabaseInfo, DbError> {
         let r = &self.inner.reader;
@@ -432,6 +472,29 @@ impl Database {
         if busy != 0 {
             tracing::warn!("wal checkpoint could not complete: readers still active");
         }
+        Ok(())
+    }
+
+    /// Writes a consistent, self-contained copy of the database to `target`
+    /// (`VACUUM INTO`, FB-83): one transaction snapshot of the committed state,
+    /// taken while the server keeps serving (readers are never blocked; in WAL
+    /// mode the single writer is only held for its own statement). The target
+    /// must not exist. The copy has no WAL and needs no recovery.
+    ///
+    /// Works on a read-only handle too, so `forgebase backup` can snapshot a
+    /// database a running server owns.
+    pub async fn snapshot_to(&self, target: &Path) -> Result<(), DbError> {
+        if target.exists() {
+            return Err(DbError::Io {
+                path: target.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::AlreadyExists, "snapshot target exists"),
+            });
+        }
+        sqlx::query("VACUUM INTO ?1")
+            .bind(target.to_string_lossy().into_owned())
+            .execute(&self.inner.writer)
+            .await
+            .map_err(|e| self.classify(e))?;
         Ok(())
     }
 
@@ -934,6 +997,35 @@ mod tests {
                 || err.to_string().contains("query_only"),
             "{err}"
         );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_to_is_consistent_online_and_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = fresh(tmp.path()).await;
+        db.meta_set("k", "v1").await.unwrap();
+        let snap = tmp.path().join("snap.db");
+        db.snapshot_to(&snap).await.unwrap();
+        assert!(db.snapshot_to(&snap).await.is_err(), "existing target is refused");
+        db.meta_set("k", "v2").await.unwrap();
+
+        // The copy is self-contained and shows the state at snapshot time.
+        let copy = Database::open(opts(&snap).read_only()).await.unwrap();
+        assert_eq!(copy.meta_get("k").await.unwrap().as_deref(), Some("v1"));
+        assert!(copy.integrity_check().await.unwrap().is_empty());
+        copy.close().await;
+
+        // A read-only handle on the live file can snapshot it as well.
+        let ro = Database::open(opts(&tmp.path().join("forgebase.db")).read_only())
+            .await
+            .unwrap();
+        let snap2 = tmp.path().join("snap2.db");
+        ro.snapshot_to(&snap2).await.unwrap();
+        ro.close().await;
+        let copy2 = Database::open(opts(&snap2).read_only()).await.unwrap();
+        assert_eq!(copy2.meta_get("k").await.unwrap().as_deref(), Some("v2"));
+        copy2.close().await;
         db.close().await;
     }
 

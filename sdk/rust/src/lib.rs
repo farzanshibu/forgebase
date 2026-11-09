@@ -2,7 +2,7 @@
 //!
 //! An async client for [ForgeBase](https://github.com/forgebase/forgebase) built on `reqwest` and
 //! `rustls` (no OpenSSL). It covers auth, collections and records, realtime subscriptions
-//! (WebSocket with SSE fallback), object storage, key-value, server functions, jobs and entitlements.
+//! (WebSocket with SSE fallback), object storage, key-value, server functions, jobs, entitlements and store billing receipts.
 //!
 //! ```no_run
 //! use forgebase_sdk::{ForgeBase, SignInOptions};
@@ -27,6 +27,7 @@
 //! `scripts/generate_models.py`); the request/response ergonomics are hand-written.
 
 pub mod auth;
+pub mod billing;
 pub mod client;
 pub mod entitlements;
 pub mod error;
@@ -35,11 +36,15 @@ pub mod generated;
 mod http;
 pub mod jobs;
 pub mod kv;
+pub mod queues;
 pub mod realtime;
 pub mod records;
 pub mod storage;
 
 pub use auth::{AuthApi, FileStore, MemoryStore, MfaChallenge, Session, SessionStore, SignInOptions, SignInResult};
+pub use billing::{
+    BillingApi, BillingStoreApi, HostedCheckout, StoreCheckout, StoreProvider, StorePurchase, StoreReceipt,
+};
 pub use client::{ClientBuilder, ForgeBase};
 pub use entitlements::{EntitlementsApi, HasQuery, MeteredRequest, QuotaRequest};
 pub use error::{ApiError, Error, ErrorKind, Result};
@@ -47,6 +52,10 @@ pub use functions::FunctionsApi;
 pub use http::RetryPolicy;
 pub use jobs::{JobWatch, JobsApi, ListJobs};
 pub use kv::{Kv, KvValue, SetOptions};
+pub use queues::{
+    AckResult, MessagePage, NewMessage, NewSubscription, NewTopic, Published, PullOptions, QueueMessage, QueueSnapshot,
+    QueueStream, QueueSubscription, QueuesApi, ReceivedMessage, SeekResult, SeekTo, StreamOptions, Topic,
+};
 pub use realtime::{
     ChannelMessage, PresenceEvent, PresenceMember, Realtime, RealtimeConfig, RealtimeEvent, RealtimeTransport,
     RecordEvent, ResetEvent, SubscribeOptions, Subscription,

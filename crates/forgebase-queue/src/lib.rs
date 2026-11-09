@@ -41,4 +41,5 @@ mod service;
 pub use error::QueueError;
 pub use http::{StreamClientMessage, StreamServerMessage, api, extension, openapi, router};
 pub use model::*;
+pub use ops::QueueBacklog;
 pub use service::QueueService;

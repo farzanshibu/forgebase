@@ -36,6 +36,7 @@ forgebase-functions = { path = "crates/forgebase-functions" }
 forgebase-billing = { path = "crates/forgebase-billing" }
 forgebase-customize = { path = "crates/forgebase-customize" }
 forgebase-queue = { path = "crates/forgebase-queue" }
+forgebase-backup = { path = "crates/forgebase-backup" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
@@ -53,6 +54,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 http-body-util = "0.1.5"
 metrics = "0.24.6"
+memory-stats = "1.2.0"
+cpu-time = "1.0.0"
 redis = { version = "=0.32.7", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }

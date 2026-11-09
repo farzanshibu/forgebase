@@ -11,6 +11,7 @@ import DatabasePage from "./pages/database/DatabasePage";
 import IdentityPage from "./pages/identity/IdentityPage";
 import FunctionsPage from "./pages/functions/FunctionsPage";
 import JobsPage from "./pages/jobs/JobsPage";
+import QueuesPage from "./pages/queues/QueuesPage";
 import RedisPage from "./pages/redis/RedisPage";
 import StoragePage from "./pages/storage/StoragePage";
 import GraphPage from "./pages/graph/GraphPage";
@@ -56,6 +57,8 @@ function Studios() {
             <Route key={s.path} path="functions/*" element={<FunctionsPage />} />
           ) : s.path === "jobs" ? (
             <Route key={s.path} path="jobs/*" element={<JobsPage />} />
+          ) : s.path === "queues" ? (
+            <Route key={s.path} path="queues/*" element={<QueuesPage />} />
           ) : s.path === "billing" ? (
             <Route key={s.path} path="billing/*" element={<BillingPage />} />
           ) : s.path === "redis" ? (

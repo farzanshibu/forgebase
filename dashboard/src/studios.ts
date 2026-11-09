@@ -84,7 +84,14 @@ export const STUDIOS: Studio[] = [
     label: "Jobs",
     summary: "Queues, jobs, schedules",
     phase: null,
-    features: ["Queue statistics", "Job list with status filter and job detail", "Retry and cancel", "Schedules"],
+    features: ["Queue statistics, pause and resume", "Job list with status filter and job detail", "Live progress, checkpoints, attempts and results", "Workflows with a step graph, retry and cancel", "Schedules"],
+  },
+  {
+    path: "queues",
+    label: "Queues Studio",
+    summary: "Topics, subscriptions, Pub/Sub",
+    phase: null,
+    features: ["Topics with retention, schema and message browser", "Subscriptions with backlog, in-flight and dead-letter metrics", "Replay by time or snapshot", "Live Pub/Sub inspector with ack and nack"],
   },
   {
     path: "billing",

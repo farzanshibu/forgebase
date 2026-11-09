@@ -6,19 +6,29 @@
 //! forgebase migrate        apply pending system migrations (--status to list)
 //! forgebase status         show project, database and server state
 //! forgebase doctor         run diagnostics; exit code 1 if any check fails
+//! forgebase backup         online backup or snapshot (also: list, verify, prune, delete)
+//! forgebase restore <SRC>  verified restore into a stopped data directory
+//! forgebase export <...>   export collections, records or the configuration
+//! forgebase import <...>   import collections, records or a configuration file
 //! forgebase admin create   create an administrator (also reset-password, list)
 //! forgebase version        print version information
 //! forgebase functions deploy <NAME> <FILE.wasm>   deploy a function version (also: logs <NAME> [--follow])
+//! forgebase queues publish|pull|tail   publish to a topic, pull from a subscription, follow a topic
+//! forgebase jobs watch <ID>            follow a long-running job's progress until it finishes
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
 
 mod admin;
 mod commands;
+mod dataops;
 mod doctor;
 mod dotenv;
 mod functions;
 mod probe;
+mod queues;
+#[cfg(test)]
+mod testserver;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -129,11 +139,29 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Check database integrity, disk space, permissions, migrations and port.
+    /// Check configuration, permissions, disk, database integrity, migrations,
+    /// indexes, storage blobs, master key, snapshots and port.
     Doctor {
         /// Print JSON.
         #[arg(long)]
         json: bool,
+        /// Also verify the newest snapshot's files and database.
+        #[arg(long)]
+        deep: bool,
+    },
+    /// Back up the data directory online (a snapshot, or a directory you name).
+    Backup(Box<dataops::BackupCli>),
+    /// Restore a verified backup or snapshot into a stopped data directory.
+    Restore(Box<dataops::RestoreCli>),
+    /// Export collections, records or the configuration.
+    Export {
+        #[command(subcommand)]
+        command: dataops::ExportCommand,
+    },
+    /// Import collections, records or a configuration file.
+    Import {
+        #[command(subcommand)]
+        command: dataops::ImportCommand,
     },
     /// Print version information.
     Version {
@@ -148,6 +176,10 @@ enum Command {
     },
     /// Deploy WebAssembly functions and read their logs on a running server.
     Functions(Box<functions::FunctionsCli>),
+    /// Publish to durable topics, pull from subscriptions and follow a topic on a running server.
+    Queues(Box<queues::QueuesCli>),
+    /// Follow long-running jobs on a running server.
+    Jobs(Box<queues::JobsCli>),
 }
 
 fn main() -> ExitCode {
@@ -180,9 +212,15 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Serve => commands::serve(g).await,
         Command::Migrate { status } => commands::migrate(g, status).await,
         Command::Status { json } => commands::status(g, json).await,
-        Command::Doctor { json } => doctor::run(g, json).await,
+        Command::Doctor { json, deep } => doctor::run(g, json, deep).await,
+        Command::Backup(b) => dataops::run_backup(g, *b).await,
+        Command::Restore(r) => dataops::run_restore(g, *r).await,
+        Command::Export { command } => dataops::run_export(g, command).await,
+        Command::Import { command } => dataops::run_import(g, command).await,
         Command::Version { json } => commands::version(json).await,
         Command::Admin { command } => admin::run(g, command).await,
         Command::Functions(f) => functions::run(g, f.server, f.command).await,
+        Command::Queues(q) => queues::run_queues(g, q.server, q.command).await,
+        Command::Jobs(j) => queues::run_jobs(g, j.server, j.command).await,
     }
 }

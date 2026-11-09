@@ -6,12 +6,14 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::auth::{AuthApi, AuthState, MemoryStore, SessionStore};
+use crate::billing::BillingApi;
 use crate::entitlements::EntitlementsApi;
 use crate::error::{Error, Result};
 use crate::functions::FunctionsApi;
 use crate::http::{Req, RetryPolicy, Transport, seg};
 use crate::jobs::JobsApi;
 use crate::kv::Kv;
+use crate::queues::QueuesApi;
 use crate::realtime::{Realtime, RealtimeConfig};
 use crate::records::{CollectionsApi, Records};
 use crate::storage::StorageApi;
@@ -250,6 +252,18 @@ impl ForgeBase {
             t: self.t.clone(),
             realtime: self.realtime.clone(),
         }
+    }
+
+    /// Durable topics and queues: publish, pull, ack, replay and streaming pull.
+    #[must_use]
+    pub fn queues(&self) -> QueuesApi {
+        QueuesApi { t: self.t.clone() }
+    }
+
+    /// Billing helpers (store receipts).
+    #[must_use]
+    pub fn billing(&self) -> BillingApi {
+        BillingApi { t: self.t.clone() }
     }
 
     /// Entitlements and quotas.
