@@ -4369,6 +4369,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/jobs/{id}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The attempts of a job with their timings. */
+        get: operations["jobs_list_attempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs/{id}/cancel": {
         parameters: {
             query?: never;
@@ -4380,6 +4397,47 @@ export interface paths {
         put?: never;
         /** Cancels a job: queued jobs at once, running jobs cooperatively. */
         post: operations["cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{id}/checkpoint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The last checkpoint of a job. */
+        get: operations["jobs_get_checkpoint"];
+        put?: never;
+        /**
+         * Saves a checkpoint of a running job; the next attempt resumes from it.
+         *     Counts as a heartbeat.
+         */
+        post: operations["jobs_save_checkpoint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{id}/children": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enqueues child jobs of a running job (they join its workflow and are
+         *     cancelled with it).
+         */
+        post: operations["jobs_spawn_children"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4454,6 +4512,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/jobs/{id}/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reports progress of a running job (stored, streamed on the realtime
+         *     channel `jobs:<id>`); counts as a heartbeat.
+         */
+        post: operations["jobs_report_progress"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{id}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The result of a succeeded job, also when it is kept in object storage. */
+        get: operations["jobs_get_result"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs/{id}/retry": {
         parameters: {
             query?: never;
@@ -4486,6 +4581,79 @@ export interface paths {
          *     passes or the job is handed to another worker.
          */
         post: operations["claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/queues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lists named queues: settings and counts. */
+        get: operations["jobs_list_queues"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/queues/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One queue: settings and counts. */
+        get: operations["jobs_get_queue"];
+        /**
+         * Saves a queue's settings: concurrency limit, rate limit per second or
+         *     minute, pause, default priority and timeout. Limits left out are removed.
+         */
+        put: operations["jobs_put_queue"];
+        post?: never;
+        /** Removes a queue's settings (its jobs stay). */
+        delete: operations["jobs_delete_queue"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/queues/{name}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pauses a queue: no worker gets its jobs until it is resumed. */
+        post: operations["jobs_pause_queue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/queues/{name}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resumes a paused queue. */
+        post: operations["jobs_resume_queue"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4558,6 +4726,61 @@ export interface paths {
         put?: never;
         /** Registers (or updates) a worker. */
         post: operations["register_worker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/workflows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lists workflows, newest first. */
+        get: operations["jobs_list_workflows"];
+        put?: never;
+        /**
+         * Creates a workflow: chains, fan-out and fan-in of steps (a step waits for
+         *     every step in its `depends_on`), with `on_failure` `fail` or `compensate`.
+         */
+        post: operations["jobs_create_workflow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/workflows/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A workflow with its jobs (the graph), their state and timings. */
+        get: operations["jobs_get_workflow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/workflows/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancels a running workflow (no compensations run). */
+        post: operations["jobs_cancel_workflow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7046,6 +7269,39 @@ export interface components {
             /** @description Collection to analyze; every collection when absent. */
             collection?: string | null;
         };
+        /** @description One attempt of a job. */
+        Attempt: {
+            /**
+             * Format: int64
+             * @description Attempt number (1 for the first; a graceful release does not count).
+             */
+            attempt: number;
+            /**
+             * Format: int64
+             * @description Run time in milliseconds (so far, while running).
+             */
+            duration_ms: number;
+            /** @description Error of a failed attempt. */
+            error?: string | null;
+            /** @description End time (RFC 3339); `null` while running. */
+            finished_at?: string | null;
+            /** @description The attempt started with a checkpoint of an earlier one. */
+            from_checkpoint: boolean;
+            /**
+             * @description `succeeded`, `failed`, `retry`, `timed_out`, `lease_expired`,
+             *     `released` or `cancelled`; `null` while running.
+             */
+            outcome?: string | null;
+            /** @description Claim time (RFC 3339). */
+            started_at: string;
+            /** @description Worker that ran it. */
+            worker_id?: string | null;
+        };
+        /** @description Attempts of a job. */
+        AttemptList: {
+            /** @description Oldest first. */
+            items: components["schemas"]["Attempt"][];
+        };
         /** @description Consistency of one account: the balance, the ledger and the lots agree. */
         AuditReport: {
             /**
@@ -7666,12 +7922,44 @@ export interface components {
             replayed: boolean;
             subscription?: components["schemas"]["BillingSubscription"] | null;
         };
+        /** @description The checkpoint of a job. */
+        Checkpoint: {
+            /** @description The saved state (`null` when none was saved). */
+            checkpoint?: Record<string, never> | null;
+            /** @description Job id. */
+            job_id: string;
+            /** @description When it was saved (RFC 3339). */
+            saved_at?: string | null;
+        };
+        /** @description Body of a checkpoint. */
+        CheckpointBody: {
+            /** @description State to resume from (JSON, at most 256 KiB). */
+            checkpoint: Record<string, never>;
+            /** @description The lease from the claim. */
+            lease_id: string;
+        };
+        /** @description Child jobs. */
+        ChildList: {
+            /** @description In request order. */
+            items: components["schemas"]["Job"][];
+        };
+        /** @description Body of a child-job request. */
+        ChildrenBody: {
+            /** @description The children (1 to 100). */
+            jobs: components["schemas"]["NewJob"][];
+            /** @description The lease of the running parent. */
+            lease_id: string;
+        };
         /** @description A claimed job with the lease that fences it. */
         ClaimedJob: {
+            /** @description The last checkpoint of an earlier attempt: resume from it. */
+            checkpoint?: Record<string, never> | null;
             /** @description The job (already `running`). */
             job: components["schemas"]["Job"];
             /** @description Secret token: `heartbeat`, `complete` and `fail` must present it. */
             lease_id: string;
+            /** @description The parents (dependencies) with their results. */
+            parents: components["schemas"]["ParentResult"][];
         };
         /** @description A claim request. */
         ClaimRequest: {
@@ -7754,6 +8042,15 @@ export interface components {
              * @description Units used (default: all reserved units; the rest is released).
              */
             units?: number | null;
+        };
+        /** @description The job that undoes a step (saga compensation). */
+        Compensation: {
+            /** @description Handler name. */
+            kind: string;
+            /** @description Handler input (default `null`). */
+            payload?: Record<string, never>;
+            /** @description Queue (default: the step's queue). */
+            queue?: string | null;
         };
         /** @description Body of a completion. */
         CompleteBody: {
@@ -8604,6 +8901,11 @@ export interface components {
             /** @description `false` sends the job straight to the dead-letter queue (default `true`). */
             retryable?: boolean;
         };
+        /**
+         * @description What a failed workflow step does to its workflow.
+         * @enum {string}
+         */
+        FailurePolicy: "fail" | "compensate";
         /** @description A feature of the catalog. */
         Feature: {
             /** @description Created. */
@@ -8846,6 +9148,8 @@ export interface components {
         Heartbeat: {
             /** @description The job was cancelled: stop and call `fail`. */
             cancel_requested: boolean;
+            /** @description When the attempt times out (RFC 3339), if the job has a timeout. */
+            deadline_at?: string | null;
             /** @description New lease expiry (RFC 3339). */
             visibility_until: string;
         };
@@ -10426,6 +10730,11 @@ export interface components {
             /** @description Entries. */
             items: components["schemas"]["Bucket"][];
         };
+        /** @description Object versions. */
+        ItemsObjects: {
+            /** @description Entries, newest first. */
+            items: components["schemas"]["ObjectInfo"][];
+        };
         ItemsResponse: {
             items: Record<string, never>[];
         };
@@ -10448,12 +10757,22 @@ export interface components {
             backoff_max_ms: number;
             /** @description Cancellation was requested while running; workers should stop and `fail`. */
             cancel_requested: boolean;
+            /** @description When the checkpoint was saved (RFC 3339). */
+            checkpoint_at?: string | null;
+            /** @description The step this job compensates (saga compensation). */
+            compensates?: string | null;
             /** @description Creation time (RFC 3339). */
             created_at: string;
             /** @description Who enqueued it. */
             created_by: string;
+            /** @description While running with a timeout: when the attempt times out (RFC 3339). */
+            deadline_at?: string | null;
             /** @description When it reached a terminal state (RFC 3339). */
             finished_at?: string | null;
+            /** @description A checkpoint is saved (`GET /api/v1/jobs/{id}/checkpoint`). */
+            has_checkpoint: boolean;
+            /** @description Last heartbeat of the current attempt (RFC 3339). */
+            heartbeat_at?: string | null;
             /** @description Job id. */
             id: string;
             /** @description Deduplication key, unique per queue. */
@@ -10467,6 +10786,8 @@ export interface components {
              * @description Attempts before the job is dead-lettered.
              */
             max_attempts: number;
+            /** @description The job that spawned this one (child jobs). */
+            parent_id?: string | null;
             /** @description Handler input. */
             payload: Record<string, never>;
             /**
@@ -10474,10 +10795,21 @@ export interface components {
              * @description Higher runs first.
              */
             priority: number;
+            progress?: components["schemas"]["Progress"] | null;
             /** @description Queue name. */
             queue: string;
             /** @description Handler output of a succeeded job. */
             result?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description Size of the stored result in bytes.
+             */
+            result_size?: number | null;
+            /**
+             * @description The result is kept in object storage (`GET /api/v1/jobs/{id}/result`);
+             *     `result` is `null` then.
+             */
+            result_stored: boolean;
             /** @description Earliest start (RFC 3339); moves forward while waiting to retry. */
             run_at: string;
             /** @description Schedule that enqueued the job. */
@@ -10486,6 +10818,13 @@ export interface components {
             started_at?: string | null;
             /** @description State. */
             status: components["schemas"]["JobStatus"];
+            /** @description Step name inside the workflow. */
+            step?: string | null;
+            /**
+             * Format: int64
+             * @description Longest run of one attempt in ms (`null`: no limit).
+             */
+            timeout_ms?: number | null;
             /** @description Last change (RFC 3339). */
             updated_at: string;
             /**
@@ -10495,8 +10834,16 @@ export interface components {
             visibility_timeout_ms: number;
             /** @description While running: when the lease expires without a heartbeat (RFC 3339). */
             visibility_until?: string | null;
+            /**
+             * Format: int64
+             * @description Parents (dependencies) that have not succeeded yet; the job is not
+             *     claimed before this is 0.
+             */
+            waiting_for: number;
             /** @description Worker that holds (or held last) the job. */
             worker_id?: string | null;
+            /** @description Workflow the job belongs to. */
+            workflow_id?: string | null;
         };
         /** @description One entry of a job's history. */
         JobEvent: {
@@ -10532,6 +10879,20 @@ export interface components {
              */
             total: number;
         };
+        /** @description The result of a succeeded job. */
+        JobResult: {
+            /** @description Job id. */
+            job_id: string;
+            /** @description The result (`null` when the handler returned none). */
+            result?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description Size in bytes when stored.
+             */
+            size?: number | null;
+            /** @description It was kept in object storage. */
+            stored: boolean;
+        };
         /** @description Queue statistics. */
         JobStats: {
             /** @description Counts per queue. */
@@ -10546,6 +10907,47 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "queued" | "running" | "succeeded" | "dead" | "cancelled";
+        /**
+         * @description A live update of a job, published on the realtime channel `jobs:<job id>`
+         *     (and on `jobs:<workflow id>` for workflow jobs).
+         */
+        JobUpdate: {
+            /**
+             * Format: int64
+             * @description Claims so far.
+             */
+            attempts: number;
+            /** @description Cancellation was requested. */
+            cancel_requested: boolean;
+            /** @description `progress` (a progress report or checkpoint) or `status` (a state change). */
+            event: string;
+            /** @description End time (RFC 3339). */
+            finished_at?: string | null;
+            /** @description A checkpoint is saved. */
+            has_checkpoint: boolean;
+            /** @description Job id. */
+            job_id: string;
+            /** @description Handler name. */
+            kind: string;
+            /** @description Last failure (first 500 characters). */
+            last_error?: string | null;
+            progress?: components["schemas"]["Progress"] | null;
+            /** @description Queue. */
+            queue: string;
+            /** @description State. */
+            status: components["schemas"]["JobStatus"];
+            /** @description Step name. */
+            step?: string | null;
+            /** @description Last change (RFC 3339). */
+            updated_at: string;
+            /**
+             * Format: int64
+             * @description Parents not finished yet.
+             */
+            waiting_for: number;
+            /** @description Workflow. */
+            workflow_id?: string | null;
+        };
         /** @description Answer of `GET .../keys/{key}`. */
         KeyValue: {
             /** @description The key. */
@@ -10991,6 +11393,8 @@ export interface components {
              * @description Earliest start as a delay from now in milliseconds.
              */
             delay_ms?: number | null;
+            /** @description Ids of jobs that must succeed first; the job waits for all of them. */
+            depends_on?: string[];
             /** @description Enqueueing the same key twice in a queue returns the first job. */
             idempotency_key?: string | null;
             /** @description Handler name. */
@@ -11011,6 +11415,12 @@ export interface components {
             queue?: string | null;
             /** @description Earliest start, RFC 3339. Mutually exclusive with `delay_ms`. */
             run_at?: string | null;
+            /**
+             * Format: int64
+             * @description Longest run of one attempt in ms (1 s to 30 days; default: the queue's,
+             *     else none). A timed-out attempt is retried like a failure.
+             */
+            timeout_ms?: number | null;
             /**
              * Format: int64
              * @description Time in ms a worker may hold the job without a heartbeat (default 60000).
@@ -11066,6 +11476,50 @@ export interface components {
              */
             visibility_timeout_ms?: number | null;
         };
+        /** @description One step of a workflow to create. */
+        NewStep: {
+            /**
+             * Format: int64
+             * @description First retry delay in ms.
+             */
+            backoff_base_ms?: number | null;
+            /**
+             * Format: int64
+             * @description Cap of the retry delay in ms.
+             */
+            backoff_max_ms?: number | null;
+            compensate?: components["schemas"]["Compensation"] | null;
+            /** @description Names of steps that must succeed first (fan-in: all of them). */
+            depends_on?: string[];
+            /** @description Handler name. */
+            kind: string;
+            /**
+             * Format: int64
+             * @description Attempts before the step is dead-lettered (default 5).
+             */
+            max_attempts?: number | null;
+            /** @description Unique name inside the workflow. */
+            name: string;
+            /** @description Handler input (default `null`). */
+            payload?: Record<string, never>;
+            /**
+             * Format: int64
+             * @description Higher runs first.
+             */
+            priority?: number | null;
+            /** @description Queue (default `default`). */
+            queue?: string | null;
+            /**
+             * Format: int64
+             * @description Longest run of one attempt, in ms (1 s to 30 days).
+             */
+            timeout_ms?: number | null;
+            /**
+             * Format: int64
+             * @description Lease length without a heartbeat, in ms.
+             */
+            visibility_timeout_ms?: number | null;
+        };
         /** @description A worker to register. */
         NewWorker: {
             /**
@@ -11081,6 +11535,18 @@ export interface components {
             name?: string | null;
             /** @description Queues it works (empty: all). */
             queues?: string[];
+        };
+        /**
+         * @description A workflow to create: a graph of steps. A chain is steps that each depend
+         *     on the one before; fan-out is several steps depending on one; fan-in is
+         *     one step depending on several (it waits for all).
+         */
+        NewWorkflow: {
+            /** @description Display name. */
+            name: string;
+            on_failure?: components["schemas"]["FailurePolicy"] | null;
+            /** @description The steps (1 to 500). */
+            steps: components["schemas"]["NewStep"][];
         };
         /** @description A graph node. */
         Node: {
@@ -11319,6 +11785,22 @@ export interface components {
             quantity?: number;
             /** @description Subject. */
             subject: string;
+        };
+        /** @description A parent (dependency) of a claimed job, with its result. */
+        ParentResult: {
+            /** @description Parent job id. */
+            id: string;
+            /**
+             * @description Its result when stored inline; `null` when it lives in object storage
+             *     (`result_stored`) — fetch it with `GET /api/v1/jobs/{id}/result`.
+             */
+            result?: Record<string, never> | null;
+            /** @description The result is in object storage. */
+            result_stored: boolean;
+            /** @description Its state (`succeeded` for dependencies; a compensated step may differ). */
+            status: components["schemas"]["JobStatus"];
+            /** @description Step name inside its workflow. */
+            step?: string | null;
         };
         /** @description One received part. */
         PartInfo: {
@@ -11746,18 +12228,45 @@ export interface components {
          * @enum {string}
          */
         ProductKind: "plan" | "addon" | "usage_pack" | "credits" | "service";
-        /** @description Progress of a rebuild. */
+        /** @description The latest progress report of a job. */
         Progress: {
+            /** @description Human-readable detail. */
+            message?: string | null;
             /**
-             * Format: int64
-             * @description Vectors added so far.
+             * Format: double
+             * @description 0 to 100.
              */
-            done: number;
+            percent?: number | null;
+            /** @description Short name of the current phase, e.g. `download`. */
+            stage?: string | null;
+            /** @description When it was reported (RFC 3339). */
+            updated_at: string;
+        };
+        /** @description Body of a progress report. */
+        ProgressBody: {
+            /** @description The lease from the claim. */
+            lease_id: string;
+            /** @description Detail (at most 2000 characters). */
+            message?: string | null;
             /**
-             * Format: int64
-             * @description Vectors to add.
+             * Format: double
+             * @description 0 to 100.
              */
-            total: number;
+            percent?: number | null;
+            /** @description Phase name (at most 128 characters). */
+            stage?: string | null;
+        };
+        /** @description A progress report. Fields left out keep their previous value. */
+        ProgressReport: {
+            /** @description Detail (at most 2000 characters). */
+            message?: string | null;
+            /**
+             * Format: double
+             * @description 0 to 100.
+             */
+            percent?: number | null;
+            /** @description Phase name (at most 128 characters). */
+            stage?: string | null;
         };
         /**
          * @description How to bill a plan change.
@@ -11899,6 +12408,105 @@ export interface components {
             sql: string;
             steps: components["schemas"]["PlanStepSchema"][];
         };
+        /** @description A named queue: its settings and current counts. */
+        QueueInfo: {
+            /**
+             * Format: int64
+             * @description Cancelled (until purged).
+             */
+            cancelled: number;
+            /**
+             * Format: int64
+             * @description Most jobs running at once over every worker.
+             */
+            concurrency?: number | null;
+            /** @description Settings were saved for it (otherwise it only has jobs). */
+            configured: boolean;
+            /** @description Created (RFC 3339) when configured. */
+            created_at?: string | null;
+            /**
+             * Format: int64
+             * @description In the dead-letter queue.
+             */
+            dead: number;
+            /**
+             * Format: int64
+             * @description Priority of jobs enqueued without one.
+             */
+            default_priority?: number | null;
+            /**
+             * Format: int64
+             * @description Per-attempt timeout of jobs enqueued without one, in ms.
+             */
+            default_timeout_ms?: number | null;
+            /** @description Queue name. */
+            name: string;
+            /** @description Hands out no jobs while paused. */
+            paused: boolean;
+            /**
+             * Format: int64
+             * @description Waiting jobs that may run (due or delayed).
+             */
+            queued: number;
+            /**
+             * Format: int64
+             * @description Most jobs started per `rate_period`.
+             */
+            rate_limit?: number | null;
+            /** @description `second` or `minute`. */
+            rate_period: components["schemas"]["RatePeriod"];
+            /**
+             * Format: int64
+             * @description Leased by a worker.
+             */
+            running: number;
+            /**
+             * Format: int64
+             * @description Finished successfully (until purged).
+             */
+            succeeded: number;
+            /** @description Last settings change (RFC 3339) when configured. */
+            updated_at?: string | null;
+            /**
+             * Format: int64
+             * @description Waiting for parents (dependencies) to succeed.
+             */
+            waiting: number;
+        };
+        /** @description Named queues. */
+        QueueList: {
+            /** @description By name. */
+            items: components["schemas"]["QueueInfo"][];
+        };
+        /**
+         * @description Settings of a named queue (`PUT /api/v1/jobs/queues/{name}`). Limits left
+         *     out are removed; `paused` left out keeps its current value.
+         */
+        QueueSettings: {
+            /**
+             * Format: int64
+             * @description Most jobs of this queue running at once, over every worker (none: no limit).
+             */
+            concurrency?: number | null;
+            /**
+             * Format: int64
+             * @description Priority of jobs enqueued without one.
+             */
+            default_priority?: number | null;
+            /**
+             * Format: int64
+             * @description Per-attempt timeout of jobs enqueued without one, in ms.
+             */
+            default_timeout_ms?: number | null;
+            /** @description Paused queues hand out no jobs (running jobs continue). */
+            paused?: boolean | null;
+            /**
+             * Format: int64
+             * @description Most jobs started per `rate_period` (none: no limit).
+             */
+            rate_limit?: number | null;
+            rate_period?: components["schemas"]["RatePeriod"] | null;
+        };
         /** @description Counts for one queue. */
         QueueStats: {
             /**
@@ -12011,6 +12619,11 @@ export interface components {
              */
             per_units?: number | null;
         };
+        /**
+         * @description Window of a queue rate limit.
+         * @enum {string}
+         */
+        RatePeriod: "second" | "minute";
         /** @description Counters of one instance (also exported as Prometheus metrics). */
         RealtimeStats: {
             /**
@@ -13722,6 +14335,67 @@ export interface components {
         WorkerList: {
             /** @description Most recently seen first. */
             items: components["schemas"]["Worker"][];
+        };
+        /** @description A workflow. */
+        Workflow: {
+            /** @description Creation time (RFC 3339). */
+            created_at: string;
+            /** @description Who created it. */
+            created_by: string;
+            /** @description Why it failed. */
+            error?: string | null;
+            /** @description The job whose failure failed the workflow. */
+            failed_job_id?: string | null;
+            /** @description End time (RFC 3339). */
+            finished_at?: string | null;
+            /** @description Workflow id. */
+            id: string;
+            /** @description Display name. */
+            name: string;
+            /** @description What a failed step does. */
+            on_failure: components["schemas"]["FailurePolicy"];
+            /** @description State. */
+            status: components["schemas"]["WorkflowStatus"];
+            /** @description Last change (RFC 3339). */
+            updated_at: string;
+        };
+        /** @description A workflow with its jobs (the graph) and their timings. */
+        WorkflowDetail: components["schemas"]["Workflow"] & {
+            /** @description Its jobs in creation order: steps, child jobs and compensations. */
+            steps: components["schemas"]["WorkflowStep"][];
+        };
+        /** @description A page of workflows, newest first. */
+        WorkflowPage: {
+            /** @description The workflows. */
+            items: components["schemas"]["Workflow"][];
+            /**
+             * Format: int64
+             * @description All workflows matching the filter.
+             */
+            total: number;
+        };
+        /**
+         * @description State of a workflow.
+         * @enum {string}
+         */
+        WorkflowStatus: "running" | "succeeded" | "failed" | "compensating" | "compensated" | "cancelled";
+        /** @description A job of a workflow and the jobs it waits for. */
+        WorkflowStep: {
+            /** @description Ids of the jobs it waits for. */
+            depends_on: string[];
+            /** @description The job. */
+            job: components["schemas"]["Job"];
+            /** @description Step name (child jobs spawned by a step have none unless given). */
+            name?: string | null;
+            /** @description `step` or `compensation`. */
+            role: string;
+        };
+        /** @description A live update of a workflow, published on `jobs:<workflow id>`. */
+        WorkflowUpdate: {
+            /** @description Always `workflow`. */
+            event: string;
+            /** @description The workflow. */
+            workflow: components["schemas"]["Workflow"];
         };
         /** @description Body of `POST .../zsets/{key}/add`. */
         ZAddBody: {
@@ -31340,10 +32014,14 @@ export interface operations {
                 limit?: number;
                 /** @description Rows to skip */
                 offset?: number;
+                /** @description Only children of this job */
+                parent_id?: string;
                 /** @description Only this queue */
                 queue?: string;
                 /** @description `queued`, `running`, `succeeded`, `dead` or `cancelled` */
                 status?: string;
+                /** @description Only jobs of this workflow */
+                workflow_id?: string;
             };
             header?: never;
             path?: never;
@@ -31572,6 +32250,65 @@ export interface operations {
             };
         };
     };
+    jobs_list_attempts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attempts, oldest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttemptList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     cancel: {
         parameters: {
             query?: never;
@@ -31630,6 +32367,205 @@ export interface operations {
                 };
             };
             /** @description Already finished (`job_finished`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    jobs_get_checkpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The checkpoint */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Checkpoint"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_save_checkpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckpointBody"];
+            };
+        };
+        responses: {
+            /** @description New lease expiry */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Heartbeat"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Lease lost (`lease_lost`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    jobs_spawn_children: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job id of the running parent */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChildrenBody"];
+            };
+        };
+        responses: {
+            /** @description Enqueued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChildList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Lease lost (`lease_lost`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -31907,6 +32843,142 @@ export interface operations {
             };
         };
     };
+    jobs_report_progress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProgressBody"];
+            };
+        };
+        responses: {
+            /** @description New lease expiry */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Heartbeat"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Lease lost (`lease_lost`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    jobs_get_result: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Job id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResult"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not succeeded (`job_not_succeeded`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     retry: {
         parameters: {
             query?: never;
@@ -32015,6 +33087,350 @@ export interface operations {
             };
             /** @description Not allowed */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_list_queues: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queues by name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_get_queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Queue name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueInfo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_put_queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Queue name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueueSettings"];
+            };
+        };
+        responses: {
+            /** @description The queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueInfo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_delete_queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Queue name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Settings removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_pause_queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Queue name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The paused queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueInfo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_resume_queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Queue name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueInfo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -32450,6 +33866,236 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    jobs_list_workflows: {
+        parameters: {
+            query?: {
+                /** @description Page size, default 50, at most 200 */
+                limit?: number;
+                /** @description Rows to skip */
+                offset?: number;
+                /** @description `running`, `succeeded`, `failed`, `compensating`, `compensated` or `cancelled` */
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of workflows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowPage"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_create_workflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewWorkflow"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_get_workflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workflow id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workflow */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    jobs_cancel_workflow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workflow id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cancelled workflow */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowDetail"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Already finished (`workflow_finished`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -38503,7 +40149,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ObjectInfo"];
+                    "application/json": components["schemas"]["ItemsObjects"];
                 };
             };
             /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
