@@ -42,6 +42,12 @@ pub enum JobError {
         /// Explanation.
         message: String,
     },
+    /// No such workflow.
+    #[error("workflow {0:?} not found")]
+    WorkflowNotFound(String),
+    /// The result store (object storage) failed.
+    #[error("job result store: {0}")]
+    Store(String),
     /// Stored data could not be decoded (corrupt row or bug).
     #[error("internal job error: {0}")]
     Internal(String),
@@ -73,6 +79,8 @@ impl ErrorCode for JobError {
             JobError::ScheduleNotFound(_) => "schedule_not_found",
             JobError::ScheduleExists(_) => "schedule_exists",
             JobError::LeaseLost(_) => "lease_lost",
+            JobError::WorkflowNotFound(_) => "workflow_not_found",
+            JobError::Store(_) => "result_store_error",
             JobError::Internal(_) => "internal_error",
         }
     }
@@ -82,9 +90,11 @@ impl ErrorCode for JobError {
             JobError::Access(e) => e.kind(),
             JobError::Db(e) => e.kind(),
             JobError::Invalid { .. } => ErrorKind::InvalidInput,
-            JobError::NotFound(_) | JobError::ScheduleNotFound(_) => ErrorKind::NotFound,
+            JobError::NotFound(_) | JobError::ScheduleNotFound(_) | JobError::WorkflowNotFound(_) => {
+                ErrorKind::NotFound
+            }
             JobError::ScheduleExists(_) | JobError::LeaseLost(_) | JobError::State { .. } => ErrorKind::Conflict,
-            JobError::Internal(_) => ErrorKind::Internal,
+            JobError::Store(_) | JobError::Internal(_) => ErrorKind::Internal,
         }
     }
 }

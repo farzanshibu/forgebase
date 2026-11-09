@@ -130,6 +130,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0020_billing.sql"),
     ),
     Migration::new(21, "queue", include_str!("../../../migrations/system/0021_queue.sql")),
+    Migration::new(
+        22,
+        "jobs_long_tasks",
+        include_str!("../../../migrations/system/0022_jobs_long_tasks.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
