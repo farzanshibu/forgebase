@@ -9,18 +9,14 @@ afterEach(() => {
 });
 
 describe("auth states", () => {
-  it("shows Sign-in required (never blank) when the API answers 401", async () => {
-    seeded({ requireAuth: true });
-    renderStudio("/database");
-    expect(await screen.findByText("Sign-in required")).toBeInTheDocument();
-    expect(screen.getByText(/request req-test/)).toBeInTheDocument();
-  });
-
-  it("shows sign-in required on the grid and the SQL editor too", async () => {
-    seeded({ requireAuth: true });
+  it("returns to sign-in with an expiry notice when the API answers 401 mid-session", async () => {
+    const mock = seeded({ requireAuth: true });
     renderStudio("/database/sql");
-    await userEvent.click(await screen.findByRole("button", { name: "Run" }));
-    expect((await screen.findAllByText("Sign-in required")).length).toBeGreaterThan(0);
+    const run = await screen.findByRole("button", { name: "Run" });
+    mock.cookieSession = false;
+    await userEvent.click(run);
+    expect(await screen.findByText("Your session expired. Sign in again.")).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Sign in" })).toBeInTheDocument();
   });
 });
 

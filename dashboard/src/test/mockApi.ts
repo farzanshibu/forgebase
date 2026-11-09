@@ -33,7 +33,42 @@ export function makeCollection(name: string, fields: { name: string; type: strin
   };
 }
 
+/** A request as seen by a custom route handler (`MockApi.on`). */
+export interface MockRequest {
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  query: URLSearchParams;
+  body: unknown;
+  headers: Record<string, string>;
+}
+export type MockReply = { status: number; body?: unknown };
+export type MockHandler = (req: MockRequest) => MockReply | Promise<MockReply>;
+
 export class MockApi {
+  /** Routes outside the OpenAPI document (`/api/auth/*`) and anything a test wants to stub. Matched before the OpenAPI routes. */
+  custom: { method: string; template: string; handler: MockHandler }[] = [];
+  /** Register `method template` (`{name}` segments are params), e.g. `mock.on("GET", "/api/auth/users/{collection}/{id}", ...)`. */
+  on(method: string, template: string, handler: MockHandler): this {
+    this.custom.push({ method: method.toUpperCase(), template, handler });
+    return this;
+  }
+  private matchCustom(method: string, pathname: string) {
+    const parts = pathname.split("/");
+    for (const c of this.custom) {
+      if (c.method !== method) continue;
+      const tp = c.template.split("/");
+      if (tp.length !== parts.length) continue;
+      const params: Record<string, string> = {};
+      const ok = tp.every((seg, i) => {
+        if (seg.startsWith("{")) { params[seg.slice(1, -1)] = decodeURIComponent(parts[i] ?? ""); return true; }
+        return seg === parts[i];
+      });
+      if (ok) return { c, params };
+    }
+    return undefined;
+  }
+
   collections: CollectionDef[];
   records: Record<string, RecordObject[]>;
   indexes: IndexInfo[] = [];
@@ -46,6 +81,8 @@ export class MockApi {
   /** Things that would make the real server or the OpenAPI document disagree with the dashboard. */
   problems: string[] = [];
   requireAuth: boolean;
+  /** A cookie session is active (set by `signedIn`): satisfies `requireAuth` like a real `fb_session` cookie. */
+  cookieSession = false;
   private seq = 100;
 
   constructor(opts: MockOptions = {}) {
@@ -69,6 +106,16 @@ export class MockApi {
     const headers = (init.headers ?? {}) as Record<string, string>;
     this.calls.push(`${method.toLowerCase()} ${u.pathname}`);
     this.headers.push(headers);
+    const custom = this.matchCustom(method, u.pathname);
+    if (custom) {
+      let cb: unknown;
+      if (typeof init.body === "string" && init.body) {
+        try { cb = JSON.parse(init.body); } catch { cb = init.body; }
+      }
+      (this.bodies[`${method.toLowerCase()} ${custom.c.template}`] ??= []).push(cb);
+      const reply = await custom.c.handler({ method, path: u.pathname, params: custom.params, query: u.searchParams, body: cb, headers });
+      return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status });
+    }
     const route = matchRoute(method, u.pathname);
     if (!route) {
       this.problems.push(`not in openapi.json: ${method} ${u.pathname}`);
@@ -80,7 +127,7 @@ export class MockApi {
     (this.bodies[key] ??= []).push(typeof init.body === "string" && reqBody === undefined ? init.body : reqBody);
 
     let out: { status: number; body?: unknown; schemaName?: string; text?: string };
-    if (this.requireAuth && !headers.Authorization) out = envelope(401, "unauthenticated", "authentication required");
+    if (this.requireAuth && !headers.Authorization && !this.cookieSession) out = envelope(401, "unauthenticated", "authentication required");
     else out = this.route(method, route.template, route.params, u.searchParams, reqBody, init.body, headers);
 
     if (out.status < 400) {
