@@ -21,8 +21,8 @@ use forgebase_query::{CompileOptions, Compiler, Expr, SqlBuilder};
 use forgebase_schema::{Collection, FieldKind, Storage};
 use serde_json::{Value as Json, json};
 
-use crate::records::{Record, row_to_record};
 use crate::access::{TENANT_COLUMN, reads_tenant_data};
+use crate::records::{Record, row_to_record};
 use crate::{AccessContext, Action, DataError, DataService};
 
 /// Kind of record change.
@@ -325,6 +325,11 @@ impl DataService {
                 return Ok(None);
             }
         }
-        Ok(Some(row_to_record(&coll, &row.columns, &row.values, &self.mask(ctx, &coll))))
+        Ok(Some(row_to_record(
+            &coll,
+            &row.columns,
+            &row.values,
+            &self.mask(ctx, &coll),
+        )))
     }
 }
