@@ -129,6 +129,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "billing",
         include_str!("../../../migrations/system/0020_billing.sql"),
     ),
+    Migration::new(
+        23,
+        "billing_stores",
+        include_str!("../../../migrations/system/0023_billing_stores.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

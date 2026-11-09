@@ -29,7 +29,21 @@ use serde_json::{Value as Json, json};
 use crate::error::{BillingError, Result};
 use crate::model::{BillingSettings, Customer, CustomerInput, Interval, ProviderAccount, ProviderInput};
 use crate::money::currency;
-use crate::provider::{ManualProvider, PaymentProvider, RazorpayProvider, StripeProvider};
+use crate::provider::app_store::AppStoreConfig;
+use crate::provider::google_play::GooglePlayConfig;
+use crate::provider::wechat_pay::WechatPayConfig;
+use crate::provider::{
+    AppStoreProvider, CreemProvider, GooglePlayProvider, ManualProvider, PaymentProvider, RazorpayProvider,
+    StoreProvider, StripeProvider, WechatPayProvider,
+};
+
+/// A driver built from a provider account.
+pub(crate) enum Driver {
+    /// Collects ForgeBase invoices (Stripe, Razorpay, WeChat Pay, manual).
+    Payment(Arc<dyn PaymentProvider>),
+    /// A merchant-of-record store (App Store, Google Play, Creem).
+    Store(Arc<dyn StoreProvider>),
+}
 
 /// Job kind of the periodic maintenance (usage, renewals, dunning).
 pub const MAINTENANCE_JOB: &str = "billing.maintenance";
@@ -64,6 +78,10 @@ pub(crate) struct Inner {
     pub providers: RwLock<HashMap<String, Arc<dyn PaymentProvider>>>,
     /// Drivers registered in code (FB-72 providers, tests).
     pub registered: RwLock<HashMap<String, Arc<dyn PaymentProvider>>>,
+    /// Store drivers built from the stored accounts (FB-72).
+    pub stores: RwLock<HashMap<String, Arc<dyn StoreProvider>>>,
+    /// Store drivers registered in code (tests).
+    pub registered_stores: RwLock<HashMap<String, Arc<dyn StoreProvider>>>,
     pub jobs: OnceLock<JobService>,
     /// Serialises maintenance runs and usage ingestion.
     pub runner: tokio::sync::Mutex<()>,
@@ -297,6 +315,8 @@ impl BillingService {
                 http: deps.http,
                 providers: RwLock::new(HashMap::new()),
                 registered: RwLock::new(HashMap::new()),
+                stores: RwLock::new(HashMap::new()),
+                registered_stores: RwLock::new(HashMap::new()),
                 jobs: OnceLock::new(),
                 runner: tokio::sync::Mutex::new(()),
             }),
@@ -316,6 +336,22 @@ impl BillingService {
         if let Ok(mut m) = self.inner.registered.write() {
             m.insert(provider.name().to_owned(), provider);
         }
+    }
+
+    /// Registers a store driver in code (tests). It takes precedence over a
+    /// stored account of the same name.
+    pub fn register_store(&self, store: Arc<dyn StoreProvider>) {
+        if let Ok(mut m) = self.inner.registered_stores.write() {
+            m.insert(store.name().to_owned(), store);
+        }
+    }
+
+    /// The store driver of a provider, if it is a configured store.
+    pub fn store(&self, name: &str) -> Option<Arc<dyn StoreProvider>> {
+        if let Some(p) = self.inner.registered_stores.read().ok().and_then(|m| m.get(name).cloned()) {
+            return Some(p);
+        }
+        self.inner.stores.read().ok().and_then(|m| m.get(name).cloned())
     }
 
     pub(crate) fn db(&self) -> &dyn Backend {
@@ -555,9 +591,43 @@ impl BillingService {
         key_id: Option<&str>,
         secret: &Json,
         api_base: Option<&str>,
-    ) -> Result<Arc<dyn PaymentProvider>> {
+    ) -> Result<Driver> {
         let s = |k: &str| secret.get(k).and_then(Json::as_str).unwrap_or_default().to_owned();
-        Ok(match provider {
+        let config = secret.get("config").cloned().unwrap_or(Json::Null);
+        let (http, clock) = (self.inner.http.clone(), self.inner.clock.clone());
+        Ok(Driver::Payment(match provider {
+            "app_store" => {
+                return Ok(Driver::Store(Arc::new(AppStoreProvider::new(
+                    AppStoreConfig::from_json(&config),
+                    api_base,
+                    None,
+                    http,
+                    clock,
+                )?)));
+            }
+            "google_play" => {
+                return Ok(Driver::Store(Arc::new(GooglePlayProvider::new(
+                    GooglePlayConfig::from_json(&config),
+                    api_base,
+                    http,
+                    clock,
+                )?)));
+            }
+            "creem" => {
+                return Ok(Driver::Store(Arc::new(CreemProvider::new(
+                    &s("api_key"),
+                    &s("webhook_secret"),
+                    api_base,
+                    http,
+                    clock,
+                )?)));
+            }
+            "wechat_pay" => Arc::new(WechatPayProvider::new(
+                WechatPayConfig::from_json(key_id.unwrap_or_default(), &s("api_key"), &config),
+                api_base,
+                http,
+                clock,
+            )?),
             "stripe" => Arc::new(StripeProvider::new(
                 &s("api_key"),
                 &s("webhook_secret"),
@@ -575,10 +645,12 @@ impl BillingService {
             other => {
                 return Err(BillingError::invalid(
                     "unknown_provider",
-                    format!("unknown provider {other:?} (stripe, razorpay, manual)"),
+                    format!(
+                        "unknown provider {other:?} (stripe, razorpay, wechat_pay, manual, app_store, google_play, creem)"
+                    ),
                 ));
             }
-        })
+        }))
     }
 
     async fn load_providers(&self) -> Result<()> {
@@ -588,19 +660,25 @@ impl BillingService {
                 Vec::new(),
             )
             .await?;
-        let mut map = HashMap::new();
+        let (mut map, mut stores) = (HashMap::new(), HashMap::new());
         for r in &rows.rows {
             let name = text(r, 0);
             let secret = self.open_secret(&name, &text(r, 2))?;
             match self.build_provider(&name, opt_text(r, 1).as_deref(), &secret, opt_text(r, 3).as_deref()) {
-                Ok(p) => {
+                Ok(Driver::Payment(p)) => {
                     map.insert(name, p);
+                }
+                Ok(Driver::Store(p)) => {
+                    stores.insert(name, p);
                 }
                 Err(e) => tracing::warn!(provider = %name, error = %e, "billing provider not loaded"),
             }
         }
         if let Ok(mut m) = self.inner.providers.write() {
             *m = map;
+        }
+        if let Ok(mut m) = self.inner.stores.write() {
+            *m = stores;
         }
         Ok(())
     }
@@ -691,10 +769,16 @@ impl BillingService {
             Some(u) => Some(check_url(u)?.trim_end_matches('/').to_owned()),
             None => None,
         };
-        let secret = json!({
+        let mut secret = json!({
             "api_key": input.api_key.clone().unwrap_or_default().trim(),
             "webhook_secret": input.webhook_secret.clone().unwrap_or_default().trim(),
         });
+        if let Some(c) = &input.config {
+            if !c.is_object() || c.to_string().len() > 64 * 1024 {
+                return Err(BillingError::invalid("invalid_config", "config must be an object of at most 64 KiB"));
+            }
+            secret["config"] = c.clone();
+        }
         let key_id = input.key_id.as_deref().map(str::trim).map(str::to_owned);
         // Validates the keys (test mode) before anything is stored.
         let driver = self.build_provider(provider, key_id.as_deref(), &secret, api_base.as_deref())?;
@@ -737,11 +821,24 @@ impl BillingService {
         }
         .await;
         self.end(tx, res).await?;
-        if let Ok(mut m) = self.inner.providers.write() {
-            if input.enabled {
-                m.insert(provider.to_owned(), driver);
-            } else {
-                m.remove(provider);
+        match driver {
+            Driver::Payment(d) => {
+                if let Ok(mut m) = self.inner.providers.write() {
+                    if input.enabled {
+                        m.insert(provider.to_owned(), d);
+                    } else {
+                        m.remove(provider);
+                    }
+                }
+            }
+            Driver::Store(d) => {
+                if let Ok(mut m) = self.inner.stores.write() {
+                    if input.enabled {
+                        m.insert(provider.to_owned(), d);
+                    } else {
+                        m.remove(provider);
+                    }
+                }
             }
         }
         Ok(ProviderAccount {
@@ -785,6 +882,9 @@ impl BillingService {
         .await;
         self.end(tx, res).await?;
         if let Ok(mut m) = self.inner.providers.write() {
+            m.remove(provider);
+        }
+        if let Ok(mut m) = self.inner.stores.write() {
             m.remove(provider);
         }
         Ok(())

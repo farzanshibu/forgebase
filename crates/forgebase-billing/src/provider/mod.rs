@@ -1,5 +1,7 @@
 //! Payment providers: the [`PaymentProvider`] trait, the normalised webhook
-//! event, and the Stripe, Razorpay and manual drivers.
+//! event, and the Stripe, Razorpay, WeChat Pay and manual drivers; the
+//! [`StoreProvider`] trait of merchant-of-record stores (FB-72) and the App
+//! Store, Google Play and Creem drivers.
 //!
 //! Drivers speak HTTP through FB-25's outbound client
 //! ([`forgebase_auth::social::http_client::HttpClient`], rustls in
@@ -9,9 +11,16 @@
 //! provider's hosted page and only provider references (customer, payment
 //! method and payment ids) are stored.
 
+pub mod app_store;
+pub mod creem;
+pub(crate) mod der;
+pub mod google_play;
+pub mod jws;
 pub mod manual;
 pub mod razorpay;
+pub mod store;
 pub mod stripe;
+pub mod wechat_pay;
 
 use std::fmt;
 
@@ -24,9 +33,14 @@ use crate::error::{BillingError, Result};
 use crate::model::{HostedPage, PaymentStatus, RefundStatus};
 use crate::money::hex;
 
+pub use app_store::AppStoreProvider;
+pub use creem::CreemProvider;
+pub use google_play::GooglePlayProvider;
 pub use manual::ManualProvider;
 pub use razorpay::RazorpayProvider;
+pub use store::{PurchaseClaim, PurchaseKind, StoreNotification, StoreProvider, StorePurchase, StoreState};
 pub use stripe::StripeProvider;
+pub use wechat_pay::WechatPayProvider;
 
 /// A customer as the provider needs it.
 #[derive(Debug, Clone, Default)]
