@@ -168,7 +168,7 @@ const SUBJECT: &str = "org:<id> or a principal key (default: the caller's subjec
 // ---------------------------------------------------------------------------
 
 /// Operator settings (dunning schedule, number prefixes, webhook windows).
-#[utoipa::path(get, path = "/api/v1/billing/settings", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/settings", operation_id = "billing_get_settings", tag = "billing-catalog",
     responses((status = 200, description = "Settings", body = BillingSettings)))]
 async fn get_settings(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     s.require_admin(&ctx).map_err(api)?;
@@ -176,7 +176,7 @@ async fn get_settings(State(s): State<BillingService>, Access(ctx): Access) -> A
 }
 
 /// Replaces the settings (platform administrators).
-#[utoipa::path(put, path = "/api/v1/billing/settings", tag = "billing-catalog", request_body = BillingSettings,
+#[utoipa::path(put, path = "/api/v1/billing/settings", operation_id = "billing_put_settings", tag = "billing-catalog", request_body = BillingSettings,
     responses((status = 200, description = "Settings", body = BillingSettings)))]
 async fn put_settings(State(s): State<BillingService>, Access(ctx): Access, b: Body<BillingSettings>) -> ApiResult {
     let input = body(&s, &ctx, b)?;
@@ -184,7 +184,7 @@ async fn put_settings(State(s): State<BillingService>, Access(ctx): Access, b: B
 }
 
 /// Configured payment providers (no secrets).
-#[utoipa::path(get, path = "/api/v1/billing/providers", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/providers", operation_id = "billing_providers", tag = "billing-catalog",
     responses((status = 200, description = "Accounts", body = Items<ProviderAccount>)))]
 async fn providers(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     items(s.providers(&ctx).await.map_err(api)?)
@@ -192,7 +192,7 @@ async fn providers(State(s): State<BillingService>, Access(ctx): Access) -> ApiR
 
 /// Saves a provider account: `stripe`, `razorpay` or `manual`. Test-mode
 /// keys only; secrets are sealed and never returned.
-#[utoipa::path(put, path = "/api/v1/billing/providers/{provider}", tag = "billing-catalog", request_body = ProviderInput,
+#[utoipa::path(put, path = "/api/v1/billing/providers/{provider}", operation_id = "billing_put_provider", tag = "billing-catalog", request_body = ProviderInput,
     params(("provider" = String, Path, description = "stripe, razorpay or manual")),
     responses((status = 200, description = "Saved", body = ProviderAccount), (status = 400, description = "Live or malformed keys")))]
 async fn put_provider(
@@ -206,7 +206,7 @@ async fn put_provider(
 }
 
 /// Removes a provider account.
-#[utoipa::path(delete, path = "/api/v1/billing/providers/{provider}", tag = "billing-catalog",
+#[utoipa::path(delete, path = "/api/v1/billing/providers/{provider}", operation_id = "billing_delete_provider", tag = "billing-catalog",
     params(("provider" = String, Path, description = "Provider")),
     responses((status = 204, description = "Removed")))]
 async fn delete_provider(
@@ -223,14 +223,14 @@ async fn delete_provider(
 // ---------------------------------------------------------------------------
 
 /// Products.
-#[utoipa::path(get, path = "/api/v1/billing/products", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/products", operation_id = "billing_products", tag = "billing-catalog",
     responses((status = 200, description = "Products", body = Items<Product>)))]
 async fn products(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     items(s.products(&ctx).await.map_err(api)?)
 }
 
 /// One product.
-#[utoipa::path(get, path = "/api/v1/billing/products/{key}", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/products/{key}", operation_id = "billing_product", tag = "billing-catalog",
     params(("key" = String, Path, description = "Product key")),
     responses((status = 200, description = "Product", body = Product)))]
 async fn product(State(s): State<BillingService>, Access(ctx): Access, Path(key): Path<String>) -> ApiResult {
@@ -240,7 +240,7 @@ async fn product(State(s): State<BillingService>, Access(ctx): Access, Path(key)
 /// Creates or replaces a product (platform administrators). Its kind maps a
 /// payment to entitlements: a FB-24 plan, add-on or usage pack, or FB-73
 /// credits.
-#[utoipa::path(put, path = "/api/v1/billing/products/{key}", tag = "billing-catalog", request_body = ProductInput,
+#[utoipa::path(put, path = "/api/v1/billing/products/{key}", operation_id = "billing_put_product", tag = "billing-catalog", request_body = ProductInput,
     params(("key" = String, Path, description = "Product key")),
     responses((status = 200, description = "Product", body = Product)))]
 async fn put_product(
@@ -254,7 +254,7 @@ async fn put_product(
 }
 
 /// Prices, optionally of one product.
-#[utoipa::path(get, path = "/api/v1/billing/prices", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/prices", operation_id = "billing_prices", tag = "billing-catalog",
     params(("product" = Option<String>, Query, description = "Product key")),
     responses((status = 200, description = "Prices", body = Items<Price>)))]
 async fn prices(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -262,7 +262,7 @@ async fn prices(State(s): State<BillingService>, Access(ctx): Access, q: Query) 
 }
 
 /// One price.
-#[utoipa::path(get, path = "/api/v1/billing/prices/{key}", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/prices/{key}", operation_id = "billing_price", tag = "billing-catalog",
     params(("key" = String, Path, description = "Price key")),
     responses((status = 200, description = "Price", body = Price)))]
 async fn price(State(s): State<BillingService>, Access(ctx): Access, Path(key): Path<String>) -> ApiResult {
@@ -272,7 +272,7 @@ async fn price(State(s): State<BillingService>, Access(ctx): Access, Path(key): 
 /// Creates or replaces a price (platform administrators): recurring monthly
 /// or yearly, one-time or metered; per unit, graduated or volume tiers; the
 /// same price in several currencies.
-#[utoipa::path(put, path = "/api/v1/billing/prices/{key}", tag = "billing-catalog", request_body = PriceInput,
+#[utoipa::path(put, path = "/api/v1/billing/prices/{key}", operation_id = "billing_put_price", tag = "billing-catalog", request_body = PriceInput,
     params(("key" = String, Path, description = "Price key")),
     responses((status = 200, description = "Price", body = Price), (status = 409, description = "Amounts of a price in use")))]
 async fn put_price(
@@ -286,14 +286,14 @@ async fn put_price(
 }
 
 /// Tax rates per region.
-#[utoipa::path(get, path = "/api/v1/billing/tax-rates", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/tax-rates", operation_id = "billing_tax_rates", tag = "billing-catalog",
     responses((status = 200, description = "Rates", body = Items<TaxRate>)))]
 async fn tax_rates(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     items(s.tax_rates(&ctx).await.map_err(api)?)
 }
 
 /// Sets the tax rate of a region (platform administrators).
-#[utoipa::path(put, path = "/api/v1/billing/tax-rates/{region}", tag = "billing-catalog", request_body = TaxRateInput,
+#[utoipa::path(put, path = "/api/v1/billing/tax-rates/{region}", operation_id = "billing_put_tax_rate", tag = "billing-catalog", request_body = TaxRateInput,
     params(("region" = String, Path, description = "IN, DE, US-CA, ...")),
     responses((status = 200, description = "Rate", body = TaxRate)))]
 async fn put_tax_rate(
@@ -307,14 +307,14 @@ async fn put_tax_rate(
 }
 
 /// Coupons (platform administrators).
-#[utoipa::path(get, path = "/api/v1/billing/coupons", tag = "billing-catalog",
+#[utoipa::path(get, path = "/api/v1/billing/coupons", operation_id = "billing_coupons", tag = "billing-catalog",
     responses((status = 200, description = "Coupons", body = Items<Coupon>)))]
 async fn coupons(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     items(s.coupons(&ctx).await.map_err(api)?)
 }
 
 /// Creates or replaces a coupon (platform administrators).
-#[utoipa::path(put, path = "/api/v1/billing/coupons/{code}", tag = "billing-catalog", request_body = CouponInput,
+#[utoipa::path(put, path = "/api/v1/billing/coupons/{code}", operation_id = "billing_put_coupon", tag = "billing-catalog", request_body = CouponInput,
     params(("code" = String, Path, description = "Coupon code")),
     responses((status = 200, description = "Coupon", body = Coupon)))]
 async fn put_coupon(
@@ -332,7 +332,7 @@ async fn put_coupon(
 // ---------------------------------------------------------------------------
 
 /// The customer of a subject.
-#[utoipa::path(get, path = "/api/v1/billing/customer", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/customer", operation_id = "billing_customer", tag = "billing",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Customer", body = Customer)))]
 async fn customer(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -341,7 +341,7 @@ async fn customer(State(s): State<BillingService>, Access(ctx): Access, q: Query
 
 /// Creates or updates the customer of a subject (billing email, currency,
 /// tax region, provider).
-#[utoipa::path(put, path = "/api/v1/billing/customer", tag = "billing", request_body = CustomerInput,
+#[utoipa::path(put, path = "/api/v1/billing/customer", operation_id = "billing_put_customer", tag = "billing", request_body = CustomerInput,
     responses((status = 200, description = "Customer", body = Customer)))]
 async fn put_customer(State(s): State<BillingService>, Access(ctx): Access, b: Body<CustomerInput>) -> ApiResult {
     let input = body(&s, &ctx, b)?;
@@ -349,7 +349,7 @@ async fn put_customer(State(s): State<BillingService>, Access(ctx): Access, b: B
 }
 
 /// Every customer (realm-level `billing:read`).
-#[utoipa::path(get, path = "/api/v1/billing/customers", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/customers", operation_id = "billing_customers", tag = "billing",
     params(("limit" = Option<u32>, Query, description = "At most 1000")),
     responses((status = 200, description = "Customers", body = Items<Customer>)))]
 async fn customers(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -357,7 +357,7 @@ async fn customers(State(s): State<BillingService>, Access(ctx): Access, q: Quer
 }
 
 /// Subscriptions of a subject.
-#[utoipa::path(get, path = "/api/v1/billing/subscriptions", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/subscriptions", operation_id = "billing_subscriptions", tag = "billing",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Subscriptions", body = Items<Subscription>)))]
 async fn subscriptions(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -365,7 +365,7 @@ async fn subscriptions(State(s): State<BillingService>, Access(ctx): Access, q: 
 }
 
 /// Subscribes (trial, or the first invoice collected). Idempotent by key.
-#[utoipa::path(post, path = "/api/v1/billing/subscriptions", tag = "billing", request_body = SubscribeInput,
+#[utoipa::path(post, path = "/api/v1/billing/subscriptions", operation_id = "billing_subscribe", tag = "billing", request_body = SubscribeInput,
     responses((status = 201, description = "Created", body = Checkout), (status = 200, description = "Replayed", body = Checkout),
         (status = 409, description = "Already subscribed")))]
 async fn subscribe(State(s): State<BillingService>, Access(ctx): Access, b: Body<SubscribeInput>) -> ApiResult {
@@ -376,7 +376,7 @@ async fn subscribe(State(s): State<BillingService>, Access(ctx): Access, b: Body
 }
 
 /// One subscription.
-#[utoipa::path(get, path = "/api/v1/billing/subscriptions/{id}", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/subscriptions/{id}", operation_id = "billing_subscription", tag = "billing",
     params(("id" = String, Path, description = "Subscription id")),
     responses((status = 200, description = "Subscription", body = Subscription)))]
 async fn subscription(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
@@ -384,7 +384,7 @@ async fn subscription(State(s): State<BillingService>, Access(ctx): Access, Path
 }
 
 /// Changes the plan (upgrade or downgrade) with proration (customer portal).
-#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/change", tag = "billing-portal", request_body = ChangePlanInput,
+#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/change", operation_id = "billing_change_plan", tag = "billing-portal", request_body = ChangePlanInput,
     params(("id" = String, Path, description = "Subscription id")),
     responses((status = 200, description = "Changed", body = Checkout)))]
 async fn change_plan(
@@ -398,7 +398,7 @@ async fn change_plan(
 }
 
 /// Cancels at the period end (default) or now (customer portal).
-#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/cancel", tag = "billing-portal", request_body = CancelInput,
+#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/cancel", operation_id = "billing_cancel", tag = "billing-portal", request_body = CancelInput,
     params(("id" = String, Path, description = "Subscription id")),
     responses((status = 200, description = "Cancelled", body = Checkout)))]
 async fn cancel(
@@ -412,7 +412,7 @@ async fn cancel(
 }
 
 /// Pauses an active subscription.
-#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/pause", tag = "billing",
+#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/pause", operation_id = "billing_pause", tag = "billing",
     params(("id" = String, Path, description = "Subscription id")),
     responses((status = 200, description = "Paused", body = Subscription)))]
 async fn pause(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
@@ -420,7 +420,7 @@ async fn pause(State(s): State<BillingService>, Access(ctx): Access, Path(id): P
 }
 
 /// Resumes a paused subscription or withdraws a scheduled cancellation.
-#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/resume", tag = "billing",
+#[utoipa::path(post, path = "/api/v1/billing/subscriptions/{id}/resume", operation_id = "billing_resume", tag = "billing",
     params(("id" = String, Path, description = "Subscription id")),
     responses((status = 200, description = "Resumed", body = Checkout)))]
 async fn resume(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
@@ -428,7 +428,7 @@ async fn resume(State(s): State<BillingService>, Access(ctx): Access, Path(id): 
 }
 
 /// Orders of a subject.
-#[utoipa::path(get, path = "/api/v1/billing/orders", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/orders", operation_id = "billing_orders", tag = "billing",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Orders", body = Items<Order>)))]
 async fn orders(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -436,7 +436,7 @@ async fn orders(State(s): State<BillingService>, Access(ctx): Access, q: Query) 
 }
 
 /// A one-time purchase (credit top-ups, usage packs). Idempotent by key.
-#[utoipa::path(post, path = "/api/v1/billing/orders", tag = "billing", request_body = OrderInput,
+#[utoipa::path(post, path = "/api/v1/billing/orders", operation_id = "billing_create_order", tag = "billing", request_body = OrderInput,
     responses((status = 201, description = "Created", body = Checkout), (status = 200, description = "Replayed", body = Checkout)))]
 async fn create_order(State(s): State<BillingService>, Access(ctx): Access, b: Body<OrderInput>) -> ApiResult {
     let input = body(&s, &ctx, b)?;
@@ -446,7 +446,7 @@ async fn create_order(State(s): State<BillingService>, Access(ctx): Access, b: B
 }
 
 /// One order.
-#[utoipa::path(get, path = "/api/v1/billing/orders/{id}", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/orders/{id}", operation_id = "billing_order", tag = "billing",
     params(("id" = String, Path, description = "Order id")),
     responses((status = 200, description = "Order", body = Order)))]
 async fn order(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
@@ -458,7 +458,7 @@ async fn order(State(s): State<BillingService>, Access(ctx): Access, Path(id): P
 // ---------------------------------------------------------------------------
 
 /// Invoices of a subject (customer portal), newest first.
-#[utoipa::path(get, path = "/api/v1/billing/invoices", tag = "billing-portal",
+#[utoipa::path(get, path = "/api/v1/billing/invoices", operation_id = "billing_invoices", tag = "billing-portal",
     params(
         ("subject" = Option<String>, Query, description = SUBJECT),
         ("status" = Option<InvoiceStatus>, Query, description = "Only this status"),
@@ -480,7 +480,7 @@ async fn invoices(State(s): State<BillingService>, Access(ctx): Access, q: Query
 }
 
 /// One invoice with its lines.
-#[utoipa::path(get, path = "/api/v1/billing/invoices/{id}", tag = "billing-portal",
+#[utoipa::path(get, path = "/api/v1/billing/invoices/{id}", operation_id = "billing_invoice", tag = "billing-portal",
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 200, description = "Invoice", body = Invoice)))]
 async fn invoice(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
@@ -488,7 +488,7 @@ async fn invoice(State(s): State<BillingService>, Access(ctx): Access, Path(id):
 }
 
 /// Pays an open invoice now (saved method, else the hosted page URL).
-#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/pay", tag = "billing-portal", request_body = PayInput,
+#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/pay", operation_id = "billing_pay_invoice", tag = "billing-portal", request_body = PayInput,
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 200, description = "Attempted", body = Collection)))]
 async fn pay_invoice(
@@ -504,7 +504,7 @@ async fn pay_invoice(
 }
 
 /// Records an out-of-band payment (operators; manual billing).
-#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/mark-paid", tag = "billing", request_body = MarkPaidInput,
+#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/mark-paid", operation_id = "billing_mark_paid", tag = "billing", request_body = MarkPaidInput,
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 200, description = "Paid", body = Invoice)))]
 async fn mark_paid(
@@ -518,7 +518,7 @@ async fn mark_paid(
 }
 
 /// Voids an unpaid invoice (operators).
-#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/void", tag = "billing",
+#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/void", operation_id = "billing_void_invoice", tag = "billing",
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 200, description = "Voided", body = Invoice)))]
 async fn void_invoice(State(s): State<BillingService>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult {
@@ -527,7 +527,7 @@ async fn void_invoice(State(s): State<BillingService>, Access(ctx): Access, Path
 
 /// Issues a credit note: a refund or a credit to the customer balance
 /// (operators). Idempotent by key.
-#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/credit-notes", tag = "billing", request_body = CreditNoteInput,
+#[utoipa::path(post, path = "/api/v1/billing/invoices/{id}/credit-notes", operation_id = "billing_credit_invoice", tag = "billing", request_body = CreditNoteInput,
     params(("id" = String, Path, description = "Invoice id")),
     responses((status = 201, description = "Issued", body = CreditNote)))]
 async fn credit_invoice(
@@ -541,7 +541,7 @@ async fn credit_invoice(
 }
 
 /// Credit notes of a subject.
-#[utoipa::path(get, path = "/api/v1/billing/credit-notes", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/credit-notes", operation_id = "billing_credit_notes", tag = "billing",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Credit notes", body = Items<CreditNote>)))]
 async fn credit_notes(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -553,7 +553,7 @@ async fn credit_notes(State(s): State<BillingService>, Access(ctx): Access, q: Q
 }
 
 /// Payments of a subject (payment history).
-#[utoipa::path(get, path = "/api/v1/billing/payments", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/payments", operation_id = "billing_payments", tag = "billing",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Payments", body = Items<Payment>)))]
 async fn payments(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -561,7 +561,7 @@ async fn payments(State(s): State<BillingService>, Access(ctx): Access, q: Query
 }
 
 /// Refunds of a subject.
-#[utoipa::path(get, path = "/api/v1/billing/refunds", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/refunds", operation_id = "billing_refunds", tag = "billing",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Refunds", body = Items<Refund>)))]
 async fn refunds(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -570,7 +570,7 @@ async fn refunds(State(s): State<BillingService>, Access(ctx): Access, q: Query)
 
 /// The customer portal: customer, live subscriptions, recent invoices,
 /// payments and credit notes.
-#[utoipa::path(get, path = "/api/v1/billing/portal", tag = "billing-portal",
+#[utoipa::path(get, path = "/api/v1/billing/portal", operation_id = "billing_portal", tag = "billing-portal",
     params(("subject" = Option<String>, Query, description = SUBJECT)),
     responses((status = 200, description = "Portal", body = Portal)))]
 async fn portal(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -578,7 +578,7 @@ async fn portal(State(s): State<BillingService>, Access(ctx): Access, q: Query) 
 }
 
 /// A provider-hosted page that saves or replaces the payment method.
-#[utoipa::path(post, path = "/api/v1/billing/portal/payment-method", tag = "billing-portal", request_body = PaymentMethodInput,
+#[utoipa::path(post, path = "/api/v1/billing/portal/payment-method", operation_id = "billing_payment_method", tag = "billing-portal", request_body = PaymentMethodInput,
     responses((status = 200, description = "Hosted page", body = HostedPage)))]
 async fn payment_method(
     State(s): State<BillingService>,
@@ -596,7 +596,7 @@ async fn payment_method(
 /// A provider webhook delivery. Verified by signature (forged: `400
 /// invalid_signature`; replayed old delivery: `400 stale_signature`),
 /// idempotent by event id (`duplicate`), out-of-order safe.
-#[utoipa::path(post, path = "/api/v1/billing/webhooks/{provider}", tag = "billing-webhooks",
+#[utoipa::path(post, path = "/api/v1/billing/webhooks/{provider}", operation_id = "billing_webhook", tag = "billing-webhooks",
     params(("provider" = String, Path, description = "stripe or razorpay")),
     responses((status = 200, description = "Handled", body = WebhookOutcome), (status = 400, description = "Signature refused"),
         (status = 404, description = "Provider not configured")))]
@@ -614,7 +614,7 @@ async fn webhook(
 }
 
 /// Webhook events received (platform administrators).
-#[utoipa::path(get, path = "/api/v1/billing/webhook-events", tag = "billing-webhooks",
+#[utoipa::path(get, path = "/api/v1/billing/webhook-events", operation_id = "billing_webhook_events", tag = "billing-webhooks",
     params(("limit" = Option<u32>, Query, description = "At most 1000")),
     responses((status = 200, description = "Events", body = Items<WebhookEvent>)))]
 async fn webhook_events(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
@@ -623,7 +623,7 @@ async fn webhook_events(State(s): State<BillingService>, Access(ctx): Access, q:
 
 /// Payment statistics: MRR, ARR, churn, revenue by currency (default: the
 /// last 30 days by day).
-#[utoipa::path(get, path = "/api/v1/billing/stats", tag = "billing",
+#[utoipa::path(get, path = "/api/v1/billing/stats", operation_id = "billing_stats", tag = "billing",
     params(
         ("from" = Option<String>, Query, description = "Window start (RFC 3339)"),
         ("to" = Option<String>, Query, description = "Window end (RFC 3339, default now)"),
@@ -643,7 +643,7 @@ async fn stats(State(s): State<BillingService>, Access(ctx): Access, q: Query) -
 
 /// Runs maintenance now (platform administrators): usage, renewals,
 /// dunning, fulfillment, entitlement syncs.
-#[utoipa::path(post, path = "/api/v1/billing/maintenance", tag = "billing",
+#[utoipa::path(post, path = "/api/v1/billing/maintenance", operation_id = "billing_maintenance", tag = "billing",
     responses((status = 200, description = "Report", body = MaintenanceReport)))]
 async fn maintenance(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
     ok(s.maintenance(&ctx).await.map_err(api)?)

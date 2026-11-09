@@ -7,6 +7,7 @@ import AccessPage from "./pages/access/AccessPage";
 import BillingPage from "./pages/billing/BillingPage";
 import AuthPage from "./pages/auth/AuthPage";
 import DatabasePage from "./pages/database/DatabasePage";
+import IdentityPage from "./pages/identity/IdentityPage";
 import FunctionsPage from "./pages/functions/FunctionsPage";
 import JobsPage from "./pages/jobs/JobsPage";
 import GraphPage from "./pages/graph/GraphPage";
@@ -46,6 +47,8 @@ function Studios() {
             <Route key={s.path} path="vector/*" element={<VectorPage />} />
           ) : s.path === "graph" ? (
             <Route key={s.path} path="graph/*" element={<GraphPage />} />
+          ) : s.path === "identity" ? (
+            <Route key={s.path} path="identity/*" element={<IdentityPage />} />
           ) : s.path === "functions" ? (
             <Route key={s.path} path="functions/*" element={<FunctionsPage />} />
           ) : s.path === "jobs" ? (

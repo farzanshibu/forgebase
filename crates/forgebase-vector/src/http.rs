@@ -273,7 +273,7 @@ async fn hybrid(
 }
 
 /// Rebuilds ANN indexes from the canonical vectors, in the background.
-#[utoipa::path(post, path = "/api/v1/vector/collections/{name}/rebuild", tag = "vector", request_body = RebuildRequest,
+#[utoipa::path(post, path = "/api/v1/vector/collections/{name}/rebuild", operation_id = "vector_rebuild", tag = "vector", request_body = RebuildRequest,
     params(("name" = String, Path, description = "Collection")),
     responses((status = 202, description = "Rebuild started; follow `progress` in the stats", body = RebuildResponse)))]
 async fn rebuild(
@@ -288,7 +288,7 @@ async fn rebuild(
 }
 
 /// Collection statistics with each index's state, progress and metrics.
-#[utoipa::path(get, path = "/api/v1/vector/collections/{name}/stats", tag = "vector",
+#[utoipa::path(get, path = "/api/v1/vector/collections/{name}/stats", operation_id = "vector_stats", tag = "vector",
     params(("name" = String, Path, description = "Collection")),
     responses((status = 200, description = "Statistics", body = CollectionStats)))]
 async fn stats(State(s): State<VectorService>, Access(ctx): Access, Path(name): Path<String>) -> ApiResult {

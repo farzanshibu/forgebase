@@ -45,7 +45,7 @@ pub(crate) fn record_response(status: StatusCode, rec: Record, location: Option<
 
 /// Lists records.
 #[utoipa::path(
-    get, path = "/api/v1/collections/{collection}/records", tag = "records",
+    get, path = "/api/v1/collections/{collection}/records", operation_id = "records_list", tag = "records",
     params(("collection" = String, Path, description = "Collection name or id")),
     description = QUERY_PARAMS_DOC,
     responses((status = 200, description = "A page of records", body = ListResponse))
@@ -115,7 +115,7 @@ pub async fn aggregate(
 
 /// The query plan of a record listing: which indexes it uses, which tables it scans.
 #[utoipa::path(
-    post, path = "/api/v1/collections/{collection}/records/explain", tag = "indexes",
+    post, path = "/api/v1/collections/{collection}/records/explain", operation_id = "records_explain", tag = "indexes",
     params(("collection" = String, Path, description = "Collection name or id")),
     request_body = ListQueryBody,
     responses((status = 200, description = "Query plan", body = QueryPlanSchema))
@@ -132,7 +132,7 @@ pub async fn explain(
 /// Creates a record, or (with a JSON array, at most 1000) several records in
 /// one all-or-nothing transaction.
 #[utoipa::path(
-    post, path = "/api/v1/collections/{collection}/records", tag = "records",
+    post, path = "/api/v1/collections/{collection}/records", operation_id = "records_create", tag = "records",
     params(("collection" = String, Path, description = "Collection name or id")),
     request_body(content = Object, description = "One record object, or an array of record objects"),
     responses(
@@ -166,7 +166,7 @@ pub async fn create(
 
 /// Reads one record.
 #[utoipa::path(
-    get, path = "/api/v1/collections/{collection}/records/{id}", tag = "records",
+    get, path = "/api/v1/collections/{collection}/records/{id}", operation_id = "records_get", tag = "records",
     params(
         ("collection" = String, Path, description = "Collection name or id"),
         ("id" = String, Path, description = "Record id"),
@@ -254,7 +254,7 @@ pub async fn put(
 
 /// Deletes a record. `If-Match: "<version>"` makes it conditional.
 #[utoipa::path(
-    delete, path = "/api/v1/collections/{collection}/records/{id}", tag = "records",
+    delete, path = "/api/v1/collections/{collection}/records/{id}", operation_id = "records_delete", tag = "records",
     params(
         ("collection" = String, Path, description = "Collection name or id"),
         ("id" = String, Path, description = "Record id"),
@@ -276,7 +276,7 @@ pub async fn delete(
 
 /// Stored versions of a record (collections with `versioned: true`), oldest first.
 #[utoipa::path(
-    get, path = "/api/v1/collections/{collection}/records/{id}/versions", tag = "records",
+    get, path = "/api/v1/collections/{collection}/records/{id}/versions", operation_id = "records_versions", tag = "records",
     params(
         ("collection" = String, Path, description = "Collection name or id"),
         ("id" = String, Path, description = "Record id"),
