@@ -6,3 +6,5 @@ export * from "./types";
 export * from "./v1";
 export * from "./authAdmin";
 export * from "./access";
+export * from "./vector";
+export * from "./graph";
