@@ -208,6 +208,7 @@ struct Inner {
     realms: crate::realm::RealmDirectory,
     sms: RwLock<Arc<dyn crate::sms::SmsProvider>>,
     change_hook: RwLock<Option<Hook>>,
+    idp: crate::idp::IdpState,
 }
 
 #[derive(Clone)]
@@ -273,6 +274,7 @@ impl AuthService {
                 realms: crate::realm::RealmDirectory::default(),
                 sms: RwLock::new(Arc::new(crate::sms::DevSmsProvider::default())),
                 change_hook: RwLock::new(None),
+                idp: crate::idp::IdpState::default(),
             }),
         };
         svc.install_default_http_client()?;
@@ -360,6 +362,10 @@ impl AuthService {
 
     pub(crate) fn webauthn_config(&self) -> &crate::webauthn::WebAuthnConfig {
         &self.inner.webauthn
+    }
+
+    pub(crate) fn idp_state(&self) -> &crate::idp::IdpState {
+        &self.inner.idp
     }
 
     pub(crate) fn keyring(&self) -> &Keyring {

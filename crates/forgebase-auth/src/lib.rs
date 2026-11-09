@@ -33,6 +33,7 @@ pub mod crypto;
 mod error;
 pub mod http;
 mod identity_http;
+pub mod idp;
 pub mod ldap;
 pub mod lifecycle;
 pub mod limits;
@@ -128,6 +129,8 @@ pub struct AuthConfig {
     pub tls_ca_file: Option<PathBuf>,
     /// Time source (tests replace it with a [`ManualClock`]).
     pub clock: Arc<dyn Clock>,
+    /// ForgeBase as identity provider: OAuth 2.0 / OpenID Connect (FB-26).
+    pub idp: idp::IdpConfig,
 }
 
 impl AuthConfig {
@@ -160,6 +163,7 @@ impl AuthConfig {
             totp_issuer: "ForgeBase".into(),
             tls_ca_file: None,
             clock: Arc::new(SystemClock),
+            idp: idp::IdpConfig::default(),
         }
     }
 }

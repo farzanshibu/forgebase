@@ -115,6 +115,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0017_storage.sql"),
     ),
     Migration::new(
+        18,
+        "oidc_provider",
+        include_str!("../../../migrations/system/0018_oidc_provider.sql"),
+    ),
+    Migration::new(
         19,
         "customize",
         include_str!("../../../migrations/system/0019_customize.sql"),
