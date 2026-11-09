@@ -66,6 +66,13 @@ export const STUDIOS: Studio[] = [
     features: ["Realms, organizations, projects and environments", "Members, teams, invitations", "Roles, role sets and the permission matrix", "Overrides, resource ACL and collection rules"],
   },
   {
+    path: "identity",
+    label: "Identity & Tenant Studio",
+    summary: "Realms, client apps, branding",
+    phase: null,
+    features: ["Realms, tenant settings and identity providers (LDAP, SMS, Turnstile)", "Client apps with secret rotation, consents and OIDC key rotation", "Branding, custom domains with TXT verification", "Email templates with delivery log, legal agreements"],
+  },
+  {
     path: "functions",
     label: "Functions Studio",
     summary: "WASM functions and schedules",
