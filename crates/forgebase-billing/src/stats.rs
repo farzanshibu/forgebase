@@ -44,6 +44,10 @@ impl Bucket {
     }
 }
 
+/// Per subscription: currency, MRR before coupons, months per period, the
+/// coupon (kind, percent, amount off).
+type SubMrr = (String, i64, i64, Option<(String, i64, i64)>);
+
 impl BillingService {
     /// Statistics over `[from, to)` (realm-level `billing:read` or
     /// privileged).
@@ -66,7 +70,7 @@ impl BillingService {
                 Vec::new(),
             )
             .await?;
-        let mut per_sub: HashMap<String, (String, i64, i64, Option<(String, i64, i64)>)> = HashMap::new();
+        let mut per_sub: HashMap<String, SubMrr> = HashMap::new();
         for r in &rows.rows {
             let price = self.price_by("key", &text(r, 2)).await?;
             if price.price_type != PriceType::Recurring {

@@ -852,10 +852,7 @@ impl BillingService {
         }
         let email = check_text(input.email, "email", 254)?;
         let name = check_text(input.name, "name", 200)?;
-        let region = match check_text(input.region, "region", 16)? {
-            Some(r) => Some(r.to_ascii_uppercase()),
-            None => None,
-        };
+        let region = check_text(input.region, "region", 16)?.map(|r| r.to_ascii_uppercase());
         let cur = match input.currency {
             Some(c) => Some(currency(&c)?),
             None => None,
