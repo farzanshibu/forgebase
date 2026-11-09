@@ -86,7 +86,7 @@ impl WechatPayConfig {
 struct PlatformKey {
     serial: String,
     rsa: Vec<u8>,
-    not_after: Option<i64>,
+    validity: Option<(i64, i64)>,
 }
 
 /// The WeChat Pay driver.
@@ -146,7 +146,10 @@ pub fn decrypt_resource(api_v3_key: &str, resource: &Json) -> Result<Json> {
         return Err(forged("unsupported resource algorithm"));
     }
     let (key, nonce) = aead_parts(api_v3_key, str_at(resource, &["nonce"]).unwrap_or_default())?;
-    let aad = resource.get("associated_data").and_then(Json::as_str).unwrap_or_default();
+    let aad = resource
+        .get("associated_data")
+        .and_then(Json::as_str)
+        .unwrap_or_default();
     let mut buf = base64::engine::general_purpose::STANDARD
         .decode(str_at(resource, &["ciphertext"]).unwrap_or_default())
         .map_err(|_| forged("the resource ciphertext is not base64"))?;
@@ -180,18 +183,31 @@ impl WechatPayProvider {
             .and_then(|u| u.host_str().map(str::to_owned))
             .unwrap_or_default();
         if PRODUCTION_HOSTS.contains(&host.as_str()) {
-            return Err(BillingError::invalid("live_mode_refused", "the production WeChat Pay API is refused"));
+            return Err(BillingError::invalid(
+                "live_mode_refused",
+                "the production WeChat Pay API is refused",
+            ));
         }
         if cfg.mchid.is_empty() || !cfg.mchid.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(BillingError::invalid("invalid_config", "key_id must be the merchant id (digits)"));
+            return Err(BillingError::invalid(
+                "invalid_config",
+                "key_id must be the merchant id (digits)",
+            ));
         }
-        for (v, name) in [(&cfg.appid, "appid"), (&cfg.merchant_serial, "merchant_serial"), (&cfg.notify_url, "notify_url")] {
+        for (v, name) in [
+            (&cfg.appid, "appid"),
+            (&cfg.merchant_serial, "merchant_serial"),
+            (&cfg.notify_url, "notify_url"),
+        ] {
             if v.is_empty() {
                 return Err(BillingError::invalid("invalid_config", format!("{name} is required")));
             }
         }
         if cfg.api_v3_key.len() != 32 {
-            return Err(BillingError::invalid("invalid_key", "the APIv3 key (api_key) must be 32 bytes"));
+            return Err(BillingError::invalid(
+                "invalid_key",
+                "the APIv3 key (api_key) must be 32 bytes",
+            ));
         }
         let key = der::pem_der(&cfg.private_key, "PRIVATE KEY")?;
         jws::rsa_public(&key)?;
@@ -201,13 +217,22 @@ impl WechatPayProvider {
             let (label, der_bytes) = blocks
                 .first()
                 .ok_or_else(|| BillingError::invalid("invalid_config", "a platform key is not PEM"))?;
-            let (rsa, not_after, cert_serial) = match label.as_str() {
+            let (rsa, validity, cert_serial) = match label.as_str() {
                 "CERTIFICATE" => {
                     let info = der::cert_info(der_bytes)?;
-                    (der::spki_key(info.spki)?.to_vec(), Some(info.not_after), Some(info.serial_hex))
+                    (
+                        der::spki_key(info.spki)?.to_vec(),
+                        Some((info.not_before, info.not_after)),
+                        Some(info.serial_hex),
+                    )
                 }
                 "PUBLIC KEY" => (der::spki_key(der_bytes)?.to_vec(), None, None),
-                _ => return Err(BillingError::invalid("invalid_config", "a platform key must be a certificate or a public key")),
+                _ => {
+                    return Err(BillingError::invalid(
+                        "invalid_config",
+                        "a platform key must be a certificate or a public key",
+                    ));
+                }
             };
             der::rsa_components(&rsa)?;
             if let Some(cs) = cert_serial
@@ -221,7 +246,7 @@ impl WechatPayProvider {
             platform.push(PlatformKey {
                 serial: serial.to_ascii_uppercase(),
                 rsa,
-                not_after,
+                validity,
             });
         }
         if platform.is_empty() {
@@ -251,12 +276,15 @@ impl WechatPayProvider {
             .iter()
             .find(|k| k.serial.eq_ignore_ascii_case(serial.trim()))
             .ok_or_else(|| forged("unknown Wechatpay-Serial (platform key not configured)"))?;
-        if key.not_after.is_some_and(|na| na < now_ms) {
-            return Err(forged("the platform certificate has expired"));
+        if key.validity.is_some_and(|(nb, na)| now_ms < nb || na < now_ms) {
+            return Err(forged("the platform certificate is expired or not yet valid"));
         }
         let ts_secs: i64 = ts.trim().parse().map_err(|_| forged("bad Wechatpay-Timestamp"))?;
         if (now_ms / 1000 - ts_secs).abs() > tolerance_secs {
-            return Err(BillingError::webhook("stale_signature", "the Wechatpay-Timestamp is outside the tolerance"));
+            return Err(BillingError::webhook(
+                "stale_signature",
+                "the Wechatpay-Timestamp is outside the tolerance",
+            ));
         }
         let sig = base64::engine::general_purpose::STANDARD
             .decode(sig.trim())
@@ -274,10 +302,10 @@ impl WechatPayProvider {
         let ts = self.clock.now_ms() / 1000;
         let nonce = uuid::Uuid::new_v4().simple().to_string().to_ascii_uppercase();
         let body_text = body.map(Json::to_string).unwrap_or_default();
-        let sig = sign_message(
-            &self.cfg.private_key,
-            &format!("{method}\n{path_query}\n{ts}\n{nonce}\n{body_text}\n"),
-        )?;
+        let sig = base64::engine::general_purpose::STANDARD.encode(jws::rsa_sign(
+            &self.key,
+            format!("{method}\n{path_query}\n{ts}\n{nonce}\n{body_text}\n").as_bytes(),
+        )?);
         let mut req = HttpRequest::get(format!("{}{path_query}", self.api_base))
             .header(
                 "authorization",
@@ -418,10 +446,7 @@ impl PaymentProvider for WechatPayProvider {
             .to_owned();
         let event_type = str_at(&v, &["event_type"]).unwrap_or_default().to_owned();
         let created_at = str_at(&v, &["create_time"]).and_then(parse_iso).unwrap_or(now_ms);
-        let res = decrypt_resource(
-            &self.cfg.api_v3_key,
-            v.get("resource").unwrap_or(&Json::Null),
-        )?;
+        let res = decrypt_resource(&self.cfg.api_v3_key, v.get("resource").unwrap_or(&Json::Null))?;
         if str_at(&res, &["mchid"]) != Some(self.cfg.mchid.as_str()) {
             return Err(forged("the notification is for another merchant"));
         }

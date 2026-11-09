@@ -651,7 +651,9 @@ async fn put_store_product(
     b: Body<StoreProductInput>,
 ) -> ApiResult {
     let input = body(&s, &ctx, b)?;
-    ok(s.put_store_product(&ctx, &provider, &product_id, input).await.map_err(api)?)
+    ok(s.put_store_product(&ctx, &provider, &product_id, input)
+        .await
+        .map_err(api)?)
 }
 
 /// Removes a store product mapping (platform administrators).
@@ -664,7 +666,9 @@ async fn delete_store_product(
     Access(ctx): Access,
     Path((provider, product_id)): Path<(String, String)>,
 ) -> ApiResult {
-    s.delete_store_product(&ctx, &provider, &product_id).await.map_err(api)?;
+    s.delete_store_product(&ctx, &provider, &product_id)
+        .await
+        .map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

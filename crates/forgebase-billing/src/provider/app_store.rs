@@ -262,9 +262,12 @@ impl AppStoreProvider {
                 amount: None,
             }),
             refund_only: false,
-            observed_at: i("signedDate")
-                .unwrap_or(now)
-                .max(renewal.and_then(|r| r.get("signedDate")).and_then(Json::as_i64).unwrap_or(0)),
+            observed_at: i("signedDate").unwrap_or(now).max(
+                renewal
+                    .and_then(|r| r.get("signedDate"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0),
+            ),
             needs_ack: false,
         })
     }
@@ -342,7 +345,9 @@ impl StoreProvider for AppStoreProvider {
                 let (tx, renewal, status) = self.status(purchase_id).await?;
                 return self.purchase(&tx, renewal.as_ref(), status);
             }
-            let v = self.get(&format!("/inApps/v1/transactions/{}", enc(purchase_id))).await?;
+            let v = self
+                .get(&format!("/inApps/v1/transactions/{}", enc(purchase_id)))
+                .await?;
             let tx = self.decode(
                 str_at(&v, &["signedTransactionInfo"])
                     .ok_or_else(|| BillingError::Provider("App Store returned no transaction".into()))?,

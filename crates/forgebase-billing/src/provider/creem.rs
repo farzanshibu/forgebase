@@ -57,7 +57,10 @@ pub fn sign(secret: &str, body: &[u8]) -> String {
 pub fn check_keys(api_key: &str, webhook_secret: &str) -> Result<()> {
     if !api_key.starts_with("creem_test_") {
         return Err(if api_key.starts_with("creem_") {
-            BillingError::invalid("live_mode_refused", "only Creem test-mode keys (creem_test_…) are accepted")
+            BillingError::invalid(
+                "live_mode_refused",
+                "only Creem test-mode keys (creem_test_…) are accepted",
+            )
         } else {
             BillingError::invalid("invalid_key", "the Creem API key must start with creem_test_")
         });
@@ -83,7 +86,10 @@ impl CreemProvider {
         check_keys(api_key, webhook_secret)?;
         let api_base = api_base.unwrap_or(TEST_API).trim_end_matches('/').to_owned();
         if api_base == PRODUCTION_API {
-            return Err(BillingError::invalid("live_mode_refused", "the production Creem API is refused"));
+            return Err(BillingError::invalid(
+                "live_mode_refused",
+                "the production Creem API is refused",
+            ));
         }
         Ok(Self {
             api_key: api_key.to_owned(),
@@ -98,7 +104,10 @@ impl CreemProvider {
         let req = HttpRequest::get(format!("{}{path}", self.api_base)).header("x-api-key", self.api_key.clone());
         let res = self.http.send(req).await?;
         if res.status == 404 {
-            return Err(BillingError::invalid("unknown_purchase", "Creem does not know this checkout"));
+            return Err(BillingError::invalid(
+                "unknown_purchase",
+                "Creem does not know this checkout",
+            ));
         }
         parse_ok(&res)
     }
@@ -317,14 +326,20 @@ impl StoreProvider for CreemProvider {
             let given = header(headers, "creem-signature")
                 .ok_or_else(|| BillingError::webhook("invalid_signature", "no creem-signature header"))?;
             if !same_signature(&sign(&self.webhook_secret, body), given) {
-                return Err(BillingError::webhook("invalid_signature", "the Creem signature does not match"));
+                return Err(BillingError::webhook(
+                    "invalid_signature",
+                    "the Creem signature does not match",
+                ));
             }
             let v = json_body(body)?;
             let id = str_at(&v, &["id"])
                 .ok_or_else(|| BillingError::webhook("invalid_payload", "no event id"))?
                 .to_owned();
             let event_type = str_at(&v, &["eventType"]).unwrap_or_default().to_owned();
-            let created_at = v.get("created_at").and_then(Json::as_i64).unwrap_or_else(|| self.clock.now_ms());
+            let created_at = v
+                .get("created_at")
+                .and_then(Json::as_i64)
+                .unwrap_or_else(|| self.clock.now_ms());
             let obj = v.get("object").cloned().unwrap_or(Json::Null);
             let mut purchase = match event_type.as_str() {
                 "checkout.completed" => Some(self.from_checkout(&obj)?),

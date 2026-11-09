@@ -61,7 +61,10 @@ impl<'a> Der<'a> {
                 (len, 2 + n)
             }
         };
-        let end = hdr.checked_add(len).filter(|e| *e <= b.len()).ok_or_else(|| bad("length"))?;
+        let end = hdr
+            .checked_add(len)
+            .filter(|e| *e <= b.len())
+            .ok_or_else(|| bad("length"))?;
         self.buf = &b[end..];
         Ok(Tlv {
             tag,

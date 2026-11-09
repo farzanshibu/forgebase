@@ -348,7 +348,13 @@ impl BillingService {
 
     /// The store driver of a provider, if it is a configured store.
     pub fn store(&self, name: &str) -> Option<Arc<dyn StoreProvider>> {
-        if let Some(p) = self.inner.registered_stores.read().ok().and_then(|m| m.get(name).cloned()) {
+        if let Some(p) = self
+            .inner
+            .registered_stores
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+        {
             return Some(p);
         }
         self.inner.stores.read().ok().and_then(|m| m.get(name).cloned())
@@ -775,7 +781,10 @@ impl BillingService {
         });
         if let Some(c) = &input.config {
             if !c.is_object() || c.to_string().len() > 64 * 1024 {
-                return Err(BillingError::invalid("invalid_config", "config must be an object of at most 64 KiB"));
+                return Err(BillingError::invalid(
+                    "invalid_config",
+                    "config must be an object of at most 64 KiB",
+                ));
             }
             secret["config"] = c.clone();
         }

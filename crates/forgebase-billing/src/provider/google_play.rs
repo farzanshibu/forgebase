@@ -76,10 +76,14 @@ impl GooglePlayConfig {
             package_name: s(v, "package_name"),
             client_email: s(&sa, "client_email"),
             private_key: s(&sa, "private_key"),
-            token_uri: Some(s(&sa, "token_uri")).filter(|t| !t.is_empty()).unwrap_or_else(|| TOKEN_URI.into()),
+            token_uri: Some(s(&sa, "token_uri"))
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| TOKEN_URI.into()),
             push_audience: s(v, "push_audience"),
             push_service_account: Some(s(v, "push_service_account")).filter(|t| !t.is_empty()),
-            certs_uri: Some(s(v, "certs_uri")).filter(|t| !t.is_empty()).unwrap_or_else(|| CERTS_URI.into()),
+            certs_uri: Some(s(v, "certs_uri"))
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| CERTS_URI.into()),
         }
     }
 }
@@ -266,7 +270,9 @@ impl GooglePlayProvider {
             product_id,
             kind: PurchaseKind::Subscription,
             state,
-            auto_renew: auto && state.live() && str_at(&v, &["subscriptionState"]) != Some("SUBSCRIPTION_STATE_CANCELED"),
+            auto_renew: auto
+                && state.live()
+                && str_at(&v, &["subscriptionState"]) != Some("SUBSCRIPTION_STATE_CANCELED"),
             period_start: None,
             expires_at: expires,
             purchased_at: str_at(&v, &["startTime"]).and_then(parse_iso).unwrap_or(now),
@@ -402,7 +408,8 @@ impl GooglePlayProvider {
             return Err(forged("the push token is issued in the future"));
         }
         if let Some(sa) = &self.cfg.push_service_account
-            && (str_at(c, &["email"]) != Some(sa.as_str()) || c.get("email_verified").and_then(Json::as_bool) != Some(true))
+            && (str_at(c, &["email"]) != Some(sa.as_str())
+                || c.get("email_verified").and_then(Json::as_bool) != Some(true))
         {
             return Err(forged("the push token is not from the configured service account"));
         }
@@ -489,7 +496,10 @@ impl StoreProvider for GooglePlayProvider {
                 .and_then(|d| serde_json::from_slice::<Json>(&d).ok())
                 .ok_or_else(|| BillingError::webhook("invalid_payload", "the message data is not base64 JSON"))?;
             if str_at(&data, &["packageName"]) != Some(self.cfg.package_name.as_str()) {
-                return Err(BillingError::invalid("wrong_app", "the notification belongs to another app"));
+                return Err(BillingError::invalid(
+                    "wrong_app",
+                    "the notification belongs to another app",
+                ));
             }
             let created_at = match data.get("eventTimeMillis") {
                 Some(Json::String(s)) => s.parse().unwrap_or(now_ms),

@@ -107,10 +107,8 @@ impl Jws {
         }
         let leaf_der = CertificateDer::from(chain[0].as_slice());
         let leaf = EndEntityCert::try_from(&leaf_der).map_err(|_| forged("the signing certificate is malformed"))?;
-        let intermediates: Vec<CertificateDer<'_>> = chain[1..]
-            .iter()
-            .map(|c| CertificateDer::from(c.as_slice()))
-            .collect();
+        let intermediates: Vec<CertificateDer<'_>> =
+            chain[1..].iter().map(|c| CertificateDer::from(c.as_slice())).collect();
         let secs = u64::try_from(now_ms.max(0) / 1000).unwrap_or_default();
         leaf.verify_for_usage(
             &[
@@ -134,7 +132,9 @@ impl Jws {
         if let Some(oid) = leaf_oid
             && !has(&chain[0], oid)?
         {
-            return Err(forged("the signing certificate is not a store receipt-signing certificate"));
+            return Err(forged(
+                "the signing certificate is not a store receipt-signing certificate",
+            ));
         }
         if let Some(oid) = intermediate_oid
             && !has(&chain[1], oid)?

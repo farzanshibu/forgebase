@@ -52,7 +52,6 @@ const FROM: &str = "_forgebase_billing_store_purchases sp JOIN _forgebase_billin
 #[derive(Debug, Clone)]
 struct Link {
     rec: StorePurchaseRecord,
-    customer_id: String,
     last_event_at: i64,
 }
 
@@ -76,7 +75,6 @@ fn link_row(r: &[forgebase_db::Value]) -> Link {
             created_at: int(r, 14),
             updated_at: int(r, 15),
         },
-        customer_id: text(r, 16),
         last_event_at: int(r, 17),
     }
 }
@@ -172,7 +170,12 @@ impl BillingService {
                 provider: text(r, 0),
                 product_id: text(r, 1),
                 price: text(r, 2),
-                kind: if text(r, 3) == "recurring" { "subscription" } else { "one_time" }.into(),
+                kind: if text(r, 3) == "recurring" {
+                    "subscription"
+                } else {
+                    "one_time"
+                }
+                .into(),
                 updated_at: int(r, 4),
             })
             .collect())
@@ -337,9 +340,10 @@ impl BillingService {
         let store = self.store_driver(provider)?;
         let kind = match input.kind.as_deref() {
             None | Some("") => None,
-            Some(k) => Some(PurchaseKind::parse(k).ok_or_else(|| {
-                BillingError::invalid("invalid_kind", "kind is subscription or one_time")
-            })?),
+            Some(k) => Some(
+                PurchaseKind::parse(k)
+                    .ok_or_else(|| BillingError::invalid("invalid_kind", "kind is subscription or one_time"))?,
+            ),
         };
         let claim = PurchaseClaim {
             transaction_id: input.transaction_id,
@@ -387,7 +391,10 @@ impl BillingService {
             )
             .await?;
         let product_id = rows.rows.first().map(|r| text(r, 0)).ok_or_else(|| {
-            BillingError::invalid("unknown_store_product", "the price is not mapped to a product of this store")
+            BillingError::invalid(
+                "unknown_store_product",
+                "the price is not mapped to a product of this store",
+            )
         })?;
         let cust = self.ensure_customer(&subject).await?;
         // The request id is stable per subject and key (store idempotency).
@@ -431,12 +438,11 @@ impl BillingService {
                 Err(e) => Err(e),
                 Ok(()) => match self.apply_store(&store, None, p.clone()).await {
                     // Purchases ForgeBase cannot place are recorded, not retried.
-                    Err(
-                        BillingError::Invalid { code, .. } | BillingError::Conflict { code, .. },
-                    ) if matches!(
-                        code,
-                        "unknown_store_product" | "store_product_kind" | "purchase_owned" | "already_subscribed"
-                    ) =>
+                    Err(BillingError::Invalid { code, .. } | BillingError::Conflict { code, .. })
+                        if matches!(
+                            code,
+                            "unknown_store_product" | "store_product_kind" | "purchase_owned" | "already_subscribed"
+                        ) =>
                     {
                         Ok(StoreOutcome::ignored(code))
                     }
@@ -494,7 +500,9 @@ impl BillingService {
             }
         };
         for l in due {
-            let Some(store) = self.store(&l.rec.provider) else { continue };
+            let Some(store) = self.store(&l.rec.provider) else {
+                continue;
+            };
             let mut tx = match self.begin().await {
                 Ok(t) => t,
                 Err(_) => return,
@@ -593,7 +601,10 @@ impl BillingService {
                 .unwrap_or(price.unit_amount)
                 .saturating_mul(p.quantity.max(1)),
         };
-        let months = period_months(price.interval.unwrap_or(crate::model::Interval::Month), price.interval_count);
+        let months = period_months(
+            price.interval.unwrap_or(crate::model::Interval::Month),
+            price.interval_count,
+        );
 
         let mut tx = self.begin().await?;
         let res = async {
@@ -788,8 +799,10 @@ impl BillingService {
                     }
                 }
             }
-            if p.kind == PurchaseKind::Subscription && billable {
-                if let Some(sid) = &sub_id {
+            if p.kind == PurchaseKind::Subscription
+                && billable
+                && let Some(sid) = &sub_id
+            {
                     let first = t
                         .fetch(
                             "SELECT COUNT(*) FROM _forgebase_billing_invoices WHERE subscription_id = ?1",
@@ -826,7 +839,6 @@ impl BillingService {
                         detail = "renewed";
                     }
                     paid_invoice = Some(inv);
-                }
             }
 
             if p.kind == PurchaseKind::OneTime && order_id.is_none() && billable {
@@ -946,7 +958,10 @@ impl BillingService {
             tracing::warn!(provider, purchase = %p.purchase_id, error = %e, "store acknowledgement failed");
         }
         let rows = self
-            .fetch(&format!("SELECT {COLUMNS} FROM {FROM} WHERE sp.id = ?1"), vec![link_id.into()])
+            .fetch(
+                &format!("SELECT {COLUMNS} FROM {FROM} WHERE sp.id = ?1"),
+                vec![link_id.into()],
+            )
             .await?;
         Ok(StoreOutcome {
             status: if detail == "stale" { "ignored" } else { "processed" },
@@ -1044,7 +1059,12 @@ impl BillingService {
             vec![
                 new_id("il").into(),
                 id.clone().into(),
-                if i.subscription_id.is_some() { "subscription" } else { "one_time" }.into(),
+                if i.subscription_id.is_some() {
+                    "subscription"
+                } else {
+                    "one_time"
+                }
+                .into(),
                 format!("{} ({})", i.price.product, i.provider).into(),
                 i.price.product.clone().into(),
                 i.price.key.clone().into(),
@@ -1053,7 +1073,9 @@ impl BillingService {
                 i.amount.into(),
                 i.period.map(|p| p.0).into(),
                 i.period.map(|p| p.1).into(),
-                json!({"store": i.provider, "transaction_id": i.transaction_id}).to_string().into(),
+                json!({"store": i.provider, "transaction_id": i.transaction_id})
+                    .to_string()
+                    .into(),
             ],
         )
         .await?;
