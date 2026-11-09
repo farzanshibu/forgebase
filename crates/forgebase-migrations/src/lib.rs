@@ -110,6 +110,16 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0016_functions.sql"),
     ),
     Migration::new(
+        17,
+        "storage",
+        include_str!("../../../migrations/system/0017_storage.sql"),
+    ),
+    Migration::new(
+        19,
+        "customize",
+        include_str!("../../../migrations/system/0019_customize.sql"),
+    ),
+    Migration::new(
         20,
         "billing",
         include_str!("../../../migrations/system/0020_billing.sql"),

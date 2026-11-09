@@ -166,6 +166,8 @@ pub struct Config {
     pub log: LogConfig,
     /// Redis protocol listener settings.
     pub resp: RespConfig,
+    /// Object storage settings (FB-30).
+    pub storage: StorageConfig,
     /// Billing settings.
     pub billing: BillingConfig,
 }
@@ -175,6 +177,42 @@ pub struct Config {
 pub struct BillingConfig {
     /// Whether billing is mounted and its maintenance job runs. Off by default.
     pub enabled: bool,
+}
+
+/// Which driver keeps object bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageDriverKind {
+    /// Files under `<data dir>/storage`.
+    Local,
+    /// An S3-compatible service.
+    S3,
+}
+
+/// Object storage settings (FB-30, ADR-0018). The S3 credentials are not
+/// part of the configuration: set `FORGEBASE_STORAGE_S3_ACCESS_KEY` and
+/// `FORGEBASE_STORAGE_S3_SECRET_KEY` (and optionally
+/// `FORGEBASE_STORAGE_S3_SESSION_TOKEN`) in the environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StorageConfig {
+    /// `local` (default) or `s3`.
+    pub driver: StorageDriverKind,
+    /// Largest object in bytes.
+    pub max_object_bytes: u64,
+    /// Seconds an upload session lives.
+    pub upload_ttl_secs: u64,
+    /// Seconds before the reconciler removes unreferenced blobs and stale staging files.
+    pub reconcile_grace_secs: u64,
+    /// S3 endpoint URL (`https://...`).
+    pub s3_endpoint: String,
+    /// S3 signing region.
+    pub s3_region: String,
+    /// S3 bucket holding the blobs.
+    pub s3_bucket: String,
+    /// Key prefix inside the S3 bucket.
+    pub s3_prefix: String,
+    /// Multipart part size in bytes (S3 needs at least 5 MiB).
+    pub s3_part_size: u64,
 }
 
 /// Settings of the optional RESP (Redis protocol) listener (FB-32, ADR-0013).
@@ -256,6 +294,17 @@ impl Config {
                 max_bulk_bytes: 16 * 1024 * 1024,
                 idle_timeout_secs: 300,
             },
+            storage: StorageConfig {
+                driver: StorageDriverKind::Local,
+                max_object_bytes: 5 * 1024 * 1024 * 1024,
+                upload_ttl_secs: 24 * 3600,
+                reconcile_grace_secs: 3600,
+                s3_endpoint: String::new(),
+                s3_region: "us-east-1".to_owned(),
+                s3_bucket: String::new(),
+                s3_prefix: String::new(),
+                s3_part_size: 8 * 1024 * 1024,
+            },
             billing: BillingConfig { enabled: false },
         }
     }
@@ -294,6 +343,20 @@ impl Config {
         if !(1..=512 * 1024 * 1024).contains(&self.resp.max_bulk_bytes) {
             return Err(invalid("resp.max_bulk_bytes", "must be between 1 and 536870912".into()));
         }
+        if self.storage.driver == StorageDriverKind::S3
+            && (self.storage.s3_endpoint.trim().is_empty() || self.storage.s3_bucket.trim().is_empty())
+        {
+            return Err(invalid(
+                "storage.s3_endpoint",
+                "the s3 driver needs s3_endpoint and s3_bucket".into(),
+            ));
+        }
+        if self.storage.max_object_bytes == 0 || self.storage.s3_part_size < 1024 {
+            return Err(invalid(
+                "storage.max_object_bytes",
+                "max_object_bytes must be positive and s3_part_size at least 1024".into(),
+            ));
+        }
         if self.resp.idle_timeout_secs > 86_400 {
             return Err(invalid("resp.idle_timeout_secs", "must be at most 86400".into()));
         }
@@ -330,6 +393,35 @@ impl Config {
         }
         if let Some(v) = o.log_format {
             self.log.format = v;
+        }
+        if let Some(st) = &o.storage {
+            if let Some(v) = st.driver {
+                self.storage.driver = v;
+            }
+            if let Some(v) = st.max_object_bytes {
+                self.storage.max_object_bytes = v;
+            }
+            if let Some(v) = st.upload_ttl_secs {
+                self.storage.upload_ttl_secs = v;
+            }
+            if let Some(v) = st.reconcile_grace_secs {
+                self.storage.reconcile_grace_secs = v;
+            }
+            if let Some(v) = &st.s3_endpoint {
+                self.storage.s3_endpoint.clone_from(v);
+            }
+            if let Some(v) = &st.s3_region {
+                self.storage.s3_region.clone_from(v);
+            }
+            if let Some(v) = &st.s3_bucket {
+                self.storage.s3_bucket.clone_from(v);
+            }
+            if let Some(v) = &st.s3_prefix {
+                self.storage.s3_prefix.clone_from(v);
+            }
+            if let Some(v) = st.s3_part_size {
+                self.storage.s3_part_size = v;
+            }
         }
         if let Some(v) = o.resp_enabled {
             self.resp.enabled = v;
@@ -392,6 +484,8 @@ pub struct ConfigOverrides {
     pub resp_max_bulk_bytes: Option<u64>,
     /// RESP idle timeout in seconds.
     pub resp_idle_timeout_secs: Option<u64>,
+    /// `[storage]` section of the config file.
+    pub storage: Option<StorageOverrides>,
     /// Mount billing.
     pub billing_enabled: Option<bool>,
 }
@@ -453,6 +547,30 @@ where
     value.trim().parse::<T>().map_err(|e| format!("{value:?}: {e}"))
 }
 
+/// `[storage]` settings from a config file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageOverrides {
+    /// `local` or `s3`.
+    pub driver: Option<StorageDriverKind>,
+    /// Largest object in bytes.
+    pub max_object_bytes: Option<u64>,
+    /// Upload session lifetime in seconds.
+    pub upload_ttl_secs: Option<u64>,
+    /// Reconciler grace period in seconds.
+    pub reconcile_grace_secs: Option<u64>,
+    /// S3 endpoint.
+    pub s3_endpoint: Option<String>,
+    /// S3 region.
+    pub s3_region: Option<String>,
+    /// S3 bucket.
+    pub s3_bucket: Option<String>,
+    /// S3 key prefix.
+    pub s3_prefix: Option<String>,
+    /// Multipart part size.
+    pub s3_part_size: Option<u64>,
+}
+
 /// The TOML file shape. Every field is optional; unknown keys are errors.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -466,6 +584,7 @@ struct FileConfig {
     log: FileLog,
     #[serde(default)]
     resp: FileResp,
+    storage: Option<StorageOverrides>,
     #[serde(default)]
     billing: FileBilling,
 }
@@ -531,6 +650,7 @@ impl From<FileConfig> for ConfigOverrides {
             resp_max_connections: f.resp.max_connections,
             resp_max_bulk_bytes: f.resp.max_bulk_bytes,
             resp_idle_timeout_secs: f.resp.idle_timeout_secs,
+            storage: f.storage,
             billing_enabled: f.billing.enabled,
         }
     }

@@ -35,6 +35,7 @@ use std::time::Duration;
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
 use forgebase_credits::CreditService;
+use forgebase_customize::{CustomizeConfig, CustomizeService};
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_entitlements::{EntitlementService, SystemClock};
@@ -68,6 +69,7 @@ pub struct RunningServer {
     functions: FunctionService,
     credits: CreditService,
     billing: Option<forgebase_billing::BillingService>,
+    customize: CustomizeService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -139,6 +141,21 @@ pub async fn start_with_jobs(
             return Err(ServerError::Credits(e.to_string()));
         }
     };
+    // Product customization (FB-74): domains, branding, email, agreements.
+    let customize = match CustomizeService::open(
+        Arc::new(db.clone()),
+        policy.clone(),
+        Arc::new(forgebase_auth::SystemClock),
+        CustomizeConfig::default(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            db.close().await;
+            return Err(ServerError::Customize(e.to_string()));
+        }
+    };
     // One authorizer — the policy engine — for the data core and the KV engine.
     let authorizer: Arc<dyn Authorizer> = policy.authorizer();
     let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
@@ -204,6 +221,19 @@ pub async fn start_with_jobs(
     }
     let registry = forgebase_entitlements::register_jobs(registry, entitlements.clone());
     let registry = forgebase_functions::register_jobs(registry, functions.clone());
+    // Object storage (FB-30): local directory or S3-compatible driver.
+    let storage = match open_storage(&db, &layout, config, state.data().clone(), &entitlements).await {
+        Ok(s) => s,
+        Err(e) => {
+            db.close().await;
+            return Err(e);
+        }
+    };
+    storage.attach_jobs(jobs.clone());
+    if let Err(e) = storage.ensure_schedule().await {
+        tracing::warn!(error = %e, "storage reconcile schedule not created");
+    }
+    let registry = forgebase_storage::register_jobs(registry, storage.clone());
     credits.attach_jobs(jobs.clone());
     if let Err(e) = credits.ensure_schedule().await {
         tracing::warn!(error = %e, "credit maintenance schedule not created");
@@ -219,6 +249,8 @@ pub async fn start_with_jobs(
         }
         None => registry,
     };
+    customize.attach_jobs(jobs.clone());
+    let registry = forgebase_customize::register_jobs(registry, customize.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -231,18 +263,28 @@ pub async fn start_with_jobs(
         forgebase_vector::extension(vector.clone()),
         forgebase_entitlements::extension(entitlements.clone()),
         forgebase_functions::extension(functions.clone()),
+        forgebase_storage::extension(storage.clone()),
         forgebase_credits::extension(credits.clone()),
+        forgebase_customize::extension(customize.clone()),
     ];
     if let Some(b) = &billing {
         extensions.push(forgebase_billing::extension(b.clone()));
     }
     let opts = RouterOptions {
         extensions,
-        gates: vec![entitlements.rate_gate()],
+        gates: vec![
+            entitlements.rate_gate(),
+            Arc::new(forgebase_customize::AgreementGate::new(customize.clone())),
+        ],
         ..opts
     };
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
     let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
+    // Host-header routing of verified custom domains: outermost, before auth and tenancy.
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        customize.clone(),
+        forgebase_customize::host_router,
+    ));
 
     let bind = (config.server.host.as_str(), config.server.port);
     let listener = match TcpListener::bind(bind).await {
@@ -336,6 +378,7 @@ pub async fn start_with_jobs(
         functions,
         credits,
         billing,
+        customize,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -466,6 +509,11 @@ impl RunningServer {
     /// The billing application (`None` unless `[billing] enabled`).
     pub fn billing(&self) -> Option<&forgebase_billing::BillingService> {
         self.billing.as_ref()
+    }
+
+    /// The customization service (domains, branding, email, agreements).
+    pub fn customize(&self) -> &CustomizeService {
+        &self.customize
     }
 
     /// The vector engine of this instance.
@@ -643,12 +691,18 @@ pub enum ServerError {
     /// The functions engine failed to start.
     #[error("functions: {0}")]
     Functions(String),
+    /// Object storage could not start.
+    #[error("storage: {0}")]
+    Storage(String),
     /// The credit service failed to open.
     #[error("credits: {0}")]
     Credits(String),
     /// The billing service failed to open.
     #[error("billing: {0}")]
     Billing(String),
+    /// The customization service failed to open.
+    #[error("customize: {0}")]
+    Customize(String),
 }
 
 impl ErrorCode for ServerError {
@@ -668,8 +722,10 @@ impl ErrorCode for ServerError {
             ServerError::Realtime(e) => e.code(),
             ServerError::Entitlements(_) => "entitlements_unavailable",
             ServerError::Functions(_) => "functions_unavailable",
+            ServerError::Storage(_) => "storage_unavailable",
             ServerError::Credits(_) => "credits_unavailable",
             ServerError::Billing(_) => "billing_unavailable",
+            ServerError::Customize(_) => "customize_unavailable",
         }
     }
 
@@ -685,9 +741,59 @@ impl ErrorCode for ServerError {
             ServerError::Policy(_)
             | ServerError::Entitlements(_)
             | ServerError::Functions(_)
+            | ServerError::Storage(_)
             | ServerError::Credits(_)
+            | ServerError::Customize(_)
             | ServerError::Billing(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }
+}
+
+/// Builds the storage service for the configured driver.
+async fn open_storage(
+    db: &Database,
+    layout: &DataLayout,
+    config: &Config,
+    data: forgebase_data::DataService,
+    entitlements: &EntitlementService,
+) -> Result<forgebase_storage::StorageService, ServerError> {
+    use forgebase_storage::{LocalDriver, S3Config, S3Driver, StorageDriver, StorageService, StorageSettings};
+    let sc = &config.storage;
+    let driver: Arc<dyn StorageDriver> = match sc.driver {
+        forgebase_core::StorageDriverKind::Local => Arc::new(LocalDriver::new(layout.storage_dir())),
+        forgebase_core::StorageDriverKind::S3 => {
+            let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+            let (Some(access), Some(secret)) = (
+                env("FORGEBASE_STORAGE_S3_ACCESS_KEY"),
+                env("FORGEBASE_STORAGE_S3_SECRET_KEY"),
+            ) else {
+                return Err(ServerError::Storage(
+                    "the s3 driver needs FORGEBASE_STORAGE_S3_ACCESS_KEY and FORGEBASE_STORAGE_S3_SECRET_KEY".into(),
+                ));
+            };
+            let mut cfg = S3Config::new(&sc.s3_endpoint, &sc.s3_bucket, access, secret);
+            cfg.region.clone_from(&sc.s3_region);
+            cfg.prefix.clone_from(&sc.s3_prefix);
+            cfg.session_token = env("FORGEBASE_STORAGE_S3_SESSION_TOKEN");
+            cfg.part_size = usize::try_from(sc.s3_part_size).unwrap_or(8 * 1024 * 1024);
+            let tls = forgebase_auth::net::TlsSettings::new();
+            let client = forgebase_auth::net::HttpsClient::new(&tls)
+                .map_err(|e| ServerError::Storage(e.to_string()))?
+                .with_timeout(std::time::Duration::from_secs(120))
+                .with_max_body(cfg.read_chunk.max(cfg.part_size) + 1024 * 1024);
+            Arc::new(S3Driver::new(cfg, Arc::new(client)).map_err(|e| ServerError::Storage(e.to_string()))?)
+        }
+    };
+    let settings = StorageSettings {
+        max_object_bytes: sc.max_object_bytes,
+        upload_ttl_secs: sc.upload_ttl_secs,
+        reconcile_grace_secs: sc.reconcile_grace_secs,
+        ..StorageSettings::default()
+    };
+    let svc = StorageService::open(Arc::new(db.clone()), data, driver, Arc::new(SystemClock), settings)
+        .await
+        .map_err(|e| ServerError::Storage(e.to_string()))?;
+    svc.attach_entitlements(entitlements.clone());
+    Ok(svc)
 }
