@@ -371,10 +371,7 @@ impl RealmDirectory {
 
     fn replace(&self, realms: Vec<RealmIdentity>, service_accounts: HashMap<String, String>) {
         let mut d = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        d.by_collection = realms
-            .iter()
-            .map(|r| (r.collection.clone(), r.realm.clone()))
-            .collect();
+        d.by_collection = realms.iter().map(|r| (r.collection.clone(), r.realm.clone())).collect();
         d.realms = realms.into_iter().map(|r| (r.realm.clone(), Arc::new(r))).collect();
         d.service_accounts = service_accounts;
     }
@@ -393,7 +390,8 @@ impl RealmDirectory {
 pub(crate) fn check_realm_id(r: &str) -> Result<(), AuthError> {
     let ok = !r.is_empty()
         && r.len() <= 64
-        && r.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        && r.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     if ok {
         Ok(())
     } else {
@@ -578,9 +576,11 @@ impl AuthService {
     pub fn realm_info(&self, ci: &ClientInfo) -> Result<Json, AuthError> {
         let ident = self.request_realm(ci)?;
         let c = &ident.config;
-        let turnstile = c.turnstile.as_ref().filter(|t| t.enabled).map(|t| {
-            json!({"site_key": t.site_key, "actions": t.actions})
-        });
+        let turnstile = c
+            .turnstile
+            .as_ref()
+            .filter(|t| t.enabled)
+            .map(|t| json!({"site_key": t.site_key, "actions": t.actions}));
         Ok(json!({
             "realm": ident.realm,
             "collection": ident.collection,
@@ -649,7 +649,12 @@ impl AuthService {
             // users would otherwise move out of the default realm.
             if let Ok(c) = self.auth_collection(Some(&collection)).await {
                 let q = self.data().backend().dialect().quote_ident(&c.name);
-                let r = read(self.data().backend(), &format!("SELECT 1 AS x FROM {q} LIMIT 1"), vec![]).await?;
+                let r = read(
+                    self.data().backend(),
+                    &format!("SELECT 1 AS x FROM {q} LIMIT 1"),
+                    vec![],
+                )
+                .await?;
                 if first(&r).is_some() {
                     return Err(AuthError::Conflict(format!(
                         "collection {collection} already holds users of realm default"

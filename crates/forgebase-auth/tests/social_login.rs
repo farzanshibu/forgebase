@@ -625,7 +625,13 @@ async fn the_same_provider_account_in_two_realms_is_two_users() {
     h.sql("INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('acme', 'Acme', '{}', 0)")
         .await;
     let r = h
-        .send(axum::http::Method::PUT, "/api/auth/realms/acme", Some(&admin), Some(json!({})), &[])
+        .send(
+            axum::http::Method::PUT,
+            "/api/auth/realms/acme",
+            Some(&admin),
+            Some(json!({})),
+            &[],
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let a = sign_in(&h, &idp, "google").await;
@@ -633,17 +639,38 @@ async fn the_same_provider_account_in_two_realms_is_two_users() {
 
     // Not registered in acme yet.
     let r = h
-        .send(axum::http::Method::POST, "/api/auth/oauth/google/start", None, Some(json!({})), &[("x-forgebase-realm", "acme")])
+        .send(
+            axum::http::Method::POST,
+            "/api/auth/oauth/google/start",
+            None,
+            Some(json!({})),
+            &[("x-forgebase-realm", "acme")],
+        )
         .await;
     assert_error(&r, StatusCode::NOT_FOUND, "not_found");
     let r = h
-        .send(axum::http::Method::GET, "/api/auth/oauth/providers", None, None, &[("x-forgebase-realm", "acme")])
+        .send(
+            axum::http::Method::GET,
+            "/api/auth/oauth/providers",
+            None,
+            None,
+            &[("x-forgebase-realm", "acme")],
+        )
         .await;
     assert_eq!(r.json["providers"].as_array().unwrap().len(), 0, "{}", r.json);
-    h.auth.providers().register("acme", provider(&idp, "google", "google")).unwrap();
+    h.auth
+        .providers()
+        .register("acme", provider(&idp, "google", "google"))
+        .unwrap();
 
     let s = h
-        .send(axum::http::Method::POST, "/api/auth/oauth/google/start", None, Some(json!({})), &[("x-forgebase-realm", "acme")])
+        .send(
+            axum::http::Method::POST,
+            "/api/auth/oauth/google/start",
+            None,
+            Some(json!({})),
+            &[("x-forgebase-realm", "acme")],
+        )
         .await;
     assert_eq!(s.status, StatusCode::OK, "{}", s.json);
     let (code, state) = idp.authorize(s.json["authorization_url"].as_str().unwrap());
@@ -652,9 +679,13 @@ async fn the_same_provider_account_in_two_realms_is_two_users() {
     assert_eq!(b.status, StatusCode::OK, "{}", b.json);
     assert_eq!(b.json["user"]["collection"], "acme_users");
     assert_ne!(a.json["user"]["id"], b.json["user"]["id"]);
-    assert_eq!(a.json["user"]["email"], b.json["user"]["email"], "same email, two realms");
     assert_eq!(
-        h.count("SELECT COUNT(DISTINCT realm) FROM _forgebase_oauth_identities WHERE provider = 'google'").await,
+        a.json["user"]["email"], b.json["user"]["email"],
+        "same email, two realms"
+    );
+    assert_eq!(
+        h.count("SELECT COUNT(DISTINCT realm) FROM _forgebase_oauth_identities WHERE provider = 'google'")
+            .await,
         2
     );
     // Browser start with ?realm= (no header possible on a navigation).
@@ -670,7 +701,13 @@ async fn the_same_provider_account_in_two_realms_is_two_users() {
     )
     .await;
     let r = h
-        .send(axum::http::Method::POST, "/api/auth/oauth/google/start", None, Some(json!({})), &[("x-forgebase-realm", "acme")])
+        .send(
+            axum::http::Method::POST,
+            "/api/auth/oauth/google/start",
+            None,
+            Some(json!({})),
+            &[("x-forgebase-realm", "acme")],
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
 }
@@ -689,5 +726,10 @@ fn providers_file_entries_may_name_their_realm() {
     assert_eq!(n, 2);
     assert_eq!(reg.list("default").len(), 1);
     assert_eq!(reg.list("acme").len(), 1);
-    assert!(reg.load_json(r#"{"providers": [{"id": "x", "kind": "github", "client_id": "a", "client_secret": "b", "realm": "Bad!"}]}"#).is_err());
+    assert!(
+        reg.load_json(
+            r#"{"providers": [{"id": "x", "kind": "github", "client_id": "a", "client_secret": "b", "realm": "Bad!"}]}"#
+        )
+        .is_err()
+    );
 }

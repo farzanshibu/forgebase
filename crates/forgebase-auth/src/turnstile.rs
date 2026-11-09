@@ -153,7 +153,11 @@ impl AuthService {
         }
         let secret = ts.secret.get().ok_or("not_configured")?;
         let idempotency = crate::crypto::random_token(16).map_err(|_| "unavailable")?;
-        let mut fields = vec![("secret", secret), ("response", token), ("idempotency_key", idempotency.as_str())];
+        let mut fields = vec![
+            ("secret", secret),
+            ("response", token),
+            ("idempotency_key", idempotency.as_str()),
+        ];
         if let Some(ip) = ci.ip.as_deref() {
             fields.push(("remoteip", ip));
         }

@@ -242,9 +242,12 @@ mod tests {
 
     #[tokio::test]
     async fn frames_by_length_chunks_and_close() {
-        let r = parse(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}trailing-junk", 100)
-            .await
-            .unwrap();
+        let r = parse(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}trailing-junk",
+            100,
+        )
+        .await
+        .unwrap();
         assert_eq!((r.status, r.body.as_slice()), (200, b"{\"a\":1}".as_slice()));
         let r = parse(
             b"HTTP/1.1 201 X\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;ext=1\r\nde\r\n0\r\nX-T: 1\r\n\r\n",
@@ -263,11 +266,26 @@ mod tests {
 
     #[tokio::test]
     async fn caps_and_garbage_are_errors() {
-        assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789", 5).await.is_err());
+        assert!(
+            parse(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789", 5)
+                .await
+                .is_err()
+        );
         assert!(parse(b"HTTP/1.1 200 OK\r\n\r\n0123456789", 5).await.is_err());
-        assert!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\n012345678\r\n0\r\n\r\n", 5).await.is_err());
+        assert!(
+            parse(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\n012345678\r\n0\r\n\r\n",
+                5
+            )
+            .await
+            .is_err()
+        );
         assert!(parse(b"garbage", 5).await.is_err());
-        assert!(parse(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort", 100).await.is_err());
+        assert!(
+            parse(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort", 100)
+                .await
+                .is_err()
+        );
         assert!(parse(b"SSH-2.0-x\r\n\r\n", 100).await.is_err());
     }
 

@@ -261,7 +261,10 @@ impl AuthService {
         if !matches!(role, "service" | "admin") {
             return Err(AuthError::invalid("role must be 'service' or 'admin'"));
         }
-        let realm = ci.realm.clone().unwrap_or_else(|| forgebase_data::DEFAULT_REALM.to_owned());
+        let realm = ci
+            .realm
+            .clone()
+            .unwrap_or_else(|| forgebase_data::DEFAULT_REALM.to_owned());
         crate::realm::check_realm_id(&realm)?;
         let known = crate::store::read(
             self.data().backend(),

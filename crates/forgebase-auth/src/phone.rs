@@ -55,20 +55,22 @@ pub fn normalize_phone(raw: &str) -> Result<String, AuthError> {
         s = format!("+{rest}");
     }
     let digits = s.strip_prefix('+').unwrap_or("");
-    let ok = (8..=15).contains(&digits.len())
-        && digits.bytes().all(|b| b.is_ascii_digit())
-        && !digits.starts_with('0');
+    let ok = (8..=15).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) && !digits.starts_with('0');
     if ok {
         Ok(format!("+{digits}"))
     } else {
-        Err(AuthError::invalid("phone must be an international number such as +4915112345678"))
+        Err(AuthError::invalid(
+            "phone must be an international number such as +4915112345678",
+        ))
     }
 }
 
 fn session_user(caller: &Authenticated) -> Result<(String, String), AuthError> {
     match (&caller.subject, caller.session_id()) {
         (Subject::User { collection, id }, Some(_)) => Ok((collection.clone(), id.clone())),
-        _ => Err(AuthError::Forbidden("phone numbers are managed by signed-in users".into())),
+        _ => Err(AuthError::Forbidden(
+            "phone numbers are managed by signed-in users".into(),
+        )),
     }
 }
 
@@ -278,7 +280,9 @@ impl AuthService {
         }
         // A reserved placeholder address (keyed hash: the number cannot be
         // read back from it); the user can add a real email later.
-        let tag = self.keyring().token_hash("phone_placeholder", &format!("{}:{phone}", coll.name));
+        let tag = self
+            .keyring()
+            .token_hash("phone_placeholder", &format!("{}:{phone}", coll.name));
         let email = format!("phone.{}@phone.invalid", &tag[..24]);
         let password = crypto::random_token(32)?;
         self.hasher().prehash(&password).await?;
@@ -420,7 +424,9 @@ impl AuthService {
             .await;
         if let Err(e) = res {
             if is_unique_violation(&e) {
-                return Err(AuthError::Conflict("this phone number belongs to another account".into()));
+                return Err(AuthError::Conflict(
+                    "this phone number belongs to another account".into(),
+                ));
             }
             return Err(e);
         }
@@ -481,7 +487,15 @@ mod tests {
         assert_eq!(normalize_phone("+49 151 1234-5678").unwrap(), "+4915112345678");
         assert_eq!(normalize_phone("0049 (151) 12345678").unwrap(), "+4915112345678");
         assert_eq!(normalize_phone("+1.555.010.0199").unwrap(), "+15550100199");
-        for bad in ["", "12345678", "+0123456789", "+12", "+1234567890123456", "+1555abc0100", "+1 555\n0100"] {
+        for bad in [
+            "",
+            "12345678",
+            "+0123456789",
+            "+12",
+            "+1234567890123456",
+            "+1555abc0100",
+            "+1 555\n0100",
+        ] {
             assert!(normalize_phone(bad).is_err(), "{bad:?}");
         }
     }

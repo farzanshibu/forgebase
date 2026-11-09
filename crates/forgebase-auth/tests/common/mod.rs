@@ -83,9 +83,22 @@ impl H {
     }
 
     /// A JSON request with extra headers (realm, Turnstile token, ...).
-    pub async fn send(&self, method: Method, path: &str, bearer: Option<&str>, body: Option<Value>, headers: &[(&str, &str)]) -> Resp {
-        self.req_with(method, path, bearer, body.map(|v| ("application/json", v.to_string())), headers)
-            .await
+    pub async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<Value>,
+        headers: &[(&str, &str)],
+    ) -> Resp {
+        self.req_with(
+            method,
+            path,
+            bearer,
+            body.map(|v| ("application/json", v.to_string())),
+            headers,
+        )
+        .await
     }
 
     pub async fn req_with(
@@ -171,7 +184,12 @@ impl H {
     /// Creates the administrator `root@example.com` and returns an access token.
     pub async fn root_token(&self) -> String {
         self.auth
-            .create_admin("root@example.com", "admin password 1", "test", &forgebase_auth::ClientInfo::default())
+            .create_admin(
+                "root@example.com",
+                "admin password 1",
+                "test",
+                &forgebase_auth::ClientInfo::default(),
+            )
             .await
             .unwrap();
         let r = self

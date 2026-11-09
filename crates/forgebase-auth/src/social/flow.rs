@@ -234,8 +234,15 @@ impl AuthService {
         let (collection, id) = Self::session_user(caller)?;
         let realm = self.realm_of(&collection)?;
         realm.require(crate::realm::Method::Oauth)?;
-        self.oauth_begin(&realm.realm, provider, "link", &collection, Some(id), &LoginOptions::default())
-            .await
+        self.oauth_begin(
+            &realm.realm,
+            provider,
+            "link",
+            &collection,
+            Some(id),
+            &LoginOptions::default(),
+        )
+        .await
     }
 
     fn session_user(caller: &Authenticated) -> Result<(String, String), AuthError> {
@@ -852,7 +859,11 @@ impl AuthService {
         profile: &Profile,
         placeholder_domain: &str,
     ) -> Result<(String, String), AuthError> {
-        let event = if provider == "ldap" { "ldap.login" } else { "oauth.login" };
+        let event = if provider == "ldap" {
+            "ldap.login"
+        } else {
+            "oauth.login"
+        };
         if let Some(email) = &profile.email
             && let Some(user) = self.find_user(coll, email).await?
         {
@@ -876,8 +887,16 @@ impl AuthService {
                         .into(),
                 ));
             }
-            self.insert_identity(ci, &realm.realm, provider, profile, &coll.name, &user.id, "verified_email")
-                .await?;
+            self.insert_identity(
+                ci,
+                &realm.realm,
+                provider,
+                profile,
+                &coll.name,
+                &user.id,
+                "verified_email",
+            )
+            .await?;
             return Ok((coll.name.clone(), user.id));
         }
         if !allow_signup || !realm.config.signup {
@@ -934,7 +953,9 @@ impl AuthService {
                     .delete_record(&AccessContext::system(), &coll.name, &uid, None)
                     .await;
                 if is_unique_violation(&e)
-                    && let Some((_, c, u)) = self.identity_by_subject(&realm.realm, provider, &profile.subject).await?
+                    && let Some((_, c, u)) = self
+                        .identity_by_subject(&realm.realm, provider, &profile.subject)
+                        .await?
                 {
                     return Ok((c, u));
                 }

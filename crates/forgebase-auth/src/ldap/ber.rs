@@ -131,7 +131,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Next TLV: tag and contents.
-    pub fn next(&mut self) -> Result<(u8, &'a [u8]), BerError> {
+    pub fn read_tlv(&mut self) -> Result<(u8, &'a [u8]), BerError> {
         let total = frame_len(self.b)?.ok_or(BerError)?;
         if total > self.b.len() {
             return Err(BerError);
@@ -148,7 +148,7 @@ impl<'a> Reader<'a> {
 
     /// Next value, which must carry `tag`.
     pub fn expect(&mut self, tag: u8) -> Result<&'a [u8], BerError> {
-        match self.next()? {
+        match self.read_tlv()? {
             (t, c) if t == tag => Ok(c),
             _ => Err(BerError),
         }
@@ -161,7 +161,8 @@ impl<'a> Reader<'a> {
             return Err(BerError);
         }
         let neg = c[0] & 0x80 != 0;
-        Ok(c.iter().fold(if neg { -1i64 } else { 0 }, |acc, x| (acc << 8) | *x as i64))
+        Ok(c.iter()
+            .fold(if neg { -1i64 } else { 0 }, |acc, x| (acc << 8) | *x as i64))
     }
 
     /// Next INTEGER.
@@ -210,6 +211,6 @@ mod tests {
         let mut r = Reader::new(&big);
         assert_eq!(r.octets().unwrap().len(), 300);
         assert!(r.is_empty());
-        assert!(Reader::new(&[0x04, 0x05, 0x01]).next().is_err(), "truncated");
+        assert!(Reader::new(&[0x04, 0x05, 0x01]).read_tlv().is_err(), "truncated");
     }
 }

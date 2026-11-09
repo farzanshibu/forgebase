@@ -168,11 +168,15 @@ impl Parser<'_> {
                         .and_then(|h| std::str::from_utf8(h).ok())
                         .and_then(|h| u8::from_str_radix(h, 16).ok())
                         .ok_or_else(|| self.err("bad escape"))?;
-                    parts.last_mut().map(|p| p.push(hex));
+                    if let Some(p) = parts.last_mut() {
+                        p.push(hex);
+                    }
                     self.pos += 3;
                 }
                 c => {
-                    parts.last_mut().map(|p| p.push(c));
+                    if let Some(p) = parts.last_mut() {
+                        p.push(c);
+                    }
                     self.pos += 1;
                 }
             }
@@ -262,7 +266,7 @@ impl Filter {
             let mut r = Reader::new(c);
             let mut v = Vec::new();
             while !r.is_empty() {
-                let (t, c) = r.next()?;
+                let (t, c) = r.read_tlv()?;
                 v.push(Filter::decode(t, c)?);
             }
             Ok(v)
@@ -275,7 +279,7 @@ impl Filter {
             0xa0 => Filter::And(list(content)?),
             0xa1 => Filter::Or(list(content)?),
             0xa2 => {
-                let (t, c) = Reader::new(content).next()?;
+                let (t, c) = Reader::new(content).read_tlv()?;
                 Filter::Not(Box::new(Filter::decode(t, c)?))
             }
             0xa3 => {
@@ -288,7 +292,7 @@ impl Filter {
                 let mut subs = Reader::new(r.expect(ber::SEQUENCE)?);
                 let (mut initial, mut any, mut last) = (None, Vec::new(), None);
                 while !subs.is_empty() {
-                    match subs.next()? {
+                    match subs.read_tlv()? {
                         (0x80, v) => initial = Some(v.to_vec()),
                         (0x81, v) => any.push(v.to_vec()),
                         (0x82, v) => last = Some(v.to_vec()),
@@ -377,16 +381,29 @@ mod tests {
         ] {
             let f = Filter::parse(s).unwrap();
             let enc = f.encode();
-            let (tag, content) = Reader::new(&enc).next().unwrap();
+            let (tag, content) = Reader::new(&enc).read_tlv().unwrap();
             assert_eq!(Filter::decode(tag, content).unwrap(), f, "{s}");
         }
         assert_eq!(Filter::parse("(cn=*)").unwrap(), Filter::Present("cn".into()));
-        assert_eq!(Filter::parse("(cn=\\28x\\29)").unwrap(), Filter::Equal("cn".into(), b"(x)".to_vec()));
+        assert_eq!(
+            Filter::parse("(cn=\\28x\\29)").unwrap(),
+            Filter::Equal("cn".into(), b"(x)".to_vec())
+        );
     }
 
     #[test]
     fn rejects_bad_filters() {
-        for s in ["", "uid=a", "(uid=a", "(=a)", "(&)", "(uid=a)(x=y)", "(uid=a(b)", "(uid>=a*)", "(uid=\\zz)"] {
+        for s in [
+            "",
+            "uid=a",
+            "(uid=a",
+            "(=a)",
+            "(&)",
+            "(uid=a)(x=y)",
+            "(uid=a(b)",
+            "(uid>=a*)",
+            "(uid=\\zz)",
+        ] {
             assert!(Filter::parse(s).is_err(), "{s:?}");
         }
         let deep = format!("{}(a=b){}", "(!".repeat(40), ")".repeat(40));

@@ -86,7 +86,10 @@ async fn https_request_with_a_trusted_certificate_succeeds() {
     let client = trusting_test_ca();
     for host in ["127.0.0.1", "localhost"] {
         let r = client
-            .send(HttpRequest::post_form(format!("https://{host}:{port}/token?x=1"), &[("code", "abc")]))
+            .send(HttpRequest::post_form(
+                format!("https://{host}:{port}/token?x=1"),
+                &[("code", "abc")],
+            ))
             .await
             .unwrap();
         assert_eq!(r.status, 200);
@@ -128,7 +131,10 @@ async fn a_server_that_keeps_the_connection_open_does_not_stall_the_client() {
         .await
         .unwrap();
     assert_eq!(r.body, br#"{"a":1}"#);
-    assert!(start.elapsed() < Duration::from_secs(5), "framed by Content-Length, not by close");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "framed by Content-Length, not by close"
+    );
 }
 
 #[tokio::test]
@@ -177,7 +183,9 @@ async fn the_auth_service_installs_the_https_client_by_default() {
     assert!(format!("{:?}", auth.http_client()).contains("HttpsClient"));
     let r = auth
         .http_client()
-        .send(HttpRequest::get(format!("https://localhost:{port}/.well-known/openid-configuration")))
+        .send(HttpRequest::get(format!(
+            "https://localhost:{port}/.well-known/openid-configuration"
+        )))
         .await
         .unwrap();
     assert_eq!(r.json().unwrap()["issuer"], "x");

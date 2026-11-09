@@ -176,8 +176,11 @@ impl SmsProvider for TwilioSms {
             } else if let Some(f) = &self.from {
                 fields.push(("From", f));
             }
-            let basic = base64::engine::general_purpose::STANDARD
-                .encode(format!("{}:{}", self.account_sid, self.auth_token.expose()));
+            let basic = base64::engine::general_purpose::STANDARD.encode(format!(
+                "{}:{}",
+                self.account_sid,
+                self.auth_token.expose()
+            ));
             let req = HttpRequest::post_form(url, &fields).header("authorization", format!("Basic {basic}"));
             let res = self.http.send(req).await.map_err(|e| e.to_string())?;
             if (200..300).contains(&res.status) {

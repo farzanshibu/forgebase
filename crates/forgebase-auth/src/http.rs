@@ -146,9 +146,13 @@ fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: 
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
         // An invalid realm id becomes "" (no such realm), never another realm.
-        realm: req_headers
-            .get(crate::realm::REALM_HEADER)
-            .map(|v| v.to_str().ok().filter(|r| crate::realm::check_realm_id(r).is_ok()).unwrap_or("").to_owned()),
+        realm: req_headers.get(crate::realm::REALM_HEADER).map(|v| {
+            v.to_str()
+                .ok()
+                .filter(|r| crate::realm::check_realm_id(r).is_ok())
+                .unwrap_or("")
+                .to_owned()
+        }),
         turnstile_token: crate::turnstile::TOKEN_HEADERS
             .iter()
             .find_map(|h| req_headers.get(*h))

@@ -2,7 +2,7 @@
 //! filter evaluation), StartTLS and LDAPS, built on the crate's own BER and
 //! filter code. Like real servers it accepts an "unauthenticated bind" (a
 //! DN with an empty password), so the client must refuse empty passwords.
-#![allow(dead_code, clippy::unwrap_used)]
+#![allow(dead_code, clippy::unwrap_used, clippy::enum_variant_names)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -135,19 +135,19 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                 let dn = String::from_utf8(r.octets().unwrap().to_vec()).unwrap();
                 let pw = String::from_utf8(r.expect(0x80).unwrap().to_vec()).unwrap();
                 log.lock().unwrap().push(format!("bind {dn}"));
-                let ok = if pw.is_empty() {
-                    true // anonymous or unauthenticated bind
-                } else if dir.service.as_ref().is_some_and(|(d, p)| *d == dn && *p == pw) {
-                    true
-                } else {
-                    dir.entries
+                // An empty password is an anonymous or unauthenticated bind,
+                // which real servers accept.
+                let ok = pw.is_empty()
+                    || dir.service.as_ref().is_some_and(|(d, p)| *d == dn && *p == pw)
+                    || dir
+                        .entries
                         .iter()
-                        .any(|e| e.dn.eq_ignore_ascii_case(&dn) && e.password == pw)
-                };
+                        .any(|e| e.dn.eq_ignore_ascii_case(&dn) && e.password == pw);
                 if ok && !pw.is_empty() {
                     bound = Some(dn);
                 }
-                s.write_all(&message(m.id, result(0x61, if ok { 0 } else { 49 }))).await?;
+                s.write_all(&message(m.id, result(0x61, if ok { 0 } else { 49 })))
+                    .await?;
             }
             0x63 => {
                 let mut r = Reader::new(&m.body);
@@ -156,11 +156,15 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                 let _deref = r.enumerated().unwrap();
                 let size = r.integer().unwrap();
                 let _time = r.integer().unwrap();
-                let _types = r.next().unwrap();
-                let (tag, content) = r.next().unwrap();
+                let _types = r.read_tlv().unwrap();
+                let (tag, content) = r.read_tlv().unwrap();
                 let filter = Filter::decode(tag, content).unwrap();
                 log.lock().unwrap().push(format!("search {filter:?}"));
-                if dir.service.as_ref().is_some_and(|(d, _)| bound.as_deref() != Some(d.as_str())) {
+                if dir
+                    .service
+                    .as_ref()
+                    .is_some_and(|(d, _)| bound.as_deref() != Some(d.as_str()))
+                {
                     s.write_all(&message(m.id, result(0x65, 50))).await?;
                     continue;
                 }

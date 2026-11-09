@@ -157,7 +157,9 @@ impl AuthService {
             return Err(AuthError::Forbidden("only users manage their own account".into()));
         };
         let Some(sid) = caller.session_id() else {
-            return Err(AuthError::Forbidden("this needs a signed-in session, not a token".into()));
+            return Err(AuthError::Forbidden(
+                "this needs a signed-in session, not a token".into(),
+            ));
         };
         if let Some(pw) = password.filter(|p| !p.is_empty()) {
             let q = self.data().backend().dialect().quote_ident(coll);
@@ -448,7 +450,12 @@ impl AuthService {
         Ok(first(&r).map(|row| row.str("email")))
     }
 
-    async fn delete_account(&self, caller: &Authenticated, ci: &ClientInfo, subject: &Subject) -> Result<(), AuthError> {
+    async fn delete_account(
+        &self,
+        caller: &Authenticated,
+        ci: &ClientInfo,
+        subject: &Subject,
+    ) -> Result<(), AuthError> {
         let (coll, id) = user_of(subject).ok_or_else(|| AuthError::invalid("not a user"))?;
         let email = self.record_email(coll, id).await?;
         match self
@@ -613,16 +620,15 @@ impl AuthService {
         let db = self.data().backend();
         let user = self.user_view(coll, id).await?;
         let q = |sql: &'static str| read(db, sql, vec![t(coll), t(id)]);
-        let phone = q("SELECT phone, verified_at FROM _forgebase_auth_phones WHERE collection = ?1 AND user_id = ?2").await?;
+        let phone =
+            q("SELECT phone, verified_at FROM _forgebase_auth_phones WHERE collection = ?1 AND user_id = ?2").await?;
         let identities = q(
             "SELECT id, provider, provider_subject, email, email_verified, display_name, created_at, last_login_at
              FROM _forgebase_oauth_identities WHERE collection = ?1 AND user_id = ?2 ORDER BY created_at",
         )
         .await?;
-        let passkeys = q(
-            "SELECT credential_id, name, use_as_mfa, created_at, last_used_at
-             FROM _forgebase_webauthn_credentials WHERE collection = ?1 AND user_id = ?2 ORDER BY created_at",
-        )
+        let passkeys = q("SELECT credential_id, name, use_as_mfa, created_at, last_used_at
+             FROM _forgebase_webauthn_credentials WHERE collection = ?1 AND user_id = ?2 ORDER BY created_at")
         .await?;
         let sessions = q(
             "SELECT id, auth_method, mfa, ip, user_agent, device_name, created_at, last_seen_at, expires_at, revoked_at
@@ -728,7 +734,12 @@ impl AuthService {
     }
 
     /// Lifecycle state of a user (administrators).
-    pub async fn user_status(&self, caller: &Authenticated, collection: &str, id: &str) -> Result<AccountStatus, AuthError> {
+    pub async fn user_status(
+        &self,
+        caller: &Authenticated,
+        collection: &str,
+        id: &str,
+    ) -> Result<AccountStatus, AuthError> {
         let subject = self.admin_target(caller, collection, id).await?;
         let coll = subject_collection(&subject);
         self.account_status(&coll, id).await

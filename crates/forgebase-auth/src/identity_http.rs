@@ -9,10 +9,10 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::AuthService;
 use crate::http::{Body, Caller, Client, HttpError, Res, login_response, ok};
 use crate::realm::RealmInput;
 use crate::service::LoginOptions;
-use crate::AuthService;
 
 pub(crate) fn routes() -> Router<AuthService> {
     Router::new()
@@ -107,7 +107,12 @@ async fn list_realms(State(a): State<AuthService>, Client(_, rid): Client, Calle
     Ok(ok(StatusCode::OK, json!({"items": items})))
 }
 
-async fn get_realm(State(a): State<AuthService>, Client(_, rid): Client, Caller(c): Caller, Path(r): Path<String>) -> Res {
+async fn get_realm(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path(r): Path<String>,
+) -> Res {
     let v = a.get_realm_identity(&c, &r).map_err(err(&rid))?;
     Ok(ok(StatusCode::OK, serde_json::to_value(&*v).unwrap_or_default()))
 }
@@ -211,7 +216,12 @@ async fn account_export(State(a): State<AuthService>, Client(ci, rid): Client, C
     Ok(ok(StatusCode::OK, a.export_self(&c, &ci).await.map_err(err(&rid))?))
 }
 
-async fn user_status(State(a): State<AuthService>, Client(_, rid): Client, Caller(c): Caller, Path((col, id)): P2) -> Res {
+async fn user_status(
+    State(a): State<AuthService>,
+    Client(_, rid): Client,
+    Caller(c): Caller,
+    Path((col, id)): P2,
+) -> Res {
     let v = a.user_status(&c, &col, &id).await.map_err(err(&rid))?;
     Ok(ok(StatusCode::OK, serde_json::to_value(v).unwrap_or_default()))
 }
@@ -230,7 +240,12 @@ async fn user_suspend(
     Ok(ok(StatusCode::OK, serde_json::to_value(v).unwrap_or_default()))
 }
 
-async fn user_unsuspend(State(a): State<AuthService>, Client(ci, rid): Client, Caller(c): Caller, Path((col, id)): P2) -> Res {
+async fn user_unsuspend(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((col, id)): P2,
+) -> Res {
     let v = a.unsuspend_user(&c, &ci, &col, &id).await.map_err(err(&rid))?;
     Ok(ok(StatusCode::OK, serde_json::to_value(v).unwrap_or_default()))
 }
@@ -249,23 +264,46 @@ async fn user_deactivate(
     Ok(ok(StatusCode::OK, serde_json::to_value(v).unwrap_or_default()))
 }
 
-async fn user_reactivate(State(a): State<AuthService>, Client(ci, rid): Client, Caller(c): Caller, Path((col, id)): P2) -> Res {
+async fn user_reactivate(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((col, id)): P2,
+) -> Res {
     let v = a.reactivate_user(&c, &ci, &col, &id).await.map_err(err(&rid))?;
     Ok(ok(StatusCode::OK, serde_json::to_value(v).unwrap_or_default()))
 }
 
-async fn user_anonymise(State(a): State<AuthService>, Client(ci, rid): Client, Caller(c): Caller, Path((col, id)): P2) -> Res {
+async fn user_anonymise(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((col, id)): P2,
+) -> Res {
     Ok(ok(
         StatusCode::OK,
         a.anonymise_user(&c, &ci, &col, &id).await.map_err(err(&rid))?,
     ))
 }
 
-async fn user_delete(State(a): State<AuthService>, Client(ci, rid): Client, Caller(c): Caller, Path((col, id)): P2) -> Res {
+async fn user_delete(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((col, id)): P2,
+) -> Res {
     a.delete_user(&c, &ci, &col, &id).await.map_err(err(&rid))?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn user_export(State(a): State<AuthService>, Client(ci, rid): Client, Caller(c): Caller, Path((col, id)): P2) -> Res {
-    Ok(ok(StatusCode::OK, a.export_user(&c, &ci, &col, &id).await.map_err(err(&rid))?))
+async fn user_export(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    Caller(c): Caller,
+    Path((col, id)): P2,
+) -> Res {
+    Ok(ok(
+        StatusCode::OK,
+        a.export_user(&c, &ci, &col, &id).await.map_err(err(&rid))?,
+    ))
 }

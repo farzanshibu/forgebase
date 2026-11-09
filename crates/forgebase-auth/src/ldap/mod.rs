@@ -36,6 +36,9 @@ use crate::social::flow::Profile;
 use crate::turnstile::TurnstileAction;
 use crate::{AuthError, AuthMethod, AuthService, Subject};
 
+/// Attributes of an entry: lower-cased name to values.
+pub type Attributes = HashMap<String, Vec<Vec<u8>>>;
+
 /// Provider id of LDAP identities.
 pub const PROVIDER: &str = "ldap";
 
@@ -214,7 +217,7 @@ pub fn parse_message(frame: &[u8]) -> Result<Message, ber::BerError> {
     let seq = Reader::new(frame).expect(SEQUENCE)?;
     let mut r = Reader::new(seq);
     let id = r.integer()?;
-    let (tag, body) = r.next()?;
+    let (tag, body) = r.read_tlv()?;
     Ok(Message {
         id,
         tag,
@@ -295,7 +298,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Conn<S> {
     async fn bind(&mut self, dn: &str, password: &str) -> Result<i64, LdapFailure> {
         let op = ber::constructed(
             0x60,
-            &[ber::integer(3), ber::octets(dn.as_bytes()), ber::tlv(0x80, password.as_bytes())],
+            &[
+                ber::integer(3),
+                ber::octets(dn.as_bytes()),
+                ber::tlv(0x80, password.as_bytes()),
+            ],
         );
         let id = self.send(op).await?;
         let body = self.expect(id, 0x61).await?;
@@ -308,7 +315,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Conn<S> {
         s: &LdapSettings,
         filter: &Filter,
         attrs: &[&str],
-    ) -> Result<Vec<(String, HashMap<String, Vec<Vec<u8>>>)>, LdapFailure> {
+    ) -> Result<Vec<(String, Attributes)>, LdapFailure> {
         let scope = match s.scope {
             LdapScope::Base => 0,
             LdapScope::One => 1,
@@ -359,7 +366,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Conn<S> {
     }
 }
 
-fn parse_entry(body: &[u8]) -> Result<(String, HashMap<String, Vec<Vec<u8>>>), ber::BerError> {
+fn parse_entry(body: &[u8]) -> Result<(String, Attributes), ber::BerError> {
     let mut r = Reader::new(body);
     let dn = String::from_utf8_lossy(r.octets()?).into_owned();
     let mut attrs = HashMap::new();
@@ -570,7 +577,10 @@ impl AuthService {
             email,
             name: user.name.clone(),
         };
-        let (collection, uid) = match self.identity_by_subject(&realm.realm, PROVIDER, &profile.subject).await? {
+        let (collection, uid) = match self
+            .identity_by_subject(&realm.realm, PROVIDER, &profile.subject)
+            .await?
+        {
             Some((_, c, u)) => (c, u),
             None => {
                 self.external_first_login(

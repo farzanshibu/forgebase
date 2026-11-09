@@ -832,7 +832,13 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         self.limit_mail(ci)?;
         let (coll, user) = self
-            .user_for_request(ci, collection, email, Some(Method::MagicLink), Some(TurnstileAction::Otp))
+            .user_for_request(
+                ci,
+                collection,
+                email,
+                Some(Method::MagicLink),
+                Some(TurnstileAction::Otp),
+            )
             .await?;
         if let Some(u) = user {
             let subject = Subject::User {
@@ -887,7 +893,13 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         self.limit_mail(ci)?;
         let (coll, user) = self
-            .user_for_request(ci, collection, email, Some(Method::EmailOtp), Some(TurnstileAction::Otp))
+            .user_for_request(
+                ci,
+                collection,
+                email,
+                Some(Method::EmailOtp),
+                Some(TurnstileAction::Otp),
+            )
             .await?;
         if let Some(u) = user {
             let subject = Subject::User {

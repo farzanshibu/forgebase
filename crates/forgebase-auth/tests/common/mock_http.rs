@@ -47,7 +47,9 @@ pub async fn start(handler: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'sta
     let s2 = seen.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((mut s, _)) = listener.accept().await else { return };
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
             let (seen, handler) = (s2.clone(), handler.clone());
             tokio::spawn(async move {
                 let mut buf = Vec::new();

@@ -29,8 +29,14 @@ async fn realm(h: &H, admin: &str, id: &str, config: Value) -> Resp {
 }
 
 async fn put_realm(h: &H, admin: &str, id: &str, body: Value) -> Resp {
-    h.send(Method::PUT, &format!("/api/auth/realms/{id}"), Some(admin), Some(body), &[])
-        .await
+    h.send(
+        Method::PUT,
+        &format!("/api/auth/realms/{id}"),
+        Some(admin),
+        Some(body),
+        &[],
+    )
+    .await
 }
 
 async fn post_in(h: &H, realm: &str, path: &str, bearer: Option<&str>, body: Value) -> Resp {
@@ -60,7 +66,11 @@ async fn same_email_in_two_realms_stays_isolated() {
     assert_eq!(r.json["collection"], "acme_users");
 
     let a = h
-        .post("/api/auth/signup", None, json!({"email": "alice@example.com", "password": PW}))
+        .post(
+            "/api/auth/signup",
+            None,
+            json!({"email": "alice@example.com", "password": PW}),
+        )
         .await;
     assert_eq!(a.status, StatusCode::CREATED, "{}", a.json);
     let b = post_in(
@@ -77,10 +87,21 @@ async fn same_email_in_two_realms_stays_isolated() {
     assert_ne!(a.json["user"]["id"], b.json["user"]["id"]);
 
     // Each realm checks its own password.
-    let r = post_in(&h, "acme", "/api/auth/login", None, json!({"email": "alice@example.com", "password": PW})).await;
+    let r = post_in(
+        &h,
+        "acme",
+        "/api/auth/login",
+        None,
+        json!({"email": "alice@example.com", "password": PW}),
+    )
+    .await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
     let r = h
-        .post("/api/auth/login", None, json!({"email": "alice@example.com", "password": ACME_PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "alice@example.com", "password": ACME_PW}),
+        )
         .await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
     let r = post_in(
@@ -95,7 +116,14 @@ async fn same_email_in_two_realms_stays_isolated() {
     assert_eq!(r.json["user"]["id"], b.json["user"]["id"]);
     let token = r.json["access_token"].as_str().unwrap().to_owned();
     let me = h.get("/api/auth/me", Some(&token)).await;
-    assert_eq!(me.json["user"]["collection"].as_str().or(me.json["collection"].as_str()), Some("acme_users"), "{}", me.json);
+    assert_eq!(
+        me.json["user"]["collection"]
+            .as_str()
+            .or(me.json["collection"].as_str()),
+        Some("acme_users"),
+        "{}",
+        me.json
+    );
 
     // Duplicates are per realm; another realm's collection is not reachable.
     let r = post_in(
@@ -116,16 +144,34 @@ async fn same_email_in_two_realms_stays_isolated() {
     )
     .await;
     assert_error(&r, StatusCode::NOT_FOUND, "not_found");
-    let r = post_in(&h, "nope", "/api/auth/login", None, json!({"email": "a@b.co", "password": PW})).await;
+    let r = post_in(
+        &h,
+        "nope",
+        "/api/auth/login",
+        None,
+        json!({"email": "a@b.co", "password": PW}),
+    )
+    .await;
     assert_error(&r, StatusCode::NOT_FOUND, "not_found");
-    let r = post_in(&h, "Bad Realm!", "/api/auth/login", None, json!({"email": "a@b.co", "password": PW})).await;
+    let r = post_in(
+        &h,
+        "Bad Realm!",
+        "/api/auth/login",
+        None,
+        json!({"email": "a@b.co", "password": PW}),
+    )
+    .await;
     assert_error(&r, StatusCode::NOT_FOUND, "not_found");
 
     // The directory knows each identity's home realm.
     assert_eq!(h.auth.realms().realm_of_collection("acme_users"), "acme");
     assert_eq!(h.auth.realms().realm_of_collection("users"), "default");
     // Audit rows carry the realm.
-    assert!(h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE realm = 'acme' AND event = 'signup'").await >= 1);
+    assert!(
+        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE realm = 'acme' AND event = 'signup'")
+            .await
+            >= 1
+    );
 }
 
 #[tokio::test]
@@ -136,7 +182,11 @@ async fn realm_configuration_is_admin_only_and_secrets_are_write_only() {
     h.sql("INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('acme', 'Acme', '{}', 0)")
         .await;
     let cfg = json!({"config": {"turnstile": {"enabled": true, "site_key": "site-1", "secret": "ts-secret-value"}}});
-    assert_error(&put_realm(&h, &user, "acme", cfg.clone()).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_error(
+        &put_realm(&h, &user, "acme", cfg.clone()).await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
     let r = put_realm(&h, &admin, "acme", cfg).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     assert_eq!(r.json["config"]["turnstile"]["secret"], "********");
@@ -155,9 +205,14 @@ async fn realm_configuration_is_admin_only_and_secrets_are_write_only() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let ident = h.auth.realms().get("acme").unwrap();
     let ts = ident.config.turnstile.as_ref().unwrap();
-    assert_eq!((ts.site_key.as_str(), ts.secret.get()), ("site-2", Some("ts-secret-value")));
+    assert_eq!(
+        (ts.site_key.as_str(), ts.secret.get()),
+        ("site-2", Some("ts-secret-value"))
+    );
     // Public view: site key, never the secret.
-    let r = h.send(Method::GET, "/api/auth/realm", None, None, &realm_h("acme")).await;
+    let r = h
+        .send(Method::GET, "/api/auth/realm", None, None, &realm_h("acme"))
+        .await;
     assert_eq!(r.json["turnstile"]["site_key"], "site-2");
     assert!(!r.json.to_string().contains("ts-secret"));
     let r = h.get("/api/auth/realms", Some(&admin)).await;
@@ -169,7 +224,11 @@ async fn realm_configuration_is_admin_only_and_secrets_are_write_only() {
         StatusCode::CONFLICT,
         "conflict",
     );
-    assert_error(&put_realm(&h, &admin, "ghost", json!({})).await, StatusCode::NOT_FOUND, "not_found");
+    assert_error(
+        &put_realm(&h, &admin, "ghost", json!({})).await,
+        StatusCode::NOT_FOUND,
+        "not_found",
+    );
     h.sql("INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('beta', 'Beta', '{}', 0)")
         .await;
     assert_error(
@@ -179,7 +238,13 @@ async fn realm_configuration_is_admin_only_and_secrets_are_write_only() {
     );
     // Validation: an enabled Turnstile needs a secret; LDAP needs settings.
     assert_error(
-        &put_realm(&h, &admin, "beta", json!({"config": {"turnstile": {"enabled": true, "site_key": "x"}}})).await,
+        &put_realm(
+            &h,
+            &admin,
+            "beta",
+            json!({"config": {"turnstile": {"enabled": true, "site_key": "x"}}}),
+        )
+        .await,
         StatusCode::BAD_REQUEST,
         "invalid_input",
     );
@@ -204,18 +269,30 @@ async fn disabled_methods_and_signup_are_refused() {
     .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let r = h
-        .post("/api/auth/login", None, json!({"email": "u@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "u@example.com", "password": PW}),
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
     assert!(r.json["error"]["message"].as_str().unwrap().contains("method_disabled"));
-    let r = h.post("/api/auth/otp/request", None, json!({"email": "u@example.com"})).await;
+    let r = h
+        .post("/api/auth/otp/request", None, json!({"email": "u@example.com"}))
+        .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
     let r = h
-        .post("/api/auth/signup", None, json!({"email": "n@example.com", "password": PW}))
+        .post(
+            "/api/auth/signup",
+            None,
+            json!({"email": "n@example.com", "password": PW}),
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
     // Magic links still work (enabled).
-    let r = h.post("/api/auth/magic-link/request", None, json!({"email": "u@example.com"})).await;
+    let r = h
+        .post("/api/auth/magic-link/request", None, json!({"email": "u@example.com"}))
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
 }
 
@@ -267,7 +344,14 @@ async fn phone_login(h: &H, realm_id: &str, sms: &DevSmsProvider, phone: &str) -
     let r = post_in(h, realm_id, "/api/auth/phone/request", None, json!({"phone": phone})).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
     let code = code_for(sms, &forgebase_auth::phone::normalize_phone(phone).unwrap());
-    post_in(h, realm_id, "/api/auth/phone/verify", None, json!({"phone": phone, "code": code})).await
+    post_in(
+        h,
+        realm_id,
+        "/api/auth/phone/verify",
+        None,
+        json!({"phone": phone, "code": code}),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -276,7 +360,9 @@ async fn phone_login_signs_up_then_signs_in_the_same_account() {
     let admin = h.root_token().await;
     let sms = dev_sms(&h);
     // Off by default.
-    let r = h.post("/api/auth/phone/request", None, json!({"phone": "+15550100001"})).await;
+    let r = h
+        .post("/api/auth/phone/request", None, json!({"phone": "+15550100001"}))
+        .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
     enable_phone(&h, &admin, "default", true).await;
 
@@ -284,7 +370,10 @@ async fn phone_login_signs_up_then_signs_in_the_same_account() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let uid = r.json["user"]["id"].as_str().unwrap().to_owned();
     assert!(r.json["user"]["email"].as_str().unwrap().ends_with("@phone.invalid"));
-    assert!(!r.json["user"]["email"].as_str().unwrap().contains("5550100001"), "number not in the placeholder");
+    assert!(
+        !r.json["user"]["email"].as_str().unwrap().contains("5550100001"),
+        "number not in the placeholder"
+    );
     let token = r.json["access_token"].as_str().unwrap().to_owned();
     let p = h.get("/api/auth/phone", Some(&token)).await;
     assert_eq!(p.json["phone"], "+15550100001");
@@ -294,7 +383,12 @@ async fn phone_login_signs_up_then_signs_in_the_same_account() {
     let r = phone_login(&h, "default", &sms, "+15550100001").await;
     assert_eq!(r.json["user"]["id"], uid.as_str(), "second sign-in, same account");
     // The text carries the code, the dev provider kept it.
-    assert!(sms.last("+15550100001").unwrap().text.contains(&sms.last("+15550100001").unwrap().secret));
+    assert!(
+        sms.last("+15550100001")
+            .unwrap()
+            .text
+            .contains(&sms.last("+15550100001").unwrap().secret)
+    );
 }
 
 #[tokio::test]
@@ -305,38 +399,61 @@ async fn wrong_codes_burn_and_unknown_numbers_get_nothing_without_signup() {
     let sms = dev_sms(&h);
     enable_phone(&h, &admin, "default", false).await;
     // Unknown number, signup off: same answer, no SMS.
-    let r = h.post("/api/auth/phone/request", None, json!({"phone": "+15550100002"})).await;
+    let r = h
+        .post("/api/auth/phone/request", None, json!({"phone": "+15550100002"}))
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
     assert!(sms.sent().is_empty());
     assert_error(
-        &h.post("/api/auth/phone/request", None, json!({"phone": "555-0100"})).await,
+        &h.post("/api/auth/phone/request", None, json!({"phone": "555-0100"}))
+            .await,
         StatusCode::BAD_REQUEST,
         "invalid_input",
     );
 
     // A known number (added by its owner) gets codes.
     let (_, token) = h.verified_user("p@example.com").await;
-    let r = h.post("/api/auth/phone/add", Some(&token), json!({"phone": "+15550100003"})).await;
+    let r = h
+        .post("/api/auth/phone/add", Some(&token), json!({"phone": "+15550100003"}))
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
     let code = code_for(&sms, "+15550100003");
     let r = h
-        .post("/api/auth/phone/confirm", Some(&token), json!({"phone": "+15550100003", "code": code}))
+        .post(
+            "/api/auth/phone/confirm",
+            Some(&token),
+            json!({"phone": "+15550100003", "code": code}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
 
-    h.post("/api/auth/phone/request", None, json!({"phone": "+15550100003"})).await;
+    h.post("/api/auth/phone/request", None, json!({"phone": "+15550100003"}))
+        .await;
     let good = code_for(&sms, "+15550100003");
     let wrong = if good == "000000" { "111111" } else { "000000" };
     for _ in 0..5 {
         let r = h
-            .post("/api/auth/phone/verify", None, json!({"phone": "+15550100003", "code": wrong}))
+            .post(
+                "/api/auth/phone/verify",
+                None,
+                json!({"phone": "+15550100003", "code": wrong}),
+            )
             .await;
         assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
     }
     let r = h
-        .post("/api/auth/phone/verify", None, json!({"phone": "+15550100003", "code": good}))
+        .post(
+            "/api/auth/phone/verify",
+            None,
+            json!({"phone": "+15550100003", "code": good}),
+        )
         .await;
-    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "burnt after 5 wrong guesses: {}", r.json);
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "burnt after 5 wrong guesses: {}",
+        r.json
+    );
 }
 
 #[tokio::test]
@@ -348,34 +465,61 @@ async fn phone_numbers_are_per_realm_and_unique_within_one() {
     enable_phone(&h, &admin, "acme", true).await;
     let a = phone_login(&h, "default", &sms, "+15550100009").await;
     let b = phone_login(&h, "acme", &sms, "+15550100009").await;
-    assert_eq!((a.status, b.status), (StatusCode::OK, StatusCode::OK), "{} {}", a.json, b.json);
+    assert_eq!(
+        (a.status, b.status),
+        (StatusCode::OK, StatusCode::OK),
+        "{} {}",
+        a.json,
+        b.json
+    );
     assert_ne!(a.json["user"]["id"], b.json["user"]["id"]);
     assert_eq!(b.json["user"]["collection"], "acme_users");
 
     // Another user of the default realm cannot take the number.
     let (_, other) = h.verified_user("o@example.com").await;
-    h.post("/api/auth/phone/add", Some(&other), json!({"phone": "+15550100009"})).await;
+    h.post("/api/auth/phone/add", Some(&other), json!({"phone": "+15550100009"}))
+        .await;
     let code = code_for(&sms, "+15550100009");
     let r = h
-        .post("/api/auth/phone/confirm", Some(&other), json!({"phone": "+15550100009", "code": code}))
+        .post(
+            "/api/auth/phone/confirm",
+            Some(&other),
+            json!({"phone": "+15550100009", "code": code}),
+        )
         .await;
     assert_error(&r, StatusCode::CONFLICT, "conflict");
     // A code for one account does not confirm for another.
-    h.post("/api/auth/phone/add", Some(&other), json!({"phone": "+15550100010"})).await;
+    h.post("/api/auth/phone/add", Some(&other), json!({"phone": "+15550100010"}))
+        .await;
     let code = code_for(&sms, "+15550100010");
     let (_, third) = h.verified_user("t@example.com").await;
     let r = h
-        .post("/api/auth/phone/confirm", Some(&third), json!({"phone": "+15550100010", "code": code}))
+        .post(
+            "/api/auth/phone/confirm",
+            Some(&third),
+            json!({"phone": "+15550100010", "code": code}),
+        )
         .await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
     // The phone-only account cannot drop its only way in; a real email can.
     let tok_a = a.json["access_token"].as_str().unwrap();
-    assert_error(&h.delete("/api/auth/phone", Some(tok_a)).await, StatusCode::CONFLICT, "conflict");
+    assert_error(
+        &h.delete("/api/auth/phone", Some(tok_a)).await,
+        StatusCode::CONFLICT,
+        "conflict",
+    );
     let r = h
-        .post("/api/auth/phone/confirm", Some(&other), json!({"phone": "+15550100010", "code": code}))
+        .post(
+            "/api/auth/phone/confirm",
+            Some(&other),
+            json!({"phone": "+15550100010", "code": code}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
-    assert_eq!(h.delete("/api/auth/phone", Some(&other)).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.delete("/api/auth/phone", Some(&other)).await.status,
+        StatusCode::NO_CONTENT
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +553,11 @@ async fn twilio_and_webhook_gateways_use_the_http_client() {
     )
     .unwrap();
     twilio.send(&sms).await.unwrap();
-    let hook = forgebase_auth::sms::WebhookSms::new(format!("{}/send", mock.url), Some("hook-token".into()), h.auth.http_client());
+    let hook = forgebase_auth::sms::WebhookSms::new(
+        format!("{}/send", mock.url),
+        Some("hook-token".into()),
+        h.auth.http_client(),
+    );
     hook.send(&sms).await.unwrap();
     let bad = forgebase_auth::sms::WebhookSms::new(format!("{}/fail", mock.url), None, h.auth.http_client());
     assert!(bad.send(&sms).await.is_err());
@@ -422,7 +570,10 @@ async fn twilio_and_webhook_gateways_use_the_http_client() {
     assert_eq!(seen[0].form("Body").as_deref(), Some("Your code is 123456"));
     assert_eq!(seen[1].header("authorization"), Some("Bearer hook-token"));
     let body: Value = serde_json::from_str(&seen[1].body).unwrap();
-    assert_eq!((body["to"].as_str(), body["kind"].as_str()), (Some("+15550100004"), Some("login_code")));
+    assert_eq!(
+        (body["to"].as_str(), body["kind"].as_str()),
+        (Some("+15550100004"), Some("login_code"))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -469,14 +620,26 @@ async fn turnstile_protects_signup_login_reset_and_otp_when_enabled() {
     // Off by default: no token needed.
     h.verified_user("u@example.com").await;
     let mock = siteverify(None).await;
-    enable_turnstile(&h, &admin, &mock.url, json!(["signup", "login", "password_reset", "otp"])).await;
+    enable_turnstile(
+        &h,
+        &admin,
+        &mock.url,
+        json!(["signup", "login", "password_reset", "otp"]),
+    )
+    .await;
 
     let body = json!({"email": "n@example.com", "password": PW});
-    let r = h.send(Method::POST, "/api/auth/signup", None, Some(body.clone()), &[]).await;
+    let r = h
+        .send(Method::POST, "/api/auth/signup", None, Some(body.clone()), &[])
+        .await;
     assert_error(&r, StatusCode::FORBIDDEN, "turnstile_failed");
-    let r = h.send(Method::POST, "/api/auth/signup", None, Some(body.clone()), &ts("bad")).await;
+    let r = h
+        .send(Method::POST, "/api/auth/signup", None, Some(body.clone()), &ts("bad"))
+        .await;
     assert_error(&r, StatusCode::FORBIDDEN, "turnstile_failed");
-    let r = h.send(Method::POST, "/api/auth/signup", None, Some(body), &ts("good")).await;
+    let r = h
+        .send(Method::POST, "/api/auth/signup", None, Some(body), &ts("good"))
+        .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.json);
     let seen = mock.requests().pop().unwrap();
     assert_eq!(seen.path, "/turnstile/v0/siteverify");
@@ -485,13 +648,26 @@ async fn turnstile_protects_signup_login_reset_and_otp_when_enabled() {
 
     let login = json!({"email": "u@example.com", "password": PW});
     assert_error(
-        &h.send(Method::POST, "/api/auth/login", None, Some(login.clone()), &[]).await,
+        &h.send(Method::POST, "/api/auth/login", None, Some(login.clone()), &[])
+            .await,
         StatusCode::FORBIDDEN,
         "turnstile_failed",
     );
-    let r = h.send(Method::POST, "/api/auth/login", None, Some(login), &[("x-turnstile-token", "good")]).await;
+    let r = h
+        .send(
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(login),
+            &[("x-turnstile-token", "good")],
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
-    for path in ["/api/auth/password-reset/request", "/api/auth/otp/request", "/api/auth/magic-link/request"] {
+    for path in [
+        "/api/auth/password-reset/request",
+        "/api/auth/otp/request",
+        "/api/auth/magic-link/request",
+    ] {
         let b = json!({"email": "u@example.com"});
         let r = h.send(Method::POST, path, None, Some(b.clone()), &[]).await;
         assert_error(&r, StatusCode::FORBIDDEN, "turnstile_failed");
@@ -499,10 +675,20 @@ async fn turnstile_protects_signup_login_reset_and_otp_when_enabled() {
         assert_eq!(r.status, StatusCode::ACCEPTED, "{path}: {}", r.json);
     }
     // Not protected: verification mails, refresh.
-    let r = h.post("/api/auth/verify-email/request", None, json!({"email": "u@example.com"})).await;
+    let r = h
+        .post(
+            "/api/auth/verify-email/request",
+            None,
+            json!({"email": "u@example.com"}),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
     // Failures are audited.
-    assert!(h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'turnstile' AND outcome = 'failure'").await >= 4);
+    assert!(
+        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'turnstile' AND outcome = 'failure'")
+            .await
+            >= 4
+    );
 }
 
 #[tokio::test]
@@ -515,7 +701,8 @@ async fn turnstile_fails_closed_and_checks_hostname_action_and_scope() {
     let login = json!({"email": "u@example.com", "password": PW});
     // The widget named another action.
     assert_error(
-        &h.send(Method::POST, "/api/auth/login", None, Some(login.clone()), &ts("good")).await,
+        &h.send(Method::POST, "/api/auth/login", None, Some(login.clone()), &ts("good"))
+            .await,
         StatusCode::FORBIDDEN,
         "turnstile_failed",
     );
@@ -523,15 +710,26 @@ async fn turnstile_fails_closed_and_checks_hostname_action_and_scope() {
     enable_turnstile(&h, &admin, &mock.url, json!(["login"])).await;
     // A token solved on another site.
     assert_error(
-        &h.send(Method::POST, "/api/auth/login", None, Some(login.clone()), &ts("elsewhere")).await,
+        &h.send(
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(login.clone()),
+            &ts("elsewhere"),
+        )
+        .await,
         StatusCode::FORBIDDEN,
         "turnstile_failed",
     );
     // siteverify down: refused, not waved through.
-    let r = h.send(Method::POST, "/api/auth/login", None, Some(login.clone()), &ts("down")).await;
+    let r = h
+        .send(Method::POST, "/api/auth/login", None, Some(login.clone()), &ts("down"))
+        .await;
     assert_error(&r, StatusCode::BAD_GATEWAY, "provider_error");
     // Only `login` is protected here.
-    let r = h.post("/api/auth/otp/request", None, json!({"email": "u@example.com"})).await;
+    let r = h
+        .post("/api/auth/otp/request", None, json!({"email": "u@example.com"}))
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
     // Disabled again: no token needed.
     put_realm(&h, &admin, "default", json!({"config": {}})).await;
@@ -555,10 +753,14 @@ async fn turnstile_also_guards_sms_codes() {
     .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let b = json!({"phone": "+15550100005"});
-    let r = h.send(Method::POST, "/api/auth/phone/request", None, Some(b.clone()), &[]).await;
+    let r = h
+        .send(Method::POST, "/api/auth/phone/request", None, Some(b.clone()), &[])
+        .await;
     assert_error(&r, StatusCode::FORBIDDEN, "turnstile_failed");
     assert!(sms.sent().is_empty());
-    let r = h.send(Method::POST, "/api/auth/phone/request", None, Some(b), &ts("good")).await;
+    let r = h
+        .send(Method::POST, "/api/auth/phone/request", None, Some(b), &ts("good"))
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
     assert_eq!(sms.sent().len(), 1);
 }
@@ -601,7 +803,8 @@ fn directory() -> Directory {
 }
 
 async fn ldap_login(h: &H, user: &str, pw: &str) -> Resp {
-    h.post("/api/auth/ldap/login", None, json!({"username": user, "password": pw})).await
+    h.post("/api/auth/ldap/login", None, json!({"username": user, "password": pw}))
+        .await
 }
 
 #[tokio::test]
@@ -630,7 +833,11 @@ async fn ldap_login_binds_searches_and_links_one_account() {
     assert_eq!(r.json["user"]["id"], uid.as_str(), "same directory account, same user");
     // No email attribute: a placeholder address.
     let r = ldap_login(&h, "eve", "eve-pw").await;
-    assert!(r.json["user"]["email"].as_str().unwrap().ends_with("@ldap.invalid"), "{}", r.json);
+    assert!(
+        r.json["user"]["email"].as_str().unwrap().ends_with("@ldap.invalid"),
+        "{}",
+        r.json
+    );
 }
 
 #[tokio::test]
@@ -639,22 +846,46 @@ async fn ldap_refuses_wrong_passwords_unknown_users_injection_and_empty_password
     let admin = h.root_token().await;
     let ldap = common::ldap::start(directory(), Tls::None).await;
     put_realm(&h, &admin, "default", ldap_cfg(ldap.port, json!({}))).await;
-    assert_error(&ldap_login(&h, "alice", "nope").await, StatusCode::UNAUTHORIZED, "invalid_credentials");
-    assert_error(&ldap_login(&h, "mallory", "x").await, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_error(
+        &ldap_login(&h, "alice", "nope").await,
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+    );
+    assert_error(
+        &ldap_login(&h, "mallory", "x").await,
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+    );
     // A filter metacharacter is a literal, not a wildcard.
-    assert_error(&ldap_login(&h, "*", "alice-pw").await, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_error(
+        &ldap_login(&h, "*", "alice-pw").await,
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+    );
     assert!(
         ldap.log().iter().any(|l| l.contains(r#"Equal("uid", [42])"#)),
         "escaped: {:?}",
         ldap.log()
     );
-    assert_error(&ldap_login(&h, "a*)(uid=*", "alice-pw").await, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_error(
+        &ldap_login(&h, "a*)(uid=*", "alice-pw").await,
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+    );
     // Empty password: refused before talking to the directory (an LDAP
     // unauthenticated bind would succeed).
     let before = ldap.log().len();
-    assert_error(&ldap_login(&h, "alice", "").await, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_error(
+        &ldap_login(&h, "alice", "").await,
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+    );
     assert_eq!(ldap.log().len(), before);
-    assert!(h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'login' AND detail LIKE '%\"ldap\"%'").await >= 4);
+    assert!(
+        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'login' AND detail LIKE '%\"ldap\"%'")
+            .await
+            >= 4
+    );
 }
 
 #[tokio::test]
@@ -663,7 +894,11 @@ async fn ldap_conflicts_ambiguity_outages_and_unsafe_configs() {
     let admin = h.root_token().await;
     // A local account already owns bob's email (verified), no auto-link.
     let r = h
-        .post("/api/auth/signup", None, json!({"email": "bob@corp.example", "password": PW}))
+        .post(
+            "/api/auth/signup",
+            None,
+            json!({"email": "bob@corp.example", "password": PW}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED);
     let ldap = common::ldap::start(directory(), Tls::None).await;
@@ -674,20 +909,51 @@ async fn ldap_conflicts_ambiguity_outages_and_unsafe_configs() {
         &h,
         &admin,
         "default",
-        ldap_cfg(ldap.port, json!({"user_filter": "(|(uid={username})(objectClass=person))"})),
+        ldap_cfg(
+            ldap.port,
+            json!({"user_filter": "(|(uid={username})(objectClass=person))"}),
+        ),
     )
     .await;
-    assert_error(&ldap_login(&h, "alice", "alice-pw").await, StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_error(
+        &ldap_login(&h, "alice", "alice-pw").await,
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+    );
     // Directory down.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     put_realm(&h, &admin, "default", ldap_cfg(closed, json!({}))).await;
-    assert_error(&ldap_login(&h, "alice", "alice-pw").await, StatusCode::BAD_GATEWAY, "provider_error");
+    assert_error(
+        &ldap_login(&h, "alice", "alice-pw").await,
+        StatusCode::BAD_GATEWAY,
+        "provider_error",
+    );
     // Clear-text ldap:// needs an explicit opt-in.
-    let r = put_realm(&h, &admin, "default", ldap_cfg(ldap.port, json!({"insecure_plaintext": false}))).await;
+    let r = put_realm(
+        &h,
+        &admin,
+        "default",
+        ldap_cfg(ldap.port, json!({"insecure_plaintext": false})),
+    )
+    .await;
     assert_error(&r, StatusCode::BAD_REQUEST, "invalid_input");
     // Wrong service password: the directory is "unavailable", not the user wrong.
-    put_realm(&h, &admin, "default", ldap_cfg(ldap.port, json!({"bind_password": "bad"}))).await;
-    assert_error(&ldap_login(&h, "alice", "alice-pw").await, StatusCode::BAD_GATEWAY, "provider_error");
+    put_realm(
+        &h,
+        &admin,
+        "default",
+        ldap_cfg(ldap.port, json!({"bind_password": "bad"})),
+    )
+    .await;
+    assert_error(
+        &ldap_login(&h, "alice", "alice-pw").await,
+        StatusCode::BAD_GATEWAY,
+        "provider_error",
+    );
 }
 
 #[cfg(feature = "https")]
@@ -728,7 +994,11 @@ async fn ldap_over_starttls_and_ldaps_verifies_the_certificate() {
     assert_eq!(ldap.log()[0], "starttls");
     // Without the CA the certificate is not trusted.
     put_realm(&h, &admin, "default", cfg(json!({"ca_pem": null}))).await;
-    assert_error(&ldap_login(&h, "alice", "alice-pw").await, StatusCode::BAD_GATEWAY, "provider_error");
+    assert_error(
+        &ldap_login(&h, "alice", "alice-pw").await,
+        StatusCode::BAD_GATEWAY,
+        "provider_error",
+    );
 
     let ldaps = common::ldap::start(directory(), Tls::Ldaps(tls_acceptor())).await;
     let mut c = ldap_cfg(ldaps.port, json!({"ca_pem": ca}));
@@ -746,7 +1016,11 @@ async fn ldap_over_starttls_and_ldaps_verifies_the_certificate() {
 
 async fn pat(h: &H, token: &str) -> String {
     let r = h
-        .post("/api/auth/tokens", Some(token), json!({"name": "t", "scopes": ["auth:read"]}))
+        .post(
+            "/api/auth/tokens",
+            Some(token),
+            json!({"name": "t", "scopes": ["auth:read"]}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.json);
     r.json["key"].as_str().unwrap().to_owned()
@@ -758,49 +1032,104 @@ async fn suspension_blocks_every_way_in_until_lifted() {
     let admin = h.root_token().await;
     let (uid, token) = h.verified_user("s@example.com").await;
     let login = h
-        .post("/api/auth/login", None, json!({"email": "s@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "s@example.com", "password": PW}),
+        )
         .await;
     let refresh = login.json["refresh_token"].as_str().unwrap().to_owned();
     let pat = pat(&h, &token).await;
     assert_eq!(h.get("/api/auth/me", Some(&pat)).await.status, StatusCode::OK);
 
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/suspend"), Some(&token), json!({"reason": "x"}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/suspend"),
+            Some(&token),
+            json!({"reason": "x"}),
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/suspend"), Some(&admin), json!({"reason": "abuse"}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/suspend"),
+            Some(&admin),
+            json!({"reason": "abuse"}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
-    assert_eq!((r.json["status"].as_str(), r.json["reason"].as_str()), (Some("suspended"), Some("abuse")));
+    assert_eq!(
+        (r.json["status"].as_str(), r.json["reason"].as_str()),
+        (Some("suspended"), Some("abuse"))
+    );
 
-    assert_eq!(h.get("/api/auth/me", Some(&token)).await.status, StatusCode::UNAUTHORIZED, "sessions revoked");
-    let r = h.post("/api/auth/refresh", None, json!({"refresh_token": refresh})).await;
-    assert!(r.status == StatusCode::FORBIDDEN || r.status == StatusCode::UNAUTHORIZED, "{}", r.json);
+    assert_eq!(
+        h.get("/api/auth/me", Some(&token)).await.status,
+        StatusCode::UNAUTHORIZED,
+        "sessions revoked"
+    );
     let r = h
-        .post("/api/auth/login", None, json!({"email": "s@example.com", "password": PW}))
+        .post("/api/auth/refresh", None, json!({"refresh_token": refresh}))
+        .await;
+    assert!(
+        r.status == StatusCode::FORBIDDEN || r.status == StatusCode::UNAUTHORIZED,
+        "{}",
+        r.json
+    );
+    let r = h
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "s@example.com", "password": PW}),
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "account_suspended");
-    assert_error(&h.get("/api/auth/me", Some(&pat)).await, StatusCode::FORBIDDEN, "account_suspended");
+    assert_error(
+        &h.get("/api/auth/me", Some(&pat)).await,
+        StatusCode::FORBIDDEN,
+        "account_suspended",
+    );
     // The policy engine sees the same suspension.
-    assert_eq!(h.count(&format!("SELECT COUNT(*) FROM _forgebase_suspensions WHERE principal = 'user:users/{uid}'")).await, 1);
+    assert_eq!(
+        h.count(&format!(
+            "SELECT COUNT(*) FROM _forgebase_suspensions WHERE principal = 'user:users/{uid}'"
+        ))
+        .await,
+        1
+    );
 
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/unsuspend"), Some(&admin), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/unsuspend"),
+            Some(&admin),
+            json!({}),
+        )
         .await;
     assert_eq!(r.json["status"], "active", "{}", r.json);
     let r = h
-        .post("/api/auth/login", None, json!({"email": "s@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "s@example.com", "password": PW}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
-    assert_eq!(h.get("/api/auth/me", Some(&pat)).await.status, StatusCode::OK, "tokens work again");
+    assert_eq!(
+        h.get("/api/auth/me", Some(&pat)).await.status,
+        StatusCode::OK,
+        "tokens work again"
+    );
     // A limited suspension that already passed does not block.
     h.sql(&format!(
         "INSERT INTO _forgebase_suspensions (principal, reason, suspended_by, suspended_at, until_at) VALUES ('user:users/{uid}', '', 'x', 0, 1)"
     ))
     .await;
     let r = h
-        .post("/api/auth/login", None, json!({"email": "s@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "s@example.com", "password": PW}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
 }
@@ -811,34 +1140,71 @@ async fn deactivation_needs_proof_and_an_admin_to_undo() {
     let admin = h.root_token().await;
     let (uid, token) = h.verified_user("d@example.com").await;
     let r = h
-        .post("/api/auth/account/deactivate", Some(&token), json!({"current_password": "wrong password"}))
+        .post(
+            "/api/auth/account/deactivate",
+            Some(&token),
+            json!({"current_password": "wrong password"}),
+        )
         .await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
     let r = h
-        .post("/api/auth/account/deactivate", Some(&token), json!({"current_password": PW}))
+        .post(
+            "/api/auth/account/deactivate",
+            Some(&token),
+            json!({"current_password": PW}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
-    assert_eq!(h.get("/api/auth/me", Some(&token)).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.get("/api/auth/me", Some(&token)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     let r = h
-        .post("/api/auth/login", None, json!({"email": "d@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "d@example.com", "password": PW}),
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "account_deactivated");
-    let r = h.get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin)).await;
+    let r = h
+        .get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin))
+        .await;
     assert_eq!(r.json["status"], "deactivated");
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/reactivate"), Some(&admin), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/reactivate"),
+            Some(&admin),
+            json!({}),
+        )
         .await;
     assert_eq!(r.json["status"], "active", "{}", r.json);
     let token = h.password_login("d@example.com").await;
     // Administrators deactivate too; reactivating an active account is a conflict.
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/deactivate"), Some(&admin), json!({"reason": "left"}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/deactivate"),
+            Some(&admin),
+            json!({"reason": "left"}),
+        )
         .await;
     assert_eq!(r.json["reason"], "left", "{}", r.json);
-    assert_eq!(h.get("/api/auth/me", Some(&token)).await.status, StatusCode::UNAUTHORIZED);
-    h.post(&format!("/api/auth/users/users/{uid}/reactivate"), Some(&admin), json!({})).await;
+    assert_eq!(
+        h.get("/api/auth/me", Some(&token)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    h.post(
+        &format!("/api/auth/users/users/{uid}/reactivate"),
+        Some(&admin),
+        json!({}),
+    )
+    .await;
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/reactivate"), Some(&admin), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/reactivate"),
+            Some(&admin),
+            json!({}),
+        )
         .await;
     assert_error(&r, StatusCode::CONFLICT, "conflict");
 }
@@ -853,7 +1219,11 @@ async fn self_delete_removes_the_record_and_every_auth_row() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     assert_eq!(r.json["deleted"], true);
     let r = h
-        .post("/api/auth/login", None, json!({"email": "del@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "del@example.com", "password": PW}),
+        )
         .await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
     for (table, col) in [
@@ -862,7 +1232,12 @@ async fn self_delete_removes_the_record_and_every_auth_row() {
         ("_forgebase_auth_one_time", "subject_id"),
         ("users", "id"),
     ] {
-        assert_eq!(h.count(&format!("SELECT COUNT(*) FROM {table} WHERE {col} = '{uid}'")).await, 0, "{table}");
+        assert_eq!(
+            h.count(&format!("SELECT COUNT(*) FROM {table} WHERE {col} = '{uid}'"))
+                .await,
+            0,
+            "{table}"
+        );
     }
     let pii = h
         .count(&format!(
@@ -870,10 +1245,20 @@ async fn self_delete_removes_the_record_and_every_auth_row() {
         ))
         .await;
     assert_eq!(pii, 0, "audit trail keeps events, not IPs");
-    assert!(h.count(&format!("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE subject_id = '{uid}' AND event = 'account.deleted'")).await == 1);
+    assert!(
+        h.count(&format!(
+            "SELECT COUNT(*) FROM _forgebase_auth_audit WHERE subject_id = '{uid}' AND event = 'account.deleted'"
+        ))
+        .await
+            == 1
+    );
     // The address is free again.
     let r = h
-        .post("/api/auth/signup", None, json!({"email": "del@example.com", "password": PW}))
+        .post(
+            "/api/auth/signup",
+            None,
+            json!({"email": "del@example.com", "password": PW}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.json);
 }
@@ -882,12 +1267,22 @@ async fn self_delete_removes_the_record_and_every_auth_row() {
 async fn stale_sessions_must_prove_identity_again() {
     let h = harness(|_| {}).await;
     let (_, token) = h.verified_user("old@example.com").await;
-    h.sql("UPDATE _forgebase_auth_sessions SET created_at = created_at - 3600").await;
+    h.sql("UPDATE _forgebase_auth_sessions SET created_at = created_at - 3600")
+        .await;
     let r = h.post("/api/auth/account/delete", Some(&token), json!({})).await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
-    assert!(r.json["error"]["message"].as_str().unwrap().contains("reauthentication_required"));
+    assert!(
+        r.json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("reauthentication_required")
+    );
     let r = h
-        .post("/api/auth/account/delete", Some(&token), json!({"current_password": PW, "anonymise": true}))
+        .post(
+            "/api/auth/account/delete",
+            Some(&token),
+            json!({"current_password": PW, "anonymise": true}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     assert_eq!(r.json["anonymised"], true);
@@ -900,11 +1295,19 @@ async fn anonymise_keeps_the_id_and_removes_personal_data() {
     let (uid, token) = h.verified_user("anon@example.com").await;
     let _pat = pat(&h, &token).await;
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/anonymise"), Some(&token), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/anonymise"),
+            Some(&token),
+            json!({}),
+        )
         .await;
     assert_error(&r, StatusCode::FORBIDDEN, "forbidden");
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/anonymise"), Some(&admin), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/anonymise"),
+            Some(&admin),
+            json!({}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     let anonymised = h
@@ -913,25 +1316,50 @@ async fn anonymise_keeps_the_id_and_removes_personal_data() {
         ))
         .await;
     assert_eq!(anonymised, 1, "id kept, email replaced");
-    assert_eq!(h.count(&format!("SELECT COUNT(*) FROM _forgebase_auth_api_keys WHERE owner_id = '{uid}'")).await, 0);
-    assert_eq!(h.get("/api/auth/me", Some(&token)).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.count(&format!(
+            "SELECT COUNT(*) FROM _forgebase_auth_api_keys WHERE owner_id = '{uid}'"
+        ))
+        .await,
+        0
+    );
+    assert_eq!(
+        h.get("/api/auth/me", Some(&token)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     let r = h
-        .post("/api/auth/login", None, json!({"email": "anon@example.com", "password": PW}))
+        .post(
+            "/api/auth/login",
+            None,
+            json!({"email": "anon@example.com", "password": PW}),
+        )
         .await;
     assert_error(&r, StatusCode::UNAUTHORIZED, "invalid_credentials");
-    let r = h.get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin)).await;
+    let r = h
+        .get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin))
+        .await;
     assert_eq!(r.json["status"], "anonymised");
     let r = h
-        .post(&format!("/api/auth/users/users/{uid}/deactivate"), Some(&admin), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{uid}/deactivate"),
+            Some(&admin),
+            json!({}),
+        )
         .await;
     assert_error(&r, StatusCode::CONFLICT, "conflict");
     // Admin delete of another user.
     let (other, _) = h.verified_user("gone@example.com").await;
     let r = h
-        .post(&format!("/api/auth/users/users/{other}/delete"), Some(&admin), json!({}))
+        .post(
+            &format!("/api/auth/users/users/{other}/delete"),
+            Some(&admin),
+            json!({}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
-    let r = h.get(&format!("/api/auth/users/users/{other}/status"), Some(&admin)).await;
+    let r = h
+        .get(&format!("/api/auth/users/users/{other}/status"), Some(&admin))
+        .await;
     assert_error(&r, StatusCode::NOT_FOUND, "not_found");
 }
 
@@ -947,18 +1375,40 @@ async fn export_returns_the_account_data() {
     assert_eq!(r.json["user"]["email"], "exp@example.com");
     assert!(r.json["user"].get("password").is_none() && r.json["user"].get("token_key").is_none());
     assert!(!r.json["sessions"].as_array().unwrap().is_empty());
-    assert!(r.json["audit"].as_array().unwrap().iter().any(|e| e["event"] == "signup"));
+    assert!(
+        r.json["audit"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event"] == "signup")
+    );
     assert_eq!(r.json["status"]["status"], "active");
     let pat = pat(&h, &token).await;
-    assert_error(&h.get("/api/auth/account/export", Some(&pat)).await, StatusCode::FORBIDDEN, "forbidden");
-    let r = h.get(&format!("/api/auth/users/users/{uid}/export"), Some(&admin)).await;
-    assert_eq!(r.json["personal_access_tokens"].as_array().unwrap().len(), 1, "{}", r.json);
     assert_error(
-        &h.get(&format!("/api/auth/users/users/{uid}/export"), Some(&token)).await,
+        &h.get("/api/auth/account/export", Some(&pat)).await,
         StatusCode::FORBIDDEN,
         "forbidden",
     );
-    assert!(h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'account.exported'").await >= 2);
+    let r = h
+        .get(&format!("/api/auth/users/users/{uid}/export"), Some(&admin))
+        .await;
+    assert_eq!(
+        r.json["personal_access_tokens"].as_array().unwrap().len(),
+        1,
+        "{}",
+        r.json
+    );
+    assert_error(
+        &h.get(&format!("/api/auth/users/users/{uid}/export"), Some(&token))
+            .await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
+    assert!(
+        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'account.exported'")
+            .await
+            >= 2
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -968,7 +1418,10 @@ async fn export_returns_the_account_data() {
 fn assert_impersonation_refused(r: &Resp, what: &str) {
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{what}: {}", r.json);
     assert!(
-        r.json["error"]["message"].as_str().unwrap_or("").contains("impersonated_session"),
+        r.json["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("impersonated_session"),
         "{what}: {}",
         r.json
     );
@@ -994,28 +1447,51 @@ async fn impersonated_sessions_cannot_change_ways_in_or_take_the_account() {
     assert_eq!(h.get("/api/auth/me", Some(&tok)).await.status, StatusCode::OK);
 
     let cases: Vec<(&str, Resp)> = vec![
-        ("oauth link", h.post("/api/auth/oauth/google/link", Some(&tok), json!({})).await),
-        ("oauth unlink", h.delete("/api/auth/oauth/identities/some-id", Some(&tok)).await),
+        (
+            "oauth link",
+            h.post("/api/auth/oauth/google/link", Some(&tok), json!({})).await,
+        ),
+        (
+            "oauth unlink",
+            h.delete("/api/auth/oauth/identities/some-id", Some(&tok)).await,
+        ),
         (
             "passkey register",
-            h.post("/api/auth/webauthn/register/options", Some(&tok), json!({})).await,
-        ),
-        ("passkey delete", h.delete("/api/auth/webauthn/credentials/some-id", Some(&tok)).await),
-        ("phone add", h.post("/api/auth/phone/add", Some(&tok), json!({"phone": "+15550100077"})).await),
-        (
-            "phone confirm",
-            h.post("/api/auth/phone/confirm", Some(&tok), json!({"phone": "+15550100077", "code": "123456"}))
+            h.post("/api/auth/webauthn/register/options", Some(&tok), json!({}))
                 .await,
         ),
+        (
+            "passkey delete",
+            h.delete("/api/auth/webauthn/credentials/some-id", Some(&tok)).await,
+        ),
+        (
+            "phone add",
+            h.post("/api/auth/phone/add", Some(&tok), json!({"phone": "+15550100077"}))
+                .await,
+        ),
+        (
+            "phone confirm",
+            h.post(
+                "/api/auth/phone/confirm",
+                Some(&tok),
+                json!({"phone": "+15550100077", "code": "123456"}),
+            )
+            .await,
+        ),
         ("phone remove", h.delete("/api/auth/phone", Some(&tok)).await),
-        ("deactivate", h.post("/api/auth/account/deactivate", Some(&tok), json!({})).await),
+        (
+            "deactivate",
+            h.post("/api/auth/account/deactivate", Some(&tok), json!({})).await,
+        ),
         (
             "delete",
-            h.post("/api/auth/account/delete", Some(&tok), json!({"current_password": PW})).await,
+            h.post("/api/auth/account/delete", Some(&tok), json!({"current_password": PW}))
+                .await,
         ),
         (
             "anonymise",
-            h.post("/api/auth/account/delete", Some(&tok), json!({"anonymise": true})).await,
+            h.post("/api/auth/account/delete", Some(&tok), json!({"anonymise": true}))
+                .await,
         ),
         ("export", h.get("/api/auth/account/export", Some(&tok)).await),
     ];
@@ -1023,10 +1499,17 @@ async fn impersonated_sessions_cannot_change_ways_in_or_take_the_account() {
         assert_impersonation_refused(r, what);
     }
     // Nothing happened to the account; its own session still can.
-    let r = h.get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin)).await;
+    let r = h
+        .get(&format!("/api/auth/users/users/{uid}/status"), Some(&admin))
+        .await;
     assert_eq!(r.json["status"], "active");
-    assert_eq!(h.get("/api/auth/account/export", Some(&own)).await.status, StatusCode::OK);
-    let r = h.post("/api/auth/phone/add", Some(&own), json!({"phone": "+15550100077"})).await;
+    assert_eq!(
+        h.get("/api/auth/account/export", Some(&own)).await.status,
+        StatusCode::OK
+    );
+    let r = h
+        .post("/api/auth/phone/add", Some(&own), json!({"phone": "+15550100077"}))
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.json);
     // Administrator lifecycle routes are not reachable with the user token.
     let r = h
