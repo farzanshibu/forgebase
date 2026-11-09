@@ -199,3 +199,15 @@ Deliberately **not** added: `webauthn-rs` (OpenSSL), `jsonwebtoken` (ring/aws-lc
 `rsa` (RUSTSEC-2023-0071), `openidconnect`/`oauth2`/`reqwest` (TLS stack),
 a CBOR crate (a 130-line strict reader covers WebAuthn). **Open decision**:
 a TLS-capable outbound HTTP client (ADR-0009 §9).
+
+## FB-32 (RESP listener, ADR-0013)
+
+New crate `forgebase-resp`. Its default build adds **no third-party crates** to the `forgebase` binary (it uses tokio, metrics, tracing, thiserror, already listed). One new third-party crate for tests and an optional feature:
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| redis | =0.32.7 (`tokio-comp`, `connection-manager`; no default features) | BSD-3-Clause | dev-dependency of `forgebase-resp`, `forgebase-server`; optional dependency behind cargo feature `external-redis` (off by default) | real Redis client for the conformance tests; external Redis/Valkey backend |
+
+New packages in `Cargo.lock` (all via `redis`): `combine` 4.6.9 (MIT), `backon` 1.6.0 (Apache-2.0), `arc-swap` 1.9.4, `num-bigint` 0.4.8, `num-integer` 0.1.47 (MIT OR Apache-2.0), `tokio-util` 0.7.20 (MIT), `ryu` 1.0.23 (Apache-2.0 OR BSL-1.0; taken under Apache-2.0). `cargo deny check licenses` passes.
+
+`redis` is pinned to 0.32.7 on purpose: 1.x depends on `xxhash-rust` (BSL-1.0, not on the allow list). Revisit if BSL-1.0 is approved.

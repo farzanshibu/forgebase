@@ -36,6 +36,7 @@ mod store;
 pub use commands::{Class, Spec, spec};
 pub use config::{EvictionPolicy, KvConfig};
 pub use error::{KvError, KvResult};
+pub use glob::matches as glob_matches;
 pub use pubsub::{Message, Subscription};
 pub use reply::Reply;
 pub use service::{Clock, KvService, KvStats, NamespaceInfo, system_clock, validate_namespace};
