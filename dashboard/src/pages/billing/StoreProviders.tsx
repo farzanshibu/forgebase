@@ -21,7 +21,7 @@ interface Spec {
 interface Card { id: string; title: string; kind: "store" | "payment"; test: string; fields: Spec[]; apiBase?: "required" | "optional" }
 
 /** Provider forms of FB-72 (ADR-0021 section 9). Every secret and every `config` value is sealed on the server and never returned. */
-export const CARDS: Card[] = [
+const CARDS: Card[] = [
   {
     id: "app_store", title: "App Store", kind: "store",
     test: "Sandbox only: environment sandbox, xcode or local_testing. The production API base and Production transactions are refused.",
