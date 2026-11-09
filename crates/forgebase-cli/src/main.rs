@@ -8,6 +8,7 @@
 //! forgebase doctor         run diagnostics; exit code 1 if any check fails
 //! forgebase admin create   create an administrator (also reset-password, list)
 //! forgebase version        print version information
+//! forgebase functions deploy <NAME> <FILE.wasm>   deploy a function version (also: logs <NAME> [--follow])
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
@@ -16,6 +17,7 @@ mod admin;
 mod commands;
 mod doctor;
 mod dotenv;
+mod functions;
 mod probe;
 
 use std::path::PathBuf;
@@ -140,6 +142,13 @@ enum Command {
         #[command(subcommand)]
         command: admin::AdminCommand,
     },
+    /// Deploy WebAssembly functions and read their logs on a running server.
+    Functions {
+        #[command(flatten)]
+        server: functions::ServerArgs,
+        #[command(subcommand)]
+        command: functions::FunctionsCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -175,5 +184,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Doctor { json } => doctor::run(g, json).await,
         Command::Version { json } => commands::version(json).await,
         Command::Admin { command } => admin::run(g, command).await,
+        Command::Functions { server, command } => functions::run(g, server, command).await,
     }
 }
