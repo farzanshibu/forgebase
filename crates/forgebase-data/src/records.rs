@@ -17,8 +17,10 @@ use forgebase_schema::{
 use serde::Serialize;
 use serde_json::{Map, Value as Json};
 
+use crate::access::{TENANT_COLUMN, is_tenant_scoped, reads_tenant_data};
 use crate::changes::ChangeOp;
 use crate::error::unique_fields;
+use crate::guard::FieldMask;
 use crate::{AccessContext, Action, DataError, DataService, MAX_BATCH, Predicate, finish};
 
 /// A record as returned by the service.
@@ -58,7 +60,7 @@ pub struct RecordVersion {
 }
 
 /// Keys that are never part of the writable document.
-const READ_ONLY_KEYS: &[&str] = &["id", "created", "updated", "_version", "expand"];
+const READ_ONLY_KEYS: &[&str] = &["id", "created", "updated", "_version", "expand", TENANT_COLUMN];
 
 /// SQL value of a JSON value for a column.
 pub(crate) fn json_to_sql(storage: Storage, v: &Json) -> Value {
@@ -86,14 +88,15 @@ pub(crate) fn sql_to_json(v: &Value) -> Json {
 }
 
 /// Converts a table row to a record. Password fields are never included;
-/// hidden fields only when `privileged`. Columns that are not fields (view
+/// fields the mask hides (hidden fields, field-level rules) are left out, and
+/// so is `_tenant` unless the mask shows it. Columns that are not fields (view
 /// columns, extra query columns) are passed through unless they start with
 /// `__`.
-pub(crate) fn row_to_record(coll: &Collection, columns: &[String], row: &[Value], privileged: bool) -> Record {
+pub(crate) fn row_to_record(coll: &Collection, columns: &[String], row: &[Value], mask: &FieldMask) -> Record {
     let mut rec = Map::new();
     let mut dynamic: Option<Map<String, Json>> = None;
     for (name, value) in columns.iter().zip(row) {
-        if name.starts_with("__") {
+        if name.starts_with("__") || (name == TENANT_COLUMN && !mask.show_tenant()) {
             continue;
         }
         if name == "_data" {
@@ -104,7 +107,7 @@ pub(crate) fn row_to_record(coll: &Collection, columns: &[String], row: &[Value]
         }
         match coll.field(name) {
             Some(f) => {
-                if matches!(f.kind, FieldKind::Password { .. }) || (f.hidden && !privileged) {
+                if matches!(f.kind, FieldKind::Password { .. }) || !mask.allows(f) {
                     continue;
                 }
                 let j = match (f.kind.storage(), value) {
@@ -246,7 +249,9 @@ impl DataService {
         Ok(Prepared { columns, relations })
     }
 
-    async fn check_relations(&self, tx: &mut dyn WriteTx, p: &Prepared) -> Result<(), DataError> {
+    /// Checks that related records exist — in `tenant` when the target is
+    /// tenant-scoped, so relations never cross tenants.
+    async fn check_relations(&self, tx: &mut dyn WriteTx, p: &Prepared, tenant: Option<&str>) -> Result<(), DataError> {
         let d = self.inner.backend.dialect();
         let cat = self.catalog();
         let mut errors = ValidationErrors::default();
@@ -260,17 +265,27 @@ impl DataService {
             };
             let mut b = SqlBuilder::new(d);
             let ph: Vec<String> = ids.iter().map(|i| b.bind(i.clone())).collect();
-            let rows = tx
-                .fetch_all(&Statement::new(
-                    format!(
-                        "SELECT count(*) FROM {} WHERE {} IN ({})",
-                        d.quote_ident(&target.name),
-                        d.quote_ident("id"),
-                        ph.join(", ")
-                    ),
-                    b.into_params(),
-                ))
-                .await?;
+            let mut sql = format!(
+                "SELECT count(*) FROM {} WHERE {} IN ({})",
+                d.quote_ident(&target.name),
+                d.quote_ident("id"),
+                ph.join(", ")
+            );
+            if is_tenant_scoped(target) {
+                let Some(t) = tenant else {
+                    errors.add(
+                        field.clone(),
+                        FieldError::new("invalid_relation", "tenant-scoped targets need a tenant"),
+                    );
+                    continue;
+                };
+                sql.push_str(&format!(
+                    " AND {} = {}",
+                    d.quote_ident(TENANT_COLUMN),
+                    b.bind(t.to_owned())
+                ));
+            }
+            let rows = tx.fetch_all(&Statement::new(sql, b.into_params())).await?;
             if rows.scalar().and_then(Value::as_i64) != Some(ids.len() as i64) {
                 errors.add(
                     field.clone(),
@@ -297,6 +312,9 @@ impl DataService {
             d.quote_ident("id"),
             b.bind(id.to_owned())
         );
+        if let Some(t) = self.tenant_clause(ctx, &mut b, coll, "t") {
+            sql.push_str(&format!(" AND {t}"));
+        }
         if let Some(p) = pred {
             sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, coll, p)?));
         }
@@ -316,7 +334,14 @@ impl DataService {
             ..CompileOptions::default()
         };
         let cat = self.catalog();
-        Ok(Compiler::new(&*cat, &opts).filter(b, coll, "t", &p.filter)?)
+        // A rule that no longer compiles (e.g. it names a dropped field) must
+        // not turn into a client error that leaks schema: fail closed.
+        Compiler::new(&*cat, &opts)
+            .filter(b, coll, "t", &p.filter)
+            .map_err(|e| {
+                tracing::warn!(collection = %coll.name, error = %e, "access rule cannot be evaluated; denying");
+                DataError::Forbidden("the access rule cannot be evaluated".into())
+            })
     }
 
     async fn insert_one(
@@ -342,12 +367,20 @@ impl DataService {
                 .into());
             }
         };
-        let prepared = self.prepare(coll, doc, WriteMode::Create)?;
-        self.check_relations(tx, &prepared).await?;
+        let mut doc = doc.clone();
+        let sent = doc.clone();
+        self.check_writable(ctx, coll, &mut doc, None, &sent)?;
+        let tenant = self.tenant_for_insert(ctx, coll)?;
+        let prepared = self.prepare(coll, &doc, WriteMode::Create)?;
+        self.check_relations(tx, &prepared, tenant.as_deref()).await?;
         let now = now_timestamp();
         let mut b = SqlBuilder::new(d);
         let mut cols = vec![d.quote_ident("id"), d.quote_ident("created"), d.quote_ident("updated")];
         let mut vals = vec![b.bind(id.clone()), b.bind(now.clone()), b.bind(now)];
+        if let Some(t) = tenant {
+            cols.push(d.quote_ident(TENANT_COLUMN));
+            vals.push(b.bind(t));
+        }
         for (c, v) in &prepared.columns {
             cols.push(d.quote_ident(c));
             vals.push(b.bind(v.clone()));
@@ -388,7 +421,7 @@ impl DataService {
             .rows
             .first()
             .ok_or_else(|| DataError::Internal("written row not found".into()))?;
-        let rec = row_to_record(coll, &rows.columns, row, true);
+        let rec = row_to_record(coll, &rows.columns, row, &FieldMask::all());
         let change_op = if op == "create" {
             ChangeOp::Create
         } else {
@@ -419,7 +452,7 @@ impl DataService {
     fn write_error(&self, coll: &Collection, e: DbError) -> DataError {
         if let Some(fields) = unique_fields(&coll.name, &e) {
             let mut v = ValidationErrors::default();
-            for f in fields {
+            for f in fields.into_iter().filter(|f| !f.eq_ignore_ascii_case(TENANT_COLUMN)) {
                 v.add(f, FieldError::new("unique", "value is already in use"));
             }
             return v.into();
@@ -441,11 +474,7 @@ impl DataService {
     }
 
     fn strip_hidden(&self, ctx: &AccessContext, coll: &Collection, mut rec: Record) -> Record {
-        if !ctx.is_privileged() {
-            for f in coll.fields.iter().filter(|f| f.hidden) {
-                rec.remove(&f.name);
-            }
-        }
+        self.mask(ctx, coll).strip(coll, &mut rec);
         rec
     }
 
@@ -471,9 +500,8 @@ impl DataService {
         collection: &str,
         data: Vec<Json>,
     ) -> Result<Vec<Record>, DataError> {
-        let coll = self.collection(collection)?;
+        let (coll, pred) = self.resolve(ctx, Action::Create, collection)?;
         self.writable(&coll)?;
-        let pred = self.authorize(ctx, Action::Create, Some(&coll))?;
         if data.is_empty() || data.len() > MAX_BATCH {
             return Err(DataError::invalid(
                 "invalid_batch",
@@ -512,8 +540,7 @@ impl DataService {
         id: &str,
         opts: &GetOptions,
     ) -> Result<Record, DataError> {
-        let coll = self.collection(collection)?;
-        let pred = self.authorize(ctx, Action::View, Some(&coll))?;
+        let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
         let rows = self
             .inner
             .backend
@@ -523,7 +550,7 @@ impl DataService {
             collection: coll.name.clone(),
             id: id.to_owned(),
         })?;
-        let mut recs = vec![row_to_record(&coll, &rows.columns, row, ctx.is_privileged())];
+        let mut recs = vec![row_to_record(&coll, &rows.columns, row, &self.mask(ctx, &coll))];
         if !opts.expand.is_empty() {
             self.expand(ctx, &coll, &mut recs, &opts.expand, 0).await?;
         }
@@ -543,9 +570,8 @@ impl DataService {
         patch: Json,
         opts: UpdateOptions,
     ) -> Result<Record, DataError> {
-        let coll = self.collection(collection)?;
+        let (coll, pred) = self.resolve(ctx, Action::Update, collection)?;
         self.writable(&coll)?;
-        let pred = self.authorize(ctx, Action::Update, Some(&coll))?;
         let Json::Object(patch_obj) = &patch else {
             return Err(DataError::invalid("invalid_body", "a patch must be a JSON object"));
         };
@@ -562,7 +588,7 @@ impl DataService {
                 collection: coll.name.clone(),
                 id: id.to_owned(),
             })?;
-            let current = row_to_record(&coll, &rows.columns, row, true);
+            let current = row_to_record(&coll, &rows.columns, row, &FieldMask::all());
             let actual = current.get("_version").and_then(Json::as_i64).unwrap_or(1);
             if let Some(expected) = opts.expected_version
                 && expected != actual
@@ -571,8 +597,9 @@ impl DataService {
             }
             let mut doc = Json::Object(
                 current
-                    .into_iter()
+                    .iter()
                     .filter(|(k, _)| !READ_ONLY_KEYS.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
             );
             if opts.replace {
@@ -580,11 +607,14 @@ impl DataService {
             } else {
                 merge_patch(&mut doc, &patch);
             }
-            let Json::Object(doc) = doc else {
+            let Json::Object(mut doc) = doc else {
                 unreachable!("merge of objects is an object")
             };
+            doc.remove(TENANT_COLUMN);
+            self.check_writable(ctx, &coll, &mut doc, Some(&current), patch_obj)?;
+            let tenant = current.get(TENANT_COLUMN).and_then(Json::as_str);
             let prepared = self.prepare(&coll, &doc, WriteMode::Update)?;
-            self.check_relations(&mut *tx, &prepared).await?;
+            self.check_relations(&mut *tx, &prepared, tenant).await?;
             let mut b = SqlBuilder::new(d);
             let mut sets = vec![
                 format!("{} = {}", d.quote_ident("updated"), b.bind(now_timestamp())),
@@ -622,9 +652,8 @@ impl DataService {
         id: &str,
         expected_version: Option<i64>,
     ) -> Result<(), DataError> {
-        let coll = self.collection(collection)?;
+        let (coll, pred) = self.resolve(ctx, Action::Delete, collection)?;
         self.writable(&coll)?;
-        let pred = self.authorize(ctx, Action::Delete, Some(&coll))?;
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
             let rows = tx.fetch_all(&self.select_by_id(ctx, &coll, id, pred.as_ref())?).await?;
@@ -632,7 +661,7 @@ impl DataService {
                 collection: coll.name.clone(),
                 id: id.to_owned(),
             })?;
-            let current = row_to_record(&coll, &rows.columns, row, true);
+            let current = row_to_record(&coll, &rows.columns, row, &FieldMask::all());
             let actual = current.get("_version").and_then(Json::as_i64).unwrap_or(1);
             if let Some(expected) = expected_version
                 && expected != actual
@@ -784,10 +813,11 @@ impl DataService {
         collection: &str,
         id: &str,
     ) -> Result<Vec<RecordVersion>, DataError> {
-        let coll = self.collection(collection)?;
-        let pred = self.authorize(ctx, Action::View, Some(&coll))?;
-        if pred.is_some() {
-            // Restricted callers see history only of records they can see now.
+        let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
+        let tenant_bound = is_tenant_scoped(&coll) && ctx.tenant.is_some();
+        if pred.is_some() || tenant_bound {
+            // Restricted callers see history only of records they can see now
+            // (in their tenant).
             let rows = self
                 .inner
                 .backend
@@ -809,11 +839,11 @@ impl DataService {
                 vec![coll.id.clone().into(), id.into()],
             ))
             .await?;
-        Ok(versions_from(&coll, ctx, &rows))
+        Ok(versions_from(&coll, &self.mask(ctx, &coll), &rows))
     }
 }
 
-fn versions_from(coll: &Collection, ctx: &AccessContext, rows: &Rows) -> Vec<RecordVersion> {
+fn versions_from(coll: &Collection, mask: &FieldMask, rows: &Rows) -> Vec<RecordVersion> {
     rows.rows
         .iter()
         .map(|r| RecordVersion {
@@ -823,12 +853,8 @@ fn versions_from(coll: &Collection, ctx: &AccessContext, rows: &Rows) -> Vec<Rec
                 .as_str()
                 .and_then(|s| serde_json::from_str::<Json>(s).ok())
                 .map(|mut j| {
-                    if !ctx.is_privileged()
-                        && let Json::Object(m) = &mut j
-                    {
-                        for f in coll.fields.iter().filter(|f| f.hidden) {
-                            m.remove(&f.name);
-                        }
+                    if let Json::Object(m) = &mut j {
+                        mask.strip(coll, m);
                     }
                     j
                 }),
@@ -913,10 +939,11 @@ impl DataService {
                 }
             }
             let d = self.inner.backend.dialect();
+            let mask = self.mask(ctx, coll);
             for (name, nested) in groups {
                 let field = coll
                     .field(&name)
-                    .filter(|f| !f.hidden || ctx.is_privileged())
+                    .filter(|f| mask.allows(f))
                     .ok_or_else(|| DataError::invalid("invalid_expand", format!("{name} is not a relation field")))?;
                 let FieldKind::Relation {
                     collection_id,
@@ -930,11 +957,17 @@ impl DataService {
                     ));
                 };
                 let target = self.collection(collection_id)?;
+                if !ctx.is_privileged()
+                    && (reads_tenant_data(&target) || (is_tenant_scoped(&target) && ctx.tenant.is_none()))
+                {
+                    continue;
+                }
                 let pred = match self.authorize(ctx, Action::List, Some(&target)) {
                     Ok(p) => p,
                     Err(DataError::Forbidden(_) | DataError::Unauthenticated) => continue,
                     Err(e) => return Err(e),
                 };
+                let target_mask = self.mask(ctx, &target);
                 let mut ids: Vec<String> = Vec::new();
                 for r in recs.iter() {
                     match r.get(&field.name) {
@@ -955,6 +988,9 @@ impl DataService {
                         d.quote_ident("id"),
                         ph.join(", ")
                     );
+                    if let Some(t) = self.tenant_clause(ctx, &mut b, &target, "t") {
+                        sql.push_str(&format!(" AND {t}"));
+                    }
                     if let Some(p) = &pred {
                         sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, &target, p)?));
                     }
@@ -964,7 +1000,7 @@ impl DataService {
                         .fetch_all(&Statement::new(sql, b.into_params()))
                         .await?;
                     for row in &rows.rows {
-                        let rec = row_to_record(&target, &rows.columns, row, ctx.is_privileged());
+                        let rec = row_to_record(&target, &rows.columns, row, &target_mask);
                         if let Some(id) = rec.get("id").and_then(Json::as_str) {
                             found.insert(id.to_owned(), rec);
                         }

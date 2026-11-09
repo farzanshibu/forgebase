@@ -22,6 +22,7 @@ use forgebase_schema::{Collection, FieldKind, Storage};
 use serde_json::{Value as Json, json};
 
 use crate::records::{Record, row_to_record};
+use crate::access::{TENANT_COLUMN, reads_tenant_data};
 use crate::{AccessContext, Action, DataError, DataService};
 
 /// Kind of record change.
@@ -157,7 +158,7 @@ pub trait ChangeHook: Send + Sync + fmt::Debug {
 /// column, so predicates compare values exactly as they do on the table.
 fn column_type(coll: &Collection, column: &str) -> Option<&'static str> {
     match column {
-        "id" | "created" | "updated" | "_data" => return Some("TEXT"),
+        "id" | "created" | "updated" | "_data" | TENANT_COLUMN => return Some("TEXT"),
         "_version" => return Some("INTEGER"),
         _ => {}
     }
@@ -217,8 +218,10 @@ impl DataService {
 
     /// Checks that `ctx` may subscribe to changes of `collection` with
     /// `action` (`List` for the collection, `View` for one record) and that
-    /// the optional `filter` compiles for this caller (hidden fields only for
-    /// privileged callers). Returns the collection.
+    /// the optional `filter` compiles for this caller (with its field-level
+    /// read rules; hidden fields only for privileged callers). A missing
+    /// collection is reported like a forbidden one to non-privileged callers.
+    /// Returns the collection.
     pub fn subscription_target(
         &self,
         ctx: &AccessContext,
@@ -226,14 +229,9 @@ impl DataService {
         action: Action,
         filter: Option<(&Expr, &HashMap<String, Json>)>,
     ) -> Result<Collection, DataError> {
-        let coll = self.collection(collection)?;
-        self.authorize(ctx, action, Some(&coll))?;
+        let (coll, _) = self.resolve(ctx, action, collection)?;
         if let Some((expr, params)) = filter {
-            let opts = CompileOptions {
-                allow_hidden: ctx.is_privileged(),
-                params: params.clone(),
-                ..CompileOptions::default()
-            };
+            let opts = self.filter_options(ctx, &coll, params);
             let cat = self.catalog();
             let mut b = SqlBuilder::new(self.inner.backend.dialect());
             Compiler::new(&*cat, &opts).filter(&mut b, &coll, "t", expr)?;
@@ -241,18 +239,28 @@ impl DataService {
         Ok(coll)
     }
 
+    fn filter_options(&self, ctx: &AccessContext, coll: &Collection, params: &HashMap<String, Json>) -> CompileOptions {
+        CompileOptions {
+            allow_hidden: ctx.is_privileged(),
+            field_guard: self.field_guard(ctx, coll),
+            params: params.clone(),
+            ..CompileOptions::default()
+        }
+    }
+
     /// What `ctx` may see of a stored row of collection `collection_id`,
     /// decided by the caller's **current** access for `action`, or `None` when
-    /// the row is not visible (denied, outside the access predicate, outside
-    /// `filter`, or the collection no longer exists).
+    /// the row is not visible (denied, another tenant, outside the access
+    /// predicate, outside `filter`, or the collection no longer exists).
     ///
-    /// The access predicate and the filter are evaluated by the database
-    /// against the snapshot itself (a one-row derived table with the table's
-    /// column types), with the same compiler as list queries; related records
-    /// in relation paths are read as they are now. The returned record has
-    /// the same fields a REST read would return to this caller (no passwords;
-    /// hidden fields only for privileged callers). This is the single place
-    /// where realtime delivery applies row- and field-level rules.
+    /// The tenant clause, the access predicate and the filter are evaluated by
+    /// the database against the snapshot itself (a one-row derived table with
+    /// the table's column types), with the same compiler as list queries;
+    /// related records in relation paths are read as they are now. The
+    /// returned record is masked like a REST read for this caller (no
+    /// passwords; hidden fields and fields the authorizer's field rules make
+    /// unreadable are left out). This is the single place where realtime
+    /// delivery applies row- and field-level rules.
     pub async fn view_snapshot(
         &self,
         ctx: &AccessContext,
@@ -264,14 +272,33 @@ impl DataService {
         let Some(coll) = self.catalog().get(collection_id).cloned() else {
             return Ok(None);
         };
+        if reads_tenant_data(&coll) && !ctx.is_privileged() {
+            return Ok(None);
+        }
         let pred = match self.authorize(ctx, action, Some(&coll)) {
             Ok(p) => p,
             Err(DataError::Unauthenticated | DataError::Forbidden(_)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        if pred.is_some() || filter.is_some() {
-            let d = self.inner.backend.dialect();
-            let mut b = SqlBuilder::new(d);
+        let d = self.inner.backend.dialect();
+        let mut b = SqlBuilder::new(d);
+        let mut clauses = Vec::new();
+        if let Some(t) = self.tenant_clause(ctx, &mut b, &coll, "t") {
+            clauses.push(t);
+        }
+        if let Some(p) = &pred {
+            match self.compile_predicate(ctx, &mut b, &coll, p) {
+                Ok(c) => clauses.push(c),
+                Err(DataError::Forbidden(_)) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        if let Some((expr, params)) = filter {
+            let opts = self.filter_options(ctx, &coll, params);
+            let cat = self.catalog();
+            clauses.push(Compiler::new(&*cat, &opts).filter(&mut b, &coll, "t", expr)?);
+        }
+        if !clauses.is_empty() {
             let cols: Vec<String> = row
                 .columns
                 .iter()
@@ -284,20 +311,11 @@ impl DataService {
                     }
                 })
                 .collect();
-            let mut sql = format!("SELECT 1 FROM (SELECT {}) AS t WHERE 1 = 1", cols.join(", "));
-            if let Some(p) = &pred {
-                sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, &coll, p)?));
-            }
-            if let Some((expr, params)) = filter {
-                let opts = CompileOptions {
-                    allow_hidden: ctx.is_privileged(),
-                    params: params.clone(),
-                    ..CompileOptions::default()
-                };
-                let cat = self.catalog();
-                let f = Compiler::new(&*cat, &opts).filter(&mut b, &coll, "t", expr)?;
-                sql.push_str(&format!(" AND ({f})"));
-            }
+            let sql = format!(
+                "SELECT 1 FROM (SELECT {}) AS t WHERE ({})",
+                cols.join(", "),
+                clauses.join(") AND (")
+            );
             let rows = self
                 .inner
                 .backend
@@ -307,11 +325,6 @@ impl DataService {
                 return Ok(None);
             }
         }
-        Ok(Some(row_to_record(
-            &coll,
-            &row.columns,
-            &row.values,
-            ctx.is_privileged(),
-        )))
+        Ok(Some(row_to_record(&coll, &row.columns, &row.values, &self.mask(ctx, &coll))))
     }
 }

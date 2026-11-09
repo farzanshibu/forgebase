@@ -11,9 +11,12 @@ license.workspace = true
 axum.workspace = true
 forgebase-api.workspace = true
 forgebase-auth.workspace = true
+forgebase-policy.workspace = true
 forgebase-data.workspace = true
 forgebase-core.workspace = true
 forgebase-db.workspace = true
+forgebase-jobs.workspace = true
+forgebase-kv.workspace = true
 forgebase-observability.workspace = true
 forgebase-realtime.workspace = true
 thiserror.workspace = true
@@ -21,6 +24,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

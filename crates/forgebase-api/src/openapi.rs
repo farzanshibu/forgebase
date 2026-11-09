@@ -17,6 +17,7 @@ use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder};
 
 use crate::error::{ErrorDetail, ErrorEnvelope};
 use crate::v1::{collections, indexes, records, schemas, sql, transfer};
+use forgebase_policy::http::docs as pd;
 
 /// Liveness probe.
 #[utoipa::path(
@@ -86,6 +87,16 @@ fn doc_openapi() {}
         indexes::set_threshold,
         sql::execute, sql::batch, sql::explain, sql::tables, sql::table,
         transfer::export, transfer::import,
+        pd::list_realms, pd::create_realm, pd::list_orgs, pd::create_org, pd::get_org, pd::update_org,
+        pd::delete_org, pd::list_org_projects, pd::create_org_project, pd::list_personal_projects,
+        pd::create_personal_project, pd::get_project, pd::delete_project, pd::create_environment,
+        pd::list_members, pd::put_member, pd::remove_member, pd::member_status, pd::list_teams,
+        pd::create_team, pd::delete_team, pd::add_team_member, pd::remove_team_member, pd::list_org_roles,
+        pd::put_org_role, pd::delete_org_role, pd::put_org_role_set, pd::list_realm_roles, pd::put_realm_role,
+        pd::delete_realm_role, pd::put_realm_role_set, pd::put_realm_binding, pd::add_override,
+        pd::delete_override, pd::list_acl, pd::put_acl, pd::delete_acl, pd::suspend, pd::unsuspend,
+        pd::get_policy, pd::put_policy, pd::delete_policy, pd::invite, pd::accept, pd::me, pd::check,
+        pd::audit,
     ),
     components(schemas(
         ErrorEnvelope, ErrorDetail,
@@ -108,6 +119,8 @@ fn doc_openapi() {}
         (name = "indexes", description = "Index management, statistics, query plans, slow queries"),
         (name = "sql", description = "SQL editor"),
         (name = "import-export", description = "Streamed import and export (JSON, NDJSON, CSV)"),
+        (name = "tenancy", description = "Realms, organizations, projects, environments (tenants), members, teams, invitations (ADR-0008)"),
+        (name = "authorization", description = "Roles, role sets, overrides, resource ACL, suspensions, collection rules, checks and audit (ADR-0008)"),
     ),
 )]
 struct ApiDoc;
@@ -191,10 +204,21 @@ fn api_security() -> Vec<SecurityRequirement> {
     ]
 }
 
-/// The complete OpenAPI document.
+/// The complete OpenAPI document of the core API.
 pub fn document() -> utoipa::openapi::OpenApi {
+    document_with(std::iter::empty())
+}
+
+/// The document with the fragments of feature crates merged in
+/// ([`crate::ApiExtension`]).
+pub fn document_with<'a>(
+    extensions: impl IntoIterator<Item = &'a utoipa::openapi::OpenApi>,
+) -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.merge(forgebase_graph::openapi());
+    for ext in extensions {
+        doc.merge(ext.clone());
+    }
     doc.merge(forgebase_realtime::openapi());
     add_security(&mut doc);
     for (path, item) in &mut doc.paths.paths {
@@ -220,6 +244,6 @@ pub fn document() -> utoipa::openapi::OpenApi {
 }
 
 /// `GET /api/openapi.json`.
-pub async fn serve() -> Response {
-    Json(document()).into_response()
+pub async fn serve(doc: std::sync::Arc<utoipa::openapi::OpenApi>) -> Response {
+    Json(&*doc).into_response()
 }

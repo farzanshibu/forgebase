@@ -105,13 +105,18 @@ Subscription targets: a collection (optionally with a filter-language
   predicate *and* the subscription filter are evaluated by SQLite against the
   event's own snapshot as a one-row derived table (`SELECT 1 FROM (SELECT
   CAST(?1 AS TEXT) AS "id", …) AS t WHERE <predicate> AND <filter>`), with the
-  same compiler as list queries and the table's column affinities. The
-  delivered `data` is built by the same `row_to_record` as REST reads (no
-  passwords; hidden fields only for privileged callers). This is the single
-  place FB-21's field-level rules plug into for realtime. Rule changes,
-  ownership changes and tenant moves therefore take effect on the next event,
-  including replayed ones (tested mid-stream). As defence in depth,
-  non-privileged subscribers never receive events of another tenant.
+  same compiler as list queries and the table's column affinities. For
+  tenant-scoped collections (FB-21) the same tenant clause as every REST
+  statement (`_tenant = ctx.tenant`) is part of that check, and views that
+  read tenant data are closed to non-privileged subscribers. Subscription
+  filters compile with the caller's field guard (FB-21 field-level read
+  rules), so unreadable fields cannot be probed. The delivered `data` is built
+  by the same `row_to_record` and field mask as REST reads (no passwords;
+  hidden fields and fields `Authorizer::field_access` makes unreadable are
+  left out). Rule changes, ownership changes and tenant moves therefore take
+  effect on the next event, including replayed ones (tested mid-stream). As
+  defence in depth, non-privileged subscribers never receive events of
+  another tenant.
   Results are cached per event and connection for subscriptions with the
   same action and filter.
 - **Replay without gaps or duplicates**: each connection subscribes to the bus
@@ -174,6 +179,14 @@ Heartbeats are `: ping` comments. A server-side close ends the stream with
 /api/v1/realtime/stats` (administrators) returns the counters. All REST and
 SSE routes are in the OpenAPI document; the WebSocket route is documented as
 an upgrade (`101`).
+
+**Identity is fixed at connect**: the connection keeps the `AccessContext`
+the auth and tenancy layers (FB-20, FB-21) built for the upgrade request
+(realm, organization, tenant from the `X-Forgebase-*` headers, roles,
+attributes). Rules are re-evaluated per event against it; selecting another
+tenant or organization needs a new connection. A connection authenticated
+with a query-string `access_token` gets the identity without the tenancy
+layer's enrichment (no tenant selected, no tenant roles), which fails closed.
 
 **Authentication**: the auth layer's credential (bearer token, API key, PAT
 or session cookie) like every `/api/v1` route; browsers that cannot set
@@ -253,7 +266,8 @@ of an instance that crashes stay listed until restart (known limitation).
   `changes_committed()` after commit — 5 call sites.
 - `access.rs`: `Action::ChannelSubscribe`, `Action::ChannelPublish` appended;
   `Authorizer::authorize_channel` with a default method (no change needed in
-  existing authorizers).
+  existing authorizers; FB-21's policy authorizer falls back to its
+  collection-less check until it adds channel rules).
 
 ## 10. Metrics
 

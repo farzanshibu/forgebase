@@ -69,7 +69,10 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0002_data_core.sql"),
     ),
     Migration::new(3, "auth", include_str!("../../../migrations/system/0003_auth.sql")),
+    Migration::new(4, "policy", include_str!("../../../migrations/system/0004_policy.sql")),
+    Migration::new(5, "kv", include_str!("../../../migrations/system/0005_kv.sql")),
     Migration::new(6, "graph", include_str!("../../../migrations/system/0006_graph.sql")),
+    Migration::new(7, "jobs", include_str!("../../../migrations/system/0007_jobs.sql")),
     Migration::new(
         11,
         "realtime",
