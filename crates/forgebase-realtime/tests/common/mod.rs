@@ -89,6 +89,8 @@ pub fn ci() -> ClientInfo {
         user_agent: None,
         request_id: None,
         impersonator: None,
+        realm: None,
+        turnstile_token: None,
     }
 }
 
