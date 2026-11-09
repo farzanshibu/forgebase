@@ -1341,12 +1341,14 @@ name = "forgebase-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "forgebase-api",
  "forgebase-auth",
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
  "forgebase-entitlements",
+ "forgebase-functions",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",
@@ -1360,6 +1362,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "wat",
 ]
 
 [[package]]

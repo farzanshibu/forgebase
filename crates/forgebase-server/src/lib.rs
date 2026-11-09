@@ -36,6 +36,7 @@ use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_entitlements::{EntitlementService, SystemClock};
+use forgebase_functions::{FunctionService, FunctionsConfig};
 use forgebase_kv::{KvConfig, KvError, KvService};
 use forgebase_vector::{VectorConfig, VectorError, VectorService};
 use tokio::net::TcpListener;
@@ -62,6 +63,7 @@ pub struct RunningServer {
     resp: Option<forgebase_resp::RespHandle>,
     realtime: forgebase_realtime::RealtimeService,
     entitlements: EntitlementService,
+    functions: FunctionService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -150,6 +152,14 @@ pub async fn start_with_jobs(
             return Err(e.into());
         }
     };
+    let functions = match open_functions(&auth, &kv).await {
+        Ok(f) => f,
+        Err(e) => {
+            realtime.shutdown();
+            db.close().await;
+            return Err(e);
+        }
+    };
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
@@ -161,6 +171,7 @@ pub async fn start_with_jobs(
         tracing::warn!(error = %e, "entitlement maintenance schedule not created");
     }
     let registry = forgebase_entitlements::register_jobs(registry, entitlements.clone());
+    let registry = forgebase_functions::register_jobs(registry, functions.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -173,6 +184,7 @@ pub async fn start_with_jobs(
             forgebase_jobs::extension(jobs.clone()),
             forgebase_vector::extension(vector.clone()),
             forgebase_entitlements::extension(entitlements.clone()),
+            forgebase_functions::extension(functions.clone()),
         ],
         gates: vec![entitlements.rate_gate()],
         ..opts
@@ -245,6 +257,7 @@ pub async fn start_with_jobs(
 
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
     vector.start_background();
+    functions.start_background();
 
     tracing::info!(
         %addr,
@@ -268,6 +281,7 @@ pub async fn start_with_jobs(
         resp,
         realtime,
         entitlements,
+        functions,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -275,6 +289,25 @@ pub async fn start_with_jobs(
 
 /// Opens the policy service (FB-21), then the auth service (FB-20) and the
 /// data service they share, with the policy engine as the authorizer.
+/// The functions engine on the auth service's data service: secrets sealed
+/// with the data directory's master key, fetch over FB-25's TLS settings.
+async fn open_functions(auth: &forgebase_auth::AuthService, kv: &KvService) -> Result<FunctionService, ServerError> {
+    let path = auth.config().master_key_path.clone();
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
+        .await
+        .map_err(|e| ServerError::Functions(e.to_string()))??;
+    let tls = auth.tls_settings()?;
+    let fetcher = forgebase_functions::Fetcher::new(&tls, forgebase_functions::FetchConfig::default())
+        .map_err(|e| ServerError::Functions(e.to_string()))?;
+    let cfg = FunctionsConfig {
+        fetcher: Some(fetcher),
+        ..FunctionsConfig::default()
+    };
+    FunctionService::open(auth.data().clone(), Some(kv.clone()), keyring, cfg)
+        .await
+        .map_err(|e| ServerError::Functions(e.to_string()))
+}
+
 async fn open_auth(
     db: &Database,
     layout: &DataLayout,
@@ -335,6 +368,11 @@ impl RunningServer {
     /// The entitlement and quota service of this instance.
     pub fn entitlements(&self) -> &EntitlementService {
         &self.entitlements
+    }
+
+    /// The server-functions engine (FB-60).
+    pub fn functions(&self) -> &FunctionService {
+        &self.functions
     }
 
     /// The vector engine of this instance.
@@ -407,6 +445,7 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.realtime.shutdown();
+        self.functions.shutdown();
         self.upkeep.abort();
         if let Some(resp) = self.resp.take() {
             resp.shutdown().await;
@@ -508,6 +547,9 @@ pub enum ServerError {
     /// The entitlement service failed to load its catalog.
     #[error("entitlements: {0}")]
     Entitlements(String),
+    /// The functions engine failed to start.
+    #[error("functions: {0}")]
+    Functions(String),
 }
 
 impl ErrorCode for ServerError {
@@ -526,6 +568,7 @@ impl ErrorCode for ServerError {
             ServerError::Policy(_) => "policy_unavailable",
             ServerError::Realtime(e) => e.code(),
             ServerError::Entitlements(_) => "entitlements_unavailable",
+            ServerError::Functions(_) => "functions_unavailable",
         }
     }
 
@@ -538,7 +581,7 @@ impl ErrorCode for ServerError {
             ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
-            ServerError::Policy(_) | ServerError::Entitlements(_) => ErrorKind::Internal,
+            ServerError::Policy(_) | ServerError::Entitlements(_) | ServerError::Functions(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }

@@ -16,6 +16,7 @@ forgebase-data.workspace = true
 forgebase-core.workspace = true
 forgebase-db.workspace = true
 forgebase-entitlements.workspace = true
+forgebase-functions.workspace = true
 forgebase-jobs.workspace = true
 forgebase-kv.workspace = true
 forgebase-observability.workspace = true
@@ -27,6 +28,8 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+wat.workspace = true
 redis = { workspace = true, features = ["tokio-comp"] }
 serde_json.workspace = true
 tempfile.workspace = true
