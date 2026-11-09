@@ -289,7 +289,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     components(schemas(
         Bucket, BucketInput, BucketPatch, Visibility, Permission, Acl, AclEntry, ObjectInfo, ObjectPage, DeleteResult,
         Upload, UploadInput, PartInfo, CompleteInput, CompletePart, SignRequest, SignedUrl, SignedMethod,
-        ReconcileReport, StorageStats, BucketUsage, CopyBody, RestoreBody, ItemsBuckets,
+        ReconcileReport, StorageStats, BucketUsage, CopyBody, RestoreBody, ItemsBuckets, ItemsObjects,
     )),
     tags((name = "storage", description = "Buckets, objects, uploads, signed URLs, quotas and maintenance")),
 )]
@@ -300,6 +300,13 @@ struct StorageDoc;
 pub struct ItemsBuckets {
     /// Entries.
     pub items: Vec<Bucket>,
+}
+
+/// Object versions.
+#[derive(Serialize, ToSchema)]
+pub struct ItemsObjects {
+    /// Entries, newest first.
+    pub items: Vec<ObjectInfo>,
 }
 
 /// Copy or move target.
@@ -594,7 +601,7 @@ async fn move_object(
 
 /// Every version of a key, newest first.
 #[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/versions/{key}", tag = "storage",
-    responses((status = 200, body = ObjectInfo)))]
+    responses((status = 200, body = ItemsObjects)))]
 async fn list_versions(
     State(s): State<StorageService>,
     Access(ctx): Access,
