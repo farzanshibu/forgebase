@@ -8,6 +8,7 @@
 //! | `GET /health/ready` | readiness (database + storage) |
 //! | `GET /metrics` | Prometheus metrics |
 //! | `GET /api/system/info` | instance information |
+//! | `/api/auth/*` | authentication (forgebase-auth, ADR-0004) |
 //! | `/admin/` | embedded admin dashboard |
 //!
 //! Versioning: management endpoints live under `/api/system/*`. Data APIs
@@ -17,7 +18,8 @@
 //!
 //! Middleware, outermost first: request context (request id, error
 //! envelope, security headers) → tracing span → metrics → panic catcher →
-//! request timeout → handler.
+//! request timeout → authentication (credential → `AccessContext`
+//! extension) → handler.
 
 pub mod admin;
 pub mod context;
@@ -36,6 +38,7 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::get;
+use forgebase_auth::AuthService;
 use forgebase_core::DataLayout;
 use forgebase_data::{Authorizer, DataError, DataService, DefaultAuthorizer};
 use forgebase_db::Database;
@@ -56,7 +59,7 @@ pub struct AppState {
     inner: Arc<StateInner>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct StateInner {
     db: Database,
     data: DataService,
@@ -65,6 +68,7 @@ struct StateInner {
     started_at: String,
     started: Instant,
     metrics: &'static PrometheusHandle,
+    auth: Option<AuthService>,
 }
 
 /// Size limits the handlers enforce themselves (see [`RouterOptions`]).
@@ -99,6 +103,7 @@ impl AppState {
                 started_at: forgebase_core::now_rfc3339(),
                 started: Instant::now(),
                 metrics: forgebase_observability::metrics_handle(),
+                auth: None,
             }),
         })
     }
@@ -115,18 +120,43 @@ impl AppState {
 
     fn with_limits(&self, limits: Limits) -> Self {
         // A new state sharing everything but the limits.
-        let i = &self.inner;
+        let mut inner = (*self.inner).clone();
+        inner.limits = limits;
+        Self { inner: Arc::new(inner) }
+    }
+
+    /// State on an existing data service (the one the auth service built,
+    /// with the Argon2id hasher for `password` fields).
+    pub fn from_data(db: Database, layout: DataLayout, data: DataService) -> Self {
         Self {
             inner: Arc::new(StateInner {
-                db: i.db.clone(),
-                data: i.data.clone(),
-                limits,
-                layout: i.layout.clone(),
-                started_at: i.started_at.clone(),
-                started: i.started,
-                metrics: i.metrics,
+                db,
+                data,
+                limits: Limits {
+                    max_import_bytes: RouterOptions::default().max_import_bytes,
+                },
+                layout,
+                started_at: forgebase_core::now_rfc3339(),
+                started: Instant::now(),
+                metrics: forgebase_observability::metrics_handle(),
+                auth: None,
             }),
         }
+    }
+
+    /// Same state with authentication: installs the auth layer and mounts
+    /// `/api/auth/*`. Without it every request is anonymous. The data service
+    /// becomes the auth service's (one catalog, one password hasher).
+    pub fn with_auth(mut self, auth: AuthService) -> Self {
+        let inner = Arc::make_mut(&mut self.inner);
+        inner.data = auth.data().clone();
+        inner.auth = Some(auth);
+        self
+    }
+
+    /// The auth service, when configured.
+    pub fn auth(&self) -> Option<&AuthService> {
+        self.inner.auth.as_ref()
     }
 
     /// The primary database.
@@ -208,6 +238,8 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 header::CONTENT_TYPE,
                 header::IF_MATCH,
                 HeaderName::from_static("x-request-id"),
+                HeaderName::from_static(forgebase_auth::http::API_KEY_HEADER),
+                HeaderName::from_static(forgebase_auth::http::CSRF_HEADER),
             ])
             .expose_headers([header::ETAG, header::LOCATION, HeaderName::from_static("x-request-id")])
             .max_age(Duration::from_secs(600)),
@@ -216,11 +248,14 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
 
 /// Builds the application router.
 ///
-/// `/api/v1/*` handlers read the request's `AccessContext`. An earlier layer
-/// (auth, FB-20; wrap the returned router with `.layer(..)`) may store one in
-/// the request extensions; otherwise [`principal::install_anonymous`] stores an
-/// anonymous context and the default authorizer denies the request.
+/// `/api/v1/*` handlers read the request's `AccessContext`. When the state has
+/// an [`AuthService`] ([`AppState::with_auth`]), its layer runs just outside
+/// [`principal::install_anonymous`] (inside request ids, CORS and the timeout,
+/// so auth errors keep the envelope) and stores the caller's context;
+/// otherwise [`principal::install_anonymous`] stores an anonymous context and
+/// the default authorizer denies the request.
 pub fn router(state: AppState, opts: RouterOptions) -> Router {
+    let auth = state.auth().cloned();
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,
     });
@@ -241,7 +276,8 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
         .fallback(routes::not_found)
         .with_state(state)
         .layer(middleware::from_fn(principal::hide_collection_existence))
-        .layer(middleware::from_fn(principal::install_anonymous))
+        .layer(middleware::from_fn(principal::install_anonymous));
+    let app = with_auth_layer(app, auth)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             opts.request_timeout,
@@ -268,6 +304,17 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
         None => app,
     };
     app.layer(middleware::from_fn(context::request_context))
+}
+
+/// Mounts `/api/auth/*` and installs the authentication layer, which must run
+/// before (outside) [`principal::install_anonymous`].
+fn with_auth_layer(app: Router, auth: Option<AuthService>) -> Router {
+    match auth {
+        Some(auth) => app
+            .merge(forgebase_auth::http::router(auth.clone()))
+            .layer(middleware::from_fn_with_state(auth, forgebase_auth::http::authenticate)),
+        None => app,
+    }
 }
 
 #[cfg(test)]

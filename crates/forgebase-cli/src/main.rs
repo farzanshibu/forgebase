@@ -6,11 +6,13 @@
 //! forgebase migrate        apply pending system migrations (--status to list)
 //! forgebase status         show project, database and server state
 //! forgebase doctor         run diagnostics; exit code 1 if any check fails
+//! forgebase admin create   create an administrator (also reset-password, list)
 //! forgebase version        print version information
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
 
+mod admin;
 mod commands;
 mod doctor;
 mod dotenv;
@@ -121,6 +123,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage administrator (superuser) accounts.
+    Admin {
+        #[command(subcommand)]
+        command: admin::AdminCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -155,5 +162,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Status { json } => commands::status(g, json).await,
         Command::Doctor { json } => doctor::run(g, json).await,
         Command::Version { json } => commands::version(json).await,
+        Command::Admin { command } => admin::run(g, command).await,
     }
 }
