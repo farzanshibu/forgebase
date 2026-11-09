@@ -4,6 +4,8 @@
 
 use utoipa::OpenApi;
 
+mod core_routes;
+
 /// List the social login providers a login page may offer (no secrets).
 #[utoipa::path(get, path = "/api/auth/oauth/providers", tag = "oauth",
     responses((status = 200, description = "Success", body = Object), (status = 400, description = "Invalid input", body = Object), (status = 401, description = "Invalid credentials, state or ceremony", body = Object), (status = 409, description = "Conflict", body = Object)))]
@@ -235,10 +237,45 @@ fn user_export() {}
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        core_routes::auth_signup, core_routes::auth_login, core_routes::auth_refresh, core_routes::auth_logout, core_routes::auth_me, core_routes::auth_verify_email_request, core_routes::auth_verify_email_confirm, core_routes::auth_password_reset_request, core_routes::auth_password_reset_confirm, core_routes::auth_magic_link_request, core_routes::auth_magic_link_confirm, core_routes::auth_otp_request, core_routes::auth_otp_verify, core_routes::auth_mfa_verify, core_routes::auth_mfa_totp_setup, core_routes::auth_mfa_totp_confirm, core_routes::auth_mfa_totp_disable, core_routes::auth_mfa_recovery_codes, core_routes::auth_password_change, core_routes::auth_sessions_list, core_routes::auth_sessions_revoke, core_routes::auth_login_history_list, core_routes::auth_tokens_list, core_routes::auth_tokens_create, core_routes::auth_tokens_revoke, core_routes::auth_admins_login, core_routes::auth_admins_list, core_routes::auth_admins_create, core_routes::auth_service_accounts_list, core_routes::auth_service_accounts_create, core_routes::auth_service_accounts_get, core_routes::auth_service_accounts_delete, core_routes::auth_service_account_keys_list, core_routes::auth_service_account_keys_create, core_routes::auth_api_keys_revoke, core_routes::auth_api_keys_list, core_routes::auth_users_get, core_routes::auth_user_sessions_list, core_routes::auth_user_sessions_revoke, core_routes::auth_user_login_history_list, core_routes::auth_impersonate, core_routes::auth_impersonations_list, core_routes::auth_impersonations_end, core_routes::auth_audit_list, core_routes::auth_keys_rotate,
         oauth_providers, oauth_start_redirect, oauth_start, oauth_link, oauth_callback_get, oauth_callback_post, oauth_identities, oauth_unlink, webauthn_register_options, webauthn_register_verify, webauthn_login_options, webauthn_login_verify, webauthn_mfa_options, webauthn_mfa_verify, webauthn_credentials, webauthn_delete,
         realm_info, realms_list, realm_get, realm_put, phone_request, phone_verify, phone_get, phone_delete, phone_add, phone_confirm, ldap_login, account_deactivate, account_delete, account_export, user_status, user_suspend, user_unsuspend, user_deactivate, user_reactivate, user_anonymise, user_delete, user_export
     ),
+    components(schemas(
+        core_routes::AuthSignupRequest,
+        core_routes::AuthLoginRequest,
+        core_routes::AuthEmailRequest,
+        core_routes::AuthTokenRequest,
+        core_routes::AuthResetConfirmRequest,
+        core_routes::AuthOtpVerifyRequest,
+        core_routes::AuthMfaVerifyRequest,
+        core_routes::AuthCodeRequest,
+        core_routes::AuthRefreshRequest,
+        core_routes::AuthChangePasswordRequest,
+        core_routes::AuthKeyRequest,
+        core_routes::AuthServiceAccountRequest,
+        core_routes::AuthAdminCreateRequest,
+        core_routes::AuthImpersonateRequest,
+        core_routes::AuthSession,
+        core_routes::AuthMfaChallenge,
+        core_routes::AuthLoginResponse,
+        core_routes::AuthUserEnvelope,
+        core_routes::AuthAccepted,
+        core_routes::AuthItems,
+        core_routes::AuthTotpSetup,
+        core_routes::AuthTotpEnabled,
+        core_routes::AuthTotpDisabled,
+        core_routes::AuthRecoveryCodes,
+        core_routes::AuthKeyCreated,
+        core_routes::AuthRevoked,
+        core_routes::AuthKeyRotated,
+    )),
     tags(
+        (name = "auth", description = "Sign-up, sign-in, tokens and password flows (ADR-0004)"),
+        (name = "mfa", description = "Second factor: TOTP and recovery codes"),
+        (name = "sessions", description = "The caller's sessions and sign-in history"),
+        (name = "tokens", description = "Personal access tokens"),
+        (name = "admin-auth", description = "Administrators, service accounts, API keys, user sessions, impersonation, audit, key rotation"),
         (name = "oauth", description = "Social login: OAuth 2.0 / OpenID Connect providers (ADR-0009)"),
         (name = "webauthn", description = "Passkeys: WebAuthn registration and authentication (ADR-0009)"),
         (name = "realms", description = "Realm-scoped identity configuration (ADR-0015)"),

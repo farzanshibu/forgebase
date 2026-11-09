@@ -16,7 +16,7 @@ use crate::principal::Access;
 
 /// Lists collections.
 #[utoipa::path(
-    get, path = "/api/v1/collections", tag = "collections",
+    get, path = "/api/v1/collections", operation_id = "collections_list", tag = "collections",
     responses((status = 200, description = "Every collection definition", body = CollectionList))
 )]
 pub async fn list(State(s): State<AppState>, Access(ctx): Access) -> ApiResult<Response> {
@@ -26,7 +26,7 @@ pub async fn list(State(s): State<AppState>, Access(ctx): Access) -> ApiResult<R
 
 /// Creates a collection (its table, automatic indexes and history entry, atomically).
 #[utoipa::path(
-    post, path = "/api/v1/collections", tag = "collections",
+    post, path = "/api/v1/collections", operation_id = "collections_create", tag = "collections",
     request_body = CollectionSchema,
     responses(
         (status = 201, description = "Created", body = CollectionSchema),
@@ -49,7 +49,7 @@ pub async fn create(
 
 /// One collection by name or id.
 #[utoipa::path(
-    get, path = "/api/v1/collections/{collection}", tag = "collections",
+    get, path = "/api/v1/collections/{collection}", operation_id = "collections_get", tag = "collections",
     params(("collection" = String, Path, description = "Collection name or id")),
     responses((status = 200, description = "The definition", body = CollectionSchema))
 )]
@@ -79,7 +79,7 @@ pub async fn update(
 
 /// Drops a collection and its records (refused while relations point to it).
 #[utoipa::path(
-    delete, path = "/api/v1/collections/{collection}", tag = "collections",
+    delete, path = "/api/v1/collections/{collection}", operation_id = "collections_delete", tag = "collections",
     params(("collection" = String, Path, description = "Collection name or id")),
     responses((status = 204, description = "Dropped"), (status = 409, description = "Referenced by a relation field"))
 )]

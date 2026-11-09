@@ -177,7 +177,7 @@ async fn enqueue(State(s): State<JobService>, Access(ctx): Access, new: Body<New
 
 /// Lists jobs, newest first. `status=dead` is the dead-letter queue.
 #[utoipa::path(
-    get, path = "/api/v1/jobs", tag = "jobs",
+    get, path = "/api/v1/jobs", operation_id = "jobs_list", tag = "jobs",
     params(
         ("status" = Option<String>, Query, description = "`queued`, `running`, `succeeded`, `dead` or `cancelled`"),
         ("queue" = Option<String>, Query, description = "Only this queue"),
@@ -209,7 +209,7 @@ async fn list(State(s): State<JobService>, Access(ctx): Access, q: Query) -> Api
 
 /// Counts per state and queue.
 #[utoipa::path(
-    get, path = "/api/v1/jobs/stats", tag = "jobs",
+    get, path = "/api/v1/jobs/stats", operation_id = "jobs_stats", tag = "jobs",
     responses((status = 200, description = "Queue statistics", body = JobStats))
 )]
 async fn stats(State(s): State<JobService>, Access(ctx): Access) -> ApiResult {
@@ -239,7 +239,7 @@ async fn delete_job(State(s): State<JobService>, Access(ctx): Access, Path(id): 
 
 /// A job's history, oldest first.
 #[utoipa::path(
-    get, path = "/api/v1/jobs/{id}/events", tag = "jobs",
+    get, path = "/api/v1/jobs/{id}/events", operation_id = "jobs_events", tag = "jobs",
     params(("id" = String, Path, description = "Job id")),
     responses((status = 200, description = "State changes", body = EventList))
 )]

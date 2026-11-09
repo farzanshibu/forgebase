@@ -230,3 +230,54 @@ async fn every_documented_operation_is_routed() {
         assert!(!unrouted, "{method} {path} is documented but not routed");
     }
 }
+
+/// Every operation of a document has a unique `operationId`.
+fn assert_unique_operation_ids(doc: &Json) {
+    let mut seen = std::collections::BTreeMap::new();
+    for (path, item) in doc["paths"].as_object().unwrap() {
+        for (method, op) in item.as_object().unwrap() {
+            let id = op["operationId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} has no operationId"));
+            if let Some(first) = seen.insert(id.to_owned(), format!("{method} {path}")) {
+                panic!("duplicate operationId `{id}`: {first} and {method} {path}");
+            }
+        }
+    }
+}
+
+/// The document served with every crate fragment that `forgebase-api` itself
+/// depends on (auth, policy, graph, realtime) has unique operationIds, and every
+/// `/api/auth/*` operation is documented with a request/response schema.
+#[test]
+fn operation_ids_are_unique_and_auth_is_documented() {
+    let auth = forgebase_auth::openapi();
+    let doc = serde_json::to_value(forgebase_api::openapi::document_with([&auth])).unwrap();
+    assert_unique_operation_ids(&doc);
+
+    for (m, p) in [
+        ("post", "/api/auth/signup"),
+        ("post", "/api/auth/login"),
+        ("post", "/api/auth/refresh"),
+        ("post", "/api/auth/logout"),
+        ("get", "/api/auth/me"),
+        ("post", "/api/auth/mfa/verify"),
+        ("get", "/api/auth/sessions"),
+        ("delete", "/api/auth/sessions/{id}"),
+        ("post", "/api/auth/tokens"),
+        ("post", "/api/auth/impersonate"),
+        ("get", "/api/auth/audit"),
+        ("post", "/api/auth/keys/rotate"),
+        ("post", "/api/auth/oauth/{provider}/start"),
+        ("post", "/api/auth/webauthn/login/verify"),
+        ("get", "/api/auth/realm"),
+        ("post", "/api/auth/phone/request"),
+        ("post", "/api/auth/account/delete"),
+    ] {
+        assert!(doc["paths"][p][m].is_object(), "missing in OpenAPI: {m} {p}");
+    }
+    let login = &doc["paths"]["/api/auth/login"]["post"];
+    assert!(login["requestBody"]["content"]["application/json"]["schema"]["$ref"].is_string());
+    assert!(login["responses"]["200"]["content"]["application/json"]["schema"].is_object());
+    assert!(login["responses"]["400"].is_object());
+}

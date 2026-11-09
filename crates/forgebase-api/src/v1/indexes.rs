@@ -21,7 +21,7 @@ use crate::principal::Access;
 
 /// Lists indexes with their statistics.
 #[utoipa::path(
-    get, path = "/api/v1/indexes", tag = "indexes",
+    get, path = "/api/v1/indexes", operation_id = "indexes_list", tag = "indexes",
     description = "Query string: `collection` limits the list to one collection.",
     responses((status = 200, description = "Indexes", body = IndexList))
 )]
@@ -33,7 +33,7 @@ pub async fn list(State(s): State<AppState>, Access(ctx): Access, q: Query) -> A
 /// Creates an index: B-tree (single, composite, unique, partial, expression,
 /// JSON path) or `fulltext`.
 #[utoipa::path(
-    post, path = "/api/v1/indexes", tag = "indexes",
+    post, path = "/api/v1/indexes", operation_id = "indexes_create", tag = "indexes",
     request_body = IndexDefinitionSchema,
     responses((status = 201, description = "Created", body = IndexInfoSchema), (status = 409, description = "Name taken or duplicate values for a unique index"))
 )]
@@ -80,7 +80,7 @@ pub async fn analyze(
 
 /// One index.
 #[utoipa::path(
-    get, path = "/api/v1/indexes/{name}", tag = "indexes",
+    get, path = "/api/v1/indexes/{name}", operation_id = "indexes_get", tag = "indexes",
     params(("name" = String, Path, description = "Index name")),
     responses((status = 200, description = "The index", body = IndexInfoSchema))
 )]
@@ -101,7 +101,7 @@ pub async fn drop(State(s): State<AppState>, Access(ctx): Access, Path(name): Pa
 
 /// Rebuilds an index (`REINDEX` + `ANALYZE`, or re-populates a full-text index).
 #[utoipa::path(
-    post, path = "/api/v1/indexes/{name}/rebuild", tag = "indexes",
+    post, path = "/api/v1/indexes/{name}/rebuild", operation_id = "indexes_rebuild", tag = "indexes",
     params(("name" = String, Path, description = "Index name")),
     responses((status = 200, description = "The rebuilt index", body = IndexInfoSchema))
 )]
@@ -111,7 +111,7 @@ pub async fn rebuild(State(s): State<AppState>, Access(ctx): Access, Path(name):
 
 /// Statistics of one index: planner statistics, estimated rows, size on disk.
 #[utoipa::path(
-    get, path = "/api/v1/indexes/{name}/stats", tag = "indexes",
+    get, path = "/api/v1/indexes/{name}/stats", operation_id = "indexes_stats", tag = "indexes",
     params(("name" = String, Path, description = "Index name")),
     responses((status = 200, description = "Index statistics", body = IndexStatsSchema))
 )]

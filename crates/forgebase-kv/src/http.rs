@@ -986,7 +986,7 @@ async fn exec(
 /// Runs several commands in order with no other command in between. A failing
 /// command reports its error and the rest still run; earlier ones are not undone.
 #[utoipa::path(
-    post, path = "/api/v1/kv/{ns}/batch", tag = "kv",
+    post, path = "/api/v1/kv/{ns}/batch", operation_id = "kv_batch", tag = "kv",
     params(("ns" = String, Path, description = "Namespace")),
     request_body = BatchBody,
     responses((status = 200, description = "`{results: [{result} | {error: {code, message}}]}`", body = Object))
@@ -1014,7 +1014,7 @@ async fn batch(
 
 /// Publishes a message to the channel's current subscribers.
 #[utoipa::path(
-    post, path = "/api/v1/kv/{ns}/publish/{channel}", tag = "kv",
+    post, path = "/api/v1/kv/{ns}/publish/{channel}", operation_id = "kv_publish", tag = "kv",
     params(("ns" = String, Path, description = "Namespace"), ("channel" = String, Path, description = "Channel")),
     request_body = PublishBody,
     responses((status = 200, description = "`{receivers: n}`", body = Object))
