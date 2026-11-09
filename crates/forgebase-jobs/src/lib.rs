@@ -21,6 +21,7 @@
 //! ([`forgebase_data::Action::ReadJobs`] and friends); the pool acts as the
 //! system principal. This crate contains no authentication or policy code.
 
+mod clock;
 mod cron;
 mod error;
 mod model;
@@ -29,6 +30,7 @@ mod registry;
 mod routes;
 mod service;
 
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use cron::{Cron, CronError};
 pub use error::JobError;
 pub use model::{

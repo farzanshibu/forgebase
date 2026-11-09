@@ -8,12 +8,11 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Only, claim_one, claim_req, claim_within, harness, harness_with, ms, system};
+use common::{Only, claim_one, claim_req, claim_after, harness, harness_with, ms, system};
 use forgebase_core::{ErrorCode, ErrorKind};
 use forgebase_data::{AccessContext, Action};
-use forgebase_jobs::{ClaimRequest, JobFilter, JobStatus, NewJob, NewSchedule, NewWorker, SchedulePatch, now_ms};
+use forgebase_jobs::{ClaimRequest, JobFilter, JobStatus, NewJob, NewSchedule, NewWorker, SchedulePatch};
 use serde_json::json;
-use tokio::time::sleep;
 
 fn job(kind: &str) -> NewJob {
     NewJob::new(kind, json!({"n": 1}))
@@ -101,15 +100,15 @@ async fn delayed_job_waits_for_its_time() {
         .0;
     assert!(ms(&j.run_at) > ms(&j.created_at), "run_at is after creation");
     assert!(claim_one(&h.svc, "w").await.is_none());
-    sleep(Duration::from_millis(150)).await;
+    h.clock.advance(Duration::from_millis(150));
     assert!(claim_one(&h.svc, "w").await.is_none(), "still not due");
-    let c = claim_within(&h.svc, "w", Duration::from_secs(3))
+    let c = claim_after(&h, "w", Duration::from_secs(10))
         .await
         .expect("claimable once due");
     assert_eq!(c.job.id, j.id);
 
     // An absolute run_at works the same way.
-    let at = forgebase_jobs::iso(now_ms() + 1200);
+    let at = forgebase_jobs::iso(h.svc.now() + 1200);
     let later = h
         .svc
         .enqueue(
@@ -124,7 +123,7 @@ async fn delayed_job_waits_for_its_time() {
         .0;
     assert!(claim_one(&h.svc, "w").await.is_none());
     assert_eq!(
-        claim_within(&h.svc, "w", Duration::from_secs(3)).await.unwrap().job.id,
+        claim_after(&h, "w", Duration::from_secs(10)).await.unwrap().job.id,
         later.id
     );
 }
@@ -199,13 +198,13 @@ async fn failures_back_off_exponentially_then_dead_letter() {
 
     // Attempt 1 fails: retry after 400ms minus up to 25% jitter.
     let c1 = claim_one(&h.svc, "w").await.unwrap();
-    let before = now_ms();
+    let before = h.svc.now();
     let r1 = h
         .svc
         .fail(&system(), &j.id, &c1.lease_id, "boom 1", true)
         .await
         .unwrap();
-    let after = now_ms();
+    let after = h.svc.now();
     assert_eq!(r1.status, JobStatus::Queued);
     assert_eq!(r1.attempts, 1);
     assert_eq!(r1.last_error.as_deref(), Some("boom 1"));
@@ -217,20 +216,20 @@ async fn failures_back_off_exponentially_then_dead_letter() {
     );
 
     // Attempt 2 fails: the delay doubles.
-    let c2 = claim_within(&h.svc, "w", Duration::from_secs(3)).await.unwrap();
+    let c2 = claim_after(&h, "w", Duration::from_secs(10)).await.unwrap();
     assert_eq!(c2.job.attempts, 2);
-    let before = now_ms();
+    let before = h.svc.now();
     let r2 = h
         .svc
         .fail(&system(), &j.id, &c2.lease_id, "boom 2", true)
         .await
         .unwrap();
-    let after = now_ms();
+    let after = h.svc.now();
     assert!(ms(&r2.run_at) - before >= 600, "delay >= 75% of 800ms");
     assert!(ms(&r2.run_at) - after <= 800, "delay <= 800ms");
 
     // Attempt 3 is the last: failing it dead-letters the job.
-    let c3 = claim_within(&h.svc, "w", Duration::from_secs(3)).await.unwrap();
+    let c3 = claim_after(&h, "w", Duration::from_secs(10)).await.unwrap();
     assert_eq!(c3.job.attempts, 3);
     let dead = h
         .svc
@@ -321,7 +320,7 @@ async fn expired_lease_is_reclaimed_and_the_old_worker_is_fenced_off() {
 
     let a = claim_one(&h.svc, "worker-a").await.unwrap();
     assert!(claim_one(&h.svc, "worker-b").await.is_none(), "lease still valid");
-    sleep(Duration::from_millis(900)).await; // worker-a "crashes": no heartbeat
+    h.clock.advance(Duration::from_millis(900)); // worker-a "crashes": no heartbeat
 
     let b = claim_one(&h.svc, "worker-b")
         .await
@@ -394,7 +393,7 @@ async fn reaper_requeues_idle_expired_leases_and_dead_letters_exhausted_ones() {
     let claimed = h.svc.claim(&system(), claim_req("w", 2)).await.unwrap();
     assert_eq!(claimed.len(), 2);
     assert_eq!(h.svc.reap_expired(&system()).await.unwrap(), 0, "leases are valid");
-    sleep(Duration::from_millis(900)).await;
+    h.clock.advance(Duration::from_millis(900));
     assert_eq!(h.svc.reap_expired(&system()).await.unwrap(), 2);
     assert_eq!(h.svc.get(&system(), &fresh.id).await.unwrap().status, JobStatus::Queued);
     let last = h.svc.get(&system(), &last.id).await.unwrap();
@@ -417,7 +416,7 @@ async fn heartbeats_keep_a_slow_job_leased() {
         .0;
     let c = claim_one(&h.svc, "slow").await.unwrap();
     for _ in 0..5 {
-        sleep(Duration::from_millis(500)).await;
+        h.clock.advance(Duration::from_millis(500));
         let hb = h.svc.heartbeat(&system(), &j.id, &c.lease_id).await.unwrap();
         assert!(!hb.cancel_requested);
         assert!(
@@ -479,7 +478,7 @@ async fn cancellation() {
         .0;
     claim_one(&h.svc, "w").await.unwrap();
     h.svc.cancel(&system(), &d.id).await.unwrap();
-    sleep(Duration::from_millis(900)).await;
+    h.clock.advance(Duration::from_millis(900));
     assert_eq!(h.svc.reap_expired(&system()).await.unwrap(), 1);
     assert_eq!(h.svc.get(&system(), &d.id).await.unwrap().status, JobStatus::Cancelled);
 
@@ -631,10 +630,10 @@ async fn cron_schedules_fire_once_per_due_time() {
         .await
         .unwrap();
     assert!(s.enabled);
-    assert!(ms(&s.next_run_at) > now_ms() - 1);
+    assert!(ms(&s.next_run_at) > h.svc.now() - 1);
     assert_eq!(h.svc.fire_due_schedules(&system()).await.unwrap(), 0, "not due yet");
 
-    sleep(Duration::from_millis(1200)).await;
+    h.clock.advance(Duration::from_millis(1200));
     // Two racing firers (think two processes) enqueue one job between them.
     let sys = system();
     let (a, b) = tokio::join!(h.svc.fire_due_schedules(&sys), h.svc.fire_due_schedules(&sys));
@@ -672,7 +671,7 @@ async fn cron_schedules_fire_once_per_due_time() {
     assert_eq!(jobs.items[0].created_by, "schedule:tick");
     let after = h.svc.schedule(&system(), &s.id).await.unwrap();
     assert_eq!(after.last_job_id.as_deref(), Some(jobs.items[0].id.as_str()));
-    assert!(ms(&after.next_run_at) > now_ms() - 1);
+    assert!(ms(&after.next_run_at) > h.svc.now() - 1);
 
     // Disabled schedules stay quiet; enabling again does not replay the gap.
     h.svc
@@ -686,7 +685,7 @@ async fn cron_schedules_fire_once_per_due_time() {
         )
         .await
         .unwrap();
-    sleep(Duration::from_millis(1200)).await;
+    h.clock.advance(Duration::from_millis(1200));
     assert_eq!(h.svc.fire_due_schedules(&system()).await.unwrap(), 0);
     let on = h
         .svc
@@ -700,7 +699,7 @@ async fn cron_schedules_fire_once_per_due_time() {
         )
         .await
         .unwrap();
-    assert!(ms(&on.next_run_at) >= now_ms());
+    assert!(ms(&on.next_run_at) >= h.svc.now());
 
     h.svc.delete_schedule(&system(), &s.id).await.unwrap();
     assert_eq!(
@@ -733,14 +732,14 @@ async fn missed_firings_collapse_into_one_and_bad_schedules_are_rejected() {
         .unwrap();
     tx.execute(&forgebase_data::db::Statement::new(
         "UPDATE _forgebase_job_schedules SET next_run_at = ?1 WHERE id = ?2",
-        vec![(now_ms() - 600_000).into(), s.id.as_str().into()],
+        vec![(h.svc.now() - 600_000).into(), s.id.as_str().into()],
     ))
     .await
     .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(h.svc.fire_due_schedules(&system()).await.unwrap(), 1);
     assert_eq!(h.svc.fire_due_schedules(&system()).await.unwrap(), 0);
-    assert!(ms(&h.svc.schedule(&system(), &s.id).await.unwrap().next_run_at) > now_ms());
+    assert!(ms(&h.svc.schedule(&system(), &s.id).await.unwrap().next_run_at) > h.svc.now());
 
     let dup = h
         .svc
@@ -807,11 +806,11 @@ async fn purge_removes_old_finished_jobs_but_never_the_dead_letter_queue() {
         }
     }
     assert_eq!(
-        h.svc.purge_finished(&system(), now_ms() - 10_000).await.unwrap(),
+        h.svc.purge_finished(&system(), h.svc.now() - 10_000).await.unwrap(),
         0,
         "too recent"
     );
-    assert_eq!(h.svc.purge_finished(&system(), now_ms() + 10_000).await.unwrap(), 1);
+    assert_eq!(h.svc.purge_finished(&system(), h.svc.now() + 10_000).await.unwrap(), 1);
     assert_eq!(h.svc.get(&system(), &ok.id).await.unwrap_err().code(), "job_not_found");
     assert_eq!(h.svc.get(&system(), &bad.id).await.unwrap().status, JobStatus::Dead);
     assert_eq!(h.svc.events(&system(), &bad.id).await.unwrap().len(), 3);

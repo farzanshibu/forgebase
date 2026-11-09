@@ -22,7 +22,7 @@ use crate::crypto::{self, Keyring};
 use crate::limits::RateLimiter;
 use crate::mailer::{DevMailer, Mailer};
 use crate::password::PasswordHasher;
-use crate::store::{self, Tx, first, i, now, ot, read, rfc3339, rows, t};
+use crate::store::{self, Tx, first, i, ot, read, rfc3339, rows, t};
 use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Subject};
 
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
@@ -191,6 +191,11 @@ struct Inner {
 }
 
 impl AuthService {
+    /// Current Unix time in seconds, from the configured clock.
+    pub(crate) fn now(&self) -> i64 {
+        self.inner.cfg.clock.now()
+    }
+
     /// Builds the data service (with the Argon2id hasher for `password`
     /// fields) and the auth service on a migrated database. Mail goes to the
     /// development mailer in `<data_dir>/mail/` unless `mailer` is given.
@@ -322,7 +327,7 @@ impl AuthService {
         )
         .await?;
         let until = first(&r).map(|row| row.i64("locked_until")).unwrap_or(0);
-        let now = now();
+        let now = self.now();
         if until > now {
             return Err(AuthError::RateLimited {
                 retry_after: (until - now) as u64,
@@ -334,7 +339,7 @@ impl AuthService {
     /// Records a failure for `key`; returns `true` when this failure locked it.
     pub(crate) async fn lockout_fail(&self, key: &str) -> Result<bool, AuthError> {
         let cfg = &self.inner.cfg;
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.db()).await?;
         let r = tx
             .read(
@@ -466,7 +471,7 @@ impl AuthService {
     /// than the rotation period, or when `force` is set. Retired keys keep
     /// verifying until every token they signed has expired.
     pub(crate) async fn ensure_signing_key(&self, force: bool) -> Result<(), AuthError> {
-        let now = now();
+        let now = self.now();
         let rotation = self.inner.cfg.signing_key_rotation.as_secs() as i64;
         let grace = self.inner.cfg.access_token_ttl.as_secs() as i64 + 60;
         let mut tx = Tx::begin(self.db()).await?;
@@ -547,7 +552,7 @@ impl AuthService {
             keys.iter().find(|k| k.active).cloned()
         };
         match current {
-            Some(k) if now() - k.created_at < rotation => Ok(k),
+            Some(k) if self.now() - k.created_at < rotation => Ok(k),
             _ => {
                 self.ensure_signing_key(false).await?;
                 let keys = self.inner.keys.read().unwrap_or_else(|p| p.into_inner());
@@ -597,7 +602,7 @@ impl AuthService {
             }
         };
         let cfg = &self.inner.cfg;
-        let now = now();
+        let now = self.now();
         let expires_at = now + cfg.session_ttl.as_secs() as i64;
         let sid = crypto::random_id(24)?;
         let refresh = crypto::random_token(32)?;
@@ -684,7 +689,7 @@ impl AuthService {
     ) -> Result<(String, u64), AuthError> {
         let key = self.active_key().await?;
         let ttl = self.inner.cfg.access_token_ttl.as_secs();
-        let now = now();
+        let now = self.now();
         let (st, col, sub) = match subject {
             Subject::User { collection, id } => ("user", Some(collection.clone()), id.clone()),
             Subject::Admin { id } => ("admin", None, id.clone()),
@@ -717,7 +722,7 @@ impl AuthService {
         let key = self.verification_key(&header.kid).await?.ok_or(bad)?;
         let claims: AccessClaims =
             crypto::jwt_verify(token, &key.secret).ok_or(AuthError::InvalidToken("invalid access token"))?;
-        let now = now();
+        let now = self.now();
         if claims.iss != ISSUER || claims.typ != "access" {
             return Err(AuthError::InvalidToken("invalid access token"));
         }
@@ -779,7 +784,7 @@ impl AuthService {
         )
         .await?;
         let row = first(&r).ok_or(AuthError::InvalidToken("invalid session cookie"))?;
-        let now = now();
+        let now = self.now();
         let idle = self.inner.cfg.session_idle_timeout.as_secs() as i64;
         if row.opt_i64("revoked_at").is_some() {
             return Err(AuthError::InvalidToken("session revoked"));
@@ -828,7 +833,7 @@ impl AuthService {
         let kr = &self.inner.keyring;
         let cfg = &self.inner.cfg;
         let hash = kr.token_hash("refresh", refresh_token);
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.db()).await?;
         let r = tx
             .read(
@@ -951,7 +956,7 @@ impl AuthService {
         let mut tx = Tx::begin(self.db()).await?;
         tx.exec(
             "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = ?3 WHERE id = ?1 AND revoked_at IS NULL",
-            vec![t(sid), i(now()), t(reason)],
+            vec![t(sid), i(self.now()), t(reason)],
         )
         .await?;
         tx.commit().await
@@ -965,7 +970,7 @@ impl AuthService {
             .exec(
                 "UPDATE _forgebase_auth_sessions SET revoked_at = ?4, revoked_reason = ?5
                  WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3 AND revoked_at IS NULL",
-                vec![t(st), ot(coll), t(id), i(now()), t(reason)],
+                vec![t(st), ot(coll), t(id), i(store::now()), t(reason)],
             )
             .await?
             .rows_affected)
@@ -979,7 +984,7 @@ impl AuthService {
         let mut tx = Tx::begin(self.db()).await?;
         tx.exec(
             "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = 'logout' WHERE id = ?1 AND revoked_at IS NULL",
-            vec![t(sid), i(now())],
+            vec![t(sid), i(self.now())],
         )
         .await?;
         audit_in(
@@ -998,7 +1003,7 @@ impl AuthService {
     /// Active sessions (devices) of the caller.
     pub async fn list_sessions(&self, caller: &Authenticated) -> Result<Vec<SessionView>, AuthError> {
         let (st, coll, id) = subject_cols(&caller.subject);
-        let now = now();
+        let now = self.now();
         let idle = self.inner.cfg.session_idle_timeout.as_secs() as i64;
         let r = read(
             self.db(),
@@ -1044,7 +1049,7 @@ impl AuthService {
                 "UPDATE _forgebase_auth_sessions SET revoked_at = ?5, revoked_reason = 'revoked'
                  WHERE id = ?1 AND revoked_at IS NULL
                    AND (?6 OR (subject_type = ?2 AND collection IS ?3 AND subject_id = ?4))",
-                vec![t(session_id), t(st), ot(coll), t(id), i(now()), i(i64::from(admin))],
+                vec![t(session_id), t(st), ot(coll), t(id), i(self.now()), i(i64::from(admin))],
             )
             .await?
             .rows_affected;
@@ -1205,7 +1210,7 @@ pub(crate) async fn audit_in(
         "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         vec![
-            i(now()),
+            i(store::now()),
             t(event),
             t(if success { "success" } else { "failure" }),
             t(actor),

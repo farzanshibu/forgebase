@@ -24,6 +24,7 @@ use tower::ServiceExt;
 struct Api {
     app: Router,
     svc: JobService,
+    clock: forgebase_jobs::ManualClock,
     _dir: tempfile::TempDir,
 }
 
@@ -35,7 +36,8 @@ impl Api {
         let state = AppState::with_authorizer(db, layout, Arc::new(DefaultAuthorizer))
             .await
             .unwrap();
-        let svc = JobService::new(state.data().clone());
+        let clock = forgebase_jobs::ManualClock::from_system();
+        let svc = JobService::with_clock(state.data().clone(), Arc::new(clock.clone()));
         let mut app = forgebase_api::router(
             state,
             RouterOptions {
@@ -52,7 +54,12 @@ impl Api {
                 }
             }));
         }
-        Self { app, svc, _dir: dir }
+        Self {
+            app,
+            svc,
+            clock,
+            _dir: dir,
+        }
     }
 
     async fn admin() -> Self {
@@ -246,12 +253,13 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
         .await;
     assert_eq!(s, StatusCode::CREATED, "{sched}");
 
-    // It does not run early ...
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // It does not run early ... (time only moves when the test moves it)
+    api.clock.advance(Duration::from_millis(200));
     let (_, now) = api.get(&format!("/api/v1/jobs/{id}")).await;
     assert_eq!(now["status"], "queued");
     // ... and it runs once it is due.
-    let done = common::wait_for(Duration::from_secs(10), || async {
+    api.clock.advance(Duration::from_millis(500));
+    let done = common::wait_for(Duration::from_secs(30), || async {
         let (_, j) = api.get(&format!("/api/v1/jobs/{id}")).await;
         (j["status"] == "succeeded").then_some(j)
     })
@@ -269,7 +277,8 @@ async fn scenario_19_schedule_and_execute_a_background_job() {
     assert_eq!(names, ["enqueued", "claimed", "succeeded"]);
 
     // The schedule produced jobs that ran.
-    common::wait_for(Duration::from_secs(8), || async {
+    common::wait_for(Duration::from_secs(30), || async {
+        api.clock.advance(Duration::from_millis(500));
         let (_, l) = api.get("/api/v1/jobs?kind=nightly_report&status=succeeded").await;
         (l["total"].as_i64().unwrap() >= 2).then_some(())
     })

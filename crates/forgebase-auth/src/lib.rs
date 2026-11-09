@@ -28,6 +28,7 @@
 //! through [`AuthService::issue_session`]; the policy engine (FB-21) reads
 //! [`Authenticated`] (scopes, method, MFA) next to the `AccessContext`.
 
+pub mod clock;
 pub mod crypto;
 mod error;
 pub mod http;
@@ -39,11 +40,13 @@ mod service;
 pub mod store;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_data::AccessContext;
 use serde::Serialize;
 
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::AuthError;
 pub use forgebase_data as data;
 pub use mailer::{DevMailer, Mail, MailKind, Mailer};
@@ -108,6 +111,8 @@ pub struct AuthConfig {
     pub trust_forwarded_for: bool,
     /// TOTP issuer shown in authenticator apps.
     pub totp_issuer: String,
+    /// Time source (tests replace it with a [`ManualClock`]).
+    pub clock: Arc<dyn Clock>,
 }
 
 impl AuthConfig {
@@ -138,6 +143,7 @@ impl AuthConfig {
             cookie_secure: true,
             trust_forwarded_for: false,
             totp_issuer: "ForgeBase".into(),
+            clock: Arc::new(SystemClock),
         }
     }
 }
