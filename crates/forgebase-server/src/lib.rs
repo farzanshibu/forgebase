@@ -8,13 +8,15 @@
 //!    migrations, snapshotting first if the database already existed,
 //! 4. record the instance id on first start,
 //! 5. bind the listener and serve the API (with the jobs API of
-//!    `forgebase-jobs` mounted under `/api/v1/jobs`),
-//! 6. start the job scheduler and in-process worker pool.
+//!    `forgebase-jobs` mounted under `/api/v1/jobs` and the vector API of
+//!    `forgebase-vector` under `/api/v1/vector`),
+//! 6. start the job scheduler and in-process worker pool, and the vector
+//!    engine's index warm-up and saver.
 //!
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
 //! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
 //! jobs get the same time to finish, the rest are released back to the queue),
-//! checkpoints the WAL into the main database file, closes the pools and
+//! writes changed vector indexes to disk, checkpoints the WAL into the main database file, closes the pools and
 //! releases the lock.
 
 mod lock;
@@ -29,6 +31,7 @@ use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_kv::{KvConfig, KvError, KvService};
+use forgebase_vector::{VectorConfig, VectorError, VectorService};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -49,6 +52,7 @@ pub struct RunningServer {
     jobs: JobService,
     job_pool: Option<forgebase_jobs::PoolHandle>,
     kv: KvService,
+    vector: VectorService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -117,8 +121,18 @@ pub async fn start_with_jobs(
         .with_auth(auth)
         .with_policy(policy);
     let jobs = JobService::new(state.data().clone());
+    let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
+        Ok(v) => v,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
     let opts = RouterOptions {
-        extensions: vec![forgebase_jobs::extension(jobs.clone())],
+        extensions: vec![
+            forgebase_jobs::extension(jobs.clone()),
+            forgebase_vector::extension(vector.clone()),
+        ],
         ..opts
     };
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
@@ -163,6 +177,7 @@ pub async fn start_with_jobs(
     });
 
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
+    vector.start_background();
 
     tracing::info!(
         %addr,
@@ -182,6 +197,7 @@ pub async fn start_with_jobs(
         jobs,
         job_pool: Some(job_pool),
         kv,
+        vector,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -223,6 +239,11 @@ impl RunningServer {
     /// principal).
     pub fn jobs(&self) -> &JobService {
         &self.jobs
+    }
+
+    /// The vector engine of this instance.
+    pub fn vector(&self) -> &VectorService {
+        &self.vector
     }
 
     /// This instance's identity.
@@ -290,6 +311,8 @@ impl RunningServer {
         if let Some(pool) = self.job_pool.take() {
             pool.shutdown().await;
         }
+        let saved = self.vector.shutdown().await;
+        tracing::debug!(files = saved, "vector indexes saved");
         match self.kv.shutdown().await {
             Ok(n) => tracing::debug!(rows = n, "kv snapshot written"),
             Err(e) => tracing::warn!(error = %e, "final kv snapshot failed; recent kv writes are lost"),
@@ -355,6 +378,9 @@ pub enum ServerError {
     /// The key-value engine could not load its snapshot.
     #[error(transparent)]
     Kv(#[from] KvError),
+    /// The vector engine could not load its catalog.
+    #[error(transparent)]
+    Vector(#[from] VectorError),
     /// A filesystem error.
     #[error("i/o error at {path}: {source}")]
     Io {
@@ -384,6 +410,7 @@ impl ErrorCode for ServerError {
             ServerError::Database(e) => e.code(),
             ServerError::Data(e) => e.code(),
             ServerError::Kv(e) => e.code(),
+            ServerError::Vector(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
@@ -397,6 +424,7 @@ impl ErrorCode for ServerError {
             ServerError::Database(e) => e.kind(),
             ServerError::Data(e) => e.kind(),
             ServerError::Kv(e) => e.kind(),
+            ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
             ServerError::Policy(_) => ErrorKind::Internal,
