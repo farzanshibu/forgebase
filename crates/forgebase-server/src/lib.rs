@@ -67,6 +67,7 @@ pub struct RunningServer {
     entitlements: EntitlementService,
     functions: FunctionService,
     credits: CreditService,
+    billing: Option<forgebase_billing::BillingService>,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -178,6 +179,19 @@ pub async fn start_with_jobs(
             return Err(e);
         }
     };
+    // Billing (FB-70): off by default.
+    let billing = if config.billing.enabled {
+        match open_billing(&db, &auth, &policy, &entitlements, &credits).await {
+            Ok(b) => Some(b),
+            Err(e) => {
+                realtime.shutdown();
+                db.close().await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
@@ -195,6 +209,16 @@ pub async fn start_with_jobs(
         tracing::warn!(error = %e, "credit maintenance schedule not created");
     }
     let registry = forgebase_credits::register_jobs(registry, credits.clone());
+    let registry = match &billing {
+        Some(b) => {
+            b.attach_jobs(jobs.clone());
+            if let Err(e) = b.ensure_schedule().await {
+                tracing::warn!(error = %e, "billing maintenance schedule not created");
+            }
+            forgebase_billing::register_jobs(registry, b.clone())
+        }
+        None => registry,
+    };
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -202,14 +226,18 @@ pub async fn start_with_jobs(
             return Err(e.into());
         }
     };
+    let mut extensions = vec![
+        forgebase_jobs::extension(jobs.clone()),
+        forgebase_vector::extension(vector.clone()),
+        forgebase_entitlements::extension(entitlements.clone()),
+        forgebase_functions::extension(functions.clone()),
+        forgebase_credits::extension(credits.clone()),
+    ];
+    if let Some(b) = &billing {
+        extensions.push(forgebase_billing::extension(b.clone()));
+    }
     let opts = RouterOptions {
-        extensions: vec![
-            forgebase_jobs::extension(jobs.clone()),
-            forgebase_vector::extension(vector.clone()),
-            forgebase_entitlements::extension(entitlements.clone()),
-            forgebase_functions::extension(functions.clone()),
-            forgebase_credits::extension(credits.clone()),
-        ],
+        extensions,
         gates: vec![entitlements.rate_gate()],
         ..opts
     };
@@ -307,6 +335,7 @@ pub async fn start_with_jobs(
         entitlements,
         functions,
         credits,
+        billing,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -331,6 +360,35 @@ async fn open_functions(auth: &forgebase_auth::AuthService, kv: &KvService) -> R
     FunctionService::open(auth.data().clone(), Some(kv.clone()), keyring, cfg)
         .await
         .map_err(|e| ServerError::Functions(e.to_string()))
+}
+
+/// The billing service (FB-70): provider secrets sealed with the data
+/// directory's master key, provider APIs over FB-25's TLS client.
+async fn open_billing(
+    db: &Database,
+    auth: &forgebase_auth::AuthService,
+    policy: &forgebase_policy::PolicyService,
+    entitlements: &EntitlementService,
+    credits: &CreditService,
+) -> Result<forgebase_billing::BillingService, ServerError> {
+    let path = auth.config().master_key_path.clone();
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
+        .await
+        .map_err(|e| ServerError::Billing(e.to_string()))??;
+    let http = forgebase_auth::net::HttpsClient::new(&auth.tls_settings()?)?;
+    forgebase_billing::BillingService::open(
+        Arc::new(db.clone()),
+        forgebase_billing::BillingDeps {
+            policy: policy.clone(),
+            entitlements: entitlements.clone(),
+            credits: Arc::new(credits.clone()),
+            clock: Arc::new(SystemClock),
+            keyring,
+            http: Arc::new(http),
+        },
+    )
+    .await
+    .map_err(|e| ServerError::Billing(e.to_string()))
 }
 
 async fn open_auth(
@@ -403,6 +461,11 @@ impl RunningServer {
     /// The credit ledger of this instance.
     pub fn credits(&self) -> &CreditService {
         &self.credits
+    }
+
+    /// The billing application (`None` unless `[billing] enabled`).
+    pub fn billing(&self) -> Option<&forgebase_billing::BillingService> {
+        self.billing.as_ref()
     }
 
     /// The vector engine of this instance.
@@ -583,6 +646,9 @@ pub enum ServerError {
     /// The credit service failed to open.
     #[error("credits: {0}")]
     Credits(String),
+    /// The billing service failed to open.
+    #[error("billing: {0}")]
+    Billing(String),
 }
 
 impl ErrorCode for ServerError {
@@ -603,6 +669,7 @@ impl ErrorCode for ServerError {
             ServerError::Entitlements(_) => "entitlements_unavailable",
             ServerError::Functions(_) => "functions_unavailable",
             ServerError::Credits(_) => "credits_unavailable",
+            ServerError::Billing(_) => "billing_unavailable",
         }
     }
 
@@ -618,7 +685,8 @@ impl ErrorCode for ServerError {
             ServerError::Policy(_)
             | ServerError::Entitlements(_)
             | ServerError::Functions(_)
-            | ServerError::Credits(_) => ErrorKind::Internal,
+            | ServerError::Credits(_)
+            | ServerError::Billing(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }

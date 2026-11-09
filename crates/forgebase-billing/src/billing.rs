@@ -702,6 +702,14 @@ impl BillingService {
         let (provider, cref) = self.provider_customer(&cust).await?;
         let pm = self.payment_method(&cust.id).await?;
         let now = self.now();
+        if provider.name() == "manual" {
+            // Paid out of band; an operator records the payment.
+            return Ok(Collection {
+                invoice: inv,
+                payment: None,
+                payment_url: None,
+            });
+        }
         let Some(pm) = pm else {
             let url = match &inv.hosted_url {
                 Some(u) => u.clone(),

@@ -17,6 +17,7 @@ forgebase-core.workspace = true
 forgebase-db.workspace = true
 forgebase-entitlements.workspace = true
 forgebase-credits.workspace = true
+forgebase-billing.workspace = true
 forgebase-functions.workspace = true
 forgebase-jobs.workspace = true
 forgebase-kv.workspace = true
