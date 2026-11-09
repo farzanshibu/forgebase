@@ -7,11 +7,15 @@
 //! 3. open the primary database (WAL, pragmas) and apply pending system
 //!    migrations, snapshotting first if the database already existed,
 //! 4. record the instance id on first start,
-//! 5. bind the listener and serve the API.
+//! 5. bind the listener and serve the API (with the jobs API of
+//!    `forgebase-jobs` mounted under `/api/v1/jobs`),
+//! 6. start the job scheduler and in-process worker pool.
 //!
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
-//! `shutdown_timeout_secs` for in-flight requests, checkpoints the WAL into
-//! the main database file, closes the pools and releases the lock.
+//! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
+//! jobs get the same time to finish, the rest are released back to the queue),
+//! checkpoints the WAL into the main database file, closes the pools and
+//! releases the lock.
 
 mod lock;
 
@@ -22,11 +26,14 @@ use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
+use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
+use forgebase_kv::{KvConfig, KvError, KvService};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use forgebase_jobs::{JobRegistry, JobService, PoolConfig};
 pub use lock::{DataDirLock, LockOwner};
 
 /// A started server.
@@ -39,12 +46,31 @@ pub struct RunningServer {
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
     upkeep: JoinHandle<()>,
+    jobs: JobService,
+    job_pool: Option<forgebase_jobs::PoolHandle>,
+    kv: KvService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
 
-/// Starts a server for `config`. Returns once the listener is bound.
+/// Starts a server for `config` with no in-process job handlers (jobs are
+/// still stored, scheduled and served to external workers). Returns once the
+/// listener is bound.
 pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
+    let pool = PoolConfig {
+        shutdown_grace: Duration::from_secs(config.server.shutdown_timeout_secs),
+        ..PoolConfig::default()
+    };
+    start_with_jobs(config, JobRegistry::new(), pool).await
+}
+
+/// Like [`start`], with in-process handlers for job kinds. The worker pool
+/// claims only the kinds registered in `registry`.
+pub async fn start_with_jobs(
+    config: &Config,
+    registry: JobRegistry,
+    pool: PoolConfig,
+) -> Result<RunningServer, ServerError> {
     let layout = DataLayout::new(&config.data_dir);
     layout.ensure().map_err(|source| ServerError::Io {
         path: layout.root().to_path_buf(),
@@ -69,6 +95,20 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
             return Err(e);
         }
     };
+    // One authorizer — the policy engine — for the data core and the KV engine.
+    let authorizer: Arc<dyn Authorizer> = policy.authorizer();
+    let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
+        Ok(kv) => kv,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
+    kv.start_background();
+    let opts = RouterOptions {
+        request_timeout: Duration::from_secs(config.server.request_timeout_secs),
+        ..RouterOptions::default()
+    };
     // One data service, built by the auth service with the Argon2id hasher
     // and the policy engine as its authorizer; the auth layer turns
     // credentials into each request's AccessContext, the tenancy layer adds
@@ -76,13 +116,13 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
         .with_policy(policy);
-    let app = forgebase_api::router(
-        state,
-        RouterOptions {
-            request_timeout: Duration::from_secs(config.server.request_timeout_secs),
-            ..RouterOptions::default()
-        },
-    );
+    let jobs = JobService::new(state.data().clone());
+    let opts = RouterOptions {
+        extensions: vec![forgebase_jobs::extension(jobs.clone())],
+        ..opts
+    };
+    let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
+    let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
 
     let bind = (config.server.host.as_str(), config.server.port);
     let listener = match TcpListener::bind(bind).await {
@@ -122,6 +162,8 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         }
     });
 
+    let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
+
     tracing::info!(
         %addr,
         data_dir = %layout.root().display(),
@@ -137,6 +179,9 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         shutdown_tx: Some(shutdown_tx),
         task: Some(task),
         upkeep,
+        jobs,
+        job_pool: Some(job_pool),
+        kv,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -172,6 +217,12 @@ impl RunningServer {
     /// The primary database.
     pub fn database(&self) -> &Database {
         &self.db
+    }
+
+    /// The job queue of this instance (enqueue, inspect, claim as the system
+    /// principal).
+    pub fn jobs(&self) -> &JobService {
+        &self.jobs
     }
 
     /// This instance's identity.
@@ -236,6 +287,13 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.upkeep.abort();
+        if let Some(pool) = self.job_pool.take() {
+            pool.shutdown().await;
+        }
+        match self.kv.shutdown().await {
+            Ok(n) => tracing::debug!(rows = n, "kv snapshot written"),
+            Err(e) => tracing::warn!(error = %e, "final kv snapshot failed; recent kv writes are lost"),
+        }
         if let Err(e) = self.db.checkpoint().await {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
         }
@@ -294,6 +352,9 @@ pub enum ServerError {
     /// The data service could not load its catalog.
     #[error(transparent)]
     Data(#[from] forgebase_data::DataError),
+    /// The key-value engine could not load its snapshot.
+    #[error(transparent)]
+    Kv(#[from] KvError),
     /// A filesystem error.
     #[error("i/o error at {path}: {source}")]
     Io {
@@ -322,6 +383,7 @@ impl ErrorCode for ServerError {
             ServerError::Bind { .. } => "bind_failed",
             ServerError::Database(e) => e.code(),
             ServerError::Data(e) => e.code(),
+            ServerError::Kv(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
@@ -334,6 +396,7 @@ impl ErrorCode for ServerError {
             ServerError::Locked { .. } | ServerError::Bind { .. } => ErrorKind::Conflict,
             ServerError::Database(e) => e.kind(),
             ServerError::Data(e) => e.kind(),
+            ServerError::Kv(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
             ServerError::Policy(_) => ErrorKind::Internal,

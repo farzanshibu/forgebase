@@ -156,3 +156,14 @@ dependencies already recorded here: `axum`, `serde`, `serde_json`, `sha2`
 `forgebase-api`) and `utoipa`. The property tests use a 10-line SplitMix64
 generator instead of `proptest` (which would add ~15 packages for one test).
 `Cargo.lock` gains only the `forgebase-policy` entry.
+## Phase 6 graph (FB-51, 2026-11-07)
+
+New crate `forgebase-graph` (graph model on SQLite, recursive-CTE traversal,
+shortest path, REST under `/api/v1/graph`). **No new third-party crates.** It
+uses packages already in the tree: axum, serde, serde_json, thiserror,
+tower-http (`limit`), tracing, url, utoipa, uuid. The bundled SQLite's recursive
+CTEs and JSON1 functions are enough; no graph library is added.
+
+## FB-61 (jobs)
+
+`forgebase-jobs` adds no third-party dependencies (uses tokio, axum, tower-http, utoipa, uuid, time, serde already listed). Cron parsing is in-crate.

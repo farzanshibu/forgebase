@@ -272,6 +272,25 @@ pub enum Action {
     ReadSql,
     /// Run SQL that writes or changes the schema.
     WriteSql,
+    /// Read graph nodes and edges, run traversals (FB-51). Graph data has no
+    /// row-level policies: a `Decision::Filter` is treated as a denial.
+    GraphRead,
+    /// Create, change or delete graph nodes and edges (FB-51).
+    GraphWrite,
+    /// Read jobs, job history, schedules, workers and queue statistics (FB-61).
+    ReadJobs,
+    /// Enqueue a background job (FB-61).
+    EnqueueJob,
+    /// Cancel, retry or delete jobs; create, change or delete schedules (FB-61).
+    ManageJobs,
+    /// Act as a job worker: register, claim, heartbeat, complete, fail (FB-61).
+    WorkJobs,
+    /// Read key-value data: GET-style commands, scans, subscribing (FB-31).
+    KvRead,
+    /// Write key-value data: SET-style commands, TTL changes, publishing.
+    KvWrite,
+    /// Key-value administration: flush a namespace, list namespaces, server statistics.
+    KvAdmin,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

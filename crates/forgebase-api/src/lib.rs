@@ -217,6 +217,27 @@ pub struct RouterOptions {
     /// or `*` for any. Empty (the default) sends no CORS headers, so browsers
     /// only allow same-origin use.
     pub cors_allowed_origins: Vec<String>,
+    /// Routes and OpenAPI fragments of feature crates built on this crate
+    /// (jobs, FB-61), mounted under `/api/v1` inside the same middleware.
+    pub extensions: Vec<ApiExtension>,
+}
+
+/// Routes of a feature crate that depends on `forgebase-api` (so this crate
+/// cannot depend on it), plus the OpenAPI fragment documenting them.
+#[derive(Clone)]
+pub struct ApiExtension {
+    /// Routes relative to `/api/v1`.
+    pub routes: Router<AppState>,
+    /// Paths and schemas; paths are full (`/api/v1/...`).
+    pub openapi: utoipa::openapi::OpenApi,
+}
+
+impl std::fmt::Debug for ApiExtension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiExtension")
+            .field("paths", &self.openapi.paths.paths.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for RouterOptions {
@@ -226,6 +247,7 @@ impl Default for RouterOptions {
             max_body_bytes: 4 * 1024 * 1024,
             max_import_bytes: 256 * 1024 * 1024,
             cors_allowed_origins: Vec::new(),
+            extensions: Vec::new(),
         }
     }
 }
@@ -273,18 +295,43 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
 /// otherwise [`principal::install_anonymous`] stores an anonymous context and
 /// the default authorizer denies the request.
 pub fn router(state: AppState, opts: RouterOptions) -> Router {
+    router_with(state, opts, Router::new(), None)
+}
+
+/// [`router`] plus routes owned by another crate (for example the KV engine's
+/// `/api/v1/kv`). `extra` gets the same layers as every other route (request
+/// ids, error envelope, anonymous fallback, timeout); `extra_openapi` is
+/// merged into `GET /api/openapi.json`.
+pub fn router_with(
+    state: AppState,
+    opts: RouterOptions,
+    extra: Router<AppState>,
+    extra_openapi: Option<utoipa::openapi::OpenApi>,
+) -> Router {
     let auth = state.auth().cloned();
     let policy = state.policy().cloned();
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,
     });
+    let mut v1 = v1::router(&opts);
+    for ext in &opts.extensions {
+        v1 = v1.merge(ext.routes.clone());
+    }
+    let doc = Arc::new(openapi::document_with(
+        opts.extensions.iter().map(|e| &e.openapi).chain(extra_openapi.as_ref()),
+    ));
     let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
         .route("/metrics", get(routes::metrics))
         .route("/api/system/info", get(routes::system_info))
-        .route("/api/openapi.json", get(openapi::serve))
-        .nest("/api/v1", v1::router(&opts))
+        .route("/api/openapi.json", get(move || openapi::serve(doc.clone())))
+        .nest("/api/v1", v1)
+        .nest_service(
+            "/api/v1/graph",
+            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
+        )
+        .merge(extra)
         .route("/admin", get(admin::redirect))
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))
