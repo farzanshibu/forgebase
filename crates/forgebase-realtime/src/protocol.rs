@@ -142,8 +142,7 @@ pub const MAX_CHANNEL: usize = 128;
 fn token_ok(s: &str, max: usize) -> bool {
     !s.is_empty()
         && s.len() <= max
-        && s
-            .bytes()
+        && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
 }
 

@@ -99,7 +99,9 @@ impl Rooms {
     /// Current members of a channel.
     pub(crate) fn members(&self, channel: &str) -> Vec<Member> {
         let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        g.get(channel).map(|r| r.values().cloned().collect()).unwrap_or_default()
+        g.get(channel)
+            .map(|r| r.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Applies a join/leave seen on the bus (from another instance).

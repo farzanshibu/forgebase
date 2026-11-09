@@ -53,9 +53,9 @@ impl RedisFanOut {
     /// supported; use a local proxy); `channel` is the Redis channel shared by
     /// all instances of one deployment.
     pub fn new(url: &str, channel: impl Into<String>) -> Result<Self, RealtimeError> {
-        let rest = url
-            .strip_prefix("redis://")
-            .ok_or_else(|| RealtimeError::invalid("invalid_redis_url", "expected redis://[[user]:password@]host[:port]"))?;
+        let rest = url.strip_prefix("redis://").ok_or_else(|| {
+            RealtimeError::invalid("invalid_redis_url", "expected redis://[[user]:password@]host[:port]")
+        })?;
         let (auth, host) = match rest.rsplit_once('@') {
             Some((cred, host)) => {
                 let (user, pass) = match cred.split_once(':') {
@@ -156,7 +156,11 @@ impl RedisFanOut {
                 () = tx.closed() => return Ok(()),
             };
             if let Frame::Array(items) = frame
-                && let [Frame::Bulk(Some(kind)), Frame::Bulk(Some(_chan)), Frame::Bulk(Some(payload))] = items.as_slice()
+                && let [
+                    Frame::Bulk(Some(kind)),
+                    Frame::Bulk(Some(_chan)),
+                    Frame::Bulk(Some(payload)),
+                ] = items.as_slice()
                 && kind == b"message"
             {
                 let text = String::from_utf8_lossy(payload).into_owned();

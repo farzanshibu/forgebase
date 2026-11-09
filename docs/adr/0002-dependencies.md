@@ -154,3 +154,24 @@ shortest path, REST under `/api/v1/graph`). **No new third-party crates.** It
 uses packages already in the tree: axum, serde, serde_json, thiserror,
 tower-http (`limit`), tracing, url, utoipa, uuid. The bundled SQLite's recursive
 CTEs and JSON1 functions are enough; no graph library is added.
+
+## Phase 5 realtime (FB-40, 2026-11-09)
+
+New crate `forgebase-realtime` (ADR-0011). One feature and one dev-dependency:
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| axum feature `ws` | 0.8.9 | MIT | realtime | WebSocket upgrade (pulls `tokio-tungstenite`) |
+| futures-util feature `sink` | 0.3.34 | MIT OR Apache-2.0 | realtime | split a WebSocket into reader and writer |
+| tokio-tungstenite | 0.29.0 (no default features; `connect`, `handshake`) | MIT | realtime (dev) | WebSocket client in tests; same version axum's `ws` uses |
+
+New packages in `Cargo.lock` (transitive, via axum `ws`): `tokio-tungstenite`
+0.29.0 (MIT), `tungstenite` 0.29.0 (MIT OR Apache-2.0), `data-encoding`
+2.11.0 (MIT), `sha1` 0.10.7 (MIT OR Apache-2.0; tungstenite's handshake hash,
+next to the 0.11 used by auth). `rand`, `httparse`, `bytes` and `http` were
+already in the tree. No TLS stack, no native code. Also uses `time` and `url`
+(already workspace dependencies).
+
+Deliberately **not** added: a Redis client (`RedisFanOut` speaks the few RESP2
+commands pub/sub needs over `tokio::net::TcpStream`), `tokio-stream` /
+`tokio-util` (bounded `mpsc` + `futures_util::stream::unfold` cover SSE).

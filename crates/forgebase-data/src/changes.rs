@@ -111,7 +111,10 @@ impl RowSnapshot {
             .iter()
             .map(|v| match v {
                 Json::Null => Some(Value::Null),
-                Json::Number(n) => Some(n.as_i64().map_or_else(|| Value::Real(n.as_f64().unwrap_or(0.0)), Value::Integer)),
+                Json::Number(n) => Some(
+                    n.as_i64()
+                        .map_or_else(|| Value::Real(n.as_f64().unwrap_or(0.0)), Value::Integer),
+                ),
                 Json::String(s) => Some(Value::Text(s.clone())),
                 Json::Object(o) => o
                     .get("$b")
@@ -304,6 +307,11 @@ impl DataService {
                 return Ok(None);
             }
         }
-        Ok(Some(row_to_record(&coll, &row.columns, &row.values, ctx.is_privileged())))
+        Ok(Some(row_to_record(
+            &coll,
+            &row.columns,
+            &row.values,
+            ctx.is_privileged(),
+        )))
     }
 }

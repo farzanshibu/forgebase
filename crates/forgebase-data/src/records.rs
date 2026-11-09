@@ -17,8 +17,8 @@ use forgebase_schema::{
 use serde::Serialize;
 use serde_json::{Map, Value as Json};
 
-use crate::error::unique_fields;
 use crate::changes::ChangeOp;
+use crate::error::unique_fields;
 use crate::{AccessContext, Action, DataError, DataService, MAX_BATCH, Predicate, finish};
 
 /// A record as returned by the service.
@@ -389,8 +389,13 @@ impl DataService {
             .first()
             .ok_or_else(|| DataError::Internal("written row not found".into()))?;
         let rec = row_to_record(coll, &rows.columns, row, true);
-        let change_op = if op == "create" { ChangeOp::Create } else { ChangeOp::Update };
-        self.record_change(tx, ctx, coll, change_op, id, (&rows.columns, row)).await?;
+        let change_op = if op == "create" {
+            ChangeOp::Create
+        } else {
+            ChangeOp::Update
+        };
+        self.record_change(tx, ctx, coll, change_op, id, (&rows.columns, row))
+            .await?;
         if coll.versioned {
             let version = rec.get("_version").and_then(Json::as_i64).unwrap_or(1);
             tx.execute(&Statement::new(

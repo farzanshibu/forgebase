@@ -206,7 +206,9 @@ async fn identity(svc: &RealtimeService, parts: &Parts, pairs: &[(String, String
             .await
             .map_err(|e| RealtimeError::Unauthenticated(e.to_string()))?;
         if !conn::scopes_grant(a.scopes.as_deref(), "realtime", Access::Read, None) {
-            return Err(RealtimeError::Forbidden("insufficient_scope: realtime needs scope realtime:read".into()).into());
+            return Err(
+                RealtimeError::Forbidden("insufficient_scope: realtime needs scope realtime:read".into()).into(),
+            );
         }
         let ctx = a.access_context(ctx.request_id.as_deref());
         return Ok(Identity {
@@ -229,7 +231,10 @@ fn same_origin(headers: &HeaderMap) -> bool {
         return true;
     };
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let origin_host = origin.split_once("://").map_or(origin, |(_, h)| h).trim_end_matches('/');
+    let origin_host = origin
+        .split_once("://")
+        .map_or(origin, |(_, h)| h)
+        .trim_end_matches('/');
     !host.is_empty() && origin_host.eq_ignore_ascii_case(host)
 }
 
@@ -302,14 +307,28 @@ async fn ws_session(svc: RealtimeService, socket: WebSocket, ident: Identity) {
     let slow = Arc::new(AtomicBool::new(false));
     let writer = tokio::spawn(ws_writer(svc.clone(), sink, rx, ctrl_rx, slow.clone()));
     let (mut conn, receivers) = Conn::new(svc, ident, tx, slow, false);
+    let mut stream = stream.map(inbound);
     let reason = match conn.welcome().await {
-        Ok(()) => conn.run(stream.map(inbound), receivers).await,
+        Ok(()) => conn.run(&mut stream, receivers).await,
         Err(r) => r,
     };
     tracing::debug!(conn = %conn.id, code = reason.code(), reason = %reason.text(), "realtime websocket closed");
+    let client_closed = reason == CloseReason::ClientGone;
     let _ = ctrl_tx.send(reason);
     drop(conn);
     let _ = timeout(cfg.send_timeout + CLOSE_GRACE, writer).await;
+    if !client_closed {
+        // Closing handshake: keep the socket until the client answers the
+        // close frame (or the grace period ends), so it can read the code.
+        let _ = timeout(CLOSE_GRACE, async {
+            while let Some(m) = stream.next().await {
+                if matches!(m, Inbound::Closed) {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
 }
 
 /// Writes queued messages; on a close request or a send that blocks past the
@@ -401,7 +420,10 @@ async fn sse(State(svc): State<RealtimeService>, req: Request) -> Result<Respons
     if specs.len() > cfg.max_subscriptions_per_connection {
         return Err(RealtimeError::invalid(
             "too_many_subscriptions",
-            format!("at most {} subscriptions per connection", cfg.max_subscriptions_per_connection),
+            format!(
+                "at most {} subscriptions per connection",
+                cfg.max_subscriptions_per_connection
+            ),
         )
         .into());
     }
@@ -429,7 +451,7 @@ async fn sse(State(svc): State<RealtimeService>, req: Request) -> Result<Respons
             Err(r) => r,
             Ok(()) => match conn.activate(prepared, None).await {
                 Err(r) => r,
-                Ok(()) => conn.run(stream::pending(), receivers).await,
+                Ok(()) => conn.run(&mut stream::pending(), receivers).await,
             },
         };
         tracing::debug!(conn = %conn.id, code = reason.code(), reason = %reason.text(), "realtime sse stream closed");
@@ -452,7 +474,10 @@ async fn sse(State(svc): State<RealtimeService>, req: Request) -> Result<Respons
                     return None;
                 }
                 let data = json!({"type": "close", "code": reason.code(), "reason": reason.text()});
-                Some((Ok(SseEvent::default().event("close").data(data.to_string())), (rx, None)))
+                Some((
+                    Ok(SseEvent::default().event("close").data(data.to_string())),
+                    (rx, None),
+                ))
             }
         }
     });

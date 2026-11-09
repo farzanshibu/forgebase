@@ -302,7 +302,10 @@ impl Conn {
         if self.subs.len() >= cfg.max_subscriptions_per_connection {
             return Err(RealtimeError::invalid(
                 "too_many_subscriptions",
-                format!("at most {} subscriptions per connection", cfg.max_subscriptions_per_connection),
+                format!(
+                    "at most {} subscriptions per connection",
+                    cfg.max_subscriptions_per_connection
+                ),
             ));
         }
         let target = match (&spec.collection, &spec.channel) {
@@ -318,12 +321,21 @@ impl Conn {
                 {
                     return Err(RealtimeError::invalid("invalid_record_id", "invalid record id"));
                 }
-                if !scopes_grant(self.ident.scopes.as_deref(), "collections", Access::Read, Some(collection)) {
+                if !scopes_grant(
+                    self.ident.scopes.as_deref(),
+                    "collections",
+                    Access::Read,
+                    Some(collection),
+                ) {
                     return Err(RealtimeError::Forbidden(format!(
                         "insufficient_scope: this subscription needs scope collections:read:{collection}"
                     )));
                 }
-                let action = if spec.record.is_some() { Action::View } else { Action::List };
+                let action = if spec.record.is_some() {
+                    Action::View
+                } else {
+                    Action::List
+                };
                 let filter = match spec.filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
                     Some(text) => forgebase_data::query::parse_filter(text)
                         .map_err(|e| RealtimeError::from_data(e.into(), ctx))?
@@ -424,7 +436,10 @@ impl Conn {
     /// one pass in cursor order. A subscription whose cursor is unusable gets
     /// a `reset` (and starts at the head). Returns per-subscription delivered
     /// counts and resets.
-    async fn replay(&mut self, idx: &[usize]) -> Result<(HashMap<usize, u64>, HashMap<usize, &'static str>), CloseReason> {
+    async fn replay(
+        &mut self,
+        idx: &[usize],
+    ) -> Result<(HashMap<usize, u64>, HashMap<usize, &'static str>), CloseReason> {
         let mut counts = HashMap::new();
         let mut resets = HashMap::new();
         if idx.is_empty() {
@@ -667,7 +682,9 @@ impl Conn {
                 if self.strikes > 10 {
                     return Err(CloseReason::Protocol);
                 }
-                let reference = serde_json::from_str::<Json>(text).ok().and_then(|v| v.get("ref").cloned());
+                let reference = serde_json::from_str::<Json>(text)
+                    .ok()
+                    .and_then(|v| v.get("ref").cloned());
                 return self
                     .fail(
                         &reference,
@@ -690,7 +707,10 @@ impl Conn {
                 let sub = self.subs.remove(pos);
                 self.svc.inner.counters.subscriptions.fetch_sub(1, Ordering::SeqCst);
                 if let Target::Channel(ch) = &sub.target
-                    && !self.subs.iter().any(|s| matches!(&s.target, Target::Channel(c) if c == ch))
+                    && !self
+                        .subs
+                        .iter()
+                        .any(|s| matches!(&s.target, Target::Channel(c) if c == ch))
                 {
                     self.leave(ch);
                 }
@@ -702,7 +722,8 @@ impl Conn {
                 reference,
             } => {
                 if !scopes_grant(self.ident.scopes.as_deref(), "realtime", Access::Write, None) {
-                    let e = RealtimeError::Forbidden("insufficient_scope: publishing needs scope realtime:write".into());
+                    let e =
+                        RealtimeError::Forbidden("insufficient_scope: publishing needs scope realtime:write".into());
                     return self.fail(&reference, None, &e).await;
                 }
                 if !self.take_token() {
@@ -743,8 +764,11 @@ impl Conn {
             ClientMsg::Ping { reference } => self.reply(&reference, json!({"type": "pong"})).await,
             ClientMsg::Auth { token, reference } => match self.reauth(token).await {
                 Ok(()) => {
-                    self.reply(&reference, json!({"type": "authenticated", "actor": self.ident.ctx.actor()}))
-                        .await
+                    self.reply(
+                        &reference,
+                        json!({"type": "authenticated", "actor": self.ident.ctx.actor()}),
+                    )
+                    .await
                 }
                 Err(e) => self.fail(&reference, None, &e).await,
             },
@@ -853,7 +877,7 @@ impl Conn {
 
     /// The connection loop. Returns why it ended; cleans up presence and
     /// counters.
-    pub(crate) async fn run<S>(&mut self, mut inbound: S, rx: Receivers) -> CloseReason
+    pub(crate) async fn run<S>(&mut self, inbound: &mut S, rx: Receivers) -> CloseReason
     where
         S: Stream<Item = Inbound> + Unpin,
     {

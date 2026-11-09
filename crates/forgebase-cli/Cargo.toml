@@ -29,7 +29,9 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+futures-util = { workspace = true, features = ["sink"] }
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 
 # Workspace-level integration tests live in /tests (owned by the repo, not by
 # one crate). They are attached here because this package builds the binary
@@ -45,6 +47,10 @@ path = "../../tests/integration/cli_e2e.rs"
 [[test]]
 name = "auth_e2e"
 path = "../../tests/integration/auth_e2e.rs"
+
+[[test]]
+name = "realtime_e2e"
+path = "../../tests/integration/realtime_e2e.rs"
 
 [lints]
 workspace = true

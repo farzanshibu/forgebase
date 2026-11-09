@@ -170,7 +170,9 @@ impl DataService {
         match self.inner.authorizer.authorize_channel(ctx, action, channel) {
             Decision::Allow => Ok(()),
             _ if ctx.principal == Principal::Anonymous => Err(DataError::Unauthenticated),
-            _ => Err(DataError::Forbidden(format!("{action:?} on channel {channel} is not allowed"))),
+            _ => Err(DataError::Forbidden(format!(
+                "{action:?} on channel {channel} is not allowed"
+            ))),
         }
     }
 
