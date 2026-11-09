@@ -15,7 +15,7 @@ use super::{
 use crate::crypto;
 use crate::password::check_password_policy;
 use crate::scopes::{Scope, parse_scopes};
-use crate::store::{Tx, first, i, now, ot, read, rfc3339, rows, t};
+use crate::store::{Tx, first, i, ot, read, rfc3339, rows, t};
 use crate::{AuthError, Authenticated, CredentialKind, Subject};
 
 const API_KEY_PREFIX: &str = "fbk_";
@@ -142,7 +142,7 @@ impl AuthService {
         check_password_policy(password, ADMIN_PASSWORD_MIN)?;
         let hash = self.hasher().hash_async(password).await?;
         let id = crypto::random_id(15)?;
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let res = tx
             .exec(
@@ -193,7 +193,7 @@ impl AuthService {
         let r = tx
             .read(
                 "UPDATE _forgebase_admins SET password_hash = ?2, updated_at = ?3 WHERE email = ?1 RETURNING id",
-                vec![t(email.clone()), t(hash), i(now())],
+                vec![t(email.clone()), t(hash), i(self.now())],
             )
             .await?;
         let id = first(&r)
@@ -259,7 +259,7 @@ impl AuthService {
             return Err(AuthError::invalid("role must be 'service' or 'admin'"));
         }
         let id = crypto::random_id(15)?;
-        let now = now();
+        let now = self.now();
         let mut tx = Tx::begin(self.data().backend()).await?;
         let res = tx
             .exec(
@@ -404,7 +404,7 @@ impl AuthService {
         let secret = crypto::random_token(32)?;
         let prefix = if kind == "api_key" { API_KEY_PREFIX } else { PAT_PREFIX };
         let key = format!("{prefix}{id}_{secret}");
-        let now = now();
+        let now = self.now();
         let expires_at = expires_in_days.map(|d| now + i64::from(d) * 86_400);
         let scope_strs: Vec<String> = scopes.iter().map(|s| s.as_str().to_owned()).collect();
         let (owner_type, coll, owner_id) = match owner {
@@ -516,7 +516,7 @@ impl AuthService {
                  WHERE id = ?1 AND revoked_at IS NULL
                    AND (?6 OR (kind = 'pat' AND owner_type = ?3 AND collection IS ?4 AND owner_id = ?5))
                  RETURNING kind",
-                vec![t(key_id), i(now()), t(st), ot(coll), t(id), i(i64::from(admin))],
+                vec![t(key_id), i(self.now()), t(st), ot(coll), t(id), i(i64::from(admin))],
             )
             .await?;
         let Some(row) = first(&r) else {
@@ -603,7 +603,7 @@ impl AuthService {
         if !crypto::ct_eq(candidate.as_bytes(), row.str("secret_hash").as_bytes()) || row.str("kind") != kind {
             return Err(bad);
         }
-        let now = now();
+        let now = self.now();
         if row.opt_i64("revoked_at").is_some() {
             return Err(AuthError::InvalidToken("API key revoked"));
         }

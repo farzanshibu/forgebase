@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use common::{claim_one, harness, open_db, service, system, wait_for};
+use common::{Harness, claim_one, harness, open_db, service, system, wait_for};
 use forgebase_data::DefaultAuthorizer;
 use forgebase_jobs::{
     HandlerError, Job, JobFilter, JobRegistry, JobService, JobStatus, NewJob, NewSchedule, PoolConfig, start_pool,
@@ -32,8 +32,19 @@ async fn status_of(svc: &JobService, id: &str) -> Job {
 }
 
 async fn wait_status(svc: &JobService, id: &str, status: JobStatus) -> Job {
-    wait_for(Duration::from_secs(10), || async {
+    wait_for(Duration::from_secs(30), || async {
         let j = status_of(svc, id).await;
+        (j.status == status).then_some(j)
+    })
+    .await
+}
+
+/// Like `wait_status`, but each poll also moves the harness clock forward, so
+/// backoff delays elapse in virtual time instead of real time.
+async fn wait_status_advancing(h: &Harness, id: &str, status: JobStatus) -> Job {
+    wait_for(Duration::from_secs(30), || async {
+        h.clock.advance(Duration::from_millis(100));
+        let j = status_of(&h.svc, id).await;
         (j.status == status).then_some(j)
     })
     .await
@@ -83,7 +94,7 @@ async fn handler_errors_retry_with_backoff_then_succeed() {
         .await
         .unwrap()
         .0;
-    let done = wait_status(&h.svc, &j.id, JobStatus::Succeeded).await;
+    let done = wait_status_advancing(&h, &j.id, JobStatus::Succeeded).await;
     assert_eq!((done.attempts, calls.load(Ordering::SeqCst)), (3, 3));
     let events: Vec<_> = h
         .svc
@@ -139,12 +150,12 @@ async fn dead_letter_queue_after_max_attempts_and_for_fatal_and_panicking_handle
         .unwrap()
         .0;
 
-    let d1 = wait_status(&h.svc, &j1.id, JobStatus::Dead).await;
+    let d1 = wait_status_advancing(&h, &j1.id, JobStatus::Dead).await;
     assert_eq!((d1.attempts, d1.last_error.as_deref()), (3, Some("boom")));
     assert_eq!(always.load(Ordering::SeqCst), 3, "ran exactly max_attempts times");
-    let d2 = wait_status(&h.svc, &j2.id, JobStatus::Dead).await;
+    let d2 = wait_status_advancing(&h, &j2.id, JobStatus::Dead).await;
     assert_eq!((d2.attempts, fatal.load(Ordering::SeqCst)), (1, 1));
-    let d3 = wait_status(&h.svc, &j3.id, JobStatus::Dead).await;
+    let d3 = wait_status_advancing(&h, &j3.id, JobStatus::Dead).await;
     assert_eq!((d3.attempts, d3.last_error.as_deref()), (2, Some("handler panicked")));
 
     let dlq = h
@@ -257,7 +268,8 @@ async fn cron_schedule_fires_jobs_through_the_pool() {
         )
         .await
         .unwrap();
-    wait_for(Duration::from_secs(8), || async {
+    wait_for(Duration::from_secs(30), || async {
+        h.clock.advance(Duration::from_millis(500));
         (runs.load(Ordering::SeqCst) >= 3).then_some(())
     })
     .await;
@@ -344,7 +356,7 @@ async fn cancelling_a_running_job_tells_the_handler_to_stop() {
         .await
         .unwrap()
         .0;
-    wait_for(Duration::from_secs(5), || async {
+    wait_for(Duration::from_secs(30), || async {
         (started.load(Ordering::SeqCst) == 1).then_some(())
     })
     .await;
@@ -437,7 +449,7 @@ async fn graceful_shutdown_releases_jobs_that_outlive_the_grace_period() {
 async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
     let dir = tempfile::tempdir().unwrap();
     let db = open_db(dir.path()).await;
-    let (_data, svc) = service(&db, Arc::new(DefaultAuthorizer)).await;
+    let (_data, svc, _clock) = service(&db, Arc::new(DefaultAuthorizer)).await;
 
     // Process 1 starts the job and "dies" in the middle of it.
     let started = Arc::new(AtomicUsize::new(0));
@@ -461,7 +473,7 @@ async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
         .await
         .unwrap()
         .0;
-    wait_for(Duration::from_secs(5), || async {
+    wait_for(Duration::from_secs(30), || async {
         (started.load(Ordering::SeqCst) == 1).then_some(())
     })
     .await;
@@ -475,8 +487,10 @@ async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
     // The database is reopened by a fresh process; the job is still there.
     db.close().await;
     let db = open_db(dir.path()).await;
-    let (_data, svc) = service(&db, Arc::new(DefaultAuthorizer)).await;
+    let (_data, svc, clock) = service(&db, Arc::new(DefaultAuthorizer)).await;
     assert_eq!(status_of(&svc, &j.id).await.status, JobStatus::Running);
+    // The dead worker's lease runs out (virtual time: no waiting, no load sensitivity).
+    clock.advance(Duration::from_secs(10));
 
     let completed = Arc::new(AtomicUsize::new(0));
     let c = completed.clone();
