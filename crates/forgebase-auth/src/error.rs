@@ -60,6 +60,15 @@ pub enum AuthError {
     /// Database failure.
     #[error(transparent)]
     Db(#[from] DbError),
+    /// The Cloudflare Turnstile check did not pass (or no token was sent).
+    #[error("the bot check did not pass; complete the challenge and retry")]
+    BotCheckFailed,
+    /// The account is suspended.
+    #[error("this account is suspended")]
+    AccountSuspended,
+    /// The account is deactivated (an administrator can reactivate it).
+    #[error("this account is deactivated")]
+    AccountDeactivated,
     /// Bug or unexpected failure; the message is logged, never returned.
     #[error("{0}")]
     Internal(String),
@@ -83,6 +92,9 @@ impl ErrorCode for AuthError {
             Self::Provider(_) => "provider_error",
             Self::Data(e) => e.code(),
             Self::Db(e) => e.code(),
+            Self::BotCheckFailed => "turnstile_failed",
+            Self::AccountSuspended => "account_suspended",
+            Self::AccountDeactivated => "account_deactivated",
             Self::Internal(_) => "internal",
         }
     }
@@ -92,7 +104,11 @@ impl ErrorCode for AuthError {
             Self::InvalidCredentials | Self::InvalidToken(_) | Self::Unauthenticated | Self::MfaRequired => {
                 ErrorKind::Unauthenticated
             }
-            Self::Forbidden(_) | Self::EmailNotVerified => ErrorKind::Forbidden,
+            Self::Forbidden(_)
+            | Self::EmailNotVerified
+            | Self::BotCheckFailed
+            | Self::AccountSuspended
+            | Self::AccountDeactivated => ErrorKind::Forbidden,
             Self::RateLimited { .. } | Self::Mail(_) | Self::Provider(_) => ErrorKind::Unavailable,
             Self::InvalidInput(_) => ErrorKind::InvalidInput,
             Self::EmailTaken | Self::Conflict(_) => ErrorKind::Conflict,

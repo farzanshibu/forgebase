@@ -34,8 +34,9 @@ struct StartReq {
     opts: LoginOptions,
 }
 
-async fn providers(State(a): State<AuthService>) -> Response {
-    ok(StatusCode::OK, json!({"providers": a.oauth_providers()}))
+async fn providers(State(a): State<AuthService>, Client(ci, _): Client) -> Response {
+    let realm = ci.realm.as_deref().unwrap_or(crate::social::DEFAULT_REALM);
+    ok(StatusCode::OK, json!({"providers": a.oauth_providers_in(realm)}))
 }
 
 async fn start(State(a): State<AuthService>, Client(ci, rid): Client, Path(p): Path<String>, body: Bytes) -> Res {
@@ -62,11 +63,18 @@ struct StartQuery {
 }
 
 /// Browser entry point: redirects to the provider.
-async fn start_redirect(State(a): State<AuthService>, Client(ci, rid): Client, Path(p): Path<String>, uri: Uri) -> Res {
+async fn start_redirect(
+    State(a): State<AuthService>,
+    Client(mut ci, rid): Client,
+    Path(p): Path<String>,
+    uri: Uri,
+) -> Res {
     let mut q = StartQuery::default();
     for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
         match &*k {
             "collection" => q.collection = Some(v.into_owned()),
+            // A browser navigation cannot send X-ForgeBase-Realm.
+            "realm" if ci.realm.is_none() => ci.realm = Some(v.into_owned()),
             "cookie" => q.cookie = v == "true" || v == "1",
             "device_name" => q.device_name = Some(v.into_owned()),
             _ => {}

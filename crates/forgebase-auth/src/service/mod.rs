@@ -40,6 +40,11 @@ pub struct ClientInfo {
     pub user_agent: Option<String>,
     /// Request id.
     pub request_id: Option<String>,
+    /// Realm the request selects (`X-ForgeBase-Realm`); `None` = `default`.
+    pub realm: Option<String>,
+    /// Cloudflare Turnstile token sent with the request (`cf-turnstile-response`
+    /// or `x-turnstile-token` header).
+    pub turnstile_token: Option<String>,
     /// Administrator acting as the caller (impersonation session); recorded
     /// in every audit row of the request.
     pub impersonator: Option<String>,
@@ -200,7 +205,23 @@ struct Inner {
     keys: RwLock<Vec<SigningKey>>,
     social: crate::social::Social,
     webauthn: crate::webauthn::WebAuthnConfig,
+    realms: crate::realm::RealmDirectory,
+    sms: RwLock<Arc<dyn crate::sms::SmsProvider>>,
+    change_hook: RwLock<Option<Hook>>,
 }
+
+#[derive(Clone)]
+struct Hook(ChangeHook);
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ChangeHook")
+    }
+}
+
+/// Called after the auth service changed state the policy engine caches
+/// (suspensions); the server wires it to `PolicyService::reload`.
+pub type ChangeHook = Arc<dyn Fn() + Send + Sync>;
 
 impl AuthService {
     /// Current Unix time in seconds, from the configured clock.
@@ -249,14 +270,73 @@ impl AuthService {
                 keys: RwLock::new(Vec::new()),
                 social: crate::social::Social::default(),
                 webauthn: crate::webauthn::WebAuthnConfig::from_public_url(&public_url),
+                realms: crate::realm::RealmDirectory::default(),
+                sms: RwLock::new(Arc::new(crate::sms::DevSmsProvider::default())),
+                change_hook: RwLock::new(None),
             }),
         };
+        svc.install_default_http_client()?;
         svc.ensure_signing_key(false).await?;
         svc.load_provider_file().await?;
         if let Some(name) = svc.inner.cfg.default_collection.clone() {
             svc.ensure_auth_collection(&name).await?;
         }
+        svc.reconcile_default_realm().await?;
+        svc.load_sms_file().await?;
         Ok(svc)
+    }
+
+    /// Trust settings for outbound TLS (`tls_ca_file` added to webpki-roots).
+    #[cfg(feature = "https")]
+    pub fn tls_settings(&self) -> Result<crate::net::TlsSettings, AuthError> {
+        let tls = crate::net::TlsSettings::new();
+        match &self.inner.cfg.tls_ca_file {
+            Some(p) => tls.with_pem_file(p),
+            None => Ok(tls),
+        }
+    }
+
+    /// Installs the rustls client for provider, Turnstile and SMS calls
+    /// (feature `https`); without it the plain-HTTP client stays.
+    fn install_default_http_client(&self) -> Result<(), AuthError> {
+        #[cfg(feature = "https")]
+        {
+            let client = crate::net::HttpsClient::new(&self.tls_settings()?)?;
+            self.set_http_client(Arc::new(client));
+        }
+        Ok(())
+    }
+
+    /// The realm directory (shared with the policy engine).
+    pub fn realms(&self) -> &crate::realm::RealmDirectory {
+        &self.inner.realms
+    }
+
+    /// The SMS provider (development provider unless replaced).
+    pub fn sms(&self) -> Arc<dyn crate::sms::SmsProvider> {
+        self.inner.sms.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Replaces the SMS provider.
+    pub fn set_sms_provider(&self, p: Arc<dyn crate::sms::SmsProvider>) {
+        *self.inner.sms.write().unwrap_or_else(|e| e.into_inner()) = p;
+    }
+
+    /// Installs the hook run after suspensions change.
+    pub fn set_change_hook(&self, hook: ChangeHook) {
+        *self.inner.change_hook.write().unwrap_or_else(|e| e.into_inner()) = Some(Hook(hook));
+    }
+
+    pub(crate) fn changed(&self) {
+        let hook = self.inner.change_hook.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(Hook(h)) = hook {
+            h();
+        }
+    }
+
+    /// The outbound HTTP client (providers, Turnstile, SMS gateways).
+    pub fn http_client(&self) -> Arc<dyn crate::social::HttpClient> {
+        self.inner.social.http()
     }
 
     /// The data service (shared; built with the Argon2id hasher).
@@ -330,6 +410,14 @@ impl AuthService {
                 self.inner.cfg.ip_attempts_per_minute,
                 Duration::from_secs(60),
             )
+            .map_err(|retry_after| AuthError::RateLimited { retry_after })
+    }
+
+    /// Counts one hit of `key` in `bucket` (e.g. SMS sends per number).
+    pub(crate) fn limit_key(&self, bucket: &str, key: &str, limit: u32, window: Duration) -> Result<(), AuthError> {
+        self.inner
+            .limiter
+            .hit(bucket, key, limit, window)
             .map_err(|retry_after| AuthError::RateLimited { retry_after })
     }
 
@@ -616,6 +704,7 @@ impl AuthService {
         ci: &ClientInfo,
         opts: &LoginOptions,
     ) -> Result<SessionTokens, AuthError> {
+        self.ensure_active(subject).await?;
         let (st, coll, sid_subject) = match subject {
             Subject::User { collection, id } => ("user", Some(collection.clone()), id.clone()),
             Subject::Admin { id } => ("admin", None, id.clone()),
@@ -897,6 +986,16 @@ impl AuthService {
         };
         let sid = row.str("session_id");
         let subject = session_subject(&row)?;
+        if let Err(e) = self.ensure_active(&subject).await {
+            tx.exec(
+                "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = 'account_inactive'
+                 WHERE id = ?1 AND revoked_at IS NULL",
+                vec![t(sid.clone()), i(now)],
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(e);
+        }
         let reuse = row.opt_i64("used_at").is_some();
         let claimed = if reuse {
             false
@@ -1278,8 +1377,10 @@ pub(crate) async fn audit_in(
         t(detail.to_string())
     };
     tx.exec(
-        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator, realm)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                 COALESCE((SELECT realm_id FROM _forgebase_realm_identity WHERE collection = ?6),
+                          CASE WHEN ?6 IS NULL THEN ?13 ELSE 'default' END))",
         vec![
             i(store::now()),
             t(event),
@@ -1293,6 +1394,7 @@ pub(crate) async fn audit_in(
             ot(ci.request_id.clone()),
             detail,
             ot(ci.impersonator.clone()),
+            ot(ci.realm.clone()),
         ],
     )
     .await?;

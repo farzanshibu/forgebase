@@ -288,3 +288,24 @@ non-persistent star selects (does not fix SQLite's schema cache, loses caching)
 and `PRAGMA schema_version` per acquire (round trip on every acquire).
 The writer needs nothing: it runs the DDL itself. Regression test:
 `crates/forgebase-db/tests/stale_statements.rs`.
+
+## Phase 3 identity extensions (FB-25, 2026-11-09)
+
+Outbound HTTPS for identity providers, Turnstile and SMS gateways, and LDAPS
+(ADR-0009 §9 option b, decided by god; ADR-0015 §2). Behind the
+`forgebase-auth` cargo feature `https` (on by default).
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| rustls | 0.23.46 (no default features; `ring`, `std`, `tls12`) | Apache-2.0 OR ISC OR MIT | auth | TLS 1.2/1.3 client (no aws-lc, no logging) |
+| ring | 0.17.14 | Apache-2.0 AND ISC | auth (via rustls) | crypto provider; C and assembly built with `cc`, no system libraries |
+| rustls-webpki | 0.103.16 | ISC | auth (via rustls) | certificate path validation |
+| rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 | auth (via rustls) | certificate/key types, PEM parsing |
+| untrusted | 0.9.0 | ISC | auth (via ring, webpki) | safe parsing of untrusted input |
+| tokio-rustls | 0.26.6 (no default features; `ring`, `tls12`) | MIT OR Apache-2.0 | auth | async TLS streams over tokio |
+| webpki-roots | 1.0.11 | CDLA-Permissive-2.0 | auth | Mozilla trust anchors (data); `deny.toml` exception for this crate only |
+| getrandom | 0.2.17 | MIT OR Apache-2.0 | auth (via ring) | second getrandom major in the tree (ring 0.17 needs 0.2) |
+| windows-sys / windows-targets | 0.52.x | MIT OR Apache-2.0 | (via ring, Windows targets only) | lock entries for the Windows build targets |
+
+No LDAP crate: the LDAPv3 subset (simple bind, search, StartTLS) is
+implemented in `forgebase-auth::ldap` (ADR-0015 §5).
