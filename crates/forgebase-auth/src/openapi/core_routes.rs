@@ -147,160 +147,160 @@ pub(super) fn auth_sessions_revoke() {}
 pub(super) fn auth_login_history_list() {}
 
 /// The caller's personal access tokens.
-#[utoipa::path(get, path = "/api/auth/tokens", operation_id = "auth_tokens_list", tag = "tokens",
+#[utoipa::path(get, path = "/api/auth/tokens", operation_id = "auth_tokens_list", tag = "keys",
     responses((status = 200, description = "Tokens", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_tokens_list() {}
 
 /// Create a personal access token; the secret is shown once.
-#[utoipa::path(post, path = "/api/auth/tokens", operation_id = "auth_tokens_create", tag = "tokens", request_body = AuthKeyRequest,
+#[utoipa::path(post, path = "/api/auth/tokens", operation_id = "auth_tokens_create", tag = "keys", request_body = AuthKeyRequest,
     responses((status = 201, description = "Created token (with secret)", body = AuthKeyCreated)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_tokens_create() {}
 
 /// Revoke a personal access token.
-#[utoipa::path(delete, path = "/api/auth/tokens/{id}", operation_id = "auth_tokens_revoke", tag = "tokens", params(("id" = String, Path, description = "Token id")),
+#[utoipa::path(delete, path = "/api/auth/tokens/{id}", operation_id = "auth_tokens_revoke", tag = "keys", params(("id" = String, Path, description = "Token id")),
     responses((status = 204, description = "Revoked")),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_tokens_revoke() {}
 
 /// Administrator password sign-in.
-#[utoipa::path(post, path = "/api/auth/admins/login", operation_id = "auth_admins_login", tag = "admin-auth", request_body = AuthLoginRequest,
+#[utoipa::path(post, path = "/api/auth/admins/login", operation_id = "auth_admins_login", tag = "admin", request_body = AuthLoginRequest,
     responses((status = 200, description = "Session, or MFA challenge", body = AuthLoginResponse)))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_admins_login() {}
 
 /// Administrators (admin only).
-#[utoipa::path(get, path = "/api/auth/admins", operation_id = "auth_admins_list", tag = "admin-auth",
+#[utoipa::path(get, path = "/api/auth/admins", operation_id = "auth_admins_list", tag = "admin",
     responses((status = 200, description = "Administrators", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_admins_list() {}
 
 /// Create an administrator (admin only).
-#[utoipa::path(post, path = "/api/auth/admins", operation_id = "auth_admins_create", tag = "admin-auth", request_body = AuthAdminCreateRequest,
+#[utoipa::path(post, path = "/api/auth/admins", operation_id = "auth_admins_create", tag = "admin", request_body = AuthAdminCreateRequest,
     responses((status = 201, description = "Created administrator", body = Object)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_admins_create() {}
 
 /// Service accounts (admin only).
-#[utoipa::path(get, path = "/api/auth/service-accounts", operation_id = "auth_service_accounts_list", tag = "admin-auth",
+#[utoipa::path(get, path = "/api/auth/service-accounts", operation_id = "auth_service_accounts_list", tag = "keys",
     responses((status = 200, description = "Service accounts", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_service_accounts_list() {}
 
 /// Create a service account (admin only).
-#[utoipa::path(post, path = "/api/auth/service-accounts", operation_id = "auth_service_accounts_create", tag = "admin-auth", request_body = AuthServiceAccountRequest,
+#[utoipa::path(post, path = "/api/auth/service-accounts", operation_id = "auth_service_accounts_create", tag = "keys", request_body = AuthServiceAccountRequest,
     responses((status = 201, description = "Created service account", body = Object)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_service_accounts_create() {}
 
 /// One service account (admin only).
-#[utoipa::path(get, path = "/api/auth/service-accounts/{id}", operation_id = "auth_service_accounts_get", tag = "admin-auth", params(("id" = String, Path, description = "Service account id")),
+#[utoipa::path(get, path = "/api/auth/service-accounts/{id}", operation_id = "auth_service_accounts_get", tag = "keys", params(("id" = String, Path, description = "Service account id")),
     responses((status = 200, description = "Service account", body = Object)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_service_accounts_get() {}
 
 /// Delete a service account and its keys (admin only).
-#[utoipa::path(delete, path = "/api/auth/service-accounts/{id}", operation_id = "auth_service_accounts_delete", tag = "admin-auth", params(("id" = String, Path, description = "Service account id")),
+#[utoipa::path(delete, path = "/api/auth/service-accounts/{id}", operation_id = "auth_service_accounts_delete", tag = "keys", params(("id" = String, Path, description = "Service account id")),
     responses((status = 204, description = "Deleted")),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_service_accounts_delete() {}
 
 /// API keys of a service account (admin only).
-#[utoipa::path(get, path = "/api/auth/service-accounts/{id}/keys", operation_id = "auth_service_account_keys_list", tag = "admin-auth", params(("id" = String, Path, description = "Service account id")),
+#[utoipa::path(get, path = "/api/auth/service-accounts/{id}/keys", operation_id = "auth_service_account_keys_list", tag = "keys", params(("id" = String, Path, description = "Service account id")),
     responses((status = 200, description = "Keys", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_service_account_keys_list() {}
 
 /// Create an API key for a service account; the secret is shown once (admin only).
-#[utoipa::path(post, path = "/api/auth/service-accounts/{id}/keys", operation_id = "auth_service_account_keys_create", tag = "admin-auth", params(("id" = String, Path, description = "Service account id")), request_body = AuthKeyRequest,
+#[utoipa::path(post, path = "/api/auth/service-accounts/{id}/keys", operation_id = "auth_service_account_keys_create", tag = "keys", params(("id" = String, Path, description = "Service account id")), request_body = AuthKeyRequest,
     responses((status = 201, description = "Created key (with secret)", body = AuthKeyCreated)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_service_account_keys_create() {}
 
 /// Revoke an API key (admin only).
-#[utoipa::path(delete, path = "/api/auth/api-keys/{id}", operation_id = "auth_api_keys_revoke", tag = "admin-auth", params(("id" = String, Path, description = "Key id")),
+#[utoipa::path(delete, path = "/api/auth/api-keys/{id}", operation_id = "auth_api_keys_revoke", tag = "keys", params(("id" = String, Path, description = "Key id")),
     responses((status = 204, description = "Revoked")),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_api_keys_revoke() {}
 
 /// All API keys (admin only).
-#[utoipa::path(get, path = "/api/auth/api-keys", operation_id = "auth_api_keys_list", tag = "admin-auth",
+#[utoipa::path(get, path = "/api/auth/api-keys", operation_id = "auth_api_keys_list", tag = "keys",
     responses((status = 200, description = "Keys", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_api_keys_list() {}
 
 /// One user record (admin only).
-#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}", operation_id = "auth_users_get", tag = "admin-auth", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}", operation_id = "auth_users_get", tag = "admin", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
     responses((status = 200, description = "User", body = Object)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_users_get() {}
 
 /// A user's sessions (admin only).
-#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}/sessions", operation_id = "auth_user_sessions_list", tag = "admin-auth", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}/sessions", operation_id = "auth_user_sessions_list", tag = "admin", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
     responses((status = 200, description = "Sessions", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_user_sessions_list() {}
 
 /// Revoke all of a user's sessions (admin only).
-#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/sessions/revoke", operation_id = "auth_user_sessions_revoke", tag = "admin-auth", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+#[utoipa::path(post, path = "/api/auth/users/{collection}/{id}/sessions/revoke", operation_id = "auth_user_sessions_revoke", tag = "admin", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
     responses((status = 200, description = "`{revoked: n}`", body = AuthRevoked)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_user_sessions_revoke() {}
 
 /// A user's sign-in history; query `limit` (admin only).
-#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}/login-history", operation_id = "auth_user_login_history_list", tag = "admin-auth", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
+#[utoipa::path(get, path = "/api/auth/users/{collection}/{id}/login-history", operation_id = "auth_user_login_history_list", tag = "admin", params(("collection" = String, Path, description = "Auth collection"), ("id" = String, Path, description = "User id")),
     responses((status = 200, description = "Login history", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_user_login_history_list() {}
 
 /// Start an audited impersonation session (admin only).
-#[utoipa::path(post, path = "/api/auth/impersonate", operation_id = "auth_impersonate", tag = "admin-auth", request_body = AuthImpersonateRequest,
+#[utoipa::path(post, path = "/api/auth/impersonate", operation_id = "auth_impersonate", tag = "admin", request_body = AuthImpersonateRequest,
     responses((status = 200, description = "Impersonation grant (tokens)", body = Object)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_impersonate() {}
 
 /// Impersonation sessions (admin only).
-#[utoipa::path(get, path = "/api/auth/impersonations", operation_id = "auth_impersonations_list", tag = "admin-auth",
+#[utoipa::path(get, path = "/api/auth/impersonations", operation_id = "auth_impersonations_list", tag = "admin",
     responses((status = 200, description = "Impersonations", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_impersonations_list() {}
 
 /// End an impersonation session (admin only).
-#[utoipa::path(post, path = "/api/auth/impersonations/{id}/end", operation_id = "auth_impersonations_end", tag = "admin-auth", params(("id" = String, Path, description = "Impersonation id")),
+#[utoipa::path(post, path = "/api/auth/impersonations/{id}/end", operation_id = "auth_impersonations_end", tag = "admin", params(("id" = String, Path, description = "Impersonation id")),
     responses((status = 204, description = "Ended")),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_impersonations_end() {}
 
 /// Security audit log; query `event`, `subject_id`, `before`, `limit` (admin only).
-#[utoipa::path(get, path = "/api/auth/audit", operation_id = "auth_audit_list", tag = "admin-auth",
+#[utoipa::path(get, path = "/api/auth/audit", operation_id = "auth_audit_list", tag = "admin",
     responses((status = 200, description = "Audit events", body = AuthItems)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
 pub(super) fn auth_audit_list() {}
 
 /// Rotate the access-token signing key (admin only).
-#[utoipa::path(post, path = "/api/auth/keys/rotate", operation_id = "auth_keys_rotate", tag = "admin-auth",
+#[utoipa::path(post, path = "/api/auth/keys/rotate", operation_id = "auth_keys_rotate", tag = "admin",
     responses((status = 200, description = "New active key id", body = AuthKeyRotated)),
     security(("bearer" = []), ("api_key" = []), ("session_cookie" = [])))]
 #[allow(dead_code, clippy::missing_const_for_fn)]
