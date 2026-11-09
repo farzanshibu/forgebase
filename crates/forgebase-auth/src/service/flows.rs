@@ -644,7 +644,7 @@ impl AuthService {
                 "choose a new password",
             ),
             MailKind::MagicLink => (cfg.magic_link_ttl, "magic-link", "Your sign-in link", "sign in"),
-            MailKind::EmailOtp => return Err(AuthError::Internal("not a link mail".into())),
+            MailKind::EmailOtp | MailKind::Invitation => return Err(AuthError::Internal("not a link mail".into())),
         };
         let token = crypto::random_token(32)?;
         self.store_one_time(subject, purpose, &token, Some(email), ttl.as_secs(), json!({}))

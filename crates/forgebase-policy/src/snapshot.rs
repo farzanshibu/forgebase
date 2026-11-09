@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 
 use forgebase_db::{Backend, Rows, Statement, Value};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
 
 use crate::PolicyError;
 use crate::perm::{self, PermissionSet};

@@ -140,6 +140,7 @@ struct Inner {
     hooks: RwLock<Hooks>,
     audit: AuditSink,
     data: OnceLock<DataService>,
+    mailer: OnceLock<(Arc<dyn forgebase_auth::Mailer>, String)>,
 }
 
 impl PolicyService {
@@ -153,6 +154,7 @@ impl PolicyService {
                 snap: RwLock::new(Arc::new(snap)),
                 hooks: RwLock::new(Hooks::default()),
                 data: OnceLock::new(),
+                mailer: OnceLock::new(),
             }),
         })
     }
@@ -169,6 +171,30 @@ impl PolicyService {
             .data
             .get()
             .ok_or_else(|| PolicyError::Internal("data service not attached".into()))
+    }
+
+    /// Attaches the auth service's mailer and public URL for invitations.
+    pub fn attach_mailer(&self, mailer: Arc<dyn forgebase_auth::Mailer>, public_url: impl Into<String>) {
+        let _ = self.inner.mailer.set((mailer, public_url.into()));
+    }
+
+    /// Mails an invitation link (`<public_url>/auth/accept-invitation?token=`);
+    /// failures are logged, the invitation stays valid.
+    pub async fn mail_invitation(&self, email: &str, org: &str, token: &str) {
+        let Some((mailer, url)) = self.inner.mailer.get() else { return };
+        let name = self.snapshot().orgs.get(org).map(|o| o.name.clone()).unwrap_or_default();
+        let link = format!("{}/auth/accept-invitation?token={token}", url.trim_end_matches('/'));
+        let mail = forgebase_auth::Mail {
+            to: email.to_owned(),
+            subject: format!("You are invited to {name}"),
+            text: format!("You have been invited to join {name}. Accept the invitation: {link}\n"),
+            kind: forgebase_auth::MailKind::Invitation,
+            secret: token.to_owned(),
+            link: Some(link),
+        };
+        if let Err(e) = mailer.send(&mail).await {
+            tracing::warn!(error = %e, "invitation mail failed");
+        }
     }
 
     /// Installs the entitlement (step 4) and quota (step 6) hooks (FB-24).
@@ -214,6 +240,11 @@ impl PolicyService {
             ));
             PolicyError::Denied(d)
         })
+    }
+
+    /// Runs the pipeline without auditing (dry runs, UI hints).
+    pub fn dry_run(&self, ctx: &AccessContext, check: &Check) -> Result<(), Denial> {
+        engine::run_check(&self.snapshot(), &self.hooks(), ctx, check)
     }
 
     /// `has({permission})` for the caller in `org` (no audit).
