@@ -6,6 +6,7 @@
 mod common;
 
 use common::*;
+use forgebase_db::Backend as _;
 use forgebase_billing::provider::stripe;
 use forgebase_billing::{BillingError, InvoiceStatus, PaymentStatus, ProviderInput, SubscriptionStatus};
 use serde_json::{Value as Json, json};

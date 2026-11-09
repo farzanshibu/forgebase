@@ -1400,6 +1400,7 @@ dependencies = [
  "base64",
  "forgebase-api",
  "forgebase-auth",
+ "forgebase-billing",
  "forgebase-core",
  "forgebase-credits",
  "forgebase-data",

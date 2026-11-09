@@ -22,6 +22,7 @@ use forgebase_core::DataLayout;
 use forgebase_credits::CreditService;
 use forgebase_data::{AccessContext, DataService};
 use forgebase_db::{Backend, Database, DbOptions, Statement};
+use forgebase_entitlements::Clock as _;
 use forgebase_entitlements::{
     AddonFeature, AddonInput, EntitlementService, FeatureInput, FeatureKind, ManualClock, PlanFeature, PlanInput,
     UsagePackInput, UsageRequest,
@@ -532,6 +533,13 @@ impl Env {
             .scalar()
             .and_then(forgebase_db::Value::as_i64)
             .unwrap()
+    }
+
+    /// Runs one write statement.
+    pub async fn exec(&self, sql: &str) {
+        let mut tx = self.db.begin(forgebase_db::TxMode::Normal).await.unwrap();
+        tx.execute(&Statement::new(sql, Vec::new())).await.unwrap();
+        tx.commit().await.unwrap();
     }
 
     /// Advances the clock and runs maintenance.

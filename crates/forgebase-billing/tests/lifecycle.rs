@@ -298,10 +298,7 @@ async fn metered_invoice_from_usage_events() {
     let rep = env.advance(MIN).await;
     assert_eq!(rep.usage_recorded, 2);
     // Re-reading the feed from the start stores nothing twice.
-    env.db
-        .fetch_all(&forgebase_db::Statement::raw("UPDATE _forgebase_billing_cursors SET seq = 0"))
-        .await
-        .unwrap();
+    env.exec("UPDATE _forgebase_billing_cursors SET seq = 0").await;
     assert_eq!(env.advance(MIN).await.usage_recorded, 0);
     assert_eq!(env.count("SELECT COUNT(*) FROM _forgebase_billing_usage_records").await, 2);
     env.clock.set(T0 + 30 * DAY);

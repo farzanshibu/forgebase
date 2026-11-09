@@ -752,7 +752,7 @@ pub struct ChangePlanInput {
 }
 
 /// Body of `POST /billing/subscriptions/{id}/cancel`.
-#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CancelInput {
     /// End at the period end (default) or now.
@@ -761,6 +761,15 @@ pub struct CancelInput {
     /// Why.
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+impl Default for CancelInput {
+    fn default() -> Self {
+        Self {
+            at_period_end: true,
+            reason: None,
+        }
+    }
 }
 
 /// What a subscription, order or plan change returned: the object, the
@@ -1111,7 +1120,7 @@ pub struct ProviderAccount {
 }
 
 /// Body of `PUT /billing/providers/{provider}`. Test-mode credentials only.
-#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInput {
     /// Stripe secret key (`sk_test_…`) or Razorpay key secret.
@@ -1129,6 +1138,18 @@ pub struct ProviderInput {
     /// In use (default true).
     #[serde(default = "yes")]
     pub enabled: bool,
+}
+
+impl Default for ProviderInput {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            key_id: None,
+            webhook_secret: None,
+            api_base: None,
+            enabled: true,
+        }
+    }
 }
 
 /// A webhook event received.
