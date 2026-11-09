@@ -291,6 +291,15 @@ pub enum Action {
     KvWrite,
     /// Key-value administration: flush a namespace, list namespaces, server statistics.
     KvAdmin,
+    /// Read vector collections and items, run similarity and hybrid searches,
+    /// read index statistics (FB-50). Vector data has no row-level policies: a
+    /// `Decision::Filter` is treated as a denial.
+    VectorRead,
+    /// Upsert and delete vector items (FB-50).
+    VectorWrite,
+    /// Create and drop vector collections and fields, rebuild indexes, run
+    /// recall checks (FB-50).
+    VectorAdmin,
 }
 
 /// A row-level predicate in the filter language, with its parameters.
