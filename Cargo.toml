@@ -76,3 +76,11 @@ unwrap_used = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Dev/test builds: keep line tables for backtraces, drop full debug info.
+# Cuts target/ size by more than half; several worktrees build in parallel on one disk.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
