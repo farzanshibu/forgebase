@@ -333,8 +333,13 @@ pub fn router_with(
     for ext in &opts.extensions {
         v1 = v1.merge(ext.routes.clone());
     }
+    let auth_doc = auth.as_ref().map(|_| forgebase_auth::openapi());
     let doc = Arc::new(openapi::document_with(
-        opts.extensions.iter().map(|e| &e.openapi).chain(extra_openapi.as_ref()),
+        opts.extensions
+            .iter()
+            .map(|e| &e.openapi)
+            .chain(extra_openapi.as_ref())
+            .chain(auth_doc.as_ref()),
     ));
     let app = Router::new()
         .route("/health", get(routes::health))

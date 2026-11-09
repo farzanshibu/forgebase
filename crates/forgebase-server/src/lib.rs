@@ -8,13 +8,17 @@
 //!    migrations, snapshotting first if the database already existed,
 //! 4. record the instance id on first start,
 //! 5. bind the listener and serve the API (with the jobs API of
-//!    `forgebase-jobs` mounted under `/api/v1/jobs`),
-//! 6. start the job scheduler and in-process worker pool.
+//!    `forgebase-jobs` mounted under `/api/v1/jobs` and the vector API of
+//!    `forgebase-vector` under `/api/v1/vector`),
+//! 6. start the job scheduler and in-process worker pool, and the vector
+//!    engine's index warm-up and saver,
+//! 7. when `[resp] enabled = true`, bind the Redis protocol listener
+//!    (`forgebase-resp`, ADR-0013) in front of the built-in KV engine.
 //!
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
 //! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
 //! jobs get the same time to finish, the rest are released back to the queue),
-//! checkpoints the WAL into the main database file, closes the pools and
+//! writes changed vector indexes to disk, checkpoints the WAL into the main database file, closes the pools and
 //! releases the lock.
 
 mod lock;
@@ -29,6 +33,7 @@ use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_kv::{KvConfig, KvError, KvService};
+use forgebase_vector::{VectorConfig, VectorError, VectorService};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -49,6 +54,8 @@ pub struct RunningServer {
     jobs: JobService,
     job_pool: Option<forgebase_jobs::PoolHandle>,
     kv: KvService,
+    vector: VectorService,
+    resp: Option<forgebase_resp::RespHandle>,
     realtime: forgebase_realtime::RealtimeService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
@@ -128,13 +135,24 @@ pub async fn start_with_jobs(
             return Err(e.into());
         }
     };
+    let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
         .with_policy(policy)
         .with_realtime(realtime.clone());
     let jobs = JobService::new(state.data().clone());
+    let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
+        Ok(v) => v,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
     let opts = RouterOptions {
-        extensions: vec![forgebase_jobs::extension(jobs.clone())],
+        extensions: vec![
+            forgebase_jobs::extension(jobs.clone()),
+            forgebase_vector::extension(vector.clone()),
+        ],
         ..opts
     };
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
@@ -155,6 +173,31 @@ pub async fn start_with_jobs(
     if !addr.ip().is_loopback() {
         tracing::warn!(%addr, "listening on a non-loopback address; /api/system/* and /metrics are not behind admin authentication yet (FB-23)");
     }
+    let resp = if config.resp.enabled {
+        let r = &config.resp;
+        let cfg = forgebase_resp::RespConfig {
+            host: r.host.clone(),
+            port: r.port,
+            max_connections: usize::try_from(r.max_connections).unwrap_or(usize::MAX),
+            max_bulk_bytes: usize::try_from(r.max_bulk_bytes).unwrap_or(usize::MAX),
+            max_request_bytes: usize::try_from(r.max_bulk_bytes.saturating_mul(4)).unwrap_or(usize::MAX),
+            idle_timeout: Duration::from_secs(r.idle_timeout_secs),
+            shutdown_grace: Duration::from_secs(config.server.shutdown_timeout_secs),
+            ..forgebase_resp::RespConfig::default()
+        };
+        match forgebase_resp::start(cfg, Arc::new(forgebase_resp::LocalKv(kv.clone())), Arc::new(resp_auth)).await {
+            Ok(h) => Some(h),
+            Err(source) => {
+                db.close().await;
+                return Err(ServerError::Bind {
+                    addr: format!("{}:{} (resp)", r.host, r.port),
+                    source,
+                });
+            }
+        }
+    } else {
+        None
+    };
     lock.record_owner(&LockOwner {
         pid: std::process::id(),
         addr: addr.to_string(),
@@ -179,6 +222,7 @@ pub async fn start_with_jobs(
     });
 
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
+    vector.start_background();
 
     tracing::info!(
         %addr,
@@ -198,6 +242,8 @@ pub async fn start_with_jobs(
         jobs,
         job_pool: Some(job_pool),
         kv,
+        vector,
+        resp,
         realtime,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
@@ -231,6 +277,12 @@ impl RunningServer {
         self.addr
     }
 
+    /// The address of the RESP (Redis protocol) listener, when it is enabled
+    /// (useful with port 0).
+    pub fn resp_addr(&self) -> Option<SocketAddr> {
+        self.resp.as_ref().map(forgebase_resp::RespHandle::local_addr)
+    }
+
     /// The primary database.
     pub fn database(&self) -> &Database {
         &self.db
@@ -240,6 +292,11 @@ impl RunningServer {
     /// principal).
     pub fn jobs(&self) -> &JobService {
         &self.jobs
+    }
+
+    /// The vector engine of this instance.
+    pub fn vector(&self) -> &VectorService {
+        &self.vector
     }
 
     /// This instance's identity.
@@ -308,9 +365,14 @@ impl RunningServer {
     async fn finish(&mut self) {
         self.realtime.shutdown();
         self.upkeep.abort();
+        if let Some(resp) = self.resp.take() {
+            resp.shutdown().await;
+        }
         if let Some(pool) = self.job_pool.take() {
             pool.shutdown().await;
         }
+        let saved = self.vector.shutdown().await;
+        tracing::debug!(files = saved, "vector indexes saved");
         match self.kv.shutdown().await {
             Ok(n) => tracing::debug!(rows = n, "kv snapshot written"),
             Err(e) => tracing::warn!(error = %e, "final kv snapshot failed; recent kv writes are lost"),
@@ -376,6 +438,9 @@ pub enum ServerError {
     /// The key-value engine could not load its snapshot.
     #[error(transparent)]
     Kv(#[from] KvError),
+    /// The vector engine could not load its catalog.
+    #[error(transparent)]
+    Vector(#[from] VectorError),
     /// A filesystem error.
     #[error("i/o error at {path}: {source}")]
     Io {
@@ -408,6 +473,7 @@ impl ErrorCode for ServerError {
             ServerError::Database(e) => e.code(),
             ServerError::Data(e) => e.code(),
             ServerError::Kv(e) => e.code(),
+            ServerError::Vector(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
@@ -422,6 +488,7 @@ impl ErrorCode for ServerError {
             ServerError::Database(e) => e.kind(),
             ServerError::Data(e) => e.kind(),
             ServerError::Kv(e) => e.kind(),
+            ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
             ServerError::Policy(_) => ErrorKind::Internal,

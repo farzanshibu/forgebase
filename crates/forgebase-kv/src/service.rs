@@ -267,6 +267,16 @@ impl KvService {
         self.inner.hub.subscribe(&scope, channel)
     }
 
+    /// Subscribes to every channel of a namespace at once. Messages carry
+    /// their channel, so the caller can filter (pattern subscriptions of the
+    /// RESP listener use this). `PUBLISH` replies count only exact-channel
+    /// subscribers, not these.
+    pub fn subscribe_all(&self, ctx: &AccessContext, ns: &str) -> KvResult<Subscription> {
+        self.authorize(ctx, Action::KvRead)?;
+        let scope = Self::scope(ctx, ns)?;
+        self.inner.hub.subscribe_all(&scope)
+    }
+
     /// Namespaces that hold keys, for the caller's tenant.
     pub fn namespaces(&self, ctx: &AccessContext) -> KvResult<Vec<NamespaceInfo>> {
         self.authorize(ctx, Action::KvRead)?;

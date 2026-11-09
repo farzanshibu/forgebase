@@ -116,7 +116,20 @@ membership — the capability is being a FB-20 administrator or an admin
 service account), **Owner** (`*`), **Admin** (all but `org:delete`),
 **Manager**, **Developer**, **Billing Manager**, **Analyst**, **Member**,
 **Viewer**, **Guest** (`org:read` only; shared resources come from the ACL).
-The exact patterns are in `migrations/system/0004_policy.sql`.
+Engine permissions (`engine:kv_read|kv_write|kv_admin`, `engine:graph_read|graph_write`,
+`engine:read_jobs|enqueue_job|manage_jobs|work_jobs`): of the seeded roles only
+Owner (`*`) and Developer (`engine:*`) hold them; other roles get them through
+custom roles or a super-admin edit of the seeded role (extending the seed is a
+follow-up migration, since 0004 has shipped). The exact patterns are in
+`migrations/system/0004_policy.sql`.
+
+Engine actions reach the authorizer with no collection; because KV and graph
+scope their data by `ctx.tenant`, the tenant is validated as strictly as for
+records: it must exist in the caller's realm, belong to the active
+organization when one is set, and be the caller's (active membership, personal
+ownership, or an ACL grant on the environment or its project). Engines treat
+`Decision::Filter` as a denial; the policy engine only ever answers
+`Allow`/`Deny` for them.
 
 Sources of a caller's effective permissions in an org: realm bindings,
 the active membership's roles and role sets, every team they are in **and

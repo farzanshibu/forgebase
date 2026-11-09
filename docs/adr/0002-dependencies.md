@@ -167,6 +167,51 @@ CTEs and JSON1 functions are enough; no graph library is added.
 ## FB-61 (jobs)
 
 `forgebase-jobs` adds no third-party dependencies (uses tokio, axum, tower-http, utoipa, uuid, time, serde already listed). Cron parsing is in-crate.
+
+## Phase 6 vector (FB-50, 2026-11-09)
+
+Native code approved by god for this card because SPEC §3/§6 name USearch. Versions from `Cargo.lock`, licences from each crate's manifest; `cargo deny check` on the full tree: see the FB-50 report.
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| usearch | 2.26.6 (`default-features = false`: no `numkong` SIMD library, no OpenMP) | Apache-2.0 | vector | HNSW approximate nearest-neighbour index (C++ built with `cc` through `cxx`) |
+
+New packages in `Cargo.lock` (transitive, build-time code generation and the C++ bridge): `cxx` 1.0.205, `cxx-build` 1.0.205, `cxxbridge-flags` 1.0.205, `cxxbridge-macro` 1.0.205, `cxxbridge-cmd` 1.0.205 (lock entry only, not built), `link-cplusplus` 1.0.12, `scratch` 1.0.9, `unicode-width` 0.2.3 (all `MIT OR Apache-2.0`), `codespan-reporting` 0.13.1 (`Apache-2.0`), `termcolor` 1.4.1 (`Unlicense OR MIT`, used under MIT). Building needs a C++17 compiler (Xcode clang on macOS, g++/clang++ on Linux, MSVC on Windows), which the Rust toolchain targets already assume for `cc`.
+
+## Phase 3 social login and passkeys additions (FB-22, 2026-11-09)
+
+Versions checked with `cargo info` on 2026-11-09. All pure Rust, no C.
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| p256 | 0.14.0 (`ecdsa`, `arithmetic`, `pkcs8`, `pem`, `std`) | Apache-2.0 OR MIT | auth | ES256 verification (ID tokens, passkeys), Apple client-secret signing |
+| num-bigint | 0.5.1 (`std`) | MIT OR Apache-2.0 | auth | RS256 verification (`modpow` on public data) |
+| url | 2.5.8 | MIT OR Apache-2.0 | auth | provider URLs, query/form parsing (already in the tree) |
+| utoipa | 6.0.0 | MIT OR Apache-2.0 | auth | OpenAPI fragment (already in the tree) |
+| uuid | 1.29.1 | Apache-2.0 OR MIT | auth (dev) | test codes (already in the tree) |
+
+New transitive packages in `Cargo.lock`: `base16ct`, `cpubits`, `crypto-bigint`,
+`der`, `ecdsa`, `elliptic-curve`, `ff`, `group`, `num-bigint`, `num-integer`,
+`pkcs8`, `primefield`, `primeorder`, `rand_core`, `rfc6979`, `sec1`, `serdect`,
+`signature`, `spki`, `wnaf`, `zeroize` (RustCrypto, MIT/Apache-2.0).
+
+Deliberately **not** added: `webauthn-rs` (OpenSSL), `jsonwebtoken` (ring/aws-lc),
+`rsa` (RUSTSEC-2023-0071), `openidconnect`/`oauth2`/`reqwest` (TLS stack),
+a CBOR crate (a 130-line strict reader covers WebAuthn). **Open decision**:
+a TLS-capable outbound HTTP client (ADR-0009 §9).
+
+## FB-32 (RESP listener, ADR-0013)
+
+New crate `forgebase-resp`. Its default build adds **no third-party crates** to the `forgebase` binary (it uses tokio, metrics, tracing, thiserror, already listed). One new third-party crate for tests and an optional feature:
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| redis | =0.32.7 (`tokio-comp`, `connection-manager`; no default features) | BSD-3-Clause | dev-dependency of `forgebase-resp`, `forgebase-server`; optional dependency behind cargo feature `external-redis` (off by default) | real Redis client for the conformance tests; external Redis/Valkey backend |
+
+New packages in `Cargo.lock` (all via `redis`): `combine` 4.6.9 (MIT), `backon` 1.6.0 (Apache-2.0), `arc-swap` 1.9.4, `num-bigint` 0.4.8, `num-integer` 0.1.47 (MIT OR Apache-2.0), `tokio-util` 0.7.20 (MIT), `ryu` 1.0.23 (Apache-2.0 OR BSL-1.0; taken under Apache-2.0). `cargo deny check licenses` passes.
+
+`redis` is pinned to 0.32.7 on purpose: 1.x depends on `xxhash-rust` (BSL-1.0, not on the allow list). Revisit if BSL-1.0 is approved.
+
 ## Phase 5 realtime (FB-40, 2026-11-09)
 
 New crate `forgebase-realtime` (ADR-0011). One feature and one dev-dependency:
