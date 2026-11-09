@@ -1,29 +1,42 @@
 # ForgeBase
 
-ForgeBase is a single-binary backend with an embedded database and an admin
-dashboard. This repository is **Phase 1 (core foundation)** only.
+ForgeBase is a single-binary backend with an embedded database, an admin
+dashboard, and the APIs for auth, data, realtime, storage, jobs, functions and
+billing. It is single-node.
 
-## What exists today (Phase 1)
+## What is in this repository
 
-- `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `version`.
+- `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `version`,
+  `admin`, `functions`.
 - Embedded SQLite database in WAL mode, one writer and a read pool, with
-  versioned, checksummed system migrations and pre-migration snapshots.
-- HTTP server with health probes (`/health`, `/health/ready`), Prometheus
-  metrics (`/metrics`), system endpoints under `/api/system/*`, and a
-  structured error envelope with request ids.
+  checksummed system migrations and pre-migration snapshots.
+- HTTP API: health probes, Prometheus metrics, `/api/system/*`, `/api/auth/*`,
+  `/api/v1/*` (collections, KV, graph, vector, storage, jobs, realtime,
+  credits, billing, customization) and the OpenAPI document at
+  `/api/openapi.json`.
 - Admin dashboard at `/admin/`, embedded in the binary.
-- TOML config and `FORGEBASE_*` environment variables, `.env` for development.
-- Docker image, Docker Compose file, and a hardened systemd unit.
+- Redis protocol listener (off by default), TOML config and `FORGEBASE_*`
+  environment variables, `.env` for development.
+- JavaScript SDK in [`sdk/js`](sdk/js).
+- Docker image, Docker Compose file, a hardened systemd unit, and a release
+  workflow for five targets.
 
-Not yet built: the data APIs (collections, records), authentication,
-authorization, object storage, vector and graph engines, realtime, functions,
-jobs, billing, and clustering. The plan for these is in
-[docs/PLAN.md](docs/PLAN.md); the full product spec is in
-[docs/SPEC.md](docs/SPEC.md).
+Status of each work package, and what is still to do, is in
+[docs/PLAN.md](docs/PLAN.md). The product spec is in [docs/SPEC.md](docs/SPEC.md).
+
+## Documentation
+
+- [Architecture](docs/architecture.md): crates and how a request flows.
+- [API](docs/api.md): conventions, auth, errors, pagination, OpenAPI.
+- [Database](docs/database.md): storage engine, multi-model data, migrations, backups.
+- [Security](docs/security.md): threat model summary (draft) and open items.
+- [Deployment](docs/deployment.md): binary, Docker, systemd, configuration, upgrades.
+- [SDKs](docs/sdk.md): JavaScript SDK, and the status of the Rust SDK.
+- [Architecture decisions](docs/adr/).
 
 ## Build
 
-Requirements: Rust 1.94 or newer (`rust-version` in `Cargo.toml`), Node.js 22,
+Requirements: Rust 1.97 or newer (`rust-version` in `Cargo.toml`), Node.js 22,
 and npm. The dashboard is compiled into the binary, so build it first.
 
 ```sh
@@ -59,7 +72,8 @@ existing file.
 
 ## Commands
 
-Output of `forgebase --help`:
+Output of `forgebase --help` (this list predates the `admin` and `functions`
+commands; run `forgebase --help` for the current one):
 
 ```text
 ForgeBase: a single-binary backend with an embedded database
@@ -119,8 +133,9 @@ file is ignored in production; it is listed in `.gitignore` and
 ```text
 <data_dir>/                    created 0700 on Unix
 ├── forgebase.db (+ -wal/-shm) canonical: all structured data; created 0600
-├── storage/                   canonical: object blobs (later phase)
-├── indexes/                   derived: rebuildable indexes (later phase)
+├── storage/                   canonical: object blobs (when storage is used)
+├── auth/master.key            root key for auth secrets; back it up with the database
+├── indexes/                   derived: rebuildable indexes
 ├── backups/                   pre-migration snapshots
 ├── tmp/                       staging for in-flight writes; safe to delete when stopped
 └── .forgebase.lock            held by the running server
@@ -140,8 +155,8 @@ docker compose up --build
 
 This starts ForgeBase on <http://127.0.0.1:8090> with data in the
 `forgebase-data` volume. The container listens on all interfaces inside the
-container; the compose file publishes the port on loopback only, because admin
-endpoints have no login yet.
+container; the compose file publishes the port on loopback only. Keep it that way unless
+a reverse proxy with TLS sits in front ([docs/security.md](docs/security.md)).
 
 Without Compose:
 
