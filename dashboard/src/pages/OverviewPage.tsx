@@ -4,7 +4,7 @@ import type { JobStats, KvStats, Point, Reading, StorageStats, SystemInfo, Vecto
 import { formatBytes, formatUptime } from "../format";
 import { usePolling } from "../hooks";
 
-export const OVERVIEW_REFRESH_MS = 5000;
+const OVERVIEW_REFRESH_MS = 5000;
 const HISTORY = 60;
 const NOT_REPORTED = "not reported by this server";
 
@@ -66,7 +66,7 @@ function Stat({ label, value, sub, absent }: { label: string; value: string | un
 }
 
 /** Tiny inline-SVG time series; points with an undefined value leave gaps. */
-export function Sparkline({ label, values }: { label: string; values: (number | undefined)[] }) {
+function Sparkline({ label, values }: { label: string; values: (number | undefined)[] }) {
   const defined = values.filter((v): v is number => v !== undefined);
   if (defined.length < 2) return <p className="mt-2 text-xs text-zinc-600">collecting…</p>;
   const w = 200;

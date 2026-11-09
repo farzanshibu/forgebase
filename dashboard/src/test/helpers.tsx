@@ -17,6 +17,9 @@ export function signedIn<T extends MockApi>(mock: T, active = true): T {
     mock.cookieSession = true;
     return { status: 200, body: { token_type: "Bearer", expires_in: 900, session_id: "s1", csrf_token: "csrf-1", session_expires_at: "2026-11-10T00:00:00Z", subject: { type: "admin", id: ADMIN.id } } };
   });
+  // The Dashboard overview opens at "/": answer its probes with "not found" (cards read "not reported") so they are not counted as problems.
+  const none = () => ({ status: 404, body: { error: { code: "not_found", message: "not found", request_id: "r" } } });
+  for (const path of ["/metrics", "/api/system/info", "/api/v1/storage/stats", "/api/v1/entitlements", "/api/v1/vector/stats", "/api/v1/jobs/stats", "/api/v1/kv/_info"]) mock.onFallback("GET", path, none);
   mock.on("POST", "/api/auth/logout", ({ headers }) => {
     if (headers.Authorization) return { status: 204 };
     mock.cookieSession = false;

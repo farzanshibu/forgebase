@@ -22,6 +22,7 @@ import {
   createVectorCollection, deleteVectorCollection, listVectorCollections, measureRecall, rebuildVectorIndex, upsertVectors,
   vectorCollectionStats, vectorHybrid, vectorSearch, vectorStats,
 } from "./api/vector";
+import { getMetrics, readingFrom, pointFrom } from "./api/metrics";
 import { getBillingSettings, isBillingDisabled } from "./api/billing";
 import {
   addDomain, createClient, deleteClient, getBranding, listAgreements, listClients, listDeliveries, listDomains, listRealmIdentities, listTemplates, previewEmail,
@@ -266,6 +267,17 @@ describe.skipIf(!BIN)("live server", () => {
     const a = await publishAgreement({ kind: "terms", title: "Smoke terms", body: "Be nice." }, "default");
     expect(a.version).toBeGreaterThanOrEqual(1);
     expect((await listAgreements("default")).map((x) => x.id)).toContain(a.id);
+  });
+
+  it("feeds the Dashboard overview: /metrics parses, stats endpoints answer", async () => {
+    const a = readingFrom(await getMetrics(), Date.now());
+    expect(a.uptime).toBeDefined();
+    expect(a.dbSize).toBeGreaterThan(0);
+    expect(a.requests).toBeGreaterThan(0);
+    await storageStats();
+    await vectorStats();
+    const b = readingFrom(await getMetrics(), Date.now() + 1000);
+    expect(pointFrom(a, b).rps).toBeGreaterThanOrEqual(0);
   });
 
   it("ends the session on sign-out", async () => {

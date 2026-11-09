@@ -16,8 +16,7 @@ describe("App shell", () => {
   });
 
   it("opens on the live overview, not a placeholder", async () => {
-    const mock = signedIn(new MockApi().install());
-    mock.on("GET", "/metrics", () => ({ status: 200, body: undefined }));
+    signedIn(new MockApi().install());
     render(<MemoryRouter initialEntries={["/"]}><App /></MemoryRouter>);
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.queryByText(/Arrives in phase/)).not.toBeInTheDocument();
