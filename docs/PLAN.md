@@ -68,6 +68,7 @@ Phase gate: god merges every package of a phase, re-runs the full test suite and
 | FB-83 | 9 | Normal | Backup/restore/export/import/snapshots, full `doctor` | all of 1–8 | #21 #22 |
 | FB-84 | 9 | Low | Docs set (architecture, api, database, security, deployment, sdk), release automation for 5 targets, Docker image | FB-80 | docs reviewed by god |
 | FB-85 | 9 | High | Final QA: all 25 SPEC §27 scenarios end-to-end on a clean machine | all | 25/25 pass |
+| FB-86 | 9 | Normal | **New (gap found 2026-11-10):** Dashboard overview studio (SPEC §17 Dashboard): database status and size, memory, CPU, requests per second, active and realtime connections, query latency, storage usage, vector index stats, job status, error stats; from `/metrics` and existing stats endpoints; missing server metrics listed for a follow-up | FB-02, FB-61, FB-30, FB-50 | build + vitest + live smoke |
 
 ## 4. Parallelism
 
