@@ -105,6 +105,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0015_credits.sql"),
     ),
     Migration::new(
+        16,
+        "functions",
+        include_str!("../../../migrations/system/0016_functions.sql"),
+    ),
+    Migration::new(
         18,
         "oidc_provider",
         include_str!("../../../migrations/system/0018_oidc_provider.sql"),

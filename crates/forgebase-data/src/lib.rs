@@ -45,7 +45,7 @@ pub use access::{
     READS_TENANT_DATA_OPTION, SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped,
     reads_tenant_data,
 };
-pub use changes::{ChangeHook, ChangeOp, RecordChange, RowSnapshot};
+pub use changes::{ChangeHook, ChangeOp, GuardRejection, PendingWrite, RecordChange, RowSnapshot, WriteGuard};
 pub use collections::SchemaChange;
 pub use error::DataError;
 pub use indexes::{IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexRecommendation, QueryPlan};
@@ -85,6 +85,8 @@ struct Inner {
     schema_lock: tokio::sync::Mutex<()>,
     /// Transactional outbox hook (FB-40), installed once at startup.
     change_hook: OnceLock<Arc<dyn changes::ChangeHook>>,
+    /// Before-write hook (server functions, FB-60), installed once at startup.
+    write_guard: OnceLock<Arc<dyn changes::WriteGuard>>,
 }
 
 impl DataService {
@@ -108,6 +110,7 @@ impl DataService {
                 catalog: RwLock::new(Arc::new(snapshot)),
                 schema_lock: tokio::sync::Mutex::new(()),
                 change_hook: OnceLock::new(),
+                write_guard: OnceLock::new(),
             }),
         })
     }

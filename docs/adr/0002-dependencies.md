@@ -310,6 +310,45 @@ Outbound HTTPS for identity providers, Turnstile and SMS gateways, and LDAPS
 No LDAP crate: the LDAPv3 subset (simple bind, search, StartTLS) is
 implemented in `forgebase-auth::ldap` (ADR-0015 §5).
 
+## FB-60 (server functions, ADR-0017, 2026-11-09)
+
+Versions checked with `cargo info` on 2026-11-09. Wasmtime is the runtime
+SPEC §3 names; the brief approved its licence.
+
+| Crate | Version | Licence | Used by | Purpose |
+|---|---|---|---|---|
+| wasmtime | 50.0.1 (`default-features = false`; `runtime`, `cranelift`, `async`, `std`) | Apache-2.0 WITH LLVM-exception | functions | WebAssembly runtime (sandbox, fuel, epochs, limiter) |
+| wat | =1.261.0 | Apache-2.0 WITH LLVM-exception | functions, server (dev only) | WAT text to binary for test modules; pinned to wasmtime's wasmparser 0.261 |
+| rustls | 0.23.46 (workspace, from FB-25) | Apache-2.0 OR ISC OR MIT | functions | names the TLS client config type of fetch |
+
+`deny.toml` allows `Apache-2.0 WITH LLVM-exception` (Wasmtime/Cranelift).
+Wasmtime 50 needs Rust 1.97 (toolchain is 1.99); the workspace
+`rust-version` (1.94) is therefore no longer the effective minimum for the
+binary — raise it when convenient.
+
+New packages in `Cargo.lock` (transitive, wasmtime 50 and its compiler):
+`wasmtime-environ`, `wasmtime-internal-{core,cranelift,fiber,unwinder,jit-debug,jit-icache-coherence,versioned-export-macros,component-macro,component-util,wit-bindgen}`
+50.0.1, `cranelift-{codegen,codegen-meta,codegen-shared,assembler-x64,assembler-x64-meta,bforest,bitset,control,entity,frontend,isle,native,srcgen}`
+0.137.1, `pulley-interpreter`/`pulley-macros` 50.0.1, `regalloc2` 0.15.2,
+`wasmparser`/`wasm-encoder`/`wasmprinter`/`wasm-metadata`/`wit-component`/`wit-parser`
+0.261.0, `wast` 261.0.0 (all Apache-2.0 WITH LLVM-exception, some also
+Apache-2.0/MIT), `target-lexicon` 0.13.5, `gimli` 0.33.0, `object` 0.40.0,
+`addr2line` 0.26.1, `postcard` 1.1.3, `cobs` 0.3.0, `embedded-io` 0.4.0/0.6.1,
+`mach2` 0.6.0, `memfd` 0.6.6, `libm` 0.2.16, `crc32fast` 1.5.4, `fnv` 1.0.7,
+`futures` 0.3.34, `async-trait` 0.1.92, `itertools` 0.14.0, `semver` 1.0.28,
+`rustc-hash` 2.1.3, `rustc-demangle` 0.1.28, `cpp_demangle` 0.5.1,
+`arbitrary` 1.5.0, `id-arena` 2.3.0, `leb128fmt` 0.1.0 (MIT/Apache-2.0/BSD/Zlib
+family). Some are lock entries for optional features only (component model,
+`wit-*`) and are not built.
+
+`cargo deny check` (cargo-deny 0.20.2): **advisories ok, bans ok, licenses ok,
+sources ok**.
+
+Deliberately **not** added: WASI (`wasmtime-wasi`: filesystem, clocks and
+sockets the sandbox must not have), an HTTP client crate (fetch reuses
+FB-25's rustls settings and HTTP/1.1 exchange), a DNS crate (system resolver
+behind a trait).
+
 ## FB-52 (Vector Studio + Graph Studio, 2026-11-09)
 
 Dashboard only. **No new npm or Rust dependencies.** The graph explorer draws an

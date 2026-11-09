@@ -34,6 +34,10 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "Unicode-3.0",
+    # Wasmtime and Cranelift (server functions, FB-60, ADR-0017): Apache-2.0
+    # plus the LLVM exception, which only removes obligations for binaries
+    # compiled from the code. Approved by god in the FB-60 brief.
+    "Apache-2.0 WITH LLVM-exception",
 ]
 # webpki-roots ships Mozilla's CA list as data under the permissive
 # CDLA-Permissive-2.0 licence; allowed for that crate only (FB-25, ADR-0015 §2).

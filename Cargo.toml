@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.97"
 publish = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/forgebase/forgebase"
@@ -31,6 +31,7 @@ forgebase-resp = { path = "crates/forgebase-resp" }
 forgebase-realtime = { path = "crates/forgebase-realtime" }
 forgebase-entitlements = { path = "crates/forgebase-entitlements" }
 forgebase-credits = { path = "crates/forgebase-credits" }
+forgebase-functions = { path = "crates/forgebase-functions" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
@@ -74,6 +75,9 @@ usearch = { version = "2.26.6", default-features = false }
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
 uuid = { version = "1.29.1", features = ["v4"] }
+# Wasm runtime for server functions (FB-60, ADR-0017). Apache-2.0 WITH LLVM-exception.
+wasmtime = { version = "50.0.1", default-features = false, features = ["runtime", "cranelift", "async", "std"] }
+wat = "=1.261.0"
 webpki-roots = "1.0.11"
 
 [workspace.lints.rust]

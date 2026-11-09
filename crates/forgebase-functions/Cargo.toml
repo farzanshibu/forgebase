@@ -1,0 +1,44 @@
+[package]
+name = "forgebase-functions"
+description = "ForgeBase server functions: sandboxed WebAssembly (Wasmtime) with capability-based host API, fuel/memory/time limits, versions and rollback, CRUD hooks, HTTP functions, sealed secrets and SSRF-safe fetch."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+forgebase-api.workspace = true
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-jobs.workspace = true
+forgebase-kv.workspace = true
+forgebase-realtime.workspace = true
+metrics.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+forgebase-core.workspace = true
+forgebase-policy.workspace = true
+http-body-util.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+wat.workspace = true
+
+[lints]
+workspace = true

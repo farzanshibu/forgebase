@@ -508,6 +508,10 @@ impl DataService {
                 format!("send 1 to {MAX_BATCH} records"),
             ));
         }
+        for item in &data {
+            let id = item.get("id").and_then(Json::as_str);
+            self.guard_write(ctx, &coll, ChangeOp::Create, id, Some(item)).await?;
+        }
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
             let mut out = Vec::with_capacity(data.len());
@@ -580,6 +584,8 @@ impl DataService {
         {
             return Err(ValidationErrors::single("id", FieldError::new("read_only", "the id cannot change")).into());
         }
+        self.guard_write(ctx, &coll, ChangeOp::Update, Some(id), Some(&patch))
+            .await?;
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
@@ -654,6 +660,7 @@ impl DataService {
     ) -> Result<(), DataError> {
         let (coll, pred) = self.resolve(ctx, Action::Delete, collection)?;
         self.writable(&coll)?;
+        self.guard_write(ctx, &coll, ChangeOp::Delete, Some(id), None).await?;
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
             let rows = tx.fetch_all(&self.select_by_id(ctx, &coll, id, pred.as_ref())?).await?;
