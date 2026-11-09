@@ -382,7 +382,7 @@ export class QueuesApi {
 
   // ------------------------------------------------------------------ replay
 
-  /** Replays: puts messages back so they are delivered again, from a time (RFC 3339 or `Date`) or a snapshot, inside the topic's retention. */
+  /** Replays: moves the cursor back to a time (RFC 3339 or `Date`, inside the topic's retention) so later messages are delivered again, or restores a snapshot's ack state (`restored` counts those). */
   seek(subscription: string, to: { time: string | Date } | { snapshot: string }): Promise<{ cursor_seq: number; restored: number }> {
     const body = "time" in to ? { time: to.time instanceof Date ? to.time.toISOString() : to.time } : { snapshot: to.snapshot };
     return this.t.request(`${Q}/subscriptions/${enc(subscription)}/seek`, { method: "POST", body });

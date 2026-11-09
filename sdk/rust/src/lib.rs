@@ -48,13 +48,13 @@ pub use functions::FunctionsApi;
 pub use http::RetryPolicy;
 pub use jobs::{JobWatch, JobsApi, ListJobs};
 pub use kv::{Kv, KvValue, SetOptions};
+pub use queues::{
+    AckResult, MessagePage, NewMessage, NewSubscription, NewTopic, Published, PullOptions, QueueMessage, QueueSnapshot,
+    QueueStream, QueueSubscription, QueuesApi, ReceivedMessage, SeekResult, SeekTo, StreamOptions, Topic,
+};
 pub use realtime::{
     ChannelMessage, PresenceEvent, PresenceMember, Realtime, RealtimeConfig, RealtimeEvent, RealtimeTransport,
     RecordEvent, ResetEvent, SubscribeOptions, Subscription,
-};
-pub use queues::{
-    AckResult, MessagePage, NewMessage, NewSubscription, NewTopic, Published, PullOptions, QueueMessage, QueueSnapshot, QueueStream,
-    QueueSubscription, QueuesApi, ReceivedMessage, SeekResult, SeekTo, StreamOptions, Topic,
 };
 pub use records::{CollectionsApi, ListOptions, ListResult, Records, TransferFormat, WriteOptions};
 pub use storage::{DeleteOutcome, ListObjects, ObjectStream, PutOptions, StorageApi};

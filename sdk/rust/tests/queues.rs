@@ -117,13 +117,19 @@ async fn publishes_with_attributes_ordering_and_dedup() {
         .queues()
         .publish(
             "orders",
-            &NewMessage::new(json!({"id": 1})).attr("kind", "rush").ordering_key("u1").dedup_id("d1"),
+            &NewMessage::new(json!({"id": 1}))
+                .attr("kind", "rush")
+                .ordering_key("u1")
+                .dedup_id("d1"),
         )
         .await
         .expect("published");
     assert_eq!((r.message_id.as_str(), r.seq, r.duplicate), ("m1", 4, false));
     let c = &m.calls()[0];
-    assert_eq!((c.method.as_str(), c.path.as_str()), ("POST", "/api/v1/queues/topics/orders/publish"));
+    assert_eq!(
+        (c.method.as_str(), c.path.as_str()),
+        ("POST", "/api/v1/queues/topics/orders/publish")
+    );
     let body: Value = serde_json::from_str(&c.body).expect("json");
     assert_eq!(
         body,
@@ -133,8 +139,17 @@ async fn publishes_with_attributes_ordering_and_dedup() {
 
 #[tokio::test]
 async fn topic_errors_carry_the_server_code() {
-    let m = Mock::start(vec![js(409, &json!({"error": {"code": "topic_exists", "message": "exists"}}))]).await;
-    let e = m.client().queues().create_topic(&NewTopic::new("t")).await.expect_err("conflict");
+    let m = Mock::start(vec![js(
+        409,
+        &json!({"error": {"code": "topic_exists", "message": "exists"}}),
+    )])
+    .await;
+    let e = m
+        .client()
+        .queues()
+        .create_topic(&NewTopic::new("t"))
+        .await
+        .expect_err("conflict");
     match e {
         forgebase_sdk::Error::Api(a) => {
             assert_eq!(a.code, "topic_exists");
@@ -148,7 +163,10 @@ async fn topic_errors_carry_the_server_code() {
 async fn lists_topics_creates_subscription_and_deletes_with_force() {
     let m = Mock::start(vec![
         js(200, &json!({"items": [{"name": "orders", "published_total": 3}]})),
-        js(201, &json!({"name": "billing", "topic": "orders", "ack_deadline_ms": 30000})),
+        js(
+            201,
+            &json!({"name": "billing", "topic": "orders", "ack_deadline_ms": 30000}),
+        ),
         (204, "application/json", String::new()),
     ])
     .await;
@@ -191,16 +209,31 @@ async fn pulls_acks_nacks_and_seeks() {
     assert_eq!(got.len(), 2);
     assert_eq!(got[1].message.data["n"], 2);
     assert_eq!(q.ack("s", &[got[0].ack_id.clone()]).await.expect("ack").count, 1);
-    assert_eq!(q.nack("s", &[got[1].ack_id.clone()]).await.expect("nack").unknown, vec!["a2"]);
-    assert_eq!(q.seek("s", &SeekTo::Snapshot("snap".into())).await.expect("seek").restored, 3);
+    assert_eq!(
+        q.nack("s", &[got[1].ack_id.clone()]).await.expect("nack").unknown,
+        vec!["a2"]
+    );
+    assert_eq!(
+        q.seek("s", &SeekTo::Snapshot("snap".into()))
+            .await
+            .expect("seek")
+            .restored,
+        3
+    );
     let calls = m.calls();
     assert_eq!(
         serde_json::from_str::<Value>(&calls[0].body).expect("json"),
         json!({"max_messages": 2, "wait_ms": 500})
     );
     assert_eq!(calls[1].path, "/api/v1/queues/subscriptions/s/ack");
-    assert_eq!(serde_json::from_str::<Value>(&calls[2].body).expect("json"), json!({"ack_ids": ["a2"]}));
-    assert_eq!(serde_json::from_str::<Value>(&calls[3].body).expect("json"), json!({"snapshot": "snap"}));
+    assert_eq!(
+        serde_json::from_str::<Value>(&calls[2].body).expect("json"),
+        json!({"ack_ids": ["a2"]})
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&calls[3].body).expect("json"),
+        json!({"snapshot": "snap"})
+    );
 }
 
 #[tokio::test]
@@ -229,7 +262,10 @@ async fn streaming_pull_yields_deliveries_and_settles_them() {
         .expect("stream");
     let a = st.next().await.expect("first").expect("some");
     let b = st.next().await.expect("second").expect("some");
-    assert_eq!((a.message.data["n"].clone(), b.message.data["n"].clone()), (json!(1), json!(2)));
+    assert_eq!(
+        (a.message.data["n"].clone(), b.message.data["n"].clone()),
+        (json!(1), json!(2))
+    );
     st.ack(&a).await.expect("ack");
     st.nack(&b).await.expect("nack");
     assert!(st.next().await.expect("end").is_none());
@@ -247,7 +283,12 @@ async fn stream_error_event_becomes_a_realtime_error() {
         "event: error\ndata: {\"code\":\"push_subscription\",\"message\":\"push subscription\"}\n\n".into(),
     )])
     .await;
-    let mut st = m.client().queues().subscribe("s", &StreamOptions::default()).await.expect("stream");
+    let mut st = m
+        .client()
+        .queues()
+        .subscribe("s", &StreamOptions::default())
+        .await
+        .expect("stream");
     match st.next().await.expect_err("error event") {
         forgebase_sdk::Error::Realtime { code, .. } => assert_eq!(code, "push_subscription"),
         other => panic!("unexpected {other:?}"),

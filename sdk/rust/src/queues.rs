@@ -343,8 +343,7 @@ impl SseParser {
     pub fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
-        loop {
-            let Some((end, skip)) = frame_end(&self.buf) else { break };
+        while let Some((end, skip)) = frame_end(&self.buf) {
             let frame: Vec<u8> = self.buf.drain(..end + skip).take(end).collect();
             let text = String::from_utf8_lossy(&frame).replace("\r\n", "\n");
             let mut event = String::from("message");
@@ -427,12 +426,7 @@ impl QueueStream {
                     _ => {}
                 }
             }
-            let Some(chunk) = self
-                .res
-                .chunk()
-                .await
-                .map_err(|e| Error::Network(describe(&e)))?
-            else {
+            let Some(chunk) = self.res.chunk().await.map_err(|e| Error::Network(describe(&e)))? else {
                 return Ok(None);
             };
             self.ready.extend(self.parser.push(&chunk));
@@ -544,16 +538,25 @@ impl QueuesApi {
 
     /// Deletes a subscription.
     pub async fn delete_subscription(&self, name: &str) -> Result<()> {
-        self.t.unit(Req::delete(format!("{Q}/subscriptions/{}", seg(name)))).await
+        self.t
+            .unit(Req::delete(format!("{Q}/subscriptions/{}", seg(name))))
+            .await
     }
 
     /// Backlog, in-flight and rate counters of a subscription, as the server reports them.
     pub async fn subscription_metrics(&self, name: &str) -> Result<Value> {
-        self.t.value(Req::get(format!("{Q}/subscriptions/{}/metrics", seg(name)))).await
+        self.t
+            .value(Req::get(format!("{Q}/subscriptions/{}/metrics", seg(name))))
+            .await
     }
 
     /// Messages that used up their delivery attempts, newest first.
-    pub async fn dead_letters(&self, subscription: &str, before: Option<i64>, limit: Option<u32>) -> Result<Vec<Value>> {
+    pub async fn dead_letters(
+        &self,
+        subscription: &str,
+        before: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Value>> {
         items(
             self.t
                 .value(
@@ -589,7 +592,12 @@ impl QueuesApi {
     }
 
     /// Changes the ack deadline of held messages (1 s to 10 min from now; `0` is a nack).
-    pub async fn modify_deadline(&self, subscription: &str, ack_ids: &[String], ack_deadline_ms: u64) -> Result<AckResult> {
+    pub async fn modify_deadline(
+        &self,
+        subscription: &str,
+        ack_ids: &[String],
+        ack_deadline_ms: u64,
+    ) -> Result<AckResult> {
         self.t
             .json(
                 Req::post(format!("{Q}/subscriptions/{}/modify-deadline", seg(subscription)))
@@ -673,8 +681,14 @@ mod tests {
         assert_eq!(
             ev,
             vec![
-                SseEvent { event: "message".into(), data: "{\"a\":1}".into() },
-                SseEvent { event: "error".into(), data: "x".into() },
+                SseEvent {
+                    event: "message".into(),
+                    data: "{\"a\":1}".into()
+                },
+                SseEvent {
+                    event: "error".into(),
+                    data: "x".into()
+                },
             ]
         );
     }
@@ -696,7 +710,10 @@ mod tests {
     fn new_message_builder_sets_fields() {
         let m = NewMessage::new(json!(1)).attr("k", "v").ordering_key("o").dedup_id("d");
         let v = serde_json::to_value(&m).unwrap_or_default();
-        assert_eq!(v, json!({"data": 1, "attributes": {"k": "v"}, "ordering_key": "o", "dedup_id": "d"}));
+        assert_eq!(
+            v,
+            json!({"data": 1, "attributes": {"k": "v"}, "ordering_key": "o", "dedup_id": "d"})
+        );
     }
 
     #[test]
