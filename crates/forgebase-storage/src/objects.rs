@@ -285,8 +285,10 @@ impl StorageService {
         let declared = declared.map(str::trim).filter(|t| !t.is_empty());
         match declared {
             Some(t) if t != "application/octet-stream" => t.to_owned(),
+            // An extension guess the bytes contradict (`x.png` holding text)
+            // is not used (FB-80), so it cannot pass an `image/*` allow-list.
             _ => sniff(head)
-                .or_else(|| from_extension(key))
+                .or_else(|| from_extension(key).filter(|t| crate::util::declared_matches_bytes(t, head)))
                 .unwrap_or("application/octet-stream")
                 .to_owned(),
         }

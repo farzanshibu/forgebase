@@ -920,6 +920,19 @@ async fn storage_keys_cannot_escape_and_uploads_are_validated() {
     assert_eq!(r.status, 413, "{}", r.text());
     let r = put("img", "pdf.png", "image/png", b"%PDF-1.7 ...".to_vec()).await;
     assert_eq!(r.code(), "content_type_mismatch", "a PDF is not a PNG");
+    let r = put(
+        "img",
+        "noext.png",
+        "application/octet-stream",
+        b"<html></html>".to_vec(),
+    )
+    .await;
+    assert_eq!(
+        r.code(),
+        "content_type_not_allowed",
+        "no type guessed from a lying extension: {}",
+        r.text()
+    );
     assert!(
         env.req("GET", "/api/v1/storage/buckets/img/objects/evil.png", &a, None)
             .await
@@ -1005,6 +1018,119 @@ async fn brute_force_is_locked_out_and_rate_limited_without_trusting_client_head
         )
         .await;
     assert_eq!(r.status, 429);
+    env.shutdown().await;
+}
+
+/// FB-81 finding: an attacker behind the administrator's address (NAT,
+/// proxy) used up the shared per-IP budget and locked admin sign-in out.
+#[tokio::test]
+async fn an_attacker_on_the_admins_address_cannot_lock_the_admin_out() {
+    let env = Env::new().await;
+    let ci = forgebase_auth::ClientInfo::default();
+    for email in ["boss@example.com", "other-admin@example.com"] {
+        env.auth.create_admin(email, ADMIN_PASSWORD, "test", &ci).await.unwrap();
+    }
+    env.auth
+        .signup(&ci, None, "colleague@example.com", USER_PASSWORD, None)
+        .await
+        .unwrap();
+    let admin = |email: &'static str, pw: &'static str, cookie: Option<String>| {
+        let env = &env;
+        async move {
+            let c = cookie.unwrap_or_default();
+            let h: Vec<(&str, &str)> = if c.is_empty() {
+                vec![]
+            } else {
+                vec![("Cookie", c.as_str())]
+            };
+            env.req(
+                "POST",
+                "/api/auth/admins/login",
+                &h,
+                Some(json!({"email": email, "password": pw})),
+            )
+            .await
+        }
+    };
+    let user = |pw: &'static str| {
+        let env = &env;
+        async move {
+            env.req(
+                "POST",
+                "/api/auth/login",
+                &[],
+                Some(json!({"email": "colleague@example.com", "password": pw})),
+            )
+            .await
+            .status
+        }
+    };
+    // Colleagues behind the same address sign in all day: successes do not
+    // spend the per-IP budget.
+    for _ in 0..40 {
+        assert_eq!(user(USER_PASSWORD).await, 200);
+    }
+    // The administrator signs in once and gets a known-device cookie.
+    let r = admin("boss@example.com", ADMIN_PASSWORD, None).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let set = r
+        .headers
+        .iter()
+        .find(|(k, v)| k == "set-cookie" && v.starts_with("fb_admin_device="))
+        .map(|(_, v)| v.clone())
+        .expect("known-device cookie");
+    assert!(set.contains("HttpOnly") && set.contains("SameSite=Strict"), "{set}");
+    assert!(set.contains("Path=/api/auth/admins/login"), "{set}");
+    let device = set.split(';').next().unwrap().to_owned();
+
+    // 1. The attacker floods end-user sign-in: that budget is spent ...
+    let mut last = 0;
+    for _ in 0..31 {
+        last = user("wrong-password-xx").await;
+    }
+    assert_eq!(last, 429);
+    // ... but admin sign-in has its own.
+    assert_eq!(admin("boss@example.com", ADMIN_PASSWORD, None).await.status, 200);
+
+    // 2. The attacker fails on purpose with the administrator's email: the
+    //    account locks for unknown browsers, not for the admin's own.
+    for _ in 0..6 {
+        admin("boss@example.com", "not-the-password-1", None).await;
+    }
+    let r = admin("boss@example.com", ADMIN_PASSWORD, None).await;
+    assert!(matches!(r.status, 423 | 429), "locked without the device: {}", r.text());
+    let r = admin("boss@example.com", ADMIN_PASSWORD, Some(device.clone())).await;
+    assert_eq!(r.status, 200, "known device: {}", r.text());
+
+    // 3. The attacker floods admin sign-in from the address.
+    let mut last = 0;
+    for _ in 0..31 {
+        last = admin("other-admin@example.com", "nope-nope-nope-1", None).await.status;
+    }
+    assert_eq!(last, 429, "the per-IP admin budget still stops guessing");
+    let r = admin("boss@example.com", ADMIN_PASSWORD, None).await;
+    assert_eq!(r.status, 429, "unknown browser on the flooded address");
+    let r = admin("boss@example.com", ADMIN_PASSWORD, Some(device.clone())).await;
+    assert_eq!(r.status, 200, "known device on the flooded address: {}", r.text());
+
+    // 4. Forged and foreign device tokens are worth nothing.
+    for forged in [
+        "fb_admin_device=1700000000.AAAA".to_owned(),
+        device.replace("fb_admin_device=", "fb_admin_device=9"),
+    ] {
+        let r = admin("boss@example.com", ADMIN_PASSWORD, Some(forged.clone())).await;
+        assert_eq!(r.status, 429, "{forged}: {}", r.text());
+    }
+    let r = admin("other-admin@example.com", ADMIN_PASSWORD, Some(device.clone())).await;
+    assert_eq!(r.status, 429, "a device token is bound to its admin's email");
+
+    // 5. A known device is not a guessing oracle: five failures spend it.
+    for _ in 0..5 {
+        let r = admin("boss@example.com", "still-not-it-123", Some(device.clone())).await;
+        assert_eq!(r.status, 401, "{}", r.text());
+    }
+    let r = admin("boss@example.com", ADMIN_PASSWORD, Some(device)).await;
+    assert_eq!(r.status, 429, "the device's own budget is spent");
     env.shutdown().await;
 }
 

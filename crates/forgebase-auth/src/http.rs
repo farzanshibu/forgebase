@@ -169,6 +169,10 @@ fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: 
     }
 }
 
+/// Cookie of an administrator's known device (FB-80): lets that browser
+/// sign in while its address is rate-limited or the account is locked.
+pub const ADMIN_DEVICE_COOKIE: &str = "fb_admin_device";
+
 /// The value of cookie `name`, if sent.
 pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
@@ -614,12 +618,30 @@ async fn login(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): B
     login_response(&a, out, &rid).await
 }
 
-async fn admin_login(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): Body<LoginReq>) -> Res {
-    let out = a
-        .login_admin(&ci, &b.email, &b.password, &b.opts)
+async fn admin_login(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    headers: HeaderMap,
+    Body(b): Body<LoginReq>,
+) -> Res {
+    let device = cookie_value(&headers, ADMIN_DEVICE_COOKIE);
+    let (out, token) = a
+        .login_admin_from(&ci, &b.email, &b.password, &b.opts, device.as_deref())
         .await
         .map_err(|e| HttpError::new(e, &rid))?;
-    login_response(&a, out, &rid).await
+    let mut res = login_response(&a, out, &rid).await?;
+    // Known-device cookie (FB-80): only sent back to the admin sign-in.
+    let mut c = format!(
+        "{ADMIN_DEVICE_COOKIE}={token}; Path=/api/auth/admins/login; Max-Age={}; SameSite=Strict; HttpOnly",
+        crate::service::ADMIN_DEVICE_TTL_SECS
+    );
+    if a.config().cookie_secure {
+        c.push_str("; Secure");
+    }
+    if let Ok(v) = HeaderValue::from_str(&c) {
+        res.headers_mut().append(SET_COOKIE, v);
+    }
+    Ok(res)
 }
 
 async fn refresh(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): Body<RefreshReq>) -> Res {

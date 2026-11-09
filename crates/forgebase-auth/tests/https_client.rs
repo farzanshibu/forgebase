@@ -209,7 +209,7 @@ async fn the_default_auth_client_refuses_private_addresses() {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     });
-    let h = common::harness(|_| {}).await;
+    let h = common::harness(|c| c.allow_private_outbound = false).await;
     let client = h.auth.http_client();
     assert!(format!("{client:?}").contains("public_only: true"));
     for url in [
