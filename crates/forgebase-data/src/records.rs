@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde_json::{Map, Value as Json};
 
 use crate::error::unique_fields;
+use crate::changes::ChangeOp;
 use crate::{AccessContext, Action, DataError, DataService, MAX_BATCH, Predicate, finish};
 
 /// A record as returned by the service.
@@ -388,6 +389,8 @@ impl DataService {
             .first()
             .ok_or_else(|| DataError::Internal("written row not found".into()))?;
         let rec = row_to_record(coll, &rows.columns, row, true);
+        let change_op = if op == "create" { ChangeOp::Create } else { ChangeOp::Update };
+        self.record_change(tx, ctx, coll, change_op, id, (&rows.columns, row)).await?;
         if coll.versioned {
             let version = rec.get("_version").and_then(Json::as_i64).unwrap_or(1);
             tx.execute(&Statement::new(
@@ -492,6 +495,7 @@ impl DataService {
         }
         .await;
         let recs = finish(tx, result).await?;
+        self.changes_committed();
         Ok(recs.into_iter().map(|r| self.strip_hidden(ctx, &coll, r)).collect())
     }
 
@@ -599,6 +603,7 @@ impl DataService {
         }
         .await;
         let rec = finish(tx, result).await?;
+        self.changes_committed();
         Ok(self.strip_hidden(ctx, &coll, rec))
     }
 
@@ -632,7 +637,9 @@ impl DataService {
             self.delete_in_tx(ctx, &mut *tx, &coll, id, actual, 0).await
         }
         .await;
-        finish(tx, result).await
+        finish(tx, result).await?;
+        self.changes_committed();
+        Ok(())
     }
 
     fn delete_in_tx<'a>(
@@ -699,13 +706,25 @@ impl DataService {
                                     v = d.quote_ident("_version"),
                                     i = d.quote_ident("id")
                                 ),
-                                vec![id.into(), now_timestamp().into(), rid.into()],
+                                vec![id.into(), now_timestamp().into(), rid.clone().into()],
                             ))
                             .await?;
+                            if self.has_change_hook() {
+                                let after = tx.fetch_all(&self.select_by_id(ctx, other, &rid, None)?).await?;
+                                if let Some(row) = after.rows.first() {
+                                    self.record_change(tx, ctx, other, ChangeOp::Update, &rid, (&after.columns, row))
+                                        .await?;
+                                }
+                            }
                         }
                     }
                 }
             }
+            let before = if self.has_change_hook() {
+                Some(tx.fetch_all(&self.select_by_id(ctx, coll, id, None)?).await?)
+            } else {
+                None
+            };
             let done = tx
                 .execute(&Statement::new(
                     format!(
@@ -728,6 +747,12 @@ impl DataService {
                 })?;
             if done.rows_affected == 0 {
                 return Ok(()); // already removed by an engine cascade
+            }
+            if let Some(before) = &before
+                && let Some(row) = before.rows.first()
+            {
+                self.record_change(tx, ctx, coll, ChangeOp::Delete, id, (&before.columns, row))
+                    .await?;
             }
             if coll.versioned {
                 tx.execute(&Statement::new(

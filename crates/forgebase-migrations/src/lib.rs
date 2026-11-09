@@ -70,6 +70,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
     ),
     Migration::new(3, "auth", include_str!("../../../migrations/system/0003_auth.sql")),
     Migration::new(6, "graph", include_str!("../../../migrations/system/0006_graph.sql")),
+    Migration::new(
+        11,
+        "realtime",
+        include_str!("../../../migrations/system/0011_realtime.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

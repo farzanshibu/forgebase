@@ -39,6 +39,7 @@ pub struct RunningServer {
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
     upkeep: JoinHandle<()>,
+    realtime: forgebase_realtime::RealtimeService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -71,7 +72,23 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     // One data service, built by the auth service with the Argon2id hasher;
     // the auth layer turns credentials into each request's AccessContext.
-    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
+    let realtime = match forgebase_realtime::RealtimeService::start(
+        auth.data().clone(),
+        Some(auth.clone()),
+        forgebase_realtime::RealtimeConfig::default(),
+        None,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
+    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
+        .with_auth(auth)
+        .with_realtime(realtime.clone());
     let app = forgebase_api::router(
         state,
         RouterOptions {
@@ -133,6 +150,7 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         shutdown_tx: Some(shutdown_tx),
         task: Some(task),
         upkeep,
+        realtime,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -206,6 +224,9 @@ impl RunningServer {
     /// Stops accepting connections, drains in-flight requests (bounded by the
     /// shutdown timeout), checkpoints and closes the database, releases the lock.
     pub async fn shutdown(mut self) -> Result<(), ServerError> {
+        // Realtime connections (upgraded sockets, SSE streams) are not
+        // in-flight requests: close them first so graceful shutdown can finish.
+        self.realtime.shutdown();
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -230,6 +251,7 @@ impl RunningServer {
     }
 
     async fn finish(&mut self) {
+        self.realtime.shutdown();
         self.upkeep.abort();
         if let Err(e) = self.db.checkpoint().await {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
@@ -304,6 +326,9 @@ pub enum ServerError {
     /// The auth service failed to start (master key, signing keys).
     #[error("auth: {0}")]
     Auth(#[from] forgebase_auth::AuthError),
+    /// The realtime service failed to start.
+    #[error("realtime: {0}")]
+    Realtime(#[from] forgebase_realtime::RealtimeError),
 }
 
 impl ErrorCode for ServerError {
@@ -317,6 +342,7 @@ impl ErrorCode for ServerError {
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
+            ServerError::Realtime(e) => e.code(),
         }
     }
 
@@ -327,6 +353,7 @@ impl ErrorCode for ServerError {
             ServerError::Data(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
+            ServerError::Realtime(e) => e.kind(),
         }
     }
 }

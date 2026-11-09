@@ -195,6 +195,7 @@ fn api_security() -> Vec<SecurityRequirement> {
 pub fn document() -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.merge(forgebase_graph::openapi());
+    doc.merge(forgebase_realtime::openapi());
     add_security(&mut doc);
     for (path, item) in &mut doc.paths.paths {
         if !path.starts_with("/api/v1/") {

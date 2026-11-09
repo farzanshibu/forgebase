@@ -138,6 +138,12 @@ pub enum Action {
     GraphRead,
     /// Create, change or delete graph nodes and edges (FB-51).
     GraphWrite,
+    /// Receive messages and presence of a realtime channel (FB-40). Asked
+    /// through [`Authorizer::authorize_channel`]; a `Decision::Filter` is a
+    /// denial.
+    ChannelSubscribe,
+    /// Publish to a realtime channel and join its presence (FB-40).
+    ChannelPublish,
 }
 
 /// A row-level predicate in the filter language, with its parameters.
@@ -178,6 +184,14 @@ pub trait Authorizer: Send + Sync + fmt::Debug {
     /// The decision for `action` on `collection` (`None` for actions that are
     /// not about one collection, e.g. SQL and index-wide operations).
     fn authorize(&self, ctx: &AccessContext, action: Action, collection: Option<&Collection>) -> Decision;
+
+    /// The decision for `action` on the realtime channel `channel` (FB-40).
+    /// Defaults to `authorize(ctx, action, None)`; a policy engine overrides
+    /// it to write rules per channel name.
+    fn authorize_channel(&self, ctx: &AccessContext, action: Action, channel: &str) -> Decision {
+        let _ = channel;
+        self.authorize(ctx, action, None)
+    }
 }
 
 /// Fail-closed default: the system and administrators may do everything,
