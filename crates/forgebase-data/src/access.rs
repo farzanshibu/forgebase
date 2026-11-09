@@ -316,6 +316,14 @@ pub enum Action {
     ChannelSubscribe,
     /// Publish to a realtime channel and join its presence (FB-40).
     ChannelPublish,
+    /// Read any bucket and object, list, download, sign download URLs (FB-30).
+    /// Bucket ACLs grant narrower access without this platform permission.
+    StorageRead,
+    /// Upload, copy, move and delete objects in any bucket (FB-30).
+    StorageWrite,
+    /// Create and delete buckets, change bucket policies and ACLs, run the
+    /// storage reconciler (FB-30).
+    StorageAdmin,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

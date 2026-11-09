@@ -161,6 +161,19 @@ pub async fn start_with_jobs(
         tracing::warn!(error = %e, "entitlement maintenance schedule not created");
     }
     let registry = forgebase_entitlements::register_jobs(registry, entitlements.clone());
+    // Object storage (FB-30): local directory or S3-compatible driver.
+    let storage = match open_storage(&db, &layout, config, state.data().clone(), &entitlements).await {
+        Ok(s) => s,
+        Err(e) => {
+            db.close().await;
+            return Err(e);
+        }
+    };
+    storage.attach_jobs(jobs.clone());
+    if let Err(e) = storage.ensure_schedule().await {
+        tracing::warn!(error = %e, "storage reconcile schedule not created");
+    }
+    let registry = forgebase_storage::register_jobs(registry, storage.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -173,6 +186,7 @@ pub async fn start_with_jobs(
             forgebase_jobs::extension(jobs.clone()),
             forgebase_vector::extension(vector.clone()),
             forgebase_entitlements::extension(entitlements.clone()),
+            forgebase_storage::extension(storage.clone()),
         ],
         gates: vec![entitlements.rate_gate()],
         ..opts
@@ -508,6 +522,9 @@ pub enum ServerError {
     /// The entitlement service failed to load its catalog.
     #[error("entitlements: {0}")]
     Entitlements(String),
+    /// Object storage could not start.
+    #[error("storage: {0}")]
+    Storage(String),
 }
 
 impl ErrorCode for ServerError {
@@ -526,6 +543,7 @@ impl ErrorCode for ServerError {
             ServerError::Policy(_) => "policy_unavailable",
             ServerError::Realtime(e) => e.code(),
             ServerError::Entitlements(_) => "entitlements_unavailable",
+            ServerError::Storage(_) => "storage_unavailable",
         }
     }
 
@@ -538,8 +556,56 @@ impl ErrorCode for ServerError {
             ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
-            ServerError::Policy(_) | ServerError::Entitlements(_) => ErrorKind::Internal,
+            ServerError::Policy(_) | ServerError::Entitlements(_) | ServerError::Storage(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }
+}
+
+/// Builds the storage service for the configured driver.
+async fn open_storage(
+    db: &Database,
+    layout: &DataLayout,
+    config: &Config,
+    data: forgebase_data::DataService,
+    entitlements: &EntitlementService,
+) -> Result<forgebase_storage::StorageService, ServerError> {
+    use forgebase_storage::{LocalDriver, S3Config, S3Driver, StorageDriver, StorageService, StorageSettings};
+    let sc = &config.storage;
+    let driver: Arc<dyn StorageDriver> = match sc.driver {
+        forgebase_core::StorageDriverKind::Local => Arc::new(LocalDriver::new(layout.storage_dir())),
+        forgebase_core::StorageDriverKind::S3 => {
+            let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+            let (Some(access), Some(secret)) = (
+                env("FORGEBASE_STORAGE_S3_ACCESS_KEY"),
+                env("FORGEBASE_STORAGE_S3_SECRET_KEY"),
+            ) else {
+                return Err(ServerError::Storage(
+                    "the s3 driver needs FORGEBASE_STORAGE_S3_ACCESS_KEY and FORGEBASE_STORAGE_S3_SECRET_KEY".into(),
+                ));
+            };
+            let mut cfg = S3Config::new(&sc.s3_endpoint, &sc.s3_bucket, access, secret);
+            cfg.region.clone_from(&sc.s3_region);
+            cfg.prefix.clone_from(&sc.s3_prefix);
+            cfg.session_token = env("FORGEBASE_STORAGE_S3_SESSION_TOKEN");
+            cfg.part_size = usize::try_from(sc.s3_part_size).unwrap_or(8 * 1024 * 1024);
+            let tls = forgebase_auth::net::TlsSettings::new();
+            let client = forgebase_auth::net::HttpsClient::new(&tls)
+                .map_err(|e| ServerError::Storage(e.to_string()))?
+                .with_timeout(std::time::Duration::from_secs(120))
+                .with_max_body(cfg.read_chunk.max(cfg.part_size) + 1024 * 1024);
+            Arc::new(S3Driver::new(cfg, Arc::new(client)).map_err(|e| ServerError::Storage(e.to_string()))?)
+        }
+    };
+    let settings = StorageSettings {
+        max_object_bytes: sc.max_object_bytes,
+        upload_ttl_secs: sc.upload_ttl_secs,
+        reconcile_grace_secs: sc.reconcile_grace_secs,
+        ..StorageSettings::default()
+    };
+    let svc = StorageService::open(Arc::new(db.clone()), data, driver, Arc::new(SystemClock), settings)
+        .await
+        .map_err(|e| ServerError::Storage(e.to_string()))?;
+    svc.attach_entitlements(entitlements.clone());
+    Ok(svc)
 }
