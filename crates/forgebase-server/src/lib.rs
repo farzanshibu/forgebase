@@ -9,7 +9,9 @@
 //! 4. record the instance id on first start,
 //! 5. bind the listener and serve the API (with the jobs API of
 //!    `forgebase-jobs` mounted under `/api/v1/jobs`),
-//! 6. start the job scheduler and in-process worker pool.
+//! 6. start the job scheduler and in-process worker pool,
+//! 7. when `[resp] enabled = true`, bind the Redis protocol listener
+//!    (`forgebase-resp`, ADR-0013) in front of the built-in KV engine.
 //!
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
 //! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
@@ -49,6 +51,7 @@ pub struct RunningServer {
     jobs: JobService,
     job_pool: Option<forgebase_jobs::PoolHandle>,
     kv: KvService,
+    resp: Option<forgebase_resp::RespHandle>,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -111,6 +114,7 @@ pub async fn start_with_jobs(
     };
     // One data service, built by the auth service with the Argon2id hasher;
     // the auth layer turns credentials into each request's AccessContext.
+    let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
     let jobs = JobService::new(state.data().clone());
     let opts = RouterOptions {
@@ -135,6 +139,31 @@ pub async fn start_with_jobs(
     if !addr.ip().is_loopback() {
         tracing::warn!(%addr, "listening on a non-loopback address; /api/system/* and /metrics are not behind admin authentication yet (FB-23)");
     }
+    let resp = if config.resp.enabled {
+        let r = &config.resp;
+        let cfg = forgebase_resp::RespConfig {
+            host: r.host.clone(),
+            port: r.port,
+            max_connections: usize::try_from(r.max_connections).unwrap_or(usize::MAX),
+            max_bulk_bytes: usize::try_from(r.max_bulk_bytes).unwrap_or(usize::MAX),
+            max_request_bytes: usize::try_from(r.max_bulk_bytes.saturating_mul(4)).unwrap_or(usize::MAX),
+            idle_timeout: Duration::from_secs(r.idle_timeout_secs),
+            shutdown_grace: Duration::from_secs(config.server.shutdown_timeout_secs),
+            ..forgebase_resp::RespConfig::default()
+        };
+        match forgebase_resp::start(cfg, Arc::new(forgebase_resp::LocalKv(kv.clone())), Arc::new(resp_auth)).await {
+            Ok(h) => Some(h),
+            Err(source) => {
+                db.close().await;
+                return Err(ServerError::Bind {
+                    addr: format!("{}:{} (resp)", r.host, r.port),
+                    source,
+                });
+            }
+        }
+    } else {
+        None
+    };
     lock.record_owner(&LockOwner {
         pid: std::process::id(),
         addr: addr.to_string(),
@@ -178,6 +207,7 @@ pub async fn start_with_jobs(
         jobs,
         job_pool: Some(job_pool),
         kv,
+        resp,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -201,6 +231,12 @@ impl RunningServer {
     /// The bound address (useful with port 0).
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// The address of the RESP (Redis protocol) listener, when it is enabled
+    /// (useful with port 0).
+    pub fn resp_addr(&self) -> Option<SocketAddr> {
+        self.resp.as_ref().map(forgebase_resp::RespHandle::local_addr)
     }
 
     /// The primary database.
@@ -276,6 +312,9 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.upkeep.abort();
+        if let Some(resp) = self.resp.take() {
+            resp.shutdown().await;
+        }
         if let Some(pool) = self.job_pool.take() {
             pool.shutdown().await;
         }

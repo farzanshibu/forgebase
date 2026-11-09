@@ -17,11 +17,13 @@ forgebase-db.workspace = true
 forgebase-jobs.workspace = true
 forgebase-kv.workspace = true
 forgebase-observability.workspace = true
+forgebase-resp.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+redis = { workspace = true, features = ["tokio-comp"] }
 serde_json.workspace = true
 tempfile.workspace = true
 

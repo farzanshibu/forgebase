@@ -121,6 +121,9 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
     println!("ForgeBase {} listening on http://{addr}", build::VERSION);
     println!("  admin:     http://{addr}/admin/");
     println!("  health:    http://{addr}/health");
+    if let Some(resp) = server.resp_addr() {
+        println!("  redis:     redis://{resp} (RESP2/RESP3; AUTH with an API key or personal access token)");
+    }
     println!("  data dir:  {}", config.data_dir.display());
     server.run_until_signal().await?;
     Ok(ExitCode::SUCCESS)

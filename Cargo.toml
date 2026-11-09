@@ -25,6 +25,7 @@ forgebase-graph = { path = "crates/forgebase-graph" }
 forgebase-jobs = { path = "crates/forgebase-jobs" }
 forgebase-auth = { path = "crates/forgebase-auth" }
 forgebase-kv = { path = "crates/forgebase-kv" }
+forgebase-resp = { path = "crates/forgebase-resp" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
@@ -40,6 +41,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 http-body-util = "0.1.5"
 metrics = "0.24.6"
+redis = { version = "=0.32.7", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 rust-embed = { version = "8.13.0", features = ["debug-embed"] }

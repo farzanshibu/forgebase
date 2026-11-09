@@ -1,0 +1,36 @@
+[package]
+name = "forgebase-resp"
+description = "ForgeBase RESP listener: the Redis protocol (RESP2 and RESP3) in front of the built-in KV engine, with API-key authentication, pub/sub and an optional external Redis/Valkey backend."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Back the listener with an external Redis or Valkey server instead of the
+# built-in engine (`external::ExternalRedis`). Off by default; nothing needs a
+# Redis to build or test.
+external-redis = ["dep:redis"]
+
+[dependencies]
+forgebase-auth.workspace = true
+forgebase-data.workspace = true
+forgebase-kv.workspace = true
+metrics.workspace = true
+redis = { workspace = true, optional = true, features = ["tokio-comp", "connection-manager"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-db.workspace = true
+futures-util.workspace = true
+redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
