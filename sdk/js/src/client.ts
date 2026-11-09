@@ -1,4 +1,5 @@
 import { AuthApi, AuthManager, type AuthOptions } from "./auth";
+import { BillingApi } from "./billing";
 import { EntitlementsApi } from "./entitlements";
 import { Transport, type FetchLike, type RetryOptions } from "./http";
 import { CollectionsApi, RecordsApi, type Row } from "./records";
@@ -26,6 +27,7 @@ export class ForgeBase {
   readonly auth: AuthApi;
   readonly collections: CollectionsApi;
   readonly entitlements: EntitlementsApi;
+  readonly billing: BillingApi;
   readonly realtime: RealtimeClient;
   readonly transport: Transport;
   private readonly mgr: AuthManager;
@@ -40,6 +42,7 @@ export class ForgeBase {
     this.auth = new AuthApi(this.transport, this.mgr);
     this.collections = new CollectionsApi(this.transport);
     this.entitlements = new EntitlementsApi(this.transport);
+    this.billing = new BillingApi(this.transport);
     const mgr = this.mgr;
     this.realtime = new RealtimeClient({
       baseUrl: this.transport.baseUrl,

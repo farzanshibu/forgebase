@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::auth::{AuthApi, AuthState, MemoryStore, SessionStore};
+use crate::billing::BillingApi;
 use crate::entitlements::EntitlementsApi;
 use crate::error::{Error, Result};
 use crate::functions::FunctionsApi;
@@ -250,6 +251,12 @@ impl ForgeBase {
             t: self.t.clone(),
             realtime: self.realtime.clone(),
         }
+    }
+
+    /// Billing helpers (store receipts).
+    #[must_use]
+    pub fn billing(&self) -> BillingApi {
+        BillingApi { t: self.t.clone() }
     }
 
     /// Entitlements and quotas.
