@@ -128,7 +128,7 @@ impl CreemProvider {
     }
 
     /// A subscription object (`sub_…`).
-    fn from_subscription(&self, s: &Json, transaction: Option<String>, hint: Option<String>) -> Result<StorePurchase> {
+    fn read_subscription(&self, s: &Json, transaction: Option<String>, hint: Option<String>) -> Result<StorePurchase> {
         let now = self.clock.now_ms();
         let id = str_at(s, &["id"])
             .ok_or_else(|| BillingError::webhook("invalid_payload", "no subscription id"))?
@@ -180,7 +180,7 @@ impl CreemProvider {
     }
 
     /// A checkout object (`ch_…`): its subscription, else its order.
-    fn from_checkout(&self, c: &Json) -> Result<StorePurchase> {
+    fn read_checkout(&self, c: &Json) -> Result<StorePurchase> {
         let now = self.clock.now_ms();
         let order = c.get("order").cloned().unwrap_or(Json::Null);
         let txn = str_at(&order, &["transaction"])
@@ -189,7 +189,7 @@ impl CreemProvider {
         let hint = Self::hint(c);
         let completed = str_at(c, &["status"]) == Some("completed");
         if let Some(s @ Json::Object(_)) = c.get("subscription") {
-            let mut p = self.from_subscription(s, txn, hint)?;
+            let mut p = self.read_subscription(s, txn, hint)?;
             if p.product_id.is_empty() {
                 p.product_id = Self::id_of(c.get("product")).unwrap_or_default();
             }
@@ -237,7 +237,7 @@ impl CreemProvider {
 
     /// A refund object (`ref_…`): only the refund; state changes come with
     /// the subscription events.
-    fn from_refund(&self, r: &Json) -> Result<StorePurchase> {
+    fn read_refund(&self, r: &Json) -> Result<StorePurchase> {
         let now = self.clock.now_ms();
         let refund_id = str_at(r, &["id"])
             .ok_or_else(|| BillingError::webhook("invalid_payload", "no refund id"))?
@@ -296,7 +296,7 @@ impl StoreProvider for CreemProvider {
                 .ok_or_else(|| BillingError::invalid("checkout_required", "send checkout_id"))?;
             let enc: String = url::form_urlencoded::byte_serialize(id.as_bytes()).collect();
             let c = self.get(&format!("/v1/checkouts?checkout_id={enc}")).await?;
-            self.from_checkout(&c)
+            self.read_checkout(&c)
         })
     }
 
@@ -312,7 +312,7 @@ impl StoreProvider for CreemProvider {
             }
             let enc: String = url::form_urlencoded::byte_serialize(purchase_id.as_bytes()).collect();
             let s = self.get(&format!("/v1/subscriptions?subscription_id={enc}")).await?;
-            self.from_subscription(&s, None, None)
+            self.read_subscription(&s, None, None)
         })
     }
 
@@ -342,19 +342,19 @@ impl StoreProvider for CreemProvider {
                 .unwrap_or_else(|| self.clock.now_ms());
             let obj = v.get("object").cloned().unwrap_or(Json::Null);
             let mut purchase = match event_type.as_str() {
-                "checkout.completed" => Some(self.from_checkout(&obj)?),
+                "checkout.completed" => Some(self.read_checkout(&obj)?),
                 t if t.starts_with("subscription.") => {
                     let txn = (t == "subscription.paid")
                         .then(|| str_at(&obj, &["last_transaction_id"]).map(str::to_owned))
                         .flatten();
-                    let mut p = self.from_subscription(&obj, txn, None)?;
+                    let mut p = self.read_subscription(&obj, txn, None)?;
                     if t != "subscription.paid" {
                         // Only a payment event raises an invoice.
                         p.transaction_id = None;
                     }
                     Some(p)
                 }
-                "refund.created" => Some(self.from_refund(&obj)?),
+                "refund.created" => Some(self.read_refund(&obj)?),
                 _ => None,
             };
             if let Some(p) = &mut purchase {

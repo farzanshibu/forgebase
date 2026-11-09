@@ -127,7 +127,7 @@ impl Jws {
         .map_err(|_| forged("the certificate chain does not lead to the store root"))?;
         let has = |cert: &[u8], oid: &str| -> Result<bool> {
             let want = der::oid_bytes(oid);
-            Ok(der::cert_info(cert)?.extensions.iter().any(|e| *e == want.as_slice()))
+            Ok(der::cert_info(cert)?.extensions.contains(&want.as_slice()))
         };
         if let Some(oid) = leaf_oid
             && !has(&chain[0], oid)?
