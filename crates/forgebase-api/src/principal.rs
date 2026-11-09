@@ -13,13 +13,17 @@
 //! Request extensions cannot be set by a client, only by code in this process,
 //! so the context cannot be forged over HTTP. A request with no context at
 //! all is treated as anonymous (fail closed).
+//!
+//! Collection existence is not leaked: the data core answers a caller who is
+//! not privileged the same denial for a missing collection as for a
+//! forbidden one (FB-21; this replaced FB-11's `hide_collection_existence`
+//! response rewrite).
 
 use axum::extract::{FromRequestParts, Request};
-use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use forgebase_data::{AccessContext, Principal};
+use axum::response::Response;
+use forgebase_data::AccessContext;
 
 use crate::context::RequestId;
 use crate::error::ApiError;
@@ -31,33 +35,6 @@ pub async fn install_anonymous(mut req: Request, next: Next) -> Response {
         req.extensions_mut().insert(AccessContext::anonymous());
     }
     next.run(req).await
-}
-
-/// Stops callers who are not administrators from probing which collections
-/// exist: the data core looks a collection up *before* it asks the authorizer,
-/// so `collection_not_found` would answer `404` for a typo but `401`/`403` for a
-/// real collection. For such callers it becomes the same `401` (anonymous) or
-/// `403` (authenticated) as an existing, forbidden collection. Administrators
-/// and the system keep the honest `404`.
-pub async fn hide_collection_existence(req: Request, next: Next) -> Response {
-    let ctx = req.extensions().get::<AccessContext>().cloned();
-    let res = next.run(req).await;
-    let privileged = ctx.as_ref().is_some_and(AccessContext::is_privileged);
-    if !privileged
-        && res
-            .extensions()
-            .get::<ApiError>()
-            .is_some_and(|e| e.code() == "collection_not_found")
-    {
-        let anonymous = ctx.is_none_or(|c| c.principal == Principal::Anonymous);
-        return if anonymous {
-            ApiError::new(StatusCode::UNAUTHORIZED, "unauthenticated", "authentication required")
-        } else {
-            ApiError::new(StatusCode::FORBIDDEN, "forbidden", "not allowed")
-        }
-        .into_response();
-    }
-    res
 }
 
 /// Extractor for the request's [`AccessContext`], with the request id filled in.

@@ -62,16 +62,20 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     let instance = db.ensure_instance().await?;
 
-    let auth = match open_auth(&db, &layout, config).await {
+    let (auth, policy) = match open_auth(&db, &layout, config).await {
         Ok(a) => a,
         Err(e) => {
             db.close().await;
-            return Err(e.into());
+            return Err(e);
         }
     };
-    // One data service, built by the auth service with the Argon2id hasher;
-    // the auth layer turns credentials into each request's AccessContext.
-    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone()).with_auth(auth);
+    // One data service, built by the auth service with the Argon2id hasher
+    // and the policy engine as its authorizer; the auth layer turns
+    // credentials into each request's AccessContext, the tenancy layer adds
+    // realm, organization, tenant, roles and attributes.
+    let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
+        .with_auth(auth)
+        .with_policy(policy);
     let app = forgebase_api::router(
         state,
         RouterOptions {
@@ -138,24 +142,24 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     })
 }
 
-/// Opens the auth service (FB-20) and the data service it shares, with the
-/// fail-closed default authorizer until the policy engine (FB-21) lands.
+/// Opens the policy service (FB-21), then the auth service (FB-20) and the
+/// data service they share, with the policy engine as the authorizer.
 async fn open_auth(
     db: &Database,
     layout: &DataLayout,
     config: &Config,
-) -> Result<forgebase_auth::AuthService, forgebase_auth::AuthError> {
+) -> Result<(forgebase_auth::AuthService, forgebase_policy::PolicyService), ServerError> {
     let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
     cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let public_url = cfg.public_url.clone();
     let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
-    forgebase_auth::AuthService::open_with_data(
-        backend,
-        Arc::new(forgebase_auth::data::DefaultAuthorizer),
-        layout.root(),
-        cfg,
-        None,
-    )
-    .await
+    let policy = forgebase_policy::PolicyService::open(backend.clone())
+        .await
+        .map_err(|e| ServerError::Policy(e.to_string()))?;
+    let auth = forgebase_auth::AuthService::open_with_data(backend, policy.authorizer(), layout.root(), cfg, None).await?;
+    policy.attach_data(auth.data().clone());
+    policy.attach_mailer(auth.mailer().clone(), public_url);
+    Ok((auth, policy))
 }
 
 impl RunningServer {
@@ -304,6 +308,9 @@ pub enum ServerError {
     /// The auth service failed to start (master key, signing keys).
     #[error("auth: {0}")]
     Auth(#[from] forgebase_auth::AuthError),
+    /// The policy service failed to load its model.
+    #[error("policy: {0}")]
+    Policy(String),
 }
 
 impl ErrorCode for ServerError {
@@ -317,6 +324,7 @@ impl ErrorCode for ServerError {
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
             ServerError::Auth(e) => e.code(),
+            ServerError::Policy(_) => "policy_unavailable",
         }
     }
 
@@ -327,6 +335,7 @@ impl ErrorCode for ServerError {
             ServerError::Data(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
+            ServerError::Policy(_) => ErrorKind::Internal,
         }
     }
 }
