@@ -231,6 +231,7 @@ async fn entitlements(State(s): State<EntitlementService>, Access(ctx): Access, 
     ),
     responses((status = 200, description = "The answer", body = HasAnswer)))]
 async fn has(State(s): State<EntitlementService>, Access(ctx): Access, q: Query) -> ApiResult {
+    s.require_caller(&ctx).map_err(api)?;
     let answer = match (q.get("feature"), q.get("permission"), q.get("plan")) {
         (Some(f), None, None) => s.has_feature(&ctx, f, q.get("subject")),
         (None, Some(p), None) => s.has_permission(&ctx, p),

@@ -980,3 +980,62 @@ async fn usage_events_are_immutable() {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].units, 1);
 }
+
+#[tokio::test]
+async fn data_core_record_calls_run_both_hooks() {
+    let env = Env::new().await;
+    let org = env.org("alice", "acme").await;
+    env.member("alice", &org, "bob", &["member"]).await;
+    let p = env
+        .policy
+        .create_project(&user("alice").with_org(&org), Some(&org), "app", "app")
+        .await
+        .unwrap();
+    let tenant = p["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "production")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    env.data
+        .create_collection(
+            &sys(),
+            serde_json::from_value(serde_json::json!({
+                "name": "notes", "options": {"tenant_scoped": true}, "fields": [{"name": "t", "type": "text"}]
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    env.feature("notes", FeatureKind::Boolean, &["data:notes:create"]).await;
+    env.feature("records", FeatureKind::Metered, &[]).await;
+    env.policy_for(
+        "records",
+        QuotaPolicy {
+            permissions: vec!["data:notes:create".into()],
+            ..QuotaPolicy::default()
+        },
+    )
+    .await;
+    let mut off = pf("notes", None, None);
+    off.enabled = false;
+    env.plan("free", vec![off, pf("records", Some(1), Some("month"))]).await;
+    env.subscribe(&org_subject(&org), "free").await;
+    let bob = user("bob").with_tenant(&tenant);
+    let r = env.data.create_record(&bob, "notes", serde_json::json!({"t": "a"})).await;
+    assert!(r.is_err(), "entitlement step denies the record call");
+    let reads = env.data.list_records(&bob, "notes", &Default::default()).await;
+    assert!(reads.is_ok(), "only the gated permission is denied: {reads:?}");
+    env.plan("free", vec![pf("notes", None, None), pf("records", Some(1), Some("month"))]).await;
+    env.data.create_record(&bob, "notes", serde_json::json!({"t": "a"})).await.unwrap();
+    // The operation meters itself; once the quota is used, step 6 denies.
+    env.ent
+        .consume(&sys(), req("records", 1, "note-1").for_subject(org_subject(&org)))
+        .await
+        .unwrap();
+    let r = env.data.create_record(&bob, "notes", serde_json::json!({"t": "b"})).await;
+    assert!(r.is_err(), "quota step denies");
+}
