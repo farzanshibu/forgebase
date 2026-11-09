@@ -35,7 +35,7 @@ describe("Billing shell", () => {
     renderStudio("/billing");
     const nav = await screen.findByRole("navigation", { name: "Billing sections" });
     expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
-      "Revenue", "Catalog", "Customers", "Subscriptions", "Orders", "Usage meters", "Invoices", "Payments", "Coupons", "Dunning", "Credits", "Providers and settings",
+      "Revenue", "Catalog", "Customers", "Subscriptions", "Orders", "Usage meters", "Invoices", "Payments", "Stores", "Coupons", "Dunning", "Credits", "Providers and settings",
     ]);
   });
 });
@@ -491,5 +491,176 @@ describe("Providers and settings", () => {
     await userEvent.click(within(tax).getByRole("button", { name: "Save tax rate" }));
     await waitFor(() => expect(lastBody(mock, "put /api/v1/billing/tax-rates/{region}")).toEqual({ name: "VAT", rate_bp: 1900, active: true }));
     expect(await screen.findByRole("table", { name: "Webhook events" })).toHaveTextContent("invoice.paid");
+  });
+});
+
+describe("Stores", () => {
+  it("lists store products and purchases with status and subject", async () => {
+    setup();
+    renderStudio("/billing/stores");
+    const products = await screen.findByRole("table", { name: "Store products" });
+    expect(products).toHaveTextContent("com.acme.pro.monthly");
+    expect(within(products).getByText("subscription")).toBeInTheDocument();
+    const purchases = await screen.findByRole("table", { name: "Store purchases" });
+    expect(within(purchases).getAllByRole("row")).toHaveLength(4);
+    expect(purchases).toHaveTextContent("orig-1001");
+    expect(within(purchases).getByRole("link", { name: "org:acme" })).toHaveAttribute("href", "/billing/customers?subject=org%3Aacme");
+    expect(within(purchases).getByText("grace")).toBeInTheDocument();
+    expect(within(purchases).getByText("auto-renews")).toBeInTheDocument();
+  });
+
+  it("filters purchases by status and by subject through the API", async () => {
+    const { mock } = setup();
+    renderStudio("/billing/stores");
+    const purchases = await screen.findByRole("table", { name: "Store purchases" });
+    await userEvent.selectOptions(screen.getByLabelText("Status"), "refunded");
+    expect(within(purchases).getAllByRole("row")).toHaveLength(2);
+    await userEvent.selectOptions(screen.getByLabelText("Status"), "");
+    await userEvent.type(screen.getByLabelText("Subject"), "org:acme");
+    await waitFor(() => expect(mock.calls.some((c) => c.includes("store-purchases"))).toBe(true));
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Store purchases" })).getAllByRole("row")).toHaveLength(2));
+  });
+
+  it("filters store products by store", async () => {
+    setup();
+    renderStudio("/billing/stores");
+    const products = await screen.findByRole("table", { name: "Store products" });
+    await userEvent.selectOptions(screen.getByLabelText("Filter store"), "google_play");
+    expect(products).not.toHaveTextContent("com.acme.pro.monthly");
+    expect(products).toHaveTextContent("coins_100");
+  });
+
+  it("maps a store product to a price, re-maps it and deletes it", async () => {
+    const { mock, st } = setup();
+    renderStudio("/billing/stores");
+    await screen.findByRole("table", { name: "Store products" });
+    const form = screen.getByRole("form", { name: "Store product mapping" });
+    await userEvent.selectOptions(within(form).getByLabelText("Mapping store"), "creem");
+    await userEvent.type(within(form).getByLabelText("Store product id"), "prod_abc");
+    expect(within(form).queryByRole("option", { name: /pro_tiers/ })).not.toBeInTheDocument(); // metered prices cannot be sold by a store
+    await userEvent.selectOptions(within(form).getByLabelText("Sold as price"), "pro_month");
+    await userEvent.click(within(form).getByRole("button", { name: "Save mapping" }));
+    expect(await within(form).findByRole("status")).toHaveTextContent("Mapping saved");
+    expect(lastBody(mock, "put /api/v1/billing/store-products/{provider}/{product_id}")).toEqual({ price: "pro_month" });
+    expect(mock.calls).toContain("put /api/v1/billing/store-products/creem/prod_abc");
+    expect(st.storeProducts.find((p) => p.product_id === "prod_abc")).toMatchObject({ provider: "creem", kind: "subscription" });
+    // Edit loads the row into the form; saving re-maps it.
+    await userEvent.click(await screen.findByRole("button", { name: "Edit app_store com.acme.pro.monthly" }));
+    expect(within(form).getByLabelText("Store product id")).toHaveValue("com.acme.pro.monthly");
+    await userEvent.selectOptions(within(form).getByLabelText("Sold as price"), "pro_month");
+    await userEvent.click(within(form).getByRole("button", { name: "Save mapping" }));
+    await waitFor(() => expect(st.storeProducts.find((p) => p.product_id === "com.acme.pro.monthly")!.price).toBe("pro_month"));
+    // Delete needs a confirmation.
+    await userEvent.click(screen.getByRole("button", { name: "Delete google_play coins_100" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete google_play coins_100" }));
+    await waitFor(() => expect(st.storeProducts.some((p) => p.product_id === "coins_100")).toBe(false));
+    expect(mock.calls).toContain("delete /api/v1/billing/store-products/google_play/coins_100");
+  });
+
+  it("shows empty states", async () => {
+    const { st } = setup();
+    st.storeProducts = [];
+    st.storePurchases = [];
+    renderStudio("/billing/stores");
+    expect(await screen.findByText(/No store products mapped/)).toBeInTheDocument();
+    expect(await screen.findByText("No store purchases match.")).toBeInTheDocument();
+  });
+
+  it("is a tab of the studio", async () => {
+    setup();
+    renderStudio("/billing");
+    const nav = await screen.findByRole("navigation", { name: "Billing sections" });
+    expect(within(nav).getByRole("link", { name: "Stores" })).toHaveAttribute("href", "/billing/stores");
+  });
+});
+
+describe("Store and regional provider forms", () => {
+  it("shows test mode for each provider and keeps every secret write-only (app_store)", async () => {
+    const { mock, st } = setup();
+    renderStudio("/billing/settings");
+    const app = await screen.findByRole("region", { name: "app_store provider" });
+    expect(within(app).getByLabelText("app_store test mode")).toHaveTextContent(/Test mode.*Sandbox only/);
+    for (const id of ["google_play", "creem", "wechat_pay"]) expect(screen.getByLabelText(`${id} test mode`)).toBeInTheDocument();
+    expect(within(app).getByText("not configured")).toBeInTheDocument();
+    await userEvent.type(within(app).getByLabelText("app_store Issuer id"), "issuer-1");
+    await userEvent.type(within(app).getByLabelText("app_store App Store Connect key id"), "KEY123");
+    await userEvent.type(within(app).getByLabelText("app_store Bundle id"), "com.acme.app");
+    await userEvent.selectOptions(within(app).getByLabelText("app_store Environment"), "xcode");
+    await userEvent.click(within(app).getByLabelText(/^app_store App Store Connect private key/));
+    await userEvent.paste("-----BEGIN PRIVATE KEY-----SECRETPEM");
+    await userEvent.click(within(app).getByRole("button", { name: "Save app_store" }));
+    expect(await within(app).findByRole("status")).toHaveTextContent("Saved");
+    expect(st.secrets.app_store!.config).toEqual({ issuer_id: "issuer-1", key_id: "KEY123", bundle_id: "com.acme.app", environment: "xcode", private_key: "-----BEGIN PRIVATE KEY-----SECRETPEM" });
+    expect(lastBody(mock, "put /api/v1/billing/providers/{p}")).toMatchObject({ enabled: true });
+    expect(within(app).getByLabelText(/^app_store App Store Connect private key/)).toHaveValue("");
+    expect(within(app).getByText("configured")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("SECRETPEM");
+  });
+
+  it("saves google_play config", async () => {
+    const { st } = setup();
+    renderStudio("/billing/settings");
+    const gp = await screen.findByRole("region", { name: "google_play provider" });
+    await userEvent.type(within(gp).getByLabelText("google_play Package name"), "com.acme.app");
+    await userEvent.type(within(gp).getByLabelText("google_play Push audience"), "https://api.example/push");
+    await userEvent.type(within(gp).getByLabelText("google_play Push service account email"), "push@acme.iam.gserviceaccount.com");
+    await userEvent.click(within(gp).getByLabelText(/^google_play Service account JSON/));
+    await userEvent.paste('{"type":"service_account"}');
+    await userEvent.click(within(gp).getByRole("button", { name: "Save google_play" }));
+    expect(await within(gp).findByRole("status")).toHaveTextContent("Saved");
+    expect(st.secrets.google_play!.config).toMatchObject({ package_name: "com.acme.app", service_account: '{"type":"service_account"}' });
+  });
+
+  it("saves creem keys with the key hint only", async () => {
+    const { st } = setup();
+    renderStudio("/billing/settings");
+    const creem = await screen.findByRole("region", { name: "creem provider" });
+    await userEvent.type(within(creem).getByLabelText("creem Creem API key (write-only)"), "creem_test_ABCDEFGH1234");
+    await userEvent.type(within(creem).getByLabelText("creem Creem webhook secret (write-only)"), "whsec_creem_1");
+    await userEvent.type(within(creem).getByLabelText("creem API base (optional)"), "https://test-api.creem.io");
+    await userEvent.click(within(creem).getByRole("button", { name: "Save creem" }));
+    expect(await within(creem).findByRole("status")).toHaveTextContent("Saved");
+    expect(st.secrets.creem).toMatchObject({ api_key: "creem_test_ABCDEFGH1234", webhook_secret: "whsec_creem_1" });
+    expect(creem).toHaveTextContent("Key …1234");
+    expect(creem).toHaveTextContent("https://test-api.creem.io");
+    expect(document.body.textContent).not.toContain("creem_test_ABCDEFGH1234");
+  });
+
+  it("wechat_pay requires an API base and valid platform keys JSON, then saves", async () => {
+    const { mock, st } = setup();
+    renderStudio("/billing/settings");
+    const wx = await screen.findByRole("region", { name: "wechat_pay provider" });
+    await userEvent.type(within(wx).getByLabelText("wechat_pay Merchant id (mchid)"), "1900000001");
+    await userEvent.type(within(wx).getByLabelText(/^wechat_pay APIv3 key/), "0123456789abcdef0123456789abcdef");
+    await userEvent.type(within(wx).getByLabelText("wechat_pay App id"), "wx123");
+    await userEvent.type(within(wx).getByLabelText("wechat_pay Merchant certificate serial"), "ABCD");
+    await userEvent.type(within(wx).getByLabelText("wechat_pay Notify URL"), "https://app/notify");
+    await userEvent.click(within(wx).getByLabelText(/^wechat_pay Merchant private key/));
+    await userEvent.paste("PEMKEY");
+    await userEvent.click(within(wx).getByLabelText(/^wechat_pay Platform keys/));
+    await userEvent.paste("not json");
+    await userEvent.click(within(wx).getByRole("button", { name: "Save wechat_pay" }));
+    expect(await within(wx).findByRole("alert")).toHaveTextContent("platform_keys must be valid JSON");
+    await userEvent.clear(within(wx).getByLabelText(/^wechat_pay Platform keys/));
+    await userEvent.click(within(wx).getByLabelText(/^wechat_pay Platform keys/));
+    await userEvent.paste('[{"serial":"S1","pem":"PEM"}]');
+    await userEvent.click(within(wx).getByRole("button", { name: "Save wechat_pay" }));
+    expect(await within(wx).findByRole("alert")).toHaveTextContent("API base is required");
+    expect(mock.calls).not.toContain("put /api/v1/billing/providers/wechat_pay");
+    await userEvent.type(within(wx).getByLabelText("wechat_pay API base"), "https://mock.wechat.test");
+    await userEvent.click(within(wx).getByRole("button", { name: "Save wechat_pay" }));
+    expect(await within(wx).findByRole("status")).toHaveTextContent("Saved");
+    expect(st.secrets.wechat_pay!.config).toMatchObject({ appid: "wx123", platform_keys: [{ serial: "S1", pem: "PEM" }] });
+    expect(lastBody(mock, "put /api/v1/billing/providers/{p}")).toMatchObject({ key_id: "1900000001", api_base: "https://mock.wechat.test", enabled: true });
+  });
+
+  it("removes a store provider after confirming", async () => {
+    const { st } = setup();
+    st.providers.push({ provider: "creem", key_id: null, hint: "…1234", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/creem", updated_at: "2026-11-01T00:00:00Z" });
+    renderStudio("/billing/settings");
+    const creem = await screen.findByRole("region", { name: "creem provider" });
+    await userEvent.click(within(creem).getByRole("button", { name: "Remove creem" }));
+    await userEvent.click(within(creem).getByRole("button", { name: "Confirm remove creem" }));
+    await waitFor(() => expect(st.providers.some((p) => p.provider === "creem")).toBe(false));
   });
 });

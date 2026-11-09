@@ -2,7 +2,7 @@
 //!
 //! An async client for [ForgeBase](https://github.com/forgebase/forgebase) built on `reqwest` and
 //! `rustls` (no OpenSSL). It covers auth, collections and records, realtime subscriptions
-//! (WebSocket with SSE fallback), object storage, key-value, server functions, jobs and entitlements.
+//! (WebSocket with SSE fallback), object storage, key-value, server functions, jobs, entitlements and store billing receipts.
 //!
 //! ```no_run
 //! use forgebase_sdk::{ForgeBase, SignInOptions};
@@ -27,6 +27,7 @@
 //! `scripts/generate_models.py`); the request/response ergonomics are hand-written.
 
 pub mod auth;
+pub mod billing;
 pub mod client;
 pub mod entitlements;
 pub mod error;
@@ -41,6 +42,9 @@ pub mod records;
 pub mod storage;
 
 pub use auth::{AuthApi, FileStore, MemoryStore, MfaChallenge, Session, SessionStore, SignInOptions, SignInResult};
+pub use billing::{
+    BillingApi, BillingStoreApi, HostedCheckout, StoreCheckout, StoreProvider, StorePurchase, StoreReceipt,
+};
 pub use client::{ClientBuilder, ForgeBase};
 pub use entitlements::{EntitlementsApi, HasQuery, MeteredRequest, QuotaRequest};
 pub use error::{ApiError, Error, ErrorKind, Result};

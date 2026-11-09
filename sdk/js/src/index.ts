@@ -4,6 +4,8 @@ export { AuthApi, AuthManager, OAuthApi, isMfaChallenge, memoryStorage, webStora
 export type { AuthEvent, AuthListener, AuthOptions, MfaChallenge, Session, SessionStorage, SignInOptions, SignInResult } from "./auth";
 export { CollectionsApi, RecordsApi } from "./records";
 export type { ListOptions, ListResult, Row, TransferFormat, WriteOptions } from "./records";
+export { BillingApi, BillingStoreApi } from "./billing";
+export type { HostedPage, StoreCheckoutInput, StoreProduct, StoreProvider, StorePurchase, StoreReceipt } from "./billing";
 export { EntitlementsApi } from "./entitlements";
 export type { Consumption, Decision, Entitlements, HasQuery, Lease, MeteredRequest, QuotaRequest, Reservation, UsageSummary } from "./entitlements";
 export { JobFailedError, JobsApi, WorkflowBuilder, isFinalJob, isFinalWorkflow, workflow } from "./jobs";

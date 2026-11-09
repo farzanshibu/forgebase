@@ -145,7 +145,21 @@ export interface CreditNoteInput { amount?: number | null; to_balance: boolean; 
 export interface Collection { invoice: Invoice; payment: Payment | null; payment_url: string | null }
 export interface ProviderAccount { provider: string; key_id: string | null; hint: string | null; api_base: string | null; enabled: boolean; webhook_path: string; updated_at: string }
 /** Write-only: the server seals the secrets and never returns them. */
-export interface ProviderInput { api_key?: string | null; key_id?: string | null; webhook_secret?: string | null; api_base?: string | null; enabled: boolean }
+export interface ProviderInput {
+  api_key?: string | null; key_id?: string | null; webhook_secret?: string | null; api_base?: string | null; enabled: boolean;
+  /** Provider-specific settings (FB-72), sealed with the secrets: the server replaces the whole sealed account on every save. */
+  config?: Record<string, unknown> | null;
+}
+export type StoreProviderId = "app_store" | "google_play" | "creem";
+export const STORE_PROVIDERS: StoreProviderId[] = ["app_store", "google_play", "creem"];
+/** A store product sold as a billing price. */
+export interface StoreProduct { provider: string; product_id: string; price: string; kind: string; updated_at: string }
+export type StorePurchaseStatus = "active" | "trialing" | "grace" | "on_hold" | "paused" | "expired" | "refunded" | "revoked" | "pending" | "replaced";
+/** A store purchase bound to one subject. */
+export interface StorePurchase {
+  id: string; provider: string; purchase_id: string; subject: string; status: string; kind: string; price: string; product_id: string; environment: string;
+  auto_renew: boolean; expires_at?: string | null; last_transaction_id?: string | null; order_id?: string | null; subscription_id?: string | null; created_at: string; updated_at: string;
+}
 export interface WebhookEvent { id: string; provider: string; event_id: string; event_type: string; event_at: string; received_at: string; status: string; result: string | null; attempts: number }
 export interface BillingSettings {
   default_currency: string; retry_days: number[]; final_action: FinalAction; invoice_prefix: string; credit_note_prefix: string;
@@ -233,6 +247,11 @@ export const putBillingSettings = (s: BillingSettings) => send<BillingSettings>(
 export const listProviders = (signal?: AbortSignal) => list<ProviderAccount>(`${B}/providers`, signal);
 export const putProvider = (provider: string, input: ProviderInput) => send<ProviderAccount>("PUT", `${B}/providers/${enc(provider)}`, input);
 export const deleteProvider = (provider: string) => send<void>("DELETE", `${B}/providers/${enc(provider)}`);
+// Merchant-of-record stores (FB-72).
+export const listStoreProducts = (signal?: AbortSignal) => list<StoreProduct>(`${B}/store-products`, signal);
+export const putStoreProduct = (provider: string, productId: string, price: string) => send<StoreProduct>("PUT", `${B}/store-products/${enc(provider)}/${enc(productId)}`, { price });
+export const deleteStoreProduct = (provider: string, productId: string) => send<void>("DELETE", `${B}/store-products/${enc(provider)}/${enc(productId)}`);
+export const listStorePurchases = (subject?: string, signal?: AbortSignal) => list<StorePurchase>(`${B}/store-purchases${qs({ subject })}`, signal);
 export const runBillingMaintenance = () => send<MaintenanceReport>("POST", `${B}/maintenance`);
 export const listWebhookEvents = (limit = 100, signal?: AbortSignal) => list<WebhookEvent>(`${B}/webhook-events${qs({ limit })}`, signal);
 
