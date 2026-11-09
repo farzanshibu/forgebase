@@ -19,6 +19,7 @@ export default function ConsentsPage() {
     <div className="space-y-6">
       <Panel title={`Consents in ${realm}`}>
         <ErrorView error={l.error} />
+        {l.error !== undefined && <Note>The server lists consents of the signed-in user only; there is no administrator-wide consent list yet.</Note>}
         {l.loading && !l.error && <Loading what="Loading consents" />}
         {l.data && rows.length === 0 && <Empty>No consents in this realm.</Empty>}
         {rows.length > 0 && (

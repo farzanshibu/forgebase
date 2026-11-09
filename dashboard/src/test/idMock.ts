@@ -84,7 +84,6 @@ export function installIdentity(mock: MockApi): IdState {
   mock.on("GET", `${A}/clients`, ({ query }) => ok({ items: st.clients.filter((c) => c.realm === realmOf(query)) }));
   mock.on("POST", `${A}/clients`, ({ body }) => {
     const b = body as Partial<ClientApp> & { name: string };
-    if (!b.redirect_uris?.length && b.type !== "public" && false) return envelope(400, "invalid_request", "redirect_uris");
     const client: ClientApp = {
       client_id: `app_${st.clients.length + 1}`, realm: b.realm ?? "default", name: b.name, description: b.description ?? null, type: b.type ?? "confidential", redirect_uris: b.redirect_uris ?? [],
       post_logout_redirect_uris: b.post_logout_redirect_uris ?? [], grant_types: b.grant_types ?? [], scopes: b.scopes ?? [], skip_consent: !!b.skip_consent, access_token_ttl: b.access_token_ttl ?? null,
