@@ -106,3 +106,32 @@ async fn shutdown_flushes_unsaved_writes() {
         Reply::bulk("v")
     );
 }
+
+/// Shutdown aborts the background flusher, which may be in the middle of a
+/// write. A flush dropped before it finished must hand its keys back, or the
+/// final flush finds nothing to write and recent keys are lost on restart.
+#[tokio::test]
+async fn a_flush_cancelled_mid_write_keeps_its_keys_for_the_next_flush() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = common::open_db(tmp.path()).await;
+    let kv = KvService::open(KvConfig::default(), Arc::new(DefaultAuthorizer), Some(Arc::new(db)))
+        .await
+        .unwrap();
+    let a = AccessContext::admin("root");
+    kv.exec(&a, "app", &cmd("SET greeting hello")).unwrap();
+
+    // Poll one flush until its first suspension (the SQLite write), then drop it.
+    {
+        let mut fut = Box::pin(kv.flush());
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            matches!(fut.as_mut().poll(&mut cx), Poll::Pending),
+            "the write needs I/O, so the first poll suspends"
+        );
+    }
+    assert_eq!(kv.stats(&a).unwrap().unsaved_keys, 1, "the cancelled flush returned its key");
+    assert_eq!(kv.shutdown().await.unwrap(), 1, "the final flush writes it");
+}

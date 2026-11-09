@@ -41,6 +41,8 @@ wat.workspace = true
 redis = { workspace = true, features = ["tokio-comp"] }
 serde_json.workspace = true
 tempfile.workspace = true
+forgebase-graph.workspace = true
+utoipa.workspace = true
 
 [lints]
 workspace = true

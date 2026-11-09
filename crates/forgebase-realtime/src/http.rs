@@ -126,6 +126,7 @@ pub struct ErrorBody {
 
 /// Error details.
 #[derive(Debug, Serialize, ToSchema)]
+#[schema(as = RealtimeErrorDetail)]
 pub struct ErrorDetail {
     /// Stable snake_case code.
     pub code: String,
@@ -510,6 +511,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
 
 /// A message to publish.
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = RealtimePublishBody)]
 pub struct PublishBody {
     /// Any JSON value.
     #[serde(default)]
