@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use forgebase_data::{
-    AccessContext, Action, DEFAULT_REALM, Decision, FieldAccess, Predicate, Principal, is_tenant_scoped,
+    AccessContext, Action, DEFAULT_REALM, Decision, FieldAccess, Predicate, Principal, SubjectRef, is_tenant_scoped,
 };
 use forgebase_query::{Compare, Expr, Op, Operand};
 use forgebase_schema::Collection;
@@ -69,10 +69,26 @@ pub(crate) fn step_tenant(snap: &Snapshot, ctx: &AccessContext, org: Option<&str
     Ok(())
 }
 
-fn hooks(hooks: &Hooks, ctx: &AccessContext, permission: &str, resource: Option<&ResourceRef>, step: Step) -> Result<(), Denial> {
+/// The subject a check is billed against: the organization it acts in, else
+/// the caller's personal scope.
+fn subject_of(ctx: &AccessContext, org: Option<&str>) -> SubjectRef {
+    match org {
+        Some(o) => SubjectRef::Org(o.to_owned()),
+        None => ctx.subject(),
+    }
+}
+
+fn hooks(
+    hooks: &Hooks,
+    ctx: &AccessContext,
+    subject: &SubjectRef,
+    permission: &str,
+    resource: Option<&ResourceRef>,
+    step: Step,
+) -> Result<(), Denial> {
     let req = HookRequest {
         ctx,
-        subject: ctx.subject(),
+        subject: subject.clone(),
         permission,
         resource,
     };
@@ -119,7 +135,8 @@ pub(crate) fn run_check(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, c: &Che
     if perm == Grant::None && c.resource.is_none() {
         return Err(Denial::at(Step::Permission, format!("missing permission {}", c.permission)));
     }
-    hooks(h, ctx, &c.permission, c.resource.as_ref(), Step::Entitlement)?;
+    let subject = subject_of(ctx, c.org.as_deref());
+    hooks(h, ctx, &subject, &c.permission, c.resource.as_ref(), Step::Entitlement)?;
     if let Some(r) = &c.resource {
         let acl = acl_chain(snap, ctx, r, &c.permission, &eff);
         match (acl, perm) {
@@ -130,7 +147,7 @@ pub(crate) fn run_check(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, c: &Che
             _ => {}
         }
     }
-    hooks(h, ctx, &c.permission, c.resource.as_ref(), Step::Quota)
+    hooks(h, ctx, &subject, &c.permission, c.resource.as_ref(), Step::Quota)
 }
 
 /// ACL of a resource and its parents (an environment inherits its project's
@@ -357,7 +374,8 @@ pub(crate) fn decide(
     if perm == Grant::Denied {
         return Err(fail(Denial::at(Step::Permission, format!("{key} is denied"))));
     }
-    hooks(h, ctx, &key, None, Step::Entitlement).map_err(fail)?;
+    let subject = subject_of(ctx, org.as_deref());
+    hooks(h, ctx, &subject, &key, None, Step::Entitlement).map_err(fail)?;
     let coll_acl = snap.acl(&ctx.realm_id, "collection", &coll.name, &key, &principal, &eff);
     if coll_acl == Grant::Denied {
         return Err(fail(Denial::at(Step::Resource, format!("{key} is denied on this collection"))));
@@ -400,7 +418,7 @@ pub(crate) fn decide(
             None => not,
         });
     }
-    hooks(h, ctx, &key, None, Step::Quota).map_err(fail)?;
+    hooks(h, ctx, &subject, &key, None, Step::Quota).map_err(fail)?;
     Ok(match allowed {
         None => Decision::Allow,
         Some(filter) => Decision::Filter(Predicate { filter, params }),

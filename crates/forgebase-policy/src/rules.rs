@@ -247,9 +247,6 @@ impl Rule {
                         "roles, permissions and scopes hold several values: compare with ?= / ?!= etc.".into(),
                     ));
                 }
-                if ref_index(&c.left).is_some() && ref_index(&c.right).is_some() && c.any {
-                    return Ok(());
-                }
                 Ok(())
             }
         }

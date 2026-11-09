@@ -117,7 +117,9 @@ impl fmt::Display for Denial {
 pub struct HookRequest<'a> {
     /// The caller.
     pub ctx: &'a AccessContext,
-    /// Who the check is billed and metered against (active org or caller).
+    /// Who the check is billed and metered against: the organization the
+    /// operation acts in (an org's tenant, an org route), else the caller's
+    /// personal scope.
     pub subject: SubjectRef,
     /// The permission key being exercised (`data:posts:create`,
     /// `projects:create`, `engine:kv_write`, ...).

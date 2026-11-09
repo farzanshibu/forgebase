@@ -330,11 +330,12 @@ async fn the_pipeline_runs_in_order_and_stops_at_the_first_failure() {
     assert_eq!(*r.calls.lock().unwrap(), ["entitlement"]);
 
     // 5 fails after 4 and before 6.
-    let r = hooks(&env, false, false);
+    env.policy.set_hooks(Hooks::default());
     env.policy
         .put_acl(&user("alice"), "project", &project, &pk("bob"), "projects:read", Effect::Deny)
         .await
         .unwrap();
+    let r = hooks(&env, false, false);
     let c = Check {
         resource: Some(ResourceRef::new("project", &project)),
         ..check("projects:read", &org)

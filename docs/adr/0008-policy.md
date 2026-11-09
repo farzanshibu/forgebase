@@ -44,9 +44,10 @@ caller spelled it.
 ## 2. Subjects: B2C and B2B
 
 A user has a personal scope and can belong to any number of organizations.
-Every check names its subject: `AccessContext::subject()` is the active
-organization (`org_id`, from `X-ForgeBase-Org` or the selected tenant) or the
-caller (`SubjectRef::Principal`). Hooks (§8) bill and meter against it.
+Every check names its subject: the organization it acts in (an org route,
+the organization owning the selected tenant, `X-ForgeBase-Org`), else the
+caller's personal scope (`SubjectRef::Principal`); `AccessContext::subject()`
+gives the same for the request. Hooks (§8) bill and meter against it.
 Projects are owned by an organization or by one user (personal project: the
 owner holds every permission on it).
 
@@ -201,7 +202,7 @@ ACL entry; for other operations a permission or an ACL grant is required.
 ```rust
 pub struct HookRequest<'a> {
     pub ctx: &'a AccessContext,          // caller, realm, org, tenant, roles
-    pub subject: SubjectRef,             // active org or the caller (billing subject)
+    pub subject: SubjectRef,             // the org the check acts in, else the caller (billing subject)
     pub permission: &'a str,             // e.g. "data:posts:create", "projects:create", "engine:kv_write"
     pub resource: Option<&'a ResourceRef>,
 }
