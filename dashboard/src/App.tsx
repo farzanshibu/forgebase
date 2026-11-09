@@ -6,6 +6,8 @@ import StudioPlaceholder from "./components/StudioPlaceholder";
 import AccessPage from "./pages/access/AccessPage";
 import AuthPage from "./pages/auth/AuthPage";
 import DatabasePage from "./pages/database/DatabasePage";
+import FunctionsPage from "./pages/functions/FunctionsPage";
+import JobsPage from "./pages/jobs/JobsPage";
 import GraphPage from "./pages/graph/GraphPage";
 import VectorPage from "./pages/vector/VectorPage";
 import SystemPage from "./pages/SystemPage";
@@ -43,6 +45,10 @@ function Studios() {
             <Route key={s.path} path="vector/*" element={<VectorPage />} />
           ) : s.path === "graph" ? (
             <Route key={s.path} path="graph/*" element={<GraphPage />} />
+          ) : s.path === "functions" ? (
+            <Route key={s.path} path="functions/*" element={<FunctionsPage />} />
+          ) : s.path === "jobs" ? (
+            <Route key={s.path} path="jobs/*" element={<JobsPage />} />
           ) : s.path === "" ? (
             <Route key="index" index element={<StudioPlaceholder studio={s} />} />
           ) : (
