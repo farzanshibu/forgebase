@@ -167,7 +167,7 @@ export class Transport {
 
       if (res.status === 401 && !opts.anonymous && !refreshed && this.credentials && (await this.credentials.onUnauthorized(headers))) {
         refreshed = true;
-        await res.body?.cancel().catch(() => undefined);
+        void res.body?.cancel().catch(() => undefined);
         continue;
       }
 
@@ -177,7 +177,7 @@ export class Transport {
         const ra = parseRetryAfter(res.headers.get("retry-after"));
         if (ra === undefined || ra <= cfg.maxRetryAfterMs) {
           attempt++;
-          await res.body?.cancel().catch(() => undefined);
+          void res.body?.cancel().catch(() => undefined);
           await this.sleep(this.backoff(attempt, ra, cfg), opts.signal);
           continue;
         }
