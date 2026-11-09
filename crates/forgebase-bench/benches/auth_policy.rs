@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use forgebase_auth::{ClientInfo, LoginOptions, LoginOutcome};
 use forgebase_auth::{AuthConfig, AuthService};
+use forgebase_auth::{ClientInfo, LoginOptions, LoginOutcome};
 use forgebase_bench::Rig;
 use forgebase_data::{AccessContext, DefaultAuthorizer};
 use forgebase_policy::{Check, PolicyService};
@@ -26,7 +26,9 @@ fn bench(c: &mut Criterion) {
             .login_admin(&ci, "root@example.com", "bench password 1", &LoginOptions::default())
             .await
             .unwrap();
-        let LoginOutcome::Session(s) = out else { panic!("expected a session") };
+        let LoginOutcome::Session(s) = out else {
+            panic!("expected a session")
+        };
         (auth, s.access_token.clone().unwrap())
     });
     let policy = rt.block_on(async {
@@ -48,9 +50,15 @@ fn bench(c: &mut Criterion) {
     // Password sign-in (Argon2id verify + session insert); a fresh client IP per
     // iteration keeps the per-IP attempt limiter out of the measurement.
     rt.block_on(async {
-        auth.signup(&ClientInfo::default(), None, "bench@example.com", "bench user pw 1", None)
-            .await
-            .unwrap();
+        auth.signup(
+            &ClientInfo::default(),
+            None,
+            "bench@example.com",
+            "bench user pw 1",
+            None,
+        )
+        .await
+        .unwrap();
     });
     let mut n = 0_u64;
     g.sample_size(20);
@@ -58,11 +66,20 @@ fn bench(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             n += 1;
             let auth = auth.clone();
-            let ci = ClientInfo { ip: Some(format!("10.{}.{}.{}", (n >> 16) & 255, (n >> 8) & 255, n & 255)), ..ClientInfo::default() };
+            let ci = ClientInfo {
+                ip: Some(format!("10.{}.{}.{}", (n >> 16) & 255, (n >> 8) & 255, n & 255)),
+                ..ClientInfo::default()
+            };
             async move {
-                auth.login_password(&ci, None, "bench@example.com", "bench user pw 1", &LoginOptions::default())
-                    .await
-                    .unwrap();
+                auth.login_password(
+                    &ci,
+                    None,
+                    "bench@example.com",
+                    "bench user pw 1",
+                    &LoginOptions::default(),
+                )
+                .await
+                .unwrap();
             }
         });
     });

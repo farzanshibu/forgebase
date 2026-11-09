@@ -19,16 +19,36 @@ fn bench(c: &mut Criterion) {
     let q = server.queue().unwrap().clone();
     let jobs = server.jobs().clone();
     let worker = rt.block_on(async {
-        q.create_topic(&sys, NewTopic { name: "bench".into(), ..NewTopic::default() }).await.unwrap();
-        q.create_subscription(
+        q.create_topic(
             &sys,
-            NewSubscription { name: "bench-sub".into(), topic: "bench".into(), ..NewSubscription::default() },
+            NewTopic {
+                name: "bench".into(),
+                ..NewTopic::default()
+            },
         )
         .await
         .unwrap();
-        jobs.register_worker(&sys, NewWorker { id: Some("bw".into()), queues: vec![], kinds: vec!["bench".into()], ..NewWorker::default() })
-            .await
-            .unwrap()
+        q.create_subscription(
+            &sys,
+            NewSubscription {
+                name: "bench-sub".into(),
+                topic: "bench".into(),
+                ..NewSubscription::default()
+            },
+        )
+        .await
+        .unwrap();
+        jobs.register_worker(
+            &sys,
+            NewWorker {
+                id: Some("bw".into()),
+                queues: vec![],
+                kinds: vec!["bench".into()],
+                ..NewWorker::default()
+            },
+        )
+        .await
+        .unwrap()
     });
 
     let mut g = c.benchmark_group("queue_jobs");
@@ -38,7 +58,9 @@ fn bench(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let (q, sys) = (q.clone(), sys.clone());
             async move {
-                q.publish(&sys, "bench", vec![NewMessage::new(json!({"n": 1}))]).await.unwrap();
+                q.publish(&sys, "bench", vec![NewMessage::new(json!({"n": 1}))])
+                    .await
+                    .unwrap();
             }
         });
     });
@@ -58,7 +80,14 @@ fn bench(c: &mut Criterion) {
             let (q, sys) = (q.clone(), sys.clone());
             async move {
                 let got = q
-                    .pull(&sys, "bench-sub", PullRequest { max_messages: Some(10), ..PullRequest::default() })
+                    .pull(
+                        &sys,
+                        "bench-sub",
+                        PullRequest {
+                            max_messages: Some(10),
+                            ..PullRequest::default()
+                        },
+                    )
                     .await
                     .unwrap();
                 let ids: Vec<String> = got.iter().map(|m| m.ack_id.clone()).collect();
@@ -71,9 +100,16 @@ fn bench(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let (jobs, sys) = (jobs.clone(), sys.clone());
             async move {
-                jobs.enqueue(&sys, NewJob { kind: "bench".into(), payload: json!({"x": 1}), ..NewJob::default() })
-                    .await
-                    .unwrap();
+                jobs.enqueue(
+                    &sys,
+                    NewJob {
+                        kind: "bench".into(),
+                        payload: json!({"x": 1}),
+                        ..NewJob::default()
+                    },
+                )
+                .await
+                .unwrap();
             }
         });
     });
@@ -82,7 +118,15 @@ fn bench(c: &mut Criterion) {
             let (jobs, sys, wid) = (jobs.clone(), sys.clone(), worker.id.clone());
             async move {
                 let got = jobs
-                    .claim(&sys, ClaimRequest { worker_id: wid, kinds: vec!["bench".into()], max: Some(1), ..ClaimRequest::default() })
+                    .claim(
+                        &sys,
+                        ClaimRequest {
+                            worker_id: wid,
+                            kinds: vec!["bench".into()],
+                            max: Some(1),
+                            ..ClaimRequest::default()
+                        },
+                    )
                     .await
                     .unwrap();
                 for j in got {

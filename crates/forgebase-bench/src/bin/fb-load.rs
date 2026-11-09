@@ -222,7 +222,15 @@ where
     (total, start.elapsed().as_secs_f64())
 }
 
-async fn timed(conn: &mut Conn, st: &mut Stats, method: &str, path: &str, tok: Option<&str>, body: Option<&Value>, ok: &[u16]) -> Value {
+async fn timed(
+    conn: &mut Conn,
+    st: &mut Stats,
+    method: &str,
+    path: &str,
+    tok: Option<&str>,
+    body: Option<&Value>,
+    ok: &[u16],
+) -> Value {
     let t = Instant::now();
     let (s, v) = conn.json(method, path, tok, body).await;
     st.us.push(t.elapsed().as_micros() as u64);
@@ -267,8 +275,19 @@ async fn records(a: &Args, token: &str) {
             while !stop.load(Ordering::Relaxed) {
                 i += 1;
                 let t = Some(token.as_str());
-                let rec = timed(&mut c, &mut st[0], "POST", "/api/v1/collections/load_notes/records", t, Some(&json!({"text": format!("w{w} i{i}"), "n": i})), &[201]).await;
-                let Some(id) = rec["id"].as_str().map(str::to_owned) else { continue };
+                let rec = timed(
+                    &mut c,
+                    &mut st[0],
+                    "POST",
+                    "/api/v1/collections/load_notes/records",
+                    t,
+                    Some(&json!({"text": format!("w{w} i{i}"), "n": i})),
+                    &[201],
+                )
+                .await;
+                let Some(id) = rec["id"].as_str().map(str::to_owned) else {
+                    continue;
+                };
                 let p = format!("/api/v1/collections/load_notes/records/{id}");
                 timed(&mut c, &mut st[1], "GET", &p, t, None, &[200]).await;
                 timed(&mut c, &mut st[2], "PATCH", &p, t, Some(&json!({"n": i + 1})), &[200]).await;
@@ -282,19 +301,33 @@ async fn records(a: &Args, token: &str) {
         s.report("records", op, secs);
     }
     let mut c = Conn::new(&a.addr);
-    timed_list(&mut c, &a.addr, &token).await;
+    timed_list(&mut c, &a.addr, token).await;
 }
 
 /// Single-connection list latency over a populated collection.
 async fn timed_list(c: &mut Conn, _addr: &str, token: &str) {
     for i in 0..2_000 {
-        c.json("POST", "/api/v1/collections/load_notes/records", Some(token), Some(&json!({"text": "seed", "n": i})))
-            .await;
+        c.json(
+            "POST",
+            "/api/v1/collections/load_notes/records",
+            Some(token),
+            Some(&json!({"text": "seed", "n": i})),
+        )
+        .await;
     }
     let mut st = Stats::default();
     let t0 = Instant::now();
     for _ in 0..500 {
-        timed(c, &mut st, "GET", "/api/v1/collections/load_notes/records?filter=n%20%3E%3D%20100&per_page=20&skip_total=true", Some(token), None, &[200]).await;
+        timed(
+            c,
+            &mut st,
+            "GET",
+            "/api/v1/collections/load_notes/records?filter=n%20%3E%3D%20100&per_page=20&skip_total=true",
+            Some(token),
+            None,
+            &[200],
+        )
+        .await;
     }
     st.report("records", "list_page_20", t0.elapsed().as_secs_f64());
 }
@@ -302,7 +335,12 @@ async fn timed_list(c: &mut Conn, _addr: &str, token: &str) {
 async fn auth(a: &Args) {
     let mut c = Conn::new(&a.addr);
     let (s, j) = c
-        .json("POST", "/api/auth/signup", None, Some(&json!({"email": "load@example.com", "password": "load password 1"})))
+        .json(
+            "POST",
+            "/api/auth/signup",
+            None,
+            Some(&json!({"email": "load@example.com", "password": "load password 1"})),
+        )
         .await;
     assert!(s == 201 || s == 409 || s == 429, "signup: {s} {j}");
     let addr = a.addr.clone();
@@ -316,7 +354,12 @@ async fn auth(a: &Args) {
             while !stop.load(Ordering::Relaxed) {
                 let t = Instant::now();
                 let (s, _) = c
-                    .json("POST", "/api/auth/login", None, Some(&json!({"email": "load@example.com", "password": "load password 1"})))
+                    .json(
+                        "POST",
+                        "/api/auth/login",
+                        None,
+                        Some(&json!({"email": "load@example.com", "password": "load password 1"})),
+                    )
                     .await;
                 let us = t.elapsed().as_micros() as u64;
                 match s {
@@ -332,17 +375,32 @@ async fn auth(a: &Args) {
         }
     })
     .await;
-    for (s, op) in stats.into_iter().zip(["login_200", "login_429_rate_limited", "login_other"]) {
+    for (s, op) in stats
+        .into_iter()
+        .zip(["login_200", "login_429_rate_limited", "login_other"])
+    {
         s.report("auth", op, secs);
     }
 }
 
 async fn queue(a: &Args, token: &str) {
     let mut c = Conn::new(&a.addr);
-    let (s, j) = c.json("POST", "/api/v1/queues/topics", Some(token), Some(&json!({"name": "load"}))).await;
+    let (s, j) = c
+        .json(
+            "POST",
+            "/api/v1/queues/topics",
+            Some(token),
+            Some(&json!({"name": "load"})),
+        )
+        .await;
     assert!(s == 201 || s == 200 || s == 409, "topic: {s} {j}");
     let (s, j) = c
-        .json("POST", "/api/v1/queues/subscriptions", Some(token), Some(&json!({"name": "load-sub", "topic": "load"})))
+        .json(
+            "POST",
+            "/api/v1/queues/subscriptions",
+            Some(token),
+            Some(&json!({"name": "load-sub", "topic": "load"})),
+        )
         .await;
     assert!(s == 201 || s == 200 || s == 409, "subscription: {s} {j}");
     let (addr, token_c) = (a.addr.clone(), token.to_owned());
@@ -355,10 +413,28 @@ async fn queue(a: &Args, token: &str) {
             let mut n = 0_u64;
             while !stop.load(Ordering::Relaxed) {
                 n += 1;
-                if n % 4 == 0 {
-                    timed(&mut c, &mut batch, "POST", "/api/v1/queues/topics/load/publish", Some(&token), Some(&batch_body), &[200, 201]).await;
+                if n.is_multiple_of(4) {
+                    timed(
+                        &mut c,
+                        &mut batch,
+                        "POST",
+                        "/api/v1/queues/topics/load/publish",
+                        Some(&token),
+                        Some(&batch_body),
+                        &[200, 201],
+                    )
+                    .await;
                 } else {
-                    timed(&mut c, &mut one, "POST", "/api/v1/queues/topics/load/publish", Some(&token), Some(&json!({"messages": [{"data": {"n": n}}]})), &[200, 201]).await;
+                    timed(
+                        &mut c,
+                        &mut one,
+                        "POST",
+                        "/api/v1/queues/topics/load/publish",
+                        Some(&token),
+                        Some(&json!({"messages": [{"data": {"n": n}}]})),
+                        &[200, 201],
+                    )
+                    .await;
                 }
             }
             vec![one, batch]
@@ -375,7 +451,12 @@ async fn queue(a: &Args, token: &str) {
     for _ in 0..200 {
         let t = Instant::now();
         let (s, j) = c
-            .json("POST", "/api/v1/queues/subscriptions/load-sub/pull", Some(token), Some(&json!({"max_messages": 100})))
+            .json(
+                "POST",
+                "/api/v1/queues/subscriptions/load-sub/pull",
+                Some(token),
+                Some(&json!({"max_messages": 100})),
+            )
             .await;
         let acks: Vec<Value> = j["messages"]
             .as_array()
@@ -390,14 +471,23 @@ async fn queue(a: &Args, token: &str) {
         }
         pulled += acks.len() as u64;
         let (s2, _) = c
-            .json("POST", "/api/v1/queues/subscriptions/load-sub/ack", Some(token), Some(&json!({"ack_ids": acks})))
+            .json(
+                "POST",
+                "/api/v1/queues/subscriptions/load-sub/ack",
+                Some(token),
+                Some(&json!({"ack_ids": acks})),
+            )
             .await;
         if s2 != 200 {
             st.errors += 1;
         }
         st.us.push(t.elapsed().as_micros() as u64);
     }
-    println!("RESULT scenario=queue op=drain_msgs_per_s n={pulled} errors={} rps={:.0}", st.errors, pulled as f64 / t0.elapsed().as_secs_f64());
+    println!(
+        "RESULT scenario=queue op=drain_msgs_per_s n={pulled} errors={} rps={:.0}",
+        st.errors,
+        pulled as f64 / t0.elapsed().as_secs_f64()
+    );
     st.report("queue", "pull_ack_100_roundtrip", t0.elapsed().as_secs_f64());
 }
 
@@ -405,7 +495,8 @@ type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<T
 
 async fn ws_connect(addr: &str, token: &str) -> Ws {
     let mut req = format!("ws://{addr}/api/v1/realtime/ws").into_client_request().unwrap();
-    req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
     tokio_tungstenite::connect_async(req).await.expect("ws connect").0
 }
 
@@ -414,7 +505,12 @@ async fn ws_connect(addr: &str, token: &str) -> Ws {
 async fn realtime(a: &Args, token: &str) {
     let mut c = Conn::new(&a.addr);
     let (s, j) = c
-        .json("POST", "/api/v1/collections", Some(token), Some(&json!({"name": "load_rt", "fields": [{"name": "sent_ns", "type": "number"}]})))
+        .json(
+            "POST",
+            "/api/v1/collections",
+            Some(token),
+            Some(&json!({"name": "load_rt", "fields": [{"name": "sent_ns", "type": "text"}]})),
+        )
         .await;
     assert!(s == 201 || s == 409, "create collection: {s} {j}");
     let received = Arc::new(AtomicU64::new(0));
@@ -423,9 +519,13 @@ async fn realtime(a: &Args, token: &str) {
     for _ in 0..a.subscribers {
         let mut ws = ws_connect(&a.addr, token).await;
         ws.next().await; // welcome
-        ws.send(Message::Text(json!({"type": "subscribe", "id": "s", "collection": "load_rt"}).to_string().into()))
-            .await
-            .unwrap();
+        ws.send(Message::Text(
+            json!({"type": "subscribe", "id": "s", "collection": "load_rt"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
         let (rc, sm) = (received.clone(), samples.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut tx = Some(tx);
@@ -441,7 +541,7 @@ async fn realtime(a: &Args, token: &str) {
                             }
                         }
                         Some("record.created") => {
-                            if let Some(sent) = v["data"]["sent_ns"].as_u64() {
+                            if let Some(sent) = v["data"]["sent_ns"].as_str().and_then(|x| x.parse::<u64>().ok()) {
                                 local.push(now_ns().saturating_sub(sent) / 1000);
                                 rc.fetch_add(1, Ordering::Relaxed);
                                 if local.len() >= 256 {
@@ -467,7 +567,16 @@ async fn realtime(a: &Args, token: &str) {
             let mut c = Conn::new(&addr);
             let mut st = Stats::default();
             while !stop.load(Ordering::Relaxed) {
-                timed(&mut c, &mut st, "POST", "/api/v1/collections/load_rt/records", Some(&token), Some(&json!({"sent_ns": now_ns()})), &[201]).await;
+                timed(
+                    &mut c,
+                    &mut st,
+                    "POST",
+                    "/api/v1/collections/load_rt/records",
+                    Some(&token),
+                    Some(&json!({"sent_ns": now_ns().to_string()})),
+                    &[201],
+                )
+                .await;
             }
             vec![st]
         }

@@ -40,7 +40,9 @@ impl Rig {
 
     /// A data service with the default (admin-or-system) authorizer.
     pub async fn data(&self) -> DataService {
-        DataService::new(self.backend(), Arc::new(DefaultAuthorizer)).await.unwrap()
+        DataService::new(self.backend(), Arc::new(DefaultAuthorizer))
+            .await
+            .unwrap()
     }
 
     /// The system access context.

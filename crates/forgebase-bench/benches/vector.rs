@@ -13,7 +13,9 @@ const N: usize = 10_000;
 
 fn vec_of(seed: usize) -> Vec<f64> {
     // Deterministic pseudo-random components in [-1, 1).
-    let mut x = (seed as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut x = (seed as u64)
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (0..DIM)
         .map(|_| {
             x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);

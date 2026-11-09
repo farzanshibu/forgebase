@@ -50,7 +50,13 @@ fn run(cwd: &Path, args: &[&str], input: Option<&str>) -> Output {
     child.wait_with_output().unwrap()
 }
 
-fn call(addr: &str, method: &str, path: &str, bearer: Option<&str>, body: Option<&Value>) -> std::io::Result<(u16, Value)> {
+fn call(
+    addr: &str,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<&Value>,
+) -> std::io::Result<(u16, Value)> {
     let mut s = TcpStream::connect(addr)?;
     s.set_read_timeout(Some(Duration::from_secs(10)))?;
     let payload = body.map(Value::to_string).unwrap_or_default();
@@ -99,7 +105,10 @@ impl Serve {
             child,
             addr: format!("127.0.0.1:{port}"),
         };
-        assert!(wait_healthy(&s.addr, Duration::from_secs(30)), "server did not become healthy");
+        assert!(
+            wait_healthy(&s.addr, Duration::from_secs(30)),
+            "server did not become healthy"
+        );
         while !matches!(http("GET", &s.addr, "/health/ready"), Ok((200, _, _))) {
             assert!(t.elapsed() < Duration::from_secs(30), "server never became ready");
             std::thread::sleep(Duration::from_millis(5));
@@ -153,7 +162,11 @@ fn admin_token(addr: &str) -> String {
 /// Runs `WRITERS` threads that call `write(thread, i)` in a loop and record the
 /// keys the server acknowledged. Stops them `after` the start by SIGKILLing the
 /// server, then joins them (their connections fail once it is gone).
-fn write_then_kill(server: Serve, after: Duration, write: impl Fn(usize, u64) -> Option<String> + Send + Sync + 'static) -> HashSet<String> {
+fn write_then_kill(
+    server: Serve,
+    after: Duration,
+    write: impl Fn(usize, u64) -> Option<String> + Send + Sync + 'static,
+) -> HashSet<String> {
     let acked = Arc::new(Mutex::new(HashSet::new()));
     let dead = Arc::new(AtomicBool::new(false));
     let write = Arc::new(write);
@@ -212,13 +225,24 @@ fn kill9_during_record_writes_loses_no_acknowledged_write() {
         let started = Instant::now();
         let acked = write_then_kill(server, Duration::from_secs(3), move |t, i| {
             let key = format!("c{cycle}-w{t}-{i}");
-            match call(&addr, "POST", "/api/v1/collections/rec/records", Some(&tok), Some(&json!({"k": key}))) {
+            match call(
+                &addr,
+                "POST",
+                "/api/v1/collections/rec/records",
+                Some(&tok),
+                Some(&json!({"k": key})),
+            ) {
                 Ok((201, _)) => Some(key),
                 _ => None,
             }
         });
         let wal = std::fs::read_dir(project.join("forgebase-data"))
-            .map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with("-wal")).map(|e| e.metadata().map(|m| m.len()).unwrap_or(0)).sum::<u64>())
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with("-wal"))
+                    .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                    .sum::<u64>()
+            })
             .unwrap_or(0);
         all.extend(acked.iter().cloned());
 
@@ -255,8 +279,16 @@ fn kill9_during_record_writes_loses_no_acknowledged_write() {
             lost.len(),
             ready.as_millis()
         );
-        assert!(lost.is_empty(), "acknowledged writes lost after kill -9: {} e.g. {:?}", lost.len(), &lost[..lost.len().min(5)]);
-        assert!(!acked.is_empty(), "no write was acknowledged; the test measured nothing");
+        assert!(
+            lost.is_empty(),
+            "acknowledged writes lost after kill -9: {} e.g. {:?}",
+            lost.len(),
+            &lost[..lost.len().min(5)]
+        );
+        assert!(
+            !acked.is_empty(),
+            "no write was acknowledged; the test measured nothing"
+        );
     }
     drop(server);
     doctor_ok(&project);
@@ -270,7 +302,14 @@ fn kill9_during_queue_publish_loses_no_acknowledged_message() {
     let port = free_port();
     let (server, _) = Serve::start(&project, port);
     let token = admin_token(&server.addr);
-    let (s, j) = call(&server.addr, "POST", "/api/v1/queues/topics", Some(&token), Some(&json!({"name": "rec"}))).unwrap();
+    let (s, j) = call(
+        &server.addr,
+        "POST",
+        "/api/v1/queues/topics",
+        Some(&token),
+        Some(&json!({"name": "rec"})),
+    )
+    .unwrap();
     assert!(s == 200 || s == 201, "{s} {j}");
     let (s, j) = call(
         &server.addr,
@@ -286,7 +325,13 @@ fn kill9_during_queue_publish_loses_no_acknowledged_message() {
     let tok = token.clone();
     let acked = write_then_kill(server, Duration::from_secs(3), move |t, i| {
         let key = format!("w{t}-{i}");
-        match call(&addr, "POST", "/api/v1/queues/topics/rec/publish", Some(&tok), Some(&json!({"messages": [{"data": {"k": key}}]}))) {
+        match call(
+            &addr,
+            "POST",
+            "/api/v1/queues/topics/rec/publish",
+            Some(&tok),
+            Some(&json!({"messages": [{"data": {"k": key}}]})),
+        ) {
             Ok((200 | 201, _)) => Some(key),
             _ => None,
         }
@@ -306,7 +351,11 @@ fn kill9_during_queue_publish_loses_no_acknowledged_message() {
         )
         .unwrap();
         assert_eq!(s, 200, "{j}");
-        let msgs: Vec<Value> = j["messages"].as_array().or_else(|| j.as_array()).cloned().unwrap_or_default();
+        let msgs: Vec<Value> = j["messages"]
+            .as_array()
+            .or_else(|| j.as_array())
+            .cloned()
+            .unwrap_or_default();
         if msgs.is_empty() {
             break;
         }
@@ -315,7 +364,14 @@ fn kill9_during_queue_publish_loses_no_acknowledged_message() {
             seen.insert(m["message"]["data"]["k"].as_str().unwrap().to_owned());
             acks.push(m["ack_id"].clone());
         }
-        call(&server.addr, "POST", "/api/v1/queues/subscriptions/rec-sub/ack", Some(&token), Some(&json!({"ack_ids": acks}))).unwrap();
+        call(
+            &server.addr,
+            "POST",
+            "/api/v1/queues/subscriptions/rec-sub/ack",
+            Some(&token),
+            Some(&json!({"ack_ids": acks})),
+        )
+        .unwrap();
     }
     let lost = acked.iter().filter(|k| !seen.contains(*k)).count();
     println!(

@@ -15,10 +15,17 @@ fn cmd(parts: &[&str]) -> Vec<Vec<u8>> {
 fn bench(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let rig = rt.block_on(Rig::open());
-    let kv = rt.block_on(KvService::open(KvConfig::default(), Arc::new(DefaultAuthorizer), Some(rig.backend()))).unwrap();
+    let kv = rt
+        .block_on(KvService::open(
+            KvConfig::default(),
+            Arc::new(DefaultAuthorizer),
+            Some(rig.backend()),
+        ))
+        .unwrap();
     let sys = AccessContext::system();
     for i in 0..10_000 {
-        kv.exec(&sys, "bench", &cmd(&["SET", &format!("key:{i}"), "value-0123456789"])).unwrap();
+        kv.exec(&sys, "bench", &cmd(&["SET", &format!("key:{i}"), "value-0123456789"]))
+            .unwrap();
     }
     let mut g = c.benchmark_group("kv");
     g.throughput(Throughput::Elements(1));
@@ -32,7 +39,8 @@ fn bench(c: &mut Criterion) {
     g.bench_function("set", |b| {
         b.iter(|| {
             i = (i + 7919) % 10_000;
-            kv.exec(&sys, "bench", &cmd(&["SET", &format!("key:{i}"), "value-9876543210"])).unwrap();
+            kv.exec(&sys, "bench", &cmd(&["SET", &format!("key:{i}"), "value-9876543210"]))
+                .unwrap();
         });
     });
     g.bench_function("incr", |b| {

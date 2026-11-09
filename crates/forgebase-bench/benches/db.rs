@@ -83,7 +83,10 @@ fn bench(c: &mut Criterion) {
             let db = db.clone();
             async move {
                 let rows = db
-                    .fetch_all(&Statement::new("SELECT v FROM bench_t WHERE id = ?", vec![Value::from(i)]))
+                    .fetch_all(&Statement::new(
+                        "SELECT v FROM bench_t WHERE id = ?",
+                        vec![Value::from(i)],
+                    ))
                     .await
                     .unwrap();
                 assert_eq!(rows.len(), 1);
