@@ -99,6 +99,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "identity",
         include_str!("../../../migrations/system/0014_identity.sql"),
     ),
+    Migration::new(
+        15,
+        "credits",
+        include_str!("../../../migrations/system/0015_credits.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
