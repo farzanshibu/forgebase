@@ -113,6 +113,19 @@ impl Hub {
         Ok(rx)
     }
 
+    /// Channels of `scope` that have at least one subscriber, with their
+    /// subscriber counts, sorted by name.
+    pub(crate) fn channels_of(&self, scope: &Scope) -> Vec<(String, usize)> {
+        let mut v: Vec<(String, usize)> = self
+            .lock()
+            .iter()
+            .filter(|((s, _), tx)| s == scope && tx.receiver_count() > 0)
+            .map(|((_, c), tx)| (c.clone(), tx.receiver_count()))
+            .collect();
+        v.sort();
+        v
+    }
+
     pub(crate) fn channel_count(&self) -> usize {
         self.lock().len()
     }
