@@ -32,6 +32,7 @@ forgebase-realtime = { path = "crates/forgebase-realtime" }
 forgebase-entitlements = { path = "crates/forgebase-entitlements" }
 forgebase-credits = { path = "crates/forgebase-credits" }
 forgebase-functions = { path = "crates/forgebase-functions" }
+forgebase-billing = { path = "crates/forgebase-billing" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
