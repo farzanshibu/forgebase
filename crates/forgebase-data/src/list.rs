@@ -154,9 +154,13 @@ impl DataService {
         let cat = self.catalog();
         let mut opts = self.compile_options(ctx);
         opts.params = q.params.clone();
+        opts.field_guard = self.field_guard(ctx, coll);
         let compiler = Compiler::new(&*cat, &opts);
         let mut b = SqlBuilder::new(d);
         let mut wheres: Vec<String> = Vec::new();
+        if let Some(t) = self.tenant_clause(ctx, &mut b, coll, "t") {
+            wheres.push(t);
+        }
         let filter: Option<Expr> = match &q.filter {
             Some(f) => parse_filter(f)?,
             None => None,
@@ -171,6 +175,19 @@ impl DataService {
             let fts = fulltext.ok_or_else(|| {
                 DataError::invalid("no_fulltext_index", format!("{} has no full-text index", coll.name))
             })?;
+            // Matching text in a field the caller cannot read would leak it.
+            if let Some(guard) = &opts.field_guard {
+                let blocked = fts.keys.iter().any(|k| {
+                    let root = k.path.split(['.', ':']).next().unwrap_or_default();
+                    coll.field(root).is_some_and(|f| !guard.readable(coll, f))
+                });
+                if blocked {
+                    return Err(DataError::invalid(
+                        "no_fulltext_index",
+                        format!("{} has no full-text index you can search", coll.name),
+                    ));
+                }
+            }
             let t = d.quote_ident(&format!("{FTS_PREFIX}{}", fts.name));
             wheres.push(format!(
                 "t.rowid IN (SELECT rowid FROM {t} WHERE {t} MATCH {})",
@@ -318,16 +335,16 @@ impl DataService {
         collection: &str,
         q: &ListQuery,
     ) -> Result<ListResult, DataError> {
-        let coll = self.collection(collection)?;
-        let pred = self.authorize(ctx, Action::List, Some(&coll))?;
+        let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
         let rows = self.inner.backend.fetch_all(&built.select).await?;
         let more = rows.rows.len() > built.per_page as usize;
         let mut items: Vec<Record> = Vec::with_capacity(rows.rows.len().min(built.per_page as usize));
         let mut last_keys: Option<Vec<Json>> = None;
+        let mask = self.mask(ctx, &coll);
         for row in rows.rows.iter().take(built.per_page as usize) {
-            items.push(row_to_record(&coll, &rows.columns, row, ctx.is_privileged()));
+            items.push(row_to_record(&coll, &rows.columns, row, &mask));
             let start = rows.columns.len() - built.sort_keys;
             last_keys = Some(row[start..].iter().map(sql_to_json).collect());
         }
@@ -384,8 +401,7 @@ impl DataService {
         filter: Option<&str>,
         params: HashMap<String, Json>,
     ) -> Result<u64, DataError> {
-        let coll = self.collection(collection)?;
-        let pred = self.authorize(ctx, Action::List, Some(&coll))?;
+        let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let q = ListQuery {
             filter: filter.map(str::to_owned),
             params,
@@ -404,12 +420,12 @@ impl DataService {
         collection: &str,
         q: &AggregateQuery,
     ) -> Result<Vec<Record>, DataError> {
-        let coll = self.collection(collection)?;
-        let pred = self.authorize(ctx, Action::List, Some(&coll))?;
+        let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let d = self.inner.backend.dialect();
         let cat = self.catalog();
         let mut opts = self.compile_options(ctx);
         opts.params = q.params.clone();
+        opts.field_guard = self.field_guard(ctx, &coll);
         let compiler = Compiler::new(&*cat, &opts);
         let mut b = SqlBuilder::new(d);
         if q.group_by.len() > 8 || q.aggregates.len() > 16 {
@@ -456,6 +472,9 @@ impl DataService {
             }));
         }
         let mut wheres = Vec::new();
+        if let Some(t) = self.tenant_clause(ctx, &mut b, &coll, "t") {
+            wheres.push(t);
+        }
         if let Some(e) = q.filter.as_deref().map(parse_filter).transpose()?.flatten() {
             wheres.push(compiler.filter(&mut b, &coll, "t", &e)?);
         }

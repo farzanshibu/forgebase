@@ -17,9 +17,11 @@
 //! numbers are formatted by Rust and strings are quoted by the dialect.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 
 use forgebase_db::{Dialect, JsonPathSeg, QueryLabel, Value};
-use forgebase_schema::{Collection, FieldKind, SchemaMode};
+use forgebase_schema::{Collection, Field, FieldKind, SchemaMode};
 use serde_json::Value as Json;
 
 use crate::QueryError;
@@ -88,11 +90,23 @@ impl Catalog for HashMap<String, Collection> {
     }
 }
 
+/// Field-level read rules (FB-21): decides whether the caller may reference a
+/// field in a filter, sort key, group-by key, aggregate or relation path.
+/// A field it refuses is reported exactly like an unknown field, so its
+/// existence does not leak.
+pub trait FieldGuard: Send + Sync + fmt::Debug {
+    /// Whether `field` of `collection` may be referenced.
+    fn readable(&self, collection: &Collection, field: &Field) -> bool;
+}
+
 /// Compilation options.
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// Hidden fields may be referenced (administrators, system).
     pub allow_hidden: bool,
+    /// Field-level read rules of the caller, checked on every field a path
+    /// touches, relation targets included. `None`: no rule beyond `hidden`.
+    pub field_guard: Option<Arc<dyn FieldGuard>>,
     /// Maximum relation hops in one path.
     pub max_relation_depth: usize,
     /// Render literals into SQL text (index definitions only). Parameters,
@@ -108,6 +122,7 @@ impl Default for CompileOptions {
     fn default() -> Self {
         Self {
             allow_hidden: false,
+            field_guard: None,
             max_relation_depth: 3,
             inline_literals: false,
             params: HashMap::new(),
@@ -509,7 +524,10 @@ impl<'a> Compiler<'a> {
             }
             return Err(unknown());
         };
-        if !field.kind.is_queryable() || (field.hidden && !self.opts.allow_hidden) {
+        if !field.kind.is_queryable()
+            || (field.hidden && !self.opts.allow_hidden)
+            || self.opts.field_guard.as_ref().is_some_and(|g| !g.readable(coll, field))
+        {
             return Err(unknown());
         }
         let col = row.col(d, &field.name);

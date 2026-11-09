@@ -66,7 +66,17 @@ impl Api {
         Self::with(None, Arc::new(DefaultAuthorizer), RouterOptions::default()).await
     }
 
+    /// The policy engine (FB-21) as authorizer, its routes and tenancy layer.
+    pub async fn with_policy_engine(ctx: Option<AccessContext>) -> Self {
+        Self::build(ctx, None, RouterOptions::default()).await
+    }
+
     pub async fn with(ctx: Option<AccessContext>, authorizer: Arc<dyn Authorizer>, opts: RouterOptions) -> Self {
+        Self::build(ctx, Some(authorizer), opts).await
+    }
+
+    async fn build(ctx: Option<AccessContext>, authorizer: Option<Arc<dyn Authorizer>>, opts: RouterOptions) -> Self {
+        let authorizer_is_policy = authorizer.is_none();
         let tmp = tempfile::tempdir().unwrap();
         let layout = DataLayout::new(tmp.path().join("data"));
         layout.ensure().unwrap();
@@ -75,8 +85,41 @@ impl Api {
             .await
             .unwrap();
         db.migrate(Some(&layout.backups_dir())).await.unwrap();
-        let state = AppState::with_authorizer(db.clone(), layout, authorizer).await.unwrap();
+        let state = match authorizer {
+            Some(a) => AppState::with_authorizer(db.clone(), layout, a).await.unwrap(),
+            None => {
+                let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+                let policy = forgebase_policy::PolicyService::open(backend).await.unwrap();
+                let state = AppState::with_authorizer(db.clone(), layout, policy.authorizer())
+                    .await
+                    .unwrap();
+                policy.attach_data(state.data().clone());
+                state.with_policy(policy)
+            }
+        };
         let mut app = forgebase_api::router(state, opts);
+        let _ = authorizer_is_policy;
+        if ctx.is_none() && authorizer_is_policy {
+            // Test-only identity: `x-test-as: admin | <user id>` stands in for
+            // the auth layer (outside the router's own layers, like it).
+            app = app.layer(middleware::from_fn(|mut req: Request<Body>, next: Next| async move {
+                let who = req
+                    .headers()
+                    .get("x-test-as")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                match who.as_deref() {
+                    Some("admin") => {
+                        req.extensions_mut().insert(AccessContext::admin("root"));
+                    }
+                    Some(id) => {
+                        req.extensions_mut().insert(AccessContext::user("users", id));
+                    }
+                    None => {}
+                }
+                next.run(req).await
+            }));
+        }
         if let Some(ctx) = ctx {
             // Outside the router's own layers, like the auth layer will be.
             app = app.layer(middleware::from_fn(move |mut req: Request<Body>, next: Next| {

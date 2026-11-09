@@ -58,6 +58,54 @@ const EXPECTED: &[(&str, &str)] = &[
     ("get", "/api/v1/sql/tables/{name}"),
     ("get", "/api/v1/collections/{collection}/export"),
     ("post", "/api/v1/collections/{collection}/import"),
+    // Policy and tenancy (FB-21, ADR-0008 §10).
+    ("get", "/api/v1/realms"),
+    ("post", "/api/v1/realms"),
+    ("get", "/api/v1/orgs"),
+    ("post", "/api/v1/orgs"),
+    ("get", "/api/v1/orgs/{org}"),
+    ("patch", "/api/v1/orgs/{org}"),
+    ("delete", "/api/v1/orgs/{org}"),
+    ("get", "/api/v1/orgs/{org}/projects"),
+    ("post", "/api/v1/orgs/{org}/projects"),
+    ("get", "/api/v1/projects"),
+    ("post", "/api/v1/projects"),
+    ("get", "/api/v1/projects/{project}"),
+    ("delete", "/api/v1/projects/{project}"),
+    ("post", "/api/v1/projects/{project}/environments"),
+    ("get", "/api/v1/orgs/{org}/members"),
+    ("put", "/api/v1/orgs/{org}/members"),
+    ("post", "/api/v1/orgs/{org}/members/remove"),
+    ("post", "/api/v1/orgs/{org}/members/status"),
+    ("get", "/api/v1/orgs/{org}/teams"),
+    ("post", "/api/v1/orgs/{org}/teams"),
+    ("delete", "/api/v1/teams/{team}"),
+    ("post", "/api/v1/teams/{team}/members"),
+    ("post", "/api/v1/teams/{team}/members/remove"),
+    ("get", "/api/v1/orgs/{org}/roles"),
+    ("put", "/api/v1/orgs/{org}/roles"),
+    ("delete", "/api/v1/orgs/{org}/roles/{key}"),
+    ("put", "/api/v1/orgs/{org}/role-sets"),
+    ("get", "/api/v1/roles"),
+    ("put", "/api/v1/roles"),
+    ("delete", "/api/v1/roles/{key}"),
+    ("put", "/api/v1/role-sets"),
+    ("put", "/api/v1/realm-bindings"),
+    ("post", "/api/v1/overrides"),
+    ("delete", "/api/v1/overrides/{id}"),
+    ("get", "/api/v1/acl"),
+    ("post", "/api/v1/acl"),
+    ("delete", "/api/v1/acl/{id}"),
+    ("post", "/api/v1/suspensions"),
+    ("post", "/api/v1/suspensions/lift"),
+    ("get", "/api/v1/policies/{collection}"),
+    ("put", "/api/v1/policies/{collection}"),
+    ("delete", "/api/v1/policies/{collection}"),
+    ("post", "/api/v1/orgs/{org}/invitations"),
+    ("post", "/api/v1/invitations/accept"),
+    ("get", "/api/v1/authz/me"),
+    ("post", "/api/v1/authz/check"),
+    ("get", "/api/v1/authz/audit"),
     ("get", "/api/v1/graph/nodes"),
     ("post", "/api/v1/graph/nodes"),
     ("get", "/api/v1/graph/nodes/{id}"),
@@ -148,13 +196,17 @@ async fn document_lists_every_route() {
 /// the router's 404 / 405.
 #[tokio::test]
 async fn every_documented_operation_is_routed() {
-    let api = Api::anonymous().await;
+    let api = Api::with_policy_engine(None).await;
     let doc = api.get("/api/openapi.json").await.json();
     for (method, path) in operations(&doc) {
         let uri = path
             .replace("{collection}", "c1")
             .replace("{id}", "r1")
-            .replace("{name}", "n1");
+            .replace("{name}", "n1")
+            .replace("{org}", "o1")
+            .replace("{project}", "p1")
+            .replace("{team}", "t1")
+            .replace("{key}", "k1");
         let m = Method::from_bytes(method.to_ascii_uppercase().as_bytes()).unwrap();
         let r = api
             .send(
