@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { deleteProvider, getBillingSettings, listProviders, listTaxRates, listWebhookEvents, putBillingSettings, putProvider, putTaxRate } from "../../api";
+import { archiveTaxRate, deleteProvider, getBillingSettings, listProviders, listTaxRates, listWebhookEvents, putBillingSettings, putProvider, putTaxRate } from "../../api";
 import type { BillingSettings, FinalAction, ProviderAccount } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
@@ -98,7 +98,7 @@ function TaxRates() {
   return (
     <Panel title="Tax rates">
       {rates.data && rates.data.length === 0 && <Empty>No tax rates.</Empty>}
-      {rates.data && rates.data.length > 0 && <ul aria-label="Tax rates" className="mb-3 text-sm">{rates.data.map((r) => <li key={r.region}><span className="font-mono text-xs">{r.region}</span> {r.name} {formatBp(r.rate_bp)}</li>)}</ul>}
+      {rates.data && rates.data.length > 0 && <ul aria-label="Tax rates" className="mb-3 text-sm">{rates.data.map((r) => <li key={r.region}><span className="font-mono text-xs">{r.region}</span> {r.name} {formatBp(r.rate_bp)}{r.active ? <span className="ml-2"><ConfirmButton label={`Archive tax rate ${r.region}`} disabled={act.busy} onConfirm={() => void act.run(() => archiveTaxRate(r.region), "Tax rate archived")} /></span> : <span className="ml-2"><Badge status="canceled" /></span>}</li>)}</ul>}
       <form onSubmit={save} aria-label="New tax rate" className="flex flex-wrap items-end gap-2 text-sm">
         <Field label="Tax region"><input className={`${inputCls} w-28`} value={region} onChange={(e) => setRegion(e.target.value)} required /></Field>
         <Field label="Tax name"><input className={`${inputCls} w-40`} value={name} onChange={(e) => setName(e.target.value)} required /></Field>

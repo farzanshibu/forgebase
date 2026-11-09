@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { SUBSCRIPTION_STATUSES, cancelSubscription, changePlan, listPrices, listSubscriptions, pauseSubscription, resumeSubscription, subscribe } from "../../api";
+import { SUBSCRIPTION_STATUSES, cancelSubscription, changePlan, listPrices, previewPlanChange, listSubscriptions, pauseSubscription, resumeSubscription, subscribe } from "../../api";
 import type { Price, Proration, Subscription, SubscriptionStatus } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatMoney } from "./money";
-import { prorationPreview } from "./proration";
 import { Badge, BillingError, Empty, Field, Th, SubjectLink } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
 import { useAct } from "./useAct";
@@ -17,7 +16,10 @@ function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]
   const [atEnd, setAtEnd] = useState(false);
   const live = sub.status !== "canceled";
   const current = prices.find((p) => p.key === sub.items[0]?.price);
-  const preview = changing && target ? prorationPreview(sub, current, prices.find((p) => p.key === target)) : undefined;
+  const preview = useLoad(
+    (s) => (changing && target ? previewPlanChange(sub.id, { price: target, proration, at_period_end: atEnd }, s) : Promise.resolve(undefined)),
+    `preview:${sub.id}:${changing}:${target}:${proration}:${atEnd}`,
+  );
   const candidates = prices.filter((p) => p.type === "recurring" && p.active && p.key !== current?.key);
   return (
     <div className="space-y-2">
@@ -43,10 +45,14 @@ function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]
             </Field>
             <label className="flex items-center gap-2 pt-6 text-sm text-zinc-300"><input type="checkbox" checked={atEnd} onChange={(e) => setAtEnd(e.target.checked)} />At period end</label>
           </div>
-          {preview && !atEnd && proration !== "none" && (
+          {preview.error != null && <ErrorView error={preview.error} />}
+          {preview.data && (
             <p aria-label="Proration preview" className="text-sm text-zinc-300">
-              Estimate: unused credit {formatMoney(preview.credit, preview.currency)}, new charge {formatMoney(preview.charge, preview.currency)}, net {formatMoney(preview.net, preview.currency)}.
-              <span className="text-zinc-500"> The server computes the final amount.</span>
+              {preview.data.at_period_end
+                ? `Takes effect ${when_(preview.data.effective_at)}; nothing is charged now. The next period costs ${formatMoney(preview.data.new_period_amount, preview.data.currency)}.`
+                : preview.data.proration === "none"
+                  ? `No proration. The next period costs ${formatMoney(preview.data.new_period_amount, preview.data.currency)}.`
+                  : `Unused credit ${formatMoney(preview.data.credit, preview.data.currency)}, new charge ${formatMoney(preview.data.charge, preview.data.currency)}, net ${formatMoney(preview.data.net, preview.data.currency)}${preview.data.invoiced_now ? " (invoiced now)" : " (added to the next invoice)"}.`}
             </p>
           )}
           <Button tone="primary" disabled={!target || act.busy} onClick={() => act.run(() => changePlan(sub.id, { price: target, proration, at_period_end: atEnd }), "Plan changed")}>Apply plan change</Button>

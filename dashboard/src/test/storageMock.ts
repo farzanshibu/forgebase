@@ -1,6 +1,26 @@
-/** In-memory fake of `/api/v1/storage` (and the entitlements read the usage panel makes) for component tests. Plain handlers: the OpenAPI fixture has no storage routes yet (FIX-3). */
-import type { BucketAcl, Bucket, ObjectInfo, ReconcileReport, StorageStats, UploadSession } from "../api";
-import { envelope, type MockApi, type MockRequest } from "./mockApi";
+/** In-memory fake of `/api/v1/storage` (and the entitlements read the usage panel makes) for component tests. Routes the OpenAPI fixture describes are contract-checked: an undocumented route/status or a body that does not fit its schema lands in `mock.problems`. */
+import type { BucketAcl, BucketUsage, Bucket, ObjectInfo, ReconcileReport, StorageStats, UploadSession } from "../api";
+import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
+import { hasResponse, matchRoute, responseSchemaName, validateBody } from "./contract";
+
+/** Registers a route and, unless `check` is false, validates every answer against the OpenAPI fixture (status documented, JSON body fits the schema). */
+function checkedOn(mock: MockApi) {
+  return (method: string, template: string, h: (r: MockRequest) => MockReply, check = true) =>
+    mock.on(method, template, (req) => {
+      const out = h(req);
+      if (!check) return out;
+      const path = template.replace(/\{\*?(\w+)\}/g, (_, n: string) => encodeURIComponent(req.params[n] ?? ""));
+      const spec = matchRoute(method, path);
+      if (!spec) mock.problems.push(`not in openapi.json: ${method} ${template}`);
+      else if (out.status < 400) {
+        if (!hasResponse(spec.op, out.status)) mock.problems.push(`${method} ${template}: status ${out.status} not documented`);
+        const name = responseSchemaName(spec.op, out.status);
+        if (name && out.body !== undefined) for (const p of validateBody(name, out.body)) mock.problems.push(`${method} ${template} -> ${name}: ${p}`);
+      }
+      return out;
+    });
+}
+
 
 const NOW = "2026-11-09T10:00:00Z";
 export const bucket = (name: string, extra: Partial<Bucket> = {}): Bucket => ({ name, visibility: "private", versioning: false, max_object_bytes: null, allowed_content_types: null, owner: "admin", created_at: NOW, updated_at: NOW, ...extra });
@@ -23,7 +43,8 @@ export interface StorageState {
   chunks: { offset: number; size: number }[];
 }
 
-export function installStorage(mock: MockApi): StorageState {
+export function installStorage(mockApi: MockApi): StorageState {
+  const mock = { on: checkedOn(mockApi) };
   const st: StorageState = {
     buckets: [bucket("media", { versioning: true }), bucket("docs")],
     versions: {
@@ -62,7 +83,7 @@ export function installStorage(mock: MockApi): StorageState {
 
   mock.on("GET", `${S}/stats`, () => ({ status: 200, body: stats() }));
   mock.on("POST", `${S}/maintenance/reconcile`, () => ({ status: 200, body: st.report }));
-  mock.on("GET", "/api/v1/entitlements", () => ({ status: 200, body: { subject: "user:admin", plan: "pro", entitled: true, features: st.quota === null ? {} : { "storage.bytes": { enabled: true, kind: "quota", limit: st.quota, unit: "bytes", period: "none", source: "plan" } } } }));
+  mock.on("GET", "/api/v1/entitlements", () => ({ status: 200, body: { subject: "user:admin", plan: "pro", entitled: true, features: st.quota === null ? {} : { "storage.bytes": { enabled: true, kind: "quota", limit: st.quota, unit: "bytes", period: "none", source: "plan" } } } }), false);
   mock.on("GET", `${S}/buckets`, () => ({ status: 200, body: { items: st.buckets } }));
   mock.on("POST", `${S}/buckets`, ({ body }) => {
     const b = body as { name: string; visibility?: Bucket["visibility"]; versioning?: boolean; max_object_bytes?: number | null };
@@ -141,9 +162,22 @@ export function installStorage(mock: MockApi): StorageState {
     if (move) delete st.versions[vkey(params.bucket!, b.key)];
     return { status: move ? 200 : 201, body: dest };
   };
+  mock.on("GET", `${S}/buckets/{bucket}/usage`, ({ params }) => {
+    if (!find(params.bucket!)) return nf();
+    const all = Object.entries(st.versions).filter(([k]) => k.startsWith(`${params.bucket}/`)).flatMap(([, vs]) => vs);
+    const l = live(params.bucket!);
+    const body: BucketUsage = { bucket: params.bucket!, objects: l.length, versions: all.length, logical_bytes: l.reduce((n, o) => n + o.size, 0), version_bytes: all.reduce((n, o) => n + o.size, 0) };
+    return { status: 200, body };
+  });
+  mock.on("GET", `${S}/buckets/{bucket}/meta/{*key}`, ({ params, query }) => {
+    const vs = st.versions[vkey(params.bucket!, params.key!)];
+    const v = query.get("version") ? vs?.find((x) => x.version_id === query.get("version")) : vs?.[0];
+    return v && !v.delete_marker ? { status: 200, body: v } : envelope(404, "object_not_found", "no such object");
+  });
   mock.on("POST", `${S}/buckets/{bucket}/copy`, xfer(false));
   mock.on("POST", `${S}/buckets/{bucket}/move`, xfer(true));
-  mock.on("GET", `${S}/buckets/{bucket}/versions/{*key}`, ({ params }) => ({ status: 200, body: { items: st.versions[vkey(params.bucket!, params.key!)] ?? [] } }));
+  // Unchecked: the fixture documents this answer as a bare ObjectInfo, but the server returns `{items}` (documentation bug, see report).
+  mock.on("GET", `${S}/buckets/{bucket}/versions/{*key}`, ({ params }) => ({ status: 200, body: { items: st.versions[vkey(params.bucket!, params.key!)] ?? [] } }), false);
   mock.on("POST", `${S}/buckets/{bucket}/restore`, ({ params, body }) => {
     const b = body as { key: string; version_id: string };
     const src = st.versions[vkey(params.bucket!, b.key)]?.find((v) => v.version_id === b.version_id);
