@@ -76,7 +76,7 @@ utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
 uuid = { version = "1.29.1", features = ["v4"] }
 # Wasm runtime for server functions (FB-60, ADR-0017). Apache-2.0 WITH LLVM-exception.
 wasmtime = { version = "50.0.1", default-features = false, features = ["runtime", "cranelift", "async", "std"] }
-wat = "1.261.0"
+wat = "=1.261.0"
 webpki-roots = "1.0.11"
 
 [workspace.lints.rust]
