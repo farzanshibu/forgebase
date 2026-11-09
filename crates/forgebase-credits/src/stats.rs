@@ -29,11 +29,11 @@ pub struct Window {
 }
 
 impl Window {
-    /// The last 30 days by day, ending now.
+    /// The last 30 days by day, up to and including now.
     pub fn last_30_days(now: i64) -> Self {
         Self {
-            from: now - 30 * DAY_MS,
-            to: now,
+            from: now + 1 - 30 * DAY_MS,
+            to: now + 1,
             interval: Interval::Day,
         }
     }
@@ -110,7 +110,12 @@ impl CreditService {
 
     /// The balance of a subject over a window: the opening balance and, per
     /// bucket, credits added, credits removed and the closing balance.
-    pub async fn balance_history(&self, ctx: &AccessContext, subject: Option<&str>, w: Window) -> Result<BalanceHistory> {
+    pub async fn balance_history(
+        &self,
+        ctx: &AccessContext,
+        subject: Option<&str>,
+        w: Window,
+    ) -> Result<BalanceHistory> {
         let subject = self.subject_for(ctx, subject)?;
         self.can_read(ctx, &subject)?;
         let starts = check_window(w)?;

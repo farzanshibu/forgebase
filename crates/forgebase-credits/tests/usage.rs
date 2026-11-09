@@ -5,7 +5,9 @@
 mod common;
 
 use common::*;
-use forgebase_credits::{AmendInput, CreditError, Cursor, EntryKind, Interval, RateBasis, RateInput, SpendInput, Window};
+use forgebase_credits::{
+    AmendInput, CreditError, Cursor, EntryKind, Interval, RateBasis, RateInput, SpendInput, Window,
+};
 use forgebase_entitlements::{Enforcement, FeatureInput, FeatureKind, GaugeRequest, PlanInput, QuotaPolicy};
 
 async fn priced(env: &Env, feature: &str, credits_per_unit: i64, per_units: i64, basis: RateBasis) {
@@ -33,18 +35,31 @@ async fn usage_events_of_priced_features_are_charged_in_credits() {
     env.use_units(&s, "ai_tokens", 2500, "u1").await;
     env.use_units(&s, "exports", 4, "u2").await; // not priced
     let run = env.credits.consume_usage().await.unwrap();
-    assert_eq!((run.events_read, run.events_charged, run.credits_charged, run.shortfall), (2, 1, 3, 0));
+    assert_eq!(
+        (run.events_read, run.events_charged, run.credits_charged, run.shortfall),
+        (2, 1, 3, 0)
+    );
     assert_eq!(env.balance(&s).await, 7);
-    let page = env.credits.usage_charges(&sys(), Some(&s), false, None, None, false).await.unwrap();
+    let page = env
+        .credits
+        .usage_charges(&sys(), Some(&s), false, None, None, false)
+        .await
+        .unwrap();
     assert_eq!(page.items.len(), 1);
     let c = &page.items[0];
-    assert_eq!((c.feature.as_str(), c.units, c.cost, c.charged, c.shortfall), ("ai_tokens", 2500, 3, 3, 0));
+    assert_eq!(
+        (c.feature.as_str(), c.units, c.cost, c.charged, c.shortfall),
+        ("ai_tokens", 2500, 3, 3, 0)
+    );
     let entry = env.credits.entry(&sys(), c.entry_id.as_ref().unwrap()).await.unwrap();
     assert_eq!((entry.kind, entry.amount), (EntryKind::Consumption, -3));
     assert_eq!(entry.usage_event_id.as_deref(), Some(c.event_id.as_str()));
     assert_eq!(entry.usage_seq, Some(c.event_seq));
     assert_eq!((entry.feature.as_deref(), entry.units), (Some("ai_tokens"), Some(2500)));
-    assert_eq!(run.cursor, env.count("SELECT MAX(seq) FROM _forgebase_usage_events").await);
+    assert_eq!(
+        run.cursor,
+        env.count("SELECT MAX(seq) FROM _forgebase_usage_events").await
+    );
     assert_eq!(env.credits.usage_cursor(&admin()).await.unwrap().seq, run.cursor);
     // Nothing new: nothing read.
     assert_eq!(env.credits.consume_usage().await.unwrap().events_read, 0);
@@ -63,13 +78,20 @@ async fn the_balance_never_goes_negative_the_rest_is_shortfall() {
     let run = env.credits.consume_usage().await.unwrap();
     assert_eq!((run.events_charged, run.credits_charged, run.shortfall), (2, 5, 5));
     assert_eq!(env.balance(&s).await, 0);
-    let short = env.credits.usage_charges(&sys(), None, true, None, None, true).await.unwrap();
+    let short = env
+        .credits
+        .usage_charges(&sys(), None, true, None, None, true)
+        .await
+        .unwrap();
     let rows: Vec<_> = short
         .items
         .iter()
         .map(|c| (c.subject.as_str(), c.cost, c.charged, c.shortfall, c.entry_id.is_some()))
         .collect();
-    assert_eq!(rows, vec![(s.as_str(), 8, 5, 3, true), (broke.as_str(), 2, 0, 2, false)]);
+    assert_eq!(
+        rows,
+        vec![(s.as_str(), 8, 5, 3, true), (broke.as_str(), 2, 0, 2, false)]
+    );
     // Only the subject (or billing:read) sees its charges; all needs privilege.
     assert_eq!(
         env.credits
@@ -108,21 +130,36 @@ async fn replaying_the_usage_feed_never_charges_an_event_twice() {
     // Back to the start of the feed: everything is read again, nothing charged.
     env.credits.set_usage_cursor(&admin(), Cursor { seq: 0 }).await.unwrap();
     let replay = env.credits.consume_usage().await.unwrap();
-    assert_eq!((replay.events_read, replay.events_charged, replay.credits_charged), (450, 0, 0));
+    assert_eq!(
+        (replay.events_read, replay.events_charged, replay.credits_charged),
+        (450, 0, 0)
+    );
     assert_eq!(env.balance(&s).await, 550);
     assert_eq!(
-        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'consumption'").await,
+        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'consumption'")
+            .await,
         450
     );
     // A cursor ahead of the feed skips what lies before it.
     env.use_units(&s, "ai_tokens", 1, "late").await;
     let max = env.count("SELECT MAX(seq) FROM _forgebase_usage_events").await;
-    env.credits.set_usage_cursor(&admin(), Cursor { seq: max }).await.unwrap();
+    env.credits
+        .set_usage_cursor(&admin(), Cursor { seq: max })
+        .await
+        .unwrap();
     assert_eq!(env.credits.consume_usage().await.unwrap().events_read, 0);
     assert_eq!(env.balance(&s).await, 550);
-    env.credits.set_usage_cursor(&admin(), Cursor { seq: max - 1 }).await.unwrap();
+    env.credits
+        .set_usage_cursor(&admin(), Cursor { seq: max - 1 })
+        .await
+        .unwrap();
     assert_eq!(env.credits.consume_usage().await.unwrap().credits_charged, 1);
-    assert!(env.credits.set_usage_cursor(&user("alice"), Cursor { seq: 0 }).await.is_err());
+    assert!(
+        env.credits
+            .set_usage_cursor(&user("alice"), Cursor { seq: 0 })
+            .await
+            .is_err()
+    );
     env.assert_consistent(&s).await;
 }
 
@@ -225,7 +262,10 @@ async fn rates_are_managed_by_administrators_and_listed_to_callers() {
                 }
             )
             .await,
-        Err(CreditError::Invalid { code: "invalid_rate", .. })
+        Err(CreditError::Invalid {
+            code: "invalid_rate",
+            ..
+        })
     ));
     assert!(env.credits.delete_rate(&user("alice"), "ai_tokens").await.is_err());
     env.credits.delete_rate(&admin(), "ai_tokens").await.unwrap();
@@ -233,7 +273,12 @@ async fn rates_are_managed_by_administrators_and_listed_to_callers() {
         env.credits.delete_rate(&admin(), "ai_tokens").await,
         Err(CreditError::NotFound(_))
     ));
-    assert!(env.credits.rates(&forgebase_data::AccessContext::anonymous()).await.is_err());
+    assert!(
+        env.credits
+            .rates(&forgebase_data::AccessContext::anonymous())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -246,14 +291,23 @@ async fn refunds_of_usage_charges_are_for_operators() {
     env.top_up(&s, 50, "t").await;
     env.use_units(&s, "ai_tokens", 20, "u").await;
     env.credits.consume_usage().await.unwrap();
-    let charge = env.credits.usage_charges(&sys(), Some(&s), false, None, None, false).await.unwrap().items[0]
+    let charge = env
+        .credits
+        .usage_charges(&sys(), Some(&s), false, None, None, false)
+        .await
+        .unwrap()
+        .items[0]
         .entry_id
         .clone()
         .unwrap();
     // The org's owner cannot give its own usage charges back.
     let owner = user("alice").with_org(&org);
     assert!(env.credits.refund(&owner, AmendInput::new(&charge, "r")).await.is_err());
-    let r = env.credits.refund(&admin(), AmendInput::new(&charge, "r").amount(5)).await.unwrap();
+    let r = env
+        .credits
+        .refund(&admin(), AmendInput::new(&charge, "r").amount(5))
+        .await
+        .unwrap();
     assert_eq!((r.entry.amount, r.entry.feature.as_deref()), (5, Some("ai_tokens")));
     assert_eq!(env.balance(&s).await, 35);
     env.assert_consistent(&s).await;
@@ -279,7 +333,10 @@ async fn statistics_show_balance_history_consumption_and_totals() {
         .spend(&sys(), SpendInput::new(&s, 7, "s").for_feature("images", 1))
         .await
         .unwrap();
-    env.credits.refund(&sys(), AmendInput::new(&spend.entry.id, "r").amount(2)).await.unwrap();
+    env.credits
+        .refund(&sys(), AmendInput::new(&spend.entry.id, "r").amount(2))
+        .await
+        .unwrap();
     env.clock.advance(2 * DAY); // day 3
     env.grant_until(&s, 20, "g", T0 + 4 * DAY).await;
 
@@ -290,7 +347,11 @@ async fn statistics_show_balance_history_consumption_and_totals() {
     };
     let h = env.credits.balance_history(&user("alice"), None, w).await.unwrap();
     assert_eq!(h.opening, 0);
-    let pts: Vec<_> = h.points.iter().map(|p| (p.start, p.credited, p.debited, p.closing)).collect();
+    let pts: Vec<_> = h
+        .points
+        .iter()
+        .map(|p| (p.start, p.credited, p.debited, p.closing))
+        .collect();
     assert_eq!(
         pts,
         vec![
@@ -320,7 +381,17 @@ async fn statistics_show_balance_history_consumption_and_totals() {
     let rows: Vec<_> = c
         .rows
         .iter()
-        .map(|r| (r.start, r.feature.as_str(), r.debited, r.refunded, r.net, r.units, r.entries))
+        .map(|r| {
+            (
+                r.start,
+                r.feature.as_str(),
+                r.debited,
+                r.refunded,
+                r.net,
+                r.units,
+                r.entries,
+            )
+        })
         .collect();
     assert_eq!(
         rows,
@@ -348,9 +419,21 @@ async fn statistics_show_balance_history_consumption_and_totals() {
     assert_eq!(month.rows.iter().map(|r| r.net).sum::<i64>(), 30);
     assert!(env.credits.consumption(&user("alice"), None, true, w).await.is_err());
 
-    let sum = env.credits.summary(&sys(), Some(&s), false, day0, day0 + 4 * DAY).await.unwrap();
+    let sum = env
+        .credits
+        .summary(&sys(), Some(&s), false, day0, day0 + 4 * DAY)
+        .await
+        .unwrap();
     assert_eq!(
-        (sum.top_up, sum.grant, sum.consumption, sum.spend, sum.refund, sum.net, sum.balance),
+        (
+            sum.top_up,
+            sum.grant,
+            sum.consumption,
+            sum.spend,
+            sum.refund,
+            sum.net,
+            sum.balance
+        ),
         (100, 20, 25, 7, 2, 90, 90)
     );
     assert!(matches!(

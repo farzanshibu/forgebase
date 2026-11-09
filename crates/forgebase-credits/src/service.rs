@@ -505,7 +505,9 @@ pub(crate) async fn sweep_batch(t: &mut Tx<'_>, subject: Option<&str>, now: i64,
     for r in &rows.rows {
         let (lot, who, source, remaining) = (text(r, 0), text(r, 1), text(r, 2), int(r, 3));
         let Some(after) = sub_balance(t, &who, remaining, now).await? else {
-            return Err(CreditError::Internal(format!("the balance of {who} is below lot {lot}")));
+            return Err(CreditError::Internal(format!(
+                "the balance of {who} is below lot {lot}"
+            )));
         };
         let n = t
             .exec(
@@ -556,7 +558,13 @@ pub(crate) async fn sweep_tx(t: &mut Tx<'_>, subject: &str, now: i64) -> Result<
 
 /// Gives `amount` (default: what is left) of a debit back to the lots it
 /// came from.
-async fn refund_tx(t: &mut Tx<'_>, orig: &LedgerEntry, amount: Option<i64>, meta: &Meta, now: i64) -> Result<LedgerEntry> {
+async fn refund_tx(
+    t: &mut Tx<'_>,
+    orig: &LedgerEntry,
+    amount: Option<i64>,
+    meta: &Meta,
+    now: i64,
+) -> Result<LedgerEntry> {
     let refunded = scalar(
         &t.fetch(
             "SELECT COALESCE(SUM(amount), 0) FROM _forgebase_credit_ledger WHERE ref_entry = ?1 AND kind = 'refund'",
@@ -728,7 +736,9 @@ async fn reverse_tx(
 pub(crate) async fn replay(t: &mut Tx<'_>, subject: &str, meta: &Meta) -> Result<Option<LedgerEntry>> {
     let rows = t
         .fetch(
-            &format!("SELECT {ENTRY_COLUMNS} FROM _forgebase_credit_ledger WHERE subject = ?1 AND idempotency_key = ?2"),
+            &format!(
+                "SELECT {ENTRY_COLUMNS} FROM _forgebase_credit_ledger WHERE subject = ?1 AND idempotency_key = ?2"
+            ),
             vec![subject.into(), meta.idem.clone().into()],
         )
         .await?;
@@ -822,7 +832,10 @@ fn check_metadata(m: Option<Json>) -> Result<Option<Json>> {
     match m {
         None | Some(Json::Null) => Ok(None),
         Some(Json::Object(o)) if Json::Object(o.clone()).to_string().len() <= 16 * 1024 => Ok(Some(Json::Object(o))),
-        Some(Json::Object(_)) => Err(CreditError::invalid("invalid_metadata", "metadata is larger than 16 KiB")),
+        Some(Json::Object(_)) => Err(CreditError::invalid(
+            "invalid_metadata",
+            "metadata is larger than 16 KiB",
+        )),
         Some(_) => Err(CreditError::invalid("invalid_metadata", "metadata must be an object")),
     }
 }
@@ -999,10 +1012,7 @@ impl CreditService {
                 vec![subject.clone().into()],
             ))
             .await?;
-        let (stored, updated_at) = acct
-            .rows
-            .first()
-            .map_or((0, None), |r| (int(r, 0), opt_int(r, 1)));
+        let (stored, updated_at) = acct.rows.first().map_or((0, None), |r| (int(r, 0), opt_int(r, 1)));
         // Lapsed lots not swept yet are not spendable.
         let lapsed = scalar(
             &self
@@ -1125,7 +1135,9 @@ impl CreditService {
         let q = |rows: Rows| scalar(&rows);
         let db = self.db();
         let balance = q(db
-            .fetch_all(&one("SELECT balance FROM _forgebase_credit_accounts WHERE subject = ?1"))
+            .fetch_all(&one(
+                "SELECT balance FROM _forgebase_credit_accounts WHERE subject = ?1",
+            ))
             .await?);
         let ledger_sum = q(db
             .fetch_all(&one(
@@ -1143,18 +1155,14 @@ impl CreditService {
             ))
             .await?);
         let bad_lots = q(db
-            .fetch_all(&one(
-                "SELECT COUNT(*) FROM _forgebase_credit_lots l
+            .fetch_all(&one("SELECT COUNT(*) FROM _forgebase_credit_lots l
                  WHERE l.subject = ?1 AND l.remaining <> (SELECT COALESCE(SUM(a.amount), 0)
-                     FROM _forgebase_credit_allocations a WHERE a.lot_id = l.id)",
-            ))
+                     FROM _forgebase_credit_allocations a WHERE a.lot_id = l.id)"))
             .await?);
         let bad_entries = q(db
-            .fetch_all(&one(
-                "SELECT COUNT(*) FROM _forgebase_credit_ledger e
+            .fetch_all(&one("SELECT COUNT(*) FROM _forgebase_credit_ledger e
                  WHERE e.subject = ?1 AND e.amount <> (SELECT COALESCE(SUM(a.amount), 0)
-                     FROM _forgebase_credit_allocations a WHERE a.entry_id = e.id)",
-            ))
+                     FROM _forgebase_credit_allocations a WHERE a.entry_id = e.id)"))
             .await?);
         let lots_match_allocations = bad_lots == 0;
         let entries_match_allocations = bad_entries == 0;
@@ -1198,7 +1206,10 @@ impl CreditService {
         if let Some(at) = input.expires_at
             && at <= now
         {
-            return Err(CreditError::invalid("invalid_expiry", "expires_at must be in the future"));
+            return Err(CreditError::invalid(
+                "invalid_expiry",
+                "expires_at must be in the future",
+            ));
         }
         let external_ref = check_text(input.external_ref, "external_ref", 256)?;
         let request = json!({
@@ -1307,7 +1318,8 @@ impl CreditService {
             check_amount(a)?;
         }
         let external_ref = check_text(input.external_ref, "external_ref", 256)?;
-        let request = json!({"op": "refund", "entry_id": orig.id, "amount": input.amount, "external_ref": external_ref});
+        let request =
+            json!({"op": "refund", "entry_id": orig.id, "amount": input.amount, "external_ref": external_ref});
         let meta = Meta::new(
             ctx,
             idem,

@@ -25,7 +25,8 @@ use crate::error::CreditError;
 use crate::model::{
     AmendInput, AuditReport, Balance, BalanceHistory, BalancePoint, ConsumptionRow, ConsumptionStats, CreditInput,
     CreditSummary, Cursor, EntryKind, Expiring, ExpiryReport, Interval, LedgerEntry, LedgerPage, Lot,
-    MaintenanceReport, Posted, Rate, RateBasis, RateInput, Reversal, SpendInput, UsageCharge, UsageChargePage, UsageRun,
+    MaintenanceReport, Posted, Rate, RateBasis, RateInput, Reversal, SpendInput, UsageCharge, UsageChargePage,
+    UsageRun,
 };
 use crate::service::{CreditService, LedgerQuery};
 use crate::stats::Window;
@@ -52,7 +53,11 @@ fn ok<T: Serialize>(v: T) -> ApiResult {
 }
 
 fn posted(p: Posted) -> ApiResult {
-    let status = if p.replayed { StatusCode::OK } else { StatusCode::CREATED };
+    let status = if p.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
     Ok((status, Json(p)).into_response())
 }
 

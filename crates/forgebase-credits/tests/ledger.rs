@@ -49,7 +49,10 @@ async fn top_ups_grants_and_spends_draw_expiring_credits_first() {
         .await
         .unwrap();
     assert!(!spent.replayed);
-    assert_eq!((spent.entry.kind, spent.entry.amount, spent.entry.balance_after), (EntryKind::Spend, -70, 80));
+    assert_eq!(
+        (spent.entry.kind, spent.entry.amount, spent.entry.balance_after),
+        (EntryKind::Spend, -70, 80)
+    );
     assert_eq!(spent.entry.feature.as_deref(), Some("ai_tokens"));
     // The expiring grant is used up first.
     let lots = env.credits.lots(&sys(), Some(&s), true).await.unwrap();
@@ -71,7 +74,11 @@ async fn top_ups_grants_and_spends_draw_expiring_credits_first() {
     let kinds: Vec<_> = page.items.iter().map(|e| (e.kind, e.amount, e.balance_after)).collect();
     assert_eq!(
         kinds,
-        vec![(EntryKind::TopUp, 100, 100), (EntryKind::Grant, 50, 150), (EntryKind::Spend, -70, 80)]
+        vec![
+            (EntryKind::TopUp, 100, 100),
+            (EntryKind::Grant, 50, 150),
+            (EntryKind::Spend, -70, 80)
+        ]
     );
     assert_eq!(env.credits.entry(&sys(), &top).await.unwrap().kind, EntryKind::TopUp);
     env.assert_consistent(&s).await;
@@ -93,7 +100,8 @@ async fn a_spend_is_all_or_nothing_and_never_overdraws() {
     env.credits.spend(&sys(), SpendInput::new(&s, 11, "s")).await.unwrap();
     assert_eq!(env.balance(&s).await, 0);
     assert_eq!(
-        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'spend'").await,
+        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'spend'")
+            .await,
         1
     );
     env.assert_consistent(&s).await;
@@ -140,16 +148,27 @@ async fn writes_are_idempotent_and_reused_keys_conflict() {
     for amount in [0, -5, forgebase_credits::MAX_AMOUNT + 1] {
         assert!(matches!(
             env.credits.top_up(&sys(), CreditInput::new(&s, amount, "a")).await,
-            Err(CreditError::Invalid { code: "invalid_amount", .. })
+            Err(CreditError::Invalid {
+                code: "invalid_amount",
+                ..
+            })
         ));
     }
     assert!(matches!(
-        env.credits.grant(&sys(), CreditInput::new(&s, 5, "past").expiring(T0)).await,
-        Err(CreditError::Invalid { code: "invalid_expiry", .. })
+        env.credits
+            .grant(&sys(), CreditInput::new(&s, 5, "past").expiring(T0))
+            .await,
+        Err(CreditError::Invalid {
+            code: "invalid_expiry",
+            ..
+        })
     ));
     assert!(matches!(
         env.credits.top_up(&sys(), CreditInput::new("bogus", 5, "b")).await,
-        Err(CreditError::Invalid { code: "invalid_subject", .. })
+        Err(CreditError::Invalid {
+            code: "invalid_subject",
+            ..
+        })
     ));
     env.assert_consistent(&s).await;
 }
@@ -166,7 +185,10 @@ async fn refunds_return_credits_to_their_lots_and_are_capped() {
         .refund(&sys(), AmendInput::new(&spend, "r1").amount(10))
         .await
         .unwrap();
-    assert_eq!((r1.entry.kind, r1.entry.amount, r1.entry.balance_after), (EntryKind::Refund, 10, 90));
+    assert_eq!(
+        (r1.entry.kind, r1.entry.amount, r1.entry.balance_after),
+        (EntryKind::Refund, 10, 90)
+    );
     assert_eq!(r1.entry.ref_entry.as_deref(), Some(spend.as_str()));
     assert_eq!(
         conflict_code(
@@ -190,14 +212,21 @@ async fn refunds_return_credits_to_their_lots_and_are_capped() {
     // Only debits can be refunded.
     assert!(matches!(
         env.credits.refund(&sys(), AmendInput::new(&top, "x")).await,
-        Err(CreditError::Invalid { code: "not_refundable", .. })
+        Err(CreditError::Invalid {
+            code: "not_refundable",
+            ..
+        })
     ));
     env.assert_consistent(&s).await;
 
     // Credits refunded into a lot that lapsed meanwhile lapse again at once.
     let spend2 = env.spend(&s, 30, "s2").await; // all from the grant
     env.clock.advance(2 * HOUR);
-    let r = env.credits.refund(&sys(), AmendInput::new(&spend2, "r4")).await.unwrap();
+    let r = env
+        .credits
+        .refund(&sys(), AmendInput::new(&spend2, "r4"))
+        .await
+        .unwrap();
     assert_eq!(r.entry.amount, 30);
     let page = env
         .credits
@@ -286,7 +315,10 @@ async fn reversals_take_back_only_what_is_left_of_a_purchase() {
         .grant_credits(CreditInput::new(&s, 500, "cycle_2026_11").expiring(T0 + 30 * DAY))
         .await
         .unwrap();
-    assert_eq!((g.entry.kind, g.entry.expires_at), (EntryKind::Grant, Some(T0 + 30 * DAY)));
+    assert_eq!(
+        (g.entry.kind, g.entry.expires_at),
+        (EntryKind::Grant, Some(T0 + 30 * DAY))
+    );
 }
 
 #[tokio::test]
@@ -324,7 +356,8 @@ async fn lapsed_credits_are_not_spendable_and_expire_by_maintenance() {
     env.clock.advance(2 * HOUR);
     env.spend(&s, 5, "s2").await;
     assert_eq!(
-        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'expiry'").await,
+        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'expiry'")
+            .await,
         2
     );
     assert_eq!(env.balance(&s).await, 0);
@@ -372,7 +405,8 @@ async fn the_maintenance_job_expires_lapsed_credits() {
     }
     pool.shutdown().await;
     assert_eq!(
-        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'expiry'").await,
+        env.count("SELECT COUNT(*) FROM _forgebase_credit_ledger WHERE kind = 'expiry'")
+            .await,
         2
     );
     assert_eq!(
@@ -499,7 +533,9 @@ async fn authorization_follows_subjects_and_never_lets_an_org_mint_its_own_credi
         Err(CreditError::NotFound(_))
     ));
     assert!(matches!(
-        env.credits.refund(&user("carol"), AmendInput::new(&spent.entry.id, "r9")).await,
+        env.credits
+            .refund(&user("carol"), AmendInput::new(&spent.entry.id, "r9"))
+            .await,
         Err(CreditError::NotFound(_))
     ));
     // Rates and maintenance: platform administrators.
@@ -543,9 +579,7 @@ async fn concurrent_spends_never_overdraw() {
         let credits = env.credits.clone();
         let s = s.clone();
         tasks.push(tokio::spawn(async move {
-            credits
-                .spend(&sys(), SpendInput::new(s, 7, format!("spend-{i}")))
-                .await
+            credits.spend(&sys(), SpendInput::new(s, 7, format!("spend-{i}"))).await
         }));
     }
     let mut ok = 0;
@@ -724,7 +758,11 @@ async fn property_ledger_sum_always_equals_balance() {
                     }
                     credits.push(env.credits.grant(&sys(), input).await.unwrap().entry.id);
                 }
-                2 | 3 => match env.credits.spend(&sys(), SpendInput::new(s, 1 + rng.below(50), &key)).await {
+                2 | 3 => match env
+                    .credits
+                    .spend(&sys(), SpendInput::new(s, 1 + rng.below(50), &key))
+                    .await
+                {
                     Ok(p) => debits.push(p.entry.id),
                     Err(CreditError::InsufficientCredits { .. }) => {}
                     Err(e) => panic!("{e}"),
