@@ -385,22 +385,177 @@ async fn import_records(
     on_conflict: OnConflict,
 ) -> Result<(u64, u64)> {
     let file = std::fs::File::open(path).map_err(io(path))?;
+    let records = BufReader::new(file).lines().enumerate().filter_map(|(n, line)| match line {
+        Err(e) => Some(Err(io(path)(e))),
+        Ok(l) if l.trim().is_empty() => None,
+        Ok(l) => Some(
+            serde_json::from_str::<Map<String, Json>>(&l)
+                .map_err(|e| BackupError::Format(format!("{} line {}: {e}", path.display(), n + 1))),
+        ),
+    });
+    import_stream(data, ctx, collection, records, on_conflict).await
+}
+
+async fn import_stream(
+    data: &DataService,
+    ctx: &AccessContext,
+    collection: &str,
+    records: impl Iterator<Item = Result<Map<String, Json>>>,
+    on_conflict: OnConflict,
+) -> Result<(u64, u64)> {
     let mut batch: Vec<Json> = Vec::with_capacity(BATCH);
     let (mut inserted, mut skipped) = (0u64, 0u64);
-    for (n, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(io(path))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let rec: Map<String, Json> = serde_json::from_str(&line)
-            .map_err(|e| BackupError::Format(format!("{} line {}: {e}", path.display(), n + 1)))?;
-        batch.push(clean(rec));
+    for rec in records {
+        batch.push(clean(rec?));
         if batch.len() == BATCH {
             flush(data, ctx, collection, &mut batch, on_conflict, &mut inserted, &mut skipped).await?;
         }
     }
     flush(data, ctx, collection, &mut batch, on_conflict, &mut inserted, &mut skipped).await?;
     Ok((inserted, skipped))
+}
+
+/// File format of a single-collection export or import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// One JSON array.
+    Json,
+    /// One JSON object per line.
+    Ndjson,
+    /// Comma-separated values (export only).
+    Csv,
+}
+
+impl std::str::FromStr for Format {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "json" => Ok(Self::Json),
+            "ndjson" | "jsonl" => Ok(Self::Ndjson),
+            "csv" => Ok(Self::Csv),
+            other => Err(format!("unknown format {other:?}; use json, ndjson or csv")),
+        }
+    }
+}
+
+fn csv_cell(v: Option<&Json>) -> String {
+    let text = match v {
+        None | Some(Json::Null) => String::new(),
+        Some(Json::String(s)) => s.clone(),
+        Some(Json::Bool(b)) => b.to_string(),
+        Some(Json::Number(n)) => n.to_string(),
+        Some(other) => other.to_string(),
+    };
+    if text.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text
+    }
+}
+
+/// Exports one collection to the file `dest` as JSON, NDJSON or CSV. CSV
+/// columns are `id`, `created`, `updated` and the declared fields (never
+/// passwords); non-scalar values are written as JSON text.
+pub async fn export_records(data: &DataService, collection: &str, dest: &Path, format: Format) -> Result<u64> {
+    use forgebase_data::schema::FieldKind;
+    let ctx = AccessContext::system();
+    if dest.exists() {
+        return Err(BackupError::Conflict(format!("{} already exists", dest.display())));
+    }
+    let coll = data.get_collection(&ctx, collection).await?;
+    if coll.kind == CollectionType::Auth {
+        return Err(BackupError::Invalid(format!(
+            "{collection} is an auth collection; its records are not exported"
+        )));
+    }
+    let columns: Vec<String> = ["id", "created", "updated"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(
+            coll.fields
+                .iter()
+                .filter(|f| !matches!(f.kind, FieldKind::Password { .. }))
+                .map(|f| f.name.clone()),
+        )
+        .collect();
+    let file = crate::fsutil::create_private(dest).map_err(io(dest))?;
+    let mut w = BufWriter::new(file);
+    let put = |w: &mut BufWriter<std::fs::File>, bytes: &[u8]| w.write_all(bytes).map_err(io(dest));
+    match format {
+        Format::Json => put(&mut w, b"[")?,
+        Format::Csv => put(&mut w, format!("{}\n", columns.join(",")).as_bytes())?,
+        Format::Ndjson => {}
+    }
+    let mut query = ListQuery {
+        per_page: Some(PAGE),
+        skip_total: true,
+        sort: Some("id".into()),
+        ..ListQuery::default()
+    };
+    let mut count = 0u64;
+    loop {
+        let page = data.list_records(&ctx, collection, &query).await?;
+        for rec in &page.items {
+            match format {
+                Format::Json => {
+                    put(&mut w, if count == 0 { b"\n" } else { b",\n" })?;
+                    put(&mut w, &serde_json::to_vec(rec).map_err(|e| BackupError::Internal(e.to_string()))?)?;
+                }
+                Format::Ndjson => {
+                    put(&mut w, &serde_json::to_vec(rec).map_err(|e| BackupError::Internal(e.to_string()))?)?;
+                    put(&mut w, b"\n")?;
+                }
+                Format::Csv => {
+                    let line: Vec<String> = columns.iter().map(|c| csv_cell(rec.get(c))).collect();
+                    put(&mut w, format!("{}\n", line.join(",")).as_bytes())?;
+                }
+            }
+            count += 1;
+        }
+        match page.next_cursor {
+            Some(c) => query.cursor = Some(c),
+            None => break,
+        }
+    }
+    if format == Format::Json {
+        put(&mut w, b"\n]\n")?;
+    }
+    w.flush().map_err(io(dest))?;
+    w.get_ref().sync_all().map_err(io(dest))?;
+    Ok(count)
+}
+
+/// Imports records from a JSON (array) or NDJSON file into an existing
+/// collection, keeping their ids. Returns `(inserted, skipped)`.
+pub async fn import_records_file(
+    data: &DataService,
+    collection: &str,
+    src: &Path,
+    format: Format,
+    on_conflict: OnConflict,
+) -> Result<(u64, u64)> {
+    let ctx = AccessContext::system();
+    data.get_collection(&ctx, collection).await?;
+    match format {
+        Format::Ndjson => import_records(data, &ctx, collection, src, on_conflict).await,
+        Format::Json => {
+            let text = std::fs::read_to_string(src).map_err(io(src))?;
+            let items: Vec<Map<String, Json>> =
+                serde_json::from_str(&text).map_err(|e| BackupError::Format(format!("{}: {e}", src.display())))?;
+            import_stream(data, &ctx, collection, items.into_iter().map(Ok), on_conflict).await
+        }
+        Format::Csv => Err(BackupError::Invalid(
+            "CSV import is available over REST (POST /api/v1/collections/{name}/import); use json or ndjson here".into(),
+        )),
+    }
+}
+
+/// A record whose id (or another unique value) is already taken.
+fn is_duplicate(e: &forgebase_data::DataError) -> bool {
+    match e {
+        forgebase_data::DataError::Validation(v) => v.fields.contains_key("id") || v.fields.keys().any(|k| k.ends_with(".id")),
+        other => other.kind() == ErrorKind::Conflict,
+    }
 }
 
 async fn flush(
@@ -419,11 +574,11 @@ async fn flush(
     let len = items.len() as u64;
     match data.create_records(ctx, collection, items.clone()).await {
         Ok(_) => *inserted += len,
-        Err(e) if on_conflict == OnConflict::Skip && e.kind() == ErrorKind::Conflict => {
+        Err(e) if on_conflict == OnConflict::Skip && is_duplicate(&e) => {
             for item in items {
                 match data.create_record(ctx, collection, item).await {
                     Ok(_) => *inserted += 1,
-                    Err(e) if e.kind() == ErrorKind::Conflict => *skipped += 1,
+                    Err(e) if is_duplicate(&e) => *skipped += 1,
                     Err(e) => return Err(e.into()),
                 }
             }

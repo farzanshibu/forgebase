@@ -15,7 +15,8 @@
 //!    limits, and the credit ledger of `forgebase-credits` under
 //!    `/api/v1/credits`, which charges usage events of priced features, and
 //!    the topics and queues API of `forgebase-queue` under `/api/v1/queues`
-//!    unless `[queue] enabled = false`),
+//!    unless `[queue] enabled = false`, and the snapshot API of
+//!    `forgebase-backup` under `/api/v1/system/backups`),
 //! 6. start the job scheduler and in-process worker pool, the vector
 //!    engine's index warm-up and saver, and the queue's maintenance and push
 //!    task,
@@ -293,6 +294,7 @@ pub async fn start_with_jobs(
         forgebase_storage::extension(storage.clone()),
         forgebase_credits::extension(credits.clone()),
         forgebase_customize::extension(customize.clone()),
+        forgebase_backup::extension(forgebase_backup::BackupService::new(db.clone(), layout.clone())),
     ];
     if let Some(b) = &billing {
         extensions.push(forgebase_billing::extension(b.clone()));
