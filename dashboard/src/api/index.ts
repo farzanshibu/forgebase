@@ -12,3 +12,4 @@ export * from "./functions";
 export * from "./jobs";
 export * from "./identity";
 export * from "./customize";
+export * from "./billing";

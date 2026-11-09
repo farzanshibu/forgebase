@@ -89,9 +89,9 @@ export const STUDIOS: Studio[] = [
   {
     path: "billing",
     label: "Billing Studio",
-    summary: "Plans, usage, invoices",
-    phase: 8,
-    features: ["Plans and subscriptions", "Usage, invoices and customers", "Payment history and webhooks"],
+    summary: "Plans, subscriptions, invoices, credits",
+    phase: null,
+    features: ["Catalog: products, prices, features, add-ons, usage packs", "Customers, subscriptions, orders and lifecycle actions", "Usage meters, invoices, payments, refunds, dunning", "Revenue metrics, credits and ledgers, providers"],
   },
   {
     path: "system",
