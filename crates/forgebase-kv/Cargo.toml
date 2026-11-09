@@ -1,0 +1,35 @@
+[package]
+name = "forgebase-kv"
+description = "ForgeBase key-value engine: Redis-style data types, TTL, LRU eviction, tenant namespaces, in-process pub/sub, SQLite write-behind persistence and the /api/v1/kv REST API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+forgebase-api.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+
+[dev-dependencies]
+forgebase-query.workspace = true
+forgebase-schema.workspace = true
+http-body-util.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

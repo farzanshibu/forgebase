@@ -701,6 +701,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-kv"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "forgebase-api",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-query",
+ "forgebase-schema",
+ "futures-util",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "utoipa",
+]
+
+[[package]]
 name = "forgebase-migrations"
 version = "0.1.0"
 dependencies = [
@@ -760,6 +786,7 @@ dependencies = [
  "forgebase-data",
  "forgebase-db",
  "forgebase-jobs",
+ "forgebase-kv",
  "forgebase-observability",
  "serde_json",
  "tempfile",

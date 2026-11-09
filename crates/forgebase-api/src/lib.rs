@@ -277,6 +277,19 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
 /// otherwise [`principal::install_anonymous`] stores an anonymous context and
 /// the default authorizer denies the request.
 pub fn router(state: AppState, opts: RouterOptions) -> Router {
+    router_with(state, opts, Router::new(), None)
+}
+
+/// [`router`] plus routes owned by another crate (for example the KV engine's
+/// `/api/v1/kv`). `extra` gets the same layers as every other route (request
+/// ids, error envelope, anonymous fallback, timeout); `extra_openapi` is
+/// merged into `GET /api/openapi.json`.
+pub fn router_with(
+    state: AppState,
+    opts: RouterOptions,
+    extra: Router<AppState>,
+    extra_openapi: Option<utoipa::openapi::OpenApi>,
+) -> Router {
     let auth = state.auth().cloned();
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,
@@ -285,7 +298,9 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
     for ext in &opts.extensions {
         v1 = v1.merge(ext.routes.clone());
     }
-    let doc = Arc::new(openapi::document_with(opts.extensions.iter().map(|e| &e.openapi)));
+    let doc = Arc::new(openapi::document_with(
+        opts.extensions.iter().map(|e| &e.openapi).chain(extra_openapi.as_ref()),
+    ));
     let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
@@ -297,6 +312,7 @@ pub fn router(state: AppState, opts: RouterOptions) -> Router {
             "/api/v1/graph",
             forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
         )
+        .merge(extra)
         .route("/admin", get(admin::redirect))
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))

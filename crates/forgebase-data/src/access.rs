@@ -146,6 +146,12 @@ pub enum Action {
     ManageJobs,
     /// Act as a job worker: register, claim, heartbeat, complete, fail (FB-61).
     WorkJobs,
+    /// Read key-value data: GET-style commands, scans, subscribing (FB-31).
+    KvRead,
+    /// Write key-value data: SET-style commands, TTL changes, publishing.
+    KvWrite,
+    /// Key-value administration: flush a namespace, list namespaces, server statistics.
+    KvAdmin,
 }
 
 /// A row-level predicate in the filter language, with its parameters.
