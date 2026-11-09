@@ -100,8 +100,8 @@ struct Inner {
     reader: SqlitePool,
     path: PathBuf,
     slow: sqlite_backend::SlowLog,
-    /// Bumped on every committed schema change; see `sqlite_backend::bind`.
-    schema_gen: std::sync::atomic::AtomicU64,
+    /// Bumped on every committed schema change; readers compare it on acquire.
+    schema_gen: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Result of [`Database::migrate`].
@@ -213,7 +213,18 @@ impl Database {
         }
 
         let reader_opts = base.read_only(opts.read_only).pragma("query_only", "ON");
+        let schema_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = Arc::new(sqlite_backend::SeenGenerations::default());
+        let hook_gen = Arc::clone(&schema_gen);
         let reader = SqlitePoolOptions::new()
+            .before_acquire(move |conn, _meta| {
+                let (seen, hook_gen) = (Arc::clone(&seen), Arc::clone(&hook_gen));
+                Box::pin(async move {
+                    let current = hook_gen.load(std::sync::atomic::Ordering::Acquire);
+                    seen.refresh_if_behind(conn, current).await?;
+                    Ok(true)
+                })
+            })
             .max_connections(opts.read_pool_size.max(1))
             .min_connections(0)
             .acquire_timeout(ACQUIRE_TIMEOUT)
@@ -228,13 +239,9 @@ impl Database {
                 reader,
                 path: opts.path,
                 slow: sqlite_backend::SlowLog::default(),
-                schema_gen: std::sync::atomic::AtomicU64::new(0),
+                schema_gen,
             }),
         })
-    }
-
-    pub(crate) fn schema_generation(&self) -> u64 {
-        self.inner.schema_gen.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(crate) fn bump_schema_generation(&self) {

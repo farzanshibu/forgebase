@@ -23,8 +23,12 @@ async fn cached_star_select_sees_columns_added_by_another_connection() {
     .unwrap();
 
     let mut tx = db.begin(TxMode::SchemaChange).await.unwrap();
-    tx.execute(&Statement::raw("CREATE TABLE t (a INTEGER, b INTEGER)")).await.unwrap();
-    tx.execute(&Statement::raw("INSERT INTO t VALUES (1, 2)")).await.unwrap();
+    tx.execute(&Statement::raw("CREATE TABLE t (a INTEGER, b INTEGER)"))
+        .await
+        .unwrap();
+    tx.execute(&Statement::raw("INSERT INTO t VALUES (1, 2)"))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Prepare + cache on reader connection A.
@@ -33,7 +37,9 @@ async fn cached_star_select_sees_columns_added_by_another_connection() {
 
     // ALTER on the writer connection B.
     let mut tx = db.begin(TxMode::SchemaChange).await.unwrap();
-    tx.execute(&Statement::raw("ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 3")).await.unwrap();
+    tx.execute(&Statement::raw("ALTER TABLE t ADD COLUMN c INTEGER DEFAULT 3"))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Read on A again: used to panic "index out of bounds" or return stale columns.

@@ -267,19 +267,24 @@ only dependencies already recorded here: `axum`, `serde`, `serde_json`,
 anchors) is a 30-line civil-date conversion in the crate, not a date library.
 `Cargo.lock` gains only the `forgebase-entitlements` entry.
 
-## Addendum (MDF-52): sqlx statement cache and DDL
+## Addendum (MDF-52): stale statements after DDL
 
-sqlx caches prepared statements per connection, keyed by SQL text, and keeps the
-column list seen at prepare time. After `ALTER TABLE ... ADD COLUMN` through the
-writer, a pooled reader that had cached `SELECT t.*` decoded rows with the old
-columns and `sqlx-sqlite` panicked (`index out of bounds`).
+Two caches go stale on a pooled reader after another connection runs DDL:
+sqlx's per-connection statement cache (it keeps the column list seen at prepare
+time; `sqlx-sqlite` then panics `index out of bounds` decoding `SELECT t.*`
+after `ADD COLUMN`) and SQLite's own in-memory schema, which is reloaded only
+when a transaction starts, so even a fresh prepare sees the old columns.
+Appending a version marker to the SQL text fixes only the first (tried, test
+still failed).
 
-Fix (`forgebase-db`): the database keeps a schema generation counter, bumped
-before and after every committed `TxMode::SchemaChange` and around migrations.
-`bind` appends `/*g<N>*/` to cached statements, so a new generation is new SQL
-text and every connection prepares afresh. Cost: one atomic load per query; no
-per-acquire round trip and no loss of caching for non-DDL traffic. Rejected:
-non-persistent statements for star selects (loses caching for the hottest read
-path) and a per-acquire `PRAGMA schema_version` check (extra round trip per
-acquire). Stale entries age out of sqlx's LRU. Regression test:
+Fix (`forgebase-db`): a shared schema generation counter, bumped before and
+after every committed `TxMode::SchemaChange` and around migrations. The reader
+pool's `before_acquire` hook compares it with the generation that connection
+last saw; if behind it calls `clear_cached_statements()` and runs
+`SELECT 1 FROM sqlite_schema LIMIT 1` to make SQLite reload the schema. Cost
+when nothing changed: one atomic load and a map lookup per acquire, no database
+round trip, and statement caching stays on for normal traffic. Rejected:
+non-persistent star selects (does not fix SQLite's schema cache, loses caching)
+and `PRAGMA schema_version` per acquire (round trip on every acquire).
+The writer needs nothing: it runs the DDL itself. Regression test:
 `crates/forgebase-db/tests/stale_statements.rs`.
