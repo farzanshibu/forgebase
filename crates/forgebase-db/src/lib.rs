@@ -435,6 +435,29 @@ impl Database {
         Ok(())
     }
 
+    /// Writes a consistent, self-contained copy of the database to `target`
+    /// (`VACUUM INTO`, FB-83): one transaction snapshot of the committed state,
+    /// taken while the server keeps serving (readers are never blocked; in WAL
+    /// mode the single writer is only held for its own statement). The target
+    /// must not exist. The copy has no WAL and needs no recovery.
+    ///
+    /// Works on a read-only handle too, so `forgebase backup` can snapshot a
+    /// database a running server owns.
+    pub async fn snapshot_to(&self, target: &Path) -> Result<(), DbError> {
+        if target.exists() {
+            return Err(DbError::Io {
+                path: target.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::AlreadyExists, "snapshot target exists"),
+            });
+        }
+        sqlx::query("VACUUM INTO ?1")
+            .bind(target.to_string_lossy().into_owned())
+            .execute(&self.inner.writer)
+            .await
+            .map_err(|e| self.classify(e))?;
+        Ok(())
+    }
+
     /// Closes both pools, waiting for in-flight queries.
     pub async fn close(&self) {
         self.inner.reader.close().await;
@@ -934,6 +957,35 @@ mod tests {
                 || err.to_string().contains("query_only"),
             "{err}"
         );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_to_is_consistent_online_and_read_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = fresh(tmp.path()).await;
+        db.meta_set("k", "v1").await.unwrap();
+        let snap = tmp.path().join("snap.db");
+        db.snapshot_to(&snap).await.unwrap();
+        assert!(db.snapshot_to(&snap).await.is_err(), "existing target is refused");
+        db.meta_set("k", "v2").await.unwrap();
+
+        // The copy is self-contained and shows the state at snapshot time.
+        let copy = Database::open(opts(&snap).read_only()).await.unwrap();
+        assert_eq!(copy.meta_get("k").await.unwrap().as_deref(), Some("v1"));
+        assert!(copy.integrity_check().await.unwrap().is_empty());
+        copy.close().await;
+
+        // A read-only handle on the live file can snapshot it as well.
+        let ro = Database::open(opts(&tmp.path().join("forgebase.db")).read_only())
+            .await
+            .unwrap();
+        let snap2 = tmp.path().join("snap2.db");
+        ro.snapshot_to(&snap2).await.unwrap();
+        ro.close().await;
+        let copy2 = Database::open(opts(&snap2).read_only()).await.unwrap();
+        assert_eq!(copy2.meta_get("k").await.unwrap().as_deref(), Some("v2"));
+        copy2.close().await;
         db.close().await;
     }
 

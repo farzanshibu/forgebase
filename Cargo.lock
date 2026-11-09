@@ -1026,6 +1026,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-backup"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "forgebase-billing"
 version = "0.1.0"
 dependencies = [
