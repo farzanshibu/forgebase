@@ -40,12 +40,20 @@ async fn before_hooks_reject_creates_updates_and_deletes() {
     let mut r = req("moderate", &guard_module(), &[]);
     r.hooks = vec![hook(
         "posts",
-        &[HookEvent::BeforeCreate, HookEvent::BeforeUpdate, HookEvent::BeforeDelete],
+        &[
+            HookEvent::BeforeCreate,
+            HookEvent::BeforeUpdate,
+            HookEvent::BeforeDelete,
+        ],
     )];
     h.deploy(r).await;
     let user = admin();
 
-    let ok = h.data.create_record(&user, "posts", json!({"title": "hello"})).await.unwrap();
+    let ok = h
+        .data
+        .create_record(&user, "posts", json!({"title": "hello"}))
+        .await
+        .unwrap();
     let id = ok["id"].as_str().unwrap().to_owned();
 
     let err = h
@@ -56,18 +64,33 @@ async fn before_hooks_reject_creates_updates_and_deletes() {
     assert_eq!(err.code(), "hook_rejected", "{err}");
     assert!(err.to_string().contains("moderate: forbidden words"), "{err}");
     assert_eq!(
-        h.data.list_records(&admin(), "posts", &Default::default()).await.unwrap().items.len(),
+        h.data
+            .list_records(&admin(), "posts", &Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
         1,
         "the rejected record was not written"
     );
 
     let err = h
         .data
-        .update_record(&user, "posts", &id, json!({"title": "forbidden"}), UpdateOptions::default())
+        .update_record(
+            &user,
+            "posts",
+            &id,
+            json!({"title": "forbidden"}),
+            UpdateOptions::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code(), "hook_rejected");
-    let rec = h.data.get_record(&admin(), "posts", &id, &Default::default()).await.unwrap();
+    let rec = h
+        .data
+        .get_record(&admin(), "posts", &id, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(rec["title"], "hello", "the update did not happen");
 
     // Delete: the input carries the id; reject deletes of one id.
@@ -110,7 +133,11 @@ async fn a_failing_before_hook_fails_closed() {
         ..LimitsInput::default()
     };
     h.deploy(r).await;
-    let err = h.data.create_record(&admin(), "orders", json!({"n": 1})).await.unwrap_err();
+    let err = h
+        .data
+        .create_record(&admin(), "orders", json!({"n": 1}))
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "hook_failed", "{err}");
     assert!(err.to_string().contains("fuel"), "{err}");
 
@@ -120,10 +147,19 @@ async fn a_failing_before_hook_fails_closed() {
     let mut r = req("broken", &w.wasm(&format!("(call $emit {s}) (i32.const 0)")), &[]);
     r.hooks = vec![hook("orders", &[HookEvent::BeforeCreate])];
     h.deploy(r).await;
-    let err = h.data.create_record(&admin(), "orders", json!({"n": 1})).await.unwrap_err();
+    let err = h
+        .data
+        .create_record(&admin(), "orders", json!({"n": 1}))
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "hook_failed");
     assert_eq!(
-        h.data.list_records(&admin(), "orders", &Default::default()).await.unwrap().items.len(),
+        h.data
+            .list_records(&admin(), "orders", &Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
         0
     );
 }
@@ -161,7 +197,11 @@ async fn after_hooks_run_for_committed_changes_only() {
     gate.hooks = vec![hook("posts", &[HookEvent::BeforeUpdate])];
     h.deploy(gate).await;
 
-    let rec = h.data.create_record(&admin(), "posts", json!({"title": "one"})).await.unwrap();
+    let rec = h
+        .data
+        .create_record(&admin(), "posts", json!({"title": "one"}))
+        .await
+        .unwrap();
     let id = rec["id"].as_str().unwrap().to_owned();
     assert!(
         h.data
@@ -173,7 +213,11 @@ async fn after_hooks_run_for_committed_changes_only() {
 
     let runs = h.svc.run_after_hooks().await.unwrap();
     assert_eq!(runs, 2, "create and delete; the rejected update never committed");
-    let audit = h.data.list_records(&admin(), "audit", &Default::default()).await.unwrap();
+    let audit = h
+        .data
+        .list_records(&admin(), "audit", &Default::default())
+        .await
+        .unwrap();
     let events: Vec<String> = audit
         .items
         .iter()
@@ -189,7 +233,12 @@ async fn after_hooks_run_for_committed_changes_only() {
     // writes did not trigger it (it hooks posts, not audit).
     assert_eq!(h.svc.run_after_hooks().await.unwrap(), 0);
     assert_eq!(
-        h.data.list_records(&admin(), "audit", &Default::default()).await.unwrap().items.len(),
+        h.data
+            .list_records(&admin(), "audit", &Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
         2
     );
 }
@@ -213,10 +262,19 @@ async fn hook_recursion_is_bounded() {
     r.hooks = vec![hook("loops", &[HookEvent::BeforeCreate])];
     h.deploy(r).await;
     h.grant("again", "data:loops:*").await;
-    let err = h.data.create_record(&admin(), "loops", json!({"x": "start"})).await.unwrap_err();
+    let err = h
+        .data
+        .create_record(&admin(), "loops", json!({"x": "start"}))
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "hook_failed", "{err}");
     assert_eq!(
-        h.data.list_records(&admin(), "loops", &Default::default()).await.unwrap().items.len(),
+        h.data
+            .list_records(&admin(), "loops", &Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
         0,
         "nothing committed: every nested write was rejected in turn"
     );

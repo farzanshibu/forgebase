@@ -368,7 +368,10 @@ fn validate(module: &Module, cfg: &VersionConfig) -> Result<()> {
         {
             return Err(FunctionError::invalid(
                 "capability_not_granted",
-                format!("the module imports forgebase.{} but the capability {cap:?} is not granted", spec.name),
+                format!(
+                    "the module imports forgebase.{} but the capability {cap:?} is not granted",
+                    spec.name
+                ),
             ));
         }
     }
@@ -403,7 +406,9 @@ fn validate(module: &Module, cfg: &VersionConfig) -> Result<()> {
         }
     }
     if !handle {
-        return Err(bad("the module must export a function \"handle\" of type () -> i32".into()));
+        return Err(bad(
+            "the module must export a function \"handle\" of type () -> i32".into()
+        ));
     }
     if !memory {
         return Err(bad("the module must export its linear memory as \"memory\"".into()));
@@ -465,7 +470,10 @@ fn finish(caller: &mut Caller<'_, StoreData>, res: std::result::Result<Vec<u8>, 
 /// One capability call: fuel, call budget, capability check, argument read,
 /// then the operation.
 async fn call(caller: &mut Caller<'_, StoreData>, op: Op, ptr: i32, len: i32) -> wasmtime::Result<i32> {
-    charge(caller, HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)))?;
+    charge(
+        caller,
+        HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)),
+    )?;
     let data = caller.data_mut();
     data.calls += 1;
     if data.calls > MAX_HOST_CALLS {
@@ -482,13 +490,19 @@ async fn call(caller: &mut Caller<'_, StoreData>, op: Op, ptr: i32, len: i32) ->
         return Ok(finish(caller, Err(e)));
     }
     let Some(args) = read_guest(caller, ptr, len) else {
-        let e = host::HostError::new("bad_argument", "the argument is outside the module's memory or too large");
+        let e = host::HostError::new(
+            "bad_argument",
+            "the argument is outside the module's memory or too large",
+        );
         return Ok(finish(caller, Err(e)));
     };
     if matches!(op, Op::Fetch) {
         let d = caller.data_mut();
         d.fetches += 1;
-        let max = env.fetcher.as_ref().map_or(0, |f| f.config().max_requests_per_execution);
+        let max = env
+            .fetcher
+            .as_ref()
+            .map_or(0, |f| f.config().max_requests_per_execution);
         if d.fetches > max {
             let e = host::HostError::new("fetch_limit", format!("at most {max} fetch calls per execution"));
             return Ok(finish(caller, Err(e)));
@@ -510,7 +524,11 @@ fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
             charge(&mut caller, HOST_CALL_FUEL)?;
             let n = usize::try_from(len).unwrap_or(0).min(caller.data().input.len());
             let bytes = caller.data().input[..n].to_vec();
-            Ok(if write_guest(&mut caller, ptr, &bytes) { to_i32(n) } else { -1 })
+            Ok(if write_guest(&mut caller, ptr, &bytes) {
+                to_i32(n)
+            } else {
+                -1
+            })
         },
     )?;
     linker.func_wrap(
@@ -520,14 +538,21 @@ fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
             charge(&mut caller, HOST_CALL_FUEL)?;
             let n = usize::try_from(len).unwrap_or(0).min(caller.data().result.len());
             let bytes = caller.data().result[..n].to_vec();
-            Ok(if write_guest(&mut caller, ptr, &bytes) { to_i32(n) } else { -1 })
+            Ok(if write_guest(&mut caller, ptr, &bytes) {
+                to_i32(n)
+            } else {
+                -1
+            })
         },
     )?;
     linker.func_wrap(
         M,
         "output",
         |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> wasmtime::Result<i32> {
-            charge(&mut caller, HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)))?;
+            charge(
+                &mut caller,
+                HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)),
+            )?;
             if usize::try_from(len).unwrap_or(usize::MAX) > MAX_OUTPUT_BYTES {
                 return Ok(-1);
             }
@@ -544,7 +569,10 @@ fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
         M,
         "log",
         |mut caller: Caller<'_, StoreData>, level: i32, ptr: i32, len: i32| -> wasmtime::Result<i32> {
-            charge(&mut caller, HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)))?;
+            charge(
+                &mut caller,
+                HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)),
+            )?;
             if !caller.data().env.config.has("log") {
                 return Ok(-1);
             }

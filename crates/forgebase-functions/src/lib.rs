@@ -150,7 +150,10 @@ impl Registry {
                 .map_or_else(|| Arc::new(Semaphore::new(permits)), |e| e.sem.clone());
             for h in &config.hooks {
                 for ev in &h.events {
-                    hooks.entry((h.collection.clone(), *ev)).or_default().push(row.name.clone());
+                    hooks
+                        .entry((h.collection.clone(), *ev))
+                        .or_default()
+                        .push(row.name.clone());
                 }
             }
             by_name.insert(row.name.clone(), Entry { row, config, sem });
@@ -389,7 +392,10 @@ impl FunctionService {
         for (k, v) in &req.env {
             validate_key("environment", k)?;
             if v.len() > 4096 {
-                return Err(FunctionError::invalid("invalid_env", "environment values are limited to 4096 bytes"));
+                return Err(FunctionError::invalid(
+                    "invalid_env",
+                    "environment values are limited to 4096 bytes",
+                ));
             }
         }
         let mut hooks = Vec::with_capacity(req.hooks.len());
@@ -579,14 +585,23 @@ impl FunctionService {
         let id = e.row.id.clone();
         store::write(
             self.backend().as_ref(),
-            ["_forgebase_function_logs", "_forgebase_function_secrets", "_forgebase_function_versions"]
-                .iter()
-                .map(|t| Statement::new(format!("DELETE FROM {t} WHERE function_id = ?1"), vec![id.clone().into()]))
-                .chain([Statement::new(
-                    "DELETE FROM _forgebase_functions WHERE id = ?1",
+            [
+                "_forgebase_function_logs",
+                "_forgebase_function_secrets",
+                "_forgebase_function_versions",
+            ]
+            .iter()
+            .map(|t| {
+                Statement::new(
+                    format!("DELETE FROM {t} WHERE function_id = ?1"),
                     vec![id.clone().into()],
-                )])
-                .collect(),
+                )
+            })
+            .chain([Statement::new(
+                "DELETE FROM _forgebase_functions WHERE id = ?1",
+                vec![id.clone().into()],
+            )])
+            .collect(),
         )
         .await?;
         self.inner
@@ -609,7 +624,10 @@ impl FunctionService {
         self.authorize(ctx, Action::ManageFunctions)?;
         validate_key("secret", key)?;
         if value.len() > 16 * 1024 {
-            return Err(FunctionError::invalid("invalid_secret", "secret values are limited to 16 KiB"));
+            return Err(FunctionError::invalid(
+                "invalid_secret",
+                "secret values are limited to 16 KiB",
+            ));
         }
         let e = self.entry(name)?;
         let sealed = self
@@ -760,9 +778,10 @@ impl FunctionService {
                 format!("functions may nest at most {MAX_DEPTH} levels"),
             ));
         }
-        let _global = self.inner.global.clone().try_acquire_owned().map_err(|_| {
-            FunctionError::Busy("the functions engine is running as many executions as allowed".into())
-        })?;
+        let _global =
+            self.inner.global.clone().try_acquire_owned().map_err(|_| {
+                FunctionError::Busy("the functions engine is running as many executions as allowed".into())
+            })?;
         let _local = e.sem.clone().try_acquire_owned().map_err(|_| {
             FunctionError::Busy(format!(
                 "function {} is running {} executions, its limit",

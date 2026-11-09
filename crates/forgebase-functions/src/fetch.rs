@@ -257,7 +257,9 @@ fn check_url(raw: &str, allowed: &[String]) -> Result<(url::Url, String, u16, bo
         None => return Err(FetchError::Invalid("the URL has no host".into())),
     };
     if !host_allowed(&host, allowed) {
-        return Err(FetchError::Blocked(format!("{host} is not in this function's fetch_hosts")));
+        return Err(FetchError::Blocked(format!(
+            "{host} is not in this function's fetch_hosts"
+        )));
     }
     let port = url
         .port_or_known_default()
@@ -479,7 +481,8 @@ fn sanitize_headers(h: &[(String, String)]) -> Result<Vec<(String, String)>, Fet
     let mut out = Vec::with_capacity(h.len());
     for (k, v) in h {
         let k = k.to_ascii_lowercase();
-        let k_ok = !k.is_empty() && k.len() <= 128 && k.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b));
+        let k_ok =
+            !k.is_empty() && k.len() <= 128 && k.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b));
         if !k_ok || v.len() > 8192 || v.contains(['\r', '\n', '\0']) {
             return Err(FetchError::Invalid(format!("bad request header {k:?}")));
         }
@@ -561,7 +564,10 @@ mod tests {
     #[test]
     fn urls() {
         assert!(matches!(check_url("ftp://x/", &[]), Err(FetchError::Blocked(_))));
-        assert!(matches!(check_url("file:///etc/passwd", &[]), Err(FetchError::Blocked(_))));
+        assert!(matches!(
+            check_url("file:///etc/passwd", &[]),
+            Err(FetchError::Blocked(_))
+        ));
         assert!(matches!(check_url("http://u:p@x/", &[]), Err(FetchError::Blocked(_))));
         assert!(matches!(check_url("not a url", &[]), Err(FetchError::Invalid(_))));
         // WHATWG parsing turns decimal and hex IPv4 forms into addresses.

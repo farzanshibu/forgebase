@@ -70,7 +70,9 @@ async fn functions_run_on_the_live_server_from_http_and_jobs_and_survive_a_resta
     assert!(doc.contains("/api/v1/functions/{name}/invoke"));
     assert_eq!(http(addr, "GET", "/api/v1/functions", "").await.0, 401, "anonymous");
     assert_eq!(
-        http(addr, "POST", "/api/v1/functions", r#"{"name":"x","wasm":""}"#).await.0,
+        http(addr, "POST", "/api/v1/functions", r#"{"name":"x","wasm":""}"#)
+            .await
+            .0,
         401
     );
 

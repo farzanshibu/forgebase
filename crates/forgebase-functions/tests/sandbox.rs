@@ -33,9 +33,16 @@ async fn fuel_exhaustion_stops_an_infinite_loop() {
     };
     h.deploy(r).await;
     let started = Instant::now();
-    let err = h.svc.invoke("spin", Trigger::Direct, &json!({}), None).await.unwrap_err();
+    let err = h
+        .svc
+        .invoke("spin", Trigger::Direct, &json!({}), None)
+        .await
+        .unwrap_err();
     assert_eq!(exec_err(err), ExecError::FuelExhausted(2_000_000));
-    assert!(started.elapsed() < Duration::from_secs(20), "fuel, not the clock, stopped it");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "fuel, not the clock, stopped it"
+    );
     let logs = h.svc.logs(&admin(), "spin", 10).await.unwrap();
     assert_eq!(logs[0].status, "fuel_exhausted");
     assert!(logs[0].fuel_used >= 1_900_000, "{}", logs[0].fuel_used);
@@ -54,7 +61,11 @@ async fn memory_growth_beyond_the_cap_traps() {
         ..LimitsInput::default()
     };
     h.deploy(r).await;
-    let err = h.svc.invoke("hog", Trigger::Direct, &json!({}), None).await.unwrap_err();
+    let err = h
+        .svc
+        .invoke("hog", Trigger::Direct, &json!({}), None)
+        .await
+        .unwrap_err();
     assert_eq!(exec_err(err), ExecError::MemoryLimit(1024 * 1024));
     assert_eq!(h.svc.logs(&admin(), "hog", 1).await.unwrap()[0].status, "memory_limit");
 
@@ -79,7 +90,11 @@ async fn wall_clock_timeout_interrupts_a_busy_guest() {
     };
     h.deploy(r).await;
     let started = Instant::now();
-    let err = h.svc.invoke("slow", Trigger::Direct, &json!({}), None).await.unwrap_err();
+    let err = h
+        .svc
+        .invoke("slow", Trigger::Direct, &json!({}), None)
+        .await
+        .unwrap_err();
     let took = started.elapsed();
     assert_eq!(exec_err(err), ExecError::Timeout(150));
     assert!(took >= Duration::from_millis(140), "{took:?}");
@@ -102,7 +117,11 @@ async fn concurrency_limit_rejects_extra_executions() {
     let svc = h.svc.clone();
     let first = tokio::spawn(async move { svc.invoke("busy", Trigger::Direct, &json!({}), None).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let second = h.svc.invoke("busy", Trigger::Direct, &json!({}), None).await.unwrap_err();
+    let second = h
+        .svc
+        .invoke("busy", Trigger::Direct, &json!({}), None)
+        .await
+        .unwrap_err();
     assert_eq!(second.code(), "function_busy");
     assert!(matches!(
         first.await.unwrap(),
@@ -115,14 +134,27 @@ async fn traps_and_failure_status_are_reported() {
     let h = harness().await;
     let w = Wat::new(&[]);
     h.deploy(req("boom", &w.wasm("unreachable"), &[])).await;
-    let err = exec_err(h.svc.invoke("boom", Trigger::Direct, &json!({}), None).await.unwrap_err());
-    assert!(matches!(err, ExecError::Trap(ref m) if m.contains("unreachable")), "{err:?}");
+    let err = exec_err(
+        h.svc
+            .invoke("boom", Trigger::Direct, &json!({}), None)
+            .await
+            .unwrap_err(),
+    );
+    assert!(
+        matches!(err, ExecError::Trap(ref m) if m.contains("unreachable")),
+        "{err:?}"
+    );
 
     let mut w = Wat::new(&[]);
     let s = w.s("bad input");
     h.deploy(req("fails", &w.wasm(&format!("(call $emit {s}) (i32.const 3)")), &[]))
         .await;
-    let err = exec_err(h.svc.invoke("fails", Trigger::Direct, &json!({}), None).await.unwrap_err());
+    let err = exec_err(
+        h.svc
+            .invoke("fails", Trigger::Direct, &json!({}), None)
+            .await
+            .unwrap_err(),
+    );
     assert_eq!(
         err,
         ExecError::Failed {
@@ -136,7 +168,11 @@ async fn traps_and_failure_status_are_reported() {
 async fn deploy_checks_imports_against_granted_capabilities() {
     let h = harness().await;
     let w = Wat::new(&["db_create"]);
-    let err = h.svc.deploy(&admin(), req("w", &w.wasm("(i32.const 0)"), &["db.read"])).await.unwrap_err();
+    let err = h
+        .svc
+        .deploy(&admin(), req("w", &w.wasm("(i32.const 0)"), &["db.read"]))
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "capability_not_granted", "{err}");
 
     // No WASI, no foreign imports.
@@ -149,9 +185,20 @@ async fn deploy_checks_imports_against_granted_capabilities() {
 
     // Required exports and a valid binary.
     let no_handle = wat_b64(r#"(module (memory (export "memory") 1))"#);
-    assert_eq!(h.svc.deploy(&admin(), req("x", &no_handle, &[])).await.unwrap_err().code(), "invalid_module");
     assert_eq!(
-        h.svc.deploy(&admin(), req("x", "AGFzbQEAAAA=", &[])).await.unwrap_err().code(),
+        h.svc
+            .deploy(&admin(), req("x", &no_handle, &[]))
+            .await
+            .unwrap_err()
+            .code(),
+        "invalid_module"
+    );
+    assert_eq!(
+        h.svc
+            .deploy(&admin(), req("x", "AGFzbQEAAAA=", &[]))
+            .await
+            .unwrap_err()
+            .code(),
         "invalid_module"
     );
     assert_eq!(
@@ -159,22 +206,37 @@ async fn deploy_checks_imports_against_granted_capabilities() {
         "invalid_module"
     );
     assert_eq!(
-        h.svc.deploy(&admin(), req("x", &constant("{}"), &["root"])).await.unwrap_err().code(),
+        h.svc
+            .deploy(&admin(), req("x", &constant("{}"), &["root"]))
+            .await
+            .unwrap_err()
+            .code(),
         "invalid_capability"
     );
     assert_eq!(
-        h.svc.deploy(&admin(), req("Bad Name", &constant("{}"), &[])).await.unwrap_err().code(),
+        h.svc
+            .deploy(&admin(), req("Bad Name", &constant("{}"), &[]))
+            .await
+            .unwrap_err()
+            .code(),
         "invalid_function_name"
     );
     // Not an administrator.
     let user = forgebase_data::AccessContext::user("users", "u1");
     assert_eq!(
-        h.svc.deploy(&user, req("x", &constant("{}"), &[])).await.unwrap_err().code(),
+        h.svc
+            .deploy(&user, req("x", &constant("{}"), &[]))
+            .await
+            .unwrap_err()
+            .code(),
         "forbidden"
     );
     assert_eq!(
         h.svc
-            .deploy(&forgebase_data::AccessContext::anonymous(), req("x", &constant("{}"), &[]))
+            .deploy(
+                &forgebase_data::AccessContext::anonymous(),
+                req("x", &constant("{}"), &[])
+            )
             .await
             .unwrap_err()
             .code(),
@@ -224,7 +286,10 @@ async fn versions_and_rollback_restore_module_and_configuration() {
     let mut r3 = req("greet", &constant(r#"{"v":3}"#), &[]);
     r3.activate = false;
     let d3 = h.deploy(r3).await;
-    assert_eq!((d3.version.version, d3.function.active_version, d3.version.active), (3, 1, false));
+    assert_eq!(
+        (d3.version.version, d3.function.active_version, d3.version.active),
+        (3, 1, false)
+    );
     assert_eq!(run(&h).await, json!({"v": 1}));
 
     // Survives a reload from the database (persisted).
@@ -233,7 +298,11 @@ async fn versions_and_rollback_restore_module_and_configuration() {
 
     h.svc.delete(&admin(), "greet").await.unwrap();
     assert_eq!(
-        h.svc.invoke("greet", Trigger::Direct, &json!({}), None).await.unwrap_err().code(),
+        h.svc
+            .invoke("greet", Trigger::Direct, &json!({}), None)
+            .await
+            .unwrap_err()
+            .code(),
         "function_not_found"
     );
 }
@@ -260,14 +329,19 @@ async fn secrets_are_sealed_at_rest_and_injected_only_with_the_capability() {
     let mut r = req("tok", &w.wasm(&body), &["secrets", "env"]);
     r.env.insert("REGION".into(), "-eu".into());
     h.deploy(r).await;
-    h.svc.put_secret(&admin(), "tok", "API_TOKEN", "s3cr3t-value").await.unwrap();
+    h.svc
+        .put_secret(&admin(), "tok", "API_TOKEN", "s3cr3t-value")
+        .await
+        .unwrap();
     let out = h.svc.invoke("tok", Trigger::Direct, &json!({}), None).await.unwrap();
     assert_eq!(out.output.as_deref(), Some(b"s3cr3t-value-eu".as_slice()));
 
     // At rest: sealed, not the plaintext; the API lists names only.
-    let rows = h
-        .db
-        .fetch_all(&Statement::new("SELECT sealed FROM _forgebase_function_secrets", vec![]))
+    let rows =
+        h.db.fetch_all(&Statement::new(
+            "SELECT sealed FROM _forgebase_function_secrets",
+            vec![],
+        ))
         .await
         .unwrap();
     let Value::Blob(sealed) = &rows.rows[0][0] else {
@@ -280,12 +354,20 @@ async fn secrets_are_sealed_at_rest_and_injected_only_with_the_capability() {
     // A version without the capability cannot import secret_get at all, and
     // a module that only checks at run time gets capability_denied.
     let w = Wat::new(&["secret_get"]);
-    let err = h.svc.deploy(&admin(), req("tok", &w.wasm("(i32.const 0)"), &[])).await.unwrap_err();
+    let err = h
+        .svc
+        .deploy(&admin(), req("tok", &w.wasm("(i32.const 0)"), &[]))
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "capability_not_granted");
 
     h.svc.delete_secret(&admin(), "tok", "API_TOKEN").await.unwrap();
     assert_eq!(
-        h.svc.delete_secret(&admin(), "tok", "API_TOKEN").await.unwrap_err().code(),
+        h.svc
+            .delete_secret(&admin(), "tok", "API_TOKEN")
+            .await
+            .unwrap_err()
+            .code(),
         "secret_not_found"
     );
 }
@@ -309,7 +391,15 @@ async fn database_access_goes_through_the_authorizer_as_the_function() {
     // Not granted yet: the policy engine denies the function's identity.
     let out = out_json(&h.svc.invoke("writer", Trigger::Direct, &json!({}), None).await.unwrap());
     assert_eq!(out["code"], "forbidden", "{out}");
-    assert_eq!(h.data.list_records(&admin(), "notes", &Default::default()).await.unwrap().items.len(), 0);
+    assert_eq!(
+        h.data
+            .list_records(&admin(), "notes", &Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        0
+    );
 
     h.grant("writer", "data:notes:write").await;
     h.grant("writer", "data:notes:read").await;

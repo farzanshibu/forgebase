@@ -36,7 +36,11 @@ fn app(h: &common::H) -> Router {
         },
     );
     app.layer(middleware::from_fn(|mut req: Request<Body>, next: Next| async move {
-        let who = req.headers().get("x-test-as").and_then(|v| v.to_str().ok()).map(str::to_owned);
+        let who = req
+            .headers()
+            .get("x-test-as")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         match who.as_deref() {
             Some("admin") => {
                 req.extensions_mut().insert(admin());
@@ -152,7 +156,14 @@ async fn scenario_18_execute_a_sandboxed_server_function() {
     });
     let r = call(&app, Method::POST, "/api/v1/functions", None, Some(deploy.clone())).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED, "anonymous cannot deploy");
-    let r = call(&app, Method::POST, "/api/v1/functions", Some("user"), Some(deploy.clone())).await;
+    let r = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions",
+        Some("user"),
+        Some(deploy.clone()),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "users cannot deploy");
     let r = call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(deploy)).await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", String::from_utf8_lossy(&r.body));
@@ -211,19 +222,41 @@ async fn scenario_18_execute_a_sandboxed_server_function() {
     assert_eq!(note["body"]["title"], "hello");
     assert_eq!(note["query"]["x"], "1");
     assert_eq!(note["headers"]["x-trace"], "abc");
-    assert!(note["headers"].get("authorization").is_none(), "credentials are not passed to functions");
+    assert!(
+        note["headers"].get("authorization").is_none(),
+        "credentials are not passed to functions"
+    );
     assert_eq!(note["auth"]["type"], "anonymous");
 
     // Persisted: readable through the data core.
     let id = note["id"].as_str().unwrap();
-    let stored = h.data.get_record(&admin(), "notes", id, &Default::default()).await.unwrap();
+    let stored = h
+        .data
+        .get_record(&admin(), "notes", id, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(stored["body"]["title"], "hello");
 
     // Second call: the KV counter persisted between executions.
-    let r = call(&app, Method::POST, "/api/v1/functions/notes/invoke", None, Some(json!({"title": "again"}))).await;
+    let r = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions/notes/invoke",
+        None,
+        Some(json!({"title": "again"})),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::CREATED);
     assert_eq!(r.json()["kv"]["value"], 2);
-    assert_eq!(h.data.list_records(&admin(), "notes", &Default::default()).await.unwrap().items.len(), 2);
+    assert_eq!(
+        h.data
+            .list_records(&admin(), "notes", &Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        2
+    );
 
     // Execution log with the function's log line.
     let r = call(&app, Method::GET, "/api/v1/functions/notes/logs", Some("admin"), None).await;
@@ -238,7 +271,14 @@ async fn scenario_18_execute_a_sandboxed_server_function() {
     assert_eq!(r.status, StatusCode::UNAUTHORIZED, "logs are not public");
 
     // Secrets are listed without values.
-    let r = call(&app, Method::GET, "/api/v1/functions/notes/secrets", Some("admin"), None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/notes/secrets",
+        Some("admin"),
+        None,
+    )
+    .await;
     assert_eq!(r.json()["items"][0]["name"], "GREETING");
     assert!(!String::from_utf8_lossy(&r.body).contains("hi-from"));
 
@@ -259,13 +299,17 @@ async fn scenario_18_execute_a_sandboxed_server_function() {
 async fn access_modes_rollback_and_error_statuses_over_http() {
     let h = harness().await;
     let app = app(&h);
-    let deploy = |name: &str, wasm: String, access: &str| {
-        json!({"name": name, "wasm": wasm, "access": access, "limits": {"fuel": 3_000_000, "timeout_ms": 1_000}})
-    };
-    for (name, access) in [("open", "public"), ("members", "authenticated"), ("staff", "permission")] {
+    let deploy = |name: &str, wasm: String, access: &str| json!({"name": name, "wasm": wasm, "access": access, "limits": {"fuel": 3_000_000, "timeout_ms": 1_000}});
+    for (name, access) in [
+        ("open", "public"),
+        ("members", "authenticated"),
+        ("staff", "permission"),
+    ] {
         let body = deploy(name, constant(r#"{"body":"v1"}"#), access);
         assert_eq!(
-            call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(body)).await.status,
+            call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(body))
+                .await
+                .status,
             StatusCode::CREATED
         );
     }
@@ -288,19 +332,47 @@ async fn access_modes_rollback_and_error_statuses_over_http() {
     let w = Wat::new(&[]);
     let body = deploy("open", w.wasm("(loop $l (br $l)) (i32.const 0)"), "public");
     assert_eq!(
-        call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(body)).await.status,
+        call(&app, Method::POST, "/api/v1/functions", Some("admin"), Some(body))
+            .await
+            .status,
         StatusCode::CREATED
     );
     let r = get("open", None).await;
     assert_eq!(r.status, StatusCode::BAD_GATEWAY);
-    assert_eq!(r.json()["error"]["code"], "function_fuel_exhausted", "{}", String::from_utf8_lossy(&r.body));
-    let r = call(&app, Method::POST, "/api/v1/functions/open/rollback", Some("user"), None).await;
+    assert_eq!(
+        r.json()["error"]["code"],
+        "function_fuel_exhausted",
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let r = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions/open/rollback",
+        Some("user"),
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    let r = call(&app, Method::POST, "/api/v1/functions/open/rollback", Some("admin"), None).await;
+    let r = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions/open/rollback",
+        Some("admin"),
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
     assert_eq!(r.json()["active_version"], 1);
     assert_eq!(get("open", None).await.body, b"v1");
-    let r = call(&app, Method::GET, "/api/v1/functions/open/versions", Some("admin"), None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/open/versions",
+        Some("admin"),
+        None,
+    )
+    .await;
     assert_eq!(r.json()["items"].as_array().unwrap().len(), 2);
 
     // Timeout is a 504; invalid output a 502.
@@ -331,11 +403,15 @@ async fn access_modes_rollback_and_error_statuses_over_http() {
 
     // Delete.
     assert_eq!(
-        call(&app, Method::DELETE, "/api/v1/functions/weird", Some("admin"), None).await.status,
+        call(&app, Method::DELETE, "/api/v1/functions/weird", Some("admin"), None)
+            .await
+            .status,
         StatusCode::NO_CONTENT
     );
     assert_eq!(get("weird", Some("admin")).await.status, StatusCode::NOT_FOUND);
-    let list = call(&app, Method::GET, "/api/v1/functions", Some("admin"), None).await.json();
+    let list = call(&app, Method::GET, "/api/v1/functions", Some("admin"), None)
+        .await
+        .json();
     assert_eq!(list["items"].as_array().unwrap().len(), 4);
 }
 
@@ -385,5 +461,8 @@ async fn http_input_carries_method_and_raw_bodies() {
         .uri("/api/v1/functions/echo/invoke")
         .body(Body::from(vec![b'a'; 2 * 1024 * 1024]))
         .unwrap();
-    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
 }

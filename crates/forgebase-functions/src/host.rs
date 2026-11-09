@@ -83,7 +83,9 @@ impl HostError {
     }
 
     pub(crate) fn to_json(&self) -> Vec<u8> {
-        json!({"code": self.code, "message": self.message}).to_string().into_bytes()
+        json!({"code": self.code, "message": self.message})
+            .to_string()
+            .into_bytes()
     }
 }
 
@@ -317,7 +319,10 @@ fn kv(env: &HostEnv, args: &[u8]) -> HostResult {
 
 async fn fetch(env: &HostEnv, args: &[u8]) -> HostResult {
     let Some(fetcher) = &env.fetcher else {
-        return Err(HostError::new("fetch_unavailable", "outbound requests are not configured"));
+        return Err(HostError::new(
+            "fetch_unavailable",
+            "outbound requests are not configured",
+        ));
     };
     let a: FetchArgs = parse(args)?;
     let body = match (a.body, a.body_base64) {

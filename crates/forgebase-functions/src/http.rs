@@ -380,7 +380,9 @@ fn input_of(ctx: &AccessContext, req: &HttpInvocation) -> Json_ {
             continue;
         }
         if let Ok(v) = v.to_str() {
-            headers.entry(k.to_owned()).or_insert_with(|| Json_::String(v.to_owned()));
+            headers
+                .entry(k.to_owned())
+                .or_insert_with(|| Json_::String(v.to_owned()));
         }
     }
     let query: Map<String, Json_> = url::form_urlencoded::parse(req.query.as_bytes())
@@ -405,7 +407,11 @@ fn input_of(ctx: &AccessContext, req: &HttpInvocation) -> Json_ {
                 let ct = ct.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
                 ct == "application/json" || ct.ends_with("+json")
             });
-        match (is_json, serde_json::from_slice::<Json_>(&req.body), std::str::from_utf8(&req.body)) {
+        match (
+            is_json,
+            serde_json::from_slice::<Json_>(&req.body),
+            std::str::from_utf8(&req.body),
+        ) {
             (true, Ok(j), _) => input["body"] = j,
             (_, _, Ok(text)) => input["body"] = Json_::String(text.to_owned()),
             _ => input["body_base64"] = Json_::String(base64::engine::general_purpose::STANDARD.encode(&req.body)),
@@ -500,8 +506,10 @@ mod tests {
 
     #[test]
     fn outputs() {
-        let r = response_of(Some(br#"{"status":201,"headers":{"X-A":"1","Set-Cookie":"s=1"},"body":{"ok":true}}"#))
-            .unwrap();
+        let r = response_of(Some(
+            br#"{"status":201,"headers":{"X-A":"1","Set-Cookie":"s=1"},"body":{"ok":true}}"#,
+        ))
+        .unwrap();
         assert_eq!(r.status(), StatusCode::CREATED);
         assert_eq!(r.headers().get("x-a").unwrap(), "1");
         assert!(r.headers().get("set-cookie").is_none());

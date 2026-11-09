@@ -30,7 +30,8 @@ fn int(r: &[Value], i: usize) -> i64 {
 }
 
 fn config_of(raw: &str) -> Result<VersionConfig> {
-    serde_json::from_str(raw).map_err(|e| FunctionError::Internal(format!("stored function config does not decode: {e}")))
+    serde_json::from_str(raw)
+        .map_err(|e| FunctionError::Internal(format!("stored function config does not decode: {e}")))
 }
 
 const FUNCTION_COLUMNS: &str = "f.id, f.name, f.description, f.access, f.active_version, f.latest_version,

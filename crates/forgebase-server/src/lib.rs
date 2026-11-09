@@ -12,7 +12,8 @@
 //!    `forgebase-vector` under `/api/v1/vector`, and the entitlement and
 //!    quota API of `forgebase-entitlements`, whose hooks run in steps 4 and
 //!    6 of the policy pipeline and whose gate applies plan-based API rate
-//!    limits),
+//!    limits, and the credit ledger of `forgebase-credits` under
+//!    `/api/v1/credits`, which charges usage events of priced features),
 //! 6. start the job scheduler and in-process worker pool, and the vector
 //!    engine's index warm-up and saver,
 //! 7. when `[resp] enabled = true`, bind the Redis protocol listener
@@ -33,6 +34,7 @@ use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
+use forgebase_credits::CreditService;
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_entitlements::{EntitlementService, SystemClock};
@@ -64,6 +66,7 @@ pub struct RunningServer {
     realtime: forgebase_realtime::RealtimeService,
     entitlements: EntitlementService,
     functions: FunctionService,
+    credits: CreditService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -120,6 +123,21 @@ pub async fn start_with_jobs(
         }
     };
     policy.set_hooks(entitlements.hooks());
+    // Credits (FB-73): prepaid balances that pay for usage events.
+    let credits = match CreditService::open(
+        Arc::new(db.clone()),
+        policy.clone(),
+        entitlements.clone(),
+        Arc::new(SystemClock),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            db.close().await;
+            return Err(ServerError::Credits(e.to_string()));
+        }
+    };
     // One authorizer — the policy engine — for the data core and the KV engine.
     let authorizer: Arc<dyn Authorizer> = policy.authorizer();
     let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
@@ -172,6 +190,11 @@ pub async fn start_with_jobs(
     }
     let registry = forgebase_entitlements::register_jobs(registry, entitlements.clone());
     let registry = forgebase_functions::register_jobs(registry, functions.clone());
+    credits.attach_jobs(jobs.clone());
+    if let Err(e) = credits.ensure_schedule().await {
+        tracing::warn!(error = %e, "credit maintenance schedule not created");
+    }
+    let registry = forgebase_credits::register_jobs(registry, credits.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -185,6 +208,7 @@ pub async fn start_with_jobs(
             forgebase_vector::extension(vector.clone()),
             forgebase_entitlements::extension(entitlements.clone()),
             forgebase_functions::extension(functions.clone()),
+            forgebase_credits::extension(credits.clone()),
         ],
         gates: vec![entitlements.rate_gate()],
         ..opts
@@ -282,6 +306,7 @@ pub async fn start_with_jobs(
         realtime,
         entitlements,
         functions,
+        credits,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -373,6 +398,11 @@ impl RunningServer {
     /// The server-functions engine (FB-60).
     pub fn functions(&self) -> &FunctionService {
         &self.functions
+    }
+
+    /// The credit ledger of this instance.
+    pub fn credits(&self) -> &CreditService {
+        &self.credits
     }
 
     /// The vector engine of this instance.
@@ -550,6 +580,9 @@ pub enum ServerError {
     /// The functions engine failed to start.
     #[error("functions: {0}")]
     Functions(String),
+    /// The credit service failed to open.
+    #[error("credits: {0}")]
+    Credits(String),
 }
 
 impl ErrorCode for ServerError {
@@ -569,6 +602,7 @@ impl ErrorCode for ServerError {
             ServerError::Realtime(e) => e.code(),
             ServerError::Entitlements(_) => "entitlements_unavailable",
             ServerError::Functions(_) => "functions_unavailable",
+            ServerError::Credits(_) => "credits_unavailable",
         }
     }
 
@@ -581,7 +615,10 @@ impl ErrorCode for ServerError {
             ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
-            ServerError::Policy(_) | ServerError::Entitlements(_) | ServerError::Functions(_) => ErrorKind::Internal,
+            ServerError::Policy(_)
+            | ServerError::Entitlements(_)
+            | ServerError::Functions(_)
+            | ServerError::Credits(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }

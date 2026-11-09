@@ -348,3 +348,17 @@ Deliberately **not** added: WASI (`wasmtime-wasi`: filesystem, clocks and
 sockets the sandbox must not have), an HTTP client crate (fetch reuses
 FB-25's rustls settings and HTTP/1.1 exchange), a DNS crate (system resolver
 behind a trait).
+
+## FB-52 (Vector Studio + Graph Studio, 2026-11-09)
+
+Dashboard only. **No new npm or Rust dependencies.** The graph explorer draws an
+inline SVG with a small in-house force-directed layout
+(`dashboard/src/pages/graph/layout.ts`, ~70 lines, deterministic), so no
+graph-drawing library (cytoscape, d3-force, sigma, ...) was added and no licence
+review was needed. Revisit if graphs of more than a few hundred on-screen nodes
+are needed; the likely pick then is `d3-force` (ISC).
+
+Rust: one rename, no new crates. `forgebase-vector` named a response schema
+`CollectionList`, which collided with the data API's `CollectionList` in the
+merged `/api/openapi.json` (the vector list route was documented with the data
+schema). It is now `VectorCollectionList`.

@@ -89,7 +89,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         recall,
     ),
     components(schemas(
-        Metric, Quantization, FieldSpec, VectorField, NewCollection, VectorCollection, CollectionList, FieldList,
+        Metric, Quantization, FieldSpec, VectorField, NewCollection, VectorCollection, VectorCollectionList, FieldList,
         UpsertItem, UpsertRequest, UpsertResult, Item, DeleteRequest, DeleteResult, FilterMode, Strategy,
         SearchRequest, SearchHit, SearchResponse, HybridWeights, TextOperator, HybridRequest, HybridHit,
         HybridResponse, RebuildRequest, RebuildResponse, IndexState, Progress, RebuildInfo, RecallReport,
@@ -115,9 +115,9 @@ async fn tenant_stats(State(s): State<VectorService>, Access(ctx): Access) -> Ap
 
 /// Collections of the caller's tenant.
 #[utoipa::path(get, path = "/api/v1/vector/collections", tag = "vector",
-    responses((status = 200, description = "Collections", body = CollectionList)))]
+    responses((status = 200, description = "Collections", body = VectorCollectionList)))]
 async fn list_collections(State(s): State<VectorService>, Access(ctx): Access) -> ApiResult {
-    ok(CollectionList {
+    ok(VectorCollectionList {
         items: s.list_collections(&ctx).await.map_err(api)?,
     })
 }

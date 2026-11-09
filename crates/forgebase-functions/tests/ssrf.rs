@@ -34,7 +34,9 @@ async fn mock_server() -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut s, _)) = listener.accept().await else { return };
+            let Ok((mut s, _)) = listener.accept().await else {
+                return;
+            };
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -58,7 +60,11 @@ async fn mock_server() -> SocketAddr {
                         "Location: http://localhost/ok\r\n".to_owned(),
                         String::new(),
                     ),
-                    "/redirect-ten" => ("307 Temporary Redirect", "Location: http://10.0.0.7/\r\n".to_owned(), String::new()),
+                    "/redirect-ten" => (
+                        "307 Temporary Redirect",
+                        "Location: http://10.0.0.7/\r\n".to_owned(),
+                        String::new(),
+                    ),
                     "/redirect-public" => ("301 Moved", "Location: /ok\r\n".to_owned(), String::new()),
                     "/redirect-other" => (
                         "302 Found",
@@ -255,7 +261,11 @@ async fn every_redirect_target_is_checked_again() {
     assert!(n.route.seen.lock().unwrap().iter().all(|a| a.ip() == public()));
 
     // A redirect to a public target is followed.
-    let ok = n.fetcher.fetch(get("http://public.test/redirect-public"), &[]).await.unwrap();
+    let ok = n
+        .fetcher
+        .fetch(get("http://public.test/redirect-public"), &[])
+        .await
+        .unwrap();
     assert_eq!((ok.status, ok.body.as_slice()), (200, b"hello".as_slice()));
     assert!(ok.url.ends_with("/ok"));
 
@@ -283,10 +293,21 @@ async fn every_redirect_target_is_checked_again() {
 async fn fetch_hosts_allow_list_is_enforced_on_every_hop() {
     let n = net(names()).await;
     let allowed = vec!["public.test".to_owned()];
-    assert_eq!(n.fetcher.fetch(get("http://public.test/ok"), &allowed).await.unwrap().status, 200);
+    assert_eq!(
+        n.fetcher
+            .fetch(get("http://public.test/ok"), &allowed)
+            .await
+            .unwrap()
+            .status,
+        200
+    );
     let why = blocked(n.fetcher.fetch(get("http://other.test/ok"), &allowed).await);
     assert!(why.contains("fetch_hosts"), "{why}");
-    blocked(n.fetcher.fetch(get("http://public.test/redirect-other"), &allowed).await);
+    blocked(
+        n.fetcher
+            .fetch(get("http://public.test/redirect-other"), &allowed)
+            .await,
+    );
 }
 
 #[tokio::test]
@@ -325,7 +346,10 @@ async fn functions_see_the_same_refusals() {
     };
     for (target, code) in [
         ("http://127.0.0.1/", "fetch_blocked"),
-        ("http://169.254.169.254/latest/meta-data/iam/security-credentials/", "fetch_blocked"),
+        (
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "fetch_blocked",
+        ),
         ("http://10.0.0.1/", "fetch_blocked"),
         ("http://[::1]/", "fetch_blocked"),
         ("http://public.test/redirect-metadata", "fetch_blocked"),
@@ -350,5 +374,9 @@ async fn functions_see_the_same_refusals() {
         .json()
         .unwrap()
         .unwrap();
-    assert_eq!((out["status"].as_u64(), out["body"].as_str()), (Some(200), Some("hello")), "{out}");
+    assert_eq!(
+        (out["status"].as_u64(), out["body"].as_str()),
+        (Some(200), Some("hello")),
+        "{out}"
+    );
 }

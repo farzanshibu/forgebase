@@ -584,7 +584,8 @@ impl DataService {
         {
             return Err(ValidationErrors::single("id", FieldError::new("read_only", "the id cannot change")).into());
         }
-        self.guard_write(ctx, &coll, ChangeOp::Update, Some(id), Some(&patch)).await?;
+        self.guard_write(ctx, &coll, ChangeOp::Update, Some(id), Some(&patch))
+            .await?;
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
