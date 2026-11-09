@@ -269,32 +269,62 @@ async fn a_deny_beats_every_allow() {
 async fn scoped_keys_and_pats_cannot_escalate() {
     let env = Env::new().await;
     let admin = env.admin("keys@example.com").await;
-    for name in ["notes", "secrets"] {
+    let mut secret_coll = String::new();
+    let mut secret_row = String::new();
+    for name in ["secrets", "notes"] {
+        let mut fields = vec![json!({"name": "title", "type": "text"})];
+        if name == "notes" {
+            fields.push(json!({"name": "ref", "type": "relation", "collection_id": secret_coll}));
+        }
         let r = env
             .as_(
                 &admin,
                 "POST",
                 "/api/v1/collections",
                 &[],
-                Some(json!({"name": name, "fields": [{"name": "title", "type": "text"}]})),
+                Some(json!({"name": name, "fields": fields})),
             )
             .await;
         assert_eq!(r.status, 201, "{}", r.text());
+        if name == "secrets" {
+            secret_coll = r.json()["id"].as_str().unwrap().to_owned();
+        }
+        let mut rec = json!({"title": format!("{name}-row")});
+        if name == "notes" {
+            rec["ref"] = json!(secret_row);
+        }
         let r = env
-            .as_(
-                &admin,
-                "POST",
-                &format!("/api/v1/collections/{name}/records"),
-                &[],
-                Some(json!({"title": format!("{name}-row")})),
-            )
+            .as_(&admin, "POST", &format!("/api/v1/collections/{name}/records"), &[], Some(rec))
             .await;
         assert_eq!(r.status, 201, "{}", r.text());
+        if name == "secrets" {
+            secret_row = r.json()["id"].as_str().unwrap().to_owned();
+        }
     }
     // An admin service account narrowed to reading one collection.
     let key = env.admin_key(&admin, &["collections:read:notes"]).await;
     let r = env.as_(&key, "GET", "/api/v1/collections/notes/records", &[], None).await;
     assert_eq!(r.status, 200, "{}", r.text());
+    // Expanding a relation must not read a collection outside the scope.
+    let r = env
+        .as_(&key, "GET", "/api/v1/collections/notes/records?expand=ref", &[], None)
+        .await;
+    assert!(!r.text().contains("secrets-row"), "expand crossed the scope: {}", r.text());
+    // A relation filter is an oracle on the target: it must not see it either.
+    let r = env
+        .as_(
+            &key,
+            "GET",
+            "/api/v1/collections/notes/records?filter=ref.title%20%3D%20'secrets-row'",
+            &[],
+            None,
+        )
+        .await;
+    assert!(
+        r.status >= 400 || r.json()["items"].as_array().is_some_and(Vec::is_empty),
+        "relation filter crossed the scope: {}",
+        r.text()
+    );
     for (method, path, body) in [
         ("GET", "/api/v1/collections/secrets/records", None),
         ("POST", "/api/v1/collections/notes/records", Some(json!({"title": "x"}))),
@@ -367,7 +397,7 @@ async fn administrative_endpoints_refuse_anonymous_and_ordinary_users() {
         ("POST", "/api/auth/service-accounts", Some(json!({"name": "x", "role": "admin"}))),
         ("GET", "/api/auth/audit", None),
         ("POST", "/api/auth/keys/rotate", Some(json!({}))),
-        ("POST", "/api/auth/impersonate", Some(json!({"collection": "users", "id": "x"}))),
+        ("POST", "/api/auth/impersonate", Some(json!({"principal": "user:users/x", "reason": "test"}))),
         ("GET", "/api/auth/users/users/x", None),
         ("PUT", "/api/auth/realms/default", Some(json!({}))),
         ("POST", "/api/v1/collections", Some(json!({"name": "pwn", "fields": []}))),
@@ -509,10 +539,16 @@ async fn outbound_clients_never_reach_internal_addresses() {
             )
             .await
             .unwrap();
-        let r = env
-            .as_(&admin, "POST", &format!("/api/v1/functions/{name}/invoke"), &[], Some(json!({})))
-            .await;
-        assert!(r.text().contains("fetch_blocked"), "{name} {url}: {} {}", r.status, r.text());
+        let out: Json = env
+            .server
+            .functions()
+            .invoke(name, forgebase_functions::Trigger::Direct, &json!({}), None)
+            .await
+            .unwrap()
+            .json()
+            .unwrap()
+            .unwrap();
+        assert_eq!(out["code"], "fetch_blocked", "{name} {url}: {out}");
     }
 
     // 3. OAuth / OIDC: an identity provider whose discovery URL points at
@@ -527,7 +563,8 @@ async fn outbound_clients_never_reach_internal_addresses() {
     )
     .unwrap();
     let data_dir = env.dir.path().join("forgebase-data");
-    env.shutdown().await;
+    let security_common::Env { server, dir: _keep, .. } = env;
+    server.shutdown().await.unwrap();
     let mut cfg = security_common::config(data_dir.parent().unwrap());
     cfg.data_dir = data_dir;
     let server = forgebase_server::start(&cfg).await.unwrap();
@@ -995,8 +1032,10 @@ async fn malicious_inputs_are_refused_without_errors_or_leaks() {
         for token in [&admin, &user] {
             let r = env.as_(token, &method, &path, &[], body.clone()).await;
             assert!(r.status < 500, "{method} {path}: {} {}", r.status, r.text());
+            // Echoing the attacker's own input is fine; server internals are not.
             let t = r.text().to_ascii_lowercase();
-            for leak in ["sqlite", "select ", "panicked", "/users/", ".rs:"] {
+            let dir = env.dir.path().display().to_string().to_ascii_lowercase();
+            for leak in ["panicked", ".rs:", "sqlite_error", "no such table", "no such column", "near \"", &dir] {
                 assert!(!t.contains(leak), "{method} {path} leaks {leak:?}: {t}");
             }
         }

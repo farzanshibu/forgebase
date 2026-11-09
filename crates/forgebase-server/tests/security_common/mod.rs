@@ -72,9 +72,10 @@ pub async fn send(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, 
     }
     req.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     s.write_all(req.as_bytes()).await.unwrap();
-    s.write_all(body).await.unwrap();
+    // The server may answer (413) and close before reading a large body.
+    let _ = s.write_all(body).await;
     let mut out = Vec::new();
-    s.read_to_end(&mut out).await.unwrap();
+    let _ = s.read_to_end(&mut out).await;
     parse(&out)
 }
 
