@@ -143,12 +143,7 @@ enum Command {
         command: admin::AdminCommand,
     },
     /// Deploy WebAssembly functions and read their logs on a running server.
-    Functions {
-        #[command(flatten)]
-        server: functions::ServerArgs,
-        #[command(subcommand)]
-        command: functions::FunctionsCommand,
-    },
+    Functions(Box<functions::FunctionsCli>),
 }
 
 fn main() -> ExitCode {
@@ -184,6 +179,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Doctor { json } => doctor::run(g, json).await,
         Command::Version { json } => commands::version(json).await,
         Command::Admin { command } => admin::run(g, command).await,
-        Command::Functions { server, command } => functions::run(g, server, command).await,
+        Command::Functions(f) => functions::run(g, f.server, f.command).await,
     }
 }

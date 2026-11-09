@@ -60,6 +60,15 @@ impl Access {
     }
 }
 
+/// Arguments of `forgebase functions`.
+#[derive(Debug, Args)]
+pub struct FunctionsCli {
+    #[command(flatten)]
+    pub server: ServerArgs,
+    #[command(subcommand)]
+    pub command: FunctionsCommand,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum FunctionsCommand {
     /// Upload a WebAssembly module as a new version of a function (creates it on the first deploy).
