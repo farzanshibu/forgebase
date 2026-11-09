@@ -32,10 +32,15 @@ pub struct Check {
     pub allow_anonymous: bool,
 }
 
-/// The realm a principal belongs to. Until FB-25 makes identities
-/// realm-scoped, every user and service account lives in the default realm.
-pub fn home_realm(_ctx: &AccessContext) -> &'static str {
-    DEFAULT_REALM
+/// The realm a caller may act in. Users and service accounts belong to the
+/// realm of their identity (FB-25: the auth service's realm directory);
+/// anonymous callers act in the realm they select. Without a directory
+/// (the engine used on its own) every identity lives in `default`.
+pub fn home_realm(snap: &Snapshot, ctx: &AccessContext) -> String {
+    match &snap.realm_dir {
+        None => DEFAULT_REALM.to_owned(),
+        Some(dir) => dir.home_realm(&ctx.principal).unwrap_or_else(|| ctx.realm_id.clone()),
+    }
 }
 
 /// Step 1 for everyone.
@@ -54,7 +59,7 @@ pub(crate) fn step_tenant(snap: &Snapshot, ctx: &AccessContext, org: Option<&str
     if !snap.realms.contains_key(&ctx.realm_id) {
         return Err(Denial::at(Step::Tenant, "unknown realm"));
     }
-    if ctx.realm_id != home_realm(ctx) {
+    if ctx.realm_id != home_realm(snap, ctx) {
         return Err(Denial::at(Step::Tenant, "cross-realm access is denied"));
     }
     if let Some(o) = org {
@@ -124,7 +129,7 @@ pub(crate) fn run_check(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, c: &Che
     let personal = c.org.is_none() && c.owner.is_some();
     if !personal {
         step_tenant(snap, ctx, c.org.as_deref())?;
-    } else if ctx.realm_id != home_realm(ctx) {
+    } else if ctx.realm_id != home_realm(snap, ctx) {
         return Err(Denial::at(Step::Tenant, "cross-realm access is denied"));
     }
     let eff = effective(snap, ctx, c.org.as_deref(), c.owner.as_deref());
@@ -349,7 +354,7 @@ pub(crate) fn decide(
     let key = data_key(&coll.name, &name);
     let fail = |d: Denial| (d, key.clone());
     step_authentication(snap, ctx, true).map_err(fail)?;
-    if ctx.realm_id != home_realm(ctx) || !snap.realms.contains_key(&ctx.realm_id) {
+    if ctx.realm_id != home_realm(snap, ctx) || !snap.realms.contains_key(&ctx.realm_id) {
         return Err(fail(Denial::at(Step::Tenant, "cross-realm access is denied")));
     }
     let scoped = is_tenant_scoped(coll);

@@ -275,7 +275,7 @@ impl PolicyService {
                     Denial::at(Step::Permission, "only users create organizations"),
                 ));
             }
-            if ctx.realm_id != home_realm(ctx) {
+            if ctx.realm_id != home_realm(&snap, ctx) {
                 return Err(self.deny(
                     ctx,
                     "orgs:create",

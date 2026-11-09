@@ -141,6 +141,7 @@ struct Inner {
     audit: AuditSink,
     data: OnceLock<DataService>,
     mailer: OnceLock<(Arc<dyn forgebase_auth::Mailer>, String)>,
+    realms: OnceLock<forgebase_auth::realm::RealmDirectory>,
 }
 
 impl PolicyService {
@@ -155,6 +156,7 @@ impl PolicyService {
                 hooks: RwLock::new(Hooks::default()),
                 data: OnceLock::new(),
                 mailer: OnceLock::new(),
+                realms: OnceLock::new(),
             }),
         })
     }
@@ -223,9 +225,17 @@ impl PolicyService {
         self.inner.snap.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
+    /// Attaches the auth service's realm directory: users and service
+    /// accounts then act in the realm of their identity (FB-25).
+    pub async fn attach_realms(&self, dir: forgebase_auth::realm::RealmDirectory) -> Result<(), PolicyError> {
+        let _ = self.inner.realms.set(dir);
+        self.reload().await
+    }
+
     /// Reloads the model (after any change; drops every cached permission).
     pub async fn reload(&self) -> Result<(), PolicyError> {
-        let snap = Snapshot::load(self.inner.db.as_ref()).await?;
+        let mut snap = Snapshot::load(self.inner.db.as_ref()).await?;
+        snap.realm_dir = self.inner.realms.get().cloned();
         *self.inner.snap.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(snap);
         Ok(())
     }

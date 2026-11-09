@@ -138,7 +138,7 @@ async fn resolve(svc: &PolicyService, ctx: &mut AccessContext, h: &HeaderMap) ->
     if !privileged && ctx.principal != Principal::System {
         crate::engine::step_authentication(&snap, ctx, true).map_err(|d| deny(ctx, d))?;
     }
-    if !snap.realms.contains_key(&ctx.realm_id) || (!privileged && ctx.realm_id != home_realm(ctx)) {
+    if !snap.realms.contains_key(&ctx.realm_id) || (!privileged && ctx.realm_id != home_realm(&snap, ctx)) {
         return Err(deny(ctx, Denial::at(Step::Tenant, "cross-realm access is denied")));
     }
     let principal = ctx.principal_key();
