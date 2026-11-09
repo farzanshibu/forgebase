@@ -907,6 +907,7 @@ dependencies = [
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-entitlements",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",
