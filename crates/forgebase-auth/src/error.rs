@@ -51,6 +51,9 @@ pub enum AuthError {
     /// Mail delivery failed.
     #[error("could not send mail: {0}")]
     Mail(String),
+    /// An identity provider answered badly or could not be reached.
+    #[error("{0}")]
+    Provider(String),
     /// Error from the data core (validation of user records, storage).
     #[error(transparent)]
     Data(#[from] DataError),
@@ -77,6 +80,7 @@ impl ErrorCode for AuthError {
             Self::Conflict(_) => "conflict",
             Self::NotFound(_) => "not_found",
             Self::Mail(_) => "mail_failed",
+            Self::Provider(_) => "provider_error",
             Self::Data(e) => e.code(),
             Self::Db(e) => e.code(),
             Self::Internal(_) => "internal",
@@ -89,7 +93,7 @@ impl ErrorCode for AuthError {
                 ErrorKind::Unauthenticated
             }
             Self::Forbidden(_) | Self::EmailNotVerified => ErrorKind::Forbidden,
-            Self::RateLimited { .. } | Self::Mail(_) => ErrorKind::Unavailable,
+            Self::RateLimited { .. } | Self::Mail(_) | Self::Provider(_) => ErrorKind::Unavailable,
             Self::InvalidInput(_) => ErrorKind::InvalidInput,
             Self::EmailTaken | Self::Conflict(_) => ErrorKind::Conflict,
             Self::NotFound(_) => ErrorKind::NotFound,

@@ -58,7 +58,7 @@ pub struct HttpError {
 }
 
 impl HttpError {
-    fn new(err: AuthError, request_id: &str) -> Self {
+    pub(crate) fn new(err: AuthError, request_id: &str) -> Self {
         Self {
             err,
             request_id: request_id.to_owned(),
@@ -70,6 +70,7 @@ fn status_of(err: &AuthError) -> StatusCode {
     match err {
         AuthError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         AuthError::Mail(_) => StatusCode::SERVICE_UNAVAILABLE,
+        AuthError::Provider(_) => StatusCode::BAD_GATEWAY,
         e => match e.kind() {
             ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
             ErrorKind::Unauthenticated => StatusCode::UNAUTHORIZED,
@@ -323,9 +324,9 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Body<T> {
     }
 }
 
-type Res = Result<Response, HttpError>;
+pub(crate) type Res = Result<Response, HttpError>;
 
-fn ok(status: StatusCode, body: Json_) -> Response {
+pub(crate) fn ok(status: StatusCode, body: Json_) -> Response {
     let mut r = (status, Json(body)).into_response();
     r.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -353,7 +354,7 @@ fn clear_cookies(secure: bool) -> Vec<HeaderValue> {
     .collect()
 }
 
-fn session_response(auth: &AuthService, tokens: &SessionTokens, extra: Option<(&str, Json_)>) -> Response {
+pub(crate) fn session_response(auth: &AuthService, tokens: &SessionTokens, extra: Option<(&str, Json_)>) -> Response {
     let mut body = serde_json::to_value(tokens).unwrap_or(Json_::Null);
     if let (Some((k, v)), Some(obj)) = (extra, body.as_object_mut()) {
         obj.insert(k.to_owned(), v);
@@ -375,7 +376,7 @@ fn session_response(auth: &AuthService, tokens: &SessionTokens, extra: Option<(&
     res
 }
 
-async fn login_response(auth: &AuthService, outcome: LoginOutcome, rid: &str) -> Res {
+pub(crate) async fn login_response(auth: &AuthService, outcome: LoginOutcome, rid: &str) -> Res {
     match outcome {
         LoginOutcome::Session(tokens) => {
             let extra = match &tokens.subject {
@@ -538,7 +539,9 @@ pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> 
         .route("/service-accounts/{id}/keys", get(list_sa_keys).post(create_sa_key))
         .route("/api-keys/{id}", delete(revoke_key))
         .route("/audit", get(audit))
-        .route("/keys/rotate", post(rotate_keys));
+        .route("/keys/rotate", post(rotate_keys))
+        .merge(crate::social::http::routes())
+        .merge(crate::webauthn::http::routes());
     Router::new().nest("/api/auth", r.with_state(auth))
 }
 

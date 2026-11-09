@@ -16,6 +16,8 @@ forgebase-core.workspace = true
 forgebase-data.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
+num-bigint.workspace = true
+p256.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
@@ -23,6 +25,8 @@ sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
+url.workspace = true
+utoipa.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -30,6 +34,7 @@ tracing.workspace = true
 forgebase-db.workspace = true
 tempfile.workspace = true
 tower.workspace = true
+uuid.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

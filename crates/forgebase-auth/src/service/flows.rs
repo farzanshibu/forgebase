@@ -61,11 +61,11 @@ pub struct TotpSetup {
 }
 
 /// A user row read for sign-in.
-struct UserRow {
-    id: String,
-    email: String,
-    password: Option<String>,
-    verified: bool,
+pub(crate) struct UserRow {
+    pub(crate) id: String,
+    pub(crate) email: String,
+    pub(crate) password: Option<String>,
+    pub(crate) verified: bool,
 }
 
 const RESERVED_SIGNUP_KEYS: &[&str] = &[
@@ -124,7 +124,7 @@ impl AuthService {
         }
     }
 
-    async fn find_user(&self, coll: &Collection, email: &str) -> Result<Option<UserRow>, AuthError> {
+    pub(crate) async fn find_user(&self, coll: &Collection, email: &str) -> Result<Option<UserRow>, AuthError> {
         let q = self.data().backend().dialect().quote_ident(&coll.name);
         let r = read(
             self.data().backend(),
@@ -997,7 +997,20 @@ impl AuthService {
             vec![t(st), t(coll), t(id)],
         )
         .await?;
-        Ok(first(&r).is_some_and(|row| row.i64("enabled") == 1))
+        if first(&r).is_some_and(|row| row.i64("enabled") == 1) {
+            return Ok(true);
+        }
+        // A passkey registered as a second factor also makes MFA mandatory.
+        if let Subject::User { collection, id } = subject {
+            let r = read(
+                self.data().backend(),
+                "SELECT 1 FROM _forgebase_webauthn_credentials WHERE collection = ?1 AND user_id = ?2 AND use_as_mfa = 1 LIMIT 1",
+                vec![t(collection.clone()), t(id.clone())],
+            )
+            .await?;
+            return Ok(!r.is_empty());
+        }
+        Ok(false)
     }
 
     fn require_session_subject(caller: &Authenticated) -> Result<(), AuthError> {
@@ -1364,6 +1377,8 @@ impl AuthService {
         let method = match detail.get("method").and_then(Json::as_str) {
             Some("magic_link") => AuthMethod::MagicLink,
             Some("email_otp") => AuthMethod::EmailOtp,
+            Some("oauth") => AuthMethod::Oauth,
+            Some("passkey") => AuthMethod::Passkey,
             _ => AuthMethod::Password,
         };
         let opts = LoginOptions {
