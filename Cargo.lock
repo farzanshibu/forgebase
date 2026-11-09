@@ -1036,6 +1036,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-backup"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "forgebase-billing"
 version = "0.1.0"
 dependencies = [
@@ -1079,7 +1101,9 @@ dependencies = [
  "dotenvy",
  "forgebase-api",
  "forgebase-auth",
+ "forgebase-backup",
  "forgebase-core",
+ "forgebase-data",
  "forgebase-db",
  "forgebase-observability",
  "forgebase-server",
@@ -1088,6 +1112,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -1484,6 +1509,7 @@ dependencies = [
  "base64",
  "forgebase-api",
  "forgebase-auth",
+ "forgebase-backup",
  "forgebase-billing",
  "forgebase-core",
  "forgebase-credits",
