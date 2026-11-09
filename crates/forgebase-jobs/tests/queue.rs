@@ -8,7 +8,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Only, claim_one, claim_req, claim_after, harness, harness_with, ms, system};
+use common::{Only, claim_after, claim_one, claim_req, harness, harness_with, ms, system};
 use forgebase_core::{ErrorCode, ErrorKind};
 use forgebase_data::{AccessContext, Action};
 use forgebase_jobs::{ClaimRequest, JobFilter, JobStatus, NewJob, NewSchedule, NewWorker, SchedulePatch};

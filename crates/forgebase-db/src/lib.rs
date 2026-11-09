@@ -759,7 +759,9 @@ impl ErrorCode for DbError {
             DbError::Migration(m) => m.kind(),
             DbError::Constraint { .. } => ErrorKind::Conflict,
             DbError::ReadOnly(_) | DbError::Statement(_) => ErrorKind::InvalidInput,
-            DbError::NotWal(_) | DbError::WalPageSizeMismatch { .. } | DbError::Io { .. } | DbError::Sqlx(_) => ErrorKind::Internal,
+            DbError::NotWal(_) | DbError::WalPageSizeMismatch { .. } | DbError::Io { .. } | DbError::Sqlx(_) => {
+                ErrorKind::Internal
+            }
         }
     }
 }
@@ -1031,7 +1033,9 @@ mod tests {
     async fn a_wal_with_another_page_size_than_the_database_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let path = crafted_pair(tmp.path(), 4096, 8192, 0x377f_0682);
-        let err = Database::open(opts(&path)).await.err().expect("must refuse");
+        let Err(err) = Database::open(opts(&path)).await else {
+            panic!("a mismatched WAL must be refused");
+        };
         match &err {
             DbError::WalPageSizeMismatch {
                 db_page_size,

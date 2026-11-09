@@ -1064,7 +1064,14 @@ impl AuthService {
                 "UPDATE _forgebase_auth_sessions SET revoked_at = ?5, revoked_reason = 'revoked'
                  WHERE id = ?1 AND revoked_at IS NULL
                    AND (?6 OR (subject_type = ?2 AND collection IS ?3 AND subject_id = ?4))",
-                vec![t(session_id), t(st), ot(coll), t(id), i(self.now()), i(i64::from(admin))],
+                vec![
+                    t(session_id),
+                    t(st),
+                    ot(coll),
+                    t(id),
+                    i(self.now()),
+                    i(i64::from(admin)),
+                ],
             )
             .await?
             .rows_affected;
