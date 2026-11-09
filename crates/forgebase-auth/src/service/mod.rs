@@ -1006,7 +1006,11 @@ impl AuthService {
         .await?;
         audit_in(
             &mut tx,
-            if caller.impersonator.is_some() { "impersonation.end" } else { "logout" },
+            if caller.impersonator.is_some() {
+                "impersonation.end"
+            } else {
+                "logout"
+            },
             true,
             ci,
             &caller.subject.actor(),

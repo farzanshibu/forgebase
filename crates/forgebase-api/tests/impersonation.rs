@@ -154,9 +154,7 @@ async fn only_a_super_admin_session_may_impersonate() {
 
     // An admin-role service account key is not an interactive admin session.
     let admin_ctx = forgebase_auth::Authenticated {
-        subject: forgebase_auth::Subject::Admin {
-            id: s.admin_id.clone(),
-        },
+        subject: forgebase_auth::Subject::Admin { id: s.admin_id.clone() },
         credential: forgebase_auth::CredentialKind::AccessToken,
         credential_id: "x".into(),
         scopes: None,
@@ -207,7 +205,10 @@ async fn reason_target_and_ttl_are_validated() {
         let (st, j) = post(json!({"principal": p, "reason": "because"})).await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{j}");
         assert!(
-            j["error"]["message"].as_str().unwrap().contains("cannot_impersonate_admin"),
+            j["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot_impersonate_admin"),
             "{j}"
         );
     }
@@ -255,12 +256,19 @@ async fn an_impersonated_session_is_the_user_not_an_admin_and_cannot_escalate() 
             "/api/auth/password/change",
             json!({"current_password": PW, "new_password": "another long password"}),
         ),
-        ("POST", "/api/auth/tokens", json!({"name": "mine", "scopes": ["collections:read"]})),
+        (
+            "POST",
+            "/api/auth/tokens",
+            json!({"name": "mine", "scopes": ["collections:read"]}),
+        ),
         ("POST", "/api/auth/mfa/totp/setup", json!({})),
         ("POST", "/api/auth/refresh", json!({"refresh_token": "nope"})),
     ] {
         let (st, j) = s.call(m, p, Some(tok), Some(b)).await;
-        assert!(st == StatusCode::FORBIDDEN || st == StatusCode::UNAUTHORIZED, "{p}: {st} {j}");
+        assert!(
+            st == StatusCode::FORBIDDEN || st == StatusCode::UNAUTHORIZED,
+            "{p}: {st} {j}"
+        );
     }
     let (_, j) = s
         .call(
@@ -270,7 +278,10 @@ async fn an_impersonated_session_is_the_user_not_an_admin_and_cannot_escalate() 
             Some(json!({"current_password": PW, "new_password": "another long password"})),
         )
         .await;
-    assert!(j["error"]["message"].as_str().unwrap().contains("impersonated_session"), "{j}");
+    assert!(
+        j["error"]["message"].as_str().unwrap().contains("impersonated_session"),
+        "{j}"
+    );
 
     // The user's own password still works (nothing was changed).
     let (st, _) = s
@@ -342,7 +353,12 @@ async fn expiry_and_end_take_effect_immediately() {
         .await;
     let user_tok = j["access_token"].as_str().unwrap();
     let (st, _) = s
-        .call("POST", &format!("/api/auth/impersonations/{sid}/end"), Some(user_tok), None)
+        .call(
+            "POST",
+            &format!("/api/auth/impersonations/{sid}/end"),
+            Some(user_tok),
+            None,
+        )
         .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
 
@@ -355,7 +371,11 @@ async fn expiry_and_end_take_effect_immediately() {
     assert_eq!(items.len(), 4, "{j}");
     assert_eq!(items.iter().filter(|i| i["active"] == true).count(), 1, "{j}");
     assert!(items.iter().all(|i| i["admin_id"] == s.admin_id.as_str()));
-    assert!(items.iter().any(|i| i["reason"] == "kept" && i["target"] == s.target().as_str()));
+    assert!(
+        items
+            .iter()
+            .any(|i| i["reason"] == "kept" && i["target"] == s.target().as_str())
+    );
 }
 
 #[tokio::test]
@@ -443,7 +463,11 @@ async fn admin_user_routes_show_sessions_history_mfa_and_revoke_all() {
     assert!(h["items"].as_array().unwrap().iter().any(|e| e["event"] == "login"));
 
     // Users cannot read each other's admin view.
-    for p in [base.clone(), format!("{base}/sessions"), format!("{base}/login-history")] {
+    for p in [
+        base.clone(),
+        format!("{base}/sessions"),
+        format!("{base}/login-history"),
+    ] {
         let (st, _) = s.call("GET", &p, Some(&user_tok), None).await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{p}");
     }
@@ -462,9 +486,7 @@ async fn admin_user_routes_show_sessions_history_mfa_and_revoke_all() {
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
     // The key list shows every key and PAT.
-    let (st, k) = s
-        .call("GET", "/api/auth/api-keys", Some(&s.admin_token), None)
-        .await;
+    let (st, k) = s.call("GET", "/api/auth/api-keys", Some(&s.admin_token), None).await;
     assert_eq!(st, StatusCode::OK);
     assert!(k["items"].is_array());
 }

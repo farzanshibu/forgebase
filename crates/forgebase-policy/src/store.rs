@@ -1453,7 +1453,9 @@ impl PolicyService {
         if let Some(o) = &ctx.org_id {
             c = c.with_org(o.clone());
         }
-        let eff = self.snapshot().effective(&c.principal_key(), &c.realm_id, c.org_id.as_deref());
+        let eff = self
+            .snapshot()
+            .effective(&c.principal_key(), &c.realm_id, c.org_id.as_deref());
         c.roles = eff.roles.iter().cloned().collect();
         Ok(c)
     }

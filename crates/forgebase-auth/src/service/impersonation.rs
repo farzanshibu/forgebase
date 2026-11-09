@@ -13,7 +13,7 @@ use serde_json::{Value as Json, json};
 use super::{
     AuditEntry, AuthService, ClientInfo, SessionView, audit_entry, audit_in, reject_impersonated, require_admin,
 };
-use crate::store::{first, i, now, ot, read, rfc3339, rows, t, Tx};
+use crate::store::{Tx, first, i, now, ot, read, rfc3339, rows, t};
 use crate::{AuthError, AuthMethod, Authenticated, CredentialKind, Subject};
 
 /// Shortest and longest impersonation, minutes.
@@ -90,9 +90,7 @@ impl AuthService {
     ) -> Result<ImpersonationGrant, AuthError> {
         reject_impersonated(caller)?;
         let Subject::Admin { id: admin_id } = &caller.subject else {
-            return Err(AuthError::Forbidden(
-                "only administrators can impersonate users".into(),
-            ));
+            return Err(AuthError::Forbidden("only administrators can impersonate users".into()));
         };
         if !matches!(
             caller.credential,
@@ -193,7 +191,11 @@ impl AuthService {
             .map(|row| ImpersonationView {
                 session_id: row.str("id"),
                 admin_id: row.str("impersonator"),
-                target: format!("user:{}/{}", row.opt_str("collection").unwrap_or_default(), row.str("subject_id")),
+                target: format!(
+                    "user:{}/{}",
+                    row.opt_str("collection").unwrap_or_default(),
+                    row.str("subject_id")
+                ),
                 reason: row.opt_str("impersonation_reason").unwrap_or_default(),
                 created_at: rfc3339(row.i64("created_at")),
                 expires_at: rfc3339(row.i64("expires_at")),

@@ -550,7 +550,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> 
         .route("/api-keys", get(list_all_keys))
         .route("/users/{collection}/{id}", get(admin_user))
         .route("/users/{collection}/{id}/sessions", get(admin_user_sessions))
-        .route("/users/{collection}/{id}/sessions/revoke", post(admin_revoke_user_sessions))
+        .route(
+            "/users/{collection}/{id}/sessions/revoke",
+            post(admin_revoke_user_sessions),
+        )
         .route("/users/{collection}/{id}/login-history", get(admin_user_history))
         .route("/impersonate", post(impersonate))
         .route("/impersonations", get(list_impersonations))

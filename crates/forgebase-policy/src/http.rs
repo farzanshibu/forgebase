@@ -712,7 +712,13 @@ pub mod docs {
         "Role sets usable in the org (`roles:read`).",
         list_org_role_sets
     );
-    doc!(get, "/api/v1/role-sets", "authorization", "Realm role sets.", list_realm_role_sets);
+    doc!(
+        get,
+        "/api/v1/role-sets",
+        "authorization",
+        "Realm role sets.",
+        list_realm_role_sets
+    );
     doc!(
         get,
         "/api/v1/realm-bindings",
@@ -782,7 +788,10 @@ pub fn router(svc: PolicyService) -> Router {
         .route("/api/v1/roles", get(list_realm_roles).put(put_realm_role))
         .route("/api/v1/roles/{key}", axum::routing::delete(delete_realm_role))
         .route("/api/v1/role-sets", get(list_realm_role_sets).put(put_realm_role_set))
-        .route("/api/v1/realm-bindings", get(list_realm_bindings).put(put_realm_binding))
+        .route(
+            "/api/v1/realm-bindings",
+            get(list_realm_bindings).put(put_realm_binding),
+        )
         .route("/api/v1/overrides", get(list_overrides).post(add_override))
         .route("/api/v1/overrides/{id}", axum::routing::delete(delete_override))
         .route("/api/v1/acl", get(list_acl).post(put_acl))
