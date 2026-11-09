@@ -9,7 +9,10 @@
 //! 4. record the instance id on first start,
 //! 5. bind the listener and serve the API (with the jobs API of
 //!    `forgebase-jobs` mounted under `/api/v1/jobs` and the vector API of
-//!    `forgebase-vector` under `/api/v1/vector`),
+//!    `forgebase-vector` under `/api/v1/vector`, and the entitlement and
+//!    quota API of `forgebase-entitlements`, whose hooks run in steps 4 and
+//!    6 of the policy pipeline and whose gate applies plan-based API rate
+//!    limits),
 //! 6. start the job scheduler and in-process worker pool, and the vector
 //!    engine's index warm-up and saver,
 //! 7. when `[resp] enabled = true`, bind the Redis protocol listener
@@ -32,6 +35,7 @@ use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
+use forgebase_entitlements::{EntitlementService, SystemClock};
 use forgebase_kv::{KvConfig, KvError, KvService};
 use forgebase_vector::{VectorConfig, VectorError, VectorService};
 use tokio::net::TcpListener;
@@ -57,6 +61,7 @@ pub struct RunningServer {
     vector: VectorService,
     resp: Option<forgebase_resp::RespHandle>,
     realtime: forgebase_realtime::RealtimeService,
+    entitlements: EntitlementService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -103,6 +108,16 @@ pub async fn start_with_jobs(
             return Err(e);
         }
     };
+    // Entitlements and quotas (FB-24): pipeline steps 4 and 6.
+    let entitlements = match EntitlementService::open(Arc::new(db.clone()), policy.clone(), Arc::new(SystemClock)).await
+    {
+        Ok(e) => e,
+        Err(e) => {
+            db.close().await;
+            return Err(ServerError::Entitlements(e.to_string()));
+        }
+    };
+    policy.set_hooks(entitlements.hooks());
     // One authorizer — the policy engine — for the data core and the KV engine.
     let authorizer: Arc<dyn Authorizer> = policy.authorizer();
     let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
@@ -141,6 +156,11 @@ pub async fn start_with_jobs(
         .with_policy(policy)
         .with_realtime(realtime.clone());
     let jobs = JobService::new(state.data().clone());
+    entitlements.attach_jobs(jobs.clone());
+    if let Err(e) = entitlements.ensure_schedule().await {
+        tracing::warn!(error = %e, "entitlement maintenance schedule not created");
+    }
+    let registry = forgebase_entitlements::register_jobs(registry, entitlements.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -152,7 +172,9 @@ pub async fn start_with_jobs(
         extensions: vec![
             forgebase_jobs::extension(jobs.clone()),
             forgebase_vector::extension(vector.clone()),
+            forgebase_entitlements::extension(entitlements.clone()),
         ],
+        gates: vec![entitlements.rate_gate()],
         ..opts
     };
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
@@ -245,6 +267,7 @@ pub async fn start_with_jobs(
         vector,
         resp,
         realtime,
+        entitlements,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -292,6 +315,11 @@ impl RunningServer {
     /// principal).
     pub fn jobs(&self) -> &JobService {
         &self.jobs
+    }
+
+    /// The entitlement and quota service of this instance.
+    pub fn entitlements(&self) -> &EntitlementService {
+        &self.entitlements
     }
 
     /// The vector engine of this instance.
@@ -462,6 +490,9 @@ pub enum ServerError {
     /// The realtime service failed to start.
     #[error("realtime: {0}")]
     Realtime(#[from] forgebase_realtime::RealtimeError),
+    /// The entitlement service failed to load its catalog.
+    #[error("entitlements: {0}")]
+    Entitlements(String),
 }
 
 impl ErrorCode for ServerError {
@@ -479,6 +510,7 @@ impl ErrorCode for ServerError {
             ServerError::Auth(e) => e.code(),
             ServerError::Policy(_) => "policy_unavailable",
             ServerError::Realtime(e) => e.code(),
+            ServerError::Entitlements(_) => "entitlements_unavailable",
         }
     }
 
@@ -491,7 +523,7 @@ impl ErrorCode for ServerError {
             ServerError::Vector(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
             ServerError::Auth(e) => e.kind(),
-            ServerError::Policy(_) => ErrorKind::Internal,
+            ServerError::Policy(_) | ServerError::Entitlements(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }

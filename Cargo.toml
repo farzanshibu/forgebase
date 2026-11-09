@@ -29,6 +29,7 @@ forgebase-kv = { path = "crates/forgebase-kv" }
 forgebase-vector = { path = "crates/forgebase-vector" }
 forgebase-resp = { path = "crates/forgebase-resp" }
 forgebase-realtime = { path = "crates/forgebase-realtime" }
+forgebase-entitlements = { path = "crates/forgebase-entitlements" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"

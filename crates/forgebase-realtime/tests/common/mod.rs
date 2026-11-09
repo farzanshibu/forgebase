@@ -88,6 +88,7 @@ pub fn ci() -> ClientInfo {
         ip: Some("127.0.0.1".into()),
         user_agent: None,
         request_id: None,
+        impersonator: None,
     }
 }
 

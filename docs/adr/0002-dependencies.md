@@ -257,3 +257,12 @@ already in the tree. No TLS stack, no native code. Also uses `time` and `url`
 Deliberately **not** added: a Redis client (`RedisFanOut` speaks the few RESP2
 commands pub/sub needs over `tokio::net::TcpStream`), `tokio-stream` /
 `tokio-util` (bounded `mpsc` + `futures_util::stream::unfold` cover SSE).
+
+## FB-24 (entitlements and quotas, ADR-0010)
+
+No new third-party crate. The new workspace crate `forgebase-entitlements` uses
+only dependencies already recorded here: `axum`, `serde`, `serde_json`,
+`thiserror`, `time` (RFC 3339 on the wire), `tokio`, `tower-http` (`limit`),
+`tracing`, `utoipa` and `uuid`. Calendar arithmetic (months, billing-cycle
+anchors) is a 30-line civil-date conversion in the crate, not a date library.
+`Cargo.lock` gains only the `forgebase-entitlements` entry.

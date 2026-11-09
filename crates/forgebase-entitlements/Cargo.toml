@@ -1,0 +1,35 @@
+[package]
+name = "forgebase-entitlements"
+description = "ForgeBase entitlements and quotas: plans, features, add-ons, trials, overrides, quota policies, atomic usage reservation, leases, alerts and plan-based API rate limits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+forgebase-api.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-jobs.workspace = true
+forgebase-policy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+forgebase-core.workspace = true
+forgebase-schema.workspace = true
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

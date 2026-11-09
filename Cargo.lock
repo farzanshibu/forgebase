@@ -868,6 +868,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-entitlements"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-jobs",
+ "forgebase-policy",
+ "forgebase-schema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "forgebase-graph"
 version = "0.1.0"
 dependencies = [
@@ -1063,6 +1088,7 @@ dependencies = [
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-entitlements",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",
