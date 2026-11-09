@@ -27,10 +27,13 @@ forgebase-auth = { path = "crates/forgebase-auth" }
 forgebase-policy = { path = "crates/forgebase-policy" }
 forgebase-kv = { path = "crates/forgebase-kv" }
 forgebase-vector = { path = "crates/forgebase-vector" }
+forgebase-resp = { path = "crates/forgebase-resp" }
 forgebase-entitlements = { path = "crates/forgebase-entitlements" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"
+num-bigint = { version = "0.5.1", default-features = false, features = ["std"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "arithmetic", "pkcs8", "pem", "std"] }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
 base64 = "0.22.1"
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
@@ -43,6 +46,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 http-body-util = "0.1.5"
 metrics = "0.24.6"
+redis = { version = "=0.32.7", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 rust-embed = { version = "8.13.0", features = ["debug-embed"] }

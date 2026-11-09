@@ -74,6 +74,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
     Migration::new(6, "graph", include_str!("../../../migrations/system/0006_graph.sql")),
     Migration::new(7, "jobs", include_str!("../../../migrations/system/0007_jobs.sql")),
     Migration::new(
+        8,
+        "oauth_webauthn",
+        include_str!("../../../migrations/system/0008_oauth_webauthn.sql"),
+    ),
+    Migration::new(
         9,
         "entitlements",
         include_str!("../../../migrations/system/0009_entitlements.sql"),

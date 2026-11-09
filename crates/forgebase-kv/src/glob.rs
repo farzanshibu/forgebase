@@ -3,7 +3,7 @@
 //! backtrack point), so a hostile pattern cannot blow up.
 
 /// Whether `text` matches `pattern`.
-pub(crate) fn matches(pattern: &str, text: &str) -> bool {
+pub fn matches(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
     let (mut pi, mut ti) = (0usize, 0usize);

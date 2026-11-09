@@ -95,7 +95,6 @@ pub(crate) struct SubRow {
     pub cycle_anchor: Option<i64>,
     pub cancel_at: Option<i64>,
     pub external_ref: Option<String>,
-    pub source_event_at: Option<i64>,
     pub updated_at: i64,
 }
 
@@ -399,7 +398,6 @@ impl Catalog {
                 cycle_anchor: opt_int(&r, 6),
                 cancel_at: opt_int(&r, 7),
                 external_ref: opt_text(&r, 8),
-                source_event_at: opt_int(&r, 9),
                 updated_at: int(&r, 10),
             };
             c.subscriptions.insert(s.subject.clone(), s);
