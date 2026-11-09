@@ -23,6 +23,19 @@ const RELAY_PAGE: i64 = 200;
 /// Key of the relay cursor in `_forgebase_queue_state`.
 const RELAY_CURSOR: &str = "outbox_cursor";
 
+/// Server-wide queue backlog ([`QueueService::backlog`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueBacklog {
+    /// Deliveries ready now.
+    pub ready: i64,
+    /// Deliveries waiting for a retry or delay to pass.
+    pub delayed: i64,
+    /// Deliveries leased to a consumer.
+    pub in_flight: i64,
+    /// Messages retained across all topics.
+    pub messages: i64,
+}
+
 impl QueueService {
     // ------------------------------------------------------------ metrics
 
@@ -43,6 +56,32 @@ impl QueueService {
         #[allow(clippy::cast_precision_loss)]
         let per_sec = r.int("window") as f64 / 300.0;
         Ok((r.int("last"), per_sec))
+    }
+
+    /// Server-wide backlog for `/metrics`: deliveries by state and messages
+    /// retained. Two cheap aggregate queries, no per-topic or per-subscription
+    /// labels. No authorisation: counts only, for the process itself.
+    pub async fn backlog(&self) -> Result<QueueBacklog> {
+        let now = self.now();
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT \
+                   coalesce(sum(CASE WHEN state = 'ready' AND available_at <= ?1 THEN 1 ELSE 0 END), 0) AS ready, \
+                   coalesce(sum(CASE WHEN state = 'ready' AND available_at > ?1 THEN 1 ELSE 0 END), 0) AS delayed, \
+                   coalesce(sum(CASE WHEN state = 'leased' THEN 1 ELSE 0 END), 0) AS in_flight, \
+                   (SELECT COUNT(*) FROM _forgebase_queue_messages) AS messages \
+                 FROM _forgebase_queue_deliveries",
+                vec![now.into()],
+            ))
+            .await?;
+        let r = Row::new(&rows, 0);
+        Ok(QueueBacklog {
+            ready: r.int("ready"),
+            delayed: r.int("delayed"),
+            in_flight: r.int("in_flight"),
+            messages: r.int("messages"),
+        })
     }
 
     /// Metrics of a topic.

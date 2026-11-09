@@ -33,6 +33,80 @@ pub mod names {
     pub const DB_WAL_SIZE_BYTES: &str = "forgebase_db_wal_size_bytes";
     /// Gauge: applied schema version.
     pub const DB_SCHEMA_VERSION: &str = "forgebase_db_schema_version";
+    /// Gauge: resident memory of the server process in bytes (standard Prometheus name).
+    pub const PROCESS_RESIDENT_MEMORY_BYTES: &str = "process_resident_memory_bytes";
+    /// Counter: user plus system CPU time of the process in seconds (standard Prometheus name).
+    pub const PROCESS_CPU_SECONDS_TOTAL: &str = "process_cpu_seconds_total";
+    /// Histogram: database statement latency in seconds, label `mode` (`read` or `write`).
+    pub const DB_QUERY_DURATION_SECONDS: &str = "forgebase_db_query_duration_seconds";
+    /// Gauge: database pool connections currently checked out, label `pool` (`writer` or `reader`).
+    pub const DB_POOL_IN_USE: &str = "forgebase_db_pool_connections_in_use";
+    /// Gauge: database pool connections open and idle, label `pool` (`writer` or `reader`).
+    pub const DB_POOL_IDLE: &str = "forgebase_db_pool_connections_idle";
+    /// Gauge: jobs per state, label `status` (`queued`, `running`, `succeeded`, `dead`, `cancelled`).
+    pub const JOBS: &str = "forgebase_jobs";
+    /// Gauge: object storage bytes, label `kind` (`logical` for current objects, `stored` after deduplication).
+    pub const STORAGE_BYTES: &str = "forgebase_storage_bytes";
+    /// Gauge: object storage object count, label `kind` (`current` or `versions`).
+    pub const STORAGE_OBJECTS: &str = "forgebase_storage_objects";
+    /// Gauge: vector indexes by `state` (`ready` or `building`).
+    pub const VECTOR_INDEXES: &str = "forgebase_vector_indexes";
+    /// Gauge: vectors held in loaded vector indexes.
+    pub const VECTOR_INDEXED_VECTORS: &str = "forgebase_vector_indexed_vectors";
+    /// Gauge: memory used by loaded vector indexes in bytes.
+    pub const VECTOR_INDEX_MEMORY_BYTES: &str = "forgebase_vector_index_memory_bytes";
+    /// Gauge: keys in the key-value store.
+    pub const KV_KEYS: &str = "forgebase_kv_keys";
+    /// Gauge: estimated memory used by the key-value store in bytes.
+    pub const KV_MEMORY_BYTES: &str = "forgebase_kv_memory_bytes";
+    /// Gauge: queue deliveries by `state` (`ready`, `delayed`, `in_flight`).
+    pub const QUEUE_DELIVERIES: &str = "forgebase_queue_deliveries";
+    /// Gauge: messages retained across all topics.
+    pub const QUEUE_MESSAGES: &str = "forgebase_queue_messages";
+}
+
+/// Resident memory and CPU time of this process, where the platform reports them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProcessStats {
+    /// Resident set size in bytes.
+    pub resident_bytes: Option<u64>,
+    /// User plus system CPU seconds since the process started.
+    pub cpu_seconds: Option<f64>,
+}
+
+/// Reads the process statistics (best effort; `None` fields are not exported).
+pub fn process_stats() -> ProcessStats {
+    ProcessStats {
+        resident_bytes: memory_stats::memory_stats().map(|m| m.physical_mem as u64),
+        cpu_seconds: cpu_time::ProcessTime::try_now()
+            .ok()
+            .map(|t| t.as_duration().as_secs_f64()),
+    }
+}
+
+/// Prometheus text for the `process_*` metrics, to append to a scrape.
+///
+/// Rendered by hand because the CPU total is fractional and the `metrics`
+/// counter is integral. Metrics the platform cannot report are left out.
+pub fn render_process_metrics() -> String {
+    use std::fmt::Write;
+    let s = process_stats();
+    let mut out = String::new();
+    if let Some(b) = s.resident_bytes {
+        let n = names::PROCESS_RESIDENT_MEMORY_BYTES;
+        let _ = write!(
+            out,
+            "# HELP {n} Resident memory size in bytes.\n# TYPE {n} gauge\n{n} {b}\n"
+        );
+    }
+    if let Some(c) = s.cpu_seconds {
+        let n = names::PROCESS_CPU_SECONDS_TOTAL;
+        let _ = write!(
+            out,
+            "# HELP {n} Total user and system CPU time spent in seconds.\n# TYPE {n} counter\n{n} {c}\n"
+        );
+    }
+    out
 }
 
 /// Latency buckets in seconds (1 ms … 10 s).
@@ -107,6 +181,12 @@ pub fn metrics_handle() -> &'static PrometheusHandle {
                 Matcher::Full(names::HTTP_REQUEST_DURATION_SECONDS.to_owned()),
                 LATENCY_BUCKETS,
             )
+            .and_then(|b| {
+                b.set_buckets_for_metric(
+                    Matcher::Full(names::DB_QUERY_DURATION_SECONDS.to_owned()),
+                    LATENCY_BUCKETS,
+                )
+            })
             .unwrap_or_else(|_| PrometheusBuilder::new());
         let recorder = builder.build_recorder();
         let handle = recorder.handle();
@@ -143,6 +223,27 @@ fn describe() {
     describe_gauge!(names::DB_SIZE_BYTES, Unit::Bytes, "Primary database file size.");
     describe_gauge!(names::DB_WAL_SIZE_BYTES, Unit::Bytes, "Write-ahead log size.");
     describe_gauge!(names::DB_SCHEMA_VERSION, "Applied system schema version.");
+    describe_histogram!(
+        names::DB_QUERY_DURATION_SECONDS,
+        Unit::Seconds,
+        "Database statement latency."
+    );
+    describe_gauge!(names::DB_POOL_IN_USE, "Database pool connections checked out.");
+    describe_gauge!(names::DB_POOL_IDLE, "Database pool connections open and idle.");
+    describe_gauge!(names::JOBS, "Jobs by status.");
+    describe_gauge!(names::STORAGE_BYTES, Unit::Bytes, "Object storage bytes.");
+    describe_gauge!(names::STORAGE_OBJECTS, "Object storage objects.");
+    describe_gauge!(names::VECTOR_INDEXES, "Vector indexes by state.");
+    describe_gauge!(names::VECTOR_INDEXED_VECTORS, "Vectors in loaded indexes.");
+    describe_gauge!(
+        names::VECTOR_INDEX_MEMORY_BYTES,
+        Unit::Bytes,
+        "Memory used by loaded vector indexes."
+    );
+    describe_gauge!(names::KV_KEYS, "Keys in the key-value store.");
+    describe_gauge!(names::KV_MEMORY_BYTES, Unit::Bytes, "Key-value store memory.");
+    describe_gauge!(names::QUEUE_DELIVERIES, "Queue deliveries by state.");
+    describe_gauge!(names::QUEUE_MESSAGES, "Messages retained in topics.");
 }
 
 #[cfg(test)]
@@ -159,6 +260,13 @@ mod tests {
         let text = metrics_handle().render();
         assert!(text.contains("forgebase_build_info"), "{text}");
         assert!(text.contains("forgebase_http_requests_total"), "{text}");
+    }
+
+    #[test]
+    fn process_metrics_render_in_exposition_format() {
+        let text = render_process_metrics();
+        assert!(text.contains("# TYPE process_resident_memory_bytes gauge"), "{text}");
+        assert!(text.contains("# TYPE process_cpu_seconds_total counter"), "{text}");
     }
 
     #[test]

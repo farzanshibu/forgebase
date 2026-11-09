@@ -431,6 +431,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpubits"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1167,6 +1177,7 @@ version = "0.1.0"
 dependencies = [
  "forgebase-core",
  "forgebase-migrations",
+ "metrics",
  "serde",
  "sqlx",
  "tempfile",
@@ -1323,7 +1334,9 @@ dependencies = [
 name = "forgebase-observability"
 version = "0.1.0"
 dependencies = [
+ "cpu-time",
  "forgebase-core",
+ "memory-stats",
  "metrics",
  "metrics-exporter-prometheus",
  "thiserror",
@@ -1486,6 +1499,7 @@ dependencies = [
  "forgebase-storage",
  "forgebase-vector",
  "futures-util",
+ "metrics",
  "redis",
  "serde_json",
  "tempfile",
@@ -2179,6 +2193,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57804b2c9b69967f1536a56f86297e367a33b19e98852ed624b84551cdbc0d90"
 dependencies = [
  "rustix",
+]
+
+[[package]]
+name = "memory-stats"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c73f5c649995a115e1a0220b35e4df0a1294500477f97a91d0660fb5abeb574a"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

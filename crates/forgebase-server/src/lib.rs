@@ -308,6 +308,13 @@ pub async fn start_with_jobs(
         ],
         ..opts
     };
+    let state = state.with_metrics_collector(subsystem_gauges(
+        jobs.clone(),
+        storage.clone(),
+        kv.clone(),
+        vector.clone(),
+        queue.clone(),
+    ));
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
     let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
     // Host-header routing of verified custom domains: outermost, before auth and tenancy.
@@ -425,6 +432,67 @@ pub async fn start_with_jobs(
 /// The queue service on the auth service's data service: webhook signing
 /// secrets sealed with the data directory's master key, metering through the
 /// quota engine, push to server functions and SSRF-safe webhooks.
+/// A `/metrics` collector for the subsystem gauges (jobs, storage, vector, KV,
+/// queue). Labels are fixed vocabularies only: no per-record, per-user or
+/// per-queue label. A subsystem whose read fails keeps its last values.
+fn subsystem_gauges(
+    jobs: JobService,
+    storage: forgebase_storage::StorageService,
+    kv: KvService,
+    vector: VectorService,
+    queue: Option<forgebase_queue::QueueService>,
+) -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync + 'static {
+    use forgebase_data::AccessContext;
+    use forgebase_observability::names;
+    move || {
+        let (jobs, storage, kv, vector, queue) =
+            (jobs.clone(), storage.clone(), kv.clone(), vector.clone(), queue.clone());
+        Box::pin(async move {
+            let sys = AccessContext::system();
+            match jobs.stats(&sys).await {
+                Ok(s) => {
+                    for (status, n) in &s.totals {
+                        metrics::gauge!(names::JOBS, "status" => status.clone()).set(*n as f64);
+                    }
+                }
+                Err(e) => tracing::debug!(error = %e, "job gauges not refreshed"),
+            }
+            match storage.stats(&sys).await {
+                Ok(s) => {
+                    metrics::gauge!(names::STORAGE_BYTES, "kind" => "logical").set(s.logical_bytes as f64);
+                    metrics::gauge!(names::STORAGE_BYTES, "kind" => "stored").set(s.stored_bytes as f64);
+                    metrics::gauge!(names::STORAGE_OBJECTS, "kind" => "current").set(s.objects as f64);
+                    metrics::gauge!(names::STORAGE_OBJECTS, "kind" => "versions").set(s.versions as f64);
+                }
+                Err(e) => tracing::debug!(error = %e, "storage gauges not refreshed"),
+            }
+            let v = vector.totals();
+            metrics::gauge!(names::VECTOR_INDEXES, "state" => "ready").set(v.indexes.saturating_sub(v.building) as f64);
+            metrics::gauge!(names::VECTOR_INDEXES, "state" => "building").set(v.building as f64);
+            metrics::gauge!(names::VECTOR_INDEXED_VECTORS).set(v.indexed_vectors as f64);
+            metrics::gauge!(names::VECTOR_INDEX_MEMORY_BYTES).set(v.memory_bytes as f64);
+            match kv.stats(&sys) {
+                Ok(s) => {
+                    metrics::gauge!(names::KV_KEYS).set(s.keys as f64);
+                    metrics::gauge!(names::KV_MEMORY_BYTES).set(s.used_memory_bytes as f64);
+                }
+                Err(e) => tracing::debug!(error = %e, "kv gauges not refreshed"),
+            }
+            if let Some(q) = queue {
+                match q.backlog().await {
+                    Ok(b) => {
+                        metrics::gauge!(names::QUEUE_DELIVERIES, "state" => "ready").set(b.ready as f64);
+                        metrics::gauge!(names::QUEUE_DELIVERIES, "state" => "delayed").set(b.delayed as f64);
+                        metrics::gauge!(names::QUEUE_DELIVERIES, "state" => "in_flight").set(b.in_flight as f64);
+                        metrics::gauge!(names::QUEUE_MESSAGES).set(b.messages as f64);
+                    }
+                    Err(e) => tracing::debug!(error = %e, "queue gauges not refreshed"),
+                }
+            }
+        })
+    }
+}
+
 async fn open_queue(
     auth: &forgebase_auth::AuthService,
     config: &Config,
