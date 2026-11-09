@@ -527,7 +527,7 @@ pub struct PresenceList {
 
 /// Publishes a message to a channel.
 #[utoipa::path(
-    post, path = "/api/v1/realtime/channels/{channel}/messages", tag = "realtime",
+    post, path = "/api/v1/realtime/channels/{channel}/messages", operation_id = "realtime_publish", tag = "realtime",
     params(("channel" = String, Path, description = "Channel name")),
     request_body = PublishBody,
     responses(
@@ -570,7 +570,7 @@ async fn presence(
 
 /// Realtime counters (administrators).
 #[utoipa::path(
-    get, path = "/api/v1/realtime/stats", tag = "realtime",
+    get, path = "/api/v1/realtime/stats", operation_id = "realtime_stats", tag = "realtime",
     responses(
         (status = 200, description = "Counters", body = RealtimeStats),
         (status = 401, description = "Authentication required", body = ErrorBody),

@@ -213,7 +213,7 @@ async fn delete_one(State(s): State<FunctionService>, Access(ctx): Access, Path(
 }
 
 /// A function's versions, newest first.
-#[utoipa::path(get, path = "/api/v1/functions/{name}/versions", tag = "functions",
+#[utoipa::path(get, path = "/api/v1/functions/{name}/versions", operation_id = "functions_versions", tag = "functions",
     params(("name" = String, Path, description = "Function name")),
     responses((status = 200, description = "Versions", body = VersionList)))]
 async fn versions(State(s): State<FunctionService>, Access(ctx): Access, Path(name): Path<String>) -> ApiResult {

@@ -1,0 +1,40 @@
+[package]
+name = "forgebase-billing"
+description = "ForgeBase billing: catalog, multi-currency prices, customers, subscriptions, one-time orders, metered usage billing, proration, coupons, tax, invoices, credit notes, refunds, dunning, a customer portal, payment statistics, and Stripe and Razorpay drivers with signed idempotent webhooks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+forgebase-api.workspace = true
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-credits.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-entitlements.workspace = true
+forgebase-jobs.workspace = true
+forgebase-policy.workspace = true
+hmac.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

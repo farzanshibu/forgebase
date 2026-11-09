@@ -71,6 +71,7 @@ pub struct RunningServer {
     entitlements: EntitlementService,
     functions: FunctionService,
     credits: CreditService,
+    billing: Option<forgebase_billing::BillingService>,
     customize: CustomizeService,
     queue: Option<forgebase_queue::QueueService>,
     shutdown_timeout: Duration,
@@ -199,6 +200,19 @@ pub async fn start_with_jobs(
             return Err(e);
         }
     };
+    // Billing (FB-70): off by default.
+    let billing = if config.billing.enabled {
+        match open_billing(&db, &auth, &policy, &entitlements, &credits).await {
+            Ok(b) => Some(b),
+            Err(e) => {
+                realtime.shutdown();
+                db.close().await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
     // Durable topics and queues (FB-63), unless `[queue] enabled = false`.
     let queue = if config.queue.enabled {
         match open_queue(&auth, config, &entitlements, &functions).await {
@@ -243,6 +257,16 @@ pub async fn start_with_jobs(
         tracing::warn!(error = %e, "credit maintenance schedule not created");
     }
     let registry = forgebase_credits::register_jobs(registry, credits.clone());
+    let registry = match &billing {
+        Some(b) => {
+            b.attach_jobs(jobs.clone());
+            if let Err(e) = b.ensure_schedule().await {
+                tracing::warn!(error = %e, "billing maintenance schedule not created");
+            }
+            forgebase_billing::register_jobs(registry, b.clone())
+        }
+        None => registry,
+    };
     customize.attach_jobs(jobs.clone());
     let registry = forgebase_customize::register_jobs(registry, customize.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
@@ -261,6 +285,9 @@ pub async fn start_with_jobs(
         forgebase_credits::extension(credits.clone()),
         forgebase_customize::extension(customize.clone()),
     ];
+    if let Some(b) = &billing {
+        extensions.push(forgebase_billing::extension(b.clone()));
+    }
     if let Some(q) = &queue {
         extensions.push(forgebase_queue::extension(q.clone()));
     }
@@ -374,6 +401,7 @@ pub async fn start_with_jobs(
         entitlements,
         functions,
         credits,
+        billing,
         customize,
         queue,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
@@ -448,6 +476,35 @@ async fn open_functions(auth: &forgebase_auth::AuthService, kv: &KvService) -> R
         .map_err(|e| ServerError::Functions(e.to_string()))
 }
 
+/// The billing service (FB-70): provider secrets sealed with the data
+/// directory's master key, provider APIs over FB-25's TLS client.
+async fn open_billing(
+    db: &Database,
+    auth: &forgebase_auth::AuthService,
+    policy: &forgebase_policy::PolicyService,
+    entitlements: &EntitlementService,
+    credits: &CreditService,
+) -> Result<forgebase_billing::BillingService, ServerError> {
+    let path = auth.config().master_key_path.clone();
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
+        .await
+        .map_err(|e| ServerError::Billing(e.to_string()))??;
+    let http = forgebase_auth::net::HttpsClient::new(&auth.tls_settings()?)?;
+    forgebase_billing::BillingService::open(
+        Arc::new(db.clone()),
+        forgebase_billing::BillingDeps {
+            policy: policy.clone(),
+            entitlements: entitlements.clone(),
+            credits: Arc::new(credits.clone()),
+            clock: Arc::new(SystemClock),
+            keyring,
+            http: Arc::new(http),
+        },
+    )
+    .await
+    .map_err(|e| ServerError::Billing(e.to_string()))
+}
+
 async fn open_auth(
     db: &Database,
     layout: &DataLayout,
@@ -518,6 +575,11 @@ impl RunningServer {
     /// The credit ledger of this instance.
     pub fn credits(&self) -> &CreditService {
         &self.credits
+    }
+
+    /// The billing application (`None` unless `[billing] enabled`).
+    pub fn billing(&self) -> Option<&forgebase_billing::BillingService> {
+        self.billing.as_ref()
     }
 
     /// The customization service (domains, branding, email, agreements).
@@ -721,6 +783,9 @@ pub enum ServerError {
     /// The credit service failed to open.
     #[error("credits: {0}")]
     Credits(String),
+    /// The billing service failed to open.
+    #[error("billing: {0}")]
+    Billing(String),
     /// The customization service failed to open.
     #[error("customize: {0}")]
     Customize(String),
@@ -746,6 +811,7 @@ impl ErrorCode for ServerError {
             ServerError::Storage(_) => "storage_unavailable",
             ServerError::Queue(_) => "queue_unavailable",
             ServerError::Credits(_) => "credits_unavailable",
+            ServerError::Billing(_) => "billing_unavailable",
             ServerError::Customize(_) => "customize_unavailable",
         }
     }
@@ -765,7 +831,8 @@ impl ErrorCode for ServerError {
             | ServerError::Storage(_)
             | ServerError::Queue(_)
             | ServerError::Credits(_)
-            | ServerError::Customize(_) => ErrorKind::Internal,
+            | ServerError::Customize(_)
+            | ServerError::Billing(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }

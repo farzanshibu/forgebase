@@ -461,7 +461,7 @@ fn client_ip(parts: &Parts, trust_proxy: bool) -> Option<String> {
 
 /// Records that the caller accepts the given (current) versions, with time,
 /// address and client.
-#[utoipa::path(post, path = "/api/v1/customize/agreements/accept", tag = "customize", request_body = AcceptInput,
+#[utoipa::path(post, path = "/api/v1/customize/agreements/accept", operation_id = "customize_accept_agreement", tag = "customize", request_body = AcceptInput,
     responses((status = 200, description = "Acceptance records", body = Items<Acceptance>),
               (status = 409, description = "agreement_outdated")))]
 async fn accept(

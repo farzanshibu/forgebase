@@ -441,7 +441,7 @@ async fn shortest_path(State(g): State<GraphService>, Access(ctx): Access, Body(
 
 /// Node and edge counts.
 #[utoipa::path(
-    get, path = "/api/v1/graph/stats", tag = "graph",
+    get, path = "/api/v1/graph/stats", operation_id = "graph_stats", tag = "graph",
     responses((status = 200, description = "Counts", body = GraphStats))
 )]
 async fn stats(State(g): State<GraphService>, Access(ctx): Access) -> ApiResult {

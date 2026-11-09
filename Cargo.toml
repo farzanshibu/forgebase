@@ -33,6 +33,7 @@ forgebase-entitlements = { path = "crates/forgebase-entitlements" }
 forgebase-storage = { path = "crates/forgebase-storage" }
 forgebase-credits = { path = "crates/forgebase-credits" }
 forgebase-functions = { path = "crates/forgebase-functions" }
+forgebase-billing = { path = "crates/forgebase-billing" }
 forgebase-customize = { path = "crates/forgebase-customize" }
 forgebase-queue = { path = "crates/forgebase-queue" }
 

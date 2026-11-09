@@ -4,6 +4,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderStudio, signedIn } from "./test/helpers";
 import { MockApi } from "./test/mockApi";
+import { installIdentity } from "./test/idMock";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -63,5 +64,33 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   await u.click(screen.getByRole("link", { name: "Slow queries" }));
   expect(await screen.findByText(/250\.5 ms/)).toBeInTheDocument();
 
+  expect(mock.problems).toEqual([]);
+});
+
+it("Identity Studio: realm -> public client app -> branding preview -> publish agreement", async () => {
+  const mock = signedIn(new MockApi().install());
+  const st = installIdentity(mock);
+  renderStudio("/identity");
+  const u = userEvent.setup();
+  expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
+
+  await u.click(screen.getByRole("link", { name: "Client apps" }));
+  await screen.findByText("app_web");
+  await u.type(screen.getByLabelText("Name"), "Mobile");
+  await u.selectOptions(screen.getByLabelText("Type"), "public");
+  await u.click(screen.getByRole("button", { name: "Create client app" }));
+  await waitFor(() => expect(st.clients.map((c) => c.name)).toContain("Mobile"));
+
+  await u.click(screen.getByRole("link", { name: "Branding" }));
+  await u.type(await screen.findByLabelText("Sign-in title"), "Hello");
+  expect(screen.getByLabelText("Sign-in preview")).toHaveTextContent("Hello");
+
+  await u.click(screen.getByRole("link", { name: "Legal agreements" }));
+  const form = await screen.findByRole("form", { name: "Publish agreement" });
+  await u.type(within(form).getByLabelText("Kind"), "privacy");
+  await u.type(within(form).getByLabelText("Title"), "Privacy");
+  await u.type(within(form).getByLabelText("Body"), "We keep little.");
+  await u.click(within(form).getByRole("button", { name: "Publish version" }));
+  await waitFor(() => expect(st.agreements.map((a) => a.kind)).toContain("privacy"));
   expect(mock.problems).toEqual([]);
 });
