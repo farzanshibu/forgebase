@@ -11,7 +11,8 @@
 //! | Invoices (lines, discounts, tax, balance, gapless numbers), collection, dunning, credit notes, refunds, fulfillment, entitlement sync | [`billing`] |
 //! | Metered billing from FB-24 usage events (cursor, idempotent by event id) | [`usage`] |
 //! | Signed, idempotent, replay-protected webhooks | [`webhook`] |
-//! | Stripe, Razorpay and manual drivers behind [`PaymentProvider`] | [`provider`] |
+//! | Stripe, Razorpay, WeChat Pay and manual drivers behind [`PaymentProvider`] | [`provider`] |
+//! | App Store, Google Play and Creem (merchant-of-record stores, FB-72) behind [`provider::StoreProvider`]: server-side purchase verification, signed notifications, refunds and revocations mapped to subscriptions, orders and entitlements | [`store`] |
 //! | MRR, ARR, churn, revenue by currency | [`stats`] |
 //! | REST under `/api/v1/billing` with OpenAPI | [`http`] |
 //!
@@ -31,6 +32,7 @@ pub mod money;
 pub mod provider;
 mod service;
 pub mod stats;
+pub mod store;
 pub mod subscription;
 pub mod usage;
 pub mod webhook;
@@ -39,7 +41,7 @@ pub use error::{BillingError, Result};
 pub use http::{extension, openapi, router};
 pub use jobs::register_jobs;
 pub use model::*;
-pub use provider::{PaymentProvider, ProviderEvent};
+pub use provider::{PaymentProvider, ProviderEvent, StoreProvider};
 pub use service::{
     BillingDeps, BillingService, DAY, MAINTENANCE_JOB, MAINTENANCE_SCHEDULE, USAGE_CURSOR, add_months, next_boundary,
     period_months,

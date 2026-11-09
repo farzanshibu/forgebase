@@ -1142,6 +1142,14 @@ pub struct ProviderInput {
     /// In use (default true).
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Provider-specific settings, sealed with the secrets (FB-72): App Store
+    /// `issuer_id`, `key_id`, `private_key`, `bundle_id`, `environment`;
+    /// Google Play `package_name`, `service_account`, `push_audience`,
+    /// `push_service_account`; WeChat Pay `appid`, `merchant_serial`,
+    /// `private_key`, `platform_keys`, `notify_url`.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub config: Option<Json>,
 }
 
 impl Default for ProviderInput {
@@ -1152,8 +1160,128 @@ impl Default for ProviderInput {
             webhook_secret: None,
             api_base: None,
             enabled: true,
+            config: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stores (FB-72)
+// ---------------------------------------------------------------------------
+
+/// A store product (App Store, Google Play, Creem) sold as a billing price.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = BillingStoreProduct)]
+pub struct StoreProduct {
+    /// `app_store`, `google_play` or `creem`.
+    pub provider: String,
+    /// Product id at the store.
+    pub product_id: String,
+    /// Price key.
+    pub price: String,
+    /// `subscription` (recurring price) or `one_time`.
+    pub kind: String,
+    /// Changed.
+    #[serde(with = "ts")]
+    #[schema(value_type = String)]
+    pub updated_at: i64,
+}
+
+/// Body of `PUT /billing/store-products/{provider}/{product_id}`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoreProductInput {
+    /// Price key: recurring for a store subscription, one-time otherwise.
+    pub price: String,
+}
+
+/// Body of `POST /billing/store/{provider}/verify`: what the app received
+/// from the store. Each store reads its own fields.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoreVerifyInput {
+    /// Subject the purchase is for (default: the caller's).
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// App Store: the transaction id (read back with the App Store Server API).
+    #[serde(default)]
+    pub transaction_id: Option<String>,
+    /// App Store: the StoreKit 2 signed transaction (JWS).
+    #[serde(default)]
+    pub signed_transaction: Option<String>,
+    /// Google Play: the purchase token.
+    #[serde(default)]
+    pub purchase_token: Option<String>,
+    /// Google Play: the product id.
+    #[serde(default)]
+    pub product_id: Option<String>,
+    /// Google Play: `subscription` (default) or `one_time`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Creem: the checkout id of the success redirect.
+    #[serde(default)]
+    pub checkout_id: Option<String>,
+}
+
+/// Body of `POST /billing/store/{provider}/checkout` (Creem).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoreCheckoutInput {
+    /// Subject (default: the caller's).
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Price key mapped to a store product.
+    pub price: String,
+    /// Where the store returns to (`?checkout_id=` is appended by the store).
+    pub success_url: String,
+    /// Sent to the store as the request id.
+    pub idempotency_key: String,
+}
+
+/// A store purchase bound to a subject.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = BillingStorePurchase)]
+pub struct StorePurchaseRecord {
+    /// Id.
+    pub id: String,
+    /// Store.
+    pub provider: String,
+    /// Stable purchase id at the store (original transaction id, purchase
+    /// token, Creem subscription or order).
+    pub purchase_id: String,
+    /// Subject.
+    pub subject: String,
+    /// Store product id.
+    pub product_id: String,
+    /// Price key.
+    pub price: String,
+    /// `subscription` or `one_time`.
+    pub kind: String,
+    /// Store state: `active`, `trialing`, `grace`, `on_hold`, `paused`,
+    /// `expired`, `refunded`, `revoked`, `pending`, `replaced`.
+    pub status: String,
+    /// Renews at the period end.
+    pub auto_renew: bool,
+    /// End of the current period.
+    #[serde(with = "ts_opt")]
+    #[schema(value_type = Option<String>)]
+    pub expires_at: Option<i64>,
+    /// `test` (sandbox, licence tester, Creem test mode).
+    pub environment: String,
+    /// The billing subscription it drives.
+    pub subscription_id: Option<String>,
+    /// The billing order (one-time purchases).
+    pub order_id: Option<String>,
+    /// Newest store transaction.
+    pub last_transaction_id: Option<String>,
+    /// Created.
+    #[serde(with = "ts")]
+    #[schema(value_type = String)]
+    pub created_at: i64,
+    /// Changed.
+    #[serde(with = "ts")]
+    #[schema(value_type = String)]
+    pub updated_at: i64,
 }
 
 /// A webhook event received.

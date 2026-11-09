@@ -395,6 +395,12 @@ impl BillingService {
         self.can_read(ctx, &s.sub.subject)
             .map_err(|_| BillingError::NotFound("subscription".into()))?;
         self.can_manage(ctx, &s.sub.subject)?;
+        if self.store_managed(id).await? {
+            return Err(BillingError::conflict(
+                "store_managed",
+                "the store owns this subscription; the customer changes it in the store",
+            ));
+        }
         Ok(s)
     }
 
@@ -1140,6 +1146,7 @@ impl BillingService {
             let due = self
                 .subs_where(
                     "s.status IN ('active', 'past_due', 'trialing') AND s.current_period_end <= ?1
+                     AND NOT EXISTS (SELECT 1 FROM _forgebase_billing_store_purchases sp WHERE sp.subscription_id = s.id)
                      ORDER BY s.current_period_end LIMIT 100",
                     vec![now.into()],
                 )
@@ -1188,6 +1195,10 @@ impl BillingService {
                 }
             }
         }
+
+        // Store subscriptions past their period end: read back from the store
+        // (a missed renewal or expiry notification).
+        self.refresh_stores().await;
 
         // Late fulfillment.
         let unfulfilled = self

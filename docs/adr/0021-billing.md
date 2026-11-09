@@ -11,8 +11,9 @@
 - Builds on: ADR-0010 (FB-24: plans, add-ons, usage packs, usage events with `seq`, `BillingSync`), ADR-0016
   (FB-73: `CreditSink`), ADR-0008 (subjects, the pipeline, `billing:read`/`billing:write`), ADR-0007 (jobs,
   `ApiExtension`), ADR-0015 (FB-25 outbound HTTPS), ADR-0001 (one writer, error model).
-- Leaves to later cards: the Billing Studio screens (FB-71); Creem, WeChat Pay, App Store and Google Play
-  (FB-72, through `PaymentProvider` and `BillingService::register_provider`); SDK helpers (FB-41/FB-82).
+- Leaves to later cards: the Billing Studio screens (FB-71); SDK helpers (FB-41/FB-82).
+- Amended 2026-11-10 by FB-72 (MDF-50): Creem, WeChat Pay, App Store and Google Play (§9, migration
+  `0024_billing_stores.sql`).
 
 ## 1. Crate and changes elsewhere
 
@@ -155,6 +156,71 @@ Under `/api/v1/billing` (tags `billing`, `billing-catalog`, `billing-portal`, `b
 
 Another subject's objects are `404`.
 
+## 9. More providers (FB-72)
+
+Two kinds of provider, one account table (`PUT /billing/providers/{p}`, secrets **and** the new
+provider-specific `config` sealed together under AAD `billing:provider:<p>`), one webhook route
+(`POST /billing/webhooks/{p}`) and one event table (dedup per provider + event id, as §6).
+
+| Provider | Kind | Test mode is enforced by |
+|---|---|---|
+| `wechat_pay` | **payment provider** (`PaymentProvider`): collects ForgeBase invoices | WeChat Pay has no test keys: `api_base` is required and the production hosts (`api.mch.weixin.qq.com`, `api2.…`) are refused |
+| `app_store` | **store** (`StoreProvider`): merchant of record, owns payment and renewals | `environment` sandbox/xcode/local_testing; production API base and `Production` transactions/notifications refused |
+| `google_play` | store | purchases without `testPurchase` (subscriptions) or `purchaseType = 0` (products) refused |
+| `creem` | store (merchant of record selling on the web) | `creem_test_…` keys only, `test-api.creem.io`; `mode: prod` payloads refused |
+
+**WeChat Pay API v3.** Requests carry `Authorization: WECHATPAY2-SHA256-RSA2048 mchid,nonce_str,signature,
+timestamp,serial_no` (RSA-SHA256 PKCS#1 v1.5 of `METHOD\nPATH\nTS\nNONCE\nBODY\n`, merchant key). Every 2xx
+response and every notification is verified with the platform key named by `Wechatpay-Serial` over
+`TS\nNONCE\nBODY\n`; `platform_keys` holds several certificates or platform public keys for rotation;
+unknown serials, expired or not-yet-valid certificates, and timestamps outside the webhook tolerance are
+refused. Notification resources (`AEAD_AES_256_GCM`, APIv3 key, nonce, associated data) are decrypted and
+the decrypted `mchid` must be ours. Invoices are paid on a Native (QR `code_url`) payment, `attach` = invoice
+id, `out_trade_no` = first 32 hex of SHA-256 of the idempotency key; refunds read the original total back
+(`GET /v3/pay/transactions/id/{id}`) and call `/v3/refund/domestic/refunds`. CNY only; no off-session charge
+(renewal invoices are paid on the hosted page, like a customer without a saved method).
+
+**Stores.** The store took the money; ForgeBase verifies, server side, what the store reports and mirrors
+it. `_forgebase_billing_store_products` maps a store product id to a price (recurring for subscriptions,
+one-time otherwise); the product kind of the price decides what is delivered (§3). A purchase row
+(`_forgebase_billing_store_purchases`, unique per store + stable purchase id) binds the purchase to **one**
+subject: a second account presenting the same receipt gets `409 purchase_owned`.
+
+| Store report | Billing |
+|---|---|
+| new transaction (purchase, renewal) | subscription created/moved to the store's period, a **paid** invoice (one line, no ForgeBase tax: the store is merchant of record, store price when reported else the catalog price) with a succeeded payment whose `provider_ref` is the transaction id (unique: replays add nothing), FB-24 sync; one-time products: a paid order, credits / usage packs fulfilled |
+| auto-renew off / on | `cancel_at_period_end` |
+| grace period | `past_due` (FB-24 keeps access) |
+| billing retry on hold, paused | `paused` (no access) |
+| expired | `canceled`, `cancel_reason = store_expired` |
+| refund, revocation, voided purchase | credit note with an **external** refund (recorded `succeeded` with the store reference, idempotency key `store:<p>:<refund ref>`), FB-73 credits reversed in proportion, subscription ended at once (`store_refunded` / `store_revoked`) |
+
+Out-of-order reports are ignored by store time (`last_event_at`, from `signedDate` / `eventTimeMillis` /
+`created_at`), except that a transaction is always invoiced (money taken is a fact). Store-managed
+subscriptions are never renewed, dunned, changed, paused or cancelled by ForgeBase (`409 store_managed`);
+maintenance reads subscriptions past their period end back from the store (at most hourly per purchase), so
+a missed renewal or expiry notification heals. An operator credit note on a store invoice cannot refund at
+the store (stores refund themselves) and settles to the customer balance (§4).
+
+| Store | Verification (`POST /billing/store/{p}/verify`) | Notifications | Authentication |
+|---|---|---|---|
+| App Store | StoreKit 2 `signed_transaction`, or `transaction_id` read with the App Store Server API (`/inApps/v1/transactions/{id}`); subscriptions also read status and renewal info (`/inApps/v1/subscriptions/{originalTransactionId}`) | Server Notifications V2 `{"signedPayload"}`, dedup by `notificationUUID`; `TEST` recorded and ignored | every JWS (payload, transaction, renewal info) verified ES256 against its `x5c` chain to the **pinned Apple Root CA - G3** (SHA-256 `63:34:3A:BF:…:91:79`) with `rustls-webpki`, plus Apple's marker extensions on leaf (`1.2.840.113635.100.6.11.1`) and intermediate (`1.2.840.113635.100.6.2.1`) so a developer certificate from the same root cannot sign; bundle id must match. Outbound: ES256 JWT of the App Store Connect key (`aud appstoreconnect-v1`, `bid`) |
+| Google Play | `purchase_token` + `product_id` (+ `kind`): `purchases.subscriptionsv2.get` / `purchases.products.get`, then acknowledged | Real-time developer notifications as Pub/Sub push; dedup by Pub/Sub `messageId`; the purchase state is always read back from the API; `voidedPurchaseNotification` refunds | push OIDC token: RS256 against Google's JWKS (cached an hour, refetched for an unknown `kid`), issuer `accounts.google.com`, configured audience, push service account with `email_verified`, not expired. Outbound: service-account JWT (RS256) exchanged at the token endpoint, cached until expiry |
+| Creem | `checkout_id` of the success redirect read with `GET /v1/checkouts` | `creem-signature` HMAC-SHA256 hex of the body; dedup by event `id`; `subscription.paid` invoices, `refund.created` refunds only (state comes with the subscription events) | checkouts are opened by ForgeBase (`POST /billing/store/creem/checkout`) with `metadata.forgebase_subject`, which comes back HMAC-signed and binds the purchase |
+
+New routes (add-only; operationIds `billing_store_products`, `billing_put_store_product`,
+`billing_delete_store_product`, `billing_store_verify`, `billing_store_checkout`, `billing_store_purchases`):
+`GET /billing/store-products` (callers), `PUT|DELETE /billing/store-products/{provider}/{product_id}`
+(administrators), `POST /billing/store/{provider}/verify` and `/checkout` (`can_manage` on the subject),
+`GET /billing/store-purchases` (`can_read`; instance-wide readers may omit the subject).
+
+Crypto: `ring` (ECDSA P-256 sign/verify, RSA PKCS#1 v1.5 SHA-256 sign/verify, AES-256-GCM),
+`rustls-webpki` (X.509 chain to a pinned anchor), `rustls-pki-types`; all three were already in the tree
+through `rustls` (ISC / Apache-2.0 / MIT, no new crates in `Cargo.lock`). A small DER reader
+(`provider/der.rs`) reads certificate serials, validity, public keys and extension OIDs. Tests sign with
+test-only keys and a test chain (`tests/fixtures/stores/gen.sh`) given to the App Store driver in place of
+Apple's root; no test reaches the network.
+
 ## Consequences
 
 - Off by default: with `[billing] enabled = false` nothing is mounted and no job runs (the migration still
@@ -166,5 +232,11 @@ Another subject's objects are `404`.
 - Webhook events are processed in the request; a burst is bounded by the single writer.
 - `incomplete_days` (default 1) also bounds manual invoices of a first period; operators using manual billing
   raise it.
-- Follow-ups: FB-71 screens, FB-72 providers, partial payments, invoice PDFs, tax engine integration, FB-40
-  realtime billing events.
+- Follow-ups: partial payments, invoice PDFs, tax engine integration, FB-40 realtime billing events.
+- FB-72 limits: test environments only (live mode is a later, explicit decision, as for Stripe); App Store
+  non-consumables and non-renewing subscriptions are one-time orders (no "lifetime plan" kind yet); Apple
+  `REFUND_REVERSED` and Google price-change and deferral details are recorded, not acted on; WeChat Pay
+  platform certificates are configured, not downloaded (`/v3/certificates`), and there is no WeChat
+  contract (papay) for off-session renewals; App Store `appAccountToken` and Google obfuscated account ids
+  are not trusted to bind a purchase (only a verified claim by the subject, or Creem's signed metadata).
+  A store purchase can hold a plan only when the subject has no other live plan (`409 already_subscribed`).
