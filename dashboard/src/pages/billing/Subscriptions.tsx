@@ -3,26 +3,11 @@ import { SUBSCRIPTION_STATUSES, cancelSubscription, changePlan, listPrices, list
 import type { Price, Proration, Subscription, SubscriptionStatus } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { formatMoney, prorate } from "./money";
-import { Badge, BillingError, Empty, Field, FORM_GRID, ROW, TABLE, THEAD, Th, idempotencyKey, subjectLink, useAct, when_ } from "./shared";
-
-/**
- * Proration preview. The server has no preview endpoint (reported), so this is an estimate from the current period
- * and the two prices' amounts in the subscription's currency: unused credit of the old price against the new price's remainder.
- */
-export function prorationPreview(sub: Subscription, current: Price | undefined, next: Price | undefined, now = Date.now()) {
-  if (!current || !next) return undefined;
-  const a = current.currency === sub.currency ? current.unit_amount : current.currency_options[sub.currency]?.unit_amount;
-  const b = next.currency === sub.currency ? next.unit_amount : next.currency_options[sub.currency]?.unit_amount;
-  if (a === undefined || b === undefined) return undefined;
-  const start = Date.parse(sub.current_period_start);
-  const end = Date.parse(sub.current_period_end);
-  const remaining = Math.max(0, end - Math.max(now, start));
-  const qty = sub.items[0]?.quantity ?? 1;
-  const credit = -prorate(a * qty, remaining, end - start);
-  const charge = prorate(b * qty, remaining, end - start);
-  return { credit, charge, net: credit + charge, currency: sub.currency };
-}
+import { formatMoney } from "./money";
+import { prorationPreview } from "./proration";
+import { Badge, BillingError, Empty, Field, Th, SubjectLink } from "./shared";
+import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
+import { useAct } from "./useAct";
 
 function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]; onDone: () => void }) {
   const act = useAct(onDone);
@@ -125,7 +110,7 @@ export default function Subscriptions() {
           <tbody>
             {rows.map((s) => (
               <tr key={s.id} className={`${ROW} align-top`}>
-                <td className="py-2 pr-3">{subjectLink(s.subject)}</td>
+                <td className="py-2 pr-3"><SubjectLink subject={s.subject} /></td>
                 <td className="pr-3 font-mono text-xs">{s.items.map((i) => `${i.price}×${i.quantity}`).join(", ")}{s.pending_price && <span className="ml-1 text-sky-300">→ {s.pending_price}</span>}</td>
                 <td className="pr-3"><Badge status={s.status} />{s.cancel_at_period_end && <span className="ml-1 text-xs text-amber-300">ends at period end</span>}</td>
                 <td className="pr-3 text-zinc-400">{when_(s.current_period_start)} to {when_(s.current_period_end)}</td>

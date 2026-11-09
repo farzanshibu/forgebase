@@ -1,9 +1,7 @@
-import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { isBillingDisabled } from "../../api";
 import { ErrorView } from "../../components/ui";
-import { when } from "../functions/util";
 import { formatMoney } from "./money";
 
 const TONES = {
@@ -26,10 +24,6 @@ export function Badge({ status }: { status: string }) {
 export const Money = ({ amount, currency }: { amount: number; currency: string }) => <span className="tabular-nums">{formatMoney(amount, currency)}</span>;
 
 export const Th = ({ children }: { children?: ReactNode }) => <th className="py-2 pr-3">{children}</th>;
-export const THEAD = "text-xs uppercase tracking-wide text-zinc-500";
-export const TABLE = "w-full text-left text-sm";
-export const ROW = "border-t border-zinc-800";
-export const when_ = when;
 
 /** The billing routes answer 404 while billing is off (the default): say so instead of showing a raw error. */
 export function Disabled() {
@@ -51,47 +45,19 @@ export function BillingError({ error }: { error: unknown }) {
   return <ErrorView error={error} />;
 }
 
-export const subjectLink = (subject: string) => (
+export function SubjectLink({ subject }: { subject: string }) {
+  return (
   <Link className="font-mono text-xs text-amber-300 hover:underline" to={`/billing/customers?subject=${encodeURIComponent(subject)}`}>{subject}</Link>
-);
+  );
+}
 
-export const idempotencyKey = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="text-sm text-zinc-400">{children}</p>;
 }
 
 
-/** Run a mutation: tracks busy and the last error, then calls `after` (usually a reload) on success. */
-export function useAct(after?: () => void) {
-  const [error, setError] = useState<unknown>();
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string>();
-  const run = useCallback(
-    async <T,>(fn: () => Promise<T>, message?: string): Promise<T | undefined> => {
-      setBusy(true);
-      setError(undefined);
-      setNote(undefined);
-      try {
-        const v = await fn();
-        if (message) setNote(message);
-        after?.();
-        return v;
-      } catch (e) {
-        setError(e);
-        return undefined;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [after],
-  );
-  return { run, error, busy, note };
-}
-
 export function Field({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {
   return <label className={`block text-sm text-zinc-300 ${className}`}>{label}<span className="mt-1 block">{children}</span></label>;
 }
 
-export const FORM_GRID = "grid gap-3 sm:grid-cols-2 lg:grid-cols-3";
-export const parseIntStrict = (t: string): number | null => (/^-?\d+$/.test(t.trim()) ? Number(t.trim()) : null);

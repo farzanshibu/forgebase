@@ -4,7 +4,8 @@ import { listPayments, listRefunds } from "../../api";
 import type { PaymentStatus } from "../../api";
 import { Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Money, ROW, TABLE, THEAD, Th, subjectLink, when_ } from "./shared";
+import { Badge, BillingError, Empty, Money, Th, SubjectLink } from "./shared";
+import { ROW, TABLE, THEAD, when_ } from "./util";
 
 export default function Payments() {
   const [status, setStatus] = useState<PaymentStatus | "">("");
@@ -29,7 +30,7 @@ export default function Payments() {
           <tbody>
             {rows.map((p) => (
               <tr key={p.id} className={ROW}>
-                <td className="py-2 pr-3 font-mono text-xs">{p.id}</td><td>{subjectLink(p.subject)}</td><td><Badge status={p.status} /></td>
+                <td className="py-2 pr-3 font-mono text-xs">{p.id}</td><td><SubjectLink subject={p.subject} /></td><td><Badge status={p.status} /></td>
                 <td><Money amount={p.amount} currency={p.currency} /></td><td>{p.amount_refunded ? <Money amount={p.amount_refunded} currency={p.currency} /> : "-"}</td>
                 <td>{p.provider}</td><td><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/billing/invoices/${encodeURIComponent(p.invoice_id)}`}>{p.invoice_id}</Link></td>
                 <td className="text-red-300">{p.failure_code ? `${p.failure_code}${p.failure_message ? `: ${p.failure_message}` : ""}` : ""}</td>

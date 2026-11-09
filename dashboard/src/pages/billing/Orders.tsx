@@ -3,7 +3,9 @@ import { createOrder, getInvoice, listOrders, listPrices } from "../../api";
 import type { Order } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Field, FORM_GRID, Money, ROW, TABLE, THEAD, Th, idempotencyKey, useAct, when_ } from "./shared";
+import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
+import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
+import { useAct } from "./useAct";
 
 function OrderTotal({ order }: { order: Order }) {
   const inv = useLoad((s) => (order.invoice_id ? getInvoice(order.invoice_id, s) : Promise.resolve(undefined)), `order-inv:${order.id}`);

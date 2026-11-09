@@ -4,7 +4,9 @@ import { creditBalance, getCustomer, listCustomers, listSubscriptions, putCustom
 import type { Customer } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Field, FORM_GRID, Money, ROW, TABLE, THEAD, Th, useAct, when_ } from "./shared";
+import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
+import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
+import { useAct } from "./useAct";
 import { formatCount } from "./money";
 
 function Detail({ subject }: { subject: string }) {

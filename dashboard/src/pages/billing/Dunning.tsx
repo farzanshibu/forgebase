@@ -2,7 +2,9 @@ import { Link } from "react-router-dom";
 import { getBillingSettings, listInvoices, listPayments, listSubscriptions, payInvoice, runBillingMaintenance } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Money, ROW, TABLE, THEAD, Th, subjectLink, useAct, when_ } from "./shared";
+import { Badge, BillingError, Empty, Money, Th, SubjectLink } from "./shared";
+import { ROW, TABLE, THEAD, when_ } from "./util";
+import { useAct } from "./useAct";
 
 /** Dunning queue: open invoices that failed collection plus past-due subscriptions, with the retry schedule from the settings. */
 export default function Dunning() {
@@ -36,7 +38,7 @@ export default function Dunning() {
               return (
                 <tr key={i.id} className={ROW}>
                   <td className="py-2 pr-3"><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/billing/invoices/${encodeURIComponent(i.id)}`}>{i.number ?? i.id}</Link></td>
-                  <td>{subjectLink(i.subject)}</td><td><Money amount={i.amount_due} currency={i.currency} /></td><td>{i.attempt_count}</td>
+                  <td><SubjectLink subject={i.subject} /></td><td><Money amount={i.amount_due} currency={i.currency} /></td><td>{i.attempt_count}</td>
                   <td className="text-zinc-400">{i.next_attempt_at ? when_(i.next_attempt_at) : "none scheduled"}</td>
                   <td className="text-red-300">{f?.failure_code ?? ""}</td>
                   <td><Button disabled={act.busy} aria-label={`Retry ${i.number ?? i.id}`} onClick={() => act.run(() => payInvoice(i.id), "Retry attempted")}>Retry now</Button></td>
@@ -50,7 +52,7 @@ export default function Dunning() {
         {subs.data && pastDue.length === 0 && <Empty>No past-due subscriptions.</Empty>}
         {pastDue.length > 0 && (
           <ul aria-label="Past-due subscriptions" className="space-y-1 text-sm">
-            {pastDue.map((s) => <li key={s.id}>{subjectLink(s.subject)} <Badge status={s.status} /> <span className="text-zinc-500">period ended {when_(s.current_period_end)}</span></li>)}
+            {pastDue.map((s) => <li key={s.id}><SubjectLink subject={s.subject} /> <Badge status={s.status} /> <span className="text-zinc-500">period ended {when_(s.current_period_end)}</span></li>)}
           </ul>
         )}
       </Panel>

@@ -3,7 +3,8 @@ import { billingStats } from "../../api";
 import { Button, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
-import { BillingError, Empty, Money, ROW, TABLE, THEAD, Th, when_ } from "./shared";
+import { BillingError, Empty, Money, Th } from "./shared";
+import { ROW, TABLE, THEAD, when_ } from "./util";
 
 export default function Revenue() {
   const [interval, setInterval_] = useState<"day" | "month">("day");

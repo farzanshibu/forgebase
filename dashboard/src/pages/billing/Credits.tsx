@@ -4,7 +4,9 @@ import type { EntryKind } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatCount } from "./money";
-import { BillingError, Empty, Field, ROW, TABLE, THEAD, Th, idempotencyKey, useAct, when_ } from "./shared";
+import { BillingError, Empty, Field, Th } from "./shared";
+import { ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
+import { useAct } from "./useAct";
 
 const n = formatCount;
 

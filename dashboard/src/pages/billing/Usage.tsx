@@ -5,7 +5,8 @@ import { Button, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatCount, meterState, percent } from "./money";
 import type { MeterState } from "./money";
-import { BillingError, Empty, ROW, TABLE, THEAD, Th, when_ } from "./shared";
+import { BillingError, Empty, Th } from "./shared";
+import { ROW, TABLE, THEAD, when_ } from "./util";
 
 const BAR: Record<MeterState, string> = { ok: "bg-emerald-500", warn70: "bg-yellow-400", warn90: "bg-orange-500", full: "bg-red-500" };
 const LABEL: Record<MeterState, string> = { ok: "within quota", warn70: "70% used", warn90: "90% used", full: "quota reached" };

@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { deleteProvider, getBillingSettings, listProviders, listTaxRates, listWebhookEvents, putBillingSettings, putProvider, putTaxRate } from "../../api";
 import type { BillingSettings, FinalAction, ProviderAccount } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
-import { Badge, BillingError, Empty, Field, FORM_GRID, ROW, TABLE, THEAD, Th, useAct, when_ } from "./shared";
+import { Badge, BillingError, Empty, Field, Th } from "./shared";
+import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
+import { useAct } from "./useAct";
 
 const PROVIDERS = ["stripe", "razorpay", "manual"] as const;
 
@@ -113,8 +115,6 @@ export default function Settings() {
   const providers = useLoad(listProviders, "providers");
   const settings = useLoad(getBillingSettings, "billing-settings");
   const events = useLoad((s) => listWebhookEvents(100, s), "webhook-events");
-  const [, force] = useState(0);
-  useEffect(() => force((v) => v + 1), [settings.data]);
   return (
     <div className="space-y-4">
       <BillingError error={providers.error} />

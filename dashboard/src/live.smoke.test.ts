@@ -22,6 +22,7 @@ import {
   createVectorCollection, deleteVectorCollection, listVectorCollections, measureRecall, rebuildVectorIndex, upsertVectors,
   vectorCollectionStats, vectorHybrid, vectorSearch, vectorStats,
 } from "./api/vector";
+import { getBillingSettings, isBillingDisabled } from "./api/billing";
 import { createEdge, createNode, graphStats, listEdges, listNodes, neighbors, shortestPath, traverse } from "./api/graph";
 
 const BIN = process.env.FB_LIVE_BIN;
@@ -158,6 +159,12 @@ describe.skipIf(!BIN)("live server", () => {
     const st = await graphStats();
     expect(st.nodes).toBe(3);
     expect(st.edge_types[0]).toMatchObject({ type: "KNOWS", count: 2 });
+  });
+
+  it("reports billing as disabled while the server has it off (default): the routes answer 404", async () => {
+    const err = await getBillingSettings().then(() => undefined, (e: unknown) => e);
+    // A binary built before FB-70 has no billing routes either; both answer 404.
+    expect(isBillingDisabled(err)).toBe(true);
   });
 
   it("ends the session on sign-out", async () => {

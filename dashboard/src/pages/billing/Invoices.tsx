@@ -5,7 +5,9 @@ import type { Invoice, InvoiceStatus } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatBp, minorToInput, parseMinor } from "./money";
-import { Badge, BillingError, Empty, Field, Money, ROW, TABLE, THEAD, Th, idempotencyKey, subjectLink, useAct, when_ } from "./shared";
+import { Badge, BillingError, Empty, Field, Money, Th, SubjectLink } from "./shared";
+import { ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
+import { useAct } from "./useAct";
 
 function CreditNoteForm({ inv, onDone }: { inv: Invoice; onDone: () => void }) {
   const act = useAct(onDone);
@@ -52,7 +54,7 @@ function InvoiceDetail() {
           <Panel title={`Invoice ${i.number ?? i.id}`}>
             <dl className="grid gap-3 text-sm sm:grid-cols-4">
               <div><dt className="text-zinc-500">Status</dt><dd><Badge status={i.status} /></dd></div>
-              <div><dt className="text-zinc-500">Subject</dt><dd>{subjectLink(i.subject)}</dd></div>
+              <div><dt className="text-zinc-500">Subject</dt><dd><SubjectLink subject={i.subject} /></dd></div>
               <div><dt className="text-zinc-500">Reason</dt><dd>{i.billing_reason}</dd></div>
               <div><dt className="text-zinc-500">Attempts</dt><dd>{i.attempt_count}{i.next_attempt_at ? `, next ${when_(i.next_attempt_at)}` : ""}</dd></div>
             </dl>
@@ -129,7 +131,7 @@ function InvoiceList() {
             {invoices.data.map((i) => (
               <tr key={i.id} className={ROW}>
                 <td className="py-2 pr-3"><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/billing/invoices/${encodeURIComponent(i.id)}`}>{i.number ?? i.id}</Link></td>
-                <td>{subjectLink(i.subject)}</td><td><Badge status={i.status} /></td><td><Money amount={i.total} currency={i.currency} /></td>
+                <td><SubjectLink subject={i.subject} /></td><td><Badge status={i.status} /></td><td><Money amount={i.total} currency={i.currency} /></td>
                 <td><Money amount={i.amount_due} currency={i.currency} /></td><td>{i.amount_refunded ? <Money amount={i.amount_refunded} currency={i.currency} /> : "-"}</td>
                 <td className="text-zinc-400">{when_(i.created_at)}</td>
               </tr>

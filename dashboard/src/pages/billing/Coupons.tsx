@@ -5,7 +5,9 @@ import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui
 import { useLoad } from "../../hooks";
 import { csv } from "../functions/util";
 import { formatBp, formatMoney, parseMinor } from "./money";
-import { Badge, BillingError, Empty, Field, FORM_GRID, ROW, TABLE, THEAD, Th, useAct, when_ } from "./shared";
+import { Badge, BillingError, Empty, Field, Th } from "./shared";
+import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
+import { useAct } from "./useAct";
 
 export default function Coupons() {
   const coupons = useLoad(listCoupons, "coupons");
