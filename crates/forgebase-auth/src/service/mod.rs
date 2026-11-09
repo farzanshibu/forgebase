@@ -209,8 +209,17 @@ struct Inner {
     sms: RwLock<Arc<dyn crate::sms::SmsProvider>>,
     realm_sms: RwLock<std::collections::HashMap<String, Arc<dyn crate::sms::SmsProvider>>>,
     change_hook: RwLock<Option<Hook>>,
-    realm_creator: RwLock<Option<crate::realm::RealmCreator>>,
+    realm_creator: RwLock<Option<Creator>>,
     idp: crate::idp::IdpState,
+}
+
+#[derive(Clone)]
+struct Creator(crate::realm::RealmCreator);
+
+impl std::fmt::Debug for Creator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RealmCreator")
+    }
 }
 
 #[derive(Clone)]
@@ -352,11 +361,16 @@ impl AuthService {
     /// engine owns realms); the server wires it. Needed for
     /// `POST /api/auth/realms`.
     pub fn set_realm_creator(&self, f: crate::realm::RealmCreator) {
-        *self.inner.realm_creator.write().unwrap_or_else(|e| e.into_inner()) = Some(f);
+        *self.inner.realm_creator.write().unwrap_or_else(|e| e.into_inner()) = Some(Creator(f));
     }
 
     pub(crate) fn realm_creator(&self) -> Option<crate::realm::RealmCreator> {
-        self.inner.realm_creator.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.inner
+            .realm_creator
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.0.clone())
     }
 
     /// Installs the hook run after suspensions change.

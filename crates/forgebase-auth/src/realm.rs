@@ -423,7 +423,11 @@ pub struct RealmInput {
 
 /// Creates a realm record: `(caller context, realm id, display name)`.
 pub type RealmCreator = Arc<
-    dyn Fn(AccessContext, String, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send>>
+    dyn Fn(
+            AccessContext,
+            String,
+            String,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AuthError>> + Send>>
         + Send
         + Sync,
 >;
@@ -459,9 +463,15 @@ impl AuthService {
         require_admin(caller)?;
         check_realm_id(&input.id)?;
         input.config.validate()?;
-        let name = input.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| input.id.clone());
+        let name = input
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| input.id.clone());
         let Some(create) = self.realm_creator() else {
-            return Err(AuthError::Internal("realm creation is not available on this server".into()));
+            return Err(AuthError::Internal(
+                "realm creation is not available on this server".into(),
+            ));
         };
         if self.realms().get(&input.id).is_some() {
             return Err(AuthError::Conflict(format!("realm {:?} already exists", input.id)));

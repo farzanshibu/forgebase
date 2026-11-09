@@ -105,7 +105,10 @@ async fn admin_lists_and_revokes_consents_by_realm_and_client() {
         assert_eq!(r.status, StatusCode::CREATED, "{}", r.json);
         ids.push(r.json["client"]["client_id"].as_str().unwrap().to_owned());
     }
-    for (n, (cid, user)) in [(&ids[0], "u1"), (&ids[0], "u2"), (&ids[1], "u1")].into_iter().enumerate() {
+    for (n, (cid, user)) in [(&ids[0], "u1"), (&ids[0], "u2"), (&ids[1], "u1")]
+        .into_iter()
+        .enumerate()
+    {
         h.sql(&format!(
             "INSERT INTO _forgebase_oauth_consents (id, realm, client_id, collection, user_id, scopes, created_at, updated_at)
              VALUES ('c{n}', 'default', '{cid}', 'users', '{user}', '[\"openid\"]', {}, {})",
@@ -255,7 +258,13 @@ async fn social_providers_crud_with_write_only_sealed_secrets() {
         "invalid_input",
     );
     assert_error(
-        &put(&h, &format!("{base}/google"), &admin, json!({"id": "other", "kind": "google", "client_id": "c", "client_secret": "s"})).await,
+        &put(
+            &h,
+            &format!("{base}/google"),
+            &admin,
+            json!({"id": "other", "kind": "google", "client_id": "c", "client_secret": "s"}),
+        )
+        .await,
         StatusCode::BAD_REQUEST,
         "invalid_input",
     );
@@ -296,9 +305,21 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
     let h = harness(|_| {}).await;
     let admin = h.root_token().await;
     make_realm(&h, &admin, "acme", json!({})).await;
-    let r = put(&h, "/api/auth/realms/acme/oauth-providers/google", &admin, google("boot-secret")).await;
+    let r = put(
+        &h,
+        "/api/auth/realms/acme/oauth-providers/google",
+        &admin,
+        google("boot-secret"),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
-    let r = put(&h, "/api/auth/realms/acme/oauth-providers/gh", &admin, json!({"kind": "github", "client_id": "g", "client_secret": "gs"})).await;
+    let r = put(
+        &h,
+        "/api/auth/realms/acme/oauth-providers/gh",
+        &admin,
+        json!({"kind": "github", "client_id": "g", "client_secret": "gs"}),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
 
     // A file defines `gh` too.
@@ -321,7 +342,10 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
     )
     .await
     .unwrap();
-    assert!(again.providers().get("acme", "google").is_some(), "stored provider reloaded and unsealed");
+    assert!(
+        again.providers().get("acme", "google").is_some(),
+        "stored provider reloaded and unsealed"
+    );
     assert!(again.providers().is_file_defined("acme", "gh"));
     assert!(!again.providers().is_file_defined("acme", "google"));
     assert_eq!(again.providers().get("acme", "gh").unwrap().config.client_id, "file");
@@ -335,7 +359,13 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
 async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     let h = harness(|_| {}).await;
     let admin = h.root_token().await;
-    make_realm(&h, &admin, "acme", json!({"methods": {"phone": true}, "phone": {"signup": true}})).await;
+    make_realm(
+        &h,
+        &admin,
+        "acme",
+        json!({"methods": {"phone": true}, "phone": {"signup": true}}),
+    )
+    .await;
     let global = DevSmsProvider::default();
     h.auth.set_sms_provider(Arc::new(global.clone()));
     let mock = mock_http::start(|_| (200, "{}".into())).await;
@@ -357,7 +387,8 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     assert_eq!(r.json["config"]["bearer_token"], MASK);
     assert!(!r.json.to_string().contains("hook-token"));
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_sms_config WHERE config LIKE '%hook-token%'").await,
+        h.count("SELECT count(*) FROM _forgebase_sms_config WHERE config LIKE '%hook-token%'")
+            .await,
         0
     );
     assert_eq!(h.get(sms, Some(&admin)).await.json["config"]["bearer_token"], MASK);
@@ -377,14 +408,21 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].path, "/send");
     assert_eq!(seen[0].header("authorization"), Some("Bearer hook-token"));
-    assert!(global.sent().is_empty(), "the instance gateway is not used for realm acme");
+    assert!(
+        global.sent().is_empty(),
+        "the instance gateway is not used for realm acme"
+    );
 
     // Another realm keeps using the instance gateway.
     let r = h
         .post("/api/auth/phone/request", None, json!({"phone": "+15550100078"}))
         .await;
     // `default` has phone login off, so it answers uniformly without sending.
-    assert!(r.status == StatusCode::ACCEPTED || r.status == StatusCode::FORBIDDEN, "{}", r.json);
+    assert!(
+        r.status == StatusCode::ACCEPTED || r.status == StatusCode::FORBIDDEN,
+        "{}",
+        r.json
+    );
     assert_eq!(mock.requests().len(), 1);
 
     // Keeping the token on update; changing provider type drops it.
@@ -406,7 +444,11 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
 
     let (_, user) = h.verified_user("kim@example.com").await;
     assert_error(&h.get(sms, Some(&user)).await, StatusCode::FORBIDDEN, "forbidden");
-    assert_error(&put(&h, sms, &user, json!({"provider": "dev"})).await, StatusCode::FORBIDDEN, "forbidden");
+    assert_error(
+        &put(&h, sms, &user, json!({"provider": "dev"})).await,
+        StatusCode::FORBIDDEN,
+        "forbidden",
+    );
 
     assert_eq!(h.delete(sms, Some(&admin)).await.status, StatusCode::NO_CONTENT);
     assert_eq!(h.get(sms, Some(&admin)).await.json["configured"], false);

@@ -288,10 +288,7 @@ impl AuthService {
 
     /// Directory the development provider writes to.
     fn sms_dev_dir(&self) -> Option<PathBuf> {
-        self.config()
-            .master_key_path
-            .parent()
-            .map(|d| d.with_file_name("sms"))
+        self.config().master_key_path.parent().map(|d| d.with_file_name("sms"))
     }
 
     /// Loads `<data_dir>/auth/sms.json` when it exists.
@@ -327,10 +324,7 @@ impl AuthService {
     pub(crate) fn build_realm_sms(&self, realm: &str, cfg: Json) -> Result<Arc<dyn SmsProvider>, AuthError> {
         let f: SmsFile =
             serde_json::from_value(cfg).map_err(|e| AuthError::invalid(format!("sms configuration: {e}")))?;
-        let dev = self
-            .sms_dev_dir()
-            .unwrap_or_else(|| PathBuf::from("sms"))
-            .join(realm);
+        let dev = self.sms_dev_dir().unwrap_or_else(|| PathBuf::from("sms")).join(realm);
         self.sms_from_config(f, dev, "sms configuration")
     }
 }

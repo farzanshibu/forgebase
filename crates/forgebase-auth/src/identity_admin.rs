@@ -100,7 +100,9 @@ impl AuthService {
                     None => None,
                 }
             } else {
-                given.and_then(|g| g.as_str().map(str::to_owned)).filter(|s| !s.is_empty())
+                given
+                    .and_then(|g| g.as_str().map(str::to_owned))
+                    .filter(|s| !s.is_empty())
             };
             // Write back into the input (creating nothing when the parent is absent).
             let Some((last, parents)) = path.split_last() else {
@@ -350,7 +352,13 @@ impl AuthService {
         let mut items: Vec<Json> = rows(&r)
             .map(|row| {
                 let cfg = serde_json::from_str(&row.str("config")).unwrap_or(Json::Null);
-                self.provider_view(realm, &row.str("id"), &cfg, row.i64("created_at"), row.i64("updated_at"))
+                self.provider_view(
+                    realm,
+                    &row.str("id"),
+                    &cfg,
+                    row.i64("created_at"),
+                    row.i64("updated_at"),
+                )
             })
             .collect();
         for p in self.providers().list(realm) {

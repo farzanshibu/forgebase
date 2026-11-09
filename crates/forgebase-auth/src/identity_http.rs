@@ -395,7 +395,10 @@ async fn provider_list(
     Caller(c): Caller,
     Path(r): Path<String>,
 ) -> Res {
-    Ok(ok(StatusCode::OK, a.list_realm_providers(&c, &r).await.map_err(err(&rid))?))
+    Ok(ok(
+        StatusCode::OK,
+        a.list_realm_providers(&c, &r).await.map_err(err(&rid))?,
+    ))
 }
 
 async fn provider_get(
@@ -404,7 +407,10 @@ async fn provider_get(
     Caller(c): Caller,
     Path((r, id)): P2,
 ) -> Res {
-    Ok(ok(StatusCode::OK, a.get_realm_provider(&c, &r, &id).await.map_err(err(&rid))?))
+    Ok(ok(
+        StatusCode::OK,
+        a.get_realm_provider(&c, &r, &id).await.map_err(err(&rid))?,
+    ))
 }
 
 async fn provider_put(
@@ -446,7 +452,10 @@ async fn sms_put(
     Path(r): Path<String>,
     Body(b): Body<serde_json::Value>,
 ) -> Res {
-    Ok(ok(StatusCode::OK, a.put_realm_sms(&c, &ci, &r, b).await.map_err(err(&rid))?))
+    Ok(ok(
+        StatusCode::OK,
+        a.put_realm_sms(&c, &ci, &r, b).await.map_err(err(&rid))?,
+    ))
 }
 
 async fn sms_delete(
