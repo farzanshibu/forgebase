@@ -982,3 +982,90 @@ async fn large_bodies_are_refused() {
     let r = h.put("/api/v1/kv/app/strings/k", json!({"value": huge})).await;
     assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn list_remove_list_set_and_stream_delete_over_rest() {
+    let h = Harness::new().await;
+    h.post(
+        "/api/v1/kv/app/lists/l/push",
+        json!({"side": "right", "values": ["a", "b", "a", "c", "a"]}),
+    )
+    .await;
+    // LSET, negative index counts from the tail
+    let r = h
+        .post("/api/v1/kv/app/lists/l/set", json!({"index": -1, "value": "z"}))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(r.json()["ok"], true);
+    h.post("/api/v1/kv/app/lists/l/set", json!({"index": 9, "value": "q"}))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
+    // LREM: first match from the head, then all the rest
+    let r = h
+        .post("/api/v1/kv/app/lists/l/remove", json!({"value": "a", "count": 1}))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(r.json()["removed"], 1);
+    let r = h.post("/api/v1/kv/app/lists/l/remove", json!({"value": "a"})).await;
+    assert_eq!(r.json()["removed"], 1);
+    assert_eq!(
+        h.get("/api/v1/kv/app/keys/l").await.json()["value"],
+        json!(["b", "c", "z"])
+    );
+
+    // XDEL
+    let id1 = h
+        .post("/api/v1/kv/app/streams/s/add", json!({"fields": {"k": "1"}}))
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    h.post("/api/v1/kv/app/streams/s/add", json!({"fields": {"k": "2"}}))
+        .await;
+    let r = h
+        .post("/api/v1/kv/app/streams/s/delete", json!({"ids": [id1, "1-1"]}))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(r.json()["removed"], 1);
+    let r = h.get("/api/v1/kv/app/streams/s/range").await.json();
+    assert_eq!(r["entries"].as_array().unwrap().len(), 1);
+    h.post("/api/v1/kv/app/streams/s/delete", json!({"ids": []}))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn channel_list_shows_live_subscribed_channels_per_tenant_and_namespace() {
+    let h = Harness::new().await;
+    let sub = |tenant: &'static str, ns: &'static str, ch: &'static str| {
+        let h = &h;
+        async move {
+            h.raw(
+                Method::GET,
+                &format!("/api/v1/kv/{ns}/subscribe/{ch}"),
+                &[("x-test-user", "admin"), ("x-test-tenant", tenant)],
+                None,
+            )
+            .await
+        }
+    };
+    let none = as_tenant(&h, "acme", Method::GET, "/api/v1/kv/chat/channels", None).await;
+    assert_eq!(none.json()["channels"], json!([]));
+    let a1 = sub("acme", "chat", "news").await;
+    let a2 = sub("acme", "chat", "news").await;
+    let a3 = sub("acme", "chat", "alerts").await;
+    let g = sub("globex", "chat", "secret").await;
+    let r = as_tenant(&h, "acme", Method::GET, "/api/v1/kv/chat/channels", None)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(
+        r.json()["channels"],
+        json!([{"name": "alerts", "subscribers": 1}, {"name": "news", "subscribers": 2}])
+    );
+    let r = as_tenant(&h, "acme", Method::GET, "/api/v1/kv/other/channels", None).await;
+    assert_eq!(r.json()["channels"], json!([]));
+    let r = as_tenant(&h, "globex", Method::GET, "/api/v1/kv/chat/channels", None).await;
+    assert_eq!(r.json()["channels"], json!([{"name": "secret", "subscribers": 1}]));
+    drop((a1, a2, a3, g));
+}

@@ -34,6 +34,8 @@ export interface SignedUrl { url: string; method: "GET" | "PUT"; expires_at: str
 export interface SignRequest { key: string; method?: "GET" | "PUT"; expires_in?: number; version_id?: string; download_as?: string; content_type?: string }
 export interface ReconcileReport { uploads_aborted: number; staging_deleted: number; orphan_blobs_deleted: number; unreferenced_blobs_deleted: number; missing_blobs: string[] }
 export interface StorageStats { buckets: number; objects: number; versions: number; logical_bytes: number; stored_bytes: number; open_uploads: number }
+/** Space used by one bucket (`GET .../buckets/{bucket}/usage`): `objects`/`logical_bytes` count current objects, `versions`/`version_bytes` every version. */
+export interface BucketUsage { bucket: string; objects: number; versions: number; logical_bytes: number; version_bytes: number }
 export interface ObjectListOptions { prefix?: string; delimiter?: string; limit?: number; cursor?: string | null }
 
 export const STORAGE_OPERATIONS = [
@@ -42,7 +44,8 @@ export const STORAGE_OPERATIONS = [
   "put /api/v1/storage/buckets/{bucket}/acl", "get /api/v1/storage/buckets/{bucket}/objects", "put /api/v1/storage/buckets/{bucket}/objects/{key}",
   "delete /api/v1/storage/buckets/{bucket}/objects/{key}", "post /api/v1/storage/buckets/{bucket}/copy", "post /api/v1/storage/buckets/{bucket}/move",
   "get /api/v1/storage/buckets/{bucket}/versions/{key}", "post /api/v1/storage/buckets/{bucket}/restore", "post /api/v1/storage/buckets/{bucket}/sign",
-  "post /api/v1/storage/buckets/{bucket}/uploads", "patch /api/v1/storage/uploads/{id}", "delete /api/v1/storage/uploads/{id}",
+  "post /api/v1/storage/buckets/{bucket}/uploads", "get /api/v1/storage/buckets/{bucket}/usage",
+  "get /api/v1/storage/buckets/{bucket}/meta/{key}", "head /api/v1/storage/buckets/{bucket}/meta/{key}", "patch /api/v1/storage/uploads/{id}", "delete /api/v1/storage/uploads/{id}",
 ] as const;
 
 export const storageStats = (signal?: AbortSignal) => request<StorageStats>(`${S}/stats`, { signal });
@@ -64,6 +67,11 @@ export function listObjects(bucket: string, o: ObjectListOptions = {}, signal?: 
   const s = q.toString();
   return request<ObjectPage>(`${S}/buckets/${enc(bucket)}/objects${s ? `?${s}` : ""}`, { signal });
 }
+/** Per-bucket usage (bucket admin). */
+export const bucketUsage = (bucket: string, signal?: AbortSignal) => request<BucketUsage>(`${S}/buckets/${enc(bucket)}/usage`, { signal });
+/** Metadata of one object (or one version) without its bytes. */
+export const objectMeta = (bucket: string, key: string, version?: string, signal?: AbortSignal) =>
+  request<ObjectInfo>(`${S}/buckets/${enc(bucket)}/meta/${encKey(key)}${version ? `?version=${enc(version)}` : ""}`, { signal });
 export const deleteObject = (bucket: string, key: string, version?: string) =>
   send<DeleteResult>("DELETE", `${S}/buckets/${enc(bucket)}/objects/${encKey(key)}${version ? `?version=${enc(version)}` : ""}`);
 export const copyObject = (bucket: string, key: string, destKey: string, destBucket?: string, versionId?: string) =>

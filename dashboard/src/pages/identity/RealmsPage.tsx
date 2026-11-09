@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { createRealm, DEFAULT_LDAP, putRealmIdentity, type LoginMethods, type RealmConfig, type RealmIdentity } from "../../api";
+import { createRealmWithIdentity, DEFAULT_LDAP, listOidcKeys, putRealmIdentity, type LoginMethods, type RealmConfig, type RealmIdentity } from "../../api";
 import { Button, Panel, inputCls } from "../../components/ui";
 import { ActionError, Empty, TextField } from "../access/shared";
 import { useRun } from "../access/util";
+import { useLoad } from "../../hooks";
 import { Check, Note } from "./shared";
 import { defaultConfig, fmtIso } from "./util";
 
@@ -49,13 +50,12 @@ export default function RealmsPage({ realms, reload, onPick }: { realms: RealmId
           <TextField label="Realm name" value={name} onChange={setName} />
           <Button tone="primary" disabled={!slug || create.busy}
             onClick={() => void create.run(async () => {
-              await createRealm(slug, name || slug);
-              await putRealmIdentity(slug, { config: defaultConfig() });
+              await createRealmWithIdentity({ id: slug, name: name || slug, config: defaultConfig() });
               onPick(slug);
               setSlug(""); setName("");
             })}>Create realm</Button>
         </div>
-        <Note>Creates the realm, then its identity configuration with the default settings; its user collection is created on first save.</Note>
+        <Note>Creates the realm and its identity configuration (default settings) in one call; its user collection is created with it.</Note>
         <ActionError error={create.error} />
       </Panel>
       {current && <RealmSettings key={current.realm} realm={current} onSaved={reload} />}
@@ -67,10 +67,16 @@ function RealmSettings({ realm, onSaved }: { realm: RealmIdentity; onSaved: () =
   const [cfg, setCfg] = useState<RealmConfig>(realm.config);
   const [saved, setSaved] = useState(false);
   const { run, error, busy } = useRun(() => { setSaved(true); onSaved(); });
+  const keys = useLoad((sig) => listOidcKeys(realm.realm, sig), `realm-keys:${realm.realm}`);
   return (
     <Panel title={`Tenant settings: ${realm.realm}`}>
       <form aria-label="Tenant settings" className="space-y-3" onSubmit={(e) => { e.preventDefault(); setSaved(false); void run(() => putRealmIdentity(realm.realm, { config: cfg })); }}>
         <p className="text-xs text-zinc-500">User collection: <span className="font-mono">{realm.collection}</span> (fixed once set)</p>
+        {keys.data && (
+          <p className="text-xs text-zinc-500" data-testid="oidc-kids">
+            OIDC signing keys: {keys.data.items.map((k) => `${k.kid} (${k.kid === keys.data!.current ? "current" : k.status})`).join(", ")}
+          </p>
+        )}
         <Check label="Allow sign-up" checked={cfg.signup} onChange={(v) => setCfg({ ...cfg, signup: v })} hint="new accounts via password, social, LDAP or phone" />
         <label className="flex items-center gap-2 text-sm text-zinc-300">
           Require verified email

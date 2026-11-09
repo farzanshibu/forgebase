@@ -11,7 +11,7 @@ export interface Job {
   id: string; queue: string; kind: string; payload: unknown; priority: number; status: JobStatus; run_at: string;
   attempts: number; max_attempts: number; backoff_base_ms: number; backoff_max_ms: number; visibility_timeout_ms: number;
   idempotency_key?: string | null; schedule_id?: string | null; worker_id?: string | null; visibility_until?: string | null;
-  cancel_requested: boolean; result?: unknown; last_error?: string | null; created_by: string;
+  cancel_requested: boolean; has_checkpoint?: boolean; waiting_for?: number; result_stored?: boolean; result?: unknown; last_error?: string | null; created_by: string;
   created_at: string; updated_at: string; started_at?: string | null; finished_at?: string | null;
   /** Long-task fields (FB-64); absent on servers without them. */
   progress?: Progress | null; has_checkpoint?: boolean; checkpoint_at?: string | null; timeout_ms?: number | null; deadline_at?: string | null;

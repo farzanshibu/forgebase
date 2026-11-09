@@ -28,9 +28,9 @@ export interface KvScanOptions { cursor?: string; match?: string; count?: number
 export const KV_OPERATIONS = [
   "get /api/v1/kv/_info", "get /api/v1/kv/_namespaces", "delete /api/v1/kv/{ns}", "get /api/v1/kv/{ns}/keys", "get /api/v1/kv/{ns}/keys/{key}",
   "delete /api/v1/kv/{ns}/keys/{key}", "put /api/v1/kv/{ns}/keys/{key}/ttl", "delete /api/v1/kv/{ns}/keys/{key}/ttl", "put /api/v1/kv/{ns}/strings/{key}",
-  "post /api/v1/kv/{ns}/hashes/{key}/set", "post /api/v1/kv/{ns}/hashes/{key}/delete", "post /api/v1/kv/{ns}/lists/{key}/push", "post /api/v1/kv/{ns}/lists/{key}/pop",
+  "post /api/v1/kv/{ns}/hashes/{key}/set", "post /api/v1/kv/{ns}/hashes/{key}/delete", "post /api/v1/kv/{ns}/lists/{key}/push", "post /api/v1/kv/{ns}/lists/{key}/pop", "post /api/v1/kv/{ns}/lists/{key}/remove", "post /api/v1/kv/{ns}/lists/{key}/set",
   "post /api/v1/kv/{ns}/sets/{key}/add", "post /api/v1/kv/{ns}/sets/{key}/remove", "post /api/v1/kv/{ns}/zsets/{key}/add", "post /api/v1/kv/{ns}/zsets/{key}/remove",
-  "post /api/v1/kv/{ns}/streams/{key}/add", "get /api/v1/kv/{ns}/streams/{key}/range", "post /api/v1/kv/{ns}/exec", "post /api/v1/kv/{ns}/publish/{channel}", "get /api/v1/kv/{ns}/subscribe/{channel}",
+  "post /api/v1/kv/{ns}/streams/{key}/add", "post /api/v1/kv/{ns}/streams/{key}/delete", "get /api/v1/kv/{ns}/channels", "get /api/v1/kv/{ns}/streams/{key}/range", "post /api/v1/kv/{ns}/exec", "post /api/v1/kv/{ns}/publish/{channel}", "get /api/v1/kv/{ns}/subscribe/{channel}",
 ] as const;
 
 /** Display text of a value; non-UTF-8 bytes show as base64 with a marker. */
@@ -66,6 +66,15 @@ export const kvHashSet = (ns: string, key: string, fields: Record<string, Bin>) 
 export const kvHashDelete = (ns: string, key: string, fields: string[]) => send<{ removed: number }>("POST", `${K}/${enc(ns)}/hashes/${enc(key)}/delete`, { fields });
 export const kvListPush = (ns: string, key: string, side: "left" | "right", values: Bin[]) => send<{ length: number }>("POST", `${K}/${enc(ns)}/lists/${enc(key)}/push`, { side, values });
 export const kvListPop = (ns: string, key: string, side: "left" | "right", count = 1) => send<{ values: Bin[] }>("POST", `${K}/${enc(ns)}/lists/${enc(key)}/pop`, { side, count });
+/** LREM: `count` 0 removes every match, n > 0 the first n from the head, n < 0 from the tail. */
+export const kvListRemove = (ns: string, key: string, value: Bin, count = 0) => send<{ removed: number }>("POST", `${K}/${enc(ns)}/lists/${enc(key)}/remove`, { value, count });
+/** LSET: replace the item at `index` (negative counts from the tail). */
+export const kvListSet = (ns: string, key: string, index: number, value: Bin) => send<{ ok: boolean }>("POST", `${K}/${enc(ns)}/lists/${enc(key)}/set`, { index, value });
+/** XDEL. */
+export const kvStreamDelete = (ns: string, key: string, ids: string[]) => send<{ removed: number }>("POST", `${K}/${enc(ns)}/streams/${enc(key)}/delete`, { ids });
+export interface KvChannel { name: string; subscribers: number }
+/** Channels with at least one live subscriber in the namespace. */
+export const kvChannels = async (ns: string, signal?: AbortSignal) => (await request<{ channels: KvChannel[] }>(`${K}/${enc(ns)}/channels`, { signal })).channels;
 export const kvSetAdd = (ns: string, key: string, members: Bin[]) => send<{ added: number }>("POST", `${K}/${enc(ns)}/sets/${enc(key)}/add`, { members });
 export const kvSetRemove = (ns: string, key: string, members: Bin[]) => send<{ removed: number }>("POST", `${K}/${enc(ns)}/sets/${enc(key)}/remove`, { members });
 export const kvZAdd = (ns: string, key: string, members: { member: Bin; score: number }[]) => send<{ added: number }>("POST", `${K}/${enc(ns)}/zsets/${enc(key)}/add`, { members });

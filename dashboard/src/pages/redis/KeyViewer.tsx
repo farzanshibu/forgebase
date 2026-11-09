@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
-  ApiError, binFrom, binText, kvClearTtl, kvDelete, kvExec, kvGet, kvHashDelete, kvHashSet, kvListPop, kvListPush, kvSetAdd, kvSetRemove, kvSetString, kvSetTtl,
-  kvStreamAdd, kvZAdd, kvZRemove,
+  ApiError, binFrom, binText, kvClearTtl, kvDelete, kvGet, kvHashDelete, kvHashSet, kvListPop, kvListPush, kvListRemove, kvListSet, kvSetAdd, kvSetRemove, kvSetString, kvSetTtl,
+  kvStreamAdd, kvStreamDelete, kvZAdd, kvZRemove,
 } from "../../api";
 import type { Bin, KvKey, StreamEntry, ZMember } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
@@ -119,14 +119,27 @@ function HashEditor({ ns, data, act }: EditorProps) {
 function ListEditor({ ns, data, act }: EditorProps) {
   const items = data.value as Bin[];
   const [val, setVal] = useState("");
+  const [editing, setEditing] = useState<number | null>(null);
+  const [draft, setDraft] = useState("");
   return (
     <div className="space-y-3">
       {items.length === 0 && <p className="text-sm text-zinc-400">The list is empty.</p>}
       {items.length > 0 && (
         <ol aria-label="List items" className="space-y-1 text-sm">
           {items.map((it, i) => (
-            <li key={i} className="flex items-center gap-2"><span className="w-8 text-right text-xs text-zinc-500">{i}</span><span className="flex-1 break-all font-mono text-xs">{binText(it)}</span>
-              <Button tone="danger" aria-label={`Remove item ${i}`} onClick={() => void act(() => kvExec(ns, ["LREM", data.key, "1", binText(it)]))}>Remove</Button>
+            <li key={i} className="flex items-center gap-2"><span className="w-8 text-right text-xs text-zinc-500">{i}</span>{editing === i ? (
+                <>
+                  <input aria-label={`Item ${i} value`} className={`${inputCls} flex-1 font-mono text-xs`} value={draft} onChange={(e) => setDraft(e.target.value)} />
+                  <Button tone="primary" aria-label={`Save item ${i}`} onClick={() => void act(async () => { await kvListSet(ns, data.key, i, binFrom(draft)); setEditing(null); })}>Save</Button>
+                  <Button aria-label={`Cancel edit ${i}`} onClick={() => setEditing(null)}>Cancel</Button>
+                </>
+              ) : (
+                <>
+                  <span className="flex-1 break-all font-mono text-xs">{binText(it)}</span>
+                  <Button aria-label={`Edit item ${i}`} onClick={() => { setDraft(binText(it)); setEditing(i); }}>Edit</Button>
+                </>
+              )}
+              <Button tone="danger" aria-label={`Remove item ${i}`} onClick={() => void act(() => kvListRemove(ns, data.key, it, 1))}>Remove</Button>
             </li>
           ))}
         </ol>
@@ -223,7 +236,7 @@ function StreamEditor({ ns, data, act }: EditorProps) {
             return (
               <li key={id} className="rounded border border-zinc-800 p-2">
                 <div className="flex items-center justify-between"><span className="font-mono text-xs text-amber-300">{id}</span>
-                  <Button tone="danger" aria-label={`Delete entry ${id}`} onClick={() => void act(() => kvExec(ns, ["XDEL", data.key, id]))}>Delete</Button></div>
+                  <Button tone="danger" aria-label={`Delete entry ${id}`} onClick={() => void act(() => kvStreamDelete(ns, data.key, [id]))}>Delete</Button></div>
                 <dl className="mt-1 grid grid-cols-[8rem_1fr] gap-y-0.5 font-mono text-xs">{Object.entries(e.fields).map(([k, v]) => (<><dt key={`k${k}`} className="text-zinc-500">{k}</dt><dd key={`v${k}`}>{binText(v)}</dd></>))}</dl>
               </li>
             );

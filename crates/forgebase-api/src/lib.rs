@@ -332,6 +332,9 @@ pub fn router_with(
 ) -> Router {
     let auth = state.auth().cloned();
     let policy = state.policy().cloned();
+    if let (Some(a), Some(p)) = (&auth, &policy) {
+        a.set_realm_creator(realm_creator(p.clone()));
+    }
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,
     });
@@ -401,6 +404,29 @@ pub fn router_with(
         None => app,
     };
     app.layer(middleware::from_fn(context::request_context))
+}
+
+/// Lets `POST /api/auth/realms` create the realm record through the policy
+/// engine, which owns realms (and reloads its snapshot).
+fn realm_creator(policy: PolicyService) -> forgebase_auth::realm::RealmCreator {
+    use forgebase_auth::AuthError;
+    use forgebase_core::{ErrorCode, ErrorKind};
+    Arc::new(move |ctx, id, name| {
+        let policy = policy.clone();
+        Box::pin(async move {
+            policy.create_realm(&ctx, &id, &name).await.map(|_| ()).map_err(|e| {
+                let m = e.to_string();
+                match e.kind() {
+                    ErrorKind::InvalidInput => AuthError::InvalidInput(m),
+                    ErrorKind::Unauthenticated => AuthError::Unauthenticated,
+                    ErrorKind::Forbidden => AuthError::Forbidden(m),
+                    ErrorKind::NotFound => AuthError::NotFound(m),
+                    ErrorKind::Conflict => AuthError::Conflict(m),
+                    _ => AuthError::Internal(m),
+                }
+            })
+        })
+    })
 }
 
 /// `/api/v1/realtime/*`: the realtime router, or `503 realtime_unavailable`

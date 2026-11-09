@@ -1,6 +1,7 @@
 import { Link, NavLink, Route, Routes, useParams } from "react-router-dom";
-import { getBucket } from "../../api";
+import { bucketUsage, getBucket } from "../../api";
 import { ErrorView, Loading } from "../../components/ui";
+import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import AclEditor from "./AclEditor";
 import BucketSettings from "./BucketSettings";
@@ -12,6 +13,7 @@ const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-
 export default function BucketView() {
   const { bucket = "" } = useParams();
   const b = useLoad((s) => getBucket(bucket, s), `bucket:${bucket}`);
+  const usage = useLoad((s) => bucketUsage(bucket, s), `bucket-usage:${bucket}`);
   const base = `/storage/b/${encodeURIComponent(bucket)}`;
   return (
     <div className="space-y-4">
@@ -19,6 +21,7 @@ export default function BucketView() {
         <Link className="text-sm text-amber-300 hover:underline" to="/storage">All buckets</Link>
         <h2 className="text-xl font-semibold">{bucket}</h2>
         {b.data && <span className="text-sm text-zinc-400">{b.data.visibility} · versioning {b.data.versioning ? "on" : "off"}</span>}
+        {usage.data && <span aria-label="Bucket usage" className="text-sm text-zinc-400">{usage.data.objects} objects · {formatBytes(usage.data.logical_bytes)}</span>}
       </div>
       <ErrorView error={b.error} />
       {b.loading && !b.error && <Loading what="Loading bucket" />}

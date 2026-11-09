@@ -32,9 +32,9 @@ use utoipa::{OpenApi, ToSchema};
 use crate::driver::ByteStream;
 use crate::error::StorageError;
 use crate::model::{
-    Acl, AclEntry, Bucket, BucketInput, BucketPatch, CompleteInput, CompletePart, DeleteResult, ObjectInfo, ObjectPage,
-    PartInfo, Permission, ReconcileReport, SignRequest, SignedMethod, SignedUrl, StorageStats, Upload, UploadInput,
-    Visibility,
+    Acl, AclEntry, Bucket, BucketInput, BucketPatch, BucketUsage, CompleteInput, CompletePart, DeleteResult,
+    ObjectInfo, ObjectPage, PartInfo, Permission, ReconcileReport, SignRequest, SignedMethod, SignedUrl, StorageStats,
+    Upload, UploadInput, Visibility,
 };
 use crate::objects::{PutRequest, RangeSpec};
 use crate::service::StorageService;
@@ -239,6 +239,11 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: StorageService) -> Router<S
             get(get_bucket).patch(patch_bucket).delete(delete_bucket),
         )
         .route("/storage/buckets/{bucket}/acl", get(get_acl).put(put_acl))
+        .route("/storage/buckets/{bucket}/usage", get(bucket_usage))
+        .route(
+            "/storage/buckets/{bucket}/meta/{*key}",
+            get(object_meta).head(object_meta_head),
+        )
         .route("/storage/buckets/{bucket}/objects", get(list_objects))
         .route(
             "/storage/buckets/{bucket}/objects/{*key}",
@@ -279,12 +284,12 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         stats, reconcile, list_buckets, create_bucket, get_bucket, patch_bucket, delete_bucket, get_acl, put_acl,
         list_objects, put_object, get_object, delete_object, copy_object, move_object, list_versions,
         restore_version, sign, create_upload, get_upload, append_chunk, abort_upload, upload_part, complete_upload,
-        signed_get, signed_put,
+        signed_get, signed_put, bucket_usage, object_meta, object_meta_head,
     ),
     components(schemas(
         Bucket, BucketInput, BucketPatch, Visibility, Permission, Acl, AclEntry, ObjectInfo, ObjectPage, DeleteResult,
         Upload, UploadInput, PartInfo, CompleteInput, CompletePart, SignRequest, SignedUrl, SignedMethod,
-        ReconcileReport, StorageStats, CopyBody, RestoreBody, ItemsBuckets,
+        ReconcileReport, StorageStats, BucketUsage, CopyBody, RestoreBody, ItemsBuckets, ItemsObjects,
     )),
     tags((name = "storage", description = "Buckets, objects, uploads, signed URLs, quotas and maintenance")),
 )]
@@ -295,6 +300,13 @@ struct StorageDoc;
 pub struct ItemsBuckets {
     /// Entries.
     pub items: Vec<Bucket>,
+}
+
+/// Object versions.
+#[derive(Serialize, ToSchema)]
+pub struct ItemsObjects {
+    /// Entries, newest first.
+    pub items: Vec<ObjectInfo>,
 }
 
 /// Copy or move target.
@@ -460,6 +472,64 @@ async fn put_object(
     created(info)
 }
 
+/// Space used by a bucket: current objects, versions and bytes (bucket admins).
+#[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/usage", operation_id = "storage_bucket_usage", tag = "storage",
+    responses((status = 200, body = BucketUsage), (status = 404, description = "No such bucket")))]
+async fn bucket_usage(State(s): State<StorageService>, Access(ctx): Access, Path(bucket): Path<String>) -> ApiResult {
+    ok(s.bucket_usage(&ctx, &bucket).await.map_err(api)?)
+}
+
+/// Metadata of an object as JSON, without reading its bytes (`?version=` for one version).
+#[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/meta/{key}", operation_id = "storage_object_meta", tag = "storage",
+    responses((status = 200, body = ObjectInfo), (status = 404, description = "No such object")))]
+async fn object_meta(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path((bucket, key)): Path<(String, String)>,
+    q: Query,
+) -> ApiResult {
+    ok(s.head_object(&ctx, &bucket, &key, q.get("version"))
+        .await
+        .map_err(api)?)
+}
+
+/// Metadata of an object as headers only (`Content-Type`, `Content-Length`, `ETag`,
+/// `X-ForgeBase-Version-Id`, checksum and `X-ForgeBase-Meta-*`), without reading its bytes.
+#[utoipa::path(head, path = "/api/v1/storage/buckets/{bucket}/meta/{key}", operation_id = "storage_object_meta_head", tag = "storage",
+    responses((status = 200, description = "Headers only"), (status = 404, description = "No such object")))]
+async fn object_meta_head(
+    State(s): State<StorageService>,
+    Access(ctx): Access,
+    Path((bucket, key)): Path<(String, String)>,
+    q: Query,
+) -> ApiResult {
+    let info = s
+        .head_object(&ctx, &bucket, &key, q.get("version"))
+        .await
+        .map_err(api)?;
+    let mut res = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, info.content_type.as_str())
+        .header(header::CONTENT_LENGTH, info.size)
+        .header(
+            header::ETAG,
+            format!("\"{}\"", info.checksum_sha256.as_deref().unwrap_or_default()),
+        )
+        .header(HeaderName::from_static(H_VERSION), info.version_id.as_str());
+    if let Some(sum) = &info.checksum_sha256 {
+        res = res.header(HeaderName::from_static(H_CHECKSUM), sum.as_str());
+    }
+    for (k, v) in &info.metadata {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(format!("{META_PREFIX}{k}").as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
+            res = res.header(n, v);
+        }
+    }
+    res.body(Body::empty()).map_err(|_| ApiError::internal())
+}
+
 /// Downloads (GET) or inspects (HEAD) an object; supports `Range`, `ETag`,
 /// `?version=` and `?download=<file name>`.
 #[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/objects/{key}", tag = "storage",
@@ -531,7 +601,7 @@ async fn move_object(
 
 /// Every version of a key, newest first.
 #[utoipa::path(get, path = "/api/v1/storage/buckets/{bucket}/versions/{key}", tag = "storage",
-    responses((status = 200, body = ObjectInfo)))]
+    responses((status = 200, body = ItemsObjects)))]
 async fn list_versions(
     State(s): State<StorageService>,
     Access(ctx): Access,
@@ -715,6 +785,34 @@ async fn signed_put(
 }
 
 impl StorageService {
+    /// Space used by a bucket (needs admin access on it).
+    pub async fn bucket_usage(&self, ctx: &forgebase_data::AccessContext, name: &str) -> crate::Result<BucketUsage> {
+        let b = self.bucket_row(name).await?;
+        self.authorize(ctx, &b, None, crate::service::Need::Admin).await?;
+        let rows = self
+            .read(
+                "SELECT COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN 1 ELSE 0 END), 0), \
+                        COUNT(*), \
+                        COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN size ELSE 0 END), 0), \
+                        COALESCE(SUM(size), 0) \
+                 FROM _forgebase_storage_objects WHERE bucket = ?",
+                vec![name.into()],
+            )
+            .await?;
+        let r = rows
+            .rows
+            .first()
+            .ok_or_else(|| StorageError::Internal("no usage".into()))?;
+        let n = |i: usize| crate::service::uint(r, i);
+        Ok(BucketUsage {
+            bucket: name.to_owned(),
+            objects: n(0),
+            versions: n(1),
+            logical_bytes: n(2),
+            version_bytes: n(3),
+        })
+    }
+
     /// Totals over the instance (needs the `storage_admin` permission).
     pub async fn stats(&self, ctx: &forgebase_data::AccessContext) -> crate::Result<StorageStats> {
         self.authorize_platform(ctx, Action::StorageAdmin)?;
