@@ -1,0 +1,253 @@
+/**
+ * In-memory fake of the billing, credits and entitlements REST APIs for component tests.
+ * None of these routes are in the OpenAPI fixture yet (FIX-3 owns it), so they are plain handlers.
+ * `installBilling(mock, { disabled: true })` answers every billing route 404, like a server with billing off.
+ */
+import type {
+  BillingSettings, CreditNote, Coupon, Customer, Invoice, LedgerEntry, Order, Payment, Price, Product, ProviderAccount, Refund,
+  Subscription, UsageSummary, WebhookEvent,
+} from "../api";
+import { envelope, type MockApi } from "./mockApi";
+
+const T0 = "2026-11-01T00:00:00Z";
+const T1 = "2026-12-01T00:00:00Z";
+
+export interface BillingState {
+  products: Product[];
+  prices: Price[];
+  customers: Customer[];
+  subscriptions: Subscription[];
+  orders: Order[];
+  invoices: Invoice[];
+  payments: Payment[];
+  refunds: Refund[];
+  notes: CreditNote[];
+  coupons: Coupon[];
+  providers: ProviderAccount[];
+  /** Secrets as received: the API must never echo them back. */
+  secrets: Record<string, { api_key?: string | null; webhook_secret?: string | null }>;
+  settings: BillingSettings;
+  webhooks: WebhookEvent[];
+  usage: UsageSummary[];
+  ledger: LedgerEntry[];
+  creditBalance: number;
+  taxRates: { id: string; region: string; name: string; rate_bp: number; active: boolean }[];
+}
+
+export const product = (key: string, over: Partial<Product> = {}): Product => ({
+  id: `prod_${key}`, key, name: key[0]!.toUpperCase() + key.slice(1), description: null, kind: "plan", plan_key: key, addon_key: null, pack_key: null,
+  credits: null, active: true, metadata: {}, created_at: T0, updated_at: T0, ...over,
+});
+
+export const price = (key: string, productKey: string, over: Partial<Price> = {}): Price => ({
+  id: `price_${key}`, key, product_id: `prod_${productKey}`, product: productKey, type: "recurring", interval: "month", interval_count: 1,
+  scheme: "per_unit", currency: "USD", unit_amount: 2900, tiers: null, currency_options: { EUR: { unit_amount: 2700 } }, feature: null,
+  meter_basis: "units", trial_days: 14, tax_behavior: "exclusive", active: true, metadata: {}, created_at: T0, ...over,
+});
+
+export const invoice = (id: string, over: Partial<Invoice> = {}): Invoice => ({
+  id, number: `INV-${id}`, customer_id: "cus1", subject: "org:acme", subscription_id: "sub1", order_id: null, status: "paid", billing_reason: "subscription_cycle",
+  currency: "USD", subtotal: 2900, discount: 0, tax: 522, total: 3422, balance_applied: 0, amount_due: 0, amount_paid: 3422, amount_refunded: 0, coupon: null,
+  tax_region: "US-CA", period_start: T0, period_end: T1, attempt_count: 1, next_attempt_at: null, hosted_url: null, finalized_at: T0, paid_at: T0, fulfilled_at: T0,
+  lines: [{ id: "l1", kind: "subscription", description: "Pro plan (monthly)", product: "pro", price: "pro_month", feature: null, quantity: 1, unit_amount: 2900, amount: 2900,
+    discount_amount: 0, tax_rate_bp: 1800, tax_amount: 522, tax_inclusive: false, period_start: T0, period_end: T1 }],
+  created_at: T0, ...over,
+});
+
+export function seedBilling(): BillingState {
+  const sub: Subscription = {
+    id: "sub1", customer_id: "cus1", subject: "org:acme", status: "active", currency: "USD", interval: "month", interval_count: 1, cycle_anchor: T0,
+    current_period_start: "2026-11-01T00:00:00Z", current_period_end: T1, trial_ends_at: null, cancel_at_period_end: false, canceled_at: null, ended_at: null,
+    cancel_reason: null, coupon: null, coupon_cycles_left: null, pending_price: null, provider: "manual", latest_invoice_id: "inv1",
+    items: [{ id: "si1", price: "pro_month", product: "pro", quantity: 1 }], version: 1, metadata: {}, created_at: T0,
+  };
+  return {
+    products: [product("pro"), product("team", { name: "Team" }), product("credits100", { name: "100 credits", kind: "credits", plan_key: null, credits: 100 })],
+    prices: [
+      price("pro_month", "pro"),
+      price("team_month", "team", { unit_amount: 9900 }),
+      price("pro_tiers", "pro", { type: "metered", scheme: "graduated", feature: "api_calls", interval: "month", tiers: [{ up_to: 100, unit_amount: 10, flat_amount: 0 }, { up_to: null, unit_amount: 5, flat_amount: 0 }], currency_options: {}, trial_days: 0 }),
+      price("credits_once", "credits100", { type: "one_time", interval: null, unit_amount: 1000, currency_options: { JPY: { unit_amount: 1500 } }, trial_days: 0 }),
+    ],
+    customers: [
+      { id: "cus1", subject: "org:acme", email: "ap@acme.test", name: "Acme", currency: "USD", region: "US-CA", tax_exempt: false, provider: "manual", provider_customer_id: null, has_payment_method: true, payment_method_label: "Visa 4242", balance: 12345, metadata: {}, created_at: T0 },
+      { id: "cus2", subject: "usr_ana", email: "ana@example.test", name: null, currency: "JPY", region: null, tax_exempt: false, provider: null, provider_customer_id: null, has_payment_method: false, payment_method_label: null, balance: 0, metadata: {}, created_at: T0 },
+    ],
+    subscriptions: [sub, { ...sub, id: "sub2", subject: "usr_ana", customer_id: "cus2", status: "past_due", currency: "JPY", latest_invoice_id: "inv2", items: [{ id: "si2", price: "pro_month", product: "pro", quantity: 1 }] }],
+    orders: [{ id: "ord1", customer_id: "cus1", subject: "org:acme", status: "paid", currency: "USD", invoice_id: "inv3", created_at: T0 }],
+    invoices: [
+      invoice("inv1"),
+      invoice("inv2", { subject: "usr_ana", customer_id: "cus2", status: "open", currency: "JPY", subtotal: 2900, tax: 0, total: 2900, amount_due: 2900, amount_paid: 0, attempt_count: 2, next_attempt_at: "2026-11-12T00:00:00Z", paid_at: null }),
+      invoice("inv3", { status: "paid", order_id: "ord1", subscription_id: null, billing_reason: "order", total: 1000, subtotal: 1000, tax: 0, amount_paid: 1000, lines: [{ id: "l3", kind: "one_time", description: "100 credits", product: "credits100", price: "credits_once", feature: null, quantity: 1, unit_amount: 1000, amount: 1000, discount_amount: 0, tax_rate_bp: 0, tax_amount: 0, tax_inclusive: false, period_start: null, period_end: null }] }),
+    ],
+    payments: [
+      { id: "pay1", invoice_id: "inv1", subject: "org:acme", provider: "manual", provider_ref: null, status: "succeeded", amount: 3422, currency: "USD", amount_refunded: 0, failure_code: null, failure_message: null, attempt: 1, created_at: T0, updated_at: T0 },
+      { id: "pay2", invoice_id: "inv2", subject: "usr_ana", provider: "stripe", provider_ref: "pi_1", status: "failed", amount: 2900, currency: "JPY", amount_refunded: 0, failure_code: "card_declined", failure_message: "Your card was declined", attempt: 2, created_at: T0, updated_at: T0 },
+    ],
+    refunds: [{ id: "ref1", payment_id: "pay1", invoice_id: "inv1", credit_note_id: "cn1", provider: "manual", provider_ref: null, status: "succeeded", amount: 500, currency: "USD", reason: "goodwill", created_at: T0 }],
+    notes: [{ id: "cn1", number: "CN-1", invoice_id: "inv1", subject: "org:acme", currency: "USD", amount: 500, refund_amount: 500, balance_amount: 0, reason: "goodwill", refund: null, credits_reversed: 0, created_at: T0 }],
+    coupons: [{ id: "cp1", code: "WELCOME15", name: null, kind: "percent", percent_bp: 1500, amount_off: null, currency: null, duration: "once", duration_cycles: null, max_redemptions: 100, redeemed: 3, expires_at: null, products: [], active: true }],
+    providers: [{ provider: "stripe", key_id: null, hint: "…c4f2", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/stripe", updated_at: T0 }],
+    secrets: {},
+    settings: { default_currency: "USD", retry_days: [1, 3, 5], final_action: "cancel", invoice_prefix: "INV", credit_note_prefix: "CN", incomplete_days: 1, webhook_max_age_secs: 259200, webhook_tolerance_secs: 300 },
+    webhooks: [{ id: "we1", provider: "stripe", event_id: "evt_1", event_type: "invoice.paid", event_at: T0, received_at: T0, status: "processed", result: "applied", attempts: 1 }],
+    usage: [
+      { feature: "api_calls", kind: "metered", scope_key: "", enabled: true, limit: 1000, carried_in: 0, used: 750, reserved: 0, remaining: 250, pack_remaining: 0, percent: 75, enforcement: "hard", period: "month", window_start: T0, window_end: T1 },
+      { feature: "exports", kind: "metered", scope_key: "", enabled: true, limit: 100, carried_in: 0, used: 95, reserved: 0, remaining: 5, pack_remaining: 50, percent: 95, enforcement: "soft", period: "month", window_start: T0, window_end: T1 },
+      { feature: "seats", kind: "gauge", scope_key: "", enabled: true, limit: 10, carried_in: 0, used: 10, reserved: 0, remaining: 0, pack_remaining: 0, percent: 100, enforcement: "hard", period: "none", window_start: T0, window_end: null },
+      { feature: "storage", kind: "gauge", scope_key: "", enabled: true, limit: 100, carried_in: 0, used: 10, reserved: 0, remaining: 90, pack_remaining: 0, percent: 10, enforcement: "hard", period: "none", window_start: T0, window_end: null },
+    ],
+    ledger: [
+      { seq: 2, id: "le2", at: T0, subject: "org:acme", kind: "consumption", amount: -40, balance_after: 960, lot_id: "lot1", ref_entry: null, feature: "ai_generation", units: 4, usage_event_id: null, usage_seq: 7, expires_at: null, idempotency_key: "k2", actor: "system", reason: null, external_ref: null, request_id: null, metadata: {} },
+      { seq: 1, id: "le1", at: T0, subject: "org:acme", kind: "top_up", amount: 1000, balance_after: 1000, lot_id: "lot1", ref_entry: null, feature: null, units: null, usage_event_id: null, usage_seq: null, expires_at: null, idempotency_key: "k1", actor: "admin", reason: "launch", external_ref: null, request_id: null, metadata: {} },
+    ],
+    creditBalance: 960,
+    taxRates: [{ id: "tx1", region: "IN", name: "GST", rate_bp: 1800, active: true }],
+  };
+}
+
+const list = (items: unknown[]) => ({ status: 200, body: { items } });
+const missing = (what: string) => envelope(404, "not_found", `no such ${what}`);
+
+export function installBilling(mock: MockApi, opts: { disabled?: boolean } = {}): BillingState {
+  const st = seedBilling();
+  const B = "/api/v1/billing";
+  const C = "/api/v1/credits";
+  const on = (method: string, template: string, h: Parameters<MockApi["on"]>[2]) =>
+    mock.on(method, template, opts.disabled && template.startsWith(B) ? () => envelope(404, "not_found", "Not Found") : h);
+  const bySubject = <T extends { subject: string }>(rows: T[], q: URLSearchParams) => rows.filter((r) => !q.get("subject") || r.subject === q.get("subject"));
+
+  on("GET", `${B}/settings`, () => ({ status: 200, body: st.settings }));
+  on("PUT", `${B}/settings`, ({ body }) => { st.settings = body as BillingSettings; return { status: 200, body: st.settings }; });
+  on("GET", `${B}/providers`, () => list(st.providers));
+  on("PUT", `${B}/providers/{p}`, ({ params, body }) => {
+    const b = body as { api_key?: string; webhook_secret?: string; enabled: boolean };
+    st.secrets[params.p!] = { api_key: b.api_key, webhook_secret: b.webhook_secret };
+    const acct: ProviderAccount = { provider: params.p!, key_id: null, hint: b.api_key ? `…${b.api_key.slice(-4)}` : null, api_base: null, enabled: b.enabled, webhook_path: `${B}/webhooks/${params.p}`, updated_at: T0 };
+    st.providers = [...st.providers.filter((a) => a.provider !== params.p), acct];
+    return { status: 200, body: acct };
+  });
+  on("DELETE", `${B}/providers/{p}`, ({ params }) => { st.providers = st.providers.filter((a) => a.provider !== params.p); return { status: 204 }; });
+  on("GET", `${B}/products`, () => list(st.products));
+  on("PUT", `${B}/products/{key}`, ({ params, body }) => {
+    const p = product(params.key!, { ...(body as Partial<Product>) });
+    st.products = [...st.products.filter((x) => x.key !== p.key), p];
+    return { status: 200, body: p };
+  });
+  on("GET", `${B}/prices`, ({ query }) => list(st.prices.filter((p) => !query.get("product") || p.product === query.get("product"))));
+  on("PUT", `${B}/prices/{key}`, ({ params, body }) => {
+    const b = body as Partial<Price>;
+    const p = price(params.key!, b.product!, { ...b, tiers: b.tiers ?? null });
+    st.prices = [...st.prices.filter((x) => x.key !== p.key), p];
+    return { status: 200, body: p };
+  });
+  on("GET", `${B}/tax-rates`, () => list(st.taxRates));
+  on("PUT", `${B}/tax-rates/{region}`, ({ params, body }) => {
+    const r = { id: `tx_${params.region}`, region: params.region!, ...(body as { name: string; rate_bp: number; active: boolean }) };
+    st.taxRates = [...st.taxRates.filter((x) => x.region !== r.region), r];
+    return { status: 200, body: r };
+  });
+  on("GET", `${B}/coupons`, () => list(st.coupons));
+  on("PUT", `${B}/coupons/{code}`, ({ params, body }) => {
+    const c = { id: `cp_${params.code}`, code: params.code!, name: null, percent_bp: null, amount_off: null, currency: null, duration_cycles: null, max_redemptions: null, redeemed: 0, expires_at: null, ...(body as object) } as Coupon;
+    st.coupons = [...st.coupons.filter((x) => x.code !== c.code), c];
+    return { status: 200, body: c };
+  });
+  on("GET", `${B}/customers`, () => list(st.customers));
+  on("GET", `${B}/customer`, ({ query }) => {
+    const c = st.customers.find((x) => x.subject === query.get("subject"));
+    return c ? { status: 200, body: c } : missing("customer");
+  });
+  on("PUT", `${B}/customer`, ({ body }) => {
+    const b = body as { subject: string; email?: string | null; name?: string | null; region?: string | null; currency?: string | null; tax_exempt?: boolean };
+    const c = st.customers.find((x) => x.subject === b.subject);
+    if (!c) return missing("customer");
+    Object.assign(c, { email: b.email ?? null, name: b.name ?? null, region: b.region ?? null, tax_exempt: b.tax_exempt ?? false });
+    return { status: 200, body: c };
+  });
+  on("GET", `${B}/subscriptions`, ({ query }) => list(bySubject(st.subscriptions, query)));
+  on("POST", `${B}/subscriptions`, ({ body }) => {
+    const b = body as { subject: string; items: { price: string; quantity: number }[]; trial_days?: number | null };
+    const pr = st.prices.find((p) => p.key === b.items[0]!.price);
+    const trial = b.trial_days ?? pr?.trial_days ?? 0;
+    const sub: Subscription = { ...st.subscriptions[0]!, id: `sub${st.subscriptions.length + 1}`, subject: b.subject, status: trial > 0 ? "trialing" : "active", trial_ends_at: trial > 0 ? T1 : null, items: [{ id: "x", price: b.items[0]!.price, product: pr?.product ?? "", quantity: 1 }] };
+    st.subscriptions = [sub, ...st.subscriptions];
+    return { status: 201, body: { subscription: sub, order: null, invoice: null, payment_url: null, replayed: false } };
+  });
+  const lifecycle = (name: string, apply: (s: Subscription, body: unknown) => void, shape: "sub" | "checkout") =>
+    on("POST", `${B}/subscriptions/{id}/${name}`, ({ params, body }) => {
+      const s = st.subscriptions.find((x) => x.id === params.id);
+      if (!s) return missing("subscription");
+      apply(s, body);
+      return { status: 200, body: shape === "sub" ? s : { subscription: s, order: null, invoice: null, payment_url: null, replayed: false } };
+    });
+  lifecycle("pause", (s) => { s.status = "paused"; }, "sub");
+  lifecycle("resume", (s) => { s.status = "active"; s.cancel_at_period_end = false; }, "checkout");
+  lifecycle("cancel", (s, b) => { if ((b as { at_period_end: boolean }).at_period_end) s.cancel_at_period_end = true; else { s.status = "canceled"; s.ended_at = T0; } }, "checkout");
+  lifecycle("change", (s, b) => { const x = b as { price: string; at_period_end: boolean }; if (x.at_period_end) s.pending_price = x.price; else s.items = [{ ...s.items[0]!, price: x.price }]; }, "checkout");
+  on("GET", `${B}/orders`, ({ query }) => list(bySubject(st.orders, query)));
+  on("POST", `${B}/orders`, ({ body }) => {
+    const b = body as { subject?: string };
+    const o: Order = { id: `ord${st.orders.length + 1}`, customer_id: "cus1", subject: b.subject ?? "org:acme", status: "open", currency: "USD", invoice_id: null, created_at: T0 };
+    st.orders = [o, ...st.orders];
+    return { status: 201, body: { subscription: null, order: o, invoice: null, payment_url: null, replayed: false } };
+  });
+  on("GET", `${B}/invoices`, ({ query }) => list(bySubject(st.invoices, query).filter((i) => !query.get("status") || i.status === query.get("status"))));
+  on("GET", `${B}/invoices/{id}`, ({ params }) => { const i = st.invoices.find((x) => x.id === params.id); return i ? { status: 200, body: i } : missing("invoice"); });
+  on("POST", `${B}/invoices/{id}/pay`, ({ params }) => {
+    const i = st.invoices.find((x) => x.id === params.id)!;
+    i.attempt_count += 1;
+    return { status: 200, body: { invoice: i, payment: null, payment_url: null } };
+  });
+  on("POST", `${B}/invoices/{id}/mark-paid`, ({ params }) => { const i = st.invoices.find((x) => x.id === params.id)!; Object.assign(i, { status: "paid", amount_paid: i.total, amount_due: 0 }); return { status: 200, body: i }; });
+  on("POST", `${B}/invoices/{id}/void`, ({ params }) => { const i = st.invoices.find((x) => x.id === params.id)!; i.status = "void"; return { status: 200, body: i }; });
+  on("POST", `${B}/invoices/{id}/credit-notes`, ({ params, body }) => {
+    const b = body as { amount: number; to_balance: boolean; reason?: string };
+    const i = st.invoices.find((x) => x.id === params.id)!;
+    if (!b.to_balance) i.amount_refunded += b.amount;
+    const n: CreditNote = { id: `cn${st.notes.length + 1}`, number: `CN-${st.notes.length + 1}`, invoice_id: i.id, subject: i.subject, currency: i.currency, amount: b.amount, refund_amount: b.to_balance ? 0 : b.amount, balance_amount: b.to_balance ? b.amount : 0, reason: b.reason ?? null, refund: null, credits_reversed: 0, created_at: T0 };
+    st.notes = [n, ...st.notes];
+    return { status: 201, body: n };
+  });
+  on("GET", `${B}/credit-notes`, ({ query }) => list(bySubject(st.notes, query)));
+  on("GET", `${B}/payments`, ({ query }) => list(bySubject(st.payments, query)));
+  on("GET", `${B}/refunds`, () => list(st.refunds));
+  on("GET", `${B}/webhook-events`, () => list(st.webhooks));
+  on("POST", `${B}/maintenance`, () => ({ status: 200, body: { usage_events_read: 0, usage_recorded: 0, trials_ended: 0, renewed: 0, ended: 0, retries: 1, fulfilled: 0, synced: 0 } }));
+  on("GET", `${B}/stats`, () => ({
+    status: 200,
+    body: {
+      from: T0, to: T1, recurring: [{ currency: "USD", mrr: 129900, arr: 1558800, subscriptions: 12 }, { currency: "JPY", mrr: 500000, arr: 6000000, subscriptions: 4 }],
+      by_status: { active: 12, trialing: 2, past_due: 1 }, active_at_start: 10, new_subscriptions: 4, churned: 1, churn_rate_bp: 1000,
+      revenue: [{ start: T0, currency: "USD", gross: 300000, refunded: 5000, net: 295000, payments: 9 }, { start: T0, currency: "JPY", gross: 90000, refunded: 0, net: 90000, payments: 3 }],
+      failed_payments: 2,
+    },
+  }));
+
+  // Entitlements side: usage meters and the catalog lists.
+  mock.on("GET", "/api/v1/usage", () => list(st.usage));
+  mock.on("GET", "/api/v1/usage/alerts", () => list([{ id: "al1", at: T0, subject: "org:acme", feature: "exports", scope_key: "", window_start: T0, threshold: 90, used: 90, limit: 100, delivered_at: null }]));
+  mock.on("GET", "/api/v1/plans", () => list([{ key: "pro", name: "Pro", description: "", is_default: false, active: true, trial_days: 14, features: [] }]));
+  mock.on("GET", "/api/v1/features", () => list([{ key: "api_calls", name: "API calls", description: "", kind: "metered", unit: "requests", permissions: [] }]));
+  mock.on("GET", "/api/v1/addons", () => list([{ key: "sso", name: "SSO", description: "", active: true, features: [] }]));
+  mock.on("GET", "/api/v1/usage-packs", () => list([{ key: "pack1k", name: "1k calls", feature: "api_calls", units: 1000, valid_days: 30, active: true }]));
+
+  // Credits.
+  mock.on("GET", `${C}/balance`, ({ query }) => ({ status: 200, body: { subject: query.get("subject"), balance: st.creditBalance, expiring: [], updated_at: T0 } }));
+  mock.on("GET", `${C}/lots`, () => list([{ id: "lot1", subject: "org:acme", entry_id: "le1", kind: "top_up", amount: 1000, remaining: 960, expires_at: null, created_at: T0 }]));
+  mock.on("GET", `${C}/ledger`, ({ query }) => ({ status: 200, body: { items: st.ledger.filter((e) => !query.get("kind") || e.kind === query.get("kind")), next: null } }));
+  mock.on("GET", `${C}/audit`, ({ query }) => ({ status: 200, body: { subject: query.get("subject"), balance: 960, ledger_sum: 960, lots_remaining: 960, last_balance_after: 960, lots_match_allocations: true, entries_match_allocations: true, consistent: true } }));
+  const post = (kind: "top_up" | "grant") => ({ body }: { body: unknown }) => {
+    const b = body as { subject: string; amount: number; reason?: string };
+    st.creditBalance += b.amount;
+    const entry: LedgerEntry = { ...st.ledger[1]!, seq: st.ledger.length + 1, id: `le${st.ledger.length + 1}`, kind, amount: b.amount, balance_after: st.creditBalance, reason: b.reason ?? null };
+    st.ledger = [entry, ...st.ledger];
+    return { status: 201, body: { entry, replayed: false } };
+  };
+  mock.on("POST", `${C}/top-ups`, post("top_up"));
+  mock.on("POST", `${C}/grants`, post("grant"));
+  mock.on("GET", `${C}/rates`, () => list([{ feature: "ai_generation", credits_per_unit: 10, per_units: 1, basis: "units", created_at: T0, updated_at: T0 }]));
+  mock.on("GET", `${C}/stats/summary`, () => ({ status: 200, body: { subject: null, from: T0, to: T1, top_up: 5000, grant: 200, consumption: 1200, spend: 0, refund: 50, reversal: 0, expiry: 10, net: 4040, balance: 4040, shortfall: 25 } }));
+  mock.on("GET", `${C}/stats/consumption`, () => ({ status: 200, body: { subject: null, interval: "day", from: T0, to: T1, rows: [{ start: T0, feature: "ai_generation", debited: 1200, refunded: 50, net: 1150, units: 120, entries: 30 }], total_net: 1150 } }));
+  return st;
+}

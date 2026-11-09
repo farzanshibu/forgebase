@@ -4,6 +4,7 @@ import Layout from "./components/Layout";
 import LoginPage from "./pages/LoginPage";
 import StudioPlaceholder from "./components/StudioPlaceholder";
 import AccessPage from "./pages/access/AccessPage";
+import BillingPage from "./pages/billing/BillingPage";
 import AuthPage from "./pages/auth/AuthPage";
 import DatabasePage from "./pages/database/DatabasePage";
 import FunctionsPage from "./pages/functions/FunctionsPage";
@@ -49,6 +50,8 @@ function Studios() {
             <Route key={s.path} path="functions/*" element={<FunctionsPage />} />
           ) : s.path === "jobs" ? (
             <Route key={s.path} path="jobs/*" element={<JobsPage />} />
+          ) : s.path === "billing" ? (
+            <Route key={s.path} path="billing/*" element={<BillingPage />} />
           ) : s.path === "" ? (
             <Route key="index" index element={<StudioPlaceholder studio={s} />} />
           ) : (
