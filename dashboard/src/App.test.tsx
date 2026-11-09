@@ -17,8 +17,8 @@ describe("App shell", () => {
 
   it("shows an honest arrives-in-phase panel for unbuilt studios", async () => {
     signedIn(new MockApi().install());
-    render(<MemoryRouter initialEntries={["/redis"]}><App /></MemoryRouter>);
-    expect(await screen.findByText("Arrives in phase 4")).toBeInTheDocument();
+    render(<MemoryRouter initialEntries={["/"]}><App /></MemoryRouter>);
+    expect(await screen.findByText("Arrives in phase 9")).toBeInTheDocument();
   });
 
   it("shows the sign-in form when nobody is signed in", async () => {

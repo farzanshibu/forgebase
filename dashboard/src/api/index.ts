@@ -10,5 +10,8 @@ export * from "./vector";
 export * from "./graph";
 export * from "./functions";
 export * from "./jobs";
+export * from "./storage";
+export * from "./kv";
 export * from "./identity";
 export * from "./customize";
+export * from "./billing";

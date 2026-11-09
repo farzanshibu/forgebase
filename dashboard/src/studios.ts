@@ -27,15 +27,15 @@ export const STUDIOS: Studio[] = [
     path: "redis",
     label: "Redis Studio",
     summary: "Keys, TTLs, streams",
-    phase: 4,
-    features: ["Key browser and search", "Value viewer and TTL management", "Pub/Sub inspector and stream browser", "Memory and cache statistics"],
+    phase: null,
+    features: ["Key browser with namespace, pattern and type filters", "Type-aware viewers and editors (string, hash, list, set, sorted set, stream)", "TTL management, command console, Pub/Sub inspector", "Memory and cache statistics"],
   },
   {
     path: "storage",
     label: "Object Storage Studio",
     summary: "Buckets and files",
-    phase: 4,
-    features: ["Bucket management and file browser", "Upload, download and preview", "Metadata, access policies and versions", "Storage statistics"],
+    phase: null,
+    features: ["Bucket management and folder browser", "Resumable upload with progress, download, copy and move", "Policies, prefix ACLs, version history and restore", "Signed URLs, usage against quota, reconcile"],
   },
   {
     path: "vector",
@@ -89,9 +89,9 @@ export const STUDIOS: Studio[] = [
   {
     path: "billing",
     label: "Billing Studio",
-    summary: "Plans, usage, invoices",
-    phase: 8,
-    features: ["Plans and subscriptions", "Usage, invoices and customers", "Payment history and webhooks"],
+    summary: "Plans, subscriptions, invoices, credits",
+    phase: null,
+    features: ["Catalog: products, prices, features, add-ons, usage packs", "Customers, subscriptions, orders and lifecycle actions", "Usage meters, invoices, payments, refunds, dunning", "Revenue metrics, credits and ledgers, providers"],
   },
   {
     path: "system",
