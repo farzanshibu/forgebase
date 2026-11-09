@@ -13,9 +13,9 @@ pub use crate::money::{Money, Scheme, Tier};
 
 macro_rules! str_enum {
     ($(#[$m:meta])* $name:ident { $($(#[$vm:meta])* $v:ident = $s:literal),+ $(,)? }) => {
-        $(#[$m])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
         #[serde(rename_all = "snake_case")]
+        $(#[$m])*
         pub enum $name { $($(#[$vm])* $v),+ }
 
         impl $name {
@@ -62,6 +62,7 @@ str_enum!(
 
 str_enum!(
     /// Billing interval.
+    #[schema(as = BillingInterval)]
     Interval {
         /// Calendar months from the cycle anchor.
         Month = "month",
@@ -92,6 +93,7 @@ str_enum!(
 
 str_enum!(
     /// Subscription lifecycle.
+    #[schema(as = BillingSubscriptionStatus)]
     SubscriptionStatus {
         /// Created; the first invoice is not paid yet (not entitled).
         Incomplete = "incomplete",
@@ -621,6 +623,7 @@ pub struct SubscriptionItem {
 
 /// A subscription.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = BillingSubscription)]
 pub struct Subscription {
     /// Id.
     pub id: String,
@@ -1064,6 +1067,7 @@ pub struct CreditNoteInput {
 
 /// The result of a collection attempt.
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[schema(as = BillingCollection)]
 pub struct Collection {
     /// The invoice after the attempt.
     pub invoice: Invoice,
@@ -1230,6 +1234,7 @@ impl Default for BillingSettings {
 
 /// What a maintenance run did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = BillingMaintenanceReport)]
 pub struct MaintenanceReport {
     /// Usage events read.
     pub usage_events_read: i64,

@@ -70,6 +70,9 @@ struct GlobalArgs {
     /// RESP bind port; 0 picks a free port [default: 6380] [env: FORGEBASE_RESP_PORT]
     #[arg(long, global = true, value_name = "PORT")]
     resp_port: Option<u16>,
+    /// Mount billing (subscriptions, invoices, payment webhooks) [env: FORGEBASE_BILLING_ENABLED]
+    #[arg(long, global = true)]
+    billing: bool,
 }
 
 impl GlobalArgs {
@@ -84,6 +87,7 @@ impl GlobalArgs {
             resp_enabled: self.resp.then_some(true),
             resp_host: self.resp_host.clone(),
             resp_port: self.resp_port,
+            billing_enabled: self.billing.then_some(true),
             ..ConfigOverrides::default()
         }
     }

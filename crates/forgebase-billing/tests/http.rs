@@ -342,6 +342,26 @@ async fn openapi_documents_every_route() {
     ] {
         assert!(paths.contains_key(p), "{p} not documented");
     }
+    // Names do not collide with other extensions in the merged document.
+    let schemas = doc["components"]["schemas"].as_object().unwrap();
+    for n in [
+        "BillingSubscription",
+        "BillingSubscriptionStatus",
+        "BillingInterval",
+        "BillingCollection",
+        "BillingMaintenanceReport",
+    ] {
+        assert!(schemas.contains_key(n), "{n} missing");
+    }
+    for n in [
+        "Subscription",
+        "SubscriptionStatus",
+        "Interval",
+        "Collection",
+        "MaintenanceReport",
+    ] {
+        assert!(!schemas.contains_key(n), "{n} collides with another crate's schema");
+    }
     // Every route of the router is documented.
     let src = include_str!("../src/http.rs");
     let routes = src.matches(".route(\"").count();
