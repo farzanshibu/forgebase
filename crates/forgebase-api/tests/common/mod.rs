@@ -76,6 +76,7 @@ impl Api {
     }
 
     async fn build(ctx: Option<AccessContext>, authorizer: Option<Arc<dyn Authorizer>>, opts: RouterOptions) -> Self {
+        let authorizer_is_policy = authorizer.is_none();
         let tmp = tempfile::tempdir().unwrap();
         let layout = DataLayout::new(tmp.path().join("data"));
         layout.ensure().unwrap();
@@ -97,6 +98,28 @@ impl Api {
             }
         };
         let mut app = forgebase_api::router(state, opts);
+        let _ = authorizer_is_policy;
+        if ctx.is_none() && authorizer_is_policy {
+            // Test-only identity: `x-test-as: admin | <user id>` stands in for
+            // the auth layer (outside the router's own layers, like it).
+            app = app.layer(middleware::from_fn(|mut req: Request<Body>, next: Next| async move {
+                let who = req
+                    .headers()
+                    .get("x-test-as")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                match who.as_deref() {
+                    Some("admin") => {
+                        req.extensions_mut().insert(AccessContext::admin("root"));
+                    }
+                    Some(id) => {
+                        req.extensions_mut().insert(AccessContext::user("users", id));
+                    }
+                    None => {}
+                }
+                next.run(req).await
+            }));
+        }
         if let Some(ctx) = ctx {
             // Outside the router's own layers, like the auth layer will be.
             app = app.layer(middleware::from_fn(move |mut req: Request<Body>, next: Next| {

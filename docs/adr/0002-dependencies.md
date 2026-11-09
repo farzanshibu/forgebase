@@ -146,3 +146,13 @@ against the RFC vectors), `rand` (getrandom is enough), an SMTP client (the
 
 `cargo deny check advisories licenses` (cargo-deny 0.20.2, RustSec database
 fetched 2026-11-07) on the full tree: **advisories ok, licences ok**.
+
+## FB-21 (policy engine and tenancy, ADR-0008)
+
+No new third-party crate. The new workspace crate `forgebase-policy` uses only
+dependencies already recorded here: `axum`, `serde`, `serde_json`, `sha2`
+(invitation-token digests), `thiserror`, `tokio` (audit writer task),
+`tracing`, `url` (`form_urlencoded` for query strings, already used by
+`forgebase-api`) and `utoipa`. The property tests use a 10-line SplitMix64
+generator instead of `proptest` (which would add ~15 packages for one test).
+`Cargo.lock` gains only the `forgebase-policy` entry.
