@@ -15,7 +15,10 @@
 //!   recorded in the execution log and not retried. A function's own writes
 //!   do not trigger its own after-hooks (no self-loops).
 //!
-//! Hook input: `{"event", "collection", "id", "data"|"record", "auth"}`.
+//! Hook input: `{"event", "collection", "record_id", "data", "auth"}` before
+//! (`data` is the create body or the update patch), `{"event", "collection",
+//! "record_id", "record", "actor", "seq"}` after (`record` is the stored row
+//! after the change, before it for deletes).
 //! Writes made by the system principal (migrations, internal jobs) skip hooks.
 
 use std::sync::{Arc, Weak};
@@ -96,7 +99,7 @@ impl WriteGuard for HookGuard {
             let mut input = json!({
                 "event": event.as_str(),
                 "collection": write.collection.name,
-                "id": write.record_id,
+                "record_id": write.record_id,
                 "auth": auth_json(&write.ctx.principal),
             });
             if let Some(d) = write.data {
@@ -190,7 +193,7 @@ pub(crate) async fn after(svc: &FunctionService, ev: &Event) -> usize {
     let input = json!({
         "event": event.as_str(),
         "collection": ev.collection,
-        "id": ev.record_id,
+        "record_id": ev.record_id,
         "record": record_json(ev),
         "actor": ev.actor,
         "seq": ev.seq,

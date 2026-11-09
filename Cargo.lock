@@ -1133,6 +1133,7 @@ dependencies = [
  "forgebase-realtime",
  "http-body-util",
  "metrics",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
