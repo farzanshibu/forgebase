@@ -7,6 +7,7 @@
 //! tokens.
 
 mod flows;
+mod impersonation;
 mod machine;
 
 use std::sync::{Arc, RwLock};
@@ -27,6 +28,7 @@ use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Su
 
 pub(crate) use flows::normalize_email;
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
+pub use impersonation::{ImpersonationGrant, ImpersonationView};
 pub use machine::{AdminView, ApiKeyView, CreatedKey, ServiceAccountView};
 
 /// Request metadata recorded with sessions and audit events.
@@ -38,6 +40,9 @@ pub struct ClientInfo {
     pub user_agent: Option<String>,
     /// Request id.
     pub request_id: Option<String>,
+    /// Administrator acting as the caller (impersonation session); recorded
+    /// in every audit row of the request.
+    pub impersonator: Option<String>,
 }
 
 /// Tokens of a new or refreshed session.
@@ -92,6 +97,8 @@ pub struct SessionView {
     pub expires_at: String,
     /// Whether this is the session making the request.
     pub current: bool,
+    /// Administrator who started this session as an impersonation.
+    pub impersonator: Option<String>,
 }
 
 /// One audit-log entry.
@@ -121,6 +128,8 @@ pub struct AuditEntry {
     pub request_id: Option<String>,
     /// Extra non-secret detail.
     pub detail: Json,
+    /// Administrator acting as `actor` (impersonation), if any.
+    pub impersonator: Option<String>,
 }
 
 /// Filter for [`AuthService::audit_log`].
@@ -427,7 +436,7 @@ impl AuthService {
         let limit = i64::from(q.limit.unwrap_or(50).clamp(1, 500));
         let r = read(
             self.db(),
-            "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail
+            "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator
              FROM _forgebase_auth_audit
              WHERE (?1 IS NULL OR substr(event, 1, length(?1)) = ?1)
                AND (?2 IS NULL OR subject_id = ?2)
@@ -444,7 +453,7 @@ impl AuthService {
         let (st, coll, id) = subject_cols(&caller.subject);
         let r = read(
             self.db(),
-            "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail
+            "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator
              FROM _forgebase_auth_audit
              WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3
                AND (event LIKE 'login%' OR event = 'mfa.verify')
@@ -702,8 +711,19 @@ impl AuthService {
         method: AuthMethod,
         mfa: bool,
     ) -> Result<(String, u64), AuthError> {
-        let key = self.active_key().await?;
         let ttl = self.inner.cfg.access_token_ttl.as_secs();
+        self.sign_access_ttl(subject, sid, method, mfa, ttl).await
+    }
+
+    async fn sign_access_ttl(
+        &self,
+        subject: &Subject,
+        sid: &str,
+        method: AuthMethod,
+        mfa: bool,
+        ttl: u64,
+    ) -> Result<(String, u64), AuthError> {
+        let key = self.active_key().await?;
         let now = self.now();
         let (st, col, sub) = match subject {
             Subject::User { collection, id } => ("user", Some(collection.clone()), id.clone()),
@@ -749,7 +769,7 @@ impl AuthService {
         }
         let r = read(
             self.db(),
-            "SELECT subject_type, collection, subject_id, mfa, revoked_at, expires_at, last_seen_at
+            "SELECT subject_type, collection, subject_id, mfa, revoked_at, expires_at, last_seen_at, impersonator
              FROM _forgebase_auth_sessions WHERE id = ?1",
             vec![t(claims.sid.clone())],
         )
@@ -781,6 +801,7 @@ impl AuthService {
             credential_id: claims.sid,
             scopes: None,
             mfa: row.i64("mfa") == 1,
+            impersonator: row.opt_str("impersonator"),
         })
     }
 
@@ -829,6 +850,7 @@ impl AuthService {
             credential_id: sid,
             scopes: None,
             mfa: row.i64("mfa") == 1,
+            impersonator: None,
         })
     }
 
@@ -1004,7 +1026,11 @@ impl AuthService {
         .await?;
         audit_in(
             &mut tx,
-            "logout",
+            if caller.impersonator.is_some() {
+                "impersonation.end"
+            } else {
+                "logout"
+            },
             true,
             ci,
             &caller.subject.actor(),
@@ -1017,13 +1043,22 @@ impl AuthService {
 
     /// Active sessions (devices) of the caller.
     pub async fn list_sessions(&self, caller: &Authenticated) -> Result<Vec<SessionView>, AuthError> {
-        let (st, coll, id) = subject_cols(&caller.subject);
+        self.sessions_of(&caller.subject, caller.session_id()).await
+    }
+
+    /// Active sessions of `subject`; `current` marks the requesting session.
+    pub(crate) async fn sessions_of(
+        &self,
+        subject: &Subject,
+        current: Option<&str>,
+    ) -> Result<Vec<SessionView>, AuthError> {
+        let (st, coll, id) = subject_cols(subject);
         let now = self.now();
         let idle = self.inner.cfg.session_idle_timeout.as_secs() as i64;
         let r = read(
             self.db(),
             "SELECT id, auth_method, mfa, cookie_hash IS NOT NULL AS cookie, ip, user_agent, device_name,
-                    created_at, last_seen_at, expires_at
+                    created_at, last_seen_at, expires_at, impersonator
              FROM _forgebase_auth_sessions
              WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3
                AND revoked_at IS NULL AND expires_at > ?4 AND last_seen_at > ?5
@@ -1031,7 +1066,6 @@ impl AuthService {
             vec![t(st), ot(coll), t(id), i(now), i(now - idle)],
         )
         .await?;
-        let current = caller.session_id();
         Ok(rows(&r)
             .map(|row| SessionView {
                 current: current == Some(row.str("id").as_str()),
@@ -1045,6 +1079,7 @@ impl AuthService {
                 created_at: rfc3339(row.i64("created_at")),
                 last_seen_at: rfc3339(row.i64("last_seen_at")),
                 expires_at: rfc3339(row.i64("expires_at")),
+                impersonator: row.opt_str("impersonator"),
             })
             .collect())
     }
@@ -1056,6 +1091,7 @@ impl AuthService {
         session_id: &str,
         ci: &ClientInfo,
     ) -> Result<(), AuthError> {
+        reject_impersonated(caller)?;
         let (st, coll, id) = subject_cols(&caller.subject);
         let admin = caller.subject.is_admin();
         let mut tx = Tx::begin(self.db()).await?;
@@ -1171,6 +1207,19 @@ fn session_subject(row: &store::Row<'_>) -> Result<Subject, AuthError> {
     }
 }
 
+/// Refuses self-service credential changes inside an impersonation session
+/// (no escalation: an impersonating administrator cannot leave the target
+/// with new passwords, factors or keys; ADR-0014 §4).
+pub(crate) fn reject_impersonated(caller: &Authenticated) -> Result<(), AuthError> {
+    if caller.impersonator.is_some() {
+        Err(AuthError::Forbidden(
+            "impersonated_session: this action is not available while impersonating".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn require_admin(caller: &Authenticated) -> Result<(), AuthError> {
     if caller.subject.is_admin() {
         Ok(())
@@ -1229,8 +1278,8 @@ pub(crate) async fn audit_in(
         t(detail.to_string())
     };
     tx.exec(
-        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         vec![
             i(store::now()),
             t(event),
@@ -1243,6 +1292,7 @@ pub(crate) async fn audit_in(
             ot(ci.user_agent.clone()),
             ot(ci.request_id.clone()),
             detail,
+            ot(ci.impersonator.clone()),
         ],
     )
     .await?;
@@ -1266,6 +1316,7 @@ fn audit_entry(row: store::Row<'_>) -> AuditEntry {
             .opt_str("detail")
             .and_then(|d| serde_json::from_str(&d).ok())
             .unwrap_or(Json::Null),
+        impersonator: row.opt_str("impersonator"),
     }
 }
 

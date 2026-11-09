@@ -414,6 +414,7 @@ impl AuthService {
         current: &str,
         new: &str,
     ) -> Result<(), AuthError> {
+        super::reject_impersonated(caller)?;
         self.limit_attempt(ci)?;
         let (stored, min, lock_key) = match &caller.subject {
             Subject::User { collection, id } => {
@@ -1014,6 +1015,7 @@ impl AuthService {
     }
 
     fn require_session_subject(caller: &Authenticated) -> Result<(), AuthError> {
+        super::reject_impersonated(caller)?;
         match (&caller.subject, caller.session_id()) {
             (Subject::User { .. } | Subject::Admin { .. }, Some(_)) => Ok(()),
             _ => Err(AuthError::Forbidden("MFA is managed from a signed-in session".into())),

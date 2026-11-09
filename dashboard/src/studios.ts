@@ -54,9 +54,16 @@ export const STUDIOS: Studio[] = [
   {
     path: "auth",
     label: "Authentication Studio",
-    summary: "Users, roles, API keys",
-    phase: 3,
-    features: ["Users and sessions", "Roles and permissions", "OAuth providers and MFA", "API keys and audit logs"],
+    summary: "Users, sessions, API keys, audit",
+    phase: null,
+    features: ["Users, sessions and devices", "Service accounts, API keys and PATs", "Auth and authorization audit logs", "Admin impersonation"],
+  },
+  {
+    path: "access",
+    label: "Access Studio",
+    summary: "Orgs, roles, permissions, rules",
+    phase: null,
+    features: ["Realms, organizations, projects and environments", "Members, teams, invitations", "Roles, role sets and the permission matrix", "Overrides, resource ACL and collection rules"],
   },
   {
     path: "functions",
