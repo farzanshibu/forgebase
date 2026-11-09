@@ -45,7 +45,7 @@ pub use entitlements::{EntitlementsApi, HasQuery, MeteredRequest, QuotaRequest};
 pub use error::{ApiError, Error, ErrorKind, Result};
 pub use functions::FunctionsApi;
 pub use http::RetryPolicy;
-pub use jobs::{JobsApi, ListJobs};
+pub use jobs::{JobWatch, JobsApi, ListJobs};
 pub use kv::{Kv, KvValue, SetOptions};
 pub use realtime::{
     ChannelMessage, PresenceEvent, PresenceMember, Realtime, RealtimeConfig, RealtimeEvent, RealtimeTransport,

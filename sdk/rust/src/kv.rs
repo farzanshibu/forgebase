@@ -5,7 +5,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::generated::{KeyValue, KvStats};
 use crate::http::{Req, Transport, seg};
 
@@ -341,14 +341,6 @@ impl Kv {
     #[must_use]
     pub fn namespace(&self) -> &str {
         &self.ns
-    }
-
-    /// Fails unless the reply says the key was set. Handy with `nx`.
-    pub fn was_set(reply: &Value) -> Result<bool> {
-        match reply.get("set").or_else(|| reply.get("ok")) {
-            Some(Value::Bool(b)) => Ok(*b),
-            Some(_) | None => Err(Error::InvalidResponse(format!("unexpected set reply: {reply}"))),
-        }
     }
 }
 

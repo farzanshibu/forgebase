@@ -232,6 +232,40 @@ pub struct AnalyzeBody {
     pub collection: Option<String>,
 }
 
+/// One attempt of a job.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Attempt {
+    /// Attempt number (1 for the first; a graceful release does not count).
+    pub attempt: i64,
+    /// Run time in milliseconds (so far, while running).
+    pub duration_ms: i64,
+    /// Error of a failed attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// End time (RFC 3339); `null` while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// The attempt started with a checkpoint of an earlier one.
+    pub from_checkpoint: bool,
+    /// `succeeded`, `failed`, `retry`, `timed_out`, `lease_expired`,
+    /// `released` or `cancelled`; `null` while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// Claim time (RFC 3339).
+    pub started_at: String,
+    /// Worker that ran it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+}
+
+/// Attempts of a job.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AttemptList {
+    /// Oldest first.
+    #[serde(default)]
+    pub items: Vec<Attempt>,
+}
+
 /// Consistency of one account: the balance, the ledger and the lots agree.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AuditReport {
@@ -690,6 +724,47 @@ pub struct BucketPatch {
     pub visibility: Option<Visibility>,
 }
 
+/// The checkpoint of a job.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Checkpoint {
+    /// The saved state (`null` when none was saved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<serde_json::Value>,
+    /// Job id.
+    pub job_id: String,
+    /// When it was saved (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<String>,
+}
+
+/// Body of a checkpoint.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CheckpointBody {
+    /// State to resume from (JSON, at most 256 KiB).
+    #[serde(default)]
+    pub checkpoint: serde_json::Value,
+    /// The lease from the claim.
+    pub lease_id: String,
+}
+
+/// Child jobs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ChildList {
+    /// In request order.
+    #[serde(default)]
+    pub items: Vec<Job>,
+}
+
+/// Body of a child-job request.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ChildrenBody {
+    /// The children (1 to 100).
+    #[serde(default)]
+    pub jobs: Vec<NewJob>,
+    /// The lease of the running parent.
+    pub lease_id: String,
+}
+
 /// A claim request.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClaimRequest {
@@ -717,10 +792,16 @@ pub struct ClaimResponse {
 /// A claimed job with the lease that fences it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClaimedJob {
+    /// The last checkpoint of an earlier attempt: resume from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<serde_json::Value>,
     /// The job (already `running`).
     pub job: Job,
     /// Secret token: `heartbeat`, `complete` and `fail` must present it.
     pub lease_id: String,
+    /// The parents (dependencies) with their results.
+    #[serde(default)]
+    pub parents: Vec<ParentResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -791,6 +872,19 @@ pub struct CommitBody {
     /// Units used (default: all reserved units; the rest is released).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub units: Option<i64>,
+}
+
+/// The job that undoes a step (saga compensation).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Compensation {
+    /// Handler name.
+    pub kind: String,
+    /// Handler input (default `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// Queue (default: the step's queue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
 }
 
 /// Body of a completion.
@@ -1427,6 +1521,18 @@ pub struct FailBody {
     pub retryable: Option<bool>,
 }
 
+/// What a failed workflow step does to its workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailurePolicy {
+    #[serde(rename = "fail")]
+    Fail,
+    #[serde(rename = "compensate")]
+    Compensate,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// A feature of the catalog.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Feature {
@@ -1705,6 +1811,9 @@ pub struct HashSetBody {
 pub struct Heartbeat {
     /// The job was cancelled: stop and call `fail`.
     pub cancel_requested: bool,
+    /// When the attempt times out (RFC 3339), if the job has a timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<String>,
     /// New lease expiry (RFC 3339).
     pub visibility_until: String,
 }
@@ -2652,13 +2761,27 @@ pub struct Job {
     pub backoff_max_ms: i64,
     /// Cancellation was requested while running; workers should stop and `fail`.
     pub cancel_requested: bool,
+    /// When the checkpoint was saved (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_at: Option<String>,
+    /// The step this job compensates (saga compensation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensates: Option<String>,
     /// Creation time (RFC 3339).
     pub created_at: String,
     /// Who enqueued it.
     pub created_by: String,
+    /// While running with a timeout: when the attempt times out (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<String>,
     /// When it reached a terminal state (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// A checkpoint is saved (`GET /api/v1/jobs/{id}/checkpoint`).
+    pub has_checkpoint: bool,
+    /// Last heartbeat of the current attempt (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_at: Option<String>,
     /// Job id.
     pub id: String,
     /// Deduplication key, unique per queue.
@@ -2671,16 +2794,27 @@ pub struct Job {
     pub last_error: Option<String>,
     /// Attempts before the job is dead-lettered.
     pub max_attempts: i64,
+    /// The job that spawned this one (child jobs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     /// Handler input.
     #[serde(default)]
     pub payload: serde_json::Value,
     /// Higher runs first.
     pub priority: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
     /// Queue name.
     pub queue: String,
     /// Handler output of a succeeded job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Size of the stored result in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_size: Option<i64>,
+    /// The result is kept in object storage (`GET /api/v1/jobs/{id}/result`);
+    /// `result` is `null` then.
+    pub result_stored: bool,
     /// Earliest start (RFC 3339); moves forward while waiting to retry.
     pub run_at: String,
     /// Schedule that enqueued the job.
@@ -2691,6 +2825,12 @@ pub struct Job {
     pub started_at: Option<String>,
     /// State.
     pub status: JobStatus,
+    /// Step name inside the workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Longest run of one attempt in ms (`null`: no limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
     /// Last change (RFC 3339).
     pub updated_at: String,
     /// Time in milliseconds a worker may hold the job without a heartbeat.
@@ -2698,9 +2838,15 @@ pub struct Job {
     /// While running: when the lease expires without a heartbeat (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_until: Option<String>,
+    /// Parents (dependencies) that have not succeeded yet; the job is not
+    /// claimed before this is 0.
+    pub waiting_for: i64,
     /// Worker that holds (or held last) the job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
+    /// Workflow the job belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
 }
 
 /// One entry of a job's history.
@@ -2733,6 +2879,21 @@ pub struct JobPage {
     pub total: i64,
 }
 
+/// The result of a succeeded job.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct JobResult {
+    /// Job id.
+    pub job_id: String,
+    /// The result (`null` when the handler returned none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// Size in bytes when stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+    /// It was kept in object storage.
+    pub stored: bool,
+}
+
 /// Queue statistics.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct JobStats {
@@ -2760,6 +2921,46 @@ pub enum JobStatus {
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
+}
+
+/// A live update of a job, published on the realtime channel `jobs:<job id>`
+/// (and on `jobs:<workflow id>` for workflow jobs).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobUpdate {
+    /// Claims so far.
+    pub attempts: i64,
+    /// Cancellation was requested.
+    pub cancel_requested: bool,
+    /// `progress` (a progress report or checkpoint) or `status` (a state change).
+    pub event: String,
+    /// End time (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// A checkpoint is saved.
+    pub has_checkpoint: bool,
+    /// Job id.
+    pub job_id: String,
+    /// Handler name.
+    pub kind: String,
+    /// Last failure (first 500 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
+    /// Queue.
+    pub queue: String,
+    /// State.
+    pub status: JobStatus,
+    /// Step name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Last change (RFC 3339).
+    pub updated_at: String,
+    /// Parents not finished yet.
+    pub waiting_for: i64,
+    /// Workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
 }
 
 /// Answer of `GET .../keys/{key}`.
@@ -3162,6 +3363,9 @@ pub struct NewJob {
     /// Earliest start as a delay from now in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delay_ms: Option<i64>,
+    /// Ids of jobs that must succeed first; the job waits for all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<Vec<String>>,
     /// Enqueueing the same key twice in a queue returns the first job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
@@ -3182,6 +3386,10 @@ pub struct NewJob {
     /// Earliest start, RFC 3339. Mutually exclusive with `delay_ms`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_at: Option<String>,
+    /// Longest run of one attempt in ms (1 s to 30 days; default: the queue's,
+    /// else none). A timed-out attempt is retried like a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
     /// Time in ms a worker may hold the job without a heartbeat (default 60000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_timeout_ms: Option<i64>,
@@ -3236,6 +3444,44 @@ pub struct NewSchedule {
     pub visibility_timeout_ms: Option<i64>,
 }
 
+/// One step of a workflow to create.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NewStep {
+    /// First retry delay in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_base_ms: Option<i64>,
+    /// Cap of the retry delay in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_max_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensate: Option<Compensation>,
+    /// Names of steps that must succeed first (fan-in: all of them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<Vec<String>>,
+    /// Handler name.
+    pub kind: String,
+    /// Attempts before the step is dead-lettered (default 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<i64>,
+    /// Unique name inside the workflow.
+    pub name: String,
+    /// Handler input (default `null`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// Higher runs first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i64>,
+    /// Queue (default `default`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
+    /// Longest run of one attempt, in ms (1 s to 30 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
+    /// Lease length without a heartbeat, in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_timeout_ms: Option<i64>,
+}
+
 /// A worker to register.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NewWorker {
@@ -3254,6 +3500,20 @@ pub struct NewWorker {
     /// Queues it works (empty: all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queues: Option<Vec<String>>,
+}
+
+/// A workflow to create: a graph of steps. A chain is steps that each depend
+/// on the one before; fan-out is several steps depending on one; fan-in is
+/// one step depending on several (it waits for all).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NewWorkflow {
+    /// Display name.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_failure: Option<FailurePolicy>,
+    /// The steps (1 to 500).
+    #[serde(default)]
+    pub steps: Vec<NewStep>,
 }
 
 /// A graph node.
@@ -3457,6 +3717,24 @@ pub struct PackGrantInput {
     pub quantity: Option<i64>,
     /// Subject.
     pub subject: String,
+}
+
+/// A parent (dependency) of a claimed job, with its result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParentResult {
+    /// Parent job id.
+    pub id: String,
+    /// Its result when stored inline; `null` when it lives in object storage
+    /// (`result_stored`) — fetch it with `GET /api/v1/jobs/{id}/result`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// The result is in object storage.
+    pub result_stored: bool,
+    /// Its state (`succeeded` for dependencies; a compensated step may differ).
+    pub status: JobStatus,
+    /// Step name inside its workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 /// One received part.
@@ -3687,13 +3965,50 @@ pub struct PreviewInput {
     pub variables: Option<serde_json::Value>,
 }
 
-/// Progress of a rebuild.
+/// The latest progress report of a job.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Progress {
-    /// Vectors added so far.
-    pub done: i64,
-    /// Vectors to add.
-    pub total: i64,
+    /// Human-readable detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    /// Short name of the current phase, e.g. `download`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// When it was reported (RFC 3339).
+    pub updated_at: String,
+}
+
+/// Body of a progress report.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ProgressBody {
+    /// The lease from the claim.
+    pub lease_id: String,
+    /// Detail (at most 2000 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    /// Phase name (at most 128 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+}
+
+/// A progress report. Fields left out keep their previous value.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ProgressReport {
+    /// Detail (at most 2000 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    /// Phase name (at most 128 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 /// The public face of a realm: what dashboards and hosted pages need.
@@ -3780,6 +4095,80 @@ pub struct QueryPlanSchema {
     pub sql: String,
     #[serde(default)]
     pub steps: Vec<PlanStepSchema>,
+}
+
+/// A named queue: its settings and current counts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueueInfo {
+    /// Cancelled (until purged).
+    pub cancelled: i64,
+    /// Most jobs running at once over every worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<i64>,
+    /// Settings were saved for it (otherwise it only has jobs).
+    pub configured: bool,
+    /// Created (RFC 3339) when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// In the dead-letter queue.
+    pub dead: i64,
+    /// Priority of jobs enqueued without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_priority: Option<i64>,
+    /// Per-attempt timeout of jobs enqueued without one, in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<i64>,
+    /// Queue name.
+    pub name: String,
+    /// Hands out no jobs while paused.
+    pub paused: bool,
+    /// Waiting jobs that may run (due or delayed).
+    pub queued: i64,
+    /// Most jobs started per `rate_period`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<i64>,
+    /// `second` or `minute`.
+    pub rate_period: RatePeriod,
+    /// Leased by a worker.
+    pub running: i64,
+    /// Finished successfully (until purged).
+    pub succeeded: i64,
+    /// Last settings change (RFC 3339) when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// Waiting for parents (dependencies) to succeed.
+    pub waiting: i64,
+}
+
+/// Named queues.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct QueueList {
+    /// By name.
+    #[serde(default)]
+    pub items: Vec<QueueInfo>,
+}
+
+/// Settings of a named queue (`PUT /api/v1/jobs/queues/{name}`). Limits left
+/// out are removed; `paused` left out keeps its current value.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct QueueSettings {
+    /// Most jobs of this queue running at once, over every worker (none: no limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<i64>,
+    /// Priority of jobs enqueued without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_priority: Option<i64>,
+    /// Per-attempt timeout of jobs enqueued without one, in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<i64>,
+    /// Paused queues hand out no jobs (running jobs continue).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+    /// Most jobs started per `rate_period` (none: no limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_period: Option<RatePeriod>,
 }
 
 /// Counts for one queue.
@@ -3887,6 +4276,18 @@ pub struct RateInput {
     /// Units the price is for (default 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_units: Option<i64>,
+}
+
+/// Window of a queue rate limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RatePeriod {
+    #[serde(rename = "second")]
+    Second,
+    #[serde(rename = "minute")]
+    Minute,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Counters of one instance (also exported as Prometheus metrics).
@@ -5337,6 +5738,119 @@ pub struct WorkerList {
     /// Most recently seen first.
     #[serde(default)]
     pub items: Vec<Worker>,
+}
+
+/// A workflow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Workflow {
+    /// Creation time (RFC 3339).
+    pub created_at: String,
+    /// Who created it.
+    pub created_by: String,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The job whose failure failed the workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_job_id: Option<String>,
+    /// End time (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// Workflow id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// What a failed step does.
+    pub on_failure: FailurePolicy,
+    /// State.
+    pub status: WorkflowStatus,
+    /// Last change (RFC 3339).
+    pub updated_at: String,
+}
+
+/// A workflow with its jobs (the graph) and their timings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowDetail {
+    /// Creation time (RFC 3339).
+    pub created_at: String,
+    /// Who created it.
+    pub created_by: String,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The job whose failure failed the workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_job_id: Option<String>,
+    /// End time (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// Workflow id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// What a failed step does.
+    pub on_failure: FailurePolicy,
+    /// State.
+    pub status: WorkflowStatus,
+    /// Last change (RFC 3339).
+    pub updated_at: String,
+    /// Its jobs in creation order: steps, child jobs and compensations.
+    #[serde(default)]
+    pub steps: Vec<WorkflowStep>,
+}
+
+/// A page of workflows, newest first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct WorkflowPage {
+    /// The workflows.
+    #[serde(default)]
+    pub items: Vec<Workflow>,
+    /// All workflows matching the filter.
+    pub total: i64,
+}
+
+/// State of a workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowStatus {
+    #[serde(rename = "running")]
+    Running,
+    #[serde(rename = "succeeded")]
+    Succeeded,
+    #[serde(rename = "failed")]
+    Failed,
+    #[serde(rename = "compensating")]
+    Compensating,
+    #[serde(rename = "compensated")]
+    Compensated,
+    #[serde(rename = "cancelled")]
+    Cancelled,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// A job of a workflow and the jobs it waits for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    /// Ids of the jobs it waits for.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// The job.
+    pub job: Job,
+    /// Step name (child jobs spawned by a step have none unless given).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `step` or `compensation`.
+    pub role: String,
+}
+
+/// A live update of a workflow, published on `jobs:<workflow id>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowUpdate {
+    /// Always `workflow`.
+    pub event: String,
+    /// The workflow.
+    pub workflow: Workflow,
 }
 
 /// Body of `POST .../zsets/{key}/add`.

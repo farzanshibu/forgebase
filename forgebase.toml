@@ -1,0 +1,40 @@
+# ForgeBase configuration.
+# Precedence: command-line flags > FORGEBASE_* environment variables > this file > defaults.
+
+# Data directory (primary database, storage/, indexes/, backups/, tmp/).
+# Relative paths are resolved against the directory of this file.
+data_dir = "forgebase-data"
+
+[server]
+# Loopback by default: admin endpoints are unauthenticated until admin login ships.
+host = "127.0.0.1"          # FORGEBASE_HOST
+port = 8090                 # FORGEBASE_PORT
+request_timeout_secs = 30   # FORGEBASE_REQUEST_TIMEOUT_SECS
+shutdown_timeout_secs = 30  # FORGEBASE_SHUTDOWN_TIMEOUT_SECS
+
+[database]
+# "full" fsyncs the WAL on every commit (durable across power loss).
+# "normal" is faster but a power cut can drop the last committed transactions.
+synchronous = "full"        # FORGEBASE_DB_SYNCHRONOUS
+busy_timeout_ms = 5000      # FORGEBASE_DB_BUSY_TIMEOUT_MS
+read_pool_size = 8          # FORGEBASE_DB_READ_POOL_SIZE
+
+[log]
+level = "info"              # FORGEBASE_LOG_LEVEL (tracing filter syntax)
+format = "pretty"           # FORGEBASE_LOG_FORMAT: "pretty" or "json"
+
+# Optional Redis protocol (RESP2/RESP3) listener for the built-in KV engine.
+# Off by default; every connection must AUTH with an API key or PAT.
+[resp]
+enabled = false             # FORGEBASE_RESP_ENABLED, flag --resp
+host = "127.0.0.1"          # FORGEBASE_RESP_HOST, flag --resp-host
+port = 6380                 # FORGEBASE_RESP_PORT, flag --resp-port
+max_connections = 1024      # FORGEBASE_RESP_MAX_CONNECTIONS
+max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
+idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
+
+# Billing (subscriptions, orders, invoices, Stripe and Razorpay webhooks).
+# Off by default. Provider keys are configured at runtime through
+# PUT /api/v1/billing/providers/{provider} (test-mode keys only, sealed).
+[billing]
+enabled = false             # FORGEBASE_BILLING_ENABLED

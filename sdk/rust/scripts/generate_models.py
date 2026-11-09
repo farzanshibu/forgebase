@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates src/generated.rs (wire models) from the server's OpenAPI document.
 
-    python3 scripts/generate_models.py [../js/openapi/openapi.json] [src/generated.rs]
+    python3 scripts/generate_models.py [openapi/openapi.json] [src/generated.rs]
 
 The output is committed; CI-style drift check: run it and `git diff --exit-code src/generated.rs`.
 Hand-written code (client, auth, records, realtime, ...) lives in the other modules and uses these
@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "../js/openapi/openapi.json"
+SRC = sys.argv[1] if len(sys.argv) > 1 else "openapi/openapi.json"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "src/generated.rs"
 
 spec = json.load(open(SRC))

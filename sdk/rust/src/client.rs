@@ -246,7 +246,10 @@ impl ForgeBase {
     /// Background jobs.
     #[must_use]
     pub fn jobs(&self) -> JobsApi {
-        JobsApi { t: self.t.clone() }
+        JobsApi {
+            t: self.t.clone(),
+            realtime: self.realtime.clone(),
+        }
     }
 
     /// Entitlements and quotas.
