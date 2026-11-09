@@ -449,7 +449,8 @@ async fn logs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testserver::{Seen, fake_server};
+    use crate::testserver::fake_server;
+    use tokio::net::TcpListener;
 
     fn client(addr: &str, token: Option<&str>) -> Client {
         Client {

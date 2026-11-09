@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { cancelWorkflow, getWorkflow } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
@@ -10,13 +10,13 @@ import WorkflowGraph from "./WorkflowGraph";
 
 export default function WorkflowDetail() {
   const { id = "" } = useParams();
-  const [every, setEvery] = useState(2000);
+  const [lastStatus, setLastStatus] = useState<string>();
+  const every = !lastStatus || lastStatus === "running" || lastStatus === "compensating" ? 2000 : 30000;
   const wf = usePolling((s) => getWorkflow(id, s), every);
   const [error, setError] = useState<unknown>();
   const w = wf.data;
-  const active = !w || w.status === "running" || w.status === "compensating";
+  if (w && w.status !== lastStatus) setLastStatus(w.status);
   // Poll quickly while the workflow runs, slowly once it has ended.
-  useEffect(() => setEvery(active ? 2000 : 30000), [active]);
 
   async function cancel() {
     setError(undefined);

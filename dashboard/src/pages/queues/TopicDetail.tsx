@@ -108,7 +108,6 @@ function Messages({ topic, version }: { topic: string; version: number }) {
   // Reload from the start whenever the topic changes or something was published.
   useEffect(() => {
     let live = true;
-    setLoading(true);
     queueTopicMessages(topic, 0, PAGE)
       .then((p) => { if (live) { setRows(p.items); setNext(p.next_after); setError(undefined); } })
       .catch((e: unknown) => { if (live) setError(e); })

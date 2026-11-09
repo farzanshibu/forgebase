@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { cancelJob, deleteJob, getJob, jobAttempts, jobCheckpoint, jobEvents, jobResult, retryJob } from "../../api";
 import type { Job, JobResult } from "../../api";
@@ -13,12 +13,12 @@ const json = (v: unknown) => JSON.stringify(v, null, 2);
 export default function JobDetail() {
   const { id = "" } = useParams();
   const nav = useNavigate();
-  const [every, setEvery] = useState(2000);
+  const [last, setLast] = useState<Job>();
+  const every = !last || last.status === "queued" || last.status === "running" ? 2000 : 30000;
   const job = usePolling((s) => getJob(id, s), every);
   const j = job.data;
+  if (j && j !== last) setLast(j);
   // Live view: poll quickly while the task can still change, slowly once it has ended.
-  const active = !j || j.status === "queued" || j.status === "running";
-  useEffect(() => setEvery(active ? 2000 : 30000), [active]);
   const stamp = `${id}:${j?.status}:${j?.attempts}:${j?.checkpoint_at ?? ""}`;
   const events = useLoad((s) => jobEvents(id, s), `job-events:${stamp}`);
   const attempts = useLoad((s) => jobAttempts(id, s), `job-attempts:${stamp}`);

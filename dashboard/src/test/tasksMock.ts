@@ -37,7 +37,7 @@ export function installTasks(mock: MockApi, jobs: () => Job[]): TaskState {
   }
   mock.on("GET", `${J}/workflows`, ({ query }) => {
     const s = query.get("status");
-    const items = st.workflows.filter((w) => !s || w.status === s).map(({ steps: _steps, ...w }) => w);
+    const items = st.workflows.filter((w) => !s || w.status === s).map((w) => Object.fromEntries(Object.entries(w).filter(([k]) => k !== "steps")));
     return { status: 200, body: { items, total: items.length } };
   });
   mock.on("GET", `${J}/workflows/{id}`, ({ params }) => st.workflows.find((w) => w.id === params.id) ? { status: 200, body: st.workflows.find((w) => w.id === params.id) } : wfNf());
