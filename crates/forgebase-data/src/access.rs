@@ -133,6 +133,12 @@ pub enum Action {
     ReadSql,
     /// Run SQL that writes or changes the schema.
     WriteSql,
+    /// Read key-value data: GET-style commands, scans, subscribing (FB-31).
+    KvRead,
+    /// Write key-value data: SET-style commands, TTL changes, publishing.
+    KvWrite,
+    /// Key-value administration: flush a namespace, list namespaces, server statistics.
+    KvAdmin,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

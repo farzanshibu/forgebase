@@ -221,16 +221,37 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
 /// the request extensions; otherwise [`principal::install_anonymous`] stores an
 /// anonymous context and the default authorizer denies the request.
 pub fn router(state: AppState, opts: RouterOptions) -> Router {
+    router_with(state, opts, Router::new(), None)
+}
+
+/// [`router`] plus routes owned by another crate (for example the KV engine's
+/// `/api/v1/kv`). `extra` gets the same layers as every other route (request
+/// ids, error envelope, anonymous fallback, timeout); `extra_openapi` is
+/// merged into `GET /api/openapi.json`.
+pub fn router_with(
+    state: AppState,
+    opts: RouterOptions,
+    extra: Router<AppState>,
+    extra_openapi: Option<utoipa::openapi::OpenApi>,
+) -> Router {
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,
     });
+    let openapi_doc = Arc::new(openapi::document_with(extra_openapi));
     let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
         .route("/metrics", get(routes::metrics))
         .route("/api/system/info", get(routes::system_info))
-        .route("/api/openapi.json", get(openapi::serve))
+        .route(
+            "/api/openapi.json",
+            get(move || {
+                let doc = Arc::clone(&openapi_doc);
+                async move { axum::Json(doc.as_ref().clone()) }
+            }),
+        )
         .nest("/api/v1", v1::router(&opts))
+        .merge(extra)
         .route("/admin", get(admin::redirect))
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))

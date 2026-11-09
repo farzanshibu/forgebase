@@ -68,6 +68,7 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "data_core",
         include_str!("../../../migrations/system/0002_data_core.sql"),
     ),
+    Migration::new(5, "kv", include_str!("../../../migrations/system/0005_kv.sql")),
 ];
 
 /// A migration recorded as applied in the database.

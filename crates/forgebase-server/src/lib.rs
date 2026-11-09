@@ -17,11 +17,14 @@ mod lock;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
+use forgebase_data::{Authorizer, DefaultAuthorizer};
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
+use forgebase_kv::{KvConfig, KvError, KvService};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -38,6 +41,7 @@ pub struct RunningServer {
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
     upkeep: JoinHandle<()>,
+    kv: KvService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -61,22 +65,31 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     };
     let instance = db.ensure_instance().await?;
 
-    let state = match AppState::new(db.clone(), layout.clone()).await {
+    // One authorizer for the data core and the KV engine; FB-21 replaces it.
+    let authorizer: Arc<dyn Authorizer> = Arc::new(DefaultAuthorizer);
+    let state = match AppState::with_authorizer(db.clone(), layout.clone(), Arc::clone(&authorizer)).await {
         Ok(state) => state,
         Err(e) => {
             db.close().await;
             return Err(e.into());
         }
     };
+    let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
+        Ok(kv) => kv,
+        Err(e) => {
+            db.close().await;
+            return Err(e.into());
+        }
+    };
+    kv.start_background();
+    let opts = RouterOptions {
+        request_timeout: Duration::from_secs(config.server.request_timeout_secs),
+        ..RouterOptions::default()
+    };
     // Until the auth layer (FB-20) is mounted here, every /api/v1 request is
     // anonymous and the default authorizer denies it.
-    let app = forgebase_api::router(
-        state,
-        RouterOptions {
-            request_timeout: Duration::from_secs(config.server.request_timeout_secs),
-            ..RouterOptions::default()
-        },
-    );
+    let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
+    let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
 
     let bind = (config.server.host.as_str(), config.server.port);
     let listener = match TcpListener::bind(bind).await {
@@ -131,6 +144,7 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
         shutdown_tx: Some(shutdown_tx),
         task: Some(task),
         upkeep,
+        kv,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -209,6 +223,10 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.upkeep.abort();
+        match self.kv.shutdown().await {
+            Ok(n) => tracing::debug!(rows = n, "kv snapshot written"),
+            Err(e) => tracing::warn!(error = %e, "final kv snapshot failed; recent kv writes are lost"),
+        }
         if let Err(e) = self.db.checkpoint().await {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
         }
@@ -267,6 +285,9 @@ pub enum ServerError {
     /// The data service could not load its catalog.
     #[error(transparent)]
     Data(#[from] forgebase_data::DataError),
+    /// The key-value engine could not load its snapshot.
+    #[error(transparent)]
+    Kv(#[from] KvError),
     /// A filesystem error.
     #[error("i/o error at {path}: {source}")]
     Io {
@@ -289,6 +310,7 @@ impl ErrorCode for ServerError {
             ServerError::Bind { .. } => "bind_failed",
             ServerError::Database(e) => e.code(),
             ServerError::Data(e) => e.code(),
+            ServerError::Kv(e) => e.code(),
             ServerError::Io { .. } => "io_error",
             ServerError::Serve(_) => "server_error",
         }
@@ -299,6 +321,7 @@ impl ErrorCode for ServerError {
             ServerError::Locked { .. } | ServerError::Bind { .. } => ErrorKind::Conflict,
             ServerError::Database(e) => e.kind(),
             ServerError::Data(e) => e.kind(),
+            ServerError::Kv(e) => e.kind(),
             ServerError::Io { .. } | ServerError::Serve(_) => ErrorKind::Internal,
         }
     }

@@ -13,6 +13,7 @@ forgebase-api.workspace = true
 forgebase-data.workspace = true
 forgebase-core.workspace = true
 forgebase-db.workspace = true
+forgebase-kv.workspace = true
 forgebase-observability.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

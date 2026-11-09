@@ -146,7 +146,16 @@ fn add_errors(op: &mut Operation, with_path_params: bool) {
 
 /// The complete OpenAPI document.
 pub fn document() -> utoipa::openapi::OpenApi {
+    document_with(None)
+}
+
+/// The document with the paths, schemas and tags of another crate's routes
+/// merged in (`router_with` mounts those routes).
+pub fn document_with(extra: Option<utoipa::openapi::OpenApi>) -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
+    if let Some(extra) = extra {
+        doc.merge(extra);
+    }
     for (path, item) in &mut doc.paths.paths {
         if !path.starts_with("/api/v1/") {
             continue;
@@ -168,7 +177,7 @@ pub fn document() -> utoipa::openapi::OpenApi {
     doc
 }
 
-/// `GET /api/openapi.json`.
+/// `GET /api/openapi.json` for the built-in routes only.
 pub async fn serve() -> Response {
     Json(document()).into_response()
 }
