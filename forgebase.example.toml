@@ -103,3 +103,35 @@ reconcile_grace_secs = 3600
 # s3_bucket = "forgebase-blobs"
 # s3_prefix = ""
 # s3_part_size = 8388608
+
+[queue]
+# Durable topics and queues (ADR-0022): /api/v1/queues and its background task.
+enabled = true
+
+# Largest message in bytes (data JSON + attributes + ordering key); also the
+# default limit of a topic. At most 10485760.
+max_message_bytes = 1048576
+
+# Retention of topics that do not set one, and the longest a topic may set (seconds).
+default_retention_secs = 604800
+max_retention_secs = 2678400
+
+# A repeated dedup_id inside this window is accepted once (seconds; topics may override).
+dedup_window_secs = 600
+
+# Longest long-poll wait of a pull (milliseconds); keep it below the request timeout.
+max_pull_wait_ms = 20000
+
+# Interval of maintenance (expired leases, retention) and push rounds (milliseconds).
+poll_interval_ms = 1000
+
+# Push delivery: timeout of one webhook or function call (seconds), and how
+# many push subscriptions are served at once.
+push_timeout_secs = 10
+push_concurrency = 8
+
+# Accept http:// webhook endpoints. Local development only: webhooks must be https://.
+allow_http_push = false
+
+# Days dead-letter records are kept.
+dead_letter_retention_days = 14

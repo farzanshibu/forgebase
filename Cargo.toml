@@ -35,6 +35,7 @@ forgebase-credits = { path = "crates/forgebase-credits" }
 forgebase-functions = { path = "crates/forgebase-functions" }
 forgebase-billing = { path = "crates/forgebase-billing" }
 forgebase-customize = { path = "crates/forgebase-customize" }
+forgebase-queue = { path = "crates/forgebase-queue" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"

@@ -26,6 +26,7 @@ forgebase-observability.workspace = true
 forgebase-vector.workspace = true
 forgebase-resp.workspace = true
 forgebase-storage.workspace = true
+forgebase-queue.workspace = true
 forgebase-realtime.workspace = true
 futures-util.workspace = true
 thiserror.workspace = true

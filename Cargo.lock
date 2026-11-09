@@ -1367,6 +1367,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-queue"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "forgebase-api",
+ "forgebase-auth",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-entitlements",
+ "forgebase-functions",
+ "forgebase-jobs",
+ "forgebase-policy",
+ "forgebase-realtime",
+ "futures-util",
+ "hmac",
+ "http-body-util",
+ "metrics",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
+ "wat",
+]
+
+[[package]]
 name = "forgebase-realtime"
 version = "0.1.0"
 dependencies = [
@@ -1443,6 +1480,7 @@ dependencies = [
  "forgebase-kv",
  "forgebase-observability",
  "forgebase-policy",
+ "forgebase-queue",
  "forgebase-realtime",
  "forgebase-resp",
  "forgebase-storage",

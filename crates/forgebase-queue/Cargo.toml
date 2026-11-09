@@ -1,0 +1,46 @@
+[package]
+name = "forgebase-queue"
+description = "ForgeBase durable topics and queues: publish/subscribe with fan-out, competing consumers, ordering keys, dedup, ack deadlines, retries, dead-letter topics, replay, pull, streaming and push delivery."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["ws"] }
+base64.workspace = true
+forgebase-api.workspace = true
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-entitlements.workspace = true
+forgebase-functions.workspace = true
+forgebase-jobs.workspace = true
+forgebase-realtime.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
+hmac.workspace = true
+metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+forgebase-policy.workspace = true
+http-body-util.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+tower.workspace = true
+wat.workspace = true
+
+[lints]
+workspace = true

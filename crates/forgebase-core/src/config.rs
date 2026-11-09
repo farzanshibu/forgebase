@@ -168,8 +168,37 @@ pub struct Config {
     pub resp: RespConfig,
     /// Object storage settings (FB-30).
     pub storage: StorageConfig,
+    /// Durable topics and queues (FB-63).
+    pub queue: QueueConfig,
     /// Billing settings.
     pub billing: BillingConfig,
+}
+
+/// Durable topics and queues settings (FB-63, ADR-0022), from `[queue]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QueueConfig {
+    /// Whether the queue API (`/api/v1/queues`) and its background task run.
+    pub enabled: bool,
+    /// Largest message in bytes (and the default limit of a topic).
+    pub max_message_bytes: u64,
+    /// Retention of topics that do not set one, in seconds.
+    pub default_retention_secs: u64,
+    /// Longest retention a topic may set, in seconds.
+    pub max_retention_secs: u64,
+    /// Dedup window of topics that do not set one, in seconds.
+    pub dedup_window_secs: u64,
+    /// Longest long-poll wait of a pull, in milliseconds (keep it below the request timeout).
+    pub max_pull_wait_ms: u64,
+    /// Interval of maintenance and push rounds, in milliseconds.
+    pub poll_interval_ms: u64,
+    /// Timeout of one push request, in seconds.
+    pub push_timeout_secs: u64,
+    /// Push subscriptions served concurrently.
+    pub push_concurrency: u32,
+    /// Accept `http://` webhook endpoints (local development only).
+    pub allow_http_push: bool,
+    /// Days dead-letter records are kept.
+    pub dead_letter_retention_days: u64,
 }
 
 /// Settings of the billing application (FB-70, ADR-0021).
@@ -305,6 +334,19 @@ impl Config {
                 s3_prefix: String::new(),
                 s3_part_size: 8 * 1024 * 1024,
             },
+            queue: QueueConfig {
+                enabled: true,
+                max_message_bytes: 1024 * 1024,
+                default_retention_secs: 7 * 86_400,
+                max_retention_secs: 31 * 86_400,
+                dedup_window_secs: 600,
+                max_pull_wait_ms: 20_000,
+                poll_interval_ms: 1_000,
+                push_timeout_secs: 10,
+                push_concurrency: 8,
+                allow_http_push: false,
+                dead_letter_retention_days: 14,
+            },
             billing: BillingConfig { enabled: false },
         }
     }
@@ -359,6 +401,34 @@ impl Config {
         }
         if self.resp.idle_timeout_secs > 86_400 {
             return Err(invalid("resp.idle_timeout_secs", "must be at most 86400".into()));
+        }
+        let q = &self.queue;
+        if !(64..=10 * 1024 * 1024).contains(&q.max_message_bytes) {
+            return Err(invalid(
+                "queue.max_message_bytes",
+                "must be between 64 and 10485760".into(),
+            ));
+        }
+        if q.default_retention_secs < 60 || q.max_retention_secs < q.default_retention_secs {
+            return Err(invalid(
+                "queue.default_retention_secs",
+                "must be at least 60 and at most max_retention_secs".into(),
+            ));
+        }
+        if !(1..=86_400).contains(&q.dedup_window_secs) {
+            return Err(invalid("queue.dedup_window_secs", "must be between 1 and 86400".into()));
+        }
+        if q.max_pull_wait_ms > 300_000 {
+            return Err(invalid("queue.max_pull_wait_ms", "must be at most 300000".into()));
+        }
+        if !(10..=60_000).contains(&q.poll_interval_ms) {
+            return Err(invalid("queue.poll_interval_ms", "must be between 10 and 60000".into()));
+        }
+        if !(1..=300).contains(&q.push_timeout_secs) || !(1..=256).contains(&q.push_concurrency) {
+            return Err(invalid(
+                "queue.push_timeout_secs",
+                "push_timeout_secs must be 1-300 and push_concurrency 1-256".into(),
+            ));
         }
         Ok(())
     }
@@ -421,6 +491,42 @@ impl Config {
             }
             if let Some(v) = st.s3_part_size {
                 self.storage.s3_part_size = v;
+            }
+        }
+        if let Some(q) = &o.queue {
+            let c = &mut self.queue;
+            if let Some(v) = q.enabled {
+                c.enabled = v;
+            }
+            if let Some(v) = q.max_message_bytes {
+                c.max_message_bytes = v;
+            }
+            if let Some(v) = q.default_retention_secs {
+                c.default_retention_secs = v;
+            }
+            if let Some(v) = q.max_retention_secs {
+                c.max_retention_secs = v;
+            }
+            if let Some(v) = q.dedup_window_secs {
+                c.dedup_window_secs = v;
+            }
+            if let Some(v) = q.max_pull_wait_ms {
+                c.max_pull_wait_ms = v;
+            }
+            if let Some(v) = q.poll_interval_ms {
+                c.poll_interval_ms = v;
+            }
+            if let Some(v) = q.push_timeout_secs {
+                c.push_timeout_secs = v;
+            }
+            if let Some(v) = q.push_concurrency {
+                c.push_concurrency = v;
+            }
+            if let Some(v) = q.allow_http_push {
+                c.allow_http_push = v;
+            }
+            if let Some(v) = q.dead_letter_retention_days {
+                c.dead_letter_retention_days = v;
             }
         }
         if let Some(v) = o.resp_enabled {
@@ -486,6 +592,8 @@ pub struct ConfigOverrides {
     pub resp_idle_timeout_secs: Option<u64>,
     /// `[storage]` section of the config file.
     pub storage: Option<StorageOverrides>,
+    /// `[queue]` section of the config file.
+    pub queue: Option<QueueOverrides>,
     /// Mount billing.
     pub billing_enabled: Option<bool>,
 }
@@ -571,6 +679,34 @@ pub struct StorageOverrides {
     pub s3_part_size: Option<u64>,
 }
 
+/// `[queue]` settings from a config file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueueOverrides {
+    /// Run the queue API and background task.
+    pub enabled: Option<bool>,
+    /// Largest message in bytes.
+    pub max_message_bytes: Option<u64>,
+    /// Default topic retention in seconds.
+    pub default_retention_secs: Option<u64>,
+    /// Longest topic retention in seconds.
+    pub max_retention_secs: Option<u64>,
+    /// Default dedup window in seconds.
+    pub dedup_window_secs: Option<u64>,
+    /// Longest long-poll wait in milliseconds.
+    pub max_pull_wait_ms: Option<u64>,
+    /// Maintenance and push interval in milliseconds.
+    pub poll_interval_ms: Option<u64>,
+    /// Push request timeout in seconds.
+    pub push_timeout_secs: Option<u64>,
+    /// Push subscriptions served concurrently.
+    pub push_concurrency: Option<u32>,
+    /// Accept `http://` webhooks.
+    pub allow_http_push: Option<bool>,
+    /// Days dead-letter records are kept.
+    pub dead_letter_retention_days: Option<u64>,
+}
+
 /// The TOML file shape. Every field is optional; unknown keys are errors.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -585,6 +721,7 @@ struct FileConfig {
     #[serde(default)]
     resp: FileResp,
     storage: Option<StorageOverrides>,
+    queue: Option<QueueOverrides>,
     #[serde(default)]
     billing: FileBilling,
 }
@@ -651,6 +788,7 @@ impl From<FileConfig> for ConfigOverrides {
             resp_max_bulk_bytes: f.resp.max_bulk_bytes,
             resp_idle_timeout_secs: f.resp.idle_timeout_secs,
             storage: f.storage,
+            queue: f.queue,
             billing_enabled: f.billing.enabled,
         }
     }
