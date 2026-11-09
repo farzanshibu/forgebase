@@ -836,6 +836,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-credits"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-entitlements",
+ "forgebase-jobs",
+ "forgebase-policy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "forgebase-data"
 version = "0.1.0"
 dependencies = [

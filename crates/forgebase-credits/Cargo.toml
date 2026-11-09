@@ -1,0 +1,34 @@
+[package]
+name = "forgebase-credits"
+description = "ForgeBase credits: an append-only credit ledger per user and per organization with prepaid balances, top-ups, grants with expiry, consumption from usage events, refunds, reversals and statistics."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+forgebase-api.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-db.workspace = true
+forgebase-entitlements.workspace = true
+forgebase-jobs.workspace = true
+forgebase-policy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
