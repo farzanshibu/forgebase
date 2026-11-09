@@ -45,6 +45,28 @@ fn bench(c: &mut Criterion) {
             }
         });
     });
+    // Password sign-in (Argon2id verify + session insert); a fresh client IP per
+    // iteration keeps the per-IP attempt limiter out of the measurement.
+    rt.block_on(async {
+        auth.signup(&ClientInfo::default(), None, "bench@example.com", "bench user pw 1", None)
+            .await
+            .unwrap();
+    });
+    let mut n = 0_u64;
+    g.sample_size(20);
+    g.bench_function("login_password_argon2id", |b| {
+        b.to_async(&rt).iter(|| {
+            n += 1;
+            let auth = auth.clone();
+            let ci = ClientInfo { ip: Some(format!("10.{}.{}.{}", (n >> 16) & 255, (n >> 8) & 255, n & 255)), ..ClientInfo::default() };
+            async move {
+                auth.login_password(&ci, None, "bench@example.com", "bench user pw 1", &LoginOptions::default())
+                    .await
+                    .unwrap();
+            }
+        });
+    });
+    g.sample_size(100);
     let user = AccessContext::user("users", "u1").with_roles(vec!["member".into()]);
     let check = Check {
         permission: "projects:read".into(),
