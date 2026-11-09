@@ -1345,7 +1345,10 @@ async fn store_account_config_merges_and_reads_back_without_secrets() {
     assert_eq!(acct.config["bundle_id"], BUNDLE);
     assert_eq!(acct.secrets_set, vec!["config.private_key"]);
     let shown = serde_json::to_string(&b.providers(&admin()).await.unwrap()).unwrap();
-    assert!(!shown.contains("PRIVATE") && !shown.contains("private_key\":"), "{shown}");
+    assert!(
+        !shown.contains("PRIVATE") && !shown.contains("private_key\":"),
+        "{shown}"
+    );
 
     // Only the changed field is sent; blanks and the missing private key keep
     // the stored values, so the driver still builds.
@@ -1353,7 +1356,10 @@ async fn store_account_config_merges_and_reads_back_without_secrets() {
         .put_provider(
             &admin(),
             "app_store",
-            apple(json!({"issuer_id": "iss2", "bundle_id": "", "private_key": "", "environment": "sandbox"}), &[]),
+            apple(
+                json!({"issuer_id": "iss2", "bundle_id": "", "private_key": "", "environment": "sandbox"}),
+                &[],
+            ),
         )
         .await
         .unwrap();
@@ -1364,11 +1370,17 @@ async fn store_account_config_merges_and_reads_back_without_secrets() {
     assert_eq!(acct.secrets_set, vec!["config.private_key"]);
     assert!(b.store("app_store").is_some());
 
-    // A config field is cleared by name.
-    let acct = b
+    // A config field is cleared by name (a required one cannot be).
+    let e = b
         .put_provider(&admin(), "app_store", apple(json!({}), &["config.issuer_id"]))
         .await
+        .unwrap_err();
+    assert_eq!(code(&e), "invalid_config");
+    let acct = b
+        .put_provider(&admin(), "app_store", apple(json!({}), &["config.environment"]))
+        .await
         .unwrap();
-    assert!(acct.config.get("issuer_id").is_none());
+    assert!(acct.config.get("environment").is_none());
+    assert_eq!(acct.environment, "sandbox");
     assert_eq!(acct.config["key_id"], "KID123");
 }

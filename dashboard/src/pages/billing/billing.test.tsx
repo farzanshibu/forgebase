@@ -686,7 +686,7 @@ describe("Store and regional provider forms", () => {
 
   it("removes a store provider after confirming", async () => {
     const { st } = setup();
-    st.providers.push({ provider: "creem", key_id: null, hint: "…1234", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/creem", updated_at: "2026-11-01T00:00:00Z" });
+    st.providers.push({ provider: "creem", key_id: null, hint: "…1234", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/creem", updated_at: "2026-11-01T00:00:00Z", test_mode: true, environment: "test", config: {}, secrets_set: ["api_key"] });
     renderStudio("/billing/settings");
     const creem = await screen.findByRole("region", { name: "creem provider" });
     await userEvent.click(within(creem).getByRole("button", { name: "Remove creem" }));

@@ -486,8 +486,17 @@ async fn saving_a_provider_keeps_omitted_secrets_and_can_clear_them() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(e, BillingError::Invalid { code: "invalid_clear", .. }), "{e:?}");
-    let acct = b
+    assert!(
+        matches!(
+            e,
+            BillingError::Invalid {
+                code: "invalid_clear",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let e = b
         .put_provider(
             &admin(),
             "stripe",
@@ -497,8 +506,20 @@ async fn saving_a_provider_keeps_omitted_secrets_and_can_clear_them() {
             },
         )
         .await
-        .unwrap();
-    assert_eq!(acct.secrets_set, vec!["api_key"]);
+        .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            BillingError::Invalid {
+                code: "invalid_key",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    // Nothing changed by the refused save.
+    let acct = b.providers(&admin()).await.unwrap().remove(0);
+    assert_eq!(acct.secrets_set, vec!["api_key", "webhook_secret"]);
     assert_eq!(acct.hint, before.hint);
     assert!(!serde_json::to_string(&acct).unwrap().contains(STRIPE_KEY));
 }

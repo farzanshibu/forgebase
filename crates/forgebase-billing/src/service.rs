@@ -832,13 +832,13 @@ impl BillingService {
                 ));
             }
         }
-        if let Some(c) = &input.config {
-            if !c.is_object() || c.to_string().len() > 64 * 1024 {
-                return Err(BillingError::invalid(
-                    "invalid_config",
-                    "config must be an object of at most 64 KiB",
-                ));
-            }
+        if let Some(c) = &input.config
+            && (!c.is_object() || c.to_string().len() > 64 * 1024)
+        {
+            return Err(BillingError::invalid(
+                "invalid_config",
+                "config must be an object of at most 64 KiB",
+            ));
         }
         let stored = self
             .fetch(
@@ -870,7 +870,11 @@ impl BillingService {
             match given(new) {
                 Some(v) => v,
                 None if cleared(name) => String::new(),
-                None => old_secret.get(name).and_then(Json::as_str).unwrap_or_default().to_owned(),
+                None => old_secret
+                    .get(name)
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
             }
         };
         let api_key = merge("api_key", &input.api_key);
@@ -878,7 +882,11 @@ impl BillingService {
             "api_key": api_key,
             "webhook_secret": merge("webhook_secret", &input.webhook_secret),
         });
-        let mut config = old_secret.get("config").and_then(Json::as_object).cloned().unwrap_or_default();
+        let mut config = old_secret
+            .get("config")
+            .and_then(Json::as_object)
+            .cloned()
+            .unwrap_or_default();
         if let Some(Json::Object(c)) = &input.config {
             for (k, v) in c {
                 if !blank(v) {
@@ -897,7 +905,9 @@ impl BillingService {
         // Validates the keys (test mode) before anything is stored.
         let driver = self.build_provider(provider, key_id.as_deref(), &secret, api_base.as_deref())?;
         let hint = match given(&input.api_key) {
-            Some(k) => Some(k).filter(|k| k.len() > 8).map(|k| format!("…{}", &k[k.len() - 4..])),
+            Some(k) => Some(k)
+                .filter(|k| k.len() > 8)
+                .map(|k| format!("…{}", &k[k.len() - 4..])),
             None if cleared("api_key") => None,
             None => old_hint,
         };
