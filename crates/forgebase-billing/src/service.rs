@@ -1021,6 +1021,14 @@ impl BillingService {
             .ok_or_else(|| BillingError::Internal("customer not created".into()))
     }
 
+    /// Fails early when the customer has no usable payment provider.
+    pub(crate) fn ensure_provider(&self, c: &Customer) -> Result<()> {
+        match &c.provider {
+            Some(p) => self.provider(p).map(|_| ()),
+            None => self.default_provider().map(|_| ()),
+        }
+    }
+
     /// The provider of a customer, its provider-side customer id (created on
     /// first use) and the reference the provider needs.
     pub(crate) async fn provider_customer(

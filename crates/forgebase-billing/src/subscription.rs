@@ -213,6 +213,7 @@ impl BillingService {
         if let Some(r) = prior.rows.first() {
             return self.checkout(&text(r, 0), None, None, true).await;
         }
+        self.ensure_provider(&cust)?;
         let prices = self
             .resolve_items(
                 &input.items,
@@ -838,6 +839,7 @@ impl BillingService {
         if let Some(r) = prior.rows.first() {
             return self.order_checkout(&text(r, 0), None, true).await;
         }
+        self.ensure_provider(&cust)?;
         let prices = self
             .resolve_items(&input.items, &cust.currency, &[PriceType::OneTime])
             .await?;
