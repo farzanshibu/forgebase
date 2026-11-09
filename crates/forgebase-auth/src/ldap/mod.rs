@@ -42,6 +42,7 @@ pub type Attributes = HashMap<String, Vec<Vec<u8>>>;
 /// Provider id of LDAP identities.
 pub const PROVIDER: &str = "ldap";
 
+#[cfg(feature = "https")]
 const STARTTLS_OID: &[u8] = b"1.3.6.1.4.1.1466.20037";
 
 /// Search scope.
