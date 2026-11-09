@@ -316,6 +316,12 @@ pub enum Action {
     ChannelSubscribe,
     /// Publish to a realtime channel and join its presence (FB-40).
     ChannelPublish,
+    /// Read server functions, their versions and execution logs (FB-60).
+    ReadFunctions,
+    /// Deploy, roll back and delete server functions; manage their secrets (FB-60).
+    ManageFunctions,
+    /// Invoke an HTTP server function whose access mode is `permission` (FB-60).
+    InvokeFunction,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

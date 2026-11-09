@@ -7,6 +7,11 @@
 //! After a transaction with at least one change commits,
 //! [`ChangeHook::committed`] is called (the realtime dispatcher's wake-up).
 //!
+//! A [`WriteGuard`] ([`DataService::set_write_guard`], server functions'
+//! before-hooks, FB-60) sees every create, update and delete *before* its
+//! transaction starts, after authorisation, and may reject it; it runs outside
+//! the write transaction so a slow hook never holds the single writer.
+//!
 //! [`DataService::view_snapshot`] answers the delivery-time question "what may
 //! this caller see of this stored row, right now?" with the caller's *current*
 //! access decision, so realtime events go through the same authorisation and
@@ -154,6 +159,42 @@ pub trait ChangeHook: Send + Sync + fmt::Debug {
     fn committed(&self);
 }
 
+/// A write about to be made through the [`DataService`], handed to the
+/// [`WriteGuard`] after authorisation and before the write transaction.
+#[derive(Debug, Clone)]
+pub struct PendingWrite {
+    /// What is about to happen.
+    pub op: ChangeOp,
+    /// The collection.
+    pub collection: Collection,
+    /// Record id (`None` for a create without an explicit id).
+    pub record_id: Option<String>,
+    /// The record body (create) or the patch (update); `None` for deletes.
+    pub data: Option<Json>,
+    /// Who makes the change.
+    pub ctx: AccessContext,
+}
+
+/// Why a [`WriteGuard`] refused a write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardRejection {
+    /// Stable code (`hook_rejected`, `hook_failed`).
+    pub code: &'static str,
+    /// Explanation shown to the caller.
+    pub message: String,
+}
+
+/// Checks writes before they happen (server-function before-hooks, FB-60).
+pub trait WriteGuard: Send + Sync + fmt::Debug {
+    /// Whether the guard wants to see `op` on `collection` (cheap and
+    /// synchronous, so writes nobody hooks pay nothing).
+    fn applies(&self, op: ChangeOp, collection: &Collection) -> bool;
+
+    /// `Ok` lets the write proceed; an error rejects it (the caller gets
+    /// `400` with the rejection's code).
+    fn check(&self, write: PendingWrite) -> forgebase_db::BoxFuture<'static, Result<(), GuardRejection>>;
+}
+
 /// Column type used to give a snapshot column the affinity of its table
 /// column, so predicates compare values exactly as they do on the table.
 fn column_type(coll: &Collection, column: &str) -> Option<&'static str> {
@@ -173,6 +214,40 @@ impl DataService {
     /// Installs the change hook (once per service; `false` if one is set).
     pub fn set_change_hook(&self, hook: std::sync::Arc<dyn ChangeHook>) -> bool {
         self.inner.change_hook.set(hook).is_ok()
+    }
+
+    /// Installs the before-write guard (once per service; `false` if one is set).
+    pub fn set_write_guard(&self, guard: std::sync::Arc<dyn WriteGuard>) -> bool {
+        self.inner.write_guard.set(guard).is_ok()
+    }
+
+    /// Asks the write guard about one write (no-op without a guard or when it
+    /// does not apply to `op` on `coll`).
+    pub(crate) async fn guard_write(
+        &self,
+        ctx: &AccessContext,
+        coll: &Collection,
+        op: ChangeOp,
+        record_id: Option<&str>,
+        data: Option<&Json>,
+    ) -> Result<(), DataError> {
+        let Some(guard) = self.inner.write_guard.get() else {
+            return Ok(());
+        };
+        if ctx.is_system() || !guard.applies(op, coll) {
+            return Ok(());
+        }
+        let write = PendingWrite {
+            op,
+            collection: coll.clone(),
+            record_id: record_id.map(str::to_owned),
+            data: data.cloned(),
+            ctx: ctx.clone(),
+        };
+        guard.check(write).await.map_err(|r| DataError::Invalid {
+            code: r.code,
+            message: r.message,
+        })
     }
 
     pub(crate) fn has_change_hook(&self) -> bool {

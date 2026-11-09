@@ -64,8 +64,12 @@ pub(crate) fn request_head(req: &HttpRequest, url: &url::Url) -> Result<String, 
     Ok(head)
 }
 
-/// Sends `req` on `stream` and reads the response.
-pub(crate) async fn exchange<S>(
+/// Sends `req` on `stream` and reads the response (at most `max_body` body
+/// bytes). The stream must already be connected (and wrapped in TLS for
+/// `https`); `url` gives the request target and the `Host` header. Server
+/// functions' SSRF-safe fetch (FB-60) connects to a vetted address itself and
+/// uses this for the exchange.
+pub async fn exchange<S>(
     stream: &mut S,
     req: &HttpRequest,
     url: &url::Url,
