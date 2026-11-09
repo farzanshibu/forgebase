@@ -204,6 +204,20 @@ impl DataService {
         })
     }
 
+    /// Compiles an access predicate against `coll` without running it, so a
+    /// rule that names unknown fields is refused when it is saved.
+    pub fn validate_predicate(&self, coll: &Collection, p: &Predicate) -> Result<(), DataError> {
+        let opts = forgebase_query::CompileOptions {
+            allow_hidden: true,
+            params: p.params.clone(),
+            ..forgebase_query::CompileOptions::default()
+        };
+        let cat = self.catalog();
+        let mut b = SqlBuilder::new(self.inner.backend.dialect());
+        forgebase_query::Compiler::new(&*cat, &opts).filter(&mut b, coll, "t", &p.filter)?;
+        Ok(())
+    }
+
     /// The caller's read mask on `coll`.
     pub(crate) fn mask(&self, ctx: &AccessContext, coll: &Collection) -> FieldMask {
         read_mask(self.inner.authorizer.as_ref(), ctx, coll)

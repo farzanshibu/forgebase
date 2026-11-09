@@ -22,6 +22,7 @@ forgebase-schema = { path = "crates/forgebase-schema" }
 forgebase-query = { path = "crates/forgebase-query" }
 forgebase-data = { path = "crates/forgebase-data" }
 forgebase-auth = { path = "crates/forgebase-auth" }
+forgebase-policy = { path = "crates/forgebase-policy" }
 
 # third party (versions and licences recorded in docs/adr/0002-dependencies.md)
 anyhow = "1.0.104"

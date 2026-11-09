@@ -109,6 +109,16 @@ pub struct Residual {
     pub params: HashMap<String, Json>,
 }
 
+impl Residual {
+    /// As a data-core predicate.
+    pub fn into_predicate(self) -> forgebase_data::Predicate {
+        forgebase_data::Predicate {
+            filter: self.filter,
+            params: self.params,
+        }
+    }
+}
+
 impl fmt::Display for Rule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.source)
@@ -298,7 +308,7 @@ impl Rule {
 
 /// A scalar in SQLite's comparison model (booleans are integers).
 #[derive(Debug, Clone, PartialEq)]
-enum Sv {
+pub(crate) enum Sv {
     Null,
     Int(i64),
     Real(f64),
