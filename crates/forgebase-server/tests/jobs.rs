@@ -196,6 +196,9 @@ async fn jobs_api_is_mounted_and_denies_anonymous_callers() {
         ("POST", "/api/v1/jobs/claim", r#"{"worker_id":"w"}"#),
         ("GET", "/api/v1/jobs/schedules", ""),
         ("GET", "/api/v1/jobs/workers", ""),
+        ("GET", "/api/v1/jobs/queues", ""),
+        ("GET", "/api/v1/jobs/workflows", ""),
+        ("POST", "/api/v1/jobs/x1/progress", r#"{"lease_id":"l"}"#),
     ] {
         let (status, text) = http(addr, method, path, body).await;
         assert_eq!(status, 401, "{method} {path}: {text}");
@@ -208,5 +211,72 @@ async fn jobs_api_is_mounted_and_denies_anonymous_callers() {
         server.jobs().stats(&AccessContext::system()).await.unwrap().totals["queued"],
         0
     );
+    server.shutdown().await.unwrap();
+}
+
+/// FB-64 through the real server: a checkpoint saved by a worker that died
+/// with the server is resumed after the restart, and a result too large for
+/// the job row is kept in object storage and read back after another restart.
+#[tokio::test]
+async fn long_task_resumes_after_restart_and_its_large_result_lives_in_storage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(tmp.path());
+    let sys = AccessContext::system();
+
+    // First run: an external worker claims the job, checkpoints, then dies with the server.
+    let server = start_with_jobs(&cfg, JobRegistry::new(), pool(100)).await.unwrap();
+    let job = server
+        .jobs()
+        .enqueue(
+            &sys,
+            NewJob::new("crunch", json!(null)).visibility_timeout(Duration::from_secs(1)),
+        )
+        .await
+        .unwrap()
+        .0;
+    let claimed = server
+        .jobs()
+        .claim(
+            &sys,
+            forgebase_jobs::ClaimRequest {
+                worker_id: "ext".into(),
+                max: Some(1),
+                ..forgebase_jobs::ClaimRequest::default()
+            },
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    server
+        .jobs()
+        .save_checkpoint(&sys, &job.id, &claimed.lease_id, &json!({"chunk": 3}))
+        .await
+        .unwrap();
+    server.shutdown().await.unwrap();
+
+    // Second run: an in-process handler resumes from the checkpoint.
+    let registry = JobRegistry::new().register("crunch", |ctx: JobContext| async move {
+        let from = ctx.checkpoint().and_then(|c| c["chunk"].as_i64()).unwrap_or(0);
+        Ok(json!({"from": from, "blob": "y".repeat(300 * 1024)}))
+    });
+    let server = start_with_jobs(&cfg, registry, pool(100)).await.unwrap();
+    wait(30, || async {
+        (status(&server, &job.id).await == JobStatus::Succeeded).then_some(())
+    })
+    .await;
+    let done = server.jobs().get(&sys, &job.id).await.unwrap();
+    assert!(done.result_stored, "a 300 KiB result goes to object storage");
+    assert!(done.result.is_none());
+    let attempts = server.jobs().attempts(&sys, &job.id).await.unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert!(attempts[1].from_checkpoint);
+    server.shutdown().await.unwrap();
+
+    // Third run: the stored result is still there.
+    let server = start_with_jobs(&cfg, JobRegistry::new(), pool(100)).await.unwrap();
+    let result = server.jobs().result(&sys, &job.id).await.unwrap().unwrap();
+    assert_eq!(result["from"], 3);
+    assert_eq!(result["blob"].as_str().map(str::len), Some(300 * 1024));
     server.shutdown().await.unwrap();
 }

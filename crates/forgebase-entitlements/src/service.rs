@@ -608,6 +608,7 @@ impl EntitlementService {
             backoff_max_ms: None,
             visibility_timeout_ms: None,
             idempotency_key: Some(format!("alert:{id}")),
+            ..NewJob::default()
         };
         if let Err(e) = jobs.enqueue(&AccessContext::system(), job).await {
             tracing::warn!(error = %e, alert = id, "could not enqueue the usage alert; maintenance retries");

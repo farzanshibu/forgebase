@@ -7,11 +7,15 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 
+use forgebase_data::AccessContext;
 use forgebase_db::BoxFuture;
 use serde_json::Value as Json;
 use tokio::sync::watch;
 
-use crate::model::Job;
+use crate::JobError;
+use crate::model::{ClaimedJob, Job, NewJob};
+use crate::service::JobService;
+use crate::tasks::{ParentResult, ProgressReport};
 
 /// Why a handler failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,25 +45,94 @@ impl<E: std::error::Error> From<E> for HandlerError {
     }
 }
 
+/// Observes the cancellation of a running job: it fires when the job is
+/// cancelled, timed out or its lease was lost. Cheap to clone; hand it to
+/// the parts of a handler that should stop.
+#[derive(Debug, Clone)]
+pub struct CancelToken {
+    rx: watch::Receiver<bool>,
+}
+
+impl CancelToken {
+    /// Whether the job should stop now.
+    pub fn is_cancelled(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// Resolves when the job should stop. Never resolves otherwise; use it
+    /// in `tokio::select!` beside the real work.
+    pub async fn cancelled(&self) {
+        let mut rx = self.rx.clone();
+        loop {
+            if *rx.borrow_and_update() {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+}
+
+/// The connection of a context to the queue (absent in detached contexts).
+#[derive(Debug, Clone)]
+struct Live {
+    service: JobService,
+    lease: String,
+    cancel: Arc<watch::Sender<bool>>,
+}
+
 /// What a running handler gets.
 #[derive(Debug, Clone)]
 pub struct JobContext {
     job: Job,
     cancel: watch::Receiver<bool>,
+    checkpoint: Option<Json>,
+    parents: Vec<ParentResult>,
+    live: Option<Live>,
 }
 
 impl JobContext {
-    pub(crate) fn new(job: Job, cancel: watch::Receiver<bool>) -> Self {
-        Self { job, cancel }
+    pub(crate) fn new(
+        claimed: ClaimedJob,
+        service: JobService,
+        cancel_tx: Arc<watch::Sender<bool>>,
+        cancel: watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            job: claimed.job,
+            cancel,
+            checkpoint: claimed.checkpoint,
+            parents: claimed.parents,
+            live: Some(Live {
+                service,
+                lease: claimed.lease_id,
+                cancel: cancel_tx,
+            }),
+        }
     }
 
-    /// A context that is never cancelled (for calling handlers in tests).
+    /// A context that is never cancelled and not connected to a queue (for
+    /// calling handlers in tests): progress and checkpoints are accepted and
+    /// dropped.
     pub fn detached(job: Job) -> Self {
         let (tx, rx) = watch::channel(false);
-        // Keep the sender alive inside the receiver's lifetime is not needed:
-        // a closed channel simply never reports cancellation.
+        // A closed channel simply never reports cancellation.
         drop(tx);
-        Self { job, cancel: rx }
+        Self {
+            job,
+            cancel: rx,
+            checkpoint: None,
+            parents: Vec::new(),
+            live: None,
+        }
+    }
+
+    /// Same detached context, resuming from `checkpoint`.
+    #[must_use]
+    pub fn with_checkpoint(mut self, checkpoint: Json) -> Self {
+        self.checkpoint = Some(checkpoint);
+        self
     }
 
     /// The job.
@@ -82,21 +155,112 @@ impl JobContext {
         self.job.attempts >= self.job.max_attempts
     }
 
-    /// Whether the job was cancelled (or its lease was lost): stop working.
+    /// Whether the job was cancelled, timed out or its lease was lost: stop working.
     pub fn is_cancelled(&self) -> bool {
         *self.cancel.borrow()
     }
 
-    /// Resolves when the job is cancelled or its lease was lost. Never resolves
-    /// otherwise; use it in `tokio::select!` beside the real work.
+    /// Resolves when the job is cancelled, timed out or its lease was lost.
+    /// Never resolves otherwise; use it in `tokio::select!` beside the real work.
     pub async fn cancelled(&self) {
-        let mut rx = self.cancel.clone();
-        loop {
-            if *rx.borrow_and_update() {
-                return;
+        self.cancel_token().cancelled().await;
+    }
+
+    /// A cancellation token for this job.
+    pub fn cancel_token(&self) -> CancelToken {
+        CancelToken {
+            rx: self.cancel.clone(),
+        }
+    }
+
+    /// The last checkpoint saved by an earlier attempt (after a crash,
+    /// timeout, retry or restart): resume from it. `None` on a fresh start.
+    pub fn checkpoint(&self) -> Option<&Json> {
+        self.checkpoint.as_ref()
+    }
+
+    /// The parents (dependencies) of the job with their results.
+    pub fn parents(&self) -> &[ParentResult] {
+        &self.parents
+    }
+
+    /// The parents' results by step name (or job id for jobs outside a
+    /// workflow), including results kept in object storage.
+    pub async fn parent_results(&self) -> Result<BTreeMap<String, Json>, JobError> {
+        let mut out = BTreeMap::new();
+        for p in &self.parents {
+            let key = p.step.clone().unwrap_or_else(|| p.id.clone());
+            let value = if p.result_stored {
+                match &self.live {
+                    Some(l) => l
+                        .service
+                        .result(&AccessContext::system(), &p.id)
+                        .await?
+                        .unwrap_or(Json::Null),
+                    None => Json::Null,
+                }
+            } else {
+                p.result.clone().unwrap_or(Json::Null)
+            };
+            out.insert(key, value);
+        }
+        Ok(out)
+    }
+
+    /// Reports progress (stored on the job and streamed on `jobs:<id>`).
+    /// Also renews the lease. Learning that the job was cancelled fires the
+    /// cancel token.
+    pub async fn progress(&self, report: ProgressReport) -> Result<(), JobError> {
+        let Some(l) = &self.live else {
+            return report.validate();
+        };
+        let hb = l
+            .service
+            .progress(&AccessContext::system(), &self.job.id, &l.lease, report)
+            .await;
+        self.observe(hb)
+    }
+
+    /// Saves a checkpoint; the next attempt starts from it. Also renews the lease.
+    pub async fn save_checkpoint(&self, checkpoint: Json) -> Result<(), JobError> {
+        let Some(l) = &self.live else {
+            return Ok(());
+        };
+        let hb = l
+            .service
+            .save_checkpoint(&AccessContext::system(), &self.job.id, &l.lease, &checkpoint)
+            .await;
+        self.observe(hb)
+    }
+
+    /// Enqueues a child job: it joins this job's workflow and is cancelled
+    /// with this job. To continue after children, enqueue a job that
+    /// `depends_on` them.
+    pub async fn spawn_child(&self, child: NewJob) -> Result<Job, JobError> {
+        let Some(l) = &self.live else {
+            return Err(JobError::state("detached", "a detached context cannot spawn jobs"));
+        };
+        let mut jobs = l
+            .service
+            .spawn_children(&AccessContext::system(), &self.job.id, &l.lease, vec![child])
+            .await?;
+        jobs.pop().ok_or_else(|| JobError::Internal("no child job".into()))
+    }
+
+    fn observe(&self, hb: Result<crate::model::Heartbeat, JobError>) -> Result<(), JobError> {
+        let Some(l) = &self.live else { return Ok(()) };
+        match hb {
+            Ok(hb) => {
+                if hb.cancel_requested {
+                    let _ = l.cancel.send(true);
+                }
+                Ok(())
             }
-            if rx.changed().await.is_err() {
-                std::future::pending::<()>().await;
+            Err(e) => {
+                if matches!(e, JobError::LeaseLost(_)) {
+                    let _ = l.cancel.send(true);
+                }
+                Err(e)
             }
         }
     }

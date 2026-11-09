@@ -39,6 +39,9 @@ pub struct PoolConfig {
     pub retention: Option<Duration>,
     /// Worker id recorded on claimed jobs.
     pub worker_id: String,
+    /// How often a running job's lease is renewed (`None`: a third of the
+    /// job's visibility timeout).
+    pub heartbeat_interval: Option<Duration>,
 }
 
 impl Default for PoolConfig {
@@ -51,6 +54,7 @@ impl Default for PoolConfig {
             shutdown_grace: Duration::from_secs(10),
             retention: Some(Duration::from_secs(7 * 24 * 3600)),
             worker_id: format!("inproc-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+            heartbeat_interval: None,
         }
     }
 }
@@ -104,6 +108,15 @@ struct AbortOnDrop(AbortHandle);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// Forgets a job's in-process cancel signal when dropped (also on abort).
+struct Unregister(JobService, String);
+
+impl Drop for Unregister {
+    fn drop(&mut self) {
+        self.0.unregister_local(&self.1);
     }
 }
 
@@ -171,8 +184,9 @@ async fn run(service: JobService, registry: JobRegistry, config: PoolConfig, mut
                                 .unwrap_or_else(|p| p.into_inner())
                                 .insert(claimed.job.id.clone(), claimed.lease_id.clone());
                             let (service, registry, in_flight) = (service.clone(), registry.clone(), in_flight.clone());
+                            let beat = config.heartbeat_interval;
                             tasks.spawn(async move {
-                                run_job(&service, &registry, claimed, &in_flight).await;
+                                run_job(&service, &registry, claimed, &in_flight, beat).await;
                                 drop(permit);
                             });
                         }
@@ -219,12 +233,18 @@ async fn run(service: JobService, registry: JobRegistry, config: PoolConfig, mut
     tracing::info!("job pool stopped");
 }
 
-/// Runs one claimed job: heartbeats while the handler works, then reports.
-async fn run_job(service: &JobService, registry: &JobRegistry, claimed: ClaimedJob, in_flight: &InFlight) {
+/// Runs one claimed job: renews the lease while the handler works (and tells
+/// the handler when the job was cancelled or the lease was lost), then reports.
+async fn run_job(
+    service: &JobService,
+    registry: &JobRegistry,
+    claimed: ClaimedJob,
+    in_flight: &InFlight,
+    beat: Option<Duration>,
+) {
     let system = AccessContext::system();
-    let ClaimedJob { lease_id, job } = claimed;
-    let id = job.id.clone();
-    let Some(handler) = registry.get(&job.kind) else {
+    let (id, lease_id) = (claimed.job.id.clone(), claimed.lease_id.clone());
+    let Some(handler) = registry.get(&claimed.job.kind) else {
         // Claimed by kind, so this is a registry race; fail it as retryable.
         report(
             service,
@@ -239,9 +259,14 @@ async fn run_job(service: &JobService, registry: &JobRegistry, claimed: ClaimedJ
     };
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let beat_every = Duration::from_millis(u64::try_from((job.visibility_timeout_ms / 3).max(20)).unwrap_or(20));
+    let cancel_tx = Arc::new(cancel_tx);
+    service.register_local(&id, cancel_tx.clone());
+    let _local = Unregister(service.clone(), id.clone());
+    let beat_every = beat.unwrap_or_else(|| {
+        Duration::from_millis(u64::try_from((claimed.job.visibility_timeout_ms / 3).max(20)).unwrap_or(20))
+    });
     let heartbeat = {
-        let (service, id, lease) = (service.clone(), id.clone(), lease_id.clone());
+        let (service, id, lease, cancel_tx) = (service.clone(), id.clone(), lease_id.clone(), cancel_tx.clone());
         tokio::spawn(async move {
             let system = AccessContext::system();
             loop {
@@ -264,7 +289,8 @@ async fn run_job(service: &JobService, registry: &JobRegistry, claimed: ClaimedJ
     let _heartbeat_guard = AbortOnDrop(heartbeat.abort_handle());
 
     // The handler runs in its own task so a panic is caught and reported.
-    let work = tokio::spawn(handler.handle(JobContext::new(job, cancel_rx)));
+    let ctx = JobContext::new(claimed, service.clone(), cancel_tx, cancel_rx);
+    let work = tokio::spawn(handler.handle(ctx));
     let _work_guard = AbortOnDrop(work.abort_handle());
     let outcome = match work.await {
         Ok(result) => result,
