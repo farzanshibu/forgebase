@@ -14,7 +14,7 @@ pub mod config;
 pub mod error;
 pub mod layout;
 
-pub use config::{Config, ConfigOverrides, LoadedConfig, LogFormat, Synchronous};
+pub use config::{Config, ConfigOverrides, LoadedConfig, LogFormat, StorageConfig, StorageDriverKind, Synchronous};
 pub use error::{ErrorCode, ErrorKind};
 pub use layout::DataLayout;
 
