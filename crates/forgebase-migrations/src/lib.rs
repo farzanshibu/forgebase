@@ -109,6 +109,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "functions",
         include_str!("../../../migrations/system/0016_functions.sql"),
     ),
+    Migration::new(
+        17,
+        "storage",
+        include_str!("../../../migrations/system/0017_storage.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

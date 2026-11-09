@@ -1381,6 +1381,7 @@ dependencies = [
  "forgebase-policy",
  "forgebase-realtime",
  "forgebase-resp",
+ "forgebase-storage",
  "forgebase-vector",
  "redis",
  "serde_json",
@@ -1389,6 +1390,38 @@ dependencies = [
  "tokio",
  "tracing",
  "wat",
+]
+
+[[package]]
+name = "forgebase-storage"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "forgebase-api",
+ "forgebase-auth",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-entitlements",
+ "forgebase-jobs",
+ "forgebase-policy",
+ "forgebase-schema",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "subtle",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]
