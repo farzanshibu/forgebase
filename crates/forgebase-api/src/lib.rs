@@ -20,11 +20,12 @@
 //! envelope, security headers) → tracing span → metrics → panic catcher →
 //! request timeout → authentication (credential → `AccessContext`
 //! extension) → tenancy (realm, organization, tenant, roles; FB-21) →
-//! handler.
+//! request gates (plan-based rate limits; FB-24) → handler.
 
 pub mod admin;
 pub mod context;
 pub mod error;
+pub mod gate;
 pub mod http;
 pub mod openapi;
 pub mod principal;
@@ -53,6 +54,7 @@ use tracing::Level;
 
 pub use context::{RequestId, X_REQUEST_ID};
 pub use error::ApiError;
+pub use gate::{GateDecision, GateHeaders, RequestGate};
 pub use principal::Access;
 
 /// Shared state of the HTTP layer. Cheap to clone.
@@ -220,6 +222,9 @@ pub struct RouterOptions {
     /// Routes and OpenAPI fragments of feature crates built on this crate
     /// (jobs, FB-61), mounted under `/api/v1` inside the same middleware.
     pub extensions: Vec<ApiExtension>,
+    /// Admission checks run on every request after authentication and
+    /// tenancy, before the handler (plan-based API rate limits, FB-24).
+    pub gates: Vec<Arc<dyn RequestGate>>,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -248,6 +253,7 @@ impl Default for RouterOptions {
             max_import_bytes: 256 * 1024 * 1024,
             cors_allowed_origins: Vec::new(),
             extensions: Vec::new(),
+            gates: Vec::new(),
         }
     }
 }
@@ -338,6 +344,13 @@ pub fn router_with(
         .fallback(routes::not_found)
         .with_state(state)
         .layer(middleware::from_fn(principal::install_anonymous));
+    // Gates run after tenancy (outside them) has completed the context.
+    let app = if opts.gates.is_empty() {
+        app
+    } else {
+        let gates: Arc<[Arc<dyn RequestGate>]> = opts.gates.clone().into();
+        app.layer(middleware::from_fn_with_state(gates, gate::run))
+    };
     let app = with_policy_layer(app, policy);
     let app = with_auth_layer(app, auth)
         .layer(TimeoutLayer::with_status_code(
