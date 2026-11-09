@@ -1,33 +1,43 @@
 //! [`JobService`]: every job operation, each one transactional.
 //!
-//! All state lives in SQLite (`_forgebase_jobs` and friends, migration 0007).
-//! The database has one writer, so a claim, a completion or a firing is atomic
-//! without further locking, and anything committed survives a crash or restart.
+//! All state lives in SQLite (`_forgebase_jobs` and friends, migrations 0007
+//! and 0022). The database has one writer, so a claim, a completion or a
+//! firing is atomic without further locking, and anything committed survives
+//! a crash or restart.
 //!
 //! Public methods take an [`AccessContext`] and ask the
 //! [`Authorizer`](forgebase_data::Authorizer) of the data core first
 //! ([`Action::ReadJobs`], [`Action::EnqueueJob`], [`Action::ManageJobs`],
 //! [`Action::WorkJobs`]). In-process machinery (the worker pool) uses
 //! [`AccessContext::system`].
+//!
+//! Side effects that must wait for the commit (live updates, waking the pool,
+//! telling an in-process handler it was cancelled, deleting stored results)
+//! are collected in an [`Fx`] and applied after the transaction committed.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, RwLock};
 
 use forgebase_data::{AccessContext, Action, DataService};
 use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::Value as Json;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::clock::{Clock, SystemClock};
 use crate::cron::Cron;
 use crate::error::JobError;
+use crate::hooks::{JobEventSink, RealtimeSink, ResultStore, channel};
 use crate::model::{
     ClaimRequest, ClaimedJob, Heartbeat, Job, JobEvent, JobFilter, JobPage, JobStats, JobStatus, MAX_CLAIM, MAX_PAGE,
     NewJob, NewSchedule, NewWorker, Policy, QueueStats, Resolved, Schedule, SchedulePatch, WORKER_ONLINE_MS, Worker,
     backoff_ms, check_name, check_payload, iso, jitter,
 };
+use crate::tasks::{
+    Attempt, Checkpoint, JobUpdate, MAX_CHECKPOINT_BYTES, MAX_CHILDREN, MAX_INLINE_RESULT_BYTES, MAX_RESULT_BYTES,
+    ParentResult, Progress, ProgressReport, WorkflowUpdate,
+};
 
-type Result<T> = std::result::Result<T, JobError>;
+pub(crate) type Result<T> = std::result::Result<T, JobError>;
 
 /// Current wall-clock time in Unix epoch milliseconds.
 pub fn now_ms() -> i64 {
@@ -45,15 +55,45 @@ struct Inner {
     data: DataService,
     clock: Arc<dyn Clock>,
     wake: Notify,
+    sink: RwLock<Option<Arc<dyn JobEventSink>>>,
+    store: RwLock<Option<Arc<dyn ResultStore>>>,
+    /// Cancellation signals of the handlers running in this process.
+    local: Mutex<HashMap<String, Arc<watch::Sender<bool>>>>,
 }
 
-const JOB_COLS: &str = "id, queue, kind, payload, priority, status, run_at, attempts, max_attempts, backoff_base_ms, \
-    backoff_max_ms, visibility_timeout_ms, idempotency_key, schedule_id, worker_id, lease_id, visibility_until, \
-    cancel_requested, result, last_error, created_by, created_at, updated_at, started_at, finished_at";
+pub(crate) const JOB_COLS: &str = "id, queue, kind, payload, priority, status, run_at, attempts, max_attempts, \
+    backoff_base_ms, backoff_max_ms, visibility_timeout_ms, idempotency_key, schedule_id, worker_id, lease_id, \
+    visibility_until, cancel_requested, result, last_error, created_by, created_at, updated_at, started_at, \
+    finished_at, progress_percent, progress_stage, progress_message, progress_at, checkpoint IS NOT NULL AS \
+    has_checkpoint, checkpoint_at, timeout_ms, deadline_at, heartbeat_at, workflow_id, step, parent_id, compensates, \
+    waiting_for, result_ref, result_size";
 
 const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max_attempts, backoff_base_ms, \
     backoff_max_ms, visibility_timeout_ms, enabled, next_run_at, last_run_at, last_job_id, created_by, created_at, \
     updated_at";
+
+/// Effects of a transaction, applied after it committed.
+#[derive(Debug, Default)]
+pub(crate) struct Fx {
+    /// Jobs to publish: (id, `status` or `progress`).
+    pub jobs: Vec<(String, &'static str)>,
+    /// Workflows whose state changed.
+    pub workflows: BTreeSet<String>,
+    /// Running jobs whose handler should stop.
+    pub cancel: Vec<String>,
+    /// New claimable work.
+    pub wake: bool,
+    /// Result-store keys to delete.
+    pub drop_objects: Vec<String>,
+}
+
+impl Fx {
+    pub(crate) fn job(&mut self, id: &str, event: &'static str) {
+        if !self.jobs.iter().any(|(i, e)| i == id && *e == event) {
+            self.jobs.push((id.to_owned(), event));
+        }
+    }
+}
 
 impl JobService {
     /// A job service over the data core's database and authorizer.
@@ -68,8 +108,35 @@ impl JobService {
                 data,
                 clock,
                 wake: Notify::new(),
+                sink: RwLock::new(None),
+                store: RwLock::new(None),
+                local: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Publishes live job and workflow updates to `sink` from now on.
+    pub fn attach_events(&self, sink: Arc<dyn JobEventSink>) {
+        *self.inner.sink.write().unwrap_or_else(|p| p.into_inner()) = Some(sink);
+    }
+
+    /// Publishes live updates on FB-40 realtime channels `jobs:<id>`.
+    pub fn attach_realtime(&self, realtime: forgebase_realtime::RealtimeService) {
+        self.attach_events(Arc::new(RealtimeSink(realtime)));
+    }
+
+    /// Keeps results larger than [`MAX_INLINE_RESULT_BYTES`] in `store`.
+    /// Without one, such results are rejected (`payload_too_large`).
+    pub fn attach_result_store(&self, store: Arc<dyn ResultStore>) {
+        *self.inner.store.write().unwrap_or_else(|p| p.into_inner()) = Some(store);
+    }
+
+    fn sink(&self) -> Option<Arc<dyn JobEventSink>> {
+        self.inner.sink.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub(crate) fn store(&self) -> Option<Arc<dyn ResultStore>> {
+        self.inner.store.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     /// Current time in Unix epoch milliseconds, from this service's clock.
@@ -77,11 +144,11 @@ impl JobService {
         self.inner.clock.now_ms()
     }
 
-    fn backend(&self) -> &dyn Backend {
+    pub(crate) fn backend(&self) -> &dyn Backend {
         self.inner.data.backend().as_ref()
     }
 
-    fn allow(&self, ctx: &AccessContext, action: Action) -> Result<()> {
+    pub(crate) fn allow(&self, ctx: &AccessContext, action: Action) -> Result<()> {
         Ok(self.inner.data.authorize_action(ctx, action)?)
     }
 
@@ -102,27 +169,96 @@ impl JobService {
         self.inner.wake.notify_one();
     }
 
-    async fn begin(&self) -> Result<Box<dyn WriteTx>> {
+    pub(crate) fn wake_pool(&self) {
+        self.wake();
+    }
+
+    pub(crate) fn register_local(&self, id: &str, cancel: Arc<watch::Sender<bool>>) {
+        self.inner
+            .local
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_owned(), cancel);
+    }
+
+    pub(crate) fn unregister_local(&self, id: &str) {
+        self.inner.local.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+    }
+
+    pub(crate) async fn begin(&self) -> Result<Box<dyn WriteTx>> {
         Ok(self.backend().begin(TxMode::Normal).await?)
+    }
+
+    /// Commits (or rolls back) and, after a commit, applies the effects.
+    pub(crate) async fn commit<T>(&self, tx: Box<dyn WriteTx>, result: Result<T>, fx: Fx) -> Result<T> {
+        let v = finish(tx, result).await?;
+        self.apply(fx).await;
+        Ok(v)
+    }
+
+    async fn apply(&self, fx: Fx) {
+        if fx.wake {
+            self.wake();
+        }
+        if !fx.cancel.is_empty() {
+            let local = self.inner.local.lock().unwrap_or_else(|p| p.into_inner());
+            for id in &fx.cancel {
+                if let Some(s) = local.get(id) {
+                    let _ = s.send(true);
+                }
+            }
+        }
+        if let Some(sink) = self.sink() {
+            for (id, event) in &fx.jobs {
+                match fetch_job(self.backend(), id).await {
+                    Ok(Some(job)) => {
+                        let data = serde_json::to_value(JobUpdate::of(&job, event)).unwrap_or(Json::Null);
+                        if let Some(w) = &job.workflow_id {
+                            sink.publish(channel(w), data.clone()).await;
+                        }
+                        sink.publish(channel(id), data).await;
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::debug!(job = %id, error = %e, "job update not published"),
+                }
+            }
+            for id in &fx.workflows {
+                if let Ok(Some(workflow)) = crate::flow::fetch_workflow(self.backend(), id).await {
+                    let data = serde_json::to_value(WorkflowUpdate {
+                        event: "workflow".into(),
+                        workflow,
+                    })
+                    .unwrap_or(Json::Null);
+                    sink.publish(channel(id), data).await;
+                }
+            }
+        }
+        if !fx.drop_objects.is_empty()
+            && let Some(store) = self.store()
+        {
+            for key in fx.drop_objects {
+                if let Err(e) = store.delete(key.clone()).await {
+                    tracing::warn!(%key, error = %e, "stored job result not deleted");
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- enqueue
 
     /// Enqueues a job. With an idempotency key that already exists in the
     /// queue, nothing is inserted and the first job is returned with
-    /// `created == false`.
+    /// `created == false`. With `depends_on`, the job waits until every
+    /// listed job succeeded (and is cancelled if one of them fails).
     pub async fn enqueue(&self, ctx: &AccessContext, new: NewJob) -> Result<(Job, bool)> {
         self.allow(ctx, Action::EnqueueJob)?;
         let now = self.now();
         let resolved = new.resolve(now)?;
         let actor = ctx.actor();
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = insert_job(&mut *tx, &resolved, None, &actor, now).await;
-        let (job, created) = finish(tx, r).await?;
-        if created {
-            self.wake();
-        }
-        Ok((job, created))
+        let r = insert_job(&mut *tx, &resolved, None, &actor, now, &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
     // ------------------------------------------------------------------ reads
@@ -144,13 +280,16 @@ impl JobService {
             params.push(status.as_str().into());
             where_sql.push_str(&format!(" AND status = ?{}", params.len()));
         }
-        if let Some(queue) = &filter.queue {
-            params.push(queue.as_str().into());
-            where_sql.push_str(&format!(" AND queue = ?{}", params.len()));
-        }
-        if let Some(kind) = &filter.kind {
-            params.push(kind.as_str().into());
-            where_sql.push_str(&format!(" AND kind = ?{}", params.len()));
+        for (col, v) in [
+            ("queue", &filter.queue),
+            ("kind", &filter.kind),
+            ("workflow_id", &filter.workflow_id),
+            ("parent_id", &filter.parent_id),
+        ] {
+            if let Some(v) = v {
+                params.push(v.as_str().into());
+                where_sql.push_str(&format!(" AND {col} = ?{}", params.len()));
+            }
         }
         let total = self
             .backend()
@@ -213,6 +352,103 @@ impl JobService {
             .collect())
     }
 
+    /// The attempts of a job with their timings, oldest first.
+    pub async fn attempts(&self, ctx: &AccessContext, id: &str) -> Result<Vec<Attempt>> {
+        self.allow(ctx, Action::ReadJobs)?;
+        if fetch_job(self.backend(), id).await?.is_none() {
+            return Err(JobError::NotFound(id.to_owned()));
+        }
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT attempt, worker_id, started_at, finished_at, outcome, error, from_checkpoint \
+                 FROM _forgebase_job_attempts WHERE job_id = ?1 ORDER BY id",
+                vec![id.into()],
+            ))
+            .await?;
+        let now = self.now();
+        Ok((0..rows.len())
+            .map(|i| {
+                let r = Row::new(&rows, i);
+                let started = r.int("started_at");
+                let finished = r.opt_int("finished_at");
+                Attempt {
+                    attempt: r.int("attempt"),
+                    worker_id: r.opt_text("worker_id"),
+                    started_at: iso(started),
+                    finished_at: finished.map(iso),
+                    duration_ms: (finished.unwrap_or(now) - started).max(0),
+                    outcome: r.opt_text("outcome"),
+                    error: r.opt_text("error"),
+                    from_checkpoint: r.int("from_checkpoint") == 1,
+                }
+            })
+            .collect())
+    }
+
+    /// The last checkpoint of a job.
+    pub async fn checkpoint(&self, ctx: &AccessContext, id: &str) -> Result<Checkpoint> {
+        self.allow(ctx, Action::ReadJobs)?;
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT checkpoint, checkpoint_at FROM _forgebase_jobs WHERE id = ?1",
+                vec![id.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            return Err(JobError::NotFound(id.to_owned()));
+        }
+        let r = Row::new(&rows, 0);
+        Ok(Checkpoint {
+            job_id: id.to_owned(),
+            checkpoint: r.opt_json("checkpoint")?,
+            saved_at: r.opt_int("checkpoint_at").map(iso),
+        })
+    }
+
+    /// The result of a succeeded job, read from the result store when it is
+    /// kept there. `None` when the handler returned none.
+    pub async fn result(&self, ctx: &AccessContext, id: &str) -> Result<Option<Json>> {
+        self.allow(ctx, Action::ReadJobs)?;
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT status, result, result_ref FROM _forgebase_jobs WHERE id = ?1",
+                vec![id.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            return Err(JobError::NotFound(id.to_owned()));
+        }
+        let r = Row::new(&rows, 0);
+        if r.text("status") != "succeeded" {
+            return Err(JobError::state(
+                "job_not_succeeded",
+                format!("job is {}; only succeeded jobs have a result", r.text("status")),
+            ));
+        }
+        self.load_result(id, &r).await
+    }
+
+    /// Inline result or the stored one.
+    pub(crate) async fn load_result(&self, id: &str, r: &Row<'_>) -> Result<Option<Json>> {
+        if let Some(key) = r.opt_text("result_ref") {
+            let store = self
+                .store()
+                .ok_or_else(|| JobError::Store("the result is stored but no result store is attached".into()))?;
+            let bytes = store
+                .get(key.clone())
+                .await
+                .map_err(JobError::Store)?
+                .ok_or_else(|| JobError::Store(format!("stored result of job {id} is missing ({key})")))?;
+            return serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| JobError::Internal(format!("stored result of job {id} is not JSON: {e}")));
+        }
+        r.opt_json("result")
+    }
+
     /// Counts per state and queue.
     pub async fn stats(&self, ctx: &AccessContext) -> Result<JobStats> {
         self.allow(ctx, Action::ReadJobs)?;
@@ -253,31 +489,41 @@ impl JobService {
     // ----------------------------------------------------------- management
 
     /// Cancels a job. A queued job is cancelled at once. A running job gets
-    /// `cancel_requested`: its worker learns it from the next heartbeat and
-    /// should stop and report `fail`; the job then ends `cancelled`.
+    /// `cancel_requested`: an in-process handler is told at once (its cancel
+    /// token fires), an external worker learns it from its next heartbeat;
+    /// either should stop and report `fail`; the job then ends `cancelled`.
+    /// Unfinished child jobs are cancelled too, and jobs that depend on a
+    /// cancelled job are cancelled with it.
     pub async fn cancel(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
+        let now = self.now();
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = cancel_tx(&mut *tx, id, self.now()).await;
-        finish(tx, r).await
+        let r = async {
+            cancel_tx(&mut *tx, id, now, &mut fx, true).await?;
+            fetch_job_tx(&mut *tx, id).await
+        }
+        .await;
+        self.commit(tx, r, fx).await
     }
 
-    /// Moves a dead or cancelled job back to the queue with a fresh attempt count.
+    /// Moves a dead or cancelled job back to the queue with a fresh attempt
+    /// count. Its checkpoint is kept, so the next attempt resumes from it.
     pub async fn retry(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = retry_tx(&mut *tx, id, self.now()).await;
-        let job = finish(tx, r).await?;
-        self.wake();
-        Ok(job)
+        let r = retry_tx(&mut *tx, id, self.now(), &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
-    /// Deletes a finished job and its history.
+    /// Deletes a finished job and its history (and its stored result).
     pub async fn delete(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = delete_tx(&mut *tx, id).await;
-        finish(tx, r).await
+        let r = delete_tx(&mut *tx, id, &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
     // --------------------------------------------------------------- workers
@@ -370,7 +616,9 @@ impl JobService {
     /// Claims up to `req.max` due jobs, highest priority first, then oldest
     /// due time. Each returned job is `running` with a fresh lease that
     /// expires after the job's visibility timeout unless the worker sends
-    /// heartbeats. Expired leases of other workers are re-queued first.
+    /// heartbeats. Expired leases and timed-out attempts of other workers are
+    /// dealt with first. Paused queues, queues at their concurrency limit or
+    /// rate limit, and jobs still waiting for parents are skipped.
     pub async fn claim(&self, ctx: &AccessContext, req: ClaimRequest) -> Result<Vec<ClaimedJob>> {
         self.allow(ctx, Action::WorkJobs)?;
         check_name("worker_id", &req.worker_id, 128)?;
@@ -393,18 +641,23 @@ impl JobService {
             self.touch_worker(&req.worker_id, now).await?;
             return Ok(Vec::new());
         }
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = claim_tx(&mut *tx, &req, max, now).await;
-        finish(tx, r).await
+        let r = claim_tx(&mut *tx, &req, max, now, &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
     async fn has_claimable(&self, req: &ClaimRequest, now: i64) -> Result<bool> {
-        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, 1);
+        let blocked = self.backend().fetch_all(&blocked_queues_stmt(now)).await?;
+        let blocked: Vec<String> = (0..blocked.len()).map(|i| Row::new(&blocked, i).text("name")).collect();
+        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &blocked, 1);
         params.insert(0, now.into());
         let sql = format!(
             "SELECT \
                EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1) \
-               OR EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'queued' AND run_at <= ?1 {filter})"
+               OR EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND deadline_at <= ?1) \
+               OR EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'queued' AND waiting_for = 0 \
+                          AND run_at <= ?1 {filter})"
         );
         Ok(self
             .backend()
@@ -430,18 +683,182 @@ impl JobService {
         finish(tx, r).await
     }
 
+    /// Reports progress of a running job (percent, stage, message; fields
+    /// left out keep their value). Stored on the job, published live on
+    /// `jobs:<id>`, and counts as a heartbeat.
+    pub async fn progress(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        report: ProgressReport,
+    ) -> Result<Heartbeat> {
+        self.allow(ctx, Action::WorkJobs)?;
+        report.validate()?;
+        let now = self.now();
+        let mut fx = Fx::default();
+        let mut tx = self.begin().await?;
+        let r = async {
+            let hb = heartbeat_tx(&mut *tx, id, lease_id, now).await?;
+            tx.execute(&Statement::new(
+                "UPDATE _forgebase_jobs SET progress_percent = COALESCE(?2, progress_percent), \
+                 progress_stage = COALESCE(?3, progress_stage), progress_message = COALESCE(?4, progress_message), \
+                 progress_at = ?5 WHERE id = ?1",
+                vec![
+                    id.into(),
+                    report.percent.into(),
+                    report.stage.clone().into(),
+                    report.message.clone().into(),
+                    now.into(),
+                ],
+            ))
+            .await?;
+            fx.job(id, "progress");
+            Ok(hb)
+        }
+        .await;
+        self.commit(tx, r, fx).await
+    }
+
+    /// Saves the checkpoint of a running job (JSON, at most
+    /// [`MAX_CHECKPOINT_BYTES`]). The next attempt (after a crash, timeout,
+    /// retry or restart) gets it. Counts as a heartbeat.
+    pub async fn save_checkpoint(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        checkpoint: &Json,
+    ) -> Result<Heartbeat> {
+        self.allow(ctx, Action::WorkJobs)?;
+        let text =
+            serde_json::to_string(checkpoint).map_err(|e| JobError::invalid("invalid_checkpoint", e.to_string()))?;
+        if text.len() > MAX_CHECKPOINT_BYTES {
+            return Err(JobError::invalid(
+                "checkpoint_too_large",
+                format!("checkpoint is larger than {MAX_CHECKPOINT_BYTES} bytes"),
+            ));
+        }
+        let now = self.now();
+        let mut fx = Fx::default();
+        let mut tx = self.begin().await?;
+        let r = async {
+            let hb = heartbeat_tx(&mut *tx, id, lease_id, now).await?;
+            tx.execute(&Statement::new(
+                "UPDATE _forgebase_jobs SET checkpoint = ?2, checkpoint_at = ?3 WHERE id = ?1",
+                vec![id.into(), text.as_str().into(), now.into()],
+            ))
+            .await?;
+            fx.job(id, "progress");
+            Ok(hb)
+        }
+        .await;
+        self.commit(tx, r, fx).await
+    }
+
+    /// Enqueues child jobs of a running job (the lease proves the caller runs
+    /// it). Children join the parent's workflow, so the workflow finishes
+    /// only after them, and are cancelled when the parent is cancelled.
+    pub async fn spawn_children(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        children: Vec<NewJob>,
+    ) -> Result<Vec<Job>> {
+        self.allow(ctx, Action::WorkJobs)?;
+        if children.is_empty() || children.len() > MAX_CHILDREN {
+            return Err(JobError::invalid(
+                "invalid_job",
+                format!("spawn 1 to {MAX_CHILDREN} child jobs at once"),
+            ));
+        }
+        let now = self.now();
+        let mut resolved = Vec::with_capacity(children.len());
+        for c in &children {
+            resolved.push(c.resolve(now)?);
+        }
+        let actor = ctx.actor();
+        let mut fx = Fx::default();
+        let mut tx = self.begin().await?;
+        let r = async {
+            let parent = leased(&mut *tx, id, lease_id).await?;
+            let mut out = Vec::with_capacity(resolved.len());
+            for mut r in resolved {
+                r.parent_id = Some(parent.id.clone());
+                r.workflow_id.clone_from(&parent.workflow_id);
+                out.push(insert_job(&mut *tx, &r, None, &actor, now, &mut fx).await?.0);
+            }
+            Ok(out)
+        }
+        .await;
+        self.commit(tx, r, fx).await
+    }
+
     /// Marks a running job succeeded. Fails with `lease_lost` if the lease is
     /// not the job's current one (expired and re-claimed, or already finished),
-    /// which is what makes completion happen once.
+    /// which is what makes completion happen once. A result larger than
+    /// [`MAX_INLINE_RESULT_BYTES`] is kept in the result store (up to
+    /// [`MAX_RESULT_BYTES`]).
     pub async fn complete(&self, ctx: &AccessContext, id: &str, lease_id: &str, result: Option<Json>) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
-        let result_text = match &result {
-            Some(v) => Some(check_payload(v)?),
+        let text = match &result {
+            Some(v) => Some(serde_json::to_string(v).map_err(|e| JobError::invalid("invalid_job", e.to_string()))?),
             None => None,
         };
+        let (inline, stored) = match text {
+            Some(t) if t.len() > MAX_INLINE_RESULT_BYTES => {
+                let Some(store) = self.store() else {
+                    return Err(JobError::invalid(
+                        "payload_too_large",
+                        format!("payload is larger than {MAX_INLINE_RESULT_BYTES} bytes"),
+                    ));
+                };
+                if t.len() > MAX_RESULT_BYTES {
+                    return Err(JobError::invalid(
+                        "payload_too_large",
+                        format!("result is larger than {MAX_RESULT_BYTES} bytes"),
+                    ));
+                }
+                // Upload outside the transaction, under a key of this lease,
+                // after checking the lease (a stale worker writes nothing).
+                self.check_lease(id, lease_id).await?;
+                let key = format!("jobs/{id}/{lease_id}.json");
+                let size = i64::try_from(t.len()).unwrap_or(i64::MAX);
+                store.put(key.clone(), t.into_bytes()).await.map_err(JobError::Store)?;
+                (None, Some((key, size)))
+            }
+            other => (other, None),
+        };
+        let now = self.now();
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = complete_tx(&mut *tx, id, lease_id, result_text, self.now()).await;
-        finish(tx, r).await
+        let r = complete_tx(&mut *tx, id, lease_id, inline, stored.clone(), now, &mut fx).await;
+        if r.is_err()
+            && let (Some((key, _)), Some(store)) = (&stored, self.store())
+        {
+            let _ = store.delete(key.clone()).await;
+        }
+        self.commit(tx, r, fx).await
+    }
+
+    async fn check_lease(&self, id: &str, lease: &str) -> Result<()> {
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT status, lease_id FROM _forgebase_jobs WHERE id = ?1",
+                vec![id.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            return Err(JobError::NotFound(id.to_owned()));
+        }
+        let r = Row::new(&rows, 0);
+        if r.text("status") == "running" && r.opt_text("lease_id").as_deref() == Some(lease) {
+            Ok(())
+        } else {
+            Err(JobError::LeaseLost(id.to_owned()))
+        }
     }
 
     /// Reports a failed attempt. A retryable failure re-queues the job after an
@@ -457,23 +874,19 @@ impl JobService {
         retryable: bool,
     ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = fail_tx(&mut *tx, id, lease_id, error, retryable, self.now()).await;
-        let job = finish(tx, r).await?;
-        if job.status == JobStatus::Queued {
-            self.wake();
-        }
-        Ok(job)
+        let r = fail_tx(&mut *tx, id, lease_id, error, retryable, self.now(), &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
     /// Gives a job back without counting the attempt (graceful shutdown).
     pub async fn release(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = release_tx(&mut *tx, id, lease_id, self.now()).await;
-        let job = finish(tx, r).await?;
-        self.wake();
-        Ok(job)
+        let r = release_tx(&mut *tx, id, lease_id, self.now(), &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
     // -------------------------------------------------------------- schedules
@@ -657,62 +1070,78 @@ impl JobService {
         if due.is_empty() {
             return Ok(0);
         }
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = fire_tx(&mut *tx, now).await;
-        let n = finish(tx, r).await?;
-        if n > 0 {
-            self.wake();
-        }
-        Ok(n)
+        let r = fire_tx(&mut *tx, now, &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
-    /// Re-queues (or dead-letters) running jobs whose lease expired. Claims do
-    /// this too; this is for idle systems. Returns the number of jobs touched.
+    /// Re-queues (or dead-letters) running jobs whose lease expired, and
+    /// retries (or dead-letters) attempts that ran past their timeout. Claims
+    /// do this too; this is for idle systems. Returns the number of jobs
+    /// touched.
     pub async fn reap_expired(&self, ctx: &AccessContext) -> Result<usize> {
         self.allow(ctx, Action::ManageJobs)?;
         let now = self.now();
         let expired = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1 LIMIT 1",
+                "SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1 \
+                 UNION ALL SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND deadline_at <= ?1 LIMIT 1",
                 vec![now.into()],
             ))
             .await?;
         if expired.is_empty() {
             return Ok(0);
         }
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = reap_tx(&mut *tx, now).await;
-        let n = finish(tx, r).await?;
-        if n > 0 {
-            self.wake();
-        }
-        Ok(n)
+        let r = reap_tx(&mut *tx, now, &mut fx).await;
+        self.commit(tx, r, fx).await
     }
 
     /// Deletes succeeded and cancelled jobs that finished before
-    /// `older_than_ms` (epoch ms), with their history. The dead-letter queue is
-    /// never purged automatically. Returns the number deleted.
+    /// `older_than_ms` (epoch ms), with their history and stored results,
+    /// and workflows that ended `succeeded`, `compensated` or `cancelled`
+    /// before then. The dead-letter queue and failed workflows are never
+    /// purged automatically. Returns the number of jobs deleted.
     pub async fn purge_finished(&self, ctx: &AccessContext, older_than_ms: i64) -> Result<u64> {
         self.allow(ctx, Action::ManageJobs)?;
+        let mut fx = Fx::default();
         let mut tx = self.begin().await?;
         let r = async {
-            Ok::<_, JobError>(
-                tx.execute(&Statement::new(
+            let refs = tx
+                .fetch_all(&Statement::new(
+                    "SELECT result_ref FROM _forgebase_jobs WHERE status IN ('succeeded', 'cancelled') \
+                     AND finished_at < ?1 AND result_ref IS NOT NULL",
+                    vec![older_than_ms.into()],
+                ))
+                .await?;
+            for i in 0..refs.len() {
+                fx.drop_objects.push(Row::new(&refs, i).text("result_ref"));
+            }
+            let n = tx
+                .execute(&Statement::new(
                     "DELETE FROM _forgebase_jobs WHERE status IN ('succeeded', 'cancelled') AND finished_at < ?1",
                     vec![older_than_ms.into()],
                 ))
                 .await?
-                .rows_affected,
-            )
+                .rows_affected;
+            tx.execute(&Statement::new(
+                "DELETE FROM _forgebase_job_workflows WHERE status IN ('succeeded', 'compensated', 'cancelled') \
+                 AND finished_at < ?1",
+                vec![older_than_ms.into()],
+            ))
+            .await?;
+            Ok::<_, JobError>(n)
         }
         .await;
-        finish(tx, r).await
+        self.commit(tx, r, fx).await
     }
 }
 
 /// Commits on success, rolls back on error.
-async fn finish<T>(tx: Box<dyn WriteTx>, result: Result<T>) -> Result<T> {
+pub(crate) async fn finish<T>(tx: Box<dyn WriteTx>, result: Result<T>) -> Result<T> {
     match result {
         Ok(v) => {
             tx.commit().await?;
@@ -730,17 +1159,17 @@ async fn finish<T>(tx: Box<dyn WriteTx>, result: Result<T>) -> Result<T> {
 // ---------------------------------------------------------------------------
 // Rows
 
-struct Row<'a> {
+pub(crate) struct Row<'a> {
     rows: &'a Rows,
     i: usize,
 }
 
 impl<'a> Row<'a> {
-    fn new(rows: &'a Rows, i: usize) -> Self {
+    pub(crate) fn new(rows: &'a Rows, i: usize) -> Self {
         Self { rows, i }
     }
 
-    fn value(&self, col: &str) -> &Value {
+    pub(crate) fn value(&self, col: &str) -> &Value {
         static NULL: Value = Value::Null;
         self.rows
             .column(col)
@@ -748,30 +1177,56 @@ impl<'a> Row<'a> {
             .unwrap_or(&NULL)
     }
 
-    fn text(&self, col: &str) -> String {
+    pub(crate) fn text(&self, col: &str) -> String {
         self.value(col).as_str().unwrap_or_default().to_owned()
     }
 
-    fn opt_text(&self, col: &str) -> Option<String> {
+    pub(crate) fn opt_text(&self, col: &str) -> Option<String> {
         self.value(col).as_str().map(str::to_owned)
     }
 
-    fn int(&self, col: &str) -> i64 {
+    pub(crate) fn int(&self, col: &str) -> i64 {
         self.value(col).as_i64().unwrap_or(0)
     }
 
-    fn opt_int(&self, col: &str) -> Option<i64> {
+    pub(crate) fn opt_int(&self, col: &str) -> Option<i64> {
         self.value(col).as_i64()
     }
 
-    fn json(&self, col: &str) -> Result<Json> {
+    fn opt_float(&self, col: &str) -> Option<f64> {
+        match self.value(col) {
+            Value::Real(f) => Some(*f),
+            Value::Integer(i) =>
+            {
+                #[allow(clippy::cast_precision_loss)]
+                Some(*i as f64)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn json(&self, col: &str) -> Result<Json> {
         serde_json::from_str(self.value(col).as_str().unwrap_or("null"))
             .map_err(|e| JobError::Internal(format!("column {col} is not JSON: {e}")))
     }
+
+    pub(crate) fn opt_json(&self, col: &str) -> Result<Option<Json>> {
+        if self.value(col).is_null() {
+            Ok(None)
+        } else {
+            self.json(col).map(Some)
+        }
+    }
 }
 
-fn job_from(r: &Row<'_>) -> Result<Job> {
+pub(crate) fn job_from(r: &Row<'_>) -> Result<Job> {
     let status = r.text("status");
+    let progress = r.opt_int("progress_at").map(|at| Progress {
+        percent: r.opt_float("progress_percent"),
+        stage: r.opt_text("progress_stage"),
+        message: r.opt_text("progress_message"),
+        updated_at: iso(at),
+    });
     Ok(Job {
         id: r.text("id"),
         queue: r.text("queue"),
@@ -791,18 +1246,49 @@ fn job_from(r: &Row<'_>) -> Result<Job> {
         worker_id: r.opt_text("worker_id"),
         visibility_until: r.opt_int("visibility_until").map(iso),
         cancel_requested: r.int("cancel_requested") == 1,
-        result: if r.value("result").is_null() {
-            None
-        } else {
-            Some(r.json("result")?)
-        },
+        result: r.opt_json("result")?,
         last_error: r.opt_text("last_error"),
         created_by: r.text("created_by"),
         created_at: iso(r.int("created_at")),
         updated_at: iso(r.int("updated_at")),
         started_at: r.opt_int("started_at").map(iso),
         finished_at: r.opt_int("finished_at").map(iso),
+        progress,
+        has_checkpoint: r.int("has_checkpoint") == 1,
+        checkpoint_at: r.opt_int("checkpoint_at").map(iso),
+        timeout_ms: r.opt_int("timeout_ms"),
+        deadline_at: r.opt_int("deadline_at").map(iso),
+        heartbeat_at: r.opt_int("heartbeat_at").map(iso),
+        workflow_id: r.opt_text("workflow_id"),
+        step: r.opt_text("step"),
+        parent_id: r.opt_text("parent_id"),
+        compensates: r.opt_text("compensates"),
+        waiting_for: r.int("waiting_for"),
+        result_stored: r.opt_text("result_ref").is_some(),
+        result_size: r.opt_int("result_size"),
     })
+}
+
+impl JobUpdate {
+    pub(crate) fn of(job: &Job, event: &str) -> Self {
+        JobUpdate {
+            event: event.to_owned(),
+            job_id: job.id.clone(),
+            queue: job.queue.clone(),
+            kind: job.kind.clone(),
+            status: job.status,
+            attempts: job.attempts,
+            progress: job.progress.clone(),
+            has_checkpoint: job.has_checkpoint,
+            cancel_requested: job.cancel_requested,
+            waiting_for: job.waiting_for,
+            workflow_id: job.workflow_id.clone(),
+            step: job.step.clone(),
+            last_error: job.last_error.as_ref().map(|e| e.chars().take(500).collect()),
+            updated_at: job.updated_at.clone(),
+            finished_at: job.finished_at.clone(),
+        }
+    }
 }
 
 fn schedule_from(r: &Row<'_>) -> Result<Schedule> {
@@ -844,7 +1330,7 @@ fn worker_from(r: &Row<'_>, now: i64) -> Worker {
     }
 }
 
-async fn fetch_job(backend: &dyn Backend, id: &str) -> Result<Option<Job>> {
+pub(crate) async fn fetch_job(backend: &dyn Backend, id: &str) -> Result<Option<Job>> {
     let rows = backend
         .fetch_all(&Statement::new(
             format!("SELECT {JOB_COLS} FROM _forgebase_jobs WHERE id = ?1"),
@@ -857,7 +1343,7 @@ async fn fetch_job(backend: &dyn Backend, id: &str) -> Result<Option<Job>> {
     job_from(&Row::new(&rows, 0)).map(Some)
 }
 
-async fn fetch_job_tx(tx: &mut dyn WriteTx, id: &str) -> Result<Job> {
+pub(crate) async fn fetch_job_tx(tx: &mut dyn WriteTx, id: &str) -> Result<Job> {
     let rows = tx
         .fetch_all(&Statement::new(
             format!("SELECT {JOB_COLS} FROM _forgebase_jobs WHERE id = ?1"),
@@ -883,7 +1369,7 @@ async fn fetch_schedule_tx(tx: &mut dyn WriteTx, id: &str) -> Result<Schedule> {
     schedule_from(&Row::new(&rows, 0))
 }
 
-async fn event(
+pub(crate) async fn event(
     tx: &mut dyn WriteTx,
     job_id: &str,
     now: i64,
@@ -908,15 +1394,41 @@ async fn event(
     Ok(())
 }
 
+/// Closes the open attempt row of a job.
+pub(crate) async fn close_attempt(
+    tx: &mut dyn WriteTx,
+    job_id: &str,
+    now: i64,
+    outcome: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    tx.execute(&Statement::new(
+        "UPDATE _forgebase_job_attempts SET finished_at = ?2, outcome = ?3, error = ?4 \
+         WHERE job_id = ?1 AND finished_at IS NULL",
+        vec![
+            job_id.into(),
+            now.into(),
+            outcome.into(),
+            error.map(|m| m.chars().take(2000).collect::<String>()).into(),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Transactions
 
-async fn insert_job(
+/// Inserts a job (or returns the one with its idempotency key). Applies the
+/// queue's default priority and timeout, counts the parents that have not
+/// succeeded yet and records the dependencies.
+pub(crate) async fn insert_job(
     tx: &mut dyn WriteTx,
     r: &Resolved,
     schedule_id: Option<&str>,
     actor: &str,
     now: i64,
+    fx: &mut Fx,
 ) -> Result<(Job, bool)> {
     if let Some(key) = &r.idempotency_key {
         let rows = tx
@@ -930,17 +1442,62 @@ async fn insert_job(
             return Ok((fetch_job_tx(tx, &id).await?, false));
         }
     }
+    let defaults = tx
+        .fetch_all(&Statement::new(
+            "SELECT default_priority, default_timeout_ms FROM _forgebase_job_queues WHERE name = ?1",
+            vec![r.queue.as_str().into()],
+        ))
+        .await?;
+    let (mut priority, mut timeout_ms) = (r.policy.priority, r.timeout_ms);
+    if !defaults.is_empty() {
+        let d = Row::new(&defaults, 0);
+        if !r.priority_given
+            && let Some(p) = d.opt_int("default_priority")
+        {
+            priority = p;
+        }
+        if timeout_ms.is_none() {
+            timeout_ms = d.opt_int("default_timeout_ms");
+        }
+    }
+    let mut waiting = 0_i64;
+    for parent in &r.depends_on {
+        let rows = tx
+            .fetch_all(&Statement::new(
+                "SELECT status FROM _forgebase_jobs WHERE id = ?1",
+                vec![parent.as_str().into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            return Err(JobError::invalid(
+                "unknown_dependency",
+                format!("depends_on: job {parent:?} does not exist"),
+            ));
+        }
+        match Row::new(&rows, 0).text("status").as_str() {
+            "succeeded" => {}
+            "dead" | "cancelled" => {
+                return Err(JobError::state(
+                    "dependency_failed",
+                    format!("depends_on: job {parent:?} did not succeed"),
+                ));
+            }
+            _ => waiting += 1,
+        }
+    }
     let id = format!("job-{}", uuid::Uuid::new_v4().simple());
     tx.execute(&Statement::new(
         "INSERT INTO _forgebase_jobs (id, queue, kind, payload, priority, status, run_at, max_attempts, \
          backoff_base_ms, backoff_max_ms, visibility_timeout_ms, idempotency_key, schedule_id, created_by, \
-         created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+         created_at, updated_at, timeout_ms, workflow_id, step, parent_id, compensates, compensate, waiting_for) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16, ?17, ?18, \
+         ?19, ?20, ?21)",
         vec![
             id.as_str().into(),
             r.queue.as_str().into(),
             r.kind.as_str().into(),
             r.payload.as_str().into(),
-            r.policy.priority.into(),
+            priority.into(),
             r.run_at.into(),
             r.policy.max_attempts.into(),
             r.policy.backoff_base_ms.into(),
@@ -950,18 +1507,53 @@ async fn insert_job(
             schedule_id.map(str::to_owned).into(),
             actor.into(),
             now.into(),
+            timeout_ms.into(),
+            r.workflow_id.clone().into(),
+            r.step.clone().into(),
+            r.parent_id.clone().into(),
+            r.compensates.clone().into(),
+            r.compensate.clone().into(),
+            waiting.into(),
         ],
     ))
     .await?;
+    for parent in &r.depends_on {
+        tx.execute(&Statement::new(
+            "INSERT OR IGNORE INTO _forgebase_job_deps (job_id, parent_id) VALUES (?1, ?2)",
+            vec![id.as_str().into(), parent.as_str().into()],
+        ))
+        .await?;
+    }
     event(tx, &id, now, "enqueued", 0, None, None).await?;
+    fx.job(&id, "status");
+    if waiting == 0 {
+        fx.wake = true;
+    }
     Ok((fetch_job_tx(tx, &id).await?, true))
 }
 
-/// `AND queue IN (...) AND kind IN (...)` with placeholders numbered after `taken`.
-fn claim_filter(queues: &[String], kinds: &[String], taken: usize) -> (String, Vec<Value>) {
+/// Queues that hand out nothing right now: paused, at their concurrency
+/// limit, or out of rate budget in the current window.
+fn blocked_queues_stmt(now: i64) -> Statement {
+    Statement::new(
+        "SELECT name FROM _forgebase_job_queues q WHERE paused = 1 \
+         OR (rate_limit IS NOT NULL AND window_start + rate_period_ms > ?1 AND window_count >= rate_limit) \
+         OR (concurrency IS NOT NULL AND concurrency <= \
+             (SELECT COUNT(*) FROM _forgebase_jobs r WHERE r.queue = q.name AND r.status = 'running'))",
+        vec![now.into()],
+    )
+}
+
+/// `AND queue IN (...) AND kind IN (...) AND queue NOT IN (...)` with
+/// placeholders numbered after `taken`.
+fn claim_filter(queues: &[String], kinds: &[String], excluded: &[String], taken: usize) -> (String, Vec<Value>) {
     let mut sql = String::new();
     let mut params: Vec<Value> = Vec::new();
-    for (col, list) in [("queue", queues), ("kind", kinds)] {
+    for (col, list, op) in [
+        ("queue", queues, "IN"),
+        ("kind", kinds, "IN"),
+        ("queue", excluded, "NOT IN"),
+    ] {
         if list.is_empty() {
             continue;
         }
@@ -972,7 +1564,7 @@ fn claim_filter(queues: &[String], kinds: &[String], taken: usize) -> (String, V
                 format!("?{}", taken + params.len())
             })
             .collect();
-        sql.push_str(&format!(" AND {col} IN ({})", marks.join(", ")));
+        sql.push_str(&format!(" AND {col} {op} ({})", marks.join(", ")));
     }
     (sql, params)
 }
@@ -987,92 +1579,298 @@ async fn touch_worker_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<()>
     Ok(())
 }
 
-async fn claim_tx(tx: &mut dyn WriteTx, req: &ClaimRequest, max: i64, now: i64) -> Result<Vec<ClaimedJob>> {
-    touch_worker_tx(tx, &req.worker_id, now).await?;
-    reap_tx(tx, now).await?;
-    let (filter, mut params) = claim_filter(&req.queues, &req.kinds, 2);
-    params.insert(0, now.into());
-    params.insert(1, max.into());
+/// What a queue may still hand out in this claim.
+#[derive(Debug, Clone, Copy)]
+struct Budget {
+    /// Concurrency left (`None`: unlimited).
+    running_left: Option<i64>,
+    /// Rate budget left in the window (`None`: unlimited).
+    rate_left: Option<i64>,
+    /// Rate window to store back: (start, claims), if rate-limited.
+    window: Option<(i64, i64)>,
+}
+
+impl Budget {
+    fn open(&self) -> bool {
+        self.running_left.is_none_or(|n| n > 0) && self.rate_left.is_none_or(|n| n > 0)
+    }
+
+    fn take(&mut self) {
+        if let Some(n) = &mut self.running_left {
+            *n -= 1;
+        }
+        if let Some(n) = &mut self.rate_left {
+            *n -= 1;
+        }
+        if let Some((_, c)) = &mut self.window {
+            *c += 1;
+        }
+    }
+}
+
+async fn budget(tx: &mut dyn WriteTx, queue: &str, now: i64) -> Result<Budget> {
     let rows = tx
         .fetch_all(&Statement::new(
-            format!(
-                "SELECT id FROM _forgebase_jobs WHERE status = 'queued' AND run_at <= ?1 {filter} \
-                 ORDER BY priority DESC, run_at, rowid LIMIT ?2"
-            ),
-            params,
+            "SELECT paused, concurrency, rate_limit, rate_period_ms, window_start, window_count, \
+             (SELECT COUNT(*) FROM _forgebase_jobs WHERE queue = ?1 AND status = 'running') AS running \
+             FROM _forgebase_job_queues WHERE name = ?1",
+            vec![queue.into()],
         ))
         .await?;
+    if rows.is_empty() {
+        return Ok(Budget {
+            running_left: None,
+            rate_left: None,
+            window: None,
+        });
+    }
+    let r = Row::new(&rows, 0);
+    if r.int("paused") == 1 {
+        return Ok(Budget {
+            running_left: Some(0),
+            rate_left: None,
+            window: None,
+        });
+    }
+    let running_left = r.opt_int("concurrency").map(|c| c - r.int("running"));
+    let (rate_left, window) = match r.opt_int("rate_limit") {
+        None => (None, None),
+        Some(limit) => {
+            let period = r.int("rate_period_ms").max(1);
+            let (start, count) = if now >= r.int("window_start") + period {
+                (now - now.rem_euclid(period), 0)
+            } else {
+                (r.int("window_start"), r.int("window_count"))
+            };
+            (Some(limit - count), Some((start, count)))
+        }
+    };
+    Ok(Budget {
+        running_left,
+        rate_left,
+        window,
+    })
+}
+
+async fn claim_tx(
+    tx: &mut dyn WriteTx,
+    req: &ClaimRequest,
+    max: i64,
+    now: i64,
+    fx: &mut Fx,
+) -> Result<Vec<ClaimedJob>> {
+    touch_worker_tx(tx, &req.worker_id, now).await?;
+    reap_tx(tx, now, fx).await?;
+    let blocked = tx.fetch_all(&blocked_queues_stmt(now)).await?;
+    let mut excluded: Vec<String> = (0..blocked.len()).map(|i| Row::new(&blocked, i).text("name")).collect();
+    let mut budgets: HashMap<String, Budget> = HashMap::new();
     let mut claimed = Vec::new();
-    for i in 0..rows.len() {
-        let id = Row::new(&rows, i).text("id");
-        let lease = format!("lease-{}", uuid::Uuid::new_v4().simple());
-        tx.execute(&Statement::new(
-            "UPDATE _forgebase_jobs SET status = 'running', attempts = attempts + 1, lease_id = ?2, worker_id = ?3, \
-             visibility_until = ?4 + visibility_timeout_ms, heartbeat_at = ?4, started_at = ?4, updated_at = ?4 \
-             WHERE id = ?1 AND status = 'queued'",
-            vec![
-                id.as_str().into(),
-                lease.as_str().into(),
-                req.worker_id.as_str().into(),
-                now.into(),
-            ],
-        ))
-        .await?;
-        let job = fetch_job_tx(tx, &id).await?;
-        event(tx, &id, now, "claimed", job.attempts, Some(&req.worker_id), None).await?;
-        claimed.push(ClaimedJob { lease_id: lease, job });
+    // Each round either claims something or excludes a saturated queue, so a
+    // queue at its limit cannot starve the others.
+    for _round in 0..16 {
+        let want = max - i64::try_from(claimed.len()).unwrap_or(i64::MAX);
+        if want <= 0 {
+            break;
+        }
+        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &excluded, 2);
+        params.insert(0, now.into());
+        params.insert(1, want.into());
+        let rows = tx
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT id, queue FROM _forgebase_jobs WHERE status = 'queued' AND waiting_for = 0 \
+                     AND run_at <= ?1 {filter} ORDER BY priority DESC, run_at, rowid LIMIT ?2"
+                ),
+                params,
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut skipped = false;
+        for i in 0..rows.len() {
+            let (id, queue) = (Row::new(&rows, i).text("id"), Row::new(&rows, i).text("queue"));
+            if excluded.contains(&queue) {
+                skipped = true;
+                continue;
+            }
+            if !budgets.contains_key(&queue) {
+                let b = budget(tx, &queue, now).await?;
+                budgets.insert(queue.clone(), b);
+            }
+            let Some(b) = budgets.get_mut(&queue) else { continue };
+            if !b.open() {
+                excluded.push(queue);
+                skipped = true;
+                continue;
+            }
+            b.take();
+            claimed.push(claim_one(tx, &id, &req.worker_id, now, fx).await?);
+        }
+        if !skipped {
+            break;
+        }
+    }
+    for (queue, b) in &budgets {
+        if let Some((start, count)) = b.window {
+            tx.execute(&Statement::new(
+                "UPDATE _forgebase_job_queues SET window_start = ?2, window_count = ?3 WHERE name = ?1",
+                vec![queue.as_str().into(), start.into(), count.into()],
+            ))
+            .await?;
+        }
     }
     Ok(claimed)
 }
 
-/// Ends the leases that expired: cancelled if cancellation was requested,
-/// dead-lettered when attempts are used up, otherwise queued again at once.
-async fn reap_tx(tx: &mut dyn WriteTx, now: i64) -> Result<usize> {
+async fn claim_one(tx: &mut dyn WriteTx, id: &str, worker: &str, now: i64, fx: &mut Fx) -> Result<ClaimedJob> {
+    let lease = format!("lease-{}", uuid::Uuid::new_v4().simple());
+    tx.execute(&Statement::new(
+        "UPDATE _forgebase_jobs SET status = 'running', attempts = attempts + 1, lease_id = ?2, worker_id = ?3, \
+         visibility_until = ?4 + visibility_timeout_ms, heartbeat_at = ?4, started_at = ?4, updated_at = ?4, \
+         deadline_at = CASE WHEN timeout_ms IS NULL THEN NULL ELSE ?4 + timeout_ms END \
+         WHERE id = ?1 AND status = 'queued'",
+        vec![id.into(), lease.as_str().into(), worker.into(), now.into()],
+    ))
+    .await?;
+    let job = fetch_job_tx(tx, id).await?;
+    tx.execute(&Statement::new(
+        "INSERT INTO _forgebase_job_attempts (job_id, attempt, worker_id, started_at, from_checkpoint) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        vec![
+            id.into(),
+            job.attempts.into(),
+            worker.into(),
+            now.into(),
+            i64::from(job.has_checkpoint).into(),
+        ],
+    ))
+    .await?;
+    event(tx, id, now, "claimed", job.attempts, Some(worker), None).await?;
+    let checkpoint = {
+        let rows = tx
+            .fetch_all(&Statement::new(
+                "SELECT checkpoint FROM _forgebase_jobs WHERE id = ?1",
+                vec![id.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            None
+        } else {
+            Row::new(&rows, 0).opt_json("checkpoint")?
+        }
+    };
+    let parents = parents_tx(tx, &job).await?;
+    fx.job(id, "status");
+    Ok(ClaimedJob {
+        lease_id: lease,
+        job,
+        checkpoint,
+        parents,
+    })
+}
+
+/// The parents of `job` with their results; a compensation job also gets
+/// the step it compensates.
+async fn parents_tx(tx: &mut dyn WriteTx, job: &Job) -> Result<Vec<ParentResult>> {
     let rows = tx
         .fetch_all(&Statement::new(
-            "SELECT id, attempts, max_attempts, cancel_requested, worker_id FROM _forgebase_jobs \
-             WHERE status = 'running' AND visibility_until <= ?1",
+            "SELECT j.id, j.step, j.status, j.result, j.result_ref FROM _forgebase_jobs j \
+             WHERE j.id IN (SELECT parent_id FROM _forgebase_job_deps WHERE job_id = ?1) OR j.id = ?2 \
+             ORDER BY j.created_at, j.rowid",
+            vec![job.id.as_str().into(), job.compensates.clone().into()],
+        ))
+        .await?;
+    (0..rows.len())
+        .map(|i| {
+            let r = Row::new(&rows, i);
+            let status = r.text("status");
+            Ok(ParentResult {
+                id: r.text("id"),
+                step: r.opt_text("step"),
+                status: JobStatus::parse(&status)
+                    .ok_or_else(|| JobError::Internal(format!("unknown job status {status:?}")))?,
+                result: r.opt_json("result")?,
+                result_stored: r.opt_text("result_ref").is_some(),
+            })
+        })
+        .collect()
+}
+
+/// Ends the leases that expired and the attempts that ran past their
+/// deadline. Expired lease: cancelled if cancellation was requested,
+/// dead-lettered when attempts are used up, otherwise queued again at once.
+/// Timeout: like a retryable failure (backoff), or dead when attempts are
+/// used up.
+pub(crate) async fn reap_tx(tx: &mut dyn WriteTx, now: i64, fx: &mut Fx) -> Result<usize> {
+    let rows = tx
+        .fetch_all(&Statement::new(
+            "SELECT id, attempts, max_attempts, cancel_requested, worker_id, timeout_ms, backoff_base_ms, \
+             backoff_max_ms, deadline_at IS NOT NULL AND deadline_at <= ?1 AS timed_out FROM _forgebase_jobs \
+             WHERE status = 'running' AND (visibility_until <= ?1 OR deadline_at <= ?1)",
             vec![now.into()],
         ))
         .await?;
     for i in 0..rows.len() {
         let r = Row::new(&rows, i);
         let (id, attempts, worker) = (r.text("id"), r.int("attempts"), r.opt_text("worker_id"));
-        let (status, ev, finished) = if r.int("cancel_requested") == 1 {
-            ("cancelled", "cancelled", true)
-        } else if attempts >= r.int("max_attempts") {
-            ("dead", "dead", true)
+        let timed_out = r.int("timed_out") == 1;
+        let message = if timed_out {
+            format!("timed out after {} ms", r.int("timeout_ms"))
         } else {
-            ("queued", "lease_expired", false)
+            "lease expired: the worker stopped sending heartbeats".to_owned()
         };
+        let (status, ev, run_at) = if r.int("cancel_requested") == 1 {
+            ("cancelled", "cancelled", now)
+        } else if attempts >= r.int("max_attempts") {
+            ("dead", "dead", now)
+        } else if timed_out {
+            let delay = backoff_ms(r.int("backoff_base_ms"), r.int("backoff_max_ms"), attempts, jitter());
+            ("queued", "retry_scheduled", now + delay)
+        } else {
+            ("queued", "lease_expired", now)
+        };
+        let finished = status != "queued";
         tx.execute(&Statement::new(
-            "UPDATE _forgebase_jobs SET status = ?2, lease_id = NULL, visibility_until = NULL, run_at = ?3, \
-             last_error = 'lease expired: the worker stopped sending heartbeats', \
-             finished_at = CASE WHEN ?4 = 1 THEN ?3 ELSE NULL END, updated_at = ?3 WHERE id = ?1",
+            "UPDATE _forgebase_jobs SET status = ?2, lease_id = NULL, visibility_until = NULL, deadline_at = NULL, \
+             run_at = ?3, last_error = ?5, finished_at = CASE WHEN ?4 = 1 THEN ?6 ELSE NULL END, updated_at = ?6 \
+             WHERE id = ?1",
             vec![
                 id.as_str().into(),
                 status.into(),
-                now.into(),
+                run_at.into(),
                 i64::from(finished).into(),
+                message.as_str().into(),
+                now.into(),
             ],
         ))
         .await?;
-        event(
-            tx,
-            &id,
-            now,
-            ev,
-            attempts,
-            worker.as_deref(),
-            Some("lease expired: the worker stopped sending heartbeats"),
-        )
-        .await?;
+        let outcome = if timed_out { "timed_out" } else { "lease_expired" };
+        close_attempt(tx, &id, now, outcome, Some(&message)).await?;
+        let detail = if status == "queued" && timed_out {
+            format!("{message} (retry at {})", iso(run_at))
+        } else {
+            message.clone()
+        };
+        event(tx, &id, now, ev, attempts, worker.as_deref(), Some(&detail)).await?;
+        fx.job(&id, "status");
+        fx.cancel.push(id.clone());
+        if finished {
+            let st = if status == "dead" {
+                JobStatus::Dead
+            } else {
+                JobStatus::Cancelled
+            };
+            crate::flow::on_terminal(tx, &id, st, now, fx).await?;
+        } else {
+            fx.wake = true;
+        }
     }
     Ok(rows.len())
 }
 
 /// The running job whose lease is `lease`, or `lease_lost` / `not found`.
-async fn leased(tx: &mut dyn WriteTx, id: &str, lease: &str) -> Result<Job> {
+pub(crate) async fn leased(tx: &mut dyn WriteTx, id: &str, lease: &str) -> Result<Job> {
     let rows = tx
         .fetch_all(&Statement::new(
             format!("SELECT {JOB_COLS} FROM _forgebase_jobs WHERE id = ?1"),
@@ -1106,22 +1904,53 @@ async fn heartbeat_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> 
     Ok(Heartbeat {
         visibility_until: iso(until),
         cancel_requested: job.cancel_requested,
+        deadline_at: job.deadline_at,
     })
 }
 
-async fn complete_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, result: Option<String>, now: i64) -> Result<Job> {
+async fn complete_tx(
+    tx: &mut dyn WriteTx,
+    id: &str,
+    lease: &str,
+    result: Option<String>,
+    stored: Option<(String, i64)>,
+    now: i64,
+    fx: &mut Fx,
+) -> Result<Job> {
     let job = leased(tx, id, lease).await?;
+    let (result_ref, result_size) = match stored {
+        Some((key, size)) => (Some(key), Some(size)),
+        None => (None, None),
+    };
     tx.execute(&Statement::new(
-        "UPDATE _forgebase_jobs SET status = 'succeeded', result = ?2, lease_id = NULL, visibility_until = NULL, \
-         last_error = NULL, finished_at = ?3, updated_at = ?3 WHERE id = ?1",
-        vec![id.into(), result.into(), now.into()],
+        "UPDATE _forgebase_jobs SET status = 'succeeded', result = ?2, result_ref = ?4, result_size = ?5, \
+         lease_id = NULL, visibility_until = NULL, deadline_at = NULL, last_error = NULL, finished_at = ?3, \
+         updated_at = ?3 WHERE id = ?1",
+        vec![
+            id.into(),
+            result.into(),
+            now.into(),
+            result_ref.into(),
+            result_size.into(),
+        ],
     ))
     .await?;
+    close_attempt(tx, id, now, "succeeded", None).await?;
     event(tx, id, now, "succeeded", job.attempts, job.worker_id.as_deref(), None).await?;
+    fx.job(id, "status");
+    crate::flow::on_terminal(tx, id, JobStatus::Succeeded, now, fx).await?;
     fetch_job_tx(tx, id).await
 }
 
-async fn fail_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, error: &str, retryable: bool, now: i64) -> Result<Job> {
+async fn fail_tx(
+    tx: &mut dyn WriteTx,
+    id: &str,
+    lease: &str,
+    error: &str,
+    retryable: bool,
+    now: i64,
+    fx: &mut Fx,
+) -> Result<Job> {
     let job = leased(tx, id, lease).await?;
     let (status, ev, run_at) = if job.cancel_requested {
         ("cancelled", "cancelled", now)
@@ -1134,7 +1963,8 @@ async fn fail_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, error: &str, retry
     let error: String = error.chars().take(4000).collect();
     tx.execute(&Statement::new(
         "UPDATE _forgebase_jobs SET status = ?2, run_at = ?3, lease_id = NULL, visibility_until = NULL, \
-         last_error = ?4, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?5 END, updated_at = ?5 WHERE id = ?1",
+         deadline_at = NULL, last_error = ?4, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?5 END, \
+         updated_at = ?5 WHERE id = ?1",
         vec![
             id.into(),
             status.into(),
@@ -1144,16 +1974,28 @@ async fn fail_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, error: &str, retry
         ],
     ))
     .await?;
+    let outcome = match status {
+        "cancelled" => "cancelled",
+        "dead" => "failed",
+        _ => "retry",
+    };
+    close_attempt(tx, id, now, outcome, Some(&error)).await?;
     let message = if status == "queued" {
         format!("{error} (retry at {})", iso(run_at))
     } else {
         error
     };
     event(tx, id, now, ev, job.attempts, job.worker_id.as_deref(), Some(&message)).await?;
+    fx.job(id, "status");
+    match status {
+        "queued" => fx.wake = true,
+        "dead" => crate::flow::on_terminal(tx, id, JobStatus::Dead, now, fx).await?,
+        _ => crate::flow::on_terminal(tx, id, JobStatus::Cancelled, now, fx).await?,
+    }
     fetch_job_tx(tx, id).await
 }
 
-async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> Result<Job> {
+async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64, fx: &mut Fx) -> Result<Job> {
     let job = leased(tx, id, lease).await?;
     let (status, ev) = if job.cancel_requested {
         ("cancelled", "cancelled")
@@ -1162,10 +2004,18 @@ async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> Re
     };
     tx.execute(&Statement::new(
         "UPDATE _forgebase_jobs SET status = ?2, attempts = MAX(attempts - 1, 0), run_at = ?3, lease_id = NULL, \
-         visibility_until = NULL, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?3 END, updated_at = ?3 \
-         WHERE id = ?1",
+         visibility_until = NULL, deadline_at = NULL, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?3 END, \
+         updated_at = ?3 WHERE id = ?1",
         vec![id.into(), status.into(), now.into()],
     ))
+    .await?;
+    close_attempt(
+        tx,
+        id,
+        now,
+        if status == "queued" { "released" } else { "cancelled" },
+        None,
+    )
     .await?;
     event(
         tx,
@@ -1177,50 +2027,77 @@ async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> Re
         Some("worker shut down"),
     )
     .await?;
-    fetch_job_tx(tx, id).await
-}
-
-async fn cancel_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<Job> {
-    let job = fetch_job_tx(tx, id).await?;
-    match job.status {
-        JobStatus::Queued => {
-            tx.execute(&Statement::new(
-                "UPDATE _forgebase_jobs SET status = 'cancelled', finished_at = ?2, updated_at = ?2 WHERE id = ?1",
-                vec![id.into(), now.into()],
-            ))
-            .await?;
-            event(tx, id, now, "cancelled", job.attempts, None, None).await?;
-        }
-        JobStatus::Running => {
-            tx.execute(&Statement::new(
-                "UPDATE _forgebase_jobs SET cancel_requested = 1, updated_at = ?2 WHERE id = ?1",
-                vec![id.into(), now.into()],
-            ))
-            .await?;
-            if !job.cancel_requested {
-                event(
-                    tx,
-                    id,
-                    now,
-                    "cancel_requested",
-                    job.attempts,
-                    job.worker_id.as_deref(),
-                    None,
-                )
-                .await?;
-            }
-        }
-        _ => {
-            return Err(JobError::state(
-                "job_finished",
-                format!("job is already {}", job.status.as_str()),
-            ));
-        }
+    fx.job(id, "status");
+    if status == "queued" {
+        fx.wake = true;
+    } else {
+        crate::flow::on_terminal(tx, id, JobStatus::Cancelled, now, fx).await?;
     }
     fetch_job_tx(tx, id).await
 }
 
-async fn retry_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<Job> {
+/// Cancels `id` (queued: at once; running: requested) and, with
+/// `children`, its unfinished child jobs. A job that already finished is an
+/// error only for the job asked for.
+pub(crate) async fn cancel_tx(tx: &mut dyn WriteTx, id: &str, now: i64, fx: &mut Fx, strict: bool) -> Result<()> {
+    let mut work = vec![(id.to_owned(), strict)];
+    while let Some((id, strict)) = work.pop() {
+        let job = fetch_job_tx(tx, &id).await?;
+        match job.status {
+            JobStatus::Queued => {
+                tx.execute(&Statement::new(
+                    "UPDATE _forgebase_jobs SET status = 'cancelled', finished_at = ?2, updated_at = ?2 WHERE id = ?1",
+                    vec![id.as_str().into(), now.into()],
+                ))
+                .await?;
+                event(tx, &id, now, "cancelled", job.attempts, None, None).await?;
+                fx.job(&id, "status");
+                // Boxed: on_terminal can cancel workflow jobs, which lands here again.
+                Box::pin(crate::flow::on_terminal(tx, &id, JobStatus::Cancelled, now, fx)).await?;
+            }
+            JobStatus::Running => {
+                tx.execute(&Statement::new(
+                    "UPDATE _forgebase_jobs SET cancel_requested = 1, updated_at = ?2 WHERE id = ?1",
+                    vec![id.as_str().into(), now.into()],
+                ))
+                .await?;
+                if !job.cancel_requested {
+                    event(
+                        tx,
+                        &id,
+                        now,
+                        "cancel_requested",
+                        job.attempts,
+                        job.worker_id.as_deref(),
+                        None,
+                    )
+                    .await?;
+                    fx.job(&id, "status");
+                }
+                fx.cancel.push(id.clone());
+            }
+            _ if strict => {
+                return Err(JobError::state(
+                    "job_finished",
+                    format!("job is already {}", job.status.as_str()),
+                ));
+            }
+            _ => continue,
+        }
+        let children = tx
+            .fetch_all(&Statement::new(
+                "SELECT id FROM _forgebase_jobs WHERE parent_id = ?1 AND status IN ('queued', 'running')",
+                vec![id.as_str().into()],
+            ))
+            .await?;
+        for i in 0..children.len() {
+            work.push((Row::new(&children, i).text("id"), false));
+        }
+    }
+    Ok(())
+}
+
+async fn retry_tx(tx: &mut dyn WriteTx, id: &str, now: i64, fx: &mut Fx) -> Result<Job> {
     let job = fetch_job_tx(tx, id).await?;
     if !matches!(job.status, JobStatus::Dead | JobStatus::Cancelled) {
         return Err(JobError::state(
@@ -1231,23 +2108,59 @@ async fn retry_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<Job> {
             ),
         ));
     }
+    // Parents decide whether it may run again.
+    let parents = tx
+        .fetch_all(&Statement::new(
+            "SELECT j.status FROM _forgebase_job_deps d JOIN _forgebase_jobs j ON j.id = d.parent_id \
+             WHERE d.job_id = ?1",
+            vec![id.into()],
+        ))
+        .await?;
+    let mut waiting = 0_i64;
+    for i in 0..parents.len() {
+        match Row::new(&parents, i).text("status").as_str() {
+            "succeeded" => {}
+            "dead" | "cancelled" => {
+                return Err(JobError::state(
+                    "dependency_failed",
+                    "a job this one depends on did not succeed; retry that one first",
+                ));
+            }
+            _ => waiting += 1,
+        }
+    }
     tx.execute(&Statement::new(
         "UPDATE _forgebase_jobs SET status = 'queued', attempts = 0, run_at = ?2, cancel_requested = 0, \
-         finished_at = NULL, updated_at = ?2 WHERE id = ?1",
-        vec![id.into(), now.into()],
+         finished_at = NULL, waiting_for = ?3, updated_at = ?2 WHERE id = ?1",
+        vec![id.into(), now.into(), waiting.into()],
     ))
     .await?;
     event(tx, id, now, "requeued", 0, None, None).await?;
+    fx.job(id, "status");
+    fx.wake = true;
     fetch_job_tx(tx, id).await
 }
 
-async fn delete_tx(tx: &mut dyn WriteTx, id: &str) -> Result<()> {
-    let job = fetch_job_tx(tx, id).await?;
-    if !job.status.is_terminal() {
+async fn delete_tx(tx: &mut dyn WriteTx, id: &str, fx: &mut Fx) -> Result<()> {
+    let rows = tx
+        .fetch_all(&Statement::new(
+            "SELECT status, result_ref FROM _forgebase_jobs WHERE id = ?1",
+            vec![id.into()],
+        ))
+        .await?;
+    if rows.is_empty() {
+        return Err(JobError::NotFound(id.to_owned()));
+    }
+    let r = Row::new(&rows, 0);
+    let status = JobStatus::parse(&r.text("status")).unwrap_or(JobStatus::Running);
+    if !status.is_terminal() {
         return Err(JobError::state(
             "job_active",
-            format!("job is {}; cancel it first", job.status.as_str()),
+            format!("job is {}; cancel it first", status.as_str()),
         ));
+    }
+    if let Some(key) = r.opt_text("result_ref") {
+        fx.drop_objects.push(key);
     }
     tx.execute(&Statement::new(
         "DELETE FROM _forgebase_jobs WHERE id = ?1",
@@ -1257,7 +2170,7 @@ async fn delete_tx(tx: &mut dyn WriteTx, id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn fire_tx(tx: &mut dyn WriteTx, now: i64) -> Result<usize> {
+async fn fire_tx(tx: &mut dyn WriteTx, now: i64, fx: &mut Fx) -> Result<usize> {
     let rows = tx
         .fetch_all(&Statement::new(
             format!(
@@ -1284,10 +2197,12 @@ async fn fire_tx(tx: &mut dyn WriteTx, now: i64) -> Result<usize> {
             kind: s.kind.clone(),
             payload: serde_json::to_string(&s.payload).unwrap_or_else(|_| "null".into()),
             policy,
+            priority_given: true,
             run_at: now,
             idempotency_key: Some(format!("schedule:{}:{due}", s.id)),
+            ..Resolved::default()
         };
-        let (job, created) = insert_job(tx, &resolved, Some(&s.id), &format!("schedule:{}", s.name), now).await?;
+        let (job, created) = insert_job(tx, &resolved, Some(&s.id), &format!("schedule:{}", s.name), now, fx).await?;
         if created {
             fired += 1;
         }
