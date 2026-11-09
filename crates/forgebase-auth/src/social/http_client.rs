@@ -2,18 +2,16 @@
 //! discovery), behind a trait so production can plug a TLS-capable client and
 //! tests an in-process one.
 //!
-//! The built-in [`PlainHttpClient`] speaks HTTP/1.1 over a plain TCP stream
-//! with timeouts and a response size cap. It does **not** do TLS: ForgeBase
-//! adds no TLS stack to the tree without a decision (ADR-0009 §9), so real
-//! identity providers need either a TLS terminating egress proxy or an
-//! `HttpClient` implementation backed by a TLS library. `https://` URLs fail
-//! with a clear error instead of silently downgrading.
+//! The auth service installs [`crate::net::HttpsClient`] (rustls + ring,
+//! feature `https`, on by default; ADR-0015 §2) at start. [`PlainHttpClient`]
+//! speaks HTTP/1.1 over plain TCP only and refuses `https://` with a clear
+//! error instead of silently downgrading (builds without the `https`
+//! feature, or a TLS-terminating egress proxy).
 
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::AuthError;
@@ -126,112 +124,20 @@ impl PlainHttpClient {
         let url = url::Url::parse(&req.url).map_err(|_| AuthError::Provider("bad provider URL".into()))?;
         if url.scheme() != "http" {
             return Err(AuthError::Provider(
-                "https provider endpoints need a TLS-capable HttpClient (see ADR-0009)".into(),
+                "https endpoints need a TLS-capable HttpClient (build with the `https` feature, ADR-0015)".into(),
             ));
         }
-        let host = url
-            .host_str()
-            .ok_or_else(|| AuthError::Provider("provider URL has no host".into()))?;
-        let port = url.port_or_known_default().unwrap_or(80);
-        let mut target = url.path().to_owned();
-        if let Some(q) = url.query() {
-            target.push('?');
-            target.push_str(q);
-        }
-        let mut head = format!(
-            "{} {target} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\nUser-Agent: forgebase-auth\r\nAccept: application/json\r\n",
-            req.method
-        );
-        for (k, v) in &req.headers {
-            if k.contains(['\r', '\n']) || v.contains(['\r', '\n']) {
-                return Err(AuthError::Provider("bad header".into()));
-            }
-            head.push_str(&format!("{k}: {v}\r\n"));
-        }
-        if req.method == "POST" {
-            head.push_str(&format!("content-length: {}\r\n", req.body.len()));
-        }
-        head.push_str("\r\n");
-
-        let mut stream = TcpStream::connect((host, port))
+        let (host, port) = crate::net::host_port(&url, 80)?;
+        let mut stream = TcpStream::connect((host.as_str(), port))
             .await
             .map_err(|_| AuthError::Provider("could not reach the provider".into()))?;
-        let io_err = |_| AuthError::Provider("provider connection failed".into());
-        stream.write_all(head.as_bytes()).await.map_err(io_err)?;
-        stream.write_all(&req.body).await.map_err(io_err)?;
-        let mut raw = Vec::new();
-        (&mut stream)
-            .take(self.max_body as u64 + 16 * 1024)
-            .read_to_end(&mut raw)
-            .await
-            .map_err(io_err)?;
-        parse_response(&raw, self.max_body)
-    }
-}
-
-fn parse_response(raw: &[u8], max_body: usize) -> Result<HttpResponse, AuthError> {
-    let bad = || AuthError::Provider("malformed provider response".into());
-    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(bad)?;
-    let head = std::str::from_utf8(&raw[..split]).map_err(|_| bad())?;
-    let mut lines = head.split("\r\n");
-    let status: u16 = lines
-        .next()
-        .and_then(|l| l.split(' ').nth(1))
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(bad)?;
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|l| l.split_once(':'))
-        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_owned()))
-        .collect();
-    let body = &raw[split + 4..];
-    let chunked = headers
-        .iter()
-        .any(|(k, v)| k == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
-    let body = if chunked {
-        dechunk(body).ok_or_else(bad)?
-    } else {
-        body.to_vec()
-    };
-    if body.len() > max_body {
-        return Err(AuthError::Provider("provider response too large".into()));
-    }
-    Ok(HttpResponse { status, headers, body })
-}
-
-fn dechunk(mut b: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    loop {
-        let eol = b.windows(2).position(|w| w == b"\r\n")?;
-        let size = usize::from_str_radix(std::str::from_utf8(&b[..eol]).ok()?.split(';').next()?.trim(), 16).ok()?;
-        b = &b[eol + 2..];
-        if size == 0 {
-            return Some(out);
-        }
-        if b.len() < size + 2 {
-            return None;
-        }
-        out.extend_from_slice(&b[..size]);
-        b = &b[size + 2..];
+        crate::net::http1::exchange(&mut stream, &req, &url, self.max_body).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_content_length_and_chunked() {
-        let r = parse_response(b"HTTP/1.1 200 OK\r\nContent-Type: a/b\r\n\r\n{\"a\":1}", 100).unwrap();
-        assert_eq!((r.status, r.body.as_slice()), (200, b"{\"a\":1}".as_slice()));
-        let r = parse_response(
-            b"HTTP/1.1 201 X\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n",
-            100,
-        )
-        .unwrap();
-        assert_eq!((r.status, r.body.as_slice()), (201, b"abcde".as_slice()));
-        assert!(parse_response(b"HTTP/1.1 200 OK\r\n\r\n0123456789", 5).is_err());
-        assert!(parse_response(b"garbage", 5).is_err());
-    }
 
     #[tokio::test]
     async fn https_is_refused_not_downgraded() {

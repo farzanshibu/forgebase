@@ -237,12 +237,39 @@ impl AuthService {
                 webauthn: crate::webauthn::WebAuthnConfig::from_public_url(&public_url),
             }),
         };
+        svc.install_default_http_client()?;
         svc.ensure_signing_key(false).await?;
         svc.load_provider_file().await?;
         if let Some(name) = svc.inner.cfg.default_collection.clone() {
             svc.ensure_auth_collection(&name).await?;
         }
         Ok(svc)
+    }
+
+    /// Trust settings for outbound TLS (`tls_ca_file` added to webpki-roots).
+    #[cfg(feature = "https")]
+    pub fn tls_settings(&self) -> Result<crate::net::TlsSettings, AuthError> {
+        let tls = crate::net::TlsSettings::new();
+        match &self.inner.cfg.tls_ca_file {
+            Some(p) => tls.with_pem_file(p),
+            None => Ok(tls),
+        }
+    }
+
+    /// Installs the rustls client for provider, Turnstile and SMS calls
+    /// (feature `https`); without it the plain-HTTP client stays.
+    fn install_default_http_client(&self) -> Result<(), AuthError> {
+        #[cfg(feature = "https")]
+        {
+            let client = crate::net::HttpsClient::new(&self.tls_settings()?)?;
+            self.set_http_client(Arc::new(client));
+        }
+        Ok(())
+    }
+
+    /// The outbound HTTP client (providers, Turnstile, SMS gateways).
+    pub fn http_client(&self) -> Arc<dyn crate::social::HttpClient> {
+        self.inner.social.http()
     }
 
     /// The data service (shared; built with the Argon2id hasher).

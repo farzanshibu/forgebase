@@ -33,6 +33,7 @@ mod error;
 pub mod http;
 pub mod limits;
 pub mod mailer;
+pub mod net;
 mod openapi;
 pub mod password;
 pub mod scopes;
@@ -112,6 +113,9 @@ pub struct AuthConfig {
     pub trust_forwarded_for: bool,
     /// TOTP issuer shown in authenticator apps.
     pub totp_issuer: String,
+    /// Extra trust anchors (PEM) for outbound HTTPS and LDAPS, added to the
+    /// webpki-roots set (feature `https`).
+    pub tls_ca_file: Option<PathBuf>,
 }
 
 impl AuthConfig {
@@ -142,6 +146,7 @@ impl AuthConfig {
             cookie_secure: true,
             trust_forwarded_for: false,
             totp_issuer: "ForgeBase".into(),
+            tls_ca_file: None,
         }
     }
 }
