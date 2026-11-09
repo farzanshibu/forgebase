@@ -2641,7 +2641,7 @@ pub struct ItemsUsageSummaryItemsItem {
     pub window_start: String,
 }
 
-/// A job. The lease token is never part of it (see [`ClaimedJob`]).
+/// A job. The lease token is never part of it (see \[`ClaimedJob`\]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     /// Claims so far (a lost lease counts).
@@ -4631,7 +4631,7 @@ pub enum SubscriptionStatus {
 }
 
 /// The billing sync seam's input: the full state of a subject's subscription
-/// (FB-70 calls [`crate::BillingSync::sync_subscription`]).
+/// (FB-70 calls \[`crate::BillingSync::sync_subscription`\]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubscriptionSync {
     /// Add-ons (`null`: unchanged; a list replaces the set).
@@ -5150,7 +5150,7 @@ pub struct VectorCollection {
     pub created: String,
     /// Free text.
     pub description: String,
-    /// See [`NewCollection::exact_threshold`].
+    /// See \[`NewCollection::exact_threshold`\].
     pub exact_threshold: i64,
     /// Vector fields.
     #[serde(default)]
@@ -5236,7 +5236,7 @@ pub struct VerifyResult {
 /// `_forgebase_function_versions.config`; a rollback restores all of it.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct VersionConfig {
-    /// Granted capabilities (see [`CAPABILITIES`]).
+    /// Granted capabilities (see \[`CAPABILITIES`\]).
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// Plain (non-secret) environment values, readable with the `env` capability.
@@ -5256,7 +5256,7 @@ pub struct VersionConfig {
 /// One version of a function.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct VersionInfo {
-    /// Granted capabilities (see [`CAPABILITIES`]).
+    /// Granted capabilities (see \[`CAPABILITIES`\]).
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// Plain (non-secret) environment values, readable with the `env` capability.

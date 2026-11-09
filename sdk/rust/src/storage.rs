@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::generated::{
-    Bucket, BucketInput, CompleteInput, CompletePart, ObjectInfo, ObjectPage, PartInfo, SignRequest,
-    SignedUrl, Upload, UploadInput,
+    Bucket, BucketInput, CompleteInput, CompletePart, ObjectInfo, ObjectPage, PartInfo, SignRequest, SignedUrl, Upload,
+    UploadInput,
 };
 use crate::http::{Req, Transport, describe, key_path, seg};
 
@@ -181,7 +181,9 @@ impl StorageApi {
 
     /// Permanently deletes one version of an object.
     pub async fn delete_object_version(&self, bucket: &str, key: &str, version_id: &str) -> Result<DeleteOutcome> {
-        self.t.json(Req::delete(Self::obj(bucket, key)).q("version", version_id)).await
+        self.t
+            .json(Req::delete(Self::obj(bucket, key)).q("version", version_id))
+            .await
     }
 
     /// Copies an object (to another bucket when `dest_bucket` is given).

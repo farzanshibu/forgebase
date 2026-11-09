@@ -15,6 +15,7 @@ models for typed responses. Rules, kept deliberately simple:
 """
 import json
 import re
+import subprocess
 import sys
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else "../js/openapi/openapi.json"
@@ -57,10 +58,18 @@ def tname(n):
     return p + "Model" if p in RESERVED_TYPES else p
 
 
+def esc(line):
+    """Escapes markdown/HTML-ish characters outside backtick spans so rustdoc does not read them as links or tags."""
+    parts = line.split("`")
+    for i in range(0, len(parts), 2):
+        parts[i] = parts[i].replace("[", "\\[").replace("]", "\\]").replace("<", "\\<").replace(">", "\\>")
+    return "`".join(parts)
+
+
 def doc(s, indent=""):
     if not s:
         return ""
-    lines = [l.rstrip() for l in s.strip().splitlines()]
+    lines = [esc(l.rstrip()) for l in s.strip().splitlines()]
     return "".join(f"{indent}/// {l}\n" if l else f"{indent}///\n" for l in lines)
 
 
@@ -351,4 +360,8 @@ use serde::{Deserialize, Serialize};
 
 """
 open(OUT, "w").write(header + "\n".join(final))
+try:  # keep the committed file rustfmt-clean so `cargo fmt --check` and the drift check agree
+    subprocess.run(["rustfmt", "--edition", "2024", "--config", "max_width=120", OUT], check=True)
+except (OSError, subprocess.CalledProcessError):
+    print("rustfmt not available: run `cargo fmt` before committing")
 print(f"{len(out_defs)} models -> {OUT}")
