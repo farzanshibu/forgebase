@@ -148,7 +148,7 @@ describe("Storage object browser", () => {
   it("deletes an object: a delete marker when versioned, gone when not", async () => {
     const { st } = setup();
     renderStudio("/storage/b/media?key=readme.txt");
-    let details = await screen.findByLabelText("Object details");
+    const details = await screen.findByLabelText("Object details");
     await userEvent.click(await within(details).findByRole("button", { name: "Delete object" }));
     await userEvent.click(within(details).getByRole("button", { name: "Confirm delete object" }));
     expect(await within(details).findByText("delete marker")).toBeInTheDocument();

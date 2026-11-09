@@ -15,29 +15,32 @@ export default function KeyBrowser({ ns }: { ns: string }) {
   const [pattern, setPattern] = useState("");
   const [type, setType] = useState<KvType | "">("");
   const [applied, setApplied] = useState({ pattern: "", type: "" as KvType | "" });
-  const [keys, setKeys] = useState<string[]>([]);
-  const [cursor, setCursor] = useState("0");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<unknown>();
+  const [res, setRes] = useState<{ id: string; filter: string; keys: string[]; cursor: string; error?: unknown }>();
   const [tick, setTick] = useState(0);
+  const filter = JSON.stringify([ns, applied.pattern, applied.type]);
+  const id = `${filter}#${tick}`;
+  const fresh = res?.id === id;
+  const loading = !fresh;
+  // After a refresh keep showing the previous page of the same filter rather than flashing empty.
+  const keys = res?.filter === filter ? res.keys : [];
+  const cursor = fresh ? res.cursor : "0";
+  const error = fresh ? res.error : undefined;
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     const ctrl = new AbortController();
-    setLoading(true); setError(undefined);
     kvScan(ns, { match: applied.pattern || undefined, type: applied.type, count: PAGE }, ctrl.signal).then(
-      (r) => { if (!ctrl.signal.aborted) { setKeys(r.keys); setCursor(r.cursor); setLoading(false); } },
-      (e: unknown) => { if (!ctrl.signal.aborted) { setError(e); setLoading(false); } },
+      (r) => { if (!ctrl.signal.aborted) setRes({ id, filter, keys: r.keys, cursor: r.cursor }); },
+      (e: unknown) => { if (!ctrl.signal.aborted) setRes({ id, filter, keys: [], cursor: "0", error: e }); },
     );
     return () => ctrl.abort();
-  }, [ns, applied, tick]);
+  }, [ns, applied.pattern, applied.type, id, filter]);
 
   const more = async () => {
     try {
       const r = await kvScan(ns, { cursor, match: applied.pattern || undefined, type: applied.type, count: PAGE });
-      setKeys((k) => [...new Set([...k, ...r.keys])]);
-      setCursor(r.cursor);
-    } catch (e) { setError(e); }
+      setRes({ id, filter, keys: [...new Set([...keys, ...r.keys])], cursor: r.cursor });
+    } catch (e) { setRes({ id, filter, keys, cursor, error: e }); }
   };
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
@@ -47,7 +50,7 @@ export default function KeyBrowser({ ns }: { ns: string }) {
     setCreateError(undefined);
     try { await kvSetString(ns, newKey, newVal); const k = newKey; setNewKey(""); setNewVal(""); reload(); select(k); } catch (err) { setCreateError(err); }
   };
-  const flush = async () => { try { await kvFlush(ns); select(null); reload(); } catch (e) { setError(e); } };
+  const flush = async () => { try { await kvFlush(ns); select(null); reload(); } catch (e) { setRes({ id, filter, keys, cursor, error: e }); } };
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">

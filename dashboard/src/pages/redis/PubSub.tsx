@@ -19,7 +19,6 @@ export default function PubSub({ ns }: { ns: string }) {
 
   const stop = () => { ctrl.current?.abort(); ctrl.current = null; setListening(null); };
   useEffect(() => () => ctrl.current?.abort(), []);
-  useEffect(() => { stop(); setLines([]); }, [ns]);
 
   const start = (e: React.FormEvent) => {
     e.preventDefault();

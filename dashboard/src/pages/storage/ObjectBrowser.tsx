@@ -23,26 +23,29 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
     setParams(p);
   };
 
-  const [list, setList] = useState<Listing>();
-  const [error, setError] = useState<unknown>();
-  const [loading, setLoading] = useState(true);
+  const [res, setRes] = useState<{ id: string; scope: string; list?: Listing; error?: unknown }>();
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
+  const scope = JSON.stringify([bucket.name, prefix]);
+  const id = `${scope}#${tick}`;
+  const loading = res?.id !== id;
+  // After a refresh keep showing the previous listing of the same folder rather than flashing empty.
+  const list = res?.scope === scope ? res.list : undefined;
+  const error = res?.id === id ? res.error : undefined;
   useEffect(() => {
     const ctrl = new AbortController();
-    setLoading(true); setError(undefined);
     listObjects(bucket.name, { prefix, delimiter: "/", limit: PAGE }, ctrl.signal).then(
-      (p) => { if (!ctrl.signal.aborted) { setList({ objects: p.objects, prefixes: p.prefixes, cursor: p.next_cursor ?? null }); setLoading(false); } },
-      (e: unknown) => { if (!ctrl.signal.aborted) { setError(e); setLoading(false); } },
+      (p) => { if (!ctrl.signal.aborted) setRes({ id, scope, list: { objects: p.objects, prefixes: p.prefixes, cursor: p.next_cursor ?? null } }); },
+      (e: unknown) => { if (!ctrl.signal.aborted) setRes({ id, scope, error: e }); },
     );
     return () => ctrl.abort();
-  }, [bucket.name, prefix, tick]);
+  }, [bucket.name, prefix, id, scope]);
   const more = async () => {
     if (!list?.cursor) return;
     try {
       const p = await listObjects(bucket.name, { prefix, delimiter: "/", limit: PAGE, cursor: list.cursor });
-      setList({ objects: [...list.objects, ...p.objects], prefixes: [...new Set([...list.prefixes, ...p.prefixes])], cursor: p.next_cursor ?? null });
-    } catch (e) { setError(e); }
+      setRes({ id, scope, list: { objects: [...list.objects, ...p.objects], prefixes: [...new Set([...list.prefixes, ...p.prefixes])], cursor: p.next_cursor ?? null } });
+    } catch (e) { setRes({ id, scope, list, error: e }); }
   };
 
   // Uploads.

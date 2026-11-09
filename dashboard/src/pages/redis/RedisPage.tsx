@@ -43,7 +43,7 @@ export default function RedisPage() {
         <Routes>
           <Route index element={<KeyBrowser ns={ns} />} />
           <Route path="console" element={<Console ns={ns} />} />
-          <Route path="pubsub" element={<PubSub ns={ns} />} />
+          <Route path="pubsub" element={<PubSub key={ns} ns={ns} />} />
           <Route path="stats" element={<StatsPanel ns={ns} namespaces={names.data ?? []} />} />
           <Route path="*" element={<p className="text-zinc-400">No such page in Redis Studio.</p>} />
         </Routes>

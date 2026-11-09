@@ -7,7 +7,7 @@ import type { Bin, KvKey, StreamEntry, ZMember } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
-import { TTL_UNITS, formatTtl, parseFields } from "./util";
+import { TTL_UNITS, formatTtl, omit, parseFields } from "./util";
 
 type Act = (f: () => Promise<unknown>) => Promise<void>;
 interface EditorProps { ns: string; data: KvKey; act: Act }
@@ -98,7 +98,7 @@ function HashEditor({ ns, data, act }: EditorProps) {
                   <td className="py-1.5 pr-2 font-mono text-xs">{f}</td>
                   <td><input aria-label={`Value of ${f}`} className={`${inputCls} w-full font-mono text-xs`} value={cur} onChange={(e) => setEdits({ ...edits, [f]: e.target.value })} /></td>
                   <td className="space-x-1 whitespace-nowrap pl-2 text-right">
-                    <Button aria-label={`Save ${f}`} disabled={cur === binText(v)} onClick={() => void act(async () => { await kvHashSet(ns, data.key, { [f]: binFrom(cur) }); setEdits(({ [f]: _, ...rest }) => rest); })}>Save</Button>
+                    <Button aria-label={`Save ${f}`} disabled={cur === binText(v)} onClick={() => void act(async () => { await kvHashSet(ns, data.key, { [f]: binFrom(cur) }); setEdits((e) => omit(e, f)); })}>Save</Button>
                     <Button tone="danger" aria-label={`Delete field ${f}`} onClick={() => void act(() => kvHashDelete(ns, data.key, [f]))}>Delete</Button>
                   </td>
                 </tr>
@@ -185,7 +185,7 @@ function ZSetEditor({ ns, data, act }: EditorProps) {
                   <td className="py-1.5 pr-2 font-mono text-xs">{m}</td>
                   <td><input aria-label={`Score of ${m}`} className={`${inputCls} w-28`} value={cur} onChange={(e) => setScores({ ...scores, [m]: e.target.value })} /></td>
                   <td className="space-x-1 whitespace-nowrap pl-2 text-right">
-                    <Button aria-label={`Save score of ${m}`} disabled={cur === String(r.score) || !Number.isFinite(Number(cur)) || cur === ""} onClick={() => void act(async () => { await kvZAdd(ns, data.key, [{ member: r.member, score: Number(cur) }]); setScores(({ [m]: _, ...rest }) => rest); })}>Save</Button>
+                    <Button aria-label={`Save score of ${m}`} disabled={cur === String(r.score) || !Number.isFinite(Number(cur)) || cur === ""} onClick={() => void act(async () => { await kvZAdd(ns, data.key, [{ member: r.member, score: Number(cur) }]); setScores((e) => omit(e, m)); })}>Save</Button>
                     <Button tone="danger" aria-label={`Remove ${m}`} onClick={() => void act(() => kvZRemove(ns, data.key, [r.member]))}>Remove</Button>
                   </td>
                 </tr>

@@ -56,3 +56,8 @@ export function parseFields(text: string): Record<string, string> {
 export const TTL_UNITS: { label: string; ms: number }[] = [
   { label: "seconds", ms: 1000 }, { label: "minutes", ms: 60_000 }, { label: "hours", ms: 3_600_000 }, { label: "days", ms: 86_400_000 },
 ];
+
+/** A copy of `o` without `key`. */
+export function omit<T>(o: Record<string, T>, key: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(o).filter(([k]) => k !== key));
+}
