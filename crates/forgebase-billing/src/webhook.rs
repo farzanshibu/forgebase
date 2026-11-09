@@ -62,37 +62,17 @@ impl BillingService {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<WebhookOutcome> {
+        // App Store, Google Play and Creem notifications (FB-72).
+        if let Some(store) = self.store(provider) {
+            return self.handle_store_notification(store, headers, body).await;
+        }
         let driver = self.provider(provider)?;
         let settings = self.settings().await?;
         let now = self.now();
         let ev = driver.verify_webhook(headers, body, now, settings.webhook_tolerance_secs)?;
         let hash = hex(&Sha256::digest(body));
-        let prior = self
-            .fetch(
-                "SELECT status, payload_hash FROM _forgebase_billing_webhook_events WHERE provider = ?1 AND event_id = ?2",
-                vec![provider.into(), ev.id.clone().into()],
-            )
-            .await?;
-        if let Some(r) = prior.rows.first()
-            && text(r, 0) != "failed"
-        {
-            let mut tx = self.begin().await?;
-            let res = async {
-                let mut t = Tx(tx.as_mut());
-                t.exec(
-                    "UPDATE _forgebase_billing_webhook_events SET attempts = attempts + 1 WHERE provider = ?1 AND event_id = ?2",
-                    vec![provider.into(), ev.id.clone().into()],
-                )
-                .await?;
-                Ok(((), true))
-            }
-            .await;
-            self.end(tx, res).await?;
-            return Ok(WebhookOutcome {
-                result: "duplicate".into(),
-                detail: (text(r, 1) != hash).then(|| "payload_differs".to_owned()),
-                event_id: ev.id,
-            });
+        if let Some(dup) = self.replayed(provider, &ev.id, &hash).await? {
+            return Ok(dup);
         }
         let too_old = ev.created_at < now - settings.webhook_max_age_secs * 1000;
         let mut tx = self.begin().await?;
@@ -143,6 +123,37 @@ impl BillingService {
             detail: applied.detail,
             event_id: ev.id,
         })
+    }
+
+    /// A delivery of an event already processed or ignored: counted and
+    /// answered `duplicate` without effect (a failed one is processed again).
+    pub(crate) async fn replayed(&self, provider: &str, event_id: &str, hash: &str) -> Result<Option<WebhookOutcome>> {
+        let prior = self
+            .fetch(
+                "SELECT status, payload_hash FROM _forgebase_billing_webhook_events WHERE provider = ?1 AND event_id = ?2",
+                vec![provider.into(), event_id.into()],
+            )
+            .await?;
+        let Some(r) = prior.rows.first().filter(|r| text(r, 0) != "failed") else {
+            return Ok(None);
+        };
+        let mut tx = self.begin().await?;
+        let res = async {
+            let mut t = Tx(tx.as_mut());
+            t.exec(
+                "UPDATE _forgebase_billing_webhook_events SET attempts = attempts + 1 WHERE provider = ?1 AND event_id = ?2",
+                vec![provider.into(), event_id.into()],
+            )
+            .await?;
+            Ok(((), true))
+        }
+        .await;
+        self.end(tx, res).await?;
+        Ok(Some(WebhookOutcome {
+            result: "duplicate".into(),
+            detail: (text(r, 1) != hash).then(|| "payload_differs".to_owned()),
+            event_id: event_id.to_owned(),
+        }))
     }
 
     async fn apply_event(&self, t: &mut Tx<'_>, provider: &str, ev: &ProviderEvent, now: i64) -> Result<Applied> {
@@ -538,7 +549,7 @@ async fn save_method(
     Ok(())
 }
 
-async fn record(
+pub(crate) async fn record(
     t: &mut Tx<'_>,
     provider: &str,
     ev: &ProviderEvent,

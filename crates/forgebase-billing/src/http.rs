@@ -112,6 +112,14 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: BillingService) -> Router<S
         .route("/billing/refunds", get(refunds))
         .route("/billing/portal", get(portal))
         .route("/billing/portal/payment-method", post(payment_method))
+        .route("/billing/store-products", get(store_products))
+        .route(
+            "/billing/store-products/{provider}/{product_id}",
+            put(put_store_product).delete(delete_store_product),
+        )
+        .route("/billing/store/{provider}/verify", post(store_verify))
+        .route("/billing/store/{provider}/checkout", post(store_checkout))
+        .route("/billing/store-purchases", get(store_purchases))
         .route("/billing/webhooks/{provider}", post(webhook))
         .route("/billing/webhook-events", get(webhook_events))
         .route("/billing/stats", get(stats))
@@ -140,7 +148,8 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         price, put_price, tax_rates, put_tax_rate, coupons, put_coupon, customer, put_customer, customers,
         subscriptions, subscribe, subscription, change_plan, cancel, pause, resume, orders, create_order, order,
         invoices, invoice, pay_invoice, mark_paid, void_invoice, credit_invoice, credit_notes, payments, refunds,
-        portal, payment_method, webhook, webhook_events, stats, maintenance,
+        portal, payment_method, store_products, put_store_product, delete_store_product, store_verify,
+        store_checkout, store_purchases, webhook, webhook_events, stats, maintenance,
     ),
     components(schemas(
         Money, Tier, Scheme, ProductKind, PriceType, Interval, MeterBasis, TaxBehavior, SubscriptionStatus,
@@ -150,13 +159,15 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         ChangePlanInput, CancelInput, Checkout, Order, OrderInput, InvoiceLine, Invoice, Payment, Refund, CreditNote,
         CreditNoteInput, Collection, PaymentMethodInput, HostedPage, ProviderAccount, ProviderInput, WebhookEvent,
         WebhookOutcome, BillingSettings, MaintenanceReport, RecurringRevenue, RevenuePoint, BillingStats, Portal,
-        MarkPaidInput, PayInput, Items<Product>, Items<Price>, Items<Invoice>,
+        MarkPaidInput, PayInput, Items<Product>, Items<Price>, Items<Invoice>, StoreProduct, StoreProductInput,
+        StoreVerifyInput, StoreCheckoutInput, StorePurchaseRecord, Items<StoreProduct>, Items<StorePurchaseRecord>,
     )),
     tags(
         (name = "billing", description = "Subscriptions, one-time orders, invoices, payments, credit notes and refunds, dunning, payment statistics"),
         (name = "billing-catalog", description = "Products, multi-currency prices (recurring, one-time, metered; per unit, graduated, volume), tax rates, coupons, provider accounts, settings"),
         (name = "billing-portal", description = "What a customer sees and does: invoices, plan changes, cancellation, the payment method on the provider's hosted page"),
-        (name = "billing-webhooks", description = "Signed, idempotent provider webhooks (Stripe, Razorpay) with replay protection"),
+        (name = "billing-webhooks", description = "Signed, idempotent provider webhooks (Stripe, Razorpay, WeChat Pay) and store notifications (App Store Server Notifications V2, Google Play real-time developer notifications, Creem) with replay protection"),
+        (name = "billing-stores", description = "Merchant-of-record stores (App Store, Google Play, Creem): product mapping, server-side purchase verification for mobile apps, checkout, purchases"),
     ),
 )]
 struct BillingDoc;
@@ -190,10 +201,12 @@ async fn providers(State(s): State<BillingService>, Access(ctx): Access) -> ApiR
     items(s.providers(&ctx).await.map_err(api)?)
 }
 
-/// Saves a provider account: `stripe`, `razorpay` or `manual`. Test-mode
-/// keys only; secrets are sealed and never returned.
+/// Saves a provider account: `stripe`, `razorpay`, `wechat_pay`, `manual`,
+/// or a store (`app_store`, `google_play`, `creem`) with its `config`.
+/// Test-mode keys and test environments only; secrets and config are sealed
+/// and never returned.
 #[utoipa::path(put, path = "/api/v1/billing/providers/{provider}", operation_id = "billing_put_provider", tag = "billing-catalog", request_body = ProviderInput,
-    params(("provider" = String, Path, description = "stripe, razorpay or manual")),
+    params(("provider" = String, Path, description = "stripe, razorpay, wechat_pay, manual, app_store, google_play or creem")),
     responses((status = 200, description = "Saved", body = ProviderAccount), (status = 400, description = "Live or malformed keys")))]
 async fn put_provider(
     State(s): State<BillingService>,
@@ -597,7 +610,7 @@ async fn payment_method(
 /// invalid_signature`; replayed old delivery: `400 stale_signature`),
 /// idempotent by event id (`duplicate`), out-of-order safe.
 #[utoipa::path(post, path = "/api/v1/billing/webhooks/{provider}", operation_id = "billing_webhook", tag = "billing-webhooks",
-    params(("provider" = String, Path, description = "stripe or razorpay")),
+    params(("provider" = String, Path, description = "stripe, razorpay, wechat_pay, app_store, google_play or creem")),
     responses((status = 200, description = "Handled", body = WebhookOutcome), (status = 400, description = "Signature refused"),
         (status = 404, description = "Provider not configured")))]
 async fn webhook(
@@ -611,6 +624,96 @@ async fn webhook(
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_ascii_lowercase(), v.to_owned())))
         .collect();
     ok(s.handle_webhook(&provider, &hs, &raw).await.map_err(api)?)
+}
+
+// ---------------------------------------------------------------------------
+// Stores (FB-72)
+// ---------------------------------------------------------------------------
+
+/// Store products and the prices they are sold as.
+#[utoipa::path(get, path = "/api/v1/billing/store-products", operation_id = "billing_store_products", tag = "billing-stores",
+    responses((status = 200, description = "Mappings", body = Items<StoreProduct>)))]
+async fn store_products(State(s): State<BillingService>, Access(ctx): Access) -> ApiResult {
+    items(s.store_products(&ctx).await.map_err(api)?)
+}
+
+/// Maps a store product to a price (recurring for subscriptions, one-time
+/// otherwise; platform administrators).
+#[utoipa::path(put, path = "/api/v1/billing/store-products/{provider}/{product_id}", operation_id = "billing_put_store_product",
+    tag = "billing-stores", request_body = StoreProductInput,
+    params(("provider" = String, Path, description = "app_store, google_play or creem"),
+        ("product_id" = String, Path, description = "Product id at the store")),
+    responses((status = 200, description = "Saved", body = StoreProduct)))]
+async fn put_store_product(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path((provider, product_id)): Path<(String, String)>,
+    b: Body<StoreProductInput>,
+) -> ApiResult {
+    let input = body(&s, &ctx, b)?;
+    ok(s.put_store_product(&ctx, &provider, &product_id, input)
+        .await
+        .map_err(api)?)
+}
+
+/// Removes a store product mapping (platform administrators).
+#[utoipa::path(delete, path = "/api/v1/billing/store-products/{provider}/{product_id}", operation_id = "billing_delete_store_product",
+    tag = "billing-stores",
+    params(("provider" = String, Path, description = "Store"), ("product_id" = String, Path, description = "Product id at the store")),
+    responses((status = 204, description = "Removed")))]
+async fn delete_store_product(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path((provider, product_id)): Path<(String, String)>,
+) -> ApiResult {
+    s.delete_store_product(&ctx, &provider, &product_id)
+        .await
+        .map_err(api)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Verifies a purchase a mobile app (or the Creem success page) received,
+/// server side with the store, and applies it: the subscription or order,
+/// a paid invoice per store transaction, entitlements. Forged or foreign
+/// receipts are refused (`400`); a purchase bound to another account is
+/// `409 purchase_owned`. Idempotent.
+#[utoipa::path(post, path = "/api/v1/billing/store/{provider}/verify", operation_id = "billing_store_verify", tag = "billing-stores",
+    request_body = StoreVerifyInput,
+    params(("provider" = String, Path, description = "app_store, google_play or creem")),
+    responses((status = 200, description = "Applied", body = StorePurchaseRecord),
+        (status = 400, description = "Forged, foreign, live or unmapped purchase"), (status = 409, description = "Bound to another account")))]
+async fn store_verify(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(provider): Path<String>,
+    b: Body<StoreVerifyInput>,
+) -> ApiResult {
+    let input = body(&s, &ctx, b)?;
+    ok(s.verify_store_purchase(&ctx, &provider, input).await.map_err(api)?)
+}
+
+/// A hosted checkout at a store that sells on the web (Creem) for a price
+/// mapped to one of its products.
+#[utoipa::path(post, path = "/api/v1/billing/store/{provider}/checkout", operation_id = "billing_store_checkout", tag = "billing-stores",
+    request_body = StoreCheckoutInput,
+    params(("provider" = String, Path, description = "creem")),
+    responses((status = 200, description = "The checkout page", body = HostedPage)))]
+async fn store_checkout(
+    State(s): State<BillingService>,
+    Access(ctx): Access,
+    Path(provider): Path<String>,
+    b: Body<StoreCheckoutInput>,
+) -> ApiResult {
+    let input = body(&s, &ctx, b)?;
+    ok(s.store_checkout(&ctx, &provider, input).await.map_err(api)?)
+}
+
+/// Store purchases of a subject.
+#[utoipa::path(get, path = "/api/v1/billing/store-purchases", operation_id = "billing_store_purchases", tag = "billing-stores",
+    params(("subject" = Option<String>, Query, description = SUBJECT)),
+    responses((status = 200, description = "Purchases", body = Items<StorePurchaseRecord>)))]
+async fn store_purchases(State(s): State<BillingService>, Access(ctx): Access, q: Query) -> ApiResult {
+    items(s.store_purchases(&ctx, q.get("subject")).await.map_err(api)?)
 }
 
 /// Webhook events received (platform administrators).
