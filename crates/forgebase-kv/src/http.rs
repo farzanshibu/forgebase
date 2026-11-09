@@ -220,6 +220,32 @@ pub struct PopBody {
     count: Option<u64>,
 }
 
+/// Body of `POST .../lists/{key}/remove` (`LREM`).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ListRemoveBody {
+    /// Value to remove.
+    value: Bin,
+    /// `0` (default) removes every match; `n > 0` the first `n` from the head; `n < 0` the first `|n|` from the tail.
+    #[serde(default)]
+    count: Option<i64>,
+}
+
+/// Body of `POST .../lists/{key}/set` (`LSET`).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ListSetBody {
+    /// Index (negative counts from the tail).
+    index: i64,
+    /// New value.
+    value: Bin,
+}
+
+/// Body of `POST .../streams/{key}/delete` (`XDEL`).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StreamDeleteBody {
+    /// Entry ids (`<ms>-<seq>`).
+    ids: Vec<String>,
+}
+
 /// Body of set add/remove and sorted-set remove.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct MembersBody {
@@ -778,6 +804,47 @@ async fn list_pop(
     Ok(Json(json!({ "values": v })))
 }
 
+/// Removes occurrences of a value from a list (`LREM`).
+#[utoipa::path(
+    post, path = "/api/v1/kv/{ns}/lists/{key}/remove", operation_id = "kv_list_remove", tag = "kv",
+    params(("ns" = String, Path, description = "Namespace"), ("key" = String, Path, description = "Key")),
+    request_body = ListRemoveBody,
+    responses((status = 200, description = "`{removed: n}`", body = Object))
+)]
+async fn list_remove(
+    State(svc): State<KvService>,
+    Access(ctx): Access,
+    Path((ns, key)): Path<(String, String)>,
+    ApiJson(b): ApiJson<ListRemoveBody>,
+) -> ApiResult<Json<Val>> {
+    let cmd = Cmd::new("LREM")
+        .arg(&key)
+        .arg(b.count.unwrap_or(0).to_string())
+        .arg(b.value.bytes()?);
+    Ok(Json(json!({ "removed": int_of(&run(&svc, &ctx, &ns, cmd)?) })))
+}
+
+/// Replaces the list element at an index (`LSET`); `400` when out of range.
+#[utoipa::path(
+    post, path = "/api/v1/kv/{ns}/lists/{key}/set", operation_id = "kv_list_set", tag = "kv",
+    params(("ns" = String, Path, description = "Namespace"), ("key" = String, Path, description = "Key")),
+    request_body = ListSetBody,
+    responses((status = 200, description = "`{ok: true}`", body = Object))
+)]
+async fn list_set(
+    State(svc): State<KvService>,
+    Access(ctx): Access,
+    Path((ns, key)): Path<(String, String)>,
+    ApiJson(b): ApiJson<ListSetBody>,
+) -> ApiResult<Json<Val>> {
+    let cmd = Cmd::new("LSET")
+        .arg(&key)
+        .arg(b.index.to_string())
+        .arg(b.value.bytes()?);
+    run(&svc, &ctx, &ns, cmd)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Adds members to a set.
 #[utoipa::path(
     post, path = "/api/v1/kv/{ns}/sets/{key}/add", tag = "kv",
@@ -890,6 +957,28 @@ async fn stream_add(
     }
     let id = reply_json(run(&svc, &ctx, &ns, cmd)?);
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
+}
+
+/// Deletes entries from a stream by id (`XDEL`).
+#[utoipa::path(
+    post, path = "/api/v1/kv/{ns}/streams/{key}/delete", operation_id = "kv_stream_delete", tag = "kv",
+    params(("ns" = String, Path, description = "Namespace"), ("key" = String, Path, description = "Key")),
+    request_body = StreamDeleteBody,
+    responses((status = 200, description = "`{removed: n}`", body = Object))
+)]
+async fn stream_delete(
+    State(svc): State<KvService>,
+    Access(ctx): Access,
+    Path((ns, key)): Path<(String, String)>,
+    ApiJson(b): ApiJson<StreamDeleteBody>,
+) -> ApiResult<Json<Val>> {
+    if b.ids.is_empty() {
+        return Err(ApiError::bad_request("kv_syntax", "ids must not be empty"));
+    }
+    let cmd = Cmd::new("XDEL")
+        .arg(&key)
+        .args(b.ids.into_iter().map(String::into_bytes));
+    Ok(Json(json!({ "removed": int_of(&run(&svc, &ctx, &ns, cmd)?) })))
 }
 
 /// Entries of a stream between two ids (`-` and `+` are the ends); `rev=true` newest first.
@@ -1029,6 +1118,17 @@ async fn publish(
     Ok(Json(json!({ "receivers": int_of(&run(&svc, &ctx, &ns, cmd)?) })))
 }
 
+/// Live pub/sub channels of a namespace (those with at least one subscriber).
+#[utoipa::path(
+    get, path = "/api/v1/kv/{ns}/channels", operation_id = "kv_channels", tag = "kv",
+    params(("ns" = String, Path, description = "Namespace")),
+    responses((status = 200, description = "`{channels: [{name, subscribers}]}`", body = Object))
+)]
+async fn channels(State(svc): State<KvService>, Access(ctx): Access, Path(ns): Path<String>) -> ApiResult<Json<Val>> {
+    let list = svc.channels(&ctx, &ns)?;
+    Ok(Json(json!({ "channels": list })))
+}
+
 /// Subscribes to a channel as server-sent events: `message` events carry
 /// `{channel, message}`; a `lagged` event says how many messages a slow
 /// reader missed. Messages are not stored: only subscribers connected at
@@ -1080,6 +1180,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: KvService, max_body_bytes: 
         .route("/api/v1/kv/{ns}/hashes/{key}/incr", post(hash_incr))
         .route("/api/v1/kv/{ns}/lists/{key}/push", post(list_push))
         .route("/api/v1/kv/{ns}/lists/{key}/pop", post(list_pop))
+        .route("/api/v1/kv/{ns}/lists/{key}/remove", post(list_remove))
+        .route("/api/v1/kv/{ns}/lists/{key}/set", post(list_set))
+        .route("/api/v1/kv/{ns}/streams/{key}/delete", post(stream_delete))
+        .route("/api/v1/kv/{ns}/channels", get(channels))
         .route("/api/v1/kv/{ns}/sets/{key}/add", post(set_add))
         .route("/api/v1/kv/{ns}/sets/{key}/remove", post(set_remove))
         .route("/api/v1/kv/{ns}/zsets/{key}/add", post(zset_add))
@@ -1101,11 +1205,12 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: KvService, max_body_bytes: 
         info, namespaces, flush_ns, scan, get_key, delete_key, set_ttl, clear_ttl, set_string, incr, mget, mset,
         hash_set, hash_delete, hash_incr, list_push, list_pop, set_add, set_remove, zset_add, zset_remove,
         stream_add, stream_range, stream_read, exec, batch, publish, subscribe,
+        list_remove, list_set, stream_delete, channels,
     ),
     components(schemas(
         Bin, SetBody, IncrBody, MgetBody, MsetEntry, MsetBody, TtlBody, HashSetBody, HashDeleteBody, HashIncrBody,
         Side, PushBody, PopBody, MembersBody, ScoredMember, ZAddBody, StreamAddBody, ExecBody, BatchBody,
-        PublishBody, KeyValue, ScanResponse, KvStats, NamespaceInfo,
+        PublishBody, KeyValue, ScanResponse, KvStats, NamespaceInfo, ListRemoveBody, ListSetBody, StreamDeleteBody,
     )),
     tags((name = "kv", description = "Key-value engine: strings, hashes, lists, sets, sorted sets, streams, TTL, pub/sub")),
 )]

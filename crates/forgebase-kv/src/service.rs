@@ -56,6 +56,15 @@ pub struct KvStats {
     pub persistent: bool,
 }
 
+/// A live pub/sub channel of a namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct ChannelInfo {
+    /// Channel name.
+    pub name: String,
+    /// Connected subscribers.
+    pub subscribers: usize,
+}
+
 /// One namespace of the caller's tenant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct NamespaceInfo {
@@ -275,6 +284,20 @@ impl KvService {
         self.authorize(ctx, Action::KvRead)?;
         let scope = Self::scope(ctx, ns)?;
         self.inner.hub.subscribe_all(&scope)
+    }
+
+    /// Channels of a namespace with at least one subscriber (messages are not
+    /// stored, so a channel exists only while someone listens).
+    pub fn channels(&self, ctx: &AccessContext, ns: &str) -> KvResult<Vec<ChannelInfo>> {
+        self.authorize(ctx, Action::KvRead)?;
+        let scope = Self::scope(ctx, ns)?;
+        Ok(self
+            .inner
+            .hub
+            .channels_of(&scope)
+            .into_iter()
+            .map(|(name, subscribers)| ChannelInfo { name, subscribers })
+            .collect())
     }
 
     /// Namespaces that hold keys, for the caller's tenant.

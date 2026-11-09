@@ -1,6 +1,6 @@
 /**
  * Typed client for `/api/v1/billing`, `/api/v1/credits` and the usage side of `/api/v1/entitlements` (ADR-0021).
- * Hand-written; the OpenAPI fixture does not describe these routes yet (FIX-3 owns it).
+ * Hand-written; the OpenAPI fixture (billing enabled) describes the billing routes and the test mocks are checked against it.
  * Money is always integer minor units next to an ISO 4217 currency; never a float.
  */
 import { ApiError, request, send } from "./client";
@@ -94,6 +94,26 @@ export interface ChangePlanInput { price: string; quantity?: number | null; pror
 export interface CancelInput { at_period_end: boolean; reason?: string | null }
 export interface Order { id: string; customer_id: string; subject: string; status: OrderStatus; currency: string; invoice_id: string | null; created_at: string }
 export interface OrderInput { subject?: string; items: ItemInput[]; coupon?: string | null; idempotency_key: string; return_url?: string | null }
+export interface OrderPage { items: Order[]; total: number; limit: number; offset: number }
+export interface PreviewLine { kind: LineKind; description: string; price: string | null; quantity: number; amount: number }
+/** Server-computed proration of a plan change (no side effects). */
+export interface ProrationPreview {
+  subscription_id: string; currency: string; from_price: string | null; to_price: string; quantity: number; proration: Proration;
+  at_period_end: boolean; effective_at: string; period_start: string; period_end: string; lines: PreviewLine[];
+  credit: number; charge: number; net: number; invoiced_now: boolean; new_period_amount: number;
+}
+export type ServerMeterState = "ok" | "warn" | "critical" | "over";
+/** One usage counter of any subject (instance-wide list). */
+export interface UsageMeter {
+  subject: string; feature: string; scope_key: string; used: number; reserved: number; carried_in: number; limit: number | null;
+  percent: number | null; state: ServerMeterState; window_start: string; window_end: string; updated_at: string;
+}
+export interface UsageMeterPage { items: UsageMeter[]; total: number; limit: number; offset: number }
+export interface DunningEntry {
+  invoice_id: string; number: string | null; subject: string; customer_id: string; subscription_id: string | null; subscription_status?: SubscriptionStatus | null;
+  currency: string; amount_due: number; attempt_count: number; retries_left: number; next_attempt_at: string | null;
+  last_failure_code: string | null; last_failure_message: string | null; final_action: FinalAction; created_at: string;
+}
 export interface Checkout { subscription: Subscription | null; order: Order | null; invoice: Invoice | null; payment_url: string | null; replayed: boolean }
 export interface InvoiceLine {
   id: string; kind: LineKind; description: string; product: string | null; price: string | null; feature: string | null;
@@ -186,9 +206,11 @@ export const BILLING_OPERATIONS = [
   "get /api/v1/billing/products", "put /api/v1/billing/products/{key}", "get /api/v1/billing/prices", "put /api/v1/billing/prices/{key}",
   "get /api/v1/billing/tax-rates", "put /api/v1/billing/tax-rates/{region}", "get /api/v1/billing/coupons", "put /api/v1/billing/coupons/{code}",
   "get /api/v1/billing/customers", "put /api/v1/billing/customer", "get /api/v1/billing/subscriptions", "post /api/v1/billing/subscriptions",
-  "post /api/v1/billing/subscriptions/{id}/change", "post /api/v1/billing/subscriptions/{id}/cancel",
+  "post /api/v1/billing/subscriptions/{id}/change", "post /api/v1/billing/subscriptions/{id}/change/preview", "post /api/v1/billing/subscriptions/{id}/cancel",
   "post /api/v1/billing/subscriptions/{id}/pause", "post /api/v1/billing/subscriptions/{id}/resume",
-  "get /api/v1/billing/orders", "post /api/v1/billing/orders", "get /api/v1/billing/invoices", "get /api/v1/billing/invoices/{id}",
+  "get /api/v1/billing/orders", "post /api/v1/billing/orders", "get /api/v1/billing/admin/orders", "get /api/v1/billing/admin/usage-meters",
+  "get /api/v1/billing/dunning", "post /api/v1/billing/products/{key}/archive", "post /api/v1/billing/prices/{key}/archive",
+  "post /api/v1/billing/coupons/{code}/archive", "post /api/v1/billing/tax-rates/{region}/archive", "get /api/v1/billing/invoices", "get /api/v1/billing/invoices/{id}",
   "post /api/v1/billing/invoices/{id}/pay", "post /api/v1/billing/invoices/{id}/mark-paid", "post /api/v1/billing/invoices/{id}/void",
   "post /api/v1/billing/invoices/{id}/credit-notes", "get /api/v1/billing/credit-notes", "get /api/v1/billing/payments",
   "get /api/v1/billing/refunds", "get /api/v1/billing/webhook-events", "get /api/v1/billing/stats", "post /api/v1/billing/maintenance",
@@ -223,6 +245,10 @@ export const listTaxRates = (signal?: AbortSignal) => list<TaxRate>(`${B}/tax-ra
 export const putTaxRate = (region: string, input: { name: string; rate_bp: number; active: boolean }) => send<TaxRate>("PUT", `${B}/tax-rates/${enc(region)}`, input);
 export const listCoupons = (signal?: AbortSignal) => list<Coupon>(`${B}/coupons`, signal);
 export const putCoupon = (code: string, input: CouponInput) => send<Coupon>("PUT", `${B}/coupons/${enc(code)}`, input);
+export const archiveProduct = (key: string) => send<Product>("POST", `${B}/products/${enc(key)}/archive`);
+export const archivePrice = (key: string) => send<Price>("POST", `${B}/prices/${enc(key)}/archive`);
+export const archiveCoupon = (code: string) => send<Coupon>("POST", `${B}/coupons/${enc(code)}/archive`);
+export const archiveTaxRate = (region: string) => send<TaxRate>("POST", `${B}/tax-rates/${enc(region)}/archive`);
 export const listFeatures = (signal?: AbortSignal) => list<Feature>(`${V1}/features`, signal);
 export const listPlans = (signal?: AbortSignal) => list<Plan>(`${V1}/plans`, signal);
 export const listAddons = (signal?: AbortSignal) => list<Addon>(`${V1}/addons`, signal);
@@ -239,6 +265,10 @@ export const cancelSubscription = (id: string, input: CancelInput) => send<Check
 export const pauseSubscription = (id: string) => send<Subscription>("POST", `${B}/subscriptions/${enc(id)}/pause`);
 export const resumeSubscription = (id: string) => send<Checkout>("POST", `${B}/subscriptions/${enc(id)}/resume`);
 export const listOrders = (subject?: string, signal?: AbortSignal) => list<Order>(`${B}/orders${qs({ subject })}`, signal);
+export const listAllOrders = (f: { subject?: string; status?: OrderStatus; limit?: number; offset?: number } = {}, signal?: AbortSignal) =>
+  request<OrderPage>(`${B}/admin/orders${qs(f)}`, { signal });
+export const previewPlanChange = (id: string, input: ChangePlanInput, signal?: AbortSignal) =>
+  request<ProrationPreview>(`${B}/subscriptions/${enc(id)}/change/preview`, { method: "POST", body: input, signal });
 export const createOrder = (input: OrderInput) => send<Checkout>("POST", `${B}/orders`, input);
 
 // Invoices, payments.
@@ -252,6 +282,10 @@ export const listCreditNotes = (subject?: string, limit = 200, signal?: AbortSig
 export const listPayments = (subject?: string, limit = 200, signal?: AbortSignal) => list<Payment>(`${B}/payments${qs({ subject, limit })}`, signal);
 export const listRefunds = (subject?: string, limit = 200, signal?: AbortSignal) => list<Refund>(`${B}/refunds${qs({ subject, limit })}`, signal);
 export const billingStats = (f: { from?: string; to?: string; interval?: "day" | "month" } = {}, signal?: AbortSignal) => request<BillingStats>(`${B}/stats${qs(f)}`, { signal });
+
+export const listUsageMeters = (f: { subject?: string; feature?: string; min_percent?: number; limit?: number; offset?: number } = {}, signal?: AbortSignal) =>
+  request<UsageMeterPage>(`${B}/admin/usage-meters${qs(f)}`, { signal });
+export const listDunning = (limit = 200, signal?: AbortSignal) => list<DunningEntry>(`${B}/dunning${qs({ limit })}`, signal);
 
 // Usage meters (entitlements).
 export const listUsage = (subject: string, signal?: AbortSignal) => list<UsageSummary>(`${V1}/usage${qs({ subject })}`, signal);

@@ -1,6 +1,6 @@
 /**
  * Typed client for the identity provider and realm identity REST (`/api/auth/*`, ADR-0015 / ADR-0019).
- * Hand-written; the OpenAPI fixture does not describe these routes.
+ * Hand-written types over the documented routes (the OpenAPI document types most bodies as free-form objects).
  * Secrets are write-only: the server answers `"********"` (or null) for a stored secret; sending `""` clears it, and
  * sending `"********"`, null or nothing keeps it.
  */
@@ -56,7 +56,33 @@ export const IDENTITY_OPERATIONS = [
   "get /api/auth/realms", "get /api/auth/realms/{realm}", "put /api/auth/realms/{realm}", "get /api/auth/realm",
   "get /api/auth/clients", "post /api/auth/clients", "get /api/auth/clients/{id}", "patch /api/auth/clients/{id}", "delete /api/auth/clients/{id}",
   "post /api/auth/clients/{id}/secret", "get /api/auth/consents", "delete /api/auth/consents/{id}", "post /api/auth/keys/oidc/rotate",
+  "post /api/auth/realms", "get /api/auth/realms/{realm}/keys", "get /api/auth/realms/{realm}/consents", "delete /api/auth/realms/{realm}/consents/{id}",
+  "get /api/auth/realms/{realm}/oauth-providers", "get /api/auth/realms/{realm}/oauth-providers/{id}", "put /api/auth/realms/{realm}/oauth-providers/{id}",
+  "delete /api/auth/realms/{realm}/oauth-providers/{id}", "get /api/auth/realms/{realm}/sms", "put /api/auth/realms/{realm}/sms", "delete /api/auth/realms/{realm}/sms",
 ] as const;
+
+/** Administrator view of a remembered consent. */
+export interface AdminConsent extends ConsentGrant { collection: string; user_id: string }
+export interface OidcKeyInfo { kid: string; alg: string; status: "active" | "retired"; created_at: string; verify_until: string | null; verifying: boolean }
+export interface OidcKeys { realm: string; current: string | null; items: OidcKeyInfo[] }
+export type ProviderKind = "google" | "github" | "apple" | "facebook" | "wechat" | "discord" | "oidc";
+export const PROVIDER_KINDS: ProviderKind[] = ["google", "github", "apple", "facebook", "wechat", "discord", "oidc"];
+/** A social login provider of a realm. Secrets are write-only (`"********"` when stored). `source: "file"` entries are read-only. */
+export interface SocialProvider {
+  id: string; realm: string; kind: ProviderKind; display_name?: string | null; source: "admin" | "file"; read_only: boolean;
+  client_id?: string; client_secret?: string | null; scopes?: string[] | null; issuer?: string | null; authorize_url?: string | null; token_url?: string | null;
+  userinfo_url?: string | null; jwks_url?: string | null; emails_url?: string | null; redirect_uri?: string | null;
+  apple?: { team_id: string; key_id: string; private_key_pem?: string | null } | null;
+  allow_signup?: boolean; auto_link_verified_email?: boolean; created_at?: string; updated_at?: string;
+}
+export type SocialProviderInput = Omit<SocialProvider, "id" | "realm" | "source" | "read_only" | "created_at" | "updated_at"> & { client_id: string };
+export type SmsProviderType = "dev" | "twilio" | "webhook";
+export interface SmsConfig {
+  provider: SmsProviderType; account_sid?: string; auth_token?: string | null; from?: string | null; messaging_service_sid?: string | null; base_url?: string | null;
+  url?: string; bearer_token?: string | null;
+}
+export interface SmsGateway { realm: string; configured: boolean; config: SmsConfig | null; created_at?: string; updated_at?: string }
+export interface RealmCreateInput { id: string; name?: string; collection?: string; config?: RealmConfig }
 
 export const listRealmIdentities = async (signal?: AbortSignal) => (await request<{ items: RealmIdentity[] }>(`${A}/realms`, { signal })).items;
 export const putRealmIdentity = (realm: string, body: RealmInput) => send<RealmIdentity>("PUT", `${A}/realms/${enc(realm)}`, body);
@@ -76,3 +102,18 @@ export const rotateClientSecret = (id: string, graceSeconds?: number) =>
 export const listConsents = async (signal?: AbortSignal) => (await request<{ items: ConsentGrant[] }>(`${A}/consents`, { signal })).items;
 export const revokeConsent = (id: string) => send<void>("DELETE", `${A}/consents/${enc(id)}`);
 export const rotateOidcKeys = (realm: string) => send<{ realm: string; kid: string }>("POST", `${A}/keys/oidc/rotate`, { realm });
+
+/** One call: creates the realm and its identity settings. */
+export const createRealmWithIdentity = (body: RealmCreateInput) => send<RealmIdentity>("POST", `${A}/realms`, body);
+export const listRealmConsents = async (realm: string, clientId?: string, signal?: AbortSignal) =>
+  (await request<{ items: AdminConsent[] }>(`${A}/realms/${enc(realm)}/consents${clientId ? `?client_id=${enc(clientId)}` : ""}`, { signal })).items;
+export const revokeRealmConsent = (realm: string, id: string) => send<void>("DELETE", `${A}/realms/${enc(realm)}/consents/${enc(id)}`);
+export const listOidcKeys = (realm: string, signal?: AbortSignal) => request<OidcKeys>(`${A}/realms/${enc(realm)}/keys`, { signal });
+export const listSocialProviders = async (realm: string, signal?: AbortSignal) =>
+  (await request<{ items: SocialProvider[] }>(`${A}/realms/${enc(realm)}/oauth-providers`, { signal })).items;
+export const getSocialProvider = (realm: string, id: string, signal?: AbortSignal) => request<SocialProvider>(`${A}/realms/${enc(realm)}/oauth-providers/${enc(id)}`, { signal });
+export const putSocialProvider = (realm: string, id: string, body: SocialProviderInput) => send<SocialProvider>("PUT", `${A}/realms/${enc(realm)}/oauth-providers/${enc(id)}`, body);
+export const deleteSocialProvider = (realm: string, id: string) => send<void>("DELETE", `${A}/realms/${enc(realm)}/oauth-providers/${enc(id)}`);
+export const getSmsGateway = (realm: string, signal?: AbortSignal) => request<SmsGateway>(`${A}/realms/${enc(realm)}/sms`, { signal });
+export const putSmsGateway = (realm: string, body: SmsConfig) => send<SmsGateway>("PUT", `${A}/realms/${enc(realm)}/sms`, body);
+export const deleteSmsGateway = (realm: string) => send<void>("DELETE", `${A}/realms/${enc(realm)}/sms`);

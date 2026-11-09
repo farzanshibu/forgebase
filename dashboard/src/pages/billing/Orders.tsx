@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { createOrder, getInvoice, listOrders, listPrices } from "../../api";
-import type { Order } from "../../api";
+import { createOrder, getInvoice, listAllOrders, listPrices } from "../../api";
+import type { Order, OrderStatus } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
@@ -12,10 +12,15 @@ function OrderTotal({ order }: { order: Order }) {
   return inv.data ? <Money amount={inv.data.total} currency={inv.data.currency} /> : <span className="text-zinc-500">-</span>;
 }
 
+const PAGE = 50;
+const STATUSES: OrderStatus[] = ["open", "paid", "canceled", "refunded"];
+
 export default function Orders() {
   const [subject, setSubject] = useState("");
   const [shown, setShown] = useState("");
-  const orders = useLoad((s) => listOrders(shown || undefined, s), `orders:${shown}`);
+  const [status, setStatus] = useState<OrderStatus | "">("");
+  const [offset, setOffset] = useState(0);
+  const orders = useLoad((s) => listAllOrders({ subject: shown || undefined, status: status || undefined, limit: PAGE, offset }, s), `orders:${shown}:${status}:${offset}`);
   const prices = useLoad((s) => listPrices(undefined, s), "order-prices");
   const act = useAct(orders.reload);
   const [price, setPrice] = useState("");
@@ -27,19 +32,20 @@ export default function Orders() {
   };
   return (
     <div className="space-y-4">
-      <p className="text-sm text-zinc-400">One-time purchases: credit top-ups, usage packs and services. Orders are listed per subject.</p>
-      <form className="flex items-end gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); setShown(subject); }}>
+      <p className="text-sm text-zinc-400">One-time purchases: credit top-ups, usage packs and services. All orders, newest first; filter by subject or status.</p>
+      <form className="flex items-end gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); setOffset(0); setShown(subject); }}>
         <label>Order subject<input className={`${inputCls} ml-2 w-56`} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="org:acme or a user key" /></label>
+        <label>Status<select className={`${inputCls} ml-2`} value={status} onChange={(e) => { setOffset(0); setStatus(e.target.value as OrderStatus | ""); }}><option value="">any</option>{STATUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
         <Button type="submit">Show orders</Button>
       </form>
       <BillingError error={orders.error} />
       {orders.loading && !orders.error && <Loading what="Loading orders" />}
-      {orders.data && orders.data.length === 0 && <Empty>No orders for this subject.</Empty>}
-      {orders.data && orders.data.length > 0 && (
+      {orders.data && orders.data.items.length === 0 && <Empty>No orders match.</Empty>}
+      {orders.data && orders.data.items.length > 0 && (
         <table aria-label="Orders" className={TABLE}>
           <thead className={THEAD}><tr><Th>Order</Th><Th>Subject</Th><Th>Status</Th><Th>Total</Th><Th>Invoice</Th><Th>Created</Th></tr></thead>
           <tbody>
-            {orders.data.map((o) => (
+            {orders.data.items.map((o) => (
               <tr key={o.id} className={ROW}>
                 <td className="py-2 pr-3 font-mono text-xs">{o.id}</td><td className="font-mono text-xs">{o.subject}</td><td><Badge status={o.status} /></td>
                 <td><OrderTotal order={o} /></td><td className="font-mono text-xs">{o.invoice_id ?? "-"}</td><td className="text-zinc-400">{when_(o.created_at)}</td>
@@ -47,6 +53,13 @@ export default function Orders() {
             ))}
           </tbody>
         </table>
+      )}
+      {orders.data && orders.data.total > 0 && (
+        <div className="flex items-center gap-3 text-sm text-zinc-400" aria-label="Orders paging">
+          <span>{orders.data.offset + 1}-{orders.data.offset + orders.data.items.length} of {orders.data.total}</span>
+          <Button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</Button>
+          <Button disabled={offset + PAGE >= orders.data.total} onClick={() => setOffset(offset + PAGE)}>Next</Button>
+        </div>
       )}
       <Panel title="New one-time order">
         <form onSubmit={submit} aria-label="New order" className="space-y-3">

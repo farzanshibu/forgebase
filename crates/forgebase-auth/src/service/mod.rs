@@ -207,8 +207,19 @@ struct Inner {
     webauthn: crate::webauthn::WebAuthnConfig,
     realms: crate::realm::RealmDirectory,
     sms: RwLock<Arc<dyn crate::sms::SmsProvider>>,
+    realm_sms: RwLock<std::collections::HashMap<String, Arc<dyn crate::sms::SmsProvider>>>,
     change_hook: RwLock<Option<Hook>>,
+    realm_creator: RwLock<Option<Creator>>,
     idp: crate::idp::IdpState,
+}
+
+#[derive(Clone)]
+struct Creator(crate::realm::RealmCreator);
+
+impl std::fmt::Debug for Creator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RealmCreator")
+    }
 }
 
 #[derive(Clone)]
@@ -273,7 +284,9 @@ impl AuthService {
                 webauthn: crate::webauthn::WebAuthnConfig::from_public_url(&public_url),
                 realms: crate::realm::RealmDirectory::default(),
                 sms: RwLock::new(Arc::new(crate::sms::DevSmsProvider::default())),
+                realm_sms: RwLock::new(std::collections::HashMap::new()),
                 change_hook: RwLock::new(None),
+                realm_creator: RwLock::new(None),
                 idp: crate::idp::IdpState::default(),
             }),
         };
@@ -285,6 +298,7 @@ impl AuthService {
         }
         svc.reconcile_default_realm().await?;
         svc.load_sms_file().await?;
+        svc.load_identity_admin_config().await?;
         Ok(svc)
     }
 
@@ -322,6 +336,41 @@ impl AuthService {
     /// Replaces the SMS provider.
     pub fn set_sms_provider(&self, p: Arc<dyn crate::sms::SmsProvider>) {
         *self.inner.sms.write().unwrap_or_else(|e| e.into_inner()) = p;
+    }
+
+    /// The SMS gateway configured for a realm, if any.
+    pub(crate) fn realm_sms(&self, realm: &str) -> Option<Arc<dyn crate::sms::SmsProvider>> {
+        self.inner
+            .realm_sms
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(realm)
+            .cloned()
+    }
+
+    /// Sets or clears (`None`) the SMS gateway of a realm.
+    pub(crate) fn set_realm_sms(&self, realm: &str, p: Option<Arc<dyn crate::sms::SmsProvider>>) {
+        let mut m = self.inner.realm_sms.write().unwrap_or_else(|e| e.into_inner());
+        match p {
+            Some(p) => m.insert(realm.to_owned(), p),
+            None => m.remove(realm),
+        };
+    }
+
+    /// Installs the function that creates the realm record (the policy
+    /// engine owns realms); the server wires it. Needed for
+    /// `POST /api/auth/realms`.
+    pub fn set_realm_creator(&self, f: crate::realm::RealmCreator) {
+        *self.inner.realm_creator.write().unwrap_or_else(|e| e.into_inner()) = Some(Creator(f));
+    }
+
+    pub(crate) fn realm_creator(&self) -> Option<crate::realm::RealmCreator> {
+        self.inner
+            .realm_creator
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.0.clone())
     }
 
     /// Installs the hook run after suspensions change.

@@ -39,7 +39,7 @@ pub use error::{KvError, KvResult};
 pub use glob::matches as glob_matches;
 pub use pubsub::{Message, Subscription};
 pub use reply::Reply;
-pub use service::{Clock, KvService, KvStats, NamespaceInfo, system_clock, validate_namespace};
+pub use service::{ChannelInfo, Clock, KvService, KvStats, NamespaceInfo, system_clock, validate_namespace};
 
 #[cfg(test)]
 mod tests;

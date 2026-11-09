@@ -143,7 +143,7 @@ impl AuthService {
             },
             secret: code,
         };
-        self.sms().send(&sms).await.map_err(|e| {
+        self.sms_for(coll).send(&sms).await.map_err(|e| {
             tracing::warn!(to = %mask_phone(phone), error = %e, "SMS delivery failed");
             AuthError::Provider("could not send the SMS".into())
         })

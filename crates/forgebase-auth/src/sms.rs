@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
 use crate::social::{HttpClient, HttpRequest, Secret};
 use crate::{AuthError, AuthService};
@@ -257,24 +258,11 @@ enum SmsFile {
 }
 
 impl AuthService {
-    /// Loads `<data_dir>/auth/sms.json` when it exists.
-    pub(crate) async fn load_sms_file(&self) -> Result<(), AuthError> {
-        let Some(dir) = self.config().master_key_path.parent() else {
-            return Ok(());
-        };
-        let path = dir.join("sms.json");
-        let text = match tokio::fs::read_to_string(&path).await {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.set_sms_provider(Arc::new(DevSmsProvider::with_dir(dir.with_file_name("sms"))));
-                return Ok(());
-            }
-            Err(e) => return Err(AuthError::Internal(format!("reading sms.json: {e}"))),
-        };
-        let f: SmsFile = serde_json::from_str(&text).map_err(|e| AuthError::invalid(format!("sms.json: {e}")))?;
+    /// Builds a provider from its configuration.
+    fn sms_from_config(&self, f: SmsFile, dev_dir: PathBuf, what: &str) -> Result<Arc<dyn SmsProvider>, AuthError> {
         let http = self.http_client();
-        let p: Arc<dyn SmsProvider> = match f {
-            SmsFile::Dev => Arc::new(DevSmsProvider::with_dir(dir.with_file_name("sms"))),
+        Ok(match f {
+            SmsFile::Dev => Arc::new(DevSmsProvider::with_dir(dev_dir)),
             SmsFile::Twilio {
                 account_sid,
                 auth_token,
@@ -291,13 +279,52 @@ impl AuthService {
             )?),
             SmsFile::Webhook { url, bearer_token } => {
                 if url::Url::parse(&url).is_err() {
-                    return Err(AuthError::invalid("sms.json: bad webhook url"));
+                    return Err(AuthError::invalid(format!("{what}: bad webhook url")));
                 }
                 Arc::new(WebhookSms::new(url, bearer_token, http))
             }
+        })
+    }
+
+    /// Directory the development provider writes to.
+    fn sms_dev_dir(&self) -> Option<PathBuf> {
+        self.config().master_key_path.parent().map(|d| d.with_file_name("sms"))
+    }
+
+    /// Loads `<data_dir>/auth/sms.json` when it exists.
+    pub(crate) async fn load_sms_file(&self) -> Result<(), AuthError> {
+        let Some(dir) = self.config().master_key_path.parent() else {
+            return Ok(());
         };
+        let path = dir.join("sms.json");
+        let dev = dir.with_file_name("sms");
+        let text = match tokio::fs::read_to_string(&path).await {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.set_sms_provider(Arc::new(DevSmsProvider::with_dir(dev)));
+                return Ok(());
+            }
+            Err(e) => return Err(AuthError::Internal(format!("reading sms.json: {e}"))),
+        };
+        let f: SmsFile = serde_json::from_str(&text).map_err(|e| AuthError::invalid(format!("sms.json: {e}")))?;
+        let p = self.sms_from_config(f, dev, "sms.json")?;
         tracing::info!(provider = ?p, "loaded SMS provider");
         self.set_sms_provider(p);
         Ok(())
+    }
+
+    /// The SMS provider for the realm that owns an auth collection: the
+    /// realm's own gateway when one is configured, else the instance's.
+    pub(crate) fn sms_for(&self, collection: &str) -> Arc<dyn SmsProvider> {
+        let realm = self.realms().realm_of_collection(collection);
+        self.realm_sms(&realm).unwrap_or_else(|| self.sms())
+    }
+
+    /// Builds a provider from a stored (unsealed) realm SMS configuration.
+    pub(crate) fn build_realm_sms(&self, realm: &str, cfg: Json) -> Result<Arc<dyn SmsProvider>, AuthError> {
+        let f: SmsFile =
+            serde_json::from_value(cfg).map_err(|e| AuthError::invalid(format!("sms configuration: {e}")))?;
+        let dev = self.sms_dev_dir().unwrap_or_else(|| PathBuf::from("sms")).join(realm);
+        self.sms_from_config(f, dev, "sms configuration")
     }
 }

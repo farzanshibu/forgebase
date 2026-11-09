@@ -30,6 +30,14 @@ describe("Storage buckets", () => {
     expect(screen.getByRole("progressbar", { name: "Storage quota" })).toHaveAttribute("aria-valuenow", "0");
   });
 
+  it("shows per-bucket usage from the usage endpoint", async () => {
+    const { mock } = setup();
+    renderStudio("/storage");
+    expect(await screen.findByLabelText("Usage of media")).toHaveTextContent("2.01 KiB · 3 objects");
+    expect(await screen.findByLabelText("Usage of docs")).toHaveTextContent("300 B · 1 object");
+    expect(mock.problems).toEqual([]);
+  });
+
   it("creates a bucket and reports a refused name", async () => {
     const { st } = setup();
     renderStudio("/storage");
@@ -103,6 +111,18 @@ describe("Storage object browser", () => {
     const more = await screen.findByRole("button", { name: "Load more" });
     await userEvent.click(more);
     await waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument());
+  });
+
+  it("reads object details from the metadata endpoint, not from a listing", async () => {
+    const { mock } = setup();
+    const seen: string[] = [];
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => { seen.push(String(input)); return base(input, init); }));
+    renderStudio("/storage/b/media?prefix=photos/&key=photos/a.png");
+    const details = await screen.findByLabelText("Object details");
+    expect(await within(details).findByText("2.00 KiB")).toBeInTheDocument();
+    expect(seen.some((u) => u.includes("/buckets/media/meta/photos/a.png"))).toBe(true);
+    expect(mock.problems).toEqual([]);
   });
 
   it("shows details, version history, restores a version and signs a URL for the object", async () => {
@@ -242,6 +262,13 @@ describe("Storage policy, ACL and signed URLs", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save policy" }));
     expect(await screen.findByText("Saved.")).toBeInTheDocument();
     expect(st.buckets.find((b) => b.name === "docs")).toMatchObject({ visibility: "public", versioning: true, max_object_bytes: 10485760, allowed_content_types: ["image/png", "text/plain"] });
+  });
+
+  it("shows how much space the bucket uses on its policy page", async () => {
+    const { mock } = setup();
+    renderStudio("/storage/b/media/settings");
+    expect(await screen.findByLabelText("Bucket space")).toHaveTextContent("Uses 2.01 KiB in 3 objects; 3.01 KiB across 4 versions.");
+    expect(mock.problems).toEqual([]);
   });
 
   it("rejects an unreadable size without calling the server", async () => {

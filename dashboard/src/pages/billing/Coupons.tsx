@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { listCoupons, putCoupon } from "../../api";
+import { archiveCoupon, listCoupons, putCoupon } from "../../api";
 import type { CouponDuration, CouponKind } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { csv } from "../functions/util";
 import { formatBp, formatMoney, parseMinor } from "./money";
@@ -47,7 +47,7 @@ export default function Coupons() {
       {coupons.data && coupons.data.length === 0 && <Empty>No coupons yet.</Empty>}
       {coupons.data && coupons.data.length > 0 && (
         <table aria-label="Coupons" className={TABLE}>
-          <thead className={THEAD}><tr><Th>Code</Th><Th>Discount</Th><Th>Duration</Th><Th>Redeemed</Th><Th>Expires</Th><Th>State</Th></tr></thead>
+          <thead className={THEAD}><tr><Th>Code</Th><Th>Discount</Th><Th>Duration</Th><Th>Redeemed</Th><Th>Expires</Th><Th>State</Th><Th /></tr></thead>
           <tbody>
             {coupons.data.map((c) => (
               <tr key={c.code} className={ROW}>
@@ -56,6 +56,7 @@ export default function Coupons() {
                 <td>{c.duration}{c.duration_cycles ? ` (${c.duration_cycles} cycles)` : ""}</td>
                 <td>{c.redeemed}{c.max_redemptions ? ` / ${c.max_redemptions}` : ""}</td><td className="text-zinc-400">{c.expires_at ? when_(c.expires_at) : "never"}</td>
                 <td><Badge status={c.active ? "active" : "canceled"} /></td>
+                <td>{c.active && <ConfirmButton label={`Archive coupon ${c.code}`} disabled={act.busy} onConfirm={() => void act.run(() => archiveCoupon(c.code), "Coupon archived")} />}</td>
               </tr>
             ))}
           </tbody>

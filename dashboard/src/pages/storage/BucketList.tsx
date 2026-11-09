@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, VISIBILITIES, createBucket, deleteBucket, listBuckets, reconcileStorage, storageQuotaBytes, storageStats } from "../../api";
+import { ApiError, VISIBILITIES, bucketUsage, createBucket, deleteBucket, listBuckets, reconcileStorage, storageQuotaBytes, storageStats } from "../../api";
 import type { ReconcileReport, Visibility } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { formatBytes } from "../../format";
@@ -26,13 +26,14 @@ export default function BucketList() {
         {buckets.data && buckets.data.length === 0 && <p className="text-sm text-zinc-400">No buckets yet. Create one below.</p>}
         {buckets.data && buckets.data.length > 0 && (
           <table aria-label="Buckets" className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-1">Name</th><th>Visibility</th><th>Versioning</th><th>Max object</th><th>Created</th><th /></tr></thead>
+            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-1">Name</th><th>Visibility</th><th>Versioning</th><th>Max object</th><th>Used</th><th>Created</th><th /></tr></thead>
             <tbody>
               {buckets.data.map((b) => (
                 <tr key={b.name} className="border-t border-zinc-800">
                   <td className="py-2"><Link className="text-amber-300 hover:underline" to={`/storage/b/${encodeURIComponent(b.name)}`}>{b.name}</Link></td>
                   <td>{b.visibility}</td><td>{b.versioning ? "on" : "off"}</td>
                   <td>{b.max_object_bytes ? formatBytes(b.max_object_bytes) : "no limit"}</td>
+                  <td><BucketUsageCell name={b.name} /></td>
                   <td className="text-zinc-400">{when(b.created_at)}</td>
                   <td className="text-right"><ConfirmButton label={`Delete bucket ${b.name}`} onConfirm={() => void act(() => deleteBucket(b.name, force))} /></td>
                 </tr>
@@ -44,6 +45,14 @@ export default function BucketList() {
       <NewBucket onCreated={buckets.reload} />
     </div>
   );
+}
+
+/** Objects and bytes of one bucket from `GET .../buckets/{bucket}/usage`; a refusal shows "n/a". */
+function BucketUsageCell({ name }: { name: string }) {
+  const u = useLoad((s) => bucketUsage(name, s), `bucket-usage:${name}`);
+  if (u.error) return <span className="text-zinc-500">n/a</span>;
+  if (!u.data) return <span className="text-zinc-500">…</span>;
+  return <span aria-label={`Usage of ${name}`}>{formatBytes(u.data.logical_bytes)} · {u.data.objects} object{u.data.objects === 1 ? "" : "s"}</span>;
 }
 
 function NewBucket({ onCreated }: { onCreated: () => void }) {
