@@ -12,13 +12,13 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use forgebase_data::{AccessContext, Action, DataService};
 use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::Value as Json;
 use tokio::sync::Notify;
 
+use crate::clock::{Clock, SystemClock};
 use crate::cron::Cron;
 use crate::error::JobError;
 use crate::model::{
@@ -29,11 +29,9 @@ use crate::model::{
 
 type Result<T> = std::result::Result<T, JobError>;
 
-/// Current time in Unix epoch milliseconds.
+/// Current wall-clock time in Unix epoch milliseconds.
 pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    SystemClock.now_ms()
 }
 
 /// The job queue. Cheap to clone.
@@ -45,6 +43,7 @@ pub struct JobService {
 #[derive(Debug)]
 struct Inner {
     data: DataService,
+    clock: Arc<dyn Clock>,
     wake: Notify,
 }
 
@@ -59,12 +58,23 @@ const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max
 impl JobService {
     /// A job service over the data core's database and authorizer.
     pub fn new(data: DataService) -> Self {
+        Self::with_clock(data, Arc::new(SystemClock))
+    }
+
+    /// A job service that reads time from `clock` (tests drive it by hand).
+    pub fn with_clock(data: DataService, clock: Arc<dyn Clock>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 data,
+                clock,
                 wake: Notify::new(),
             }),
         }
+    }
+
+    /// Current time in Unix epoch milliseconds, from this service's clock.
+    pub fn now(&self) -> i64 {
+        self.inner.clock.now_ms()
     }
 
     fn backend(&self) -> &dyn Backend {
@@ -103,7 +113,7 @@ impl JobService {
     /// `created == false`.
     pub async fn enqueue(&self, ctx: &AccessContext, new: NewJob) -> Result<(Job, bool)> {
         self.allow(ctx, Action::EnqueueJob)?;
-        let now = now_ms();
+        let now = self.now();
         let resolved = new.resolve(now)?;
         let actor = ctx.actor();
         let mut tx = self.begin().await?;
@@ -248,7 +258,7 @@ impl JobService {
     pub async fn cancel(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
         let mut tx = self.begin().await?;
-        let r = cancel_tx(&mut *tx, id, now_ms()).await;
+        let r = cancel_tx(&mut *tx, id, self.now()).await;
         finish(tx, r).await
     }
 
@@ -256,7 +266,7 @@ impl JobService {
     pub async fn retry(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
         let mut tx = self.begin().await?;
-        let r = retry_tx(&mut *tx, id, now_ms()).await;
+        let r = retry_tx(&mut *tx, id, self.now()).await;
         let job = finish(tx, r).await?;
         self.wake();
         Ok(job)
@@ -303,7 +313,7 @@ impl JobService {
                 "concurrency must be between 1 and 10000",
             ));
         }
-        let now = now_ms();
+        let now = self.now();
         let mut tx = self.begin().await?;
         let r = async {
             tx.execute(&Statement::new(
@@ -340,7 +350,7 @@ impl JobService {
         if rows.is_empty() {
             return Err(JobError::Internal(format!("worker {id} vanished")));
         }
-        Ok(worker_from(&Row::new(&rows, 0), now_ms()))
+        Ok(worker_from(&Row::new(&rows, 0), self.now()))
     }
 
     /// Workers, most recently seen first.
@@ -353,7 +363,7 @@ impl JobService {
                  FROM _forgebase_job_workers ORDER BY last_seen_at DESC, id LIMIT 500",
             ))
             .await?;
-        let now = now_ms();
+        let now = self.now();
         Ok((0..rows.len()).map(|i| worker_from(&Row::new(&rows, i), now)).collect())
     }
 
@@ -377,7 +387,7 @@ impl JobService {
                 format!("max must be between 1 and {MAX_CLAIM}"),
             ));
         }
-        let now = now_ms();
+        let now = self.now();
         // Cheap read first: an idle poll must not take the single writer.
         if !self.has_claimable(&req, now).await? {
             self.touch_worker(&req.worker_id, now).await?;
@@ -414,7 +424,7 @@ impl JobService {
     /// Extends the lease and tells the worker whether the job was cancelled.
     pub async fn heartbeat(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Heartbeat> {
         self.allow(ctx, Action::WorkJobs)?;
-        let now = now_ms();
+        let now = self.now();
         let mut tx = self.begin().await?;
         let r = heartbeat_tx(&mut *tx, id, lease_id, now).await;
         finish(tx, r).await
@@ -430,7 +440,7 @@ impl JobService {
             None => None,
         };
         let mut tx = self.begin().await?;
-        let r = complete_tx(&mut *tx, id, lease_id, result_text, now_ms()).await;
+        let r = complete_tx(&mut *tx, id, lease_id, result_text, self.now()).await;
         finish(tx, r).await
     }
 
@@ -448,7 +458,7 @@ impl JobService {
     ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let mut tx = self.begin().await?;
-        let r = fail_tx(&mut *tx, id, lease_id, error, retryable, now_ms()).await;
+        let r = fail_tx(&mut *tx, id, lease_id, error, retryable, self.now()).await;
         let job = finish(tx, r).await?;
         if job.status == JobStatus::Queued {
             self.wake();
@@ -460,7 +470,7 @@ impl JobService {
     pub async fn release(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let mut tx = self.begin().await?;
-        let r = release_tx(&mut *tx, id, lease_id, now_ms()).await;
+        let r = release_tx(&mut *tx, id, lease_id, self.now()).await;
         let job = finish(tx, r).await?;
         self.wake();
         Ok(job)
@@ -484,7 +494,7 @@ impl JobService {
             new.visibility_timeout_ms,
         )?;
         let payload = check_payload(&new.payload)?;
-        let now = now_ms();
+        let now = self.now();
         let next = cron
             .next_after(now)
             .ok_or_else(|| JobError::invalid("invalid_cron", "the expression never fires"))?;
@@ -532,7 +542,7 @@ impl JobService {
     /// Changes a schedule. A new cron expression recomputes the next firing.
     pub async fn update_schedule(&self, ctx: &AccessContext, id: &str, patch: SchedulePatch) -> Result<Schedule> {
         self.allow(ctx, Action::ManageJobs)?;
-        let now = now_ms();
+        let now = self.now();
         let mut tx = self.begin().await?;
         let r = async {
             let mut s = fetch_schedule_tx(&mut *tx, id).await?;
@@ -636,7 +646,7 @@ impl JobService {
     /// one. Returns the number of jobs enqueued.
     pub async fn fire_due_schedules(&self, ctx: &AccessContext) -> Result<usize> {
         self.allow(ctx, Action::ManageJobs)?;
-        let now = now_ms();
+        let now = self.now();
         let due = self
             .backend()
             .fetch_all(&Statement::new(
@@ -660,7 +670,7 @@ impl JobService {
     /// this too; this is for idle systems. Returns the number of jobs touched.
     pub async fn reap_expired(&self, ctx: &AccessContext) -> Result<usize> {
         self.allow(ctx, Action::ManageJobs)?;
-        let now = now_ms();
+        let now = self.now();
         let expired = self
             .backend()
             .fetch_all(&Statement::new(

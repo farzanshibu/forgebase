@@ -195,7 +195,16 @@ async fn alter_adds_renames_changes_and_drops_fields_keeping_data() {
         .await
         .unwrap();
     let any = svc
-        .list_records(&ctx, "items", &ListQuery::default())
+        .list_records(
+            &ctx,
+            "items",
+            // Not the default order: record order is not guaranteed, and the
+            // "fresh thing" record would not match the title filter below.
+            &ListQuery {
+                filter: Some("title = 'item 3'".into()),
+                ..ListQuery::default()
+            },
+        )
         .await
         .unwrap()
         .items[0]["id"]

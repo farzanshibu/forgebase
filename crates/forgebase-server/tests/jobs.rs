@@ -90,7 +90,7 @@ async fn a_job_in_flight_survives_a_server_restart_and_completes_exactly_once() 
         .enqueue(&sys, NewJob::new("report", json!({"quarter": "Q3"})))
         .await
         .unwrap();
-    wait(5, || async { (started.load(Ordering::SeqCst) == 1).then_some(()) }).await;
+    wait(60, || async { (started.load(Ordering::SeqCst) == 1).then_some(()) }).await;
     assert_eq!(status(&server, &job.id).await, JobStatus::Running);
     server.shutdown().await.unwrap(); // graceful shutdown mid-job
 
@@ -102,7 +102,7 @@ async fn a_job_in_flight_survives_a_server_restart_and_completes_exactly_once() 
         async move { Ok(json!({"quarter": ctx.payload()["quarter"], "attempt": ctx.attempt()})) }
     });
     let server = start_with_jobs(&cfg, second, pool(100)).await.unwrap();
-    let done = wait(10, || async {
+    let done = wait(60, || async {
         let j = server.jobs().get(&sys, &job.id).await.unwrap();
         (j.status == JobStatus::Succeeded).then_some(j)
     })
@@ -128,9 +128,10 @@ async fn a_job_in_flight_survives_a_server_restart_and_completes_exactly_once() 
 }
 
 /// Delayed jobs and cron schedules are rows: they are still there after a
-/// restart and fire on time.
+/// restart and fire on time. The one real-time smoke test of the job queue
+/// (a real clock across two server runs): generous margins, no negative timing checks.
 #[tokio::test]
-async fn delayed_jobs_and_schedules_survive_a_restart() {
+async fn smoke_delayed_jobs_and_schedules_survive_a_restart_real_time() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = config(tmp.path());
     let sys = AccessContext::system();
@@ -170,11 +171,11 @@ async fn delayed_jobs_and_schedules_survive_a_restart() {
             async { Ok(json!("tock")) }
         });
     let server = start_with_jobs(&cfg, registry, pool(100)).await.unwrap();
-    wait(10, || async {
+    wait(60, || async {
         (status(&server, &delayed.id).await == JobStatus::Succeeded).then_some(())
     })
     .await;
-    wait(10, || async { (ticks.load(Ordering::SeqCst) >= 2).then_some(()) }).await;
+    wait(60, || async { (ticks.load(Ordering::SeqCst) >= 2).then_some(()) }).await;
     assert_eq!(ran_later.load(Ordering::SeqCst), 1);
     server.shutdown().await.unwrap();
 }

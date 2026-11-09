@@ -178,6 +178,31 @@ Native code approved by god for this card because SPEC §3/§6 name USearch. Ver
 
 New packages in `Cargo.lock` (transitive, build-time code generation and the C++ bridge): `cxx` 1.0.205, `cxx-build` 1.0.205, `cxxbridge-flags` 1.0.205, `cxxbridge-macro` 1.0.205, `cxxbridge-cmd` 1.0.205 (lock entry only, not built), `link-cplusplus` 1.0.12, `scratch` 1.0.9, `unicode-width` 0.2.3 (all `MIT OR Apache-2.0`), `codespan-reporting` 0.13.1 (`Apache-2.0`), `termcolor` 1.4.1 (`Unlicense OR MIT`, used under MIT). Building needs a C++17 compiler (Xcode clang on macOS, g++/clang++ on Linux, MSVC on Windows), which the Rust toolchain targets already assume for `cc`.
 
+## FIX-1 (test reliability and the SQLite advisory, 2026-11-09)
+
+No new dependencies.
+
+**RUSTSEC-2026-0459 (bundled SQLite older than 3.54).** `libsqlite3-sys` 0.37
+bundles SQLite 3.51.3. `sqlx-sqlite` 0.9.0 requires `libsqlite3-sys < 0.38`, so
+the fixed SQLite cannot be pulled in yet. Two measures, both to be removed
+when `sqlx-sqlite` allows `libsqlite3-sys >= 0.39`:
+
+1. `deny.toml` ignores the advisory with a reason and a review date
+   (**2026-12-09**; re-check then whether a newer `sqlx` is out).
+2. Mitigation in `forgebase-db`: `Database::open` reads the 32-byte header of
+   a sibling `<db>-wal` file and the 100-byte database header and refuses to open
+   (`DbError::WalPageSizeMismatch`, code `database_wal_mismatch`) when the two
+   page sizes differ, before SQLite can replay that WAL. A missing or empty
+   WAL, a WAL without the WAL magic number (SQLite ignores it) and a new or
+   empty database are not affected. Tested with a hand-crafted pair of files.
+   This is a mitigation for one attack shape (a mismatched database/WAL pair
+   planted next to the database file), not a fix: the real fix is the SQLite upgrade.
+
+**Test clocks.** `forgebase-jobs` and `forgebase-auth` read time through an
+injectable `Clock` (`SystemClock` in production, `ManualClock` in tests), so
+lease, backoff, cron, delay and token-expiry tests advance virtual time
+instead of sleeping and no longer depend on machine load.
+
 ## Phase 3 social login and passkeys additions (FB-22, 2026-11-09)
 
 Versions checked with `cargo info` on 2026-11-09. All pure Rust, no C.
