@@ -129,7 +129,17 @@ impl Req {
         );
         Ok(self)
     }
-    pub fn json_value(mut self, body: Value) -> Self {
+    /// A body the SDK built: top-level `null`s mean "not set" and are left out (the server rejects
+    /// `null` for some optional fields).
+    pub fn json_value(mut self, mut body: Value) -> Self {
+        if let Value::Object(m) = &mut body {
+            m.retain(|_, v| !v.is_null());
+        }
+        self.body = Body::Json(body);
+        self
+    }
+    /// A body the caller built: sent exactly as given.
+    pub fn json_raw(mut self, body: Value) -> Self {
         self.body = Body::Json(body);
         self
     }

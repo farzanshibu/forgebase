@@ -277,7 +277,7 @@ impl ForgeBase {
             .map_err(|_| Error::Config(format!("bad HTTP method {method:?}")))?;
         let mut r = Req::new(m, path);
         if let Some(b) = body {
-            r = r.json_value(b);
+            r = r.json_raw(b);
         }
         self.t.value(r).await
     }
