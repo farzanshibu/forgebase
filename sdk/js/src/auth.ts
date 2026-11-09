@@ -291,8 +291,8 @@ export class AuthApi {
   }
 
   /** Adopt tokens obtained elsewhere (SSR hand-off, tests). */
-  setSession(s: Session | null): Promise<void> {
-    return this.mgr.setSession(s);
+  setSession(s: Session | null, event: AuthEvent = "signed_in"): Promise<void> {
+    return this.mgr.setSession(s, event);
   }
 
   setApiKey(key: string | undefined): void {

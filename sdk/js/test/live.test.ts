@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   AuthenticationError, ConflictError, ForgeBase, NotFoundError, PermissionError, QuotaExceededError, ValidationError, isMfaChallenge,
-  type RealtimeEvent, type RecordEvent, type Session,
+  type RealtimeEvent, type RecordEvent, type RecordsApi, type Session,
 } from "../src/index";
 
 const BIN = process.env.FB_LIVE_BIN;
@@ -164,7 +164,7 @@ describe.skipIf(!BIN)("live server", () => {
 
   describe("collections and records", () => {
     type Post = { id: string; title: string; views: number; status: string; _version?: number };
-    let posts: ReturnType<ForgeBase["collection"]>;
+    let posts: RecordsApi<Post>;
 
     beforeAll(async () => {
       await admin.collections.create({
