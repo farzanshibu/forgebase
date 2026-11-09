@@ -35,6 +35,7 @@ pub mod generated;
 mod http;
 pub mod jobs;
 pub mod kv;
+pub mod queues;
 pub mod realtime;
 pub mod records;
 pub mod storage;
@@ -47,6 +48,10 @@ pub use functions::FunctionsApi;
 pub use http::RetryPolicy;
 pub use jobs::{JobWatch, JobsApi, ListJobs};
 pub use kv::{Kv, KvValue, SetOptions};
+pub use queues::{
+    AckResult, MessagePage, NewMessage, NewSubscription, NewTopic, Published, PullOptions, QueueMessage, QueueSnapshot,
+    QueueStream, QueueSubscription, QueuesApi, ReceivedMessage, SeekResult, SeekTo, StreamOptions, Topic,
+};
 pub use realtime::{
     ChannelMessage, PresenceEvent, PresenceMember, Realtime, RealtimeConfig, RealtimeEvent, RealtimeTransport,
     RecordEvent, ResetEvent, SubscribeOptions, Subscription,

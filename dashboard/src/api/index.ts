@@ -11,6 +11,7 @@ export * from "./vector";
 export * from "./graph";
 export * from "./functions";
 export * from "./jobs";
+export * from "./queues";
 export * from "./storage";
 export * from "./kv";
 export * from "./identity";

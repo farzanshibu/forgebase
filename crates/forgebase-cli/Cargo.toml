@@ -57,5 +57,9 @@ path = "../../tests/integration/realtime_e2e.rs"
 name = "functions_e2e"
 path = "../../tests/integration/functions_e2e.rs"
 
+[[test]]
+name = "queues_e2e"
+path = "../../tests/integration/queues_e2e.rs"
+
 [lints]
 workspace = true

@@ -5,6 +5,7 @@
 import type { ExecutionLog, FunctionInfo, Job, JobEvent, JobStatus, SecretInfo, VersionInfo } from "../api";
 import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
 import { hasResponse, matchRoute, responseSchemaName, validateBody } from "./contract";
+import { installTasks, type TaskState } from "./tasksMock";
 
 const NOW = "2026-11-09T10:00:00Z";
 type Handler = (r: MockRequest) => MockReply;
@@ -116,7 +117,7 @@ const job = (id: string, status: JobStatus, extra: Partial<Job> = {}): Job => ({
   has_checkpoint: false, waiting_for: 0, result_stored: false, ...extra,
 });
 
-export interface JobsState { jobs: Job[]; events: Record<string, JobEvent[]> }
+export interface JobsState { jobs: Job[]; events: Record<string, JobEvent[]>; tasks: TaskState }
 
 export function installJobs(mock: MockApi): JobsState {
   const st: JobsState = {
@@ -126,6 +127,7 @@ export function installJobs(mock: MockApi): JobsState {
       job("job_d", "dead", { last_error: "smtp refused", attempts: 3 }),
       job("job_s", "succeeded", { result: { sent: true }, finished_at: NOW }),
     ],
+    tasks: undefined as unknown as TaskState,
     events: { job_d: [{ id: 1, at: NOW, event: "enqueued", attempt: 0 }, { id: 2, at: NOW, event: "dead", attempt: 3, message: "smtp refused" }] },
   };
   const J = "/api/v1/jobs";
@@ -150,6 +152,7 @@ export function installJobs(mock: MockApi): JobsState {
     return { status: 200, body: { items: all.slice(off, off + lim), total: all.length } };
   }, true);
   route(mock, "GET", `${J}/schedules`, () => ({ status: 200, body: { items: [{ id: "s1", name: "nightly", cron: "0 3 * * *", queue: "default", kind: "report", payload: {}, priority: 0, max_attempts: 3, backoff_base_ms: 1000, backoff_max_ms: 60000, visibility_timeout_ms: 30000, enabled: true, next_run_at: NOW, created_by: "admin", created_at: NOW, updated_at: NOW }] } }), true);
+  st.tasks = installTasks(mock, () => st.jobs); // long-task routes: before the `{id}` routes
   route(mock, "GET", `${J}/{id}`, ({ params }) => { const j = find(params.id!); return j ? { status: 200, body: j } : nf(); }, true);
   route(mock, "GET", `${J}/{id}/events`, ({ params }) => (find(params.id!) ? { status: 200, body: { items: st.events[params.id!] ?? [] } } : nf()), true);
   route(mock, "POST", `${J}/{id}/retry`, ({ params }) => {

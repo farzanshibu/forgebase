@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { JOB_STATUSES, jobStats, listJobs } from "../../api";
+import { JOB_STATUSES, jobStats, listJobQueues, listJobs, pauseJobQueue, resumeJobQueue } from "../../api";
 import type { JobStatus } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
@@ -15,6 +15,17 @@ export default function JobList() {
   const [kind, setKind] = useState("");
   const [offset, setOffset] = useState(0);
   const stats = useLoad(jobStats, "job-stats");
+  const settings = useLoad(listJobQueues, "job-queue-settings");
+  const [queueError, setQueueError] = useState<unknown>();
+  async function toggle(name: string, paused: boolean) {
+    setQueueError(undefined);
+    try {
+      await (paused ? resumeJobQueue(name) : pauseJobQueue(name));
+      settings.reload();
+    } catch (e) {
+      setQueueError(e);
+    }
+  }
   const key = `jobs:${status}:${queue}:${kind}:${offset}`;
   const jobs = useLoad((s) => listJobs({ status: status || undefined, queue, kind, limit: PAGE, offset }, s), key);
 
@@ -24,6 +35,7 @@ export default function JobList() {
   };
   const refresh = () => {
     stats.reload();
+    settings.reload();
     jobs.reload();
   };
   const total = jobs.data?.total ?? 0;
@@ -36,12 +48,12 @@ export default function JobList() {
             {JOB_STATUSES.map((s) => `${stats.data!.totals[s] ?? 0} ${s}`).join(" · ")}
           </p>
         )}
-        <ErrorView error={stats.error} />
+        <ErrorView error={stats.error ?? queueError} />
         {stats.data && stats.data.queues.length === 0 && <p className="text-sm text-zinc-400">No queues yet: they appear when the first job is enqueued.</p>}
         {stats.data && stats.data.queues.length > 0 && (
           <table aria-label="Queues" className="w-full text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-zinc-500">
-              <tr><th className="py-1">Queue</th>{JOB_STATUSES.map((s) => <th key={s}>{s}</th>)}</tr>
+              <tr><th className="py-1">Queue</th>{JOB_STATUSES.map((s) => <th key={s}>{s}</th>)}<th>Limits</th><th /></tr>
             </thead>
             <tbody>
               {stats.data.queues.map((q) => (
@@ -50,6 +62,17 @@ export default function JobList() {
                     <button type="button" className="text-amber-300 hover:underline" aria-label={`Show jobs of ${q.queue}`} onClick={filter(() => setQueue(q.queue))}>{q.queue}</button>
                   </td>
                   {JOB_STATUSES.map((s) => <td key={s}>{q[s]}</td>)}
+                  {(() => {
+                    const cfg = settings.data?.find((x) => x.name === q.queue);
+                    if (!cfg) return <><td /><td /></>;
+                    const limits = [cfg.concurrency ? `${cfg.concurrency} at once` : "", cfg.rate_limit ? `${cfg.rate_limit}/${cfg.rate_period}` : ""].filter(Boolean).join(", ");
+                    return (
+                      <>
+                        <td className="text-zinc-400">{limits || "no limits"}{cfg.paused ? <span className="ml-1 text-amber-300">paused</span> : null}</td>
+                        <td><button type="button" className="text-amber-300 hover:underline" aria-label={`${cfg.paused ? "Resume" : "Pause"} queue ${q.queue}`} onClick={() => void toggle(q.queue, cfg.paused)}>{cfg.paused ? "Resume" : "Pause"}</button></td>
+                      </>
+                    );
+                  })()}
                 </tr>
               ))}
             </tbody>

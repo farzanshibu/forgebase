@@ -157,6 +157,30 @@ st.upload_multipart("docs", "big.bin", &data, 8 << 20, None).await?;  // parts +
 Also: `list_objects` (prefix, delimiter, cursor), `copy_object`, `move_object`, `delete_object`,
 `delete_object_version`, `list_versions`, `upload_signed`.
 
+## Queues
+
+```rust
+use forgebase_sdk::{NewMessage, NewSubscription, NewTopic, PullOptions, SeekTo, StreamOptions};
+use serde_json::json;
+
+let q = fb.queues();
+q.create_topic(&NewTopic::new("orders")).await?;
+q.create_subscription(&NewSubscription::new("billing", "orders")).await?;
+q.publish("orders", &NewMessage::new(json!({"id": 1})).attr("kind", "rush").dedup_id("o-1")).await?;
+
+// Pull and ack
+for m in q.pull("billing", &PullOptions { max_messages: Some(10), wait_ms: Some(2000), ..Default::default() }).await? {
+    q.ack("billing", &[m.ack_id]).await?;
+}
+
+// Streaming pull (server-sent events); settle each delivery, `None` means the server closed the stream
+let mut stream = q.subscribe("billing", &StreamOptions::default()).await?;
+while let Some(m) = stream.next().await? {
+    stream.ack(&m).await?; // or stream.nack(&m) to redeliver after the backoff
+}
+q.seek("billing", &SeekTo::Time("2026-01-01T00:00:00Z".into())).await?; // replay
+```
+
 ## KV, functions, jobs, entitlements
 
 ```rust

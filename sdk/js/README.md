@@ -126,6 +126,42 @@ The access token rotates while the socket stays open: the SDK forwards each new 
 reconnects with a fresh one after the server closes with `4001`. Runtimes without a global `WebSocket` (Node < 22) take
 `new ForgeBase(url, { realtime: { WebSocket } })` with the `ws` package.
 
+## Queues and pub/sub
+
+Durable topics with subscriptions, replay and dead letters (`/api/v1/queues`):
+
+```ts
+await fb.queues.createTopic("orders");
+await fb.queues.createSubscription("billing", "orders", { ackDeadlineMs: 30_000, maxDeliveryAttempts: 5 });
+await fb.queues.publish("orders", { id: 1 }, { attributes: { kind: "rush" }, orderingKey: "u1", dedupId: "o-1" });
+
+// Streaming pull: resolve = ack, throw = nack (redelivered after the backoff). Reconnects by itself.
+const stream = fb.queues.subscribe<{ id: number }>("billing", async (d) => charge(d.data.id), { maxMessages: 50 });
+stream.unsubscribe();
+
+// Manual pull
+for (const m of await fb.queues.pull("billing", { maxMessages: 10, waitMs: 2000 })) await fb.queues.ack("billing", [m.ack_id]);
+await fb.queues.seek("billing", { time: new Date(Date.now() - 3_600_000) }); // replay the last hour
+```
+
+## Jobs and long tasks
+
+```ts
+const job = await fb.jobs.enqueue("video.transcode", { id }, { timeoutMs: 3_600_000, idempotencyKey: `t-${id}` });
+const sub = await fb.jobs.onProgress(job.id, (u) => console.log(u.status, u.progress?.percent)); // stored state first, then live
+const done = await fb.jobs.wait(job.id); // rejects with JobFailedError when the job dies or is cancelled
+await sub.unsubscribe();
+
+// Workflows: a DAG of jobs (a step without `after` follows the previous one).
+const wf = await fb.jobs.createWorkflow(
+  workflow("etl").onFailure("compensate")
+    .step("fetch", "http.get", { url }, { compensate: { kind: "cleanup" } })
+    .step("parse", "csv.parse")
+    .step("load", "db.load", null, { after: ["parse"] }),
+);
+await fb.jobs.waitWorkflow(wf.id);
+```
+
 ## Entitlements and quotas
 
 ```ts

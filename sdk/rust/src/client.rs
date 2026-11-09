@@ -12,6 +12,7 @@ use crate::functions::FunctionsApi;
 use crate::http::{Req, RetryPolicy, Transport, seg};
 use crate::jobs::JobsApi;
 use crate::kv::Kv;
+use crate::queues::QueuesApi;
 use crate::realtime::{Realtime, RealtimeConfig};
 use crate::records::{CollectionsApi, Records};
 use crate::storage::StorageApi;
@@ -250,6 +251,12 @@ impl ForgeBase {
             t: self.t.clone(),
             realtime: self.realtime.clone(),
         }
+    }
+
+    /// Durable topics and queues: publish, pull, ack, replay and streaming pull.
+    #[must_use]
+    pub fn queues(&self) -> QueuesApi {
+        QueuesApi { t: self.t.clone() }
     }
 
     /// Entitlements and quotas.
