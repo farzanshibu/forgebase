@@ -195,3 +195,27 @@ async fn openapi_documents_the_security_schemes() {
             .any(|r| r.get("bearer").is_some())
     );
 }
+
+/// FB-22: the social login and passkey routes are in the OpenAPI document
+/// and every documented operation is routed.
+#[tokio::test]
+async fn openapi_documents_social_login_and_passkeys() {
+    let (app, _auth, _tmp) = app().await;
+    let (status, doc, _) = call(&app, "GET", "/api/openapi.json", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut n = 0;
+    for (path, item) in doc["paths"].as_object().unwrap() {
+        if !(path.starts_with("/api/auth/oauth/") || path.starts_with("/api/auth/webauthn/")) {
+            continue;
+        }
+        for method in item.as_object().unwrap().keys() {
+            n += 1;
+            let uri = path.replace("{provider}", "nope").replace("{id}", "x1");
+            let (status, body, _) = call(&app, &method.to_uppercase(), &uri, None, Some(json!({}))).await;
+            let unrouted = status == StatusCode::METHOD_NOT_ALLOWED
+                || (status == StatusCode::NOT_FOUND && body["error"]["message"] == "no route for this path");
+            assert!(!unrouted, "{method} {path} documented but not routed");
+        }
+    }
+    assert_eq!(n, 16, "all 16 operations are documented");
+}

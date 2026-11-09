@@ -271,6 +271,72 @@ fn serve_flags_override_config_and_a_second_server_is_refused() {
 }
 
 #[test]
+fn the_resp_listener_is_off_unless_asked_and_serve_flags_turn_it_on() {
+    use std::io::{Read, Write};
+    let ping = |addr: &str| -> Option<String> {
+        let mut s = std::net::TcpStream::connect(addr).ok()?;
+        s.set_read_timeout(Some(Duration::from_secs(10))).ok()?;
+        s.write_all(b"PING\r\n").ok()?;
+        let mut buf = [0u8; 16];
+        let n = s.read(&mut buf).ok()?;
+        Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+    };
+    // default: nothing listens on the RESP port
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let (port, resp_port) = (free_port(), free_port());
+    let off = Serve::start(&root, port);
+    assert!(
+        ping(&format!("127.0.0.1:{resp_port}")).is_none(),
+        "RESP is off by default"
+    );
+    off.stop();
+    // --resp --resp-port: PING works before AUTH, data commands need AUTH
+    let child = forgebase(&root)
+        .args([
+            "serve",
+            "--port",
+            &port.to_string(),
+            "--resp",
+            "--resp-port",
+            &resp_port.to_string(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let on = Serve {
+        child: Some(child),
+        addr: format!("127.0.0.1:{port}"),
+    };
+    assert!(wait_healthy(&on.addr, Duration::from_secs(20)));
+    let addr = format!("127.0.0.1:{resp_port}");
+    assert_eq!(ping(&addr).as_deref(), Some("+PONG\r\n"));
+    let mut s = std::net::TcpStream::connect(&addr).unwrap();
+    s.write_all(b"GET k\r\n").unwrap();
+    let mut buf = [0u8; 64];
+    let n = s.read(&mut buf).unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("-NOAUTH"));
+    on.stop();
+    // environment variables work too
+    let child = forgebase(&root)
+        .env("FORGEBASE_RESP_ENABLED", "true")
+        .env("FORGEBASE_RESP_PORT", resp_port.to_string())
+        .args(["serve", "--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let env_on = Serve {
+        child: Some(child),
+        addr: format!("127.0.0.1:{port}"),
+    };
+    assert!(wait_healthy(&env_on.addr, Duration::from_secs(20)));
+    assert_eq!(ping(&addr).as_deref(), Some("+PONG\r\n"));
+    env_on.stop();
+}
+
+#[test]
 fn doctor_flags_a_missing_database() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

@@ -32,6 +32,8 @@ pub const DEFAULT_DATA_DIR: &str = "forgebase-data";
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 /// Default HTTP port.
 pub const DEFAULT_PORT: u16 = 8090;
+/// Default port of the optional RESP (Redis protocol) listener.
+pub const DEFAULT_RESP_PORT: u16 = 6380;
 
 /// Contents written by `forgebase init` when no config file exists.
 pub const CONFIG_TEMPLATE: &str = r#"# ForgeBase configuration.
@@ -58,6 +60,16 @@ read_pool_size = 8          # FORGEBASE_DB_READ_POOL_SIZE
 [log]
 level = "info"              # FORGEBASE_LOG_LEVEL (tracing filter syntax)
 format = "pretty"           # FORGEBASE_LOG_FORMAT: "pretty" or "json"
+
+# Optional Redis protocol (RESP2/RESP3) listener for the built-in KV engine.
+# Off by default; every connection must AUTH with an API key or PAT.
+[resp]
+enabled = false             # FORGEBASE_RESP_ENABLED, flag --resp
+host = "127.0.0.1"          # FORGEBASE_RESP_HOST, flag --resp-host
+port = 6380                 # FORGEBASE_RESP_PORT, flag --resp-port
+max_connections = 1024      # FORGEBASE_RESP_MAX_CONNECTIONS
+max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
+idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
 "#;
 
 /// SQLite `synchronous` setting for the primary database.
@@ -146,6 +158,26 @@ pub struct Config {
     pub database: DatabaseConfig,
     /// Logging settings.
     pub log: LogConfig,
+    /// Redis protocol listener settings.
+    pub resp: RespConfig,
+}
+
+/// Settings of the optional RESP (Redis protocol) listener (FB-32, ADR-0013).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RespConfig {
+    /// Whether the listener runs. Off by default.
+    pub enabled: bool,
+    /// Bind host. Loopback by default: RESP has no TLS.
+    pub host: String,
+    /// Bind port; `0` picks a free port.
+    pub port: u16,
+    /// Most simultaneous connections; further ones are refused.
+    pub max_connections: u32,
+    /// Largest single bulk string (an argument such as a value) in bytes.
+    pub max_bulk_bytes: u64,
+    /// Seconds a connection may sit idle before it is closed; `0` = never.
+    /// Subscribed connections are exempt.
+    pub idle_timeout_secs: u64,
 }
 
 /// HTTP server settings.
@@ -201,6 +233,14 @@ impl Config {
                 level: "info".to_owned(),
                 format: LogFormat::Pretty,
             },
+            resp: RespConfig {
+                enabled: false,
+                host: DEFAULT_HOST.to_owned(),
+                port: DEFAULT_RESP_PORT,
+                max_connections: 1024,
+                max_bulk_bytes: 16 * 1024 * 1024,
+                idle_timeout_secs: 300,
+            },
         }
     }
 
@@ -228,6 +268,18 @@ impl Config {
         }
         if self.log.level.trim().is_empty() {
             return Err(invalid("log.level", "must not be empty".into()));
+        }
+        if self.resp.host.trim().is_empty() || self.resp.host.contains(char::is_whitespace) {
+            return Err(invalid("resp.host", format!("invalid host {:?}", self.resp.host)));
+        }
+        if !(1..=1_000_000).contains(&self.resp.max_connections) {
+            return Err(invalid("resp.max_connections", "must be between 1 and 1000000".into()));
+        }
+        if !(1..=512 * 1024 * 1024).contains(&self.resp.max_bulk_bytes) {
+            return Err(invalid("resp.max_bulk_bytes", "must be between 1 and 536870912".into()));
+        }
+        if self.resp.idle_timeout_secs > 86_400 {
+            return Err(invalid("resp.idle_timeout_secs", "must be at most 86400".into()));
         }
         Ok(())
     }
@@ -263,6 +315,24 @@ impl Config {
         if let Some(v) = o.log_format {
             self.log.format = v;
         }
+        if let Some(v) = o.resp_enabled {
+            self.resp.enabled = v;
+        }
+        if let Some(v) = &o.resp_host {
+            self.resp.host.clone_from(v);
+        }
+        if let Some(v) = o.resp_port {
+            self.resp.port = v;
+        }
+        if let Some(v) = o.resp_max_connections {
+            self.resp.max_connections = v;
+        }
+        if let Some(v) = o.resp_max_bulk_bytes {
+            self.resp.max_bulk_bytes = v;
+        }
+        if let Some(v) = o.resp_idle_timeout_secs {
+            self.resp.idle_timeout_secs = v;
+        }
     }
 }
 
@@ -291,6 +361,18 @@ pub struct ConfigOverrides {
     pub log_level: Option<String>,
     /// Log format.
     pub log_format: Option<LogFormat>,
+    /// Run the RESP listener.
+    pub resp_enabled: Option<bool>,
+    /// RESP bind host.
+    pub resp_host: Option<String>,
+    /// RESP bind port.
+    pub resp_port: Option<u16>,
+    /// Most RESP connections.
+    pub resp_max_connections: Option<u32>,
+    /// Largest RESP bulk string in bytes.
+    pub resp_max_bulk_bytes: Option<u64>,
+    /// RESP idle timeout in seconds.
+    pub resp_idle_timeout_secs: Option<u64>,
 }
 
 impl ConfigOverrides {
@@ -321,10 +403,24 @@ impl ConfigOverrides {
                 "DB_READ_POOL_SIZE" => o.read_pool_size = Some(parse_num(&value).map_err(bad)?),
                 "LOG_LEVEL" => o.log_level = Some(value),
                 "LOG_FORMAT" => o.log_format = Some(value.parse().map_err(bad)?),
+                "RESP_ENABLED" => o.resp_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "RESP_HOST" => o.resp_host = Some(value),
+                "RESP_PORT" => o.resp_port = Some(parse_num(&value).map_err(bad)?),
+                "RESP_MAX_CONNECTIONS" => o.resp_max_connections = Some(parse_num(&value).map_err(bad)?),
+                "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
+                "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 _ => return Err(bad("unknown ForgeBase environment variable".into())),
             }
         }
         Ok(o)
+    }
+}
+
+fn parse_bool(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!("{value:?}: expected true or false")),
     }
 }
 
@@ -346,6 +442,19 @@ struct FileConfig {
     database: FileDatabase,
     #[serde(default)]
     log: FileLog,
+    #[serde(default)]
+    resp: FileResp,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileResp {
+    enabled: Option<bool>,
+    host: Option<String>,
+    port: Option<u16>,
+    max_connections: Option<u32>,
+    max_bulk_bytes: Option<u64>,
+    idle_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -386,6 +495,12 @@ impl From<FileConfig> for ConfigOverrides {
             read_pool_size: f.database.read_pool_size,
             log_level: f.log.level,
             log_format: f.log.format,
+            resp_enabled: f.resp.enabled,
+            resp_host: f.resp.host,
+            resp_port: f.resp.port,
+            resp_max_connections: f.resp.max_connections,
+            resp_max_bulk_bytes: f.resp.max_bulk_bytes,
+            resp_idle_timeout_secs: f.resp.idle_timeout_secs,
         }
     }
 }
@@ -616,6 +731,45 @@ mod tests {
         assert_eq!(c.server.port, 3333);
         assert_eq!(c.log.level, "warn");
         assert_eq!(c.data_dir, tmp.path().join("cli-data"));
+    }
+
+    #[test]
+    fn resp_listener_is_off_by_default_and_configurable_from_every_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = ConfigLoader::new(tmp.path()).load().unwrap().config.resp;
+        assert!(!d.enabled);
+        assert_eq!((d.host.as_str(), d.port), ("127.0.0.1", 6380));
+        std::fs::write(
+            tmp.path().join("forgebase.toml"),
+            "[resp]\nenabled = true\nport = 7000\nmax_connections = 5\n",
+        )
+        .unwrap();
+        let c = ConfigLoader::new(tmp.path()).load().unwrap().config.resp;
+        assert!(c.enabled);
+        assert_eq!((c.port, c.max_connections), (7000, 5));
+        let e = env(&[
+            ("FORGEBASE_RESP_PORT", "7001"),
+            ("FORGEBASE_RESP_IDLE_TIMEOUT_SECS", "9"),
+        ]);
+        let cli = ConfigOverrides {
+            resp_port: Some(7002),
+            resp_host: Some("::1".into()),
+            ..Default::default()
+        };
+        let c = ConfigLoader::new(tmp.path())
+            .env(e)
+            .cli(cli)
+            .load()
+            .unwrap()
+            .config
+            .resp;
+        assert!(c.enabled, "file value kept");
+        assert_eq!((c.port, c.host.as_str(), c.idle_timeout_secs), (7002, "::1", 9));
+        assert_eq!(env(&[("FORGEBASE_RESP_ENABLED", "on")]).resp_enabled, Some(true));
+        assert!(ConfigOverrides::from_env([("FORGEBASE_RESP_ENABLED".to_owned(), "maybe".to_owned())]).is_err());
+        let mut bad = Config::defaults(tmp.path());
+        bad.resp.max_bulk_bytes = 0;
+        assert_eq!(bad.validate().unwrap_err().code(), "config_value_invalid");
     }
 
     #[test]

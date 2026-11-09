@@ -61,6 +61,15 @@ struct GlobalArgs {
     /// Log format: pretty or json [env: FORGEBASE_LOG_FORMAT]
     #[arg(long, global = true, value_name = "FORMAT")]
     log_format: Option<LogFormat>,
+    /// Also serve the Redis protocol (RESP2/RESP3) for the built-in KV engine [env: FORGEBASE_RESP_ENABLED]
+    #[arg(long, global = true)]
+    resp: bool,
+    /// RESP bind host [default: 127.0.0.1] [env: FORGEBASE_RESP_HOST]
+    #[arg(long, global = true, value_name = "HOST")]
+    resp_host: Option<String>,
+    /// RESP bind port; 0 picks a free port [default: 6380] [env: FORGEBASE_RESP_PORT]
+    #[arg(long, global = true, value_name = "PORT")]
+    resp_port: Option<u16>,
 }
 
 impl GlobalArgs {
@@ -72,6 +81,9 @@ impl GlobalArgs {
             port: self.port,
             log_level: self.log_level.clone(),
             log_format: self.log_format,
+            resp_enabled: self.resp.then_some(true),
+            resp_host: self.resp_host.clone(),
+            resp_port: self.resp_port,
             ..ConfigOverrides::default()
         }
     }

@@ -25,6 +25,7 @@ use crate::password::PasswordHasher;
 use crate::store::{self, Tx, first, i, ot, read, rfc3339, rows, t};
 use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Subject};
 
+pub(crate) use flows::normalize_email;
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
 pub use machine::{AdminView, ApiKeyView, CreatedKey, ServiceAccountView};
 
@@ -188,6 +189,8 @@ struct Inner {
     mailer: Arc<dyn Mailer>,
     limiter: RateLimiter,
     keys: RwLock<Vec<SigningKey>>,
+    social: crate::social::Social,
+    webauthn: crate::webauthn::WebAuthnConfig,
 }
 
 impl AuthService {
@@ -220,6 +223,7 @@ impl AuthService {
         mailer: Arc<dyn Mailer>,
         cfg: AuthConfig,
     ) -> Result<Self, AuthError> {
+        let public_url = cfg.public_url.clone();
         let path = cfg.master_key_path.clone();
         let keyring = tokio::task::spawn_blocking(move || Keyring::load_or_create(&path))
             .await
@@ -234,9 +238,12 @@ impl AuthService {
                 mailer,
                 limiter: RateLimiter::new(),
                 keys: RwLock::new(Vec::new()),
+                social: crate::social::Social::default(),
+                webauthn: crate::webauthn::WebAuthnConfig::from_public_url(&public_url),
             }),
         };
         svc.ensure_signing_key(false).await?;
+        svc.load_provider_file().await?;
         if let Some(name) = svc.inner.cfg.default_collection.clone() {
             svc.ensure_auth_collection(&name).await?;
         }
@@ -256,6 +263,14 @@ impl AuthService {
     /// The password hasher (also the data core's `SecretHasher`).
     pub fn hasher(&self) -> &PasswordHasher {
         &self.inner.hasher
+    }
+
+    pub(crate) fn social(&self) -> &crate::social::Social {
+        &self.inner.social
+    }
+
+    pub(crate) fn webauthn_config(&self) -> &crate::webauthn::WebAuthnConfig {
+        &self.inner.webauthn
     }
 
     pub(crate) fn keyring(&self) -> &Keyring {

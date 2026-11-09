@@ -34,10 +34,13 @@ mod error;
 pub mod http;
 pub mod limits;
 pub mod mailer;
+mod openapi;
 pub mod password;
 pub mod scopes;
 mod service;
+pub mod social;
 pub mod store;
+pub mod webauthn;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +53,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::AuthError;
 pub use forgebase_data as data;
 pub use mailer::{DevMailer, Mail, MailKind, Mailer};
+pub use openapi::openapi;
 pub use password::{Argon2Config, PasswordHasher};
 pub use scopes::Scope;
 pub use service::{
@@ -228,6 +232,10 @@ pub enum AuthMethod {
     MagicLink,
     /// Email one-time code.
     EmailOtp,
+    /// Social login (OAuth 2 / OpenID Connect provider).
+    Oauth,
+    /// Passkey (WebAuthn).
+    Passkey,
 }
 
 impl AuthMethod {
@@ -236,6 +244,8 @@ impl AuthMethod {
             AuthMethod::Password => "password",
             AuthMethod::MagicLink => "magic_link",
             AuthMethod::EmailOtp => "email_otp",
+            AuthMethod::Oauth => "oauth",
+            AuthMethod::Passkey => "passkey",
         }
     }
 }
