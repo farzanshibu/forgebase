@@ -121,7 +121,12 @@ impl H {
     /// after a process restart. The clock carries on.
     pub async fn restart(self) -> H {
         let H {
-            db, rt, svc, clock, dir, ..
+            db,
+            rt,
+            svc,
+            clock,
+            dir,
+            ..
         } = self;
         let settings = svc.settings().clone();
         svc.shutdown(Duration::from_secs(1)).await;

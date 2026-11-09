@@ -25,9 +25,7 @@ use forgebase_core::{DataLayout, ErrorCode};
 use forgebase_db::BoxFuture;
 use forgebase_functions::fetch::{Connector, Resolver};
 use forgebase_functions::{DeployRequest, FetchConfig, Fetcher, FunctionService, FunctionsConfig, LimitsInput};
-use forgebase_queue::{
-    NewMessage, NewSubscription, NewTopic, PullRequest, PushConfig, PushKind, QueueSettings, push,
-};
+use forgebase_queue::{NewSubscription, PullRequest, PushConfig, PushKind, QueueSettings, push};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -94,12 +92,33 @@ async fn rest_round_trip() {
     let a = Some("admin");
     let (s, _) = call(&app, None, Method::GET, "/api/v1/queues/topics", None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-    let (s, _) = call(&app, Some("nobody"), Method::POST, "/api/v1/queues/topics", Some(json!({"bad": 1}))).await;
+    let (s, _) = call(
+        &app,
+        Some("nobody"),
+        Method::POST,
+        "/api/v1/queues/topics",
+        Some(json!({"bad": 1})),
+    )
+    .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "authorised before the body is looked at");
 
-    let (s, t) = call(&app, a, Method::POST, "/api/v1/queues/topics", Some(json!({"name": "orders", "max_message_bytes": 128}))).await;
+    let (s, t) = call(
+        &app,
+        a,
+        Method::POST,
+        "/api/v1/queues/topics",
+        Some(json!({"name": "orders", "max_message_bytes": 128})),
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{t}");
-    let (s, _) = call(&app, a, Method::POST, "/api/v1/queues/topics", Some(json!({"name": "orders"}))).await;
+    let (s, _) = call(
+        &app,
+        a,
+        Method::POST,
+        "/api/v1/queues/topics",
+        Some(json!({"name": "orders"})),
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
     let (s, sub) = call(
         &app,
@@ -135,7 +154,10 @@ async fn rest_round_trip() {
         Some(json!({"messages": [{"data": "x".repeat(200)}]})),
     )
     .await;
-    assert_eq!((s, e["error"]["code"].as_str()), (StatusCode::PAYLOAD_TOO_LARGE, Some("message_too_large")));
+    assert_eq!(
+        (s, e["error"]["code"].as_str()),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("message_too_large"))
+    );
 
     let (s, pulled) = call(
         &app,
@@ -170,11 +192,28 @@ async fn rest_round_trip() {
     .await;
     assert_eq!((s, r["count"].as_i64()), (StatusCode::OK, Some(2)));
 
-    let (s, m) = call(&app, a, Method::GET, "/api/v1/queues/subscriptions/billing/metrics", None).await;
-    assert_eq!((s, m["acked_total"].as_i64(), m["backlog_messages"].as_i64()), (StatusCode::OK, Some(2), Some(0)));
+    let (s, m) = call(
+        &app,
+        a,
+        Method::GET,
+        "/api/v1/queues/subscriptions/billing/metrics",
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, m["acked_total"].as_i64(), m["backlog_messages"].as_i64()),
+        (StatusCode::OK, Some(2), Some(0))
+    );
     let (s, m) = call(&app, a, Method::GET, "/api/v1/queues/topics/orders/metrics", None).await;
     assert_eq!((s, m["published_total"].as_i64()), (StatusCode::OK, Some(2)));
-    let (s, page) = call(&app, a, Method::GET, "/api/v1/queues/topics/orders/messages?limit=1", None).await;
+    let (s, page) = call(
+        &app,
+        a,
+        Method::GET,
+        "/api/v1/queues/topics/orders/messages?limit=1",
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
     assert!(page["next_after"].is_i64());
@@ -199,7 +238,14 @@ async fn rest_round_trip() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{r}");
-    let (s, _) = call(&app, a, Method::POST, "/api/v1/queues/subscriptions/billing/seek", Some(json!({}))).await;
+    let (s, _) = call(
+        &app,
+        a,
+        Method::POST,
+        "/api/v1/queues/subscriptions/billing/seek",
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     let (s, _) = call(&app, a, Method::DELETE, "/api/v1/queues/topics/orders", None).await;
     assert_eq!(s, StatusCode::CONFLICT);
@@ -217,7 +263,9 @@ fn openapi_operation_ids_are_unique_and_prefixed() {
     for (path, item) in doc["paths"].as_object().unwrap() {
         assert!(path.starts_with("/api/v1/queues/"), "{path}");
         for (_, op) in item.as_object().unwrap() {
-            let Some(id) = op.get("operationId").and_then(Json::as_str) else { continue };
+            let Some(id) = op.get("operationId").and_then(Json::as_str) else {
+                continue;
+            };
             assert!(id.starts_with("queues_"), "{id}");
             assert!(ids.insert(id.to_owned()), "duplicate {id}");
             n += 1;
@@ -226,7 +274,9 @@ fn openapi_operation_ids_are_unique_and_prefixed() {
     assert_eq!(n, 26);
 }
 
-async fn next_frame(ws: &mut (impl StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>> + Unpin)) -> Json {
+async fn next_frame(
+    ws: &mut (impl StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>> + Unpin),
+) -> Json {
     loop {
         let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
             .await
@@ -258,11 +308,20 @@ async fn websocket_streaming_pull_honours_flow_control() {
     let f = next_frame(&mut ws).await;
     assert_eq!(f["type"], "messages");
     let first: Vec<Json> = f["messages"].as_array().unwrap().clone();
-    assert_eq!(first.iter().map(|m| m["message"]["data"].clone()).collect::<Vec<_>>(), vec![json!(1), json!(2)]);
+    assert_eq!(
+        first.iter().map(|m| m["message"]["data"].clone()).collect::<Vec<_>>(),
+        vec![json!(1), json!(2)]
+    );
     // The window is full: nothing more until something is acknowledged.
-    assert!(tokio::time::timeout(Duration::from_millis(300), ws.next()).await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), ws.next())
+            .await
+            .is_err()
+    );
     ws.send(WsMessage::Text(
-        json!({"type": "ack", "ack_ids": [first[0]["ack_id"]]}).to_string().into(),
+        json!({"type": "ack", "ack_ids": [first[0]["ack_id"]]})
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();
@@ -272,7 +331,10 @@ async fn websocket_streaming_pull_honours_flow_control() {
         let f = next_frame(&mut ws).await;
         match f["type"].as_str() {
             Some("result") => {
-                assert_eq!((f["op"].as_str(), f["result"]["count"].as_i64()), (Some("ack"), Some(1)));
+                assert_eq!(
+                    (f["op"].as_str(), f["result"]["count"].as_i64()),
+                    (Some("ack"), Some(1))
+                );
                 got_result = true;
             }
             Some("messages") => more = f["messages"].as_array().unwrap().clone(),
@@ -347,16 +409,32 @@ async fn sse_streaming_pull_with_rest_acks() {
     assert_eq!(first[0]["message"]["data"], "a");
     let again = sse_events(&mut stream, &mut buf, 2, Duration::from_millis(300)).await;
     assert_eq!(again.len(), 1, "window of one: b waits for the ack");
-    let ack = h.svc.ack(&admin(), "s", &[first[0]["ack_id"].as_str().unwrap().to_owned()]).await.unwrap();
+    let ack = h
+        .svc
+        .ack(&admin(), "s", &[first[0]["ack_id"].as_str().unwrap().to_owned()])
+        .await
+        .unwrap();
     assert_eq!(ack.count, 1);
     let both = sse_events(&mut stream, &mut buf, 2, Duration::from_secs(5)).await;
     assert_eq!(both.len(), 2);
     assert_eq!(both[1]["message"]["data"], "b");
     // Server shutdown ends open streams.
     h.svc.close_streams();
-    let mut rest = Vec::new();
-    let ended = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
-    assert!(ended.is_ok(), "the stream ended");
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut chunk = [0u8; 4096];
+        loop {
+            if buf.contains("\r\n0\r\n\r\n") {
+                return;
+            }
+            let n = stream.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                return;
+            }
+            buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the event stream ended (last chunk sent)");
 }
 
 // ------------------------------------------------------------------- push
@@ -474,7 +552,14 @@ async fn webhook_push_is_signed_and_retried_until_it_succeeds() {
         .await;
     let secret = sub.push_secret.clone().expect("secret shown once on create");
     assert!(secret.starts_with("whsec_"));
-    assert!(h.svc.subscription(&admin(), "hook").await.unwrap().push_secret.is_none());
+    assert!(
+        h.svc
+            .subscription(&admin(), "hook")
+            .await
+            .unwrap()
+            .push_secret
+            .is_none()
+    );
     let id = h.publish("t", json!({"order": 7})).await;
 
     // Pull is refused on a push subscription.
@@ -505,10 +590,14 @@ async fn webhook_push_is_signed_and_retried_until_it_succeeds() {
     h2.svc.set_fetcher(fetcher(mock2));
     h2.topic("t").await;
     h2.topic("dead").await;
-    h2.sub_with(push_sub("bg", PushKind::Webhook, "http://hooks.test/hook", None)).await;
+    h2.sub_with(push_sub("bg", PushKind::Webhook, "http://hooks.test/hook", None))
+        .await;
     h2.svc.start_background();
     h2.publish("t", json!("bg")).await;
-    common::wait_for(Duration::from_secs(5), || async { (hook2.calls.lock().unwrap().len() == 1).then_some(()) }).await;
+    common::wait_for(Duration::from_secs(5), || async {
+        (hook2.calls.lock().unwrap().len() == 1).then_some(())
+    })
+    .await;
     h2.svc.shutdown(Duration::from_secs(1)).await;
 }
 
@@ -520,7 +609,12 @@ async fn webhook_push_is_ssrf_safe() {
     h.topic("t").await;
     h.topic("dead").await;
     // Literal internal addresses are refused when configured.
-    for url in ["http://127.0.0.1:9/x", "http://169.254.169.254/latest", "http://[::1]/x", "http://10.0.0.1/x"] {
+    for url in [
+        "http://127.0.0.1:9/x",
+        "http://169.254.169.254/latest",
+        "http://[::1]/x",
+        "http://10.0.0.1/x",
+    ] {
         let err = h
             .svc
             .create_subscription(&admin(), push_sub("bad", PushKind::Webhook, url, None))
@@ -535,8 +629,13 @@ async fn webhook_push_is_ssrf_safe() {
         .unwrap_err();
     assert_eq!(err.code(), "invalid_push_endpoint");
     // A name that resolves to an internal address is refused at delivery.
-    h.sub_with(push_sub("internal", PushKind::Webhook, "http://internal.test/hook", Some(1)))
-        .await;
+    h.sub_with(push_sub(
+        "internal",
+        PushKind::Webhook,
+        "http://internal.test/hook",
+        Some(1),
+    ))
+    .await;
     h.publish("t", json!("secret")).await;
     assert_eq!(h.svc.deliver_push().await.unwrap(), 0);
     assert!(hook.calls.lock().unwrap().is_empty(), "nothing reached any server");
@@ -555,13 +654,19 @@ async fn webhook_push_is_ssrf_safe() {
     strict.topic("dead").await;
     let err = strict
         .svc
-        .create_subscription(&admin(), push_sub("plain", PushKind::Webhook, "http://hooks.test/hook", None))
+        .create_subscription(
+            &admin(),
+            push_sub("plain", PushKind::Webhook, "http://hooks.test/hook", None),
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code(), "invalid_push_endpoint");
     strict
         .svc
-        .create_subscription(&admin(), push_sub("tls", PushKind::Webhook, "https://hooks.test/hook", None))
+        .create_subscription(
+            &admin(),
+            push_sub("tls", PushKind::Webhook, "https://hooks.test/hook", None),
+        )
         .await
         .unwrap();
 }
@@ -593,14 +698,22 @@ async fn push_to_a_function_acks_on_success_and_dead_letters_failures() {
     let functions = FunctionService::open(h.data.clone(), None, h.keyring.clone(), FunctionsConfig::default())
         .await
         .unwrap();
-    functions.deploy(&admin(), deploy("ok-fn", "(i32.const 0)")).await.unwrap();
-    functions.deploy(&admin(), deploy("bad-fn", "unreachable")).await.unwrap();
+    functions
+        .deploy(&admin(), deploy("ok-fn", "(i32.const 0)"))
+        .await
+        .unwrap();
+    functions
+        .deploy(&admin(), deploy("bad-fn", "unreachable"))
+        .await
+        .unwrap();
     h.svc.attach_functions(functions);
     h.topic("t").await;
     h.topic("dead").await;
     h.sub("dead-reader", "dead").await;
-    h.sub_with(push_sub("to-ok", PushKind::Function, "ok-fn", Some(2))).await;
-    h.sub_with(push_sub("to-bad", PushKind::Function, "bad-fn", Some(2))).await;
+    h.sub_with(push_sub("to-ok", PushKind::Function, "ok-fn", Some(2)))
+        .await;
+    h.sub_with(push_sub("to-bad", PushKind::Function, "bad-fn", Some(2)))
+        .await;
     h.publish("t", json!({"n": 1})).await;
 
     assert_eq!(h.svc.deliver_push().await.unwrap(), 1, "ok-fn acks, bad-fn fails");
@@ -610,10 +723,18 @@ async fn push_to_a_function_acks_on_success_and_dead_letters_failures() {
     let bad = h.svc.dead_letters(&admin(), "to-bad", None, 10).await.unwrap().items;
     assert_eq!(bad.len(), 1);
     assert_eq!(bad[0].history.len(), 2);
-    assert!(bad[0].history.iter().all(|a| a.outcome.as_deref() == Some("failed") && a.error.is_some()));
+    assert!(
+        bad[0]
+            .history
+            .iter()
+            .all(|a| a.outcome.as_deref() == Some("failed") && a.error.is_some())
+    );
     let copy = h.pull("dead-reader", 10).await;
     assert_eq!(copy.len(), 1);
-    assert_eq!(copy[0].message.attributes["forgebase.dead_letter.subscription"], "to-bad");
+    assert_eq!(
+        copy[0].message.attributes["forgebase.dead_letter.subscription"],
+        "to-bad"
+    );
 }
 
 #[tokio::test]
@@ -633,6 +754,4 @@ async fn the_push_secret_survives_a_restart() {
     assert_eq!(h.svc.deliver_push().await.unwrap(), 1);
     let calls = hook.calls.lock().unwrap().clone();
     assert!(push::verify(&secret, &calls[0].0, &calls[0].1, h.svc.now() / 1000, 300));
-    let _ = NewTopic::default();
-    let _ = NewMessage::new(json!(null));
 }

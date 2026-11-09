@@ -330,7 +330,11 @@ mod tests {
         check_schema(&s).unwrap();
         assert!(validate(&s, &json!({"id": "x", "qty": 2, "tags": ["a"]})).is_ok());
         assert!(validate(&s, &json!({"id": "x"})).unwrap_err().contains("qty"));
-        assert!(validate(&s, &json!({"id": "x", "qty": 0})).unwrap_err().contains("/qty"));
+        assert!(
+            validate(&s, &json!({"id": "x", "qty": 0}))
+                .unwrap_err()
+                .contains("/qty")
+        );
         assert!(validate(&s, &json!({"id": "x", "qty": 1.5})).is_err());
         assert!(validate(&s, &json!({"id": "x", "qty": 1, "extra": 1})).is_err());
         assert!(validate(&s, &json!({"id": "x", "qty": 1, "tags": ["a", "a"]})).is_err());

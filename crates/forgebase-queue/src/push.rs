@@ -85,7 +85,9 @@ impl QueueService {
 
     async fn push_one(&self, sub: &SubRow) -> Result<usize> {
         let Some(push) = &sub.push else { return Ok(0) };
-        let batch = self.claim(&sub.name, self.inner.settings.push_batch, None, "push").await?;
+        let batch = self
+            .claim(&sub.name, self.inner.settings.push_batch, None, "push")
+            .await?;
         let mut ok = 0;
         for m in batch {
             let outcome = match push.kind {

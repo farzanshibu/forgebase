@@ -128,8 +128,14 @@ impl QueueService {
             ))
             .await?;
             if sub.max_delivery_attempts.is_some_and(|m| attempts >= m) {
-                self.dead_letter_tx(tx, sub, seq, "max delivery attempts reached (ack deadline expired)", now)
-                    .await?;
+                self.dead_letter_tx(
+                    tx,
+                    sub,
+                    seq,
+                    "max delivery attempts reached (ack deadline expired)",
+                    now,
+                )
+                .await?;
             } else {
                 // The lease id stays valid until the next lease, so a late ack still counts.
                 tx.execute(&Statement::new(
@@ -490,8 +496,14 @@ impl QueueService {
                 ))
                 .await?;
                 if s.max_delivery_attempts.is_some_and(|m| attempts >= m) {
-                    self.dead_letter_tx(&mut *tx, &s, seq, &format!("max delivery attempts reached ({outcome})"), now)
-                        .await?;
+                    self.dead_letter_tx(
+                        &mut *tx,
+                        &s,
+                        seq,
+                        &format!("max delivery attempts reached ({outcome})"),
+                        now,
+                    )
+                    .await?;
                 } else {
                     tx.execute(&Statement::new(
                         "UPDATE _forgebase_queue_deliveries SET state = 'ready', available_at = ?3, lease_id = NULL, \
@@ -520,7 +532,13 @@ impl QueueService {
     }
 
     /// Sets the deadline of deliveries to `ms` from now; `0` nacks them.
-    pub async fn modify_deadline(&self, ctx: &AccessContext, sub: &str, ack_ids: &[String], ms: i64) -> Result<AckResult> {
+    pub async fn modify_deadline(
+        &self,
+        ctx: &AccessContext,
+        sub: &str,
+        ack_ids: &[String],
+        ms: i64,
+    ) -> Result<AckResult> {
         self.allow(ctx, Action::QueueConsume)?;
         Self::check_ids(ack_ids)?;
         let ms = crate::model::in_range("ack_deadline_ms", ms, 0, MAX_ACK_DEADLINE_MS)?;

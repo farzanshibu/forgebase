@@ -74,10 +74,15 @@ pub fn router<S: Clone + Send + Sync + 'static>(service: QueueService) -> Router
         .route("/queues/topics/{topic}/publish", post(publish))
         .route("/queues/topics/{topic}/messages", get(list_messages))
         .route("/queues/topics/{topic}/metrics", get(topic_metrics))
-        .route("/queues/subscriptions", get(list_subscriptions).post(create_subscription))
+        .route(
+            "/queues/subscriptions",
+            get(list_subscriptions).post(create_subscription),
+        )
         .route(
             "/queues/subscriptions/{sub}",
-            get(get_subscription).patch(update_subscription).delete(delete_subscription),
+            get(get_subscription)
+                .patch(update_subscription)
+                .delete(delete_subscription),
         )
         .route("/queues/subscriptions/{sub}/pull", post(pull))
         .route("/queues/subscriptions/{sub}/ack", post(ack))
@@ -89,7 +94,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(service: QueueService) -> Router
         .route("/queues/subscriptions/{sub}/stream", get(stream))
         .route("/queues/subscriptions/{sub}/events", get(events))
         .route("/queues/snapshots", get(list_snapshots).post(create_snapshot))
-        .route("/queues/snapshots/{snapshot}", get(get_snapshot).delete(delete_snapshot))
+        .route(
+            "/queues/snapshots/{snapshot}",
+            get(get_snapshot).delete(delete_snapshot),
+        )
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
         .with_state(service)
 }
@@ -261,7 +269,12 @@ async fn update_topic(
     ),
     responses((status = 204, description = "Deleted"), (status = 409, description = "The topic has subscriptions (`topic_has_subscriptions`)"))
 )]
-async fn delete_topic(State(s): State<QueueService>, Access(ctx): Access, Path(topic): Path<String>, q: Query) -> ApiResult {
+async fn delete_topic(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(topic): Path<String>,
+    q: Query,
+) -> ApiResult {
     let force = q.bool("force")?;
     s.delete_topic(&ctx, &topic, force).await.map_err(api)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -350,9 +363,17 @@ async fn list_subscriptions(State(s): State<QueueService>, Access(ctx): Access, 
     request_body = NewSubscription,
     responses((status = 201, description = "Created", body = Subscription), (status = 409, description = "The name is taken (`subscription_exists`)"))
 )]
-async fn create_subscription(State(s): State<QueueService>, Access(ctx): Access, b: Body<NewSubscription>) -> ApiResult {
+async fn create_subscription(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    b: Body<NewSubscription>,
+) -> ApiResult {
     let new = body(&s, &ctx, Action::QueueAdmin, b)?;
-    Ok((StatusCode::CREATED, Json(s.create_subscription(&ctx, new).await.map_err(api)?)).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(s.create_subscription(&ctx, new).await.map_err(api)?),
+    )
+        .into_response())
 }
 
 /// One subscription.
@@ -418,7 +439,12 @@ async fn pull(
     request_body = AckRequest,
     responses((status = 200, description = "Outcome", body = AckResult))
 )]
-async fn ack(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>, b: Body<AckRequest>) -> ApiResult {
+async fn ack(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: Body<AckRequest>,
+) -> ApiResult {
     let req = body(&s, &ctx, Action::QueueConsume, b)?;
     Ok(Json(s.ack(&ctx, &sub, &req.ack_ids).await.map_err(api)?).into_response())
 }
@@ -430,7 +456,12 @@ async fn ack(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path
     request_body = AckRequest,
     responses((status = 200, description = "Outcome", body = AckResult))
 )]
-async fn nack(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>, b: Body<AckRequest>) -> ApiResult {
+async fn nack(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: Body<AckRequest>,
+) -> ApiResult {
     let req = body(&s, &ctx, Action::QueueConsume, b)?;
     Ok(Json(s.nack(&ctx, &sub, &req.ack_ids).await.map_err(api)?).into_response())
 }
@@ -463,7 +494,12 @@ async fn modify_deadline(
     request_body = SeekRequest,
     responses((status = 200, description = "Outcome", body = SeekResult))
 )]
-async fn seek(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>, b: Body<SeekRequest>) -> ApiResult {
+async fn seek(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: Body<SeekRequest>,
+) -> ApiResult {
     let req = body(&s, &ctx, Action::QueueAdmin, b)?;
     Ok(Json(s.seek(&ctx, &sub, req).await.map_err(api)?).into_response())
 }
@@ -474,7 +510,11 @@ async fn seek(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Pat
     params(("sub" = String, Path, description = "Subscription name")),
     responses((status = 200, description = "Metrics", body = SubscriptionMetrics))
 )]
-async fn subscription_metrics(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>) -> ApiResult {
+async fn subscription_metrics(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+) -> ApiResult {
     Ok(Json(s.subscription_metrics(&ctx, &sub).await.map_err(api)?).into_response())
 }
 
@@ -488,7 +528,12 @@ async fn subscription_metrics(State(s): State<QueueService>, Access(ctx): Access
     ),
     responses((status = 200, description = "Dead letters", body = DeadLetterPage))
 )]
-async fn dead_letters(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>, q: Query) -> ApiResult {
+async fn dead_letters(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    q: Query,
+) -> ApiResult {
     let before = int_param(&q, "before")?;
     let limit = q.u32("limit")?.map_or(50, i64::from);
     Ok(Json(s.dead_letters(&ctx, &sub, before, limit).await.map_err(api)?).into_response())
@@ -552,7 +597,9 @@ async fn stream(
 ) -> ApiResult {
     let w = window(&q)?;
     stream_target(&s, &ctx, &sub).await?;
-    Ok(ws.on_upgrade(move |socket| ws_session(s, ctx, sub, w, socket)).into_response())
+    Ok(ws
+        .on_upgrade(move |socket| ws_session(s, ctx, sub, w, socket))
+        .into_response())
 }
 
 fn frame(m: &StreamServerMessage) -> WsMessage {
@@ -584,7 +631,11 @@ async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Win
         wake.borrow_and_update();
         match s.stream_batch(&sub, &consumer, w.max_messages, w.max_bytes).await {
             Ok(messages) if !messages.is_empty() => {
-                if tx.send(frame(&StreamServerMessage::Messages { messages })).await.is_err() {
+                if tx
+                    .send(frame(&StreamServerMessage::Messages { messages }))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 continue;
@@ -670,10 +721,7 @@ async fn handle_client(
         }
     };
     Some(match r {
-        Ok(result) => StreamServerMessage::Result {
-            op: op.into(),
-            result,
-        },
+        Ok(result) => StreamServerMessage::Result { op: op.into(), result },
         Err(e) => {
             let a = api(e);
             StreamServerMessage::Error {
@@ -728,7 +776,11 @@ async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): P
                 return Some((Ok(error_event(api(e))), st));
             }
             st.wake.borrow_and_update();
-            match st.s.stream_batch(&st.sub, &st.consumer, st.w.max_messages, st.w.max_bytes).await {
+            match st
+                .s
+                .stream_batch(&st.sub, &st.consumer, st.w.max_messages, st.w.max_bytes)
+                .await
+            {
                 Ok(batch) if !batch.is_empty() => st.pending.extend(batch),
                 Ok(_) => {
                     let poll = st.s.settings().poll_interval;
@@ -788,7 +840,11 @@ async fn list_snapshots(State(s): State<QueueService>, Access(ctx): Access) -> A
 )]
 async fn create_snapshot(State(s): State<QueueService>, Access(ctx): Access, b: Body<NewSnapshot>) -> ApiResult {
     let new = body(&s, &ctx, Action::QueueAdmin, b)?;
-    Ok((StatusCode::CREATED, Json(s.create_snapshot(&ctx, new).await.map_err(api)?)).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(s.create_snapshot(&ctx, new).await.map_err(api)?),
+    )
+        .into_response())
 }
 
 /// One snapshot.

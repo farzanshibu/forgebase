@@ -742,7 +742,11 @@ pub(crate) fn check_name(what: &str, value: &str) -> Result<(), QueueError> {
 }
 
 pub(crate) fn check_labels(labels: &BTreeMap<String, String>) -> Result<(), QueueError> {
-    if labels.len() > 64 || labels.iter().any(|(k, v)| k.is_empty() || k.len() > 64 || v.len() > 256) {
+    if labels.len() > 64
+        || labels
+            .iter()
+            .any(|(k, v)| k.is_empty() || k.len() > 64 || v.len() > 256)
+    {
         return Err(QueueError::invalid(
             "invalid_labels",
             "at most 64 labels, keys 1-64 bytes, values up to 256 bytes",

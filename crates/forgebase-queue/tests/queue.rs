@@ -49,7 +49,11 @@ async fn fan_out_reaches_every_subscription() {
     h.svc.run_maintenance().await.unwrap();
     h.clock.advance(Duration::from_secs(2));
     let again = h.pull("shipping", 10).await;
-    assert_eq!(ids(&again), ids(&b), "unacked messages of the other subscription come back");
+    assert_eq!(
+        ids(&again),
+        ids(&b),
+        "unacked messages of the other subscription come back"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -58,7 +62,9 @@ async fn competing_consumers_share_a_subscription_without_duplicates() {
     h.topic("work").await;
     h.sub("workers", "work").await;
     for batch in 0..3 {
-        let msgs = (0..100).map(|i| NewMessage::new(json!({"job": batch * 100 + i}))).collect();
+        let msgs = (0..100)
+            .map(|i| NewMessage::new(json!({"job": batch * 100 + i})))
+            .collect();
         h.svc.publish(&admin(), "work", msgs).await.unwrap();
     }
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -115,11 +121,17 @@ async fn a_missed_ack_deadline_redelivers() {
     assert_eq!((first.len(), first[0].delivery_attempt), (1, 1));
     assert!(h.pull("s", 10).await.is_empty(), "leased: not handed out twice");
     h.clock.advance(Duration::from_millis(2_001));
-    assert!(h.pull("s", 10).await.is_empty(), "expired, waiting for the retry backoff");
+    assert!(
+        h.pull("s", 10).await.is_empty(),
+        "expired, waiting for the retry backoff"
+    );
     h.clock.advance(Duration::from_millis(1_000));
     let second = h.pull("s", 10).await;
     assert_eq!(second.len(), 1);
-    assert_eq!((second[0].message.id.as_str(), second[0].delivery_attempt), (id.as_str(), 2));
+    assert_eq!(
+        (second[0].message.id.as_str(), second[0].delivery_attempt),
+        (id.as_str(), 2)
+    );
     // The first delivery's ack id is no longer current.
     let stale = h.svc.ack(&admin(), "s", &[first[0].ack_id.clone()]).await.unwrap();
     assert_eq!((stale.count, stale.unknown.len()), (0, 1));
@@ -152,7 +164,11 @@ async fn messages_are_dead_lettered_after_max_attempts_with_their_history() {
     .await;
     let id = h
         .svc
-        .publish(&admin(), "t", vec![NewMessage::new(json!({"x": 1})).attr("kind", "bad")])
+        .publish(
+            &admin(),
+            "t",
+            vec![NewMessage::new(json!({"x": 1})).attr("kind", "bad")],
+        )
         .await
         .unwrap()[0]
         .message_id
@@ -185,7 +201,10 @@ async fn messages_are_dead_lettered_after_max_attempts_with_their_history() {
     assert_eq!(Some(m.id.clone()), dl[0].forwarded_message_id);
 
     let metrics = h.svc.subscription_metrics(&admin(), "s").await.unwrap();
-    assert_eq!((metrics.dead_lettered_total, metrics.dead_letters, metrics.nacked_total), (1, 1, 3));
+    assert_eq!(
+        (metrics.dead_lettered_total, metrics.dead_letters, metrics.nacked_total),
+        (1, 1, 3)
+    );
 
     // Missed deadlines count too.
     h.sub_with(NewSubscription {
@@ -228,11 +247,18 @@ async fn ordering_keys_deliver_in_publish_order_one_at_a_time() {
     assert_eq!(h.pull("unordered", 10).await.len(), 6, "ordering off: all at once");
 
     let first = h.pull("ordered", 10).await;
-    assert_eq!(datas(&first), vec![json!("A1"), json!("B1"), json!("C1")], "one per key");
+    assert_eq!(
+        datas(&first),
+        vec![json!("A1"), json!("B1"), json!("C1")],
+        "one per key"
+    );
     assert!(h.pull("ordered", 10).await.is_empty(), "the heads are outstanding");
     // Ack A1: A2 is next. Nack B1: B1 comes back before B2.
     h.ack("ordered", &first[0..1]).await;
-    h.svc.nack(&admin(), "ordered", &[first[1].ack_id.clone()]).await.unwrap();
+    h.svc
+        .nack(&admin(), "ordered", &[first[1].ack_id.clone()])
+        .await
+        .unwrap();
     let second = h.pull("ordered", 10).await;
     assert_eq!(datas(&second), vec![json!("B1"), json!("A2")]);
     h.ack("ordered", &second).await;
@@ -336,7 +362,10 @@ async fn record_changes_are_relayed_from_the_realtime_outbox_once() {
         )
         .await
         .unwrap();
-    h.data.create_record(&admin(), "orders", json!({"code": "before"})).await.unwrap();
+    h.data
+        .create_record(&admin(), "orders", json!({"code": "before"}))
+        .await
+        .unwrap();
     h.svc
         .create_topic(
             &admin(),
@@ -370,7 +399,11 @@ async fn record_changes_are_relayed_from_the_realtime_outbox_once() {
         .unwrap_err();
     assert!(matches!(err, QueueError::Access(_)), "{err:?}");
 
-    let rec = h.data.create_record(&admin(), "orders", json!({"code": "a1"})).await.unwrap();
+    let rec = h
+        .data
+        .create_record(&admin(), "orders", json!({"code": "a1"}))
+        .await
+        .unwrap();
     // A transaction that rolls back (duplicate code) leaves no outbox row and no message.
     assert!(
         h.data
@@ -391,7 +424,11 @@ async fn record_changes_are_relayed_from_the_realtime_outbox_once() {
     assert_eq!(m.attributes["forgebase.record_id"], rid);
     assert_eq!(m.ordering_key.as_deref(), Some(rid));
     // A source topic does not take publishes.
-    let err = h.svc.publish(&admin(), "order-events", vec![NewMessage::new(json!(1))]).await.unwrap_err();
+    let err = h
+        .svc
+        .publish(&admin(), "order-events", vec![NewMessage::new(json!(1))])
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "topic_has_source");
 }
 
@@ -509,7 +546,11 @@ async fn queued_and_leased_messages_survive_a_restart() {
     h.ack("s", &fresh).await;
     h.clock.advance(Duration::from_millis(5_001));
     let again = h.pull("s", 10).await;
-    assert_eq!(ids(&again), vec![a], "the crashed consumer's lease expired: redelivered");
+    assert_eq!(
+        ids(&again),
+        vec![a],
+        "the crashed consumer's lease expired: redelivered"
+    );
     assert_eq!(again[0].delivery_attempt, 2);
 }
 
@@ -567,7 +608,10 @@ async fn schema_size_and_attribute_rules_are_enforced_at_publish() {
         )
         .await
         .unwrap();
-    let ok = h.svc.publish(&admin(), "typed", vec![NewMessage::new(json!({"id": "a", "qty": 2}))]).await;
+    let ok = h
+        .svc
+        .publish(&admin(), "typed", vec![NewMessage::new(json!({"id": "a", "qty": 2}))])
+        .await;
     assert!(ok.is_ok());
     let err = h
         .svc
@@ -577,11 +621,19 @@ async fn schema_size_and_attribute_rules_are_enforced_at_publish() {
     assert_eq!(err.code(), "schema_violation");
     assert!(err.to_string().contains("/id"), "{err}");
     let big = json!({"id": "x".repeat(300)});
-    let err = h.svc.publish(&admin(), "typed", vec![NewMessage::new(big)]).await.unwrap_err();
+    let err = h
+        .svc
+        .publish(&admin(), "typed", vec![NewMessage::new(big)])
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "message_too_large");
     let err = h
         .svc
-        .publish(&admin(), "typed", vec![NewMessage::new(json!({"id": "a"})).attr("forgebase.op", "x")])
+        .publish(
+            &admin(),
+            "typed",
+            vec![NewMessage::new(json!({"id": "a"})).attr("forgebase.op", "x")],
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code(), "invalid_message");
@@ -591,7 +643,10 @@ async fn schema_size_and_attribute_rules_are_enforced_at_publish() {
         .publish(
             &admin(),
             "typed",
-            vec![NewMessage::new(json!({"id": "fine"})), NewMessage::new(json!({"qty": 1}))],
+            vec![
+                NewMessage::new(json!({"id": "fine"})),
+                NewMessage::new(json!({"qty": 1})),
+            ],
         )
         .await
         .unwrap_err();
@@ -637,7 +692,11 @@ async fn retention_drops_old_and_excess_messages() {
     h.publish("short", json!("new")).await;
     let r = h.svc.run_maintenance().await.unwrap();
     assert_eq!(r.pruned, 1);
-    assert_eq!(datas(&h.pull("s", 10).await), vec![json!("new")], "unacked but past retention: gone");
+    assert_eq!(
+        datas(&h.pull("s", 10).await),
+        vec![json!("new")],
+        "unacked but past retention: gone"
+    );
 
     h.svc
         .create_topic(
@@ -650,7 +709,9 @@ async fn retention_drops_old_and_excess_messages() {
         )
         .await
         .unwrap();
-    let msgs = (0..20).map(|i| NewMessage::new(json!({"i": i, "pad": "x".repeat(80)}))).collect();
+    let msgs = (0..20)
+        .map(|i| NewMessage::new(json!({"i": i, "pad": "x".repeat(80)})))
+        .collect();
     h.svc.publish(&admin(), "small", msgs).await.unwrap();
     h.svc.run_maintenance().await.unwrap();
     let m = h.svc.topic_metrics(&admin(), "small").await.unwrap();
@@ -700,7 +761,11 @@ async fn publishes_are_metered_and_quotas_enforced() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), "quota_exceeded");
-    assert_eq!(h.svc.topic(&admin(), "t").await.unwrap().published_total, 2, "a refusal publishes nothing");
+    assert_eq!(
+        h.svc.topic(&admin(), "t").await.unwrap().published_total,
+        2,
+        "a refusal publishes nothing"
+    );
     // Duplicates do not use quota.
     h.svc
         .publish(&u, "t", vec![NewMessage::new(json!(3)).dedup_id("d")])
@@ -712,7 +777,11 @@ async fn publishes_are_metered_and_quotas_enforced() {
         .await
         .unwrap();
     assert!(dup[0].duplicate);
-    let err = h.svc.publish(&u, "t", vec![NewMessage::new(json!(5))]).await.unwrap_err();
+    let err = h
+        .svc
+        .publish(&u, "t", vec![NewMessage::new(json!(5))])
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "quota_exceeded");
     // The transactional path checks the quota too.
     let backend = h.data.backend().clone();
@@ -746,7 +815,11 @@ async fn transactional_publishes_are_metered_after_commit() {
     tx.commit().await.unwrap();
     assert_eq!(h.svc.meter_pending().await.unwrap(), 1);
     assert_eq!(h.svc.meter_pending().await.unwrap(), 0, "metered once");
-    let err = h.svc.publish(&u, "t", vec![NewMessage::new(json!(2))]).await.unwrap_err();
+    let err = h
+        .svc
+        .publish(&u, "t", vec![NewMessage::new(json!(2))])
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "quota_exceeded", "the metered usage counts");
 }
 
@@ -756,10 +829,18 @@ async fn every_operation_is_authorised() {
     h.topic("t").await;
     h.sub("s", "t").await;
     let anon = AccessContext::anonymous();
-    let err = h.svc.publish(&anon, "t", vec![NewMessage::new(json!(1))]).await.unwrap_err();
+    let err = h
+        .svc
+        .publish(&anon, "t", vec![NewMessage::new(json!(1))])
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "unauthenticated");
     let u = user("u3");
-    let err = h.svc.publish(&u, "t", vec![NewMessage::new(json!(1))]).await.unwrap_err();
+    let err = h
+        .svc
+        .publish(&u, "t", vec![NewMessage::new(json!(1))])
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "forbidden");
     h.grant("user:users/u3", "engine:queue_publish").await;
     h.grant("user:users/u3", "engine:queue_consume").await;
@@ -769,9 +850,30 @@ async fn every_operation_is_authorised() {
     h.svc.ack(&u, "s", &[got[0].ack_id.clone()]).await.unwrap();
     for err in [
         h.svc.topics(&u).await.map(|_| ()).unwrap_err(),
-        h.svc.create_topic(&u, NewTopic { name: "x".into(), ..NewTopic::default() }).await.map(|_| ()).unwrap_err(),
+        h.svc
+            .create_topic(
+                &u,
+                NewTopic {
+                    name: "x".into(),
+                    ..NewTopic::default()
+                },
+            )
+            .await
+            .map(|_| ())
+            .unwrap_err(),
         h.svc.delete_subscription(&u, "s").await.unwrap_err(),
-        h.svc.seek(&u, "s", SeekRequest { time: Some(iso(0)), ..SeekRequest::default() }).await.map(|_| ()).unwrap_err(),
+        h.svc
+            .seek(
+                &u,
+                "s",
+                SeekRequest {
+                    time: Some(iso(0)),
+                    ..SeekRequest::default()
+                },
+            )
+            .await
+            .map(|_| ())
+            .unwrap_err(),
     ] {
         assert_eq!(err.code(), "forbidden");
     }
@@ -805,7 +907,10 @@ async fn long_poll_waits_for_a_publish() {
     h.publish("t", json!("wake")).await;
     let (got, waited) = waiter.await.unwrap();
     assert_eq!(datas(&got), vec![json!("wake")]);
-    assert!(waited < Duration::from_secs(4), "woken by the publish, not the timeout ({waited:?})");
+    assert!(
+        waited < Duration::from_secs(4),
+        "woken by the publish, not the timeout ({waited:?})"
+    );
     // Nothing to deliver: returns after the wait.
     let started = tokio::time::Instant::now();
     let none = h
@@ -833,6 +938,9 @@ async fn deleting_a_topic_with_subscriptions_needs_force() {
     let err = h.svc.delete_topic(&admin(), "t", false).await.unwrap_err();
     assert_eq!(err.code(), "topic_has_subscriptions");
     h.svc.delete_topic(&admin(), "t", true).await.unwrap();
-    assert_eq!(h.svc.subscription(&admin(), "s").await.unwrap_err().code(), "subscription_not_found");
+    assert_eq!(
+        h.svc.subscription(&admin(), "s").await.unwrap_err().code(),
+        "subscription_not_found"
+    );
     assert!(h.svc.topics(&admin()).await.unwrap().is_empty());
 }

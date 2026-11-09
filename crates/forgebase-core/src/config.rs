@@ -388,7 +388,10 @@ impl Config {
         }
         let q = &self.queue;
         if !(64..=10 * 1024 * 1024).contains(&q.max_message_bytes) {
-            return Err(invalid("queue.max_message_bytes", "must be between 64 and 10485760".into()));
+            return Err(invalid(
+                "queue.max_message_bytes",
+                "must be between 64 and 10485760".into(),
+            ));
         }
         if q.default_retention_secs < 60 || q.max_retention_secs < q.default_retention_secs {
             return Err(invalid(

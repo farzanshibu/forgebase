@@ -107,7 +107,14 @@ pub(crate) fn minute(now: i64) -> i64 {
 }
 
 /// Adds `n` to a per-minute rate counter.
-pub(crate) async fn bump_rate(tx: &mut dyn WriteTx, scope: &str, name: &str, metric: &str, now: i64, n: i64) -> Result<()> {
+pub(crate) async fn bump_rate(
+    tx: &mut dyn WriteTx,
+    scope: &str,
+    name: &str,
+    metric: &str,
+    now: i64,
+    n: i64,
+) -> Result<()> {
     if n == 0 {
         return Ok(());
     }
@@ -309,8 +316,7 @@ pub(crate) async fn sub_row(db: &mut Db<'_>, name: &str) -> Result<SubRow> {
         .ok_or_else(|| QueueError::SubscriptionNotFound(name.to_owned()))
 }
 
-pub(crate) const MESSAGE_COLS: &str =
-    "m.seq, m.topic, m.id, m.data, m.attributes, m.ordering_key, m.dedup_id, m.publisher, m.bytes, m.published_at, m.history";
+pub(crate) const MESSAGE_COLS: &str = "m.seq, m.topic, m.id, m.data, m.attributes, m.ordering_key, m.dedup_id, m.publisher, m.bytes, m.published_at, m.history";
 
 pub(crate) fn message_from(r: &Row<'_>) -> Result<Message> {
     let history = match r.opt_text("history") {
@@ -596,7 +602,9 @@ impl QueueService {
             None => (None, None),
             Some(src) => {
                 if !ctx.is_privileged() {
-                    return Err(forgebase_data::DataError::Forbidden("record sources need an administrator".into()).into());
+                    return Err(
+                        forgebase_data::DataError::Forbidden("record sources need an administrator".into()).into(),
+                    );
                 }
                 if new.schema.is_some() {
                     return Err(QueueError::invalid(
@@ -604,7 +612,10 @@ impl QueueService {
                         "a topic fed by a record source cannot have a schema",
                     ));
                 }
-                (Some(check_source(src)?), Some(serde_json::to_string(&src.ops).unwrap_or_default()))
+                (
+                    Some(check_source(src)?),
+                    Some(serde_json::to_string(&src.ops).unwrap_or_default()),
+                )
             }
         };
         let now = self.now();
@@ -685,7 +696,9 @@ impl QueueService {
                 "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics ORDER BY name"
             )))
             .await?;
-        Row::all(&rows).map(|r| TopicRow::from_row(&r).map(|t| t.public())).collect()
+        Row::all(&rows)
+            .map(|r| TopicRow::from_row(&r).map(|t| t.public()))
+            .collect()
     }
 
     /// Changes a topic's limits, schema or labels.
@@ -699,17 +712,30 @@ impl QueueService {
             sets.push(format!("{col} = ?{}", params.len()));
         };
         if let Some(v) = patch.retention_ms {
-            set("retention_ms", in_range("retention_ms", v, 60_000, s.max_retention_ms)?.into());
+            set(
+                "retention_ms",
+                in_range("retention_ms", v, 60_000, s.max_retention_ms)?.into(),
+            );
         }
         if let Some(v) = patch.retention_bytes {
-            let v = if v == 0 { None } else { Some(in_range("retention_bytes", v, 1024, i64::MAX)?) };
+            let v = if v == 0 {
+                None
+            } else {
+                Some(in_range("retention_bytes", v, 1024, i64::MAX)?)
+            };
             set("retention_bytes", v.into());
         }
         if let Some(v) = patch.max_message_bytes {
-            set("max_message_bytes", in_range("max_message_bytes", v, 64, s.max_message_bytes)?.into());
+            set(
+                "max_message_bytes",
+                in_range("max_message_bytes", v, 64, s.max_message_bytes)?.into(),
+            );
         }
         if let Some(v) = patch.dedup_window_ms {
-            set("dedup_window_ms", in_range("dedup_window_ms", v, 1_000, s.max_dedup_window_ms)?.into());
+            set(
+                "dedup_window_ms",
+                in_range("dedup_window_ms", v, 1_000, s.max_dedup_window_ms)?.into(),
+            );
         }
         if patch.clear_schema {
             set("message_schema", Value::Null);
@@ -858,7 +884,11 @@ impl QueueService {
         let Some(ent) = self.inner.ent.get() else { return };
         let msg_feature = self.inner.settings.messages_feature.as_deref();
         for h in holds {
-            let units = if Some(h.feature.as_str()) == msg_feature { count } else { bytes };
+            let units = if Some(h.feature.as_str()) == msg_feature {
+                count
+            } else {
+                bytes
+            };
             let r = if units > 0 {
                 ent.commit(&AccessContext::system(), &h.id, Some(units)).await
             } else {
@@ -952,7 +982,11 @@ impl QueueService {
         let holds = match &subject {
             Some(s) => {
                 let (count, bytes) = self.expected_fresh(&t, &prepared, now).await?;
-                if count > 0 { self.hold(s, count, bytes).await? } else { Vec::new() }
+                if count > 0 {
+                    self.hold(s, count, bytes).await?
+                } else {
+                    Vec::new()
+                }
             }
             None => Vec::new(),
         };
@@ -974,7 +1008,8 @@ impl QueueService {
             Ok(out) => {
                 let fresh: Vec<_> = out.iter().zip(&prepared).filter(|(o, _)| !o.duplicate).collect();
                 let bytes: i64 = fresh.iter().map(|(_, p)| p.bytes).sum();
-                self.settle_holds(&holds, i64::try_from(fresh.len()).unwrap_or(0), bytes).await;
+                self.settle_holds(&holds, i64::try_from(fresh.len()).unwrap_or(0), bytes)
+                    .await;
                 metrics::counter!("forgebase_queue_published_total", "topic" => topic.to_owned())
                     .increment(fresh.len() as u64);
                 self.notify();
@@ -1136,7 +1171,12 @@ impl QueueService {
         )?;
         let attempts = match new.max_delivery_attempts {
             None | Some(0) => None,
-            Some(n) => Some(in_range("max_delivery_attempts", n, 1, crate::model::MAX_DELIVERY_ATTEMPTS)?),
+            Some(n) => Some(in_range(
+                "max_delivery_attempts",
+                n,
+                1,
+                crate::model::MAX_DELIVERY_ATTEMPTS,
+            )?),
         };
         let base = in_range("backoff_base_ms", new.backoff_base_ms.unwrap_or(1_000), 0, 600_000)?;
         let cap = in_range("backoff_max_ms", new.backoff_max_ms.unwrap_or(600_000), base, 3_600_000)?;
@@ -1187,8 +1227,10 @@ impl QueueService {
                 (Some(StartPosition::Earliest), _) => 0,
                 (Some(StartPosition::Time(_)), Some(ts)) => cursor_before(&mut *tx, &new.topic, ts).await?,
                 _ => scalar(
-                    &tx.fetch_all(&Statement::raw("SELECT coalesce(max(seq), 0) FROM _forgebase_queue_messages"))
-                        .await?,
+                    &tx.fetch_all(&Statement::raw(
+                        "SELECT coalesce(max(seq), 0) FROM _forgebase_queue_messages",
+                    ))
+                    .await?,
                 ),
             };
             tx.execute(&Statement::new(
@@ -1253,7 +1295,9 @@ impl QueueService {
                     .await?
             }
         };
-        Row::all(&rows).map(|r| SubRow::from_row(&r).map(|s| s.public())).collect()
+        Row::all(&rows)
+            .map(|r| SubRow::from_row(&r).map(|s| s.public()))
+            .collect()
     }
 
     /// Changes a subscription. A new webhook endpoint gets a new signing
@@ -1284,7 +1328,12 @@ impl QueueService {
             let v = if v == 0 {
                 None
             } else {
-                Some(in_range("max_delivery_attempts", v, 1, crate::model::MAX_DELIVERY_ATTEMPTS)?)
+                Some(in_range(
+                    "max_delivery_attempts",
+                    v,
+                    1,
+                    crate::model::MAX_DELIVERY_ATTEMPTS,
+                )?)
             };
             set("max_delivery_attempts", v.into());
         }
@@ -1338,7 +1387,10 @@ impl QueueService {
                 }
             }
             tx.execute(&Statement::new(
-                format!("UPDATE _forgebase_queue_subscriptions SET {} WHERE name = ?1", sets.join(", ")),
+                format!(
+                    "UPDATE _forgebase_queue_subscriptions SET {} WHERE name = ?1",
+                    sets.join(", ")
+                ),
                 params,
             ))
             .await?;
@@ -1412,7 +1464,10 @@ fn check_topic_schema(s: &Json) -> Result<String> {
 fn check_source(src: &RecordSource) -> Result<String> {
     let c = src.collection.trim();
     if c.is_empty() || c.len() > 128 {
-        return Err(QueueError::invalid("invalid_source", "source.collection must be 1-128 bytes"));
+        return Err(QueueError::invalid(
+            "invalid_source",
+            "source.collection must be 1-128 bytes",
+        ));
     }
     for op in &src.ops {
         if !matches!(op.as_str(), "create" | "update" | "delete") {

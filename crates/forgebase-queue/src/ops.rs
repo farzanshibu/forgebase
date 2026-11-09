@@ -11,9 +11,7 @@ use serde_json::{Value as Json, json};
 use tokio::sync::watch;
 
 use crate::error::QueueError;
-use crate::model::{
-    DeadLetter, DeadLetterPage, MaintenanceReport, NewMessage, SubscriptionMetrics, TopicMetrics, iso,
-};
+use crate::model::{DeadLetter, DeadLetterPage, MaintenanceReport, NewMessage, SubscriptionMetrics, TopicMetrics, iso};
 use crate::row::{Row, scalar};
 use crate::service::{
     Db, Inner, QueueService, Result, SUB_COLS, SubRow, TOPIC_COLS, TopicRow, finish, insert_message_tx, minute,
@@ -145,7 +143,11 @@ impl QueueService {
                 "SELECT id, subscription, topic, message_id, data, attributes, ordering_key, published_at, attempts, \
                  history, reason, dead_letter_topic, forwarded_message_id, at FROM _forgebase_queue_dead_letters \
                  WHERE subscription = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3",
-                vec![sub.into(), before.unwrap_or(i64::MAX).into(), limit.clamp(1, 500).into()],
+                vec![
+                    sub.into(),
+                    before.unwrap_or(i64::MAX).into(),
+                    limit.clamp(1, 500).into(),
+                ],
             ))
             .await?;
         let items = Row::all(&rows)
@@ -375,7 +377,12 @@ impl QueueService {
                 }
             }
         };
-        let topics: Vec<TopicRow> = self.all_topics().await?.into_iter().filter(|t| t.source.is_some()).collect();
+        let topics: Vec<TopicRow> = self
+            .all_topics()
+            .await?
+            .into_iter()
+            .filter(|t| t.source.is_some())
+            .collect();
         let events = forgebase_realtime::outbox::read_after(backend, cursor, RELAY_PAGE)
             .await
             .map_err(|e| QueueError::Internal(e.to_string()))?;
@@ -469,7 +476,13 @@ impl QueueService {
         match self
             .inner
             .data
-            .view_snapshot(&AccessContext::system(), Action::View, &ev.collection_id, &ev.snapshot, None)
+            .view_snapshot(
+                &AccessContext::system(),
+                Action::View,
+                &ev.collection_id,
+                &ev.snapshot,
+                None,
+            )
             .await
         {
             Ok(Some(rec)) => Json::Object(rec),
@@ -507,7 +520,11 @@ impl QueueService {
     /// Starts the background task: maintenance every poll interval and push
     /// delivery whenever messages may be due. Idempotent.
     pub fn start_background(&self) {
-        let mut guard = self.inner.background.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .background
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.is_some() {
             return;
         }
@@ -537,7 +554,12 @@ impl QueueService {
     }
 }
 
-async fn background(weak: Weak<Inner>, mut wake: watch::Receiver<u64>, mut stop: watch::Receiver<bool>, every: Duration) {
+async fn background(
+    weak: Weak<Inner>,
+    mut wake: watch::Receiver<u64>,
+    mut stop: watch::Receiver<bool>,
+    every: Duration,
+) {
     let mut last_maintenance = tokio::time::Instant::now() - every;
     loop {
         let Some(inner) = weak.upgrade() else { return };

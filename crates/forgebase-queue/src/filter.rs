@@ -44,12 +44,18 @@ enum Cond {
 fn strings(v: &Json, what: &str) -> Result<Vec<String>, String> {
     v.as_array()
         .filter(|a| !a.is_empty())
-        .and_then(|a| a.iter().map(|s| s.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>())
+        .and_then(|a| {
+            a.iter()
+                .map(|s| s.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        })
         .ok_or_else(|| format!("{what} must be a non-empty array of strings"))
 }
 
 fn text(v: &Json, what: &str) -> Result<String, String> {
-    v.as_str().map(str::to_owned).ok_or_else(|| format!("{what} must be a string"))
+    v.as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{what} must be a string"))
 }
 
 impl Filter {
@@ -98,7 +104,9 @@ impl Filter {
                             "in" => Cond::In(strings(arg, &what)?),
                             "not_in" => Cond::NotIn(strings(arg, &what)?),
                             "prefix" => Cond::Prefix(text(arg, &what)?),
-                            "exists" => Cond::Exists(arg.as_bool().ok_or_else(|| format!("{what}: exists takes a boolean"))?),
+                            "exists" => {
+                                Cond::Exists(arg.as_bool().ok_or_else(|| format!("{what}: exists takes a boolean"))?)
+                            }
                             other => return Err(format!("{what}: unknown operator {other:?}")),
                         };
                         f.conds.push((key.clone(), c));
@@ -149,7 +157,12 @@ mod tests {
         assert!(f.matches(&attrs(&[("type", "order"), ("region", "us"), ("vip", "yes")])));
         assert!(!f.matches(&attrs(&[("type", "order"), ("region", "us")])));
         assert!(!f.matches(&attrs(&[("type", "order"), ("region", "asia"), ("vip", "yes")])));
-        assert!(!f.matches(&attrs(&[("type", "order"), ("region", "eu"), ("vip", "yes"), ("trace", "1")])));
+        assert!(!f.matches(&attrs(&[
+            ("type", "order"),
+            ("region", "eu"),
+            ("vip", "yes"),
+            ("trace", "1")
+        ])));
     }
 
     #[test]
