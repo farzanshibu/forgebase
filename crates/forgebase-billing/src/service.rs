@@ -735,16 +735,58 @@ impl BillingService {
         }
     }
 
-    fn account_row(r: &[Value]) -> ProviderAccount {
-        let provider = text(r, 0);
+    /// Config fields that are secrets: sealed, never returned.
+    fn secret_config_keys(provider: &str) -> &'static [&'static str] {
+        match provider {
+            "app_store" | "wechat_pay" => &["private_key", "platform_keys"],
+            "google_play" => &["service_account"],
+            _ => &[],
+        }
+    }
+
+    /// An account as the API shows it: the non-secret config, the environment
+    /// and the names (never the values) of the stored secrets.
+    fn account_view(provider: &str, row: &[Value], secret: &Json) -> ProviderAccount {
+        let hidden = Self::secret_config_keys(provider);
+        let mut config = serde_json::Map::new();
+        let mut secrets_set = Vec::new();
+        for k in ["api_key", "webhook_secret"] {
+            if secret.get(k).and_then(Json::as_str).is_some_and(|v| !v.is_empty()) {
+                secrets_set.push(k.to_owned());
+            }
+        }
+        if let Some(c) = secret.get("config").and_then(Json::as_object) {
+            for (k, v) in c {
+                if hidden.contains(&k.as_str()) {
+                    if !blank(v) {
+                        secrets_set.push(format!("config.{k}"));
+                    }
+                } else {
+                    config.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let environment = match provider {
+            "app_store" => config
+                .get("environment")
+                .and_then(Json::as_str)
+                .filter(|e| !e.is_empty())
+                .unwrap_or("sandbox")
+                .to_owned(),
+            _ => "test".to_owned(),
+        };
         ProviderAccount {
             webhook_path: format!("/api/v1/billing/webhooks/{provider}"),
-            provider,
-            key_id: opt_text(r, 1),
-            hint: opt_text(r, 2),
-            api_base: opt_text(r, 3),
-            enabled: int(r, 4) != 0,
-            updated_at: int(r, 5),
+            provider: provider.to_owned(),
+            key_id: opt_text(row, 1),
+            hint: opt_text(row, 2),
+            api_base: opt_text(row, 3),
+            enabled: int(row, 4) != 0,
+            test_mode: true,
+            environment,
+            config: Json::Object(config),
+            secrets_set,
+            updated_at: int(row, 5),
         }
     }
 
@@ -753,17 +795,26 @@ impl BillingService {
         self.require_admin(ctx)?;
         let rows = self
             .fetch(
-                "SELECT provider, key_id, hint, api_base, enabled, updated_at FROM _forgebase_billing_providers
+                "SELECT provider, key_id, hint, api_base, enabled, updated_at, secret FROM _forgebase_billing_providers
                  ORDER BY provider",
                 Vec::new(),
             )
             .await?;
-        Ok(rows.rows.iter().map(|r| Self::account_row(r)).collect())
+        rows.rows
+            .iter()
+            .map(|r| {
+                let provider = text(r, 0);
+                let secret = self.open_secret(&provider, &text(r, 6))?;
+                Ok(Self::account_view(&provider, r, &secret))
+            })
+            .collect()
     }
 
     /// Saves a provider account (platform administrators). Test-mode keys
     /// only; the secrets are sealed with the instance keyring and never
-    /// returned.
+    /// returned. An existing account is merged: an omitted, `null` or empty
+    /// secret, key id, API base or config field keeps its stored value, and
+    /// `clear` names the fields to remove.
     pub async fn put_provider(
         &self,
         ctx: &AccessContext,
@@ -771,14 +822,16 @@ impl BillingService {
         input: ProviderInput,
     ) -> Result<ProviderAccount> {
         self.require_admin(ctx)?;
-        let api_base = match input.api_base.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(u) => Some(check_url(u)?.trim_end_matches('/').to_owned()),
-            None => None,
-        };
-        let mut secret = json!({
-            "api_key": input.api_key.clone().unwrap_or_default().trim(),
-            "webhook_secret": input.webhook_secret.clone().unwrap_or_default().trim(),
-        });
+        let cleared = |name: &str| input.clear.iter().any(|c| c.trim() == name);
+        for c in &input.clear {
+            let c = c.trim();
+            if !matches!(c, "api_key" | "webhook_secret" | "key_id" | "api_base") && !c.starts_with("config.") {
+                return Err(BillingError::invalid(
+                    "invalid_clear",
+                    format!("cannot clear {c:?}: use api_key, webhook_secret, key_id, api_base or config.<name>"),
+                ));
+            }
+        }
         if let Some(c) = &input.config {
             if !c.is_object() || c.to_string().len() > 64 * 1024 {
                 return Err(BillingError::invalid(
@@ -786,17 +839,68 @@ impl BillingService {
                     "config must be an object of at most 64 KiB",
                 ));
             }
-            secret["config"] = c.clone();
         }
-        let key_id = input.key_id.as_deref().map(str::trim).map(str::to_owned);
+        let stored = self
+            .fetch(
+                "SELECT key_id, secret, api_base, hint FROM _forgebase_billing_providers WHERE provider = ?1",
+                vec![provider.into()],
+            )
+            .await?;
+        let (old_key_id, old_secret, old_base, old_hint) = match stored.rows.first() {
+            Some(r) => (
+                opt_text(r, 0),
+                self.open_secret(provider, &text(r, 1))?,
+                opt_text(r, 2),
+                opt_text(r, 3),
+            ),
+            None => (None, json!({}), None, None),
+        };
+        let given = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        let api_base = match given(&input.api_base) {
+            Some(u) => Some(check_url(&u)?.trim_end_matches('/').to_owned()),
+            None if cleared("api_base") => None,
+            None => old_base,
+        };
+        let key_id = match given(&input.key_id) {
+            Some(k) => Some(k),
+            None if cleared("key_id") => None,
+            None => old_key_id,
+        };
+        let merge = |name: &str, new: &Option<String>| -> String {
+            match given(new) {
+                Some(v) => v,
+                None if cleared(name) => String::new(),
+                None => old_secret.get(name).and_then(Json::as_str).unwrap_or_default().to_owned(),
+            }
+        };
+        let api_key = merge("api_key", &input.api_key);
+        let mut secret = json!({
+            "api_key": api_key,
+            "webhook_secret": merge("webhook_secret", &input.webhook_secret),
+        });
+        let mut config = old_secret.get("config").and_then(Json::as_object).cloned().unwrap_or_default();
+        if let Some(Json::Object(c)) = &input.config {
+            for (k, v) in c {
+                if !blank(v) {
+                    config.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        for c in &input.clear {
+            if let Some(k) = c.trim().strip_prefix("config.") {
+                config.remove(k);
+            }
+        }
+        if !config.is_empty() {
+            secret["config"] = Json::Object(config);
+        }
         // Validates the keys (test mode) before anything is stored.
         let driver = self.build_provider(provider, key_id.as_deref(), &secret, api_base.as_deref())?;
-        let hint = input
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|k| k.len() > 8)
-            .map(|k| format!("…{}", &k[k.len() - 4..]));
+        let hint = match given(&input.api_key) {
+            Some(k) => Some(k).filter(|k| k.len() > 8).map(|k| format!("…{}", &k[k.len() - 4..])),
+            None if cleared("api_key") => None,
+            None => old_hint,
+        };
         let sealed = self
             .inner
             .keyring
@@ -850,15 +954,15 @@ impl BillingService {
                 }
             }
         }
-        Ok(ProviderAccount {
-            provider: provider.to_owned(),
-            key_id,
-            hint,
-            api_base,
-            enabled: input.enabled,
-            webhook_path: format!("/api/v1/billing/webhooks/{provider}"),
-            updated_at: now,
-        })
+        let row = vec![
+            Value::from(provider),
+            key_id.clone().into(),
+            hint.clone().into(),
+            api_base.clone().into(),
+            Value::from(i64::from(input.enabled)),
+            Value::from(now),
+        ];
+        Ok(Self::account_view(provider, &row, &secret))
     }
 
     /// Removes a provider account (platform administrators).
@@ -1178,5 +1282,15 @@ impl BillingService {
             r.provider_customer_id = Some(pid);
         }
         Ok((p, r))
+    }
+}
+
+/// A config value that carries nothing: `null`, an empty string or an empty list.
+fn blank(v: &Json) -> bool {
+    match v {
+        Json::Null => true,
+        Json::String(s) => s.trim().is_empty(),
+        Json::Array(a) => a.is_empty(),
+        _ => false,
     }
 }

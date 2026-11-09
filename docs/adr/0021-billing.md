@@ -162,6 +162,17 @@ Two kinds of provider, one account table (`PUT /billing/providers/{p}`, secrets 
 provider-specific `config` sealed together under AAD `billing:provider:<p>`), one webhook route
 (`POST /billing/webhooks/{p}`) and one event table (dedup per provider + event id, as §6).
 
+**Saving an account (FIX-8).** `PUT /billing/providers/{p}` merges into the stored sealed account instead of
+replacing it: an omitted, `null` or empty `api_key`, `webhook_secret`, `key_id`, `api_base` or `config` field
+keeps its stored value (the key hint too), and a non-empty one replaces only that field; `config` is merged
+key by key. `clear` (`["api_key", "webhook_secret", "key_id", "api_base", "config.<name>"]`; anything else
+→ `400 invalid_clear`) removes a field. The merged account is validated as before (live keys still refused),
+so a clear that leaves the driver unbuildable fails. `ProviderAccount` gains, additively, `test_mode`
+(always `true`), `environment` (`sandbox`/`xcode`/`local_testing` for the App Store, `test` otherwise),
+`config` (the non-secret settings; never `private_key`, `service_account` or `platform_keys`) and
+`secrets_set` (names of stored secrets, never values). Existing request bodies keep working; the only
+behaviour change is that a blank field no longer wipes the stored one.
+
 | Provider | Kind | Test mode is enforced by |
 |---|---|---|
 | `wechat_pay` | **payment provider** (`PaymentProvider`): collects ForgeBase invoices | WeChat Pay has no test keys: `api_base` is required and the production hosts (`api.mch.weixin.qq.com`, `api2.…`) are refused |

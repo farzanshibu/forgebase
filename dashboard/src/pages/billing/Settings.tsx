@@ -30,6 +30,7 @@ function ProviderCard({ name, account, onChanged }: { name: string; account?: Pr
         <h3 className="font-medium capitalize">{name}</h3>
         <Badge status={account ? (account.enabled ? "active" : "paused") : "canceled"} />
       </div>
+      {account && <p aria-label={`${name} test mode`} className="mt-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{account.test_mode ? `Test mode (${account.environment})` : `Mode: ${account.environment}`}</p>}
       {account && <p className="mt-1 text-sm text-zinc-400">{account.hint ? `Key ${account.hint}` : "Configured"}{account.key_id ? `, key id ${account.key_id}` : ""} · webhook <span className="font-mono text-xs">{account.webhook_path}</span></p>}
       {!account && <p className="mt-1 text-sm text-zinc-500">Not configured.</p>}
       <form onSubmit={save} className="mt-3 space-y-3">
@@ -47,7 +48,7 @@ function ProviderCard({ name, account, onChanged }: { name: string; account?: Pr
           <Button type="submit" tone="primary" disabled={act.busy}>Save {name}</Button>
           {account && <ConfirmButton label={`Remove ${name}`} disabled={act.busy} onConfirm={() => void act.run(() => deleteProvider(name), "Removed")} />}
         </div>
-        <p className="text-xs text-zinc-500">Test-mode keys only. Secrets are sealed on the server and never shown again.</p>
+        <p className="text-xs text-zinc-500">Test-mode keys only. Secrets are sealed on the server and never shown again; a field left blank keeps its stored value.</p>
       </form>
     </section>
   );

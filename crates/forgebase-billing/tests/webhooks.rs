@@ -414,3 +414,91 @@ async fn only_test_mode_keys_and_secrets_stay_sealed() {
     );
     assert!(!serde_json::to_string(&accounts).unwrap().contains(STRIPE_KEY));
 }
+
+#[tokio::test]
+async fn saving_a_provider_keeps_omitted_secrets_and_can_clear_them() {
+    let env = Env::new().await;
+    env.stripe().await;
+    let b = &env.billing;
+    let before = b.providers(&admin()).await.unwrap().remove(0);
+    assert!(before.test_mode);
+    assert_eq!(before.environment, "test");
+    assert_eq!(before.secrets_set, vec!["api_key", "webhook_secret"]);
+
+    // A blank or omitted secret keeps the stored one (and its hint); the
+    // account is still usable: the driver is rebuilt from the kept key.
+    for input in [
+        ProviderInput::default(),
+        ProviderInput {
+            api_key: Some("  ".into()),
+            webhook_secret: Some(String::new()),
+            ..ProviderInput::default()
+        },
+    ] {
+        let acct = b.put_provider(&admin(), "stripe", input).await.unwrap();
+        assert_eq!(acct.hint, before.hint);
+        assert_eq!(acct.secrets_set, before.secrets_set);
+        let listed = b.providers(&admin()).await.unwrap().remove(0);
+        assert_eq!(listed.hint, before.hint);
+        assert_eq!(listed.secrets_set, before.secrets_set);
+        assert!(b.provider("stripe").is_ok());
+    }
+
+    // Supplying one secret replaces only that one.
+    let acct = b
+        .put_provider(
+            &admin(),
+            "stripe",
+            ProviderInput {
+                webhook_secret: Some("whsec_rotated_1234".into()),
+                ..ProviderInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(acct.hint, before.hint);
+    assert_eq!(acct.secrets_set, vec!["api_key", "webhook_secret"]);
+
+    // `enabled` is still taken from the request.
+    let acct = b
+        .put_provider(
+            &admin(),
+            "stripe",
+            ProviderInput {
+                enabled: false,
+                ..ProviderInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!acct.enabled);
+    assert_eq!(acct.hint, before.hint);
+
+    // Clearing is explicit; a cleared key cannot build the driver.
+    let e = b
+        .put_provider(
+            &admin(),
+            "stripe",
+            ProviderInput {
+                clear: vec!["webhook_secret".into(), "nope".into()],
+                ..ProviderInput::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(e, BillingError::Invalid { code: "invalid_clear", .. }), "{e:?}");
+    let acct = b
+        .put_provider(
+            &admin(),
+            "stripe",
+            ProviderInput {
+                clear: vec!["webhook_secret".into()],
+                ..ProviderInput::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(acct.secrets_set, vec!["api_key"]);
+    assert_eq!(acct.hint, before.hint);
+    assert!(!serde_json::to_string(&acct).unwrap().contains(STRIPE_KEY));
+}

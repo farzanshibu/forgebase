@@ -1115,6 +1115,19 @@ pub struct ProviderAccount {
     pub api_base: Option<String>,
     /// In use.
     pub enabled: bool,
+    /// Always `true`: only test-mode credentials are accepted (live keys are
+    /// refused when saved).
+    pub test_mode: bool,
+    /// The provider environment: `sandbox`, `xcode` or `local_testing` for the
+    /// App Store, `test` for every other provider.
+    pub environment: String,
+    /// The non-secret provider-specific settings (never `private_key`,
+    /// `service_account` or `platform_keys`).
+    #[schema(value_type = Object)]
+    pub config: Json,
+    /// Names of the secrets that are stored (`api_key`, `webhook_secret`,
+    /// `config.private_key`, ...). The values are never returned.
+    pub secrets_set: Vec<String>,
     /// Webhook URL to register at the provider (relative to the public URL).
     pub webhook_path: String,
     /// Changed.
@@ -1150,6 +1163,12 @@ pub struct ProviderInput {
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub config: Option<Json>,
+    /// Fields to remove from the stored account: `api_key`, `webhook_secret`,
+    /// `key_id`, `api_base` or `config.<name>`. A secret or config field that
+    /// is omitted, `null` or empty keeps its stored value; list it here to
+    /// clear it.
+    #[serde(default)]
+    pub clear: Vec<String>,
 }
 
 impl Default for ProviderInput {
@@ -1161,6 +1180,7 @@ impl Default for ProviderInput {
             api_base: None,
             enabled: true,
             config: None,
+            clear: Vec::new(),
         }
     }
 }

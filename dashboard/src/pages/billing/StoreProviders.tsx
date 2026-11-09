@@ -67,6 +67,12 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
   const act = useAct(onChanged);
   const [values, setValues] = useState<Record<string, string>>({});
   const [apiBase, setApiBase] = useState("");
+  // Non-secret values come back from the server; secrets never do, so a stored one shows "leave blank to keep".
+  const shown = (f: Spec): string => {
+    const v = f.where === "top" ? (f.name === "key_id" ? account?.key_id : undefined) : account?.config?.[f.name];
+    return typeof v === "string" ? v : "";
+  };
+  const isSet = (f: Spec) => !!account?.secrets_set.includes(f.where === "config" ? `config.${f.name}` : f.name);
   const [enabled, setEnabled] = useState(account?.enabled ?? true);
   const [bad, setBad] = useState<string>();
   const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
@@ -75,7 +81,9 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
     const top: Record<string, string | null> = {};
     const config: Record<string, unknown> = {};
     for (const f of card.fields) {
-      const raw = (values[f.name] ?? f.options?.[0] ?? "").trim();
+      const raw = (values[f.name] ?? (f.secret ? "" : shown(f) || f.options?.[0]) ?? "").trim();
+      // A blank secret is not sent: the server keeps the stored one.
+      if (!raw && f.secret) continue;
       let v: unknown = raw;
       if (f.json) {
         try { v = JSON.parse(raw); } catch { return setBad(`${f.name} must be valid JSON`); }
@@ -100,7 +108,7 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
         <h3 className="font-medium">{card.title} <span className="text-xs font-normal text-zinc-500">{card.kind === "store" ? "merchant of record" : "payment provider"}</span></h3>
         <Badge status={account ? (account.enabled ? "active" : "paused") : "canceled"} label={account ? (account.enabled ? "configured" : "disabled") : "not configured"} />
       </div>
-      <p aria-label={`${card.id} test mode`} className="mt-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-300">Test mode. {card.test}</p>
+      <p aria-label={`${card.id} test mode`} className="mt-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-300">Test mode{account ? ` (${account.environment})` : ""}. {card.test}</p>
       {account && (
         <p className="mt-2 text-sm text-zinc-400">
           {account.hint ? `Key ${account.hint}` : "Credentials sealed"}{account.api_base ? <>, API base <span className="font-mono text-xs">{account.api_base}</span></> : ""} · {card.kind === "store" ? "notifications" : "webhook"} <span className="font-mono text-xs">{account.webhook_path}</span>
@@ -111,11 +119,11 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
           {card.fields.map((f) => (
             <Field key={f.name} label={`${card.id} ${f.label}`} className={f.multiline ? "sm:col-span-2" : ""}>
               {f.options ? (
-                <select className={inputCls} value={values[f.name] ?? f.options[0]} onChange={(e) => set(f.name, e.target.value)}>{f.options.map((o) => <option key={o}>{o}</option>)}</select>
+                <select className={inputCls} value={values[f.name] ?? (shown(f) || f.options[0])} onChange={(e) => set(f.name, e.target.value)}>{f.options.map((o) => <option key={o}>{o}</option>)}</select>
               ) : f.multiline ? (
-                <textarea className={`${inputCls} h-24 font-mono text-xs`} autoComplete="off" spellCheck={false} value={values[f.name] ?? ""} onChange={(e) => set(f.name, e.target.value)} placeholder={f.placeholder} required />
+                <textarea className={`${inputCls} h-24 font-mono text-xs`} autoComplete="off" spellCheck={false} value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
               ) : (
-                <input className={inputCls} type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? ""} onChange={(e) => set(f.name, e.target.value)} placeholder={f.placeholder} required />
+                <input className={inputCls} type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
               )}
             </Field>
           ))}
@@ -133,7 +141,7 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
           <Button type="submit" tone="primary" disabled={act.busy}>Save {card.id}</Button>
           {account && <ConfirmButton label={`Remove ${card.id}`} disabled={act.busy} onConfirm={() => void act.run(() => deleteProvider(card.id), "Removed")} />}
         </div>
-        <p className="text-xs text-zinc-500">Saving replaces the whole sealed account, so enter every secret again each time. Nothing is shown back.</p>
+        <p className="text-xs text-zinc-500">Secrets are never shown back. A secret or field left blank keeps its stored value; only what you change is replaced.</p>
       </form>
     </section>
   );
