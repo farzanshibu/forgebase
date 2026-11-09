@@ -18,6 +18,7 @@ forgebase-db.workspace = true
 forgebase-entitlements.workspace = true
 forgebase-credits.workspace = true
 forgebase-functions.workspace = true
+forgebase-customize.workspace = true
 forgebase-jobs.workspace = true
 forgebase-kv.workspace = true
 forgebase-observability.workspace = true

@@ -35,6 +35,7 @@ use std::time::Duration;
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
 use forgebase_credits::CreditService;
+use forgebase_customize::{CustomizeConfig, CustomizeService};
 use forgebase_data::Authorizer;
 use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
 use forgebase_entitlements::{EntitlementService, SystemClock};
@@ -67,6 +68,7 @@ pub struct RunningServer {
     entitlements: EntitlementService,
     functions: FunctionService,
     credits: CreditService,
+    customize: CustomizeService,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -136,6 +138,21 @@ pub async fn start_with_jobs(
         Err(e) => {
             db.close().await;
             return Err(ServerError::Credits(e.to_string()));
+        }
+    };
+    // Product customization (FB-74): domains, branding, email, agreements.
+    let customize = match CustomizeService::open(
+        Arc::new(db.clone()),
+        policy.clone(),
+        Arc::new(forgebase_auth::SystemClock),
+        CustomizeConfig::default(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            db.close().await;
+            return Err(ServerError::Customize(e.to_string()));
         }
     };
     // One authorizer — the policy engine — for the data core and the KV engine.
@@ -208,6 +225,8 @@ pub async fn start_with_jobs(
         tracing::warn!(error = %e, "credit maintenance schedule not created");
     }
     let registry = forgebase_credits::register_jobs(registry, credits.clone());
+    customize.attach_jobs(jobs.clone());
+    let registry = forgebase_customize::register_jobs(registry, customize.clone());
     let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
         Ok(v) => v,
         Err(e) => {
@@ -223,12 +242,21 @@ pub async fn start_with_jobs(
             forgebase_functions::extension(functions.clone()),
             forgebase_storage::extension(storage.clone()),
             forgebase_credits::extension(credits.clone()),
+            forgebase_customize::extension(customize.clone()),
         ],
-        gates: vec![entitlements.rate_gate()],
+        gates: vec![
+            entitlements.rate_gate(),
+            Arc::new(forgebase_customize::AgreementGate::new(customize.clone())),
+        ],
         ..opts
     };
     let kv_routes = forgebase_kv::http::router(kv.clone(), usize::try_from(opts.max_body_bytes).unwrap_or(usize::MAX));
     let app = forgebase_api::router_with(state, opts, kv_routes, Some(forgebase_kv::http::openapi()));
+    // Host-header routing of verified custom domains: outermost, before auth and tenancy.
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        customize.clone(),
+        forgebase_customize::host_router,
+    ));
 
     let bind = (config.server.host.as_str(), config.server.port);
     let listener = match TcpListener::bind(bind).await {
@@ -321,6 +349,7 @@ pub async fn start_with_jobs(
         entitlements,
         functions,
         credits,
+        customize,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -417,6 +446,11 @@ impl RunningServer {
     /// The credit ledger of this instance.
     pub fn credits(&self) -> &CreditService {
         &self.credits
+    }
+
+    /// The customization service (domains, branding, email, agreements).
+    pub fn customize(&self) -> &CustomizeService {
+        &self.customize
     }
 
     /// The vector engine of this instance.
@@ -600,6 +634,9 @@ pub enum ServerError {
     /// The credit service failed to open.
     #[error("credits: {0}")]
     Credits(String),
+    /// The customization service failed to open.
+    #[error("customize: {0}")]
+    Customize(String),
 }
 
 impl ErrorCode for ServerError {
@@ -621,6 +658,7 @@ impl ErrorCode for ServerError {
             ServerError::Functions(_) => "functions_unavailable",
             ServerError::Storage(_) => "storage_unavailable",
             ServerError::Credits(_) => "credits_unavailable",
+            ServerError::Customize(_) => "customize_unavailable",
         }
     }
 
@@ -637,7 +675,8 @@ impl ErrorCode for ServerError {
             | ServerError::Entitlements(_)
             | ServerError::Functions(_)
             | ServerError::Storage(_)
-            | ServerError::Credits(_) => ErrorKind::Internal,
+            | ServerError::Credits(_)
+            | ServerError::Customize(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
         }
     }
