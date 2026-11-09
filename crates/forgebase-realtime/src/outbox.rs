@@ -112,8 +112,9 @@ fn parse_rows(rows: &Rows) -> Result<Vec<Event>, RealtimeError> {
     Ok(out)
 }
 
-/// Events with `seq > after`, oldest first, at most `limit`.
-pub(crate) async fn read_after(backend: &dyn Backend, after: i64, limit: i64) -> Result<Vec<Event>, RealtimeError> {
+/// Events with `seq > after`, oldest first, at most `limit`. Public for
+/// other consumers of the outbox (server functions' after-hooks, FB-60).
+pub async fn read_after(backend: &dyn Backend, after: i64, limit: i64) -> Result<Vec<Event>, RealtimeError> {
     let rows = backend
         .fetch_all(&Statement::new(
             "SELECT seq, op, collection_id, collection, record_id, tenant, actor, snapshot, created_at
@@ -125,7 +126,7 @@ pub(crate) async fn read_after(backend: &dyn Backend, after: i64, limit: i64) ->
 }
 
 /// `(oldest retained seq, newest seq)`; `(0, 0)` while the outbox is empty.
-pub(crate) async fn bounds(backend: &dyn Backend) -> Result<(i64, i64), RealtimeError> {
+pub async fn bounds(backend: &dyn Backend) -> Result<(i64, i64), RealtimeError> {
     let rows = backend
         .fetch_all(&Statement::new(
             "SELECT coalesce(min(seq), 0), coalesce(max(seq), 0) FROM _forgebase_realtime_outbox",
