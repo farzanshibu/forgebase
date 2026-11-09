@@ -437,8 +437,8 @@ export class QueuesApi {
       const once = (op: "ack" | "nack") => async () => {
         if (settled) return;
         settled = true;
-        const res = op === "ack" ? await this.ack(subscription, [r.ack_id]) : await this.nack(subscription, [r.ack_id]);
-        void res;
+        if (op === "ack") await this.ack(subscription, [r.ack_id]);
+        else await this.nack(subscription, [r.ack_id]);
       };
       const d: Delivery<T> = {
         data: r.message.data,
