@@ -13,9 +13,12 @@
 //!    quota API of `forgebase-entitlements`, whose hooks run in steps 4 and
 //!    6 of the policy pipeline and whose gate applies plan-based API rate
 //!    limits, and the credit ledger of `forgebase-credits` under
-//!    `/api/v1/credits`, which charges usage events of priced features),
-//! 6. start the job scheduler and in-process worker pool, and the vector
-//!    engine's index warm-up and saver,
+//!    `/api/v1/credits`, which charges usage events of priced features, and
+//!    the topics and queues API of `forgebase-queue` under `/api/v1/queues`
+//!    unless `[queue] enabled = false`),
+//! 6. start the job scheduler and in-process worker pool, the vector
+//!    engine's index warm-up and saver, and the queue's maintenance and push
+//!    task,
 //! 7. when `[resp] enabled = true`, bind the Redis protocol listener
 //!    (`forgebase-resp`, ADR-0013) in front of the built-in KV engine.
 //!
@@ -69,6 +72,7 @@ pub struct RunningServer {
     functions: FunctionService,
     credits: CreditService,
     customize: CustomizeService,
+    queue: Option<forgebase_queue::QueueService>,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
 }
@@ -195,6 +199,20 @@ pub async fn start_with_jobs(
             return Err(e);
         }
     };
+    // Durable topics and queues (FB-63), unless `[queue] enabled = false`.
+    let queue = if config.queue.enabled {
+        match open_queue(&auth, config, &entitlements, &functions).await {
+            Ok(q) => Some(q),
+            Err(e) => {
+                realtime.shutdown();
+                functions.shutdown();
+                db.close().await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
@@ -234,16 +252,20 @@ pub async fn start_with_jobs(
             return Err(e.into());
         }
     };
+    let mut extensions = vec![
+        forgebase_jobs::extension(jobs.clone()),
+        forgebase_vector::extension(vector.clone()),
+        forgebase_entitlements::extension(entitlements.clone()),
+        forgebase_functions::extension(functions.clone()),
+        forgebase_storage::extension(storage.clone()),
+        forgebase_credits::extension(credits.clone()),
+        forgebase_customize::extension(customize.clone()),
+    ];
+    if let Some(q) = &queue {
+        extensions.push(forgebase_queue::extension(q.clone()));
+    }
     let opts = RouterOptions {
-        extensions: vec![
-            forgebase_jobs::extension(jobs.clone()),
-            forgebase_vector::extension(vector.clone()),
-            forgebase_entitlements::extension(entitlements.clone()),
-            forgebase_functions::extension(functions.clone()),
-            forgebase_storage::extension(storage.clone()),
-            forgebase_credits::extension(credits.clone()),
-            forgebase_customize::extension(customize.clone()),
-        ],
+        extensions,
         gates: vec![
             entitlements.rate_gate(),
             Arc::new(forgebase_customize::AgreementGate::new(customize.clone())),
@@ -324,6 +346,9 @@ pub async fn start_with_jobs(
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
     vector.start_background();
     functions.start_background();
+    if let Some(q) = &queue {
+        q.start_background();
+    }
 
     tracing::info!(
         %addr,
@@ -350,6 +375,7 @@ pub async fn start_with_jobs(
         functions,
         credits,
         customize,
+        queue,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
     })
@@ -359,6 +385,52 @@ pub async fn start_with_jobs(
 /// data service they share, with the policy engine as the authorizer.
 /// The functions engine on the auth service's data service: secrets sealed
 /// with the data directory's master key, fetch over FB-25's TLS settings.
+/// The queue service on the auth service's data service: webhook signing
+/// secrets sealed with the data directory's master key, metering through the
+/// quota engine, push to server functions and SSRF-safe webhooks.
+async fn open_queue(
+    auth: &forgebase_auth::AuthService,
+    config: &Config,
+    entitlements: &EntitlementService,
+    functions: &FunctionService,
+) -> Result<forgebase_queue::QueueService, ServerError> {
+    let qc = &config.queue;
+    let path = auth.config().master_key_path.clone();
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
+        .await
+        .map_err(|e| ServerError::Queue(e.to_string()))?
+        .map_err(|e| ServerError::Queue(e.to_string()))?;
+    let secs = |s: u64| i64::try_from(s.saturating_mul(1000)).unwrap_or(i64::MAX);
+    let settings = forgebase_queue::QueueSettings {
+        max_message_bytes: i64::try_from(qc.max_message_bytes).unwrap_or(i64::MAX),
+        default_retention_ms: secs(qc.default_retention_secs),
+        max_retention_ms: secs(qc.max_retention_secs),
+        default_dedup_window_ms: secs(qc.dedup_window_secs),
+        max_pull_wait_ms: i64::try_from(qc.max_pull_wait_ms).unwrap_or(i64::MAX),
+        poll_interval: Duration::from_millis(qc.poll_interval_ms),
+        push_timeout: Duration::from_secs(qc.push_timeout_secs),
+        push_concurrency: usize::try_from(qc.push_concurrency).unwrap_or(8),
+        allow_http_push: qc.allow_http_push,
+        dead_letter_retention_ms: secs(qc.dead_letter_retention_days.saturating_mul(86_400)),
+        ..forgebase_queue::QueueSettings::default()
+    };
+    let tls = auth.tls_settings().map_err(|e| ServerError::Queue(e.to_string()))?;
+    let fetcher = forgebase_functions::Fetcher::new(
+        &tls,
+        forgebase_functions::FetchConfig {
+            timeout: settings.push_timeout,
+            max_request_bytes: usize::try_from(qc.max_message_bytes).unwrap_or(usize::MAX) * 2 + 64 * 1024,
+            ..forgebase_functions::FetchConfig::default()
+        },
+    )
+    .map_err(|e| ServerError::Queue(e.to_string()))?;
+    let queue = forgebase_queue::QueueService::new(auth.data().clone(), keyring, settings);
+    queue.attach_entitlements(entitlements.clone());
+    queue.attach_functions(functions.clone());
+    queue.set_fetcher(fetcher);
+    Ok(queue)
+}
+
 async fn open_functions(auth: &forgebase_auth::AuthService, kv: &KvService) -> Result<FunctionService, ServerError> {
     let path = auth.config().master_key_path.clone();
     let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
@@ -453,6 +525,11 @@ impl RunningServer {
         &self.customize
     }
 
+    /// The topics and queues service (FB-63), unless `[queue] enabled = false`.
+    pub fn queue(&self) -> Option<&forgebase_queue::QueueService> {
+        self.queue.as_ref()
+    }
+
     /// The vector engine of this instance.
     pub fn vector(&self) -> &VectorService {
         &self.vector
@@ -498,6 +575,9 @@ impl RunningServer {
         // Realtime connections (upgraded sockets, SSE streams) are not
         // in-flight requests: close them first so graceful shutdown can finish.
         self.realtime.shutdown();
+        if let Some(q) = &self.queue {
+            q.close_streams();
+        }
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -523,6 +603,10 @@ impl RunningServer {
 
     async fn finish(&mut self) {
         self.realtime.shutdown();
+        if let Some(q) = &self.queue {
+            q.close_streams();
+            q.shutdown(self.shutdown_timeout).await;
+        }
         self.functions.shutdown();
         self.upkeep.abort();
         if let Some(resp) = self.resp.take() {
@@ -631,6 +715,9 @@ pub enum ServerError {
     /// Object storage could not start.
     #[error("storage: {0}")]
     Storage(String),
+    /// The queue service could not start.
+    #[error("queue: {0}")]
+    Queue(String),
     /// The credit service failed to open.
     #[error("credits: {0}")]
     Credits(String),
@@ -657,6 +744,7 @@ impl ErrorCode for ServerError {
             ServerError::Entitlements(_) => "entitlements_unavailable",
             ServerError::Functions(_) => "functions_unavailable",
             ServerError::Storage(_) => "storage_unavailable",
+            ServerError::Queue(_) => "queue_unavailable",
             ServerError::Credits(_) => "credits_unavailable",
             ServerError::Customize(_) => "customize_unavailable",
         }
@@ -675,6 +763,7 @@ impl ErrorCode for ServerError {
             | ServerError::Entitlements(_)
             | ServerError::Functions(_)
             | ServerError::Storage(_)
+            | ServerError::Queue(_)
             | ServerError::Credits(_)
             | ServerError::Customize(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),

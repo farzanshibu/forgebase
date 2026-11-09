@@ -65,6 +65,8 @@ pub(crate) struct Inner {
     pub(crate) fetcher: OnceLock<Fetcher>,
     /// Bumped after every commit that may make messages deliverable.
     pub(crate) wake: watch::Sender<u64>,
+    /// `true` once streams must end (server shutdown).
+    pub(crate) closed: watch::Sender<bool>,
     pub(crate) background: Mutex<Option<(watch::Sender<bool>, JoinHandle<()>)>>,
 }
 
@@ -474,6 +476,7 @@ impl QueueService {
     /// A queue service that reads time from `clock` (tests drive it by hand).
     pub fn with_clock(data: DataService, keyring: Keyring, settings: QueueSettings, clock: Arc<dyn Clock>) -> Self {
         let (wake, _) = watch::channel(0);
+        let (closed, _) = watch::channel(false);
         Self {
             inner: Arc::new(Inner {
                 data,
@@ -484,6 +487,7 @@ impl QueueService {
                 functions: OnceLock::new(),
                 fetcher: OnceLock::new(),
                 wake,
+                closed,
                 background: Mutex::new(None),
             }),
         }
@@ -536,6 +540,17 @@ impl QueueService {
     /// Wakes long polls, streams and the push dispatcher.
     pub(crate) fn notify(&self) {
         self.inner.wake.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
+    /// Ends every open WebSocket and SSE stream (their leases are released or
+    /// expire); new streams end at once. The server calls it before graceful
+    /// shutdown so open streams do not hold it up.
+    pub fn close_streams(&self) {
+        self.inner.closed.send_replace(true);
+    }
+
+    pub(crate) fn closed_rx(&self) -> watch::Receiver<bool> {
+        self.inner.closed.subscribe()
     }
 
     /// A receiver that changes whenever new work may be available.

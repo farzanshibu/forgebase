@@ -563,8 +563,13 @@ async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Win
     let consumer = format!("ws-{}", uuid::Uuid::new_v4().simple());
     let (mut tx, mut rx) = socket.split();
     let mut wake = s.wake_rx();
+    let mut closed = s.closed_rx();
     let poll = s.settings().poll_interval;
     loop {
+        if *closed.borrow_and_update() {
+            let _ = tx.send(WsMessage::Close(None)).await;
+            break;
+        }
         // Access can change while the stream is open.
         if let Err(e) = s.authorize(&ctx, Action::QueueConsume) {
             let a = api(e);
@@ -612,6 +617,7 @@ async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Win
                 }
             }
             _ = wake.changed() => {}
+            _ = closed.changed() => {}
             () = tokio::time::sleep(poll) => {}
         }
     }
@@ -697,6 +703,7 @@ async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): P
     let state = SseState {
         consumer: format!("sse-{}", uuid::Uuid::new_v4().simple()),
         wake: s.wake_rx(),
+        closed: s.closed_rx(),
         s,
         ctx,
         sub,
@@ -706,7 +713,7 @@ async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): P
     };
     let stream = futures_util::stream::unfold(state, |mut st| async move {
         loop {
-            if st.done {
+            if st.done || *st.closed.borrow_and_update() {
                 return None;
             }
             if let Some(m) = st.pending.pop_front() {
@@ -727,6 +734,7 @@ async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): P
                     let poll = st.s.settings().poll_interval;
                     tokio::select! {
                         _ = st.wake.changed() => {}
+                        _ = st.closed.changed() => {}
                         () = tokio::time::sleep(poll) => {}
                     }
                 }
@@ -749,6 +757,7 @@ struct SseState {
     consumer: String,
     w: Window,
     wake: tokio::sync::watch::Receiver<u64>,
+    closed: tokio::sync::watch::Receiver<bool>,
     pending: VecDeque<ReceivedMessage>,
     done: bool,
 }

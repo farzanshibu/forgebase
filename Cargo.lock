@@ -1446,6 +1446,7 @@ dependencies = [
  "forgebase-kv",
  "forgebase-observability",
  "forgebase-policy",
+ "forgebase-queue",
  "forgebase-realtime",
  "forgebase-resp",
  "forgebase-storage",
