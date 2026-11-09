@@ -330,6 +330,17 @@ pub enum Action {
     /// Create and delete buckets, change bucket policies and ACLs, run the
     /// storage reconciler (FB-30).
     StorageAdmin,
+    /// Read topics, subscriptions, snapshots, retained messages, dead letters
+    /// and queue metrics (FB-63).
+    QueueRead,
+    /// Publish messages to a topic (FB-63).
+    QueuePublish,
+    /// Consume a subscription: pull, stream, ack, nack and extend ack
+    /// deadlines (FB-63).
+    QueueConsume,
+    /// Create, change and delete topics, subscriptions and snapshots; seek
+    /// subscriptions (FB-63).
+    QueueAdmin,
 }
 
 /// A row-level predicate in the filter language, with its parameters.

@@ -1,0 +1,221 @@
+name: Release
+
+# Builds the forgebase binary for five targets, writes SHA-256 checksums, attaches
+# everything to a GitHub release, and publishes the Docker image.
+#
+# Trigger: push a tag such as v0.2.0, or run the workflow by hand. A manual run
+# builds and uploads the artifacts but does not create a release or push an image.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dashboard:
+    name: dashboard (build)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  binaries:
+    name: binary ${{ matrix.target }}
+    needs: dashboard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            builder: cross
+            smoke: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04
+            builder: cross
+            smoke: false
+          - target: x86_64-apple-darwin
+            os: macos-14
+            builder: cargo
+            smoke: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            builder: cargo
+            smoke: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            builder: cargo
+            smoke: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard/dist
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # cross builds musl targets in a container with the right C toolchain,
+      # because the bundled SQLite and Wasmtime need one. Pinned to a release.
+      - name: Install cross
+        if: matrix.builder == 'cross'
+        run: cargo install cross --version 0.2.5 --locked
+
+      - name: Build (cross)
+        if: matrix.builder == 'cross'
+        run: cross build --release --locked --target ${{ matrix.target }} -p forgebase-cli
+
+      - name: Build (cargo)
+        if: matrix.builder == 'cargo'
+        run: cargo build --release --locked --target ${{ matrix.target }} -p forgebase-cli
+
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/forgebase"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" version
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="forgebase-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/forgebase" "dist/$name/forgebase"
+          cp README.md LICENSE-APACHE LICENSE-MIT "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "forgebase-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/forgebase.exe" "dist/$name/forgebase.exe"
+          Copy-Item README.md, LICENSE-APACHE, LICENSE-MIT "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force "dist/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: checksums and release
+    needs: binaries
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          gh release upload "$TAG" dist/* --clobber
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha
+
+      # The Dockerfile builds the dashboard and the binary itself, so this job
+      # needs no artifacts from the jobs above. Single platform: a Rust build
+      # under QEMU for a second platform would take far longer than the release.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
