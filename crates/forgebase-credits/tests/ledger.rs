@@ -280,7 +280,7 @@ async fn reversals_take_back_only_what_is_left_of_a_purchase() {
         .await
         .unwrap();
     assert!(replay.replayed);
-    assert_eq!(replay.reversed, 30);
+    assert_eq!((replay.reversed, replay.unrecovered), (30, 70));
     // Nothing left: no entry, all unrecovered.
     let none = env
         .credits

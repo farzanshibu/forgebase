@@ -1376,8 +1376,18 @@ impl CreditService {
         let res = async {
             let mut t = Tx(tx.as_mut());
             if let Some(entry) = replay(&mut t, &orig.subject, &meta).await? {
+                // What was asked then: the amount given, else what was not
+                // reversed before this entry.
+                let before = -scalar(
+                    &t.fetch(
+                        "SELECT COALESCE(SUM(amount), 0) FROM _forgebase_credit_ledger
+                         WHERE ref_entry = ?1 AND kind = 'reversal' AND seq < ?2",
+                        vec![orig.id.clone().into(), entry.seq.into()],
+                    )
+                    .await?,
+                );
                 let reversed = -entry.amount;
-                let asked = input.amount.unwrap_or(reversed);
+                let asked = input.amount.unwrap_or(orig.amount - before);
                 return Ok((
                     Reversal {
                         entry: Some(entry),
@@ -1409,7 +1419,7 @@ impl CreditService {
     /// read its subject.
     async fn amend_target(&self, ctx: &AccessContext, id: &str) -> Result<LedgerEntry> {
         match self.load_entry(id).await? {
-            Some(e) if self.can_read(ctx, &e.subject).is_ok() || ctx.is_privileged() => Ok(e),
+            Some(e) if self.can_read(ctx, &e.subject).is_ok() => Ok(e),
             Some(_) | None => Err(CreditError::NotFound("ledger entry".into())),
         }
     }
