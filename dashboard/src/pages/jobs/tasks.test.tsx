@@ -184,7 +184,7 @@ describe("Workflows", () => {
     const { st } = setup();
     st.tasks.workflows = [workflow()];
     renderStudio("/jobs");
-    await userEvent.click(await screen.findByRole("link", { name: "Workflows" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "Workflows" }));
     expect(await screen.findByRole("table", { name: "Workflows" })).toBeInTheDocument();
   });
 

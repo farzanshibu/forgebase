@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { NavLink, Route, Routes, useSearchParams } from "react-router-dom";
+import { Route, Routes, useSearchParams } from "react-router-dom";
+import { RouteTabs } from "../panel/RouteTabs";
 import { kvNamespaces } from "../../api";
 import { useLoad } from "../../hooks";
 import Console from "./Console";
@@ -7,8 +8,6 @@ import KeyBrowser from "./KeyBrowser";
 import PubSub from "./PubSub";
 import StatsPanel from "./StatsPanel";
 import { Input } from "panelui-web/input";
-
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 export default function RedisPage() {
   const [params, setParams] = useSearchParams();
@@ -33,12 +32,7 @@ export default function RedisPage() {
           <datalist id="kv-namespaces">{(names.data ?? []).map((n) => <option key={n.name} value={n.name}>{`${n.keys} keys`}</option>)}</datalist>
         </form>
       </div>
-      <nav aria-label="Redis sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
-        <NavLink to={`/redis${search}`} end className={tab}>Keys</NavLink>
-        <NavLink to={`/redis/console${search}`} className={tab}>Console</NavLink>
-        <NavLink to={`/redis/pubsub${search}`} className={tab}>Pub/Sub</NavLink>
-        <NavLink to={`/redis/stats${search}`} className={tab}>Memory and stats</NavLink>
-      </nav>
+      <RouteTabs label="Redis sections" tabs={[{ to: `/redis${search}`, label: "Keys", end: true }, { to: `/redis/console${search}`, label: "Console" }, { to: `/redis/pubsub${search}`, label: "Pub/Sub" }, { to: `/redis/stats${search}`, label: "Memory and stats" }]} className="mt-4" />
       <div className="mt-6">
         <Routes>
           <Route index element={<KeyBrowser ns={ns} />} />

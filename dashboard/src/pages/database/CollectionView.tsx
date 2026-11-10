@@ -1,4 +1,5 @@
-import { NavLink, Route, Routes, useParams } from "react-router-dom";
+import { Route, Routes, useParams } from "react-router-dom";
+import { RouteTabs } from "../panel/RouteTabs";
 import { listCollections } from "../../api";
 import { useLoad } from "../../hooks";
 import { ErrorView, Loading } from "../../components/ui";
@@ -22,13 +23,7 @@ export default function CollectionView() {
   return (
     <div>
       <h2 className="text-lg font-medium">{name}</h2>
-      <nav aria-label="Collection sections" className="mt-2 mb-4 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-        {TABS.map((t) => (
-          <NavLink key={t.label} to={`/database/c/${encodeURIComponent(name)}${t.to}`} end={t.end} className={({ isActive }) => (isActive ? "text-warning" : "text-muted-foreground hover:text-foreground")}>
-            {t.label}
-          </NavLink>
-        ))}
-      </nav>
+      <RouteTabs label="Collection sections" tabs={TABS.map((t) => ({ ...t, to: `/database/c/${encodeURIComponent(name)}${t.to}` }))} className="mt-2 mb-4" />
       <ErrorView error={error} />
       {loading && !error && <Loading what="Loading collection" />}
       {data && !coll && <p role="alert" className="text-destructive">No collection named {name}.</p>}
