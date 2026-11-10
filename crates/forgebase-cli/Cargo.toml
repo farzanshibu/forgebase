@@ -79,5 +79,10 @@ path = "../../tests/integration/recovery.rs"
 name = "spec_scenarios"
 path = "../../tests/integration/spec_scenarios.rs"
 
+# FB-90: first-run setup (setup link, /api/setup/*, init admin flags).
+[[test]]
+name = "setup_e2e"
+path = "../../tests/integration/setup_e2e.rs"
+
 [lints]
 workspace = true

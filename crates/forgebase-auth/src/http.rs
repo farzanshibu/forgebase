@@ -549,7 +549,8 @@ struct ImpersonateReq {
 // Routes
 // ---------------------------------------------------------------------------
 
-/// The `/api/auth/*` routes, ready to merge into the application router.
+/// The `/api/auth/*` and `/api/setup/*` routes, ready to merge into the
+/// application router.
 pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> {
     let r = Router::new()
         .route("/signup", post(signup))
@@ -599,7 +600,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(auth: AuthService) -> Router<S> 
         .merge(crate::webauthn::http::routes())
         .merge(crate::identity_http::routes())
         .merge(crate::idp::http::routes());
-    Router::new().nest("/api/auth", r.with_state(auth))
+    Router::new()
+        .nest("/api/auth", r.with_state(auth.clone()))
+        // First-run setup (FB-90): `/api/setup/*`, no authentication.
+        .merge(crate::setup::routes(auth))
 }
 
 async fn signup(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): Body<SignupReq>) -> Res {
@@ -630,7 +634,15 @@ async fn admin_login(
         .await
         .map_err(|e| HttpError::new(e, &rid))?;
     let mut res = login_response(&a, out, &rid).await?;
-    // Known-device cookie (FB-80): only sent back to the admin sign-in.
+    if let Some(v) = admin_device_cookie(&a, &token) {
+        res.headers_mut().append(SET_COOKIE, v);
+    }
+    Ok(res)
+}
+
+/// Known-device cookie (FB-80): only sent back to the admin sign-in. Also
+/// set by first-run setup (FB-90), which signs the new administrator in.
+pub(crate) fn admin_device_cookie(a: &AuthService, token: &str) -> Option<HeaderValue> {
     let mut c = format!(
         "{ADMIN_DEVICE_COOKIE}={token}; Path=/api/auth/admins/login; Max-Age={}; SameSite=Strict; HttpOnly",
         crate::service::ADMIN_DEVICE_TTL_SECS
@@ -638,10 +650,7 @@ async fn admin_login(
     if a.config().cookie_secure {
         c.push_str("; Secure");
     }
-    if let Ok(v) = HeaderValue::from_str(&c) {
-        res.headers_mut().append(SET_COOKIE, v);
-    }
-    Ok(res)
+    HeaderValue::from_str(&c).ok()
 }
 
 async fn refresh(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): Body<RefreshReq>) -> Res {

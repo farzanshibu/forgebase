@@ -1,6 +1,7 @@
 //! OpenAPI fragment for every `/api/auth/*` route: the auth core (FB-20),
 //! social login and passkeys (FB-22), realm, phone, LDAP and account
-//! lifecycle (FB-25), and the identity provider (FB-26).
+//! lifecycle (FB-25), the identity provider (FB-26), and first-run setup
+//! (`/api/setup/*`, FB-90).
 //! Merged into `GET /api/openapi.json` by `forgebase-api` when auth is on.
 
 use utoipa::OpenApi;
@@ -380,6 +381,45 @@ fn idp_consent_revoke() {}
 #[allow(dead_code, clippy::missing_const_for_fn)]
 fn idp_keys_rotate() {}
 
+/// Whether the server is in first-run setup mode (no administrator exists yet). No authentication.
+#[utoipa::path(get, path = "/api/setup/status", operation_id = "setup_status", tag = "setup",
+    responses((status = 200, description = "Setup state", body = SetupStatus)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn setup_status() {}
+
+/// Create the first administrator with the one-time setup token `forgebase serve` printed, and sign them in. Answers like `POST /api/auth/admins/login` (cookie session unless `cookie` is `false`), with status 201. Rate limited per client address.
+#[utoipa::path(post, path = "/api/setup/admin", operation_id = "setup_admin", tag = "setup", request_body = SetupAdminRequest,
+    responses((status = 201, description = "Administrator created and signed in", body = Object),
+        (status = 400, description = "validation_failed: email or password does not meet the rules of `forgebase admin create`", body = Object),
+        (status = 403, description = "invalid_setup_token", body = Object),
+        (status = 409, description = "setup_complete: an administrator already exists", body = Object),
+        (status = 429, description = "Too many attempts from this address", body = Object)))]
+#[allow(dead_code, clippy::missing_const_for_fn)]
+fn setup_admin() {}
+
+/// `GET /api/setup/status` response.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct SetupStatus {
+    /// `true` while no administrator exists.
+    setup_required: bool,
+}
+
+/// `POST /api/setup/admin` body.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct SetupAdminRequest {
+    /// The setup token from the link `forgebase serve` printed.
+    token: String,
+    email: String,
+    /// At least 10 characters.
+    password: String,
+    /// Cookie session (default `true`); `false` returns bearer tokens instead.
+    cookie: Option<bool>,
+    /// Name for the device list.
+    device_name: Option<String>,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -390,6 +430,7 @@ fn idp_keys_rotate() {}
         idp_authorize_post, idp_consent, idp_token, idp_userinfo_get, idp_userinfo_post, idp_introspect, idp_revoke, idp_device_authorization, idp_device_get,
         idp_device_post, idp_logout_get, idp_logout_post, idp_clients, idp_client_create, idp_client_get, idp_client_update, idp_client_delete,
         idp_client_secret, idp_consents, idp_consent_revoke, idp_keys_rotate,
+        setup_status, setup_admin,
         admin_routes::identity_realm_create, admin_routes::identity_realm_keys, admin_routes::identity_realm_consents, admin_routes::identity_realm_consent_revoke, admin_routes::identity_provider_list, admin_routes::identity_provider_get, admin_routes::identity_provider_put, admin_routes::identity_provider_delete, admin_routes::identity_sms_get, admin_routes::identity_sms_put, admin_routes::identity_sms_delete
     ),
     components(schemas(
@@ -420,6 +461,8 @@ fn idp_keys_rotate() {}
         core_routes::AuthKeyCreated,
         core_routes::AuthRevoked,
         core_routes::AuthKeyRotated,
+        SetupStatus,
+        SetupAdminRequest,
     )),
     tags(
         (name = "oauth", description = "Social login: OAuth 2.0 / OpenID Connect providers (ADR-0009)"),
@@ -433,6 +476,7 @@ fn idp_keys_rotate() {}
         (name = "sessions", description = "Sessions, devices and sign-in history (ADR-0004)"),
         (name = "keys", description = "Personal access tokens, service accounts and API keys (ADR-0004)"),
         (name = "admin", description = "Administrators, user inspection, impersonation, audit, key rotation (ADR-0004, ADR-0014)"),
+        (name = "setup", description = "First-run setup: create the first administrator with the setup token (FB-90)"),
         (name = "oidc", description = "ForgeBase as identity provider: OAuth 2.0 / OpenID Connect, Client Apps, consent, device flow (ADR-0019)"),
     )
 )]
@@ -447,17 +491,19 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 mod tests {
     use std::collections::BTreeSet;
 
-    /// Every `.route(...)` of the auth routers, as `(METHOD, /api/auth/path)`.
+    /// Every `.route(...)` of the auth and setup routers, as `(METHOD, path)`.
     fn routed() -> BTreeSet<(String, String)> {
         let sources = [
-            include_str!("http.rs"),
-            include_str!("identity_http.rs"),
-            include_str!("social/http.rs"),
-            include_str!("webauthn/http.rs"),
-            include_str!("idp/http.rs"),
+            ("/api/auth", include_str!("http.rs")),
+            ("/api/auth", include_str!("identity_http.rs")),
+            ("/api/auth", include_str!("social/http.rs")),
+            ("/api/auth", include_str!("webauthn/http.rs")),
+            ("/api/auth", include_str!("idp/http.rs")),
+            // First-run setup routes carry their full path.
+            ("", include_str!("setup.rs")),
         ];
         let mut out = BTreeSet::new();
-        for src in sources {
+        for (prefix, src) in sources {
             let mut rest = src;
             while let Some(i) = rest.find(".route(") {
                 rest = &rest[i + 7..];
@@ -487,7 +533,7 @@ mod tests {
                         k == 0 || !after.as_bytes()[k - 1].is_ascii_alphanumeric() && after.as_bytes()[k - 1] != b'_'
                     });
                     if hit {
-                        out.insert((m.to_uppercase(), format!("/api/auth{path}")));
+                        out.insert((m.to_uppercase(), format!("{prefix}{path}")));
                     }
                 }
             }

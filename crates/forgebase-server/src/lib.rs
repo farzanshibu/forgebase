@@ -79,6 +79,8 @@ pub struct RunningServer {
     queue: Option<forgebase_queue::QueueService>,
     shutdown_timeout: Duration,
     lock: Option<DataDirLock>,
+    /// First-run setup token (FB-90), while no administrator exists.
+    setup_token: Option<String>,
 }
 
 /// Starts a server for `config` with no in-process job handlers (jobs are
@@ -123,6 +125,18 @@ pub async fn start_with_jobs(
             return Err(e);
         }
     };
+    // First-run setup (FB-90): a one-time token while no administrator
+    // exists. The caller prints it; it never goes to the log.
+    let setup_token = match auth.begin_setup().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot check for an administrator; setup link not issued");
+            None
+        }
+    };
+    if setup_token.is_some() {
+        tracing::info!("setup mode: no administrator yet; the setup link is printed to standard output");
+    }
     // Entitlements and quotas (FB-24): pipeline steps 4 and 6.
     let entitlements = match EntitlementService::open(Arc::new(db.clone()), policy.clone(), Arc::new(SystemClock)).await
     {
@@ -429,6 +443,7 @@ pub async fn start_with_jobs(
         queue,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
         lock: Some(lock),
+        setup_token,
     })
 }
 
@@ -632,6 +647,12 @@ impl RunningServer {
     /// The bound address (useful with port 0).
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// The one-time first-run setup token (FB-90), when the server started
+    /// with no administrator. Print it to standard output only.
+    pub fn setup_token(&self) -> Option<&str> {
+        self.setup_token.as_deref()
     }
 
     /// The address of the RESP (Redis protocol) listener, when it is enabled

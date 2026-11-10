@@ -1,7 +1,7 @@
 //! `forgebase`: the single ForgeBase executable.
 //!
 //! ```text
-//! forgebase init [DIR]     create config, data directory and database
+//! forgebase init [DIR]     create config, data directory, database and the first administrator
 //! forgebase serve          run the server (--host --port --data-dir --config)
 //! forgebase migrate        apply pending system migrations (--status to list)
 //! forgebase status         show project, database and server state
@@ -124,6 +124,9 @@ enum Command {
         /// Project directory; created if missing.
         #[arg(default_value = ".")]
         dir: PathBuf,
+        /// The first administrator (FB-90).
+        #[command(flatten)]
+        admin: admin::InitAdminArgs,
     },
     /// Start the server and serve until Ctrl-C / SIGTERM.
     Serve,
@@ -208,7 +211,7 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let g = &cli.global;
     match cli.command {
-        Command::Init { dir } => commands::init(g, &dir).await,
+        Command::Init { dir, admin } => commands::init(g, &dir, &admin).await,
         Command::Serve => commands::serve(g).await,
         Command::Migrate { status } => commands::migrate(g, status).await,
         Command::Status { json } => commands::status(g, json).await,
