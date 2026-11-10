@@ -238,9 +238,8 @@ git diff --exit-code src/generated.rs     # drift check
 * **Message queues and topics** (FB-63: publish, pull, ack) are not on the server yet, so the SDK has
   no such API. Job progress, checkpoints, attempts, results, job queues and workflows (FB-64) are covered
   by `jobs()`: `report_progress`, `checkpoint`, `watch`, `queues`, `create_workflow`, ...
-* Two schemas share a name in the OpenAPI document (`NewCollection`, `DeleteResult`), so the generated
-  model is the wrong one for those endpoints: collection definitions are passed as JSON and
-  `storage().delete_object` returns a hand-written `DeleteOutcome`.
+* Collection definitions are passed as JSON: the OpenAPI request schema is the full `CollectionSchema`
+  (with server-assigned `id`, `version`, ...). `storage().delete_object` returns the generated `DeleteResult`.
 * No cookie sessions (a browser feature) and no OAuth redirect helper beyond `oauth_start` / `oauth_complete`.
 * Not covered by helpers (use `fb.request`): policies, orgs and teams, plans and billing admin, vector,
   graph, SQL, credits, customization.

@@ -428,8 +428,8 @@ impl CollectionsApi {
 
     /// Creates a collection. `def` is the definition as JSON, for example
     /// `{"name": "posts", "type": "base", "fields": [{"name": "title", "type": "text", "required": true}]}`.
-    /// (It is not typed: the OpenAPI document names two different request schemas `NewCollection`, so the
-    /// generated model is the vector collection's, not this one.)
+    /// (It is not typed: the request schema in the OpenAPI document is the full [`CollectionSchema`], which
+    /// also carries server-assigned fields such as `id` and `version`.)
     pub async fn create<B: Serialize + ?Sized>(&self, def: &B) -> Result<CollectionSchema> {
         self.t.json(Req::post("/api/v1/collections").json(def)?).await
     }

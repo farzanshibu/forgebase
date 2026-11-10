@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::generated::{
-    Bucket, BucketInput, CompleteInput, CompletePart, ObjectInfo, ObjectPage, PartInfo, SignRequest, SignedUrl, Upload,
-    UploadInput,
+    Bucket, BucketInput, CompleteInput, CompletePart, DeleteResult, ObjectInfo, ObjectPage, PartInfo, SignRequest,
+    SignedUrl, Upload, UploadInput,
 };
 use crate::http::{Req, Transport, describe, key_path, seg};
 
@@ -34,16 +34,6 @@ pub struct ListObjects {
     pub limit: Option<u32>,
     /// `next_cursor` of the previous page.
     pub cursor: Option<String>,
-}
-
-/// What a delete did. (Hand-written: the OpenAPI document names two different schemas `DeleteResult`,
-/// so the generated one is not this endpoint's.)
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct DeleteOutcome {
-    /// The version removed, or the delete marker created.
-    pub version_id: String,
-    /// True when a delete marker was added (versioned bucket).
-    pub delete_marker: bool,
 }
 
 /// A download in progress: read it in chunks instead of holding the whole object.
@@ -174,13 +164,13 @@ impl StorageApi {
         self.t.json(r).await
     }
 
-    /// Deletes an object: in a versioned bucket this adds a delete marker (see [`DeleteOutcome`]).
-    pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<DeleteOutcome> {
+    /// Deletes an object: in a versioned bucket this adds a delete marker (see [`DeleteResult`]).
+    pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<DeleteResult> {
         self.t.json(Req::delete(Self::obj(bucket, key))).await
     }
 
     /// Permanently deletes one version of an object.
-    pub async fn delete_object_version(&self, bucket: &str, key: &str, version_id: &str) -> Result<DeleteOutcome> {
+    pub async fn delete_object_version(&self, bucket: &str, key: &str, version_id: &str) -> Result<DeleteResult> {
         self.t
             .json(Req::delete(Self::obj(bucket, key)).q("version", version_id))
             .await

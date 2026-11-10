@@ -200,11 +200,11 @@ export class CollectionsApi {
     return this.t.request(`/api/v1/collections/${enc(name)}`);
   }
 
-  create(def: Schemas["NewCollection"]): Promise<Schemas["CollectionSchema"]> {
+  create(def: Schemas["CollectionSchema"]): Promise<Schemas["CollectionSchema"]> {
     return this.t.request("/api/v1/collections", { method: "POST", body: def });
   }
 
-  update(name: string, def: Schemas["NewCollection"]): Promise<Schemas["CollectionSchema"]> {
+  update(name: string, def: Schemas["CollectionSchema"]): Promise<Schemas["CollectionSchema"]> {
     return this.t.request(`/api/v1/collections/${enc(name)}`, { method: "PUT", body: def });
   }
 
