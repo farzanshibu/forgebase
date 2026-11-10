@@ -91,7 +91,7 @@ export function seedBilling(): BillingState {
     refunds: [{ id: "ref1", payment_id: "pay1", invoice_id: "inv1", credit_note_id: "cn1", provider: "manual", provider_ref: null, status: "succeeded", amount: 500, currency: "USD", reason: "goodwill", created_at: T0 }],
     notes: [{ id: "cn1", number: "CN-1", invoice_id: "inv1", subject: "org:acme", currency: "USD", amount: 500, refund_amount: 500, balance_amount: 0, reason: "goodwill", refund: null, credits_reversed: 0, created_at: T0 }],
     coupons: [{ id: "cp1", code: "WELCOME15", name: null, kind: "percent", percent_bp: 1500, amount_off: null, currency: null, duration: "once", duration_cycles: null, max_redemptions: 100, redeemed: 3, expires_at: null, products: [], active: true }],
-    providers: [{ provider: "stripe", key_id: null, hint: "…c4f2", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/stripe", updated_at: T0 }],
+    providers: [{ provider: "stripe", key_id: null, hint: "…c4f2", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/stripe", updated_at: T0, test_mode: true, environment: "test", config: {}, secrets_set: ["api_key", "webhook_secret"] }],
     secrets: {},
     storeProducts: [
       { provider: "app_store", product_id: "com.acme.pro.monthly", price: "team_month", kind: "subscription", updated_at: T0 },
@@ -134,9 +134,28 @@ export function installBilling(mock: MockApi, opts: { disabled?: boolean } = {})
   on("PUT", `${B}/settings`, ({ body }) => { st.settings = body as BillingSettings; return { status: 200, body: st.settings }; });
   on("GET", `${B}/providers`, () => list(st.providers));
   on("PUT", `${B}/providers/{p}`, ({ params, body }) => {
-    const b = body as { api_key?: string; webhook_secret?: string; enabled: boolean; config?: Record<string, unknown> | null; api_base?: string | null };
-    st.secrets[params.p!] = { api_key: b.api_key, webhook_secret: b.webhook_secret, config: b.config };
-    const acct: ProviderAccount = { provider: params.p!, key_id: null, hint: b.api_key && b.api_key.length > 8 ? `…${b.api_key.slice(-4)}` : null, api_base: b.api_base ?? null, enabled: b.enabled, webhook_path: `${B}/webhooks/${params.p}`, updated_at: T0 };
+    const b = body as { api_key?: string | null; key_id?: string | null; webhook_secret?: string | null; enabled: boolean; config?: Record<string, unknown> | null; api_base?: string | null; clear?: string[] };
+    // Same merge as the server: an omitted or blank secret, key id, API base or config field keeps its stored value; `clear` removes one.
+    const old = st.providers.find((a) => a.provider === params.p);
+    const prev = st.secrets[params.p!] ?? {};
+    const clear = new Set(b.clear ?? []);
+    const blank = (v: unknown) => v == null || (typeof v === "string" && !v.trim()) || (Array.isArray(v) && v.length === 0);
+    const pick = (name: string, v: string | null | undefined, was: string | null | undefined) => (!blank(v) ? v!.trim() : clear.has(name) ? undefined : was ?? undefined);
+    const config: Record<string, unknown> = { ...(prev.config ?? {}) };
+    for (const [k, v] of Object.entries(b.config ?? {})) if (!blank(v)) config[k] = v;
+    for (const c of clear) if (c.startsWith("config.")) delete config[c.slice(7)];
+    const api_key = pick("api_key", b.api_key, prev.api_key);
+    const webhook_secret = pick("webhook_secret", b.webhook_secret, prev.webhook_secret);
+    st.secrets[params.p!] = { api_key, webhook_secret, config };
+    const hidden = ["private_key", "service_account", "platform_keys"];
+    const hint = !blank(b.api_key) ? (b.api_key!.trim().length > 8 ? `…${b.api_key!.trim().slice(-4)}` : null) : clear.has("api_key") ? null : old?.hint ?? null;
+    const acct: ProviderAccount = {
+      provider: params.p!, key_id: pick("key_id", b.key_id, old?.key_id) ?? null, hint, api_base: pick("api_base", b.api_base, old?.api_base) ?? null, enabled: b.enabled,
+      webhook_path: `${B}/webhooks/${params.p}`, updated_at: T0, test_mode: true,
+      environment: params.p === "app_store" ? String(config.environment || "sandbox") : "test",
+      config: Object.fromEntries(Object.entries(config).filter(([k]) => !hidden.includes(k))),
+      secrets_set: [...(api_key ? ["api_key"] : []), ...(webhook_secret ? ["webhook_secret"] : []), ...hidden.filter((k) => !blank(config[k])).map((k) => `config.${k}`)],
+    };
     st.providers = [...st.providers.filter((a) => a.provider !== params.p), acct];
     return { status: 200, body: acct };
   });

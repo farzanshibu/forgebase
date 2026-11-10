@@ -1628,6 +1628,7 @@ dependencies = [
  "forgebase-db",
  "forgebase-entitlements",
  "forgebase-functions",
+ "forgebase-graph",
  "forgebase-jobs",
  "forgebase-kv",
  "forgebase-observability",
@@ -1645,6 +1646,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "utoipa",
  "wat",
 ]
 

@@ -128,11 +128,19 @@ pub(crate) fn request_id(headers: &HeaderMap) -> String {
 // ---------------------------------------------------------------------------
 
 fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: bool) -> ClientInfo {
+    // The last entry: the one the trusted proxy appended. Earlier entries
+    // come from the client and are not evidence of anything (FB-80).
     let forwarded = trust_xff
-        .then(|| req_headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()))
+        .then(|| {
+            req_headers
+                .get_all("x-forwarded-for")
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .flat_map(|v| v.split(','))
+                .map(str::trim)
+                .rfind(|s| !s.is_empty())
+        })
         .flatten()
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
         .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
         .map(str::to_owned);
     ClientInfo {
@@ -160,6 +168,10 @@ fn client_info(req_headers: &HeaderMap, connect: Option<SocketAddr>, trust_xff: 
         impersonator: None,
     }
 }
+
+/// Cookie of an administrator's known device (FB-80): lets that browser
+/// sign in while its address is rate-limited or the account is locked.
+pub const ADMIN_DEVICE_COOKIE: &str = "fb_admin_device";
 
 /// The value of cookie `name`, if sent.
 pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -606,12 +618,30 @@ async fn login(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): B
     login_response(&a, out, &rid).await
 }
 
-async fn admin_login(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): Body<LoginReq>) -> Res {
-    let out = a
-        .login_admin(&ci, &b.email, &b.password, &b.opts)
+async fn admin_login(
+    State(a): State<AuthService>,
+    Client(ci, rid): Client,
+    headers: HeaderMap,
+    Body(b): Body<LoginReq>,
+) -> Res {
+    let device = cookie_value(&headers, ADMIN_DEVICE_COOKIE);
+    let (out, token) = a
+        .login_admin_from(&ci, &b.email, &b.password, &b.opts, device.as_deref())
         .await
         .map_err(|e| HttpError::new(e, &rid))?;
-    login_response(&a, out, &rid).await
+    let mut res = login_response(&a, out, &rid).await?;
+    // Known-device cookie (FB-80): only sent back to the admin sign-in.
+    let mut c = format!(
+        "{ADMIN_DEVICE_COOKIE}={token}; Path=/api/auth/admins/login; Max-Age={}; SameSite=Strict; HttpOnly",
+        crate::service::ADMIN_DEVICE_TTL_SECS
+    );
+    if a.config().cookie_secure {
+        c.push_str("; Secure");
+    }
+    if let Ok(v) = HeaderValue::from_str(&c) {
+        res.headers_mut().append(SET_COOKIE, v);
+    }
+    Ok(res)
 }
 
 async fn refresh(State(a): State<AuthService>, Client(ci, rid): Client, Body(b): Body<RefreshReq>) -> Res {
@@ -1060,6 +1090,33 @@ async fn rotate_keys(State(a): State<AuthService>, Client(ci, rid): Client, Call
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forwarded_for_uses_the_entry_the_proxy_appended() {
+        let peer = Some(SocketAddr::from(([127, 0, 0, 1], 5000)));
+        let mut h = HeaderMap::new();
+        // The client sent "1.2.3.4"; the proxy appended the real address.
+        h.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4, 198.51.100.7"));
+        assert_eq!(client_info(&h, peer, true).ip.as_deref(), Some("198.51.100.7"));
+        assert_eq!(
+            client_info(&h, peer, false).ip.as_deref(),
+            Some("127.0.0.1"),
+            "untrusted: socket"
+        );
+        h.append("x-forwarded-for", HeaderValue::from_static("203.0.113.5"));
+        assert_eq!(
+            client_info(&h, peer, true).ip.as_deref(),
+            Some("203.0.113.5"),
+            "last header line"
+        );
+        let mut bad = HeaderMap::new();
+        bad.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4, not-an-ip"));
+        assert_eq!(
+            client_info(&bad, peer, true).ip.as_deref(),
+            Some("127.0.0.1"),
+            "garbage: socket"
+        );
+    }
 
     #[test]
     fn cookies_and_queries() {

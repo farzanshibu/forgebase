@@ -108,6 +108,7 @@ pub struct HttpsClient {
     config: Arc<ClientConfig>,
     timeout: Duration,
     max_body: usize,
+    public_only: bool,
 }
 
 impl std::fmt::Debug for HttpsClient {
@@ -115,6 +116,7 @@ impl std::fmt::Debug for HttpsClient {
         f.debug_struct("HttpsClient")
             .field("timeout", &self.timeout)
             .field("max_body", &self.max_body)
+            .field("public_only", &self.public_only)
             .finish_non_exhaustive()
     }
 }
@@ -126,7 +128,20 @@ impl HttpsClient {
             config: tls.client_config(&[b"http/1.1"])?,
             timeout: Duration::from_secs(10),
             max_body: 1 << 20,
+            public_only: false,
         })
+    }
+
+    /// SSRF guard (FB-80): resolve the host once, refuse it when any address
+    /// is in a [blocked range](super::blocked_reason) (loopback, private,
+    /// link-local and cloud metadata, ...), and connect to the vetted
+    /// addresses only, so a DNS answer that changes cannot redirect the
+    /// connection. The auth service turns it on unless `[auth]
+    /// allow_private_outbound` is set; storage drivers leave it off (an S3
+    /// endpoint on your own network is normal).
+    pub fn public_only(mut self, on: bool) -> Self {
+        self.public_only = on;
+        self
     }
 
     /// Overall timeout of one request (connect, handshake, exchange).
@@ -149,9 +164,31 @@ impl HttpsClient {
             _ => return Err(AuthError::Provider("only http and https URLs are supported".into())),
         };
         let (host, port) = host_port(&url, if tls { 443 } else { 80 })?;
-        let tcp = TcpStream::connect((host.as_str(), port))
-            .await
-            .map_err(|_| AuthError::Provider(format!("could not reach {host}")))?;
+        let tcp = if self.public_only {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .map_err(|_| AuthError::Provider(format!("could not resolve {host}")))?
+                .collect();
+            if addrs.is_empty() {
+                return Err(AuthError::Provider(format!("could not resolve {host}")));
+            }
+            if let Some((ip, why)) = addrs
+                .iter()
+                .find_map(|a| super::blocked_reason(a.ip()).map(|why| (a.ip(), why)))
+            {
+                return Err(AuthError::Provider(format!(
+                    "{host} resolves to {ip}, in {why}; outbound requests to such addresses are refused \
+                     (set [auth] allow_private_outbound for a provider on your own network)"
+                )));
+            }
+            TcpStream::connect(addrs.as_slice())
+                .await
+                .map_err(|_| AuthError::Provider(format!("could not reach {host}")))?
+        } else {
+            TcpStream::connect((host.as_str(), port))
+                .await
+                .map_err(|_| AuthError::Provider(format!("could not reach {host}")))?
+        };
         let _ = tcp.set_nodelay(true);
         if tls {
             let mut s = TlsSettings::upgrade(&self.config, &host, tcp).await?;

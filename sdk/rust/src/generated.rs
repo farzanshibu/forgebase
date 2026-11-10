@@ -51,6 +51,24 @@ pub struct Acceptance {
     pub version: i64,
 }
 
+/// Body of an ack or nack.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AckRequest {
+    /// Ack ids from deliveries.
+    #[serde(default)]
+    pub ack_ids: Vec<String>,
+}
+
+/// Outcome of an ack, nack or deadline change.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AckResult {
+    /// Deliveries changed.
+    pub count: i64,
+    /// Ack ids that are unknown or no longer current (redelivered since, acked, or dead-lettered).
+    #[serde(default)]
+    pub unknown: Vec<String>,
+}
+
 /// The ACL of a bucket (replaced as a whole).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Acl {
@@ -589,6 +607,245 @@ pub struct BatchBody {
     pub commands: Vec<Vec<Bin>>,
 }
 
+/// The result of a collection attempt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BillingCollection {
+    /// The invoice after the attempt.
+    pub invoice: Invoice,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<Payment>,
+    /// The hosted page where the customer must pay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_url: Option<String>,
+}
+
+/// Billing interval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BillingInterval {
+    #[serde(rename = "month")]
+    Month,
+    #[serde(rename = "year")]
+    Year,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a maintenance run did.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BillingMaintenanceReport {
+    /// Subscriptions ended (cancel at period end, dunning, incomplete).
+    pub ended: i64,
+    /// Invoices fulfilled (late fulfillment).
+    pub fulfilled: i64,
+    /// Subscriptions renewed (invoice raised).
+    pub renewed: i64,
+    /// Dunning retries attempted.
+    pub retries: i64,
+    /// Entitlement syncs applied.
+    pub synced: i64,
+    /// Trials converted or ended.
+    pub trials_ended: i64,
+    /// Usage events read.
+    pub usage_events_read: i64,
+    /// Usage records stored for metered prices.
+    pub usage_recorded: i64,
+}
+
+/// Operator settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BillingSettings {
+    /// Credit note number prefix.
+    pub credit_note_prefix: String,
+    /// Currency of new customers.
+    pub default_currency: String,
+    /// After the last retry.
+    pub final_action: FinalAction,
+    /// Days an unpaid first invoice keeps an `incomplete` subscription.
+    pub incomplete_days: i64,
+    /// Invoice number prefix.
+    pub invoice_prefix: String,
+    /// Days after the first failed attempt at which payment is retried
+    /// (`[1, 3, 5]`: retries 1, 3 and 5 days after the failure).
+    #[serde(default)]
+    pub retry_days: Vec<i64>,
+    /// Webhooks older than this are ignored (replay window).
+    pub webhook_max_age_secs: i64,
+    /// Seconds a signed webhook timestamp may differ from now (Stripe).
+    pub webhook_tolerance_secs: i64,
+}
+
+/// Payment statistics over a window.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BillingStats {
+    /// Subscriptions active at the window start.
+    pub active_at_start: i64,
+    /// Subscriptions per status, now.
+    #[serde(default)]
+    pub by_status: std::collections::HashMap<String, i64>,
+    /// churned / active_at_start in basis points (`null`: none at start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub churn_rate_bp: Option<i64>,
+    /// Subscriptions that ended in the window.
+    pub churned: i64,
+    /// Payments that failed in the window.
+    pub failed_payments: i64,
+    /// Window start.
+    pub from: String,
+    /// Subscriptions started in the window.
+    pub new_subscriptions: i64,
+    /// MRR and ARR per currency, now.
+    #[serde(default)]
+    pub recurring: Vec<RecurringRevenue>,
+    /// Revenue per currency and bucket.
+    #[serde(default)]
+    pub revenue: Vec<RevenuePoint>,
+    /// Window end.
+    pub to: String,
+}
+
+/// A store product (App Store, Google Play, Creem) sold as a billing price.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BillingStoreProduct {
+    /// `subscription` (recurring price) or `one_time`.
+    pub kind: String,
+    /// Price key.
+    pub price: String,
+    /// Product id at the store.
+    pub product_id: String,
+    /// `app_store`, `google_play` or `creem`.
+    pub provider: String,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// A store purchase bound to a subject.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BillingStorePurchase {
+    /// Renews at the period end.
+    pub auto_renew: bool,
+    /// Created.
+    pub created_at: String,
+    /// `test` (sandbox, licence tester, Creem test mode).
+    pub environment: String,
+    /// End of the current period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// `subscription` or `one_time`.
+    pub kind: String,
+    /// Newest store transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_transaction_id: Option<String>,
+    /// The billing order (one-time purchases).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    /// Price key.
+    pub price: String,
+    /// Store product id.
+    pub product_id: String,
+    /// Store.
+    pub provider: String,
+    /// Stable purchase id at the store (original transaction id, purchase
+    /// token, Creem subscription or order).
+    pub purchase_id: String,
+    /// Store state: `active`, `trialing`, `grace`, `on_hold`, `paused`,
+    /// `expired`, `refunded`, `revoked`, `pending`, `replaced`.
+    pub status: String,
+    /// Subject.
+    pub subject: String,
+    /// The billing subscription it drives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// A subscription.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BillingSubscription {
+    /// Ends at the period end.
+    pub cancel_at_period_end: bool,
+    /// Why it was cancelled (`requested`, `payment_failed`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_reason: Option<String>,
+    /// When cancellation was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canceled_at: Option<String>,
+    /// Coupon code in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon: Option<String>,
+    /// Discounted invoices left (repeating coupons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon_cycles_left: Option<i64>,
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Current period end.
+    pub current_period_end: String,
+    /// Current period start.
+    pub current_period_start: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// Cycle anchor (renewals keep its day of month and time).
+    pub cycle_anchor: String,
+    /// When it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Interval.
+    pub interval: BillingInterval,
+    /// Intervals per period.
+    pub interval_count: i64,
+    /// Prices.
+    #[serde(default)]
+    pub items: Vec<SubscriptionItem>,
+    /// Newest invoice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_invoice_id: Option<String>,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Price scheduled for the next period (downgrade at period end).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_price: Option<String>,
+    /// Payment provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Lifecycle state.
+    pub status: BillingSubscriptionStatus,
+    /// Subject billed.
+    pub subject: String,
+    /// End of the trial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_ends_at: Option<String>,
+    /// Changes so far.
+    pub version: i64,
+}
+
+/// Subscription lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BillingSubscriptionStatus {
+    #[serde(rename = "incomplete")]
+    Incomplete,
+    #[serde(rename = "trialing")]
+    Trialing,
+    #[serde(rename = "active")]
+    Active,
+    #[serde(rename = "past_due")]
+    PastDue,
+    #[serde(rename = "paused")]
+    Paused,
+    #[serde(rename = "canceled")]
+    Canceled,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// A binary-safe value: a string, or `{"base64": "..."}` for bytes that are
 /// not UTF-8.
 pub type Bin = serde_json::Value;
@@ -722,6 +979,64 @@ pub struct BucketPatch {
     pub versioning: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<Visibility>,
+}
+
+/// Space used by one bucket.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BucketUsage {
+    /// Bucket name.
+    pub bucket: String,
+    /// Logical bytes of current objects.
+    pub logical_bytes: i64,
+    /// Current (non-deleted) objects.
+    pub objects: i64,
+    /// Logical bytes of every version (before deduplication).
+    pub version_bytes: i64,
+    /// Object versions, including older ones and delete markers.
+    pub versions: i64,
+}
+
+/// Body of `POST /billing/subscriptions/{id}/cancel`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CancelInput {
+    /// End at the period end (default) or now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_period_end: Option<bool>,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Body of `POST /billing/subscriptions/{id}/change`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ChangePlanInput {
+    /// Switch at the end of the period instead (no proration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_period_end: Option<bool>,
+    /// New plan price key (replaces the subscription's recurring plan price).
+    pub price: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proration: Option<Proration>,
+    /// Units (default: unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<i64>,
+}
+
+/// What a subscription, order or plan change returned: the object, the
+/// invoice it produced, and where to pay when no payment method is saved.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Checkout {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoice: Option<Invoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<Order>,
+    /// The provider's hosted payment page, when the customer must pay there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_url: Option<String>,
+    /// The idempotency key was seen before: this is the first result.
+    pub replayed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<BillingSubscription>,
 }
 
 /// The checkpoint of a job.
@@ -988,6 +1303,122 @@ pub struct CountResponse {
     pub count: i64,
 }
 
+/// A coupon.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Coupon {
+    /// Redeemable.
+    pub active: bool,
+    /// Amount off, minor units of `currency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_off: Option<i64>,
+    /// Code customers enter.
+    pub code: String,
+    /// Currency of `amount_off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// How long it applies.
+    pub duration: CouponDuration,
+    /// Invoices (repeating).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_cycles: Option<i64>,
+    /// Last day it can be redeemed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Percent or amount.
+    pub kind: CouponKind,
+    /// Redemption cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_redemptions: Option<i64>,
+    /// Name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Percent off in basis points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent_bp: Option<i64>,
+    /// Product keys it applies to (empty: all).
+    #[serde(default)]
+    pub products: Vec<String>,
+    /// Times redeemed.
+    pub redeemed: i64,
+}
+
+/// How long a coupon applies to a subscription.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CouponDuration {
+    #[serde(rename = "once")]
+    Once,
+    #[serde(rename = "repeating")]
+    Repeating,
+    #[serde(rename = "forever")]
+    Forever,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Body of `PUT /billing/coupons/{code}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CouponInput {
+    /// Redeemable (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// Amount off (kind `amount`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_off: Option<i64>,
+    /// Currency of `amount_off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<CouponDuration>,
+    /// Invoices (repeating).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_cycles: Option<i64>,
+    /// Last moment it can be redeemed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Percent or amount.
+    pub kind: CouponKind,
+    /// Redemption cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_redemptions: Option<i64>,
+    /// Name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Percent off in basis points (kind `percent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent_bp: Option<i64>,
+    /// Product keys it applies to (default: all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub products: Option<Vec<String>>,
+}
+
+/// Coupon type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CouponKind {
+    #[serde(rename = "percent")]
+    Percent,
+    #[serde(rename = "amount")]
+    Amount,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Body of `POST /system/backups`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreateSnapshot {
+    /// Include derived index files (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_indexes: Option<bool>,
+    /// Free-form label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<Retention>,
+}
+
 /// Body of a top-up or grant.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CreditInput {
@@ -1009,6 +1440,52 @@ pub struct CreditInput {
     pub reason: Option<String>,
     /// Subject (`org:<id>` or a principal key).
     pub subject: String,
+}
+
+/// A credit note.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreditNote {
+    /// Amount credited.
+    pub amount: i64,
+    /// Of which credited to the customer balance.
+    pub balance_amount: i64,
+    /// Created.
+    pub created_at: String,
+    /// FB-73 credits taken back (credit top-ups refunded).
+    pub credits_reversed: i64,
+    /// Currency.
+    pub currency: String,
+    /// Id.
+    pub id: String,
+    /// Invoice credited.
+    pub invoice_id: String,
+    /// Number.
+    pub number: String,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refund: Option<Refund>,
+    /// Of which refunded to the payment method.
+    pub refund_amount: i64,
+    /// Subject.
+    pub subject: String,
+}
+
+/// Body of `POST /billing/invoices/{id}/credit-notes`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreditNoteInput {
+    /// Amount (default: all that is left to credit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<i64>,
+    /// A replay with the same key returns the first credit note.
+    pub idempotency_key: String,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Credit the customer balance instead of refunding the payment method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_balance: Option<bool>,
 }
 
 /// Totals by entry kind over a period.
@@ -1043,6 +1520,26 @@ pub struct CreditSummary {
     pub top_up: i64,
 }
 
+/// What a maintenance run did.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreditsMaintenanceReport {
+    /// Expiries.
+    pub expired: ExpiryReport,
+    /// Usage consumption.
+    pub usage: UsageRun,
+}
+
+/// The amounts of a price in one more currency.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CurrencyOption {
+    /// Tiers (tiered schemes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<Tier>>,
+    /// Price per unit, minor units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_amount: Option<i64>,
+}
+
 /// The consumer cursor.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Cursor {
@@ -1071,6 +1568,123 @@ pub struct CustomLimit {
     /// Rolling window length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_secs: Option<i64>,
+}
+
+/// A customer: one billing subject (`org:<id>` or a principal key).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Customer {
+    /// Credit owed to the customer, minor units of `currency`.
+    pub balance: i64,
+    /// Created.
+    pub created_at: String,
+    /// Currency of invoices.
+    pub currency: String,
+    /// Billing email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// A saved payment method is on file (a provider reference, never card data).
+    pub has_payment_method: bool,
+    /// Id.
+    pub id: String,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Billing name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Its label (`visa ••4242`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_method_label: Option<String>,
+    /// Payment provider (`stripe`, `razorpay`, `manual`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The customer at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_customer_id: Option<String>,
+    /// Tax region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Subject billed.
+    pub subject: String,
+    /// No tax is charged.
+    pub tax_exempt: bool,
+}
+
+/// Body of `PUT /billing/customers`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CustomerInput {
+    /// Currency of invoices (default: the settings' default currency; fixed
+    /// once a subscription or order exists).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// Billing email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Caller data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    /// Billing name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Payment provider (default: the only configured one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Tax region (`IN`, `US-CA`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Subject (default: the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Operators: tax exempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_exempt: Option<bool>,
+}
+
+/// A message that used up its delivery attempts.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DeadLetter {
+    /// When (RFC 3339).
+    pub at: String,
+    /// Deliveries made.
+    pub attempts: i64,
+    /// Attributes.
+    #[serde(default)]
+    pub attributes: std::collections::HashMap<String, String>,
+    /// Data.
+    #[serde(default)]
+    pub data: serde_json::Value,
+    /// Dead-letter topic it was forwarded to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_topic: Option<String>,
+    /// Id of the copy on the dead-letter topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_message_id: Option<String>,
+    /// Every delivery attempt.
+    #[serde(default)]
+    pub history: Vec<DeliveryAttempt>,
+    /// Record id.
+    pub id: i64,
+    /// Message id.
+    pub message_id: String,
+    /// Ordering key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordering_key: Option<String>,
+    /// Published (RFC 3339).
+    pub published_at: String,
+    /// Why it was dead-lettered.
+    pub reason: String,
+    /// Subscription it failed on.
+    pub subscription: String,
+    /// Its topic.
+    pub topic: String,
+}
+
+/// Dead letters of a subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DeadLetterPage {
+    /// Newest first.
+    #[serde(default)]
+    pub items: Vec<DeadLetter>,
 }
 
 /// A quota decision with the counter state after it.
@@ -1120,11 +1734,13 @@ pub struct DeleteRequest {
     pub ids: Vec<String>,
 }
 
-/// Outcome of a delete.
+/// What a delete did.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DeleteResult {
-    /// Items removed.
-    pub deleted: i64,
+    /// `true` when a delete marker was added (versioned bucket).
+    pub delete_marker: bool,
+    /// The version removed, or the delete marker created.
+    pub version_id: String,
 }
 
 /// One row of the delivery log (never the body).
@@ -1161,6 +1777,24 @@ pub struct Delivery {
     pub to: String,
     /// Last change (epoch ms).
     pub updated_at: i64,
+}
+
+/// One delivery attempt of a message to a subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DeliveryAttempt {
+    /// When it was handed out (RFC 3339).
+    pub at: String,
+    /// Attempt number, from 1.
+    pub attempt: i64,
+    /// Consumer it went to (`rest`, a stream id, `push`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer: Option<String>,
+    /// Push or nack error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// `nacked`, `expired`, `failed` (push), `released`; absent while outstanding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 /// State of a delivery.
@@ -1286,6 +1920,46 @@ pub enum DomainStatus {
     Unknown,
 }
 
+/// An unpaid invoice that dunning is working on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DunningEntry {
+    /// Amount still due.
+    pub amount_due: i64,
+    /// Payment attempts so far.
+    pub attempt_count: i64,
+    /// Invoice created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// What happens after the last retry.
+    pub final_action: FinalAction,
+    /// Invoice id.
+    pub invoice_id: String,
+    /// Code of the last failed payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_code: Option<String>,
+    /// Message of the last failed payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_message: Option<String>,
+    /// Next automatic attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    /// Invoice number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// Retries left on the dunning schedule.
+    pub retries_left: i64,
+    /// Subject.
+    pub subject: String,
+    /// Subscription id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_status: Option<BillingSubscriptionStatus>,
+}
+
 /// A typed edge between two nodes.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Edge {
@@ -1385,6 +2059,21 @@ pub struct Entitlements {
     pub trial_ends_at: Option<String>,
 }
 
+/// What a maintenance run did.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct EntitlementsMaintenanceReport {
+    /// Undelivered alerts queued again.
+    pub alerts_requeued: i64,
+    /// Leases marked expired.
+    pub leases_expired: i64,
+    /// Reservations released because they expired.
+    pub reservations_expired: i64,
+    /// Trials that ended without conversion.
+    pub trials_expired: i64,
+    /// Counter windows opened (with rollover).
+    pub windows_opened: i64,
+}
+
 /// What a ledger entry records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryKind {
@@ -1411,7 +2100,7 @@ pub enum EntryKind {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ErrorBody {
     /// `{code, message, request_id}`.
-    pub error: ErrorDetail,
+    pub error: RealtimeErrorDetail,
 }
 
 /// The `error` object of the envelope.
@@ -1646,6 +2335,35 @@ pub struct FieldSpec {
     pub quantization: Option<Quantization>,
 }
 
+/// One file of a backup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// Role of the file.
+    pub kind: FileKind,
+    /// `/`-separated path relative to the backup directory.
+    pub path: String,
+    /// Lower-case hex SHA-256.
+    pub sha256: String,
+    /// Size in bytes.
+    pub size: i64,
+}
+
+/// What a file is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileKind {
+    #[serde(rename = "database")]
+    Database,
+    #[serde(rename = "storage")]
+    Storage,
+    #[serde(rename = "index")]
+    Index,
+    #[serde(rename = "key")]
+    Key,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// When a metadata filter is applied relative to the vector search.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterMode {
@@ -1655,6 +2373,18 @@ pub enum FilterMode {
     Pre,
     #[serde(rename = "post")]
     Post,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// What dunning does after the last failed retry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FinalAction {
+    #[serde(rename = "cancel")]
+    Cancel,
+    #[serde(rename = "leave_past_due")]
+    LeavePastDue,
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
@@ -1846,6 +2576,15 @@ pub struct HookSpec {
     /// Events.
     #[serde(default)]
     pub events: Vec<HookEvent>,
+}
+
+/// A provider-hosted page.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct HostedPage {
+    /// Provider session id.
+    pub session_id: String,
+    /// Open this URL.
+    pub url: String,
 }
 
 /// One hybrid search result.
@@ -2097,7 +2836,7 @@ pub struct IndexStatus {
     /// Memory used by the serving index.
     pub memory_bytes: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<Progress>,
+    pub progress: Option<VectorProgress>,
     /// Element type of the index.
     pub quantization: Quantization,
     /// Why the index is not ready, or why the running rebuild started.
@@ -2122,6 +2861,141 @@ pub enum Interval {
     Day,
     #[serde(rename = "month")]
     Month,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// An invoice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Invoice {
+    /// Left to collect.
+    pub amount_due: i64,
+    /// Collected.
+    pub amount_paid: i64,
+    /// Given back by credit notes.
+    pub amount_refunded: i64,
+    /// Collection attempts.
+    pub attempt_count: i64,
+    /// Customer credit applied.
+    pub balance_applied: i64,
+    /// `subscription_create`, `subscription_cycle`, `subscription_update`, `order`.
+    pub billing_reason: String,
+    /// Coupon code applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon: Option<String>,
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// Discount.
+    pub discount: i64,
+    /// Finalized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at: Option<String>,
+    /// What was paid for was delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fulfilled_at: Option<String>,
+    /// Hosted payment page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_url: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Lines.
+    #[serde(default)]
+    pub lines: Vec<InvoiceLine>,
+    /// Next dunning retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    /// Number (set when finalized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// Order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    /// Paid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_at: Option<String>,
+    /// Period end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
+    /// Period start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    /// State.
+    pub status: InvoiceStatus,
+    /// Subject.
+    pub subject: String,
+    /// Subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    /// Sum of the lines before discount (exclusive of added tax).
+    pub subtotal: i64,
+    /// Tax (added and included).
+    pub tax: i64,
+    /// Tax region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_region: Option<String>,
+    /// subtotal − discount + exclusive tax.
+    pub total: i64,
+}
+
+/// An invoice line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvoiceLine {
+    /// Signed amount before discount (credits are negative).
+    pub amount: i64,
+    /// Text on the invoice.
+    pub description: String,
+    /// Discount on the line.
+    pub discount_amount: i64,
+    /// Metered feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Type.
+    pub kind: LineKind,
+    /// Service period end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
+    /// Service period start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    /// Price key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    /// Product key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
+    /// Units.
+    pub quantity: i64,
+    /// Tax of the line.
+    pub tax_amount: i64,
+    /// Tax is part of `amount`.
+    pub tax_inclusive: bool,
+    /// Tax rate in basis points.
+    pub tax_rate_bp: i64,
+    /// Price per unit (per-unit prices).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_amount: Option<i64>,
+}
+
+/// Invoice lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvoiceStatus {
+    #[serde(rename = "draft")]
+    Draft,
+    #[serde(rename = "open")]
+    Open,
+    #[serde(rename = "paid")]
+    Paid,
+    #[serde(rename = "void")]
+    Void,
+    #[serde(rename = "uncollectible")]
+    Uncollectible,
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
@@ -2161,6 +3035,16 @@ pub struct Item {
     pub vectors: std::collections::HashMap<String, Vec<f64>>,
     /// Incremented by every replace.
     pub version: i64,
+}
+
+/// A price and a quantity.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemInput {
+    /// Price key.
+    pub price: String,
+    /// Units (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<i64>,
 }
 
 /// A list.
@@ -2250,12 +3134,245 @@ pub struct ItemsAgreementItemsItem {
     pub version: i64,
 }
 
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsBillingStoreProduct {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsBillingStoreProductItemsItem>,
+}
+
+/// A store product (App Store, Google Play, Creem) sold as a billing price.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsBillingStoreProductItemsItem {
+    /// `subscription` (recurring price) or `one_time`.
+    pub kind: String,
+    /// Price key.
+    pub price: String,
+    /// Product id at the store.
+    pub product_id: String,
+    /// `app_store`, `google_play` or `creem`.
+    pub provider: String,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsBillingStorePurchase {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsBillingStorePurchaseItemsItem>,
+}
+
+/// A store purchase bound to a subject.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsBillingStorePurchaseItemsItem {
+    /// Renews at the period end.
+    pub auto_renew: bool,
+    /// Created.
+    pub created_at: String,
+    /// `test` (sandbox, licence tester, Creem test mode).
+    pub environment: String,
+    /// End of the current period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// `subscription` or `one_time`.
+    pub kind: String,
+    /// Newest store transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_transaction_id: Option<String>,
+    /// The billing order (one-time purchases).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    /// Price key.
+    pub price: String,
+    /// Store product id.
+    pub product_id: String,
+    /// Store.
+    pub provider: String,
+    /// Stable purchase id at the store (original transaction id, purchase
+    /// token, Creem subscription or order).
+    pub purchase_id: String,
+    /// Store state: `active`, `trialing`, `grace`, `on_hold`, `paused`,
+    /// `expired`, `refunded`, `revoked`, `pending`, `replaced`.
+    pub status: String,
+    /// Subject.
+    pub subject: String,
+    /// The billing subscription it drives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsBillingSubscription {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsBillingSubscriptionItemsItem>,
+}
+
+/// A subscription.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsBillingSubscriptionItemsItem {
+    /// Ends at the period end.
+    pub cancel_at_period_end: bool,
+    /// Why it was cancelled (`requested`, `payment_failed`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_reason: Option<String>,
+    /// When cancellation was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canceled_at: Option<String>,
+    /// Coupon code in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon: Option<String>,
+    /// Discounted invoices left (repeating coupons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon_cycles_left: Option<i64>,
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Current period end.
+    pub current_period_end: String,
+    /// Current period start.
+    pub current_period_start: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// Cycle anchor (renewals keep its day of month and time).
+    pub cycle_anchor: String,
+    /// When it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Interval.
+    pub interval: BillingInterval,
+    /// Intervals per period.
+    pub interval_count: i64,
+    /// Prices.
+    #[serde(default)]
+    pub items: Vec<SubscriptionItem>,
+    /// Newest invoice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_invoice_id: Option<String>,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Price scheduled for the next period (downgrade at period end).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_price: Option<String>,
+    /// Payment provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Lifecycle state.
+    pub status: BillingSubscriptionStatus,
+    /// Subject billed.
+    pub subject: String,
+    /// End of the trial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_ends_at: Option<String>,
+    /// Changes so far.
+    pub version: i64,
+}
+
 /// Buckets.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ItemsBuckets {
     /// Entries.
     #[serde(default)]
     pub items: Vec<Bucket>,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsCoupon {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsCouponItemsItem>,
+}
+
+/// A coupon.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsCouponItemsItem {
+    /// Redeemable.
+    pub active: bool,
+    /// Amount off, minor units of `currency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_off: Option<i64>,
+    /// Code customers enter.
+    pub code: String,
+    /// Currency of `amount_off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// How long it applies.
+    pub duration: CouponDuration,
+    /// Invoices (repeating).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_cycles: Option<i64>,
+    /// Last day it can be redeemed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Percent or amount.
+    pub kind: CouponKind,
+    /// Redemption cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_redemptions: Option<i64>,
+    /// Name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Percent off in basis points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent_bp: Option<i64>,
+    /// Product keys it applies to (empty: all).
+    #[serde(default)]
+    pub products: Vec<String>,
+    /// Times redeemed.
+    pub redeemed: i64,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsCreditNote {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsCreditNoteItemsItem>,
+}
+
+/// A credit note.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsCreditNoteItemsItem {
+    /// Amount credited.
+    pub amount: i64,
+    /// Of which credited to the customer balance.
+    pub balance_amount: i64,
+    /// Created.
+    pub created_at: String,
+    /// FB-73 credits taken back (credit top-ups refunded).
+    pub credits_reversed: i64,
+    /// Currency.
+    pub currency: String,
+    /// Id.
+    pub id: String,
+    /// Invoice credited.
+    pub invoice_id: String,
+    /// Number.
+    pub number: String,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refund: Option<Refund>,
+    /// Of which refunded to the payment method.
+    pub refund_amount: i64,
+    /// Subject.
+    pub subject: String,
 }
 
 /// A list.
@@ -2287,6 +3404,54 @@ pub struct ItemsCustomLimitItemsItem {
     /// Rolling window length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_secs: Option<i64>,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsCustomer {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsCustomerItemsItem>,
+}
+
+/// A customer: one billing subject (`org:<id>` or a principal key).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsCustomerItemsItem {
+    /// Credit owed to the customer, minor units of `currency`.
+    pub balance: i64,
+    /// Created.
+    pub created_at: String,
+    /// Currency of invoices.
+    pub currency: String,
+    /// Billing email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// A saved payment method is on file (a provider reference, never card data).
+    pub has_payment_method: bool,
+    /// Id.
+    pub id: String,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Billing name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Its label (`visa ••4242`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_method_label: Option<String>,
+    /// Payment provider (`stripe`, `razorpay`, `manual`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The customer at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_customer_id: Option<String>,
+    /// Tax region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Subject billed.
+    pub subject: String,
+    /// No tax is charged.
+    pub tax_exempt: bool,
 }
 
 /// A list.
@@ -2371,6 +3536,54 @@ pub struct ItemsDomainItemsItem {
 
 /// A list.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsDunningEntry {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsDunningEntryItemsItem>,
+}
+
+/// An unpaid invoice that dunning is working on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsDunningEntryItemsItem {
+    /// Amount still due.
+    pub amount_due: i64,
+    /// Payment attempts so far.
+    pub attempt_count: i64,
+    /// Invoice created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// What happens after the last retry.
+    pub final_action: FinalAction,
+    /// Invoice id.
+    pub invoice_id: String,
+    /// Code of the last failed payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_code: Option<String>,
+    /// Message of the last failed payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_message: Option<String>,
+    /// Next automatic attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    /// Invoice number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// Retries left on the dunning schedule.
+    pub retries_left: i64,
+    /// Subject.
+    pub subject: String,
+    /// Subscription id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_status: Option<BillingSubscriptionStatus>,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ItemsEmailTemplate {
     /// Entries.
     #[serde(default)]
@@ -2435,6 +3648,90 @@ pub struct ItemsFeatureItemsItem {
 
 /// A list.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsInvoice {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsInvoiceItemsItem>,
+}
+
+/// An invoice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsInvoiceItemsItem {
+    /// Left to collect.
+    pub amount_due: i64,
+    /// Collected.
+    pub amount_paid: i64,
+    /// Given back by credit notes.
+    pub amount_refunded: i64,
+    /// Collection attempts.
+    pub attempt_count: i64,
+    /// Customer credit applied.
+    pub balance_applied: i64,
+    /// `subscription_create`, `subscription_cycle`, `subscription_update`, `order`.
+    pub billing_reason: String,
+    /// Coupon code applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon: Option<String>,
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// Discount.
+    pub discount: i64,
+    /// Finalized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at: Option<String>,
+    /// What was paid for was delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fulfilled_at: Option<String>,
+    /// Hosted payment page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted_url: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Lines.
+    #[serde(default)]
+    pub lines: Vec<InvoiceLine>,
+    /// Next dunning retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    /// Number (set when finalized).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// Order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    /// Paid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_at: Option<String>,
+    /// Period end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
+    /// Period start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    /// State.
+    pub status: InvoiceStatus,
+    /// Subject.
+    pub subject: String,
+    /// Subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    /// Sum of the lines before discount (exclusive of added tax).
+    pub subtotal: i64,
+    /// Tax (added and included).
+    pub tax: i64,
+    /// Tax region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_region: Option<String>,
+    /// subtotal − discount + exclusive tax.
+    pub total: i64,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ItemsLot {
     /// Entries.
     #[serde(default)]
@@ -2459,6 +3756,42 @@ pub struct ItemsLotItemsItem {
     pub kind: EntryKind,
     /// Credits left.
     pub remaining: i64,
+    /// Subject.
+    pub subject: String,
+}
+
+/// Object versions.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsObjects {
+    /// Entries, newest first.
+    #[serde(default)]
+    pub items: Vec<ObjectInfo>,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsOrder {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsOrderItemsItem>,
+}
+
+/// A one-time order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsOrderItemsItem {
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// Id.
+    pub id: String,
+    /// Invoice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoice_id: Option<String>,
+    /// State.
+    pub status: OrderStatus,
     /// Subject.
     pub subject: String,
 }
@@ -2538,6 +3871,50 @@ pub struct ItemsPackGrantItemsItem {
 
 /// A list.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsPayment {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsPaymentItemsItem>,
+}
+
+/// A payment attempt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsPaymentItemsItem {
+    /// Amount.
+    pub amount: i64,
+    /// Refunded so far.
+    pub amount_refunded: i64,
+    /// Attempt number of the invoice.
+    pub attempt: i64,
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Decline code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    /// Decline message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_message: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Invoice.
+    pub invoice_id: String,
+    /// Provider.
+    pub provider: String,
+    /// Payment id at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
+    /// State.
+    pub status: PaymentStatus,
+    /// Subject.
+    pub subject: String,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ItemsPlan {
     /// Entries.
     #[serde(default)]
@@ -2569,6 +3946,150 @@ pub struct ItemsPlanItemsItem {
     pub trial_days: i64,
     /// Last change.
     pub updated_at: String,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsPrice {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsPriceItemsItem>,
+}
+
+/// A price of a product.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsPriceItemsItem {
+    /// Sellable.
+    pub active: bool,
+    /// Created.
+    pub created_at: String,
+    /// Primary currency.
+    pub currency: String,
+    /// The same price in other currencies.
+    #[serde(default)]
+    pub currency_options: std::collections::HashMap<String, CurrencyOption>,
+    /// Metered: the FB-24 feature whose usage events are billed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+    /// Id.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<BillingInterval>,
+    /// Intervals per period.
+    pub interval_count: i64,
+    /// Stable key.
+    pub key: String,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Metered: all units or only overage.
+    pub meter_basis: MeterBasis,
+    /// Product key.
+    pub product: String,
+    /// Product id.
+    pub product_id: String,
+    /// Quantity to amount.
+    pub scheme: Scheme,
+    /// Whether the amounts include tax.
+    pub tax_behavior: TaxBehavior,
+    /// Tiers in the primary currency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<Tier>>,
+    /// Free trial days when subscribing.
+    pub trial_days: i64,
+    /// How it is charged.
+    pub r#type: PriceType,
+    /// Price per unit in the primary currency (per-unit scheme).
+    pub unit_amount: i64,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsProduct {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsProductItemsItem>,
+}
+
+/// A product.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsProductItemsItem {
+    /// Sellable.
+    pub active: bool,
+    /// FB-24 add-on (kind `addon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addon_key: Option<String>,
+    /// Created.
+    pub created_at: String,
+    /// Credits per unit (kind `credits`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<i64>,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Stable key.
+    pub key: String,
+    /// What a paid line delivers.
+    pub kind: ProductKind,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Display name.
+    pub name: String,
+    /// FB-24 usage pack (kind `usage_pack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_key: Option<String>,
+    /// FB-24 plan (kind `plan`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_key: Option<String>,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsProviderAccount {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsProviderAccountItemsItem>,
+}
+
+/// A configured payment provider (secrets are never returned).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsProviderAccountItemsItem {
+    /// API base URL override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
+    /// The non-secret provider-specific settings (never `private_key`,
+    /// `service_account` or `platform_keys`).
+    #[serde(default)]
+    pub config: serde_json::Value,
+    /// In use.
+    pub enabled: bool,
+    /// The provider environment: `sandbox`, `xcode` or `local_testing` for the
+    /// App Store, `test` for every other provider.
+    pub environment: String,
+    /// Last characters of the API secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Public key id (Razorpay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    /// `stripe`, `razorpay` or `manual`.
+    pub provider: String,
+    /// Names of the secrets that are stored (`api_key`, `webhook_secret`,
+    /// `config.private_key`, ...). The values are never returned.
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
+    /// Always `true`: only test-mode credentials are accepted (live keys are
+    /// refused when saved).
+    pub test_mode: bool,
+    /// Changed.
+    pub updated_at: String,
+    /// Webhook URL to register at the provider (relative to the public URL).
+    pub webhook_path: String,
 }
 
 /// A list.
@@ -2637,10 +4158,71 @@ pub struct ItemsRateItemsItem {
     pub updated_at: String,
 }
 
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsRefund {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsRefundItemsItem>,
+}
+
+/// A refund.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemsRefundItemsItem {
+    /// Amount.
+    pub amount: i64,
+    /// Created.
+    pub created_at: String,
+    /// Credit note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_note_id: Option<String>,
+    /// Currency.
+    pub currency: String,
+    /// Id.
+    pub id: String,
+    /// Invoice.
+    pub invoice_id: String,
+    /// Payment refunded.
+    pub payment_id: String,
+    /// Provider.
+    pub provider: String,
+    /// Refund id at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// State.
+    pub status: RefundStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ItemsResponse {
     #[serde(default)]
     pub items: Vec<serde_json::Value>,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsTaxRate {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsTaxRateItemsItem>,
+}
+
+/// A tax rate of a region.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsTaxRateItemsItem {
+    /// In use.
+    pub active: bool,
+    /// Id.
+    pub id: String,
+    /// Name on invoices (`GST`, `VAT`).
+    pub name: String,
+    /// Rate in basis points (1800 = 18 %).
+    pub rate_bp: i64,
+    /// Region (`IN`, `DE`, `US-CA`).
+    pub region: String,
 }
 
 /// A list.
@@ -2748,6 +4330,38 @@ pub struct ItemsUsageSummaryItemsItem {
     pub window_end: Option<String>,
     /// Window start.
     pub window_start: String,
+}
+
+/// A list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsWebhookEvent {
+    /// Entries.
+    #[serde(default)]
+    pub items: Vec<ItemsWebhookEventItemsItem>,
+}
+
+/// A webhook event received.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ItemsWebhookEventItemsItem {
+    /// Deliveries seen.
+    pub attempts: i64,
+    /// Provider time of the event.
+    pub event_at: String,
+    /// Event id at the provider.
+    pub event_id: String,
+    /// Event type.
+    pub event_type: String,
+    /// Id.
+    pub id: String,
+    /// Provider.
+    pub provider: String,
+    /// Received.
+    pub received_at: String,
+    /// What happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// `processed`, `ignored` or `failed`.
+    pub status: String,
 }
 
 /// A job. The lease token is never part of it (see \[`ClaimedJob`\]).
@@ -2963,6 +4577,17 @@ pub struct JobUpdate {
     pub workflow_id: Option<String>,
 }
 
+/// Master key handling recorded in a backup.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct KeyInfo {
+    /// First 16 hex characters of the key file's SHA-256 (`None` when the
+    /// data directory had no key). Restore refuses a different key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// Whether `auth/master.key` is part of the backup.
+    pub included: bool,
+}
+
 /// Answer of `GET .../keys/{key}`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct KeyValue {
@@ -3132,6 +4757,24 @@ pub struct LimitsInput {
     pub timeout_ms: Option<i64>,
 }
 
+/// Invoice line type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineKind {
+    #[serde(rename = "subscription")]
+    Subscription,
+    #[serde(rename = "proration")]
+    Proration,
+    #[serde(rename = "usage")]
+    Usage,
+    #[serde(rename = "one_time")]
+    OneTime,
+    #[serde(rename = "adjustment")]
+    Adjustment,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListQueryBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3158,6 +4801,16 @@ pub struct ListQueryBody {
     pub sort: Option<String>,
 }
 
+/// Body of `POST .../lists/{key}/remove` (`LREM`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListRemoveBody {
+    /// `0` (default) removes every match; `n > 0` the first `n` from the head; `n < 0` the first `|n|` from the tail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
+    /// Value to remove.
+    pub value: Bin,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListResponse {
     #[serde(default)]
@@ -3172,6 +4825,15 @@ pub struct ListResponse {
     pub total_items: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_pages: Option<i64>,
+}
+
+/// Body of `POST .../lists/{key}/set` (`LSET`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListSetBody {
+    /// Index (negative counts from the tail).
+    pub index: i64,
+    /// New value.
+    pub value: Bin,
 }
 
 /// A line the function logged.
@@ -3205,19 +4867,39 @@ pub struct Lot {
     pub subject: String,
 }
 
-/// What a maintenance run did.
+/// The manifest.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct MaintenanceReport {
-    /// Undelivered alerts queued again.
-    pub alerts_requeued: i64,
-    /// Leases marked expired.
-    pub leases_expired: i64,
-    /// Reservations released because they expired.
-    pub reservations_expired: i64,
-    /// Trials that ended without conversion.
-    pub trials_expired: i64,
-    /// Counter windows opened (with rollover).
-    pub windows_opened: i64,
+pub struct Manifest {
+    /// RFC 3339 creation time (UTC).
+    pub created: String,
+    /// Every file with size and hash.
+    #[serde(default)]
+    pub files: Vec<FileEntry>,
+    /// ForgeBase version that wrote it.
+    pub forgebase_version: String,
+    /// Manifest format version.
+    pub format: i64,
+    /// Backup id (the directory name for snapshots).
+    pub id: String,
+    /// Whether derived index files are included.
+    pub includes_indexes: bool,
+    /// `backup` (explicit destination) or `snapshot` (managed, with retention).
+    pub kind: String,
+    /// Free-form label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Master key handling.
+    pub master_key: KeyInfo,
+    /// Highest applied system migration in the copied database.
+    pub schema_version: i64,
+}
+
+/// Body of `POST /billing/invoices/{id}/mark-paid` (manual billing).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MarkPaidInput {
+    /// Bank transfer or cheque reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// A member of a channel's presence.
@@ -3244,6 +4926,77 @@ pub struct MembersBody {
     pub members: Vec<Bin>,
 }
 
+/// A stored message.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Message {
+    /// Attributes.
+    #[serde(default)]
+    pub attributes: std::collections::HashMap<String, String>,
+    /// Size counted against limits.
+    pub bytes: i64,
+    /// Data.
+    #[serde(default)]
+    pub data: serde_json::Value,
+    /// Dedup id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_id: Option<String>,
+    /// For a message on a dead-letter topic: its deliveries on the source subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_history: Option<Vec<DeliveryAttempt>>,
+    /// Message id.
+    pub id: String,
+    /// Ordering key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordering_key: Option<String>,
+    /// Published (RFC 3339).
+    pub published_at: String,
+    /// Publisher (actor).
+    pub publisher: String,
+    /// Sequence number (strictly increasing across topics).
+    pub seq: i64,
+    /// Topic.
+    pub topic: String,
+}
+
+/// Retained messages of a topic.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MessagePage {
+    /// Oldest first.
+    #[serde(default)]
+    pub items: Vec<Message>,
+    /// Pass as `after` for the next page; absent at the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<i64>,
+}
+
+/// Which usage units a metered price bills.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeterBasis {
+    #[serde(rename = "units")]
+    Units,
+    #[serde(rename = "overage")]
+    Overage,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where a meter stands against its limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeterState {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "warn")]
+    Warn,
+    #[serde(rename = "critical")]
+    Critical,
+    #[serde(rename = "over")]
+    Over,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// Distance function of a vector field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Metric {
@@ -3264,6 +5017,25 @@ pub struct MgetBody {
     /// Keys to read.
     #[serde(default)]
     pub keys: Vec<String>,
+}
+
+/// Body of a deadline change.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ModifyDeadlineRequest {
+    /// New deadline from now, 0 to 10 min; `0` nacks.
+    pub ack_deadline_ms: i64,
+    /// Ack ids from deliveries.
+    #[serde(default)]
+    pub ack_ids: Vec<String>,
+}
+
+/// An amount in minor units of an ISO 4217 currency.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Money {
+    /// Minor units (cents for USD, paise for INR, yen for JPY).
+    pub amount: i64,
+    /// ISO 4217 code, upper case.
+    pub currency: String,
 }
 
 /// Body of `POST /mset`.
@@ -3312,23 +5084,6 @@ pub struct NeighborPage {
     /// Pass as `offset` for the next page; absent on the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_after: Option<String>,
-}
-
-/// A new collection.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct NewCollection {
-    /// Free text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Searches over at most this many candidate vectors are exact (brute
-    /// force) instead of approximate. Default from the server configuration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exact_threshold: Option<i64>,
-    /// Vector fields (at most 16; more can be added later).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fields: Option<Vec<FieldSpec>>,
-    /// `[A-Za-z][A-Za-z0-9_]{0,62}`, unique in the tenant.
-    pub name: String,
 }
 
 /// Body of `POST /edges`.
@@ -3395,6 +5150,23 @@ pub struct NewJob {
     pub visibility_timeout_ms: Option<i64>,
 }
 
+/// One message to publish.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NewMessage {
+    /// String attributes (subscription filters match on them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<std::collections::HashMap<String, String>>,
+    /// Any JSON value.
+    #[serde(default)]
+    pub data: serde_json::Value,
+    /// A repeat inside the topic's dedup window is accepted once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_id: Option<String>,
+    /// Messages with the same key reach an ordered subscription in publish order, one at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordering_key: Option<String>,
+}
+
 /// Body of `POST /nodes`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NewNode {
@@ -3444,6 +5216,15 @@ pub struct NewSchedule {
     pub visibility_timeout_ms: Option<i64>,
 }
 
+/// Body of a snapshot creation.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NewSnapshot {
+    /// 1-128 letters, digits, `.`, `_`, `:` or `-`.
+    pub name: String,
+    /// Subscription whose acknowledgement state is saved.
+    pub subscription: String,
+}
+
 /// One step of a workflow to create.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NewStep {
@@ -3480,6 +5261,70 @@ pub struct NewStep {
     /// Lease length without a heartbeat, in ms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility_timeout_ms: Option<i64>,
+}
+
+/// Body of a subscription creation.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NewSubscription {
+    /// Visibility timeout of a delivery, 1 s to 10 min (default 10 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_deadline_ms: Option<i64>,
+    /// Redelivery backoff after a nack or a missed deadline: base (default 1 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_base_ms: Option<i64>,
+    /// Backoff cap (default 10 min).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_max_ms: Option<i64>,
+    /// Topic that receives dead-lettered messages with their delivery history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_topic: Option<String>,
+    /// Attribute filter (see the ADR); immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+    /// Free-form labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    /// After this many deliveries a message is dead-lettered (1-100; default: unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_delivery_attempts: Option<i64>,
+    /// 1-128 letters, digits, `.`, `_`, `:` or `-`.
+    pub name: String,
+    /// Deliver messages with the same ordering key in publish order, one at a time; immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordering: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<StartPosition>,
+    /// Topic to subscribe to.
+    pub topic: String,
+}
+
+/// Body of a topic creation.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NewTopic {
+    /// A repeated `dedup_id` inside this window is accepted once (default 10 minutes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_window_ms: Option<i64>,
+    /// Free-form labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    /// Largest message (data, attributes and ordering key), default and upper bound from the server config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_message_bytes: Option<i64>,
+    /// 1-128 letters, digits, `.`, `_`, `:` or `-`, starting with a letter or digit.
+    pub name: String,
+    /// Most bytes kept; the oldest messages are dropped beyond it (default: no limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_bytes: Option<i64>,
+    /// How long messages are kept, acknowledged or not (default 7 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_ms: Option<i64>,
+    /// JSON Schema every message's `data` must satisfy (subset, see the ADR).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RecordSource>,
 }
 
 /// A worker to register.
@@ -3616,6 +5461,75 @@ pub struct ObjectPage {
     /// "Directories" when a delimiter was given.
     #[serde(default)]
     pub prefixes: Vec<String>,
+}
+
+/// A one-time order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Order {
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Customer id.
+    pub customer_id: String,
+    /// Id.
+    pub id: String,
+    /// Invoice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoice_id: Option<String>,
+    /// State.
+    pub status: OrderStatus,
+    /// Subject.
+    pub subject: String,
+}
+
+/// Body of `POST /billing/orders`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OrderInput {
+    /// Coupon code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon: Option<String>,
+    /// A replay with the same key returns the first order.
+    pub idempotency_key: String,
+    /// One-time prices.
+    #[serde(default)]
+    pub items: Vec<ItemInput>,
+    /// Where the hosted payment page returns to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+    /// Subject (default: the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
+/// A page of orders.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OrderPage {
+    /// Orders, newest first.
+    #[serde(default)]
+    pub items: Vec<Order>,
+    /// Page size.
+    pub limit: i64,
+    /// Rows skipped.
+    pub offset: i64,
+    /// All orders matching the filters.
+    pub total: i64,
+}
+
+/// Order lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderStatus {
+    #[serde(rename = "open")]
+    Open,
+    #[serde(rename = "paid")]
+    Paid,
+    #[serde(rename = "canceled")]
+    Canceled,
+    #[serde(rename = "refunded")]
+    Refunded,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// An exception for a subject, a member or a user everywhere.
@@ -3782,6 +5696,77 @@ pub struct PathResult {
     pub nodes: Vec<Node>,
 }
 
+/// Body of `POST /billing/invoices/{id}/pay`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PayInput {
+    /// Where the hosted payment page returns to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+/// A payment attempt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Payment {
+    /// Amount.
+    pub amount: i64,
+    /// Refunded so far.
+    pub amount_refunded: i64,
+    /// Attempt number of the invoice.
+    pub attempt: i64,
+    /// Created.
+    pub created_at: String,
+    /// Currency.
+    pub currency: String,
+    /// Decline code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    /// Decline message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_message: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Invoice.
+    pub invoice_id: String,
+    /// Provider.
+    pub provider: String,
+    /// Payment id at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
+    /// State.
+    pub status: PaymentStatus,
+    /// Subject.
+    pub subject: String,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// Body of `POST /billing/portal/payment-method`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PaymentMethodInput {
+    /// Where the provider page returns to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+    /// Subject (default: the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
+/// One collection attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentStatus {
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "succeeded")]
+    Succeeded,
+    #[serde(rename = "failed")]
+    Failed,
+    #[serde(rename = "canceled")]
+    Canceled,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// What a caller still has to accept.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Pending {
@@ -3918,6 +5903,25 @@ pub struct PopBody {
     pub side: Side,
 }
 
+/// The customer portal: what a customer sees of its billing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Portal {
+    /// Newest credit notes.
+    #[serde(default)]
+    pub credit_notes: Vec<CreditNote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer: Option<Customer>,
+    /// Newest invoices.
+    #[serde(default)]
+    pub invoices: Vec<Invoice>,
+    /// Newest payments.
+    #[serde(default)]
+    pub payments: Vec<Payment>,
+    /// Subscriptions that have not ended.
+    #[serde(default)]
+    pub subscriptions: Vec<BillingSubscription>,
+}
+
 /// Result of a ledger write.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Posted {
@@ -3965,6 +5969,211 @@ pub struct PreviewInput {
     pub variables: Option<serde_json::Value>,
 }
 
+/// One line of a plan-change preview (the same lines the change would invoice).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreviewLine {
+    /// Minor units; negative for a credit.
+    pub amount: i64,
+    /// What the line is for.
+    pub description: String,
+    /// `proration`.
+    pub kind: LineKind,
+    /// Price key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    /// Units.
+    pub quantity: i64,
+}
+
+/// A price of a product.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Price {
+    /// Sellable.
+    pub active: bool,
+    /// Created.
+    pub created_at: String,
+    /// Primary currency.
+    pub currency: String,
+    /// The same price in other currencies.
+    #[serde(default)]
+    pub currency_options: std::collections::HashMap<String, CurrencyOption>,
+    /// Metered: the FB-24 feature whose usage events are billed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+    /// Id.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<BillingInterval>,
+    /// Intervals per period.
+    pub interval_count: i64,
+    /// Stable key.
+    pub key: String,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Metered: all units or only overage.
+    pub meter_basis: MeterBasis,
+    /// Product key.
+    pub product: String,
+    /// Product id.
+    pub product_id: String,
+    /// Quantity to amount.
+    pub scheme: Scheme,
+    /// Whether the amounts include tax.
+    pub tax_behavior: TaxBehavior,
+    /// Tiers in the primary currency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<Tier>>,
+    /// Free trial days when subscribing.
+    pub trial_days: i64,
+    /// How it is charged.
+    pub r#type: PriceType,
+    /// Price per unit in the primary currency (per-unit scheme).
+    pub unit_amount: i64,
+}
+
+/// Body of `PUT /billing/prices/{key}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PriceInput {
+    /// Sellable (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// Primary currency.
+    pub currency: String,
+    /// The same price in other currencies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_options: Option<std::collections::HashMap<String, CurrencyOption>>,
+    /// Metered: FB-24 feature key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<BillingInterval>,
+    /// Intervals per period (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_count: Option<i64>,
+    /// Caller data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter_basis: Option<MeterBasis>,
+    /// Product key.
+    pub product: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<Scheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_behavior: Option<TaxBehavior>,
+    /// Tiers (graduated and volume).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<Tier>>,
+    /// Free trial days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_days: Option<i64>,
+    /// How it is charged.
+    pub r#type: PriceType,
+    /// Price per unit, minor units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_amount: Option<i64>,
+}
+
+/// How a price is charged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PriceType {
+    #[serde(rename = "recurring")]
+    Recurring,
+    #[serde(rename = "one_time")]
+    OneTime,
+    #[serde(rename = "metered")]
+    Metered,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// A product.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Product {
+    /// Sellable.
+    pub active: bool,
+    /// FB-24 add-on (kind `addon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addon_key: Option<String>,
+    /// Created.
+    pub created_at: String,
+    /// Credits per unit (kind `credits`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<i64>,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Stable key.
+    pub key: String,
+    /// What a paid line delivers.
+    pub kind: ProductKind,
+    /// Caller data.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Display name.
+    pub name: String,
+    /// FB-24 usage pack (kind `usage_pack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_key: Option<String>,
+    /// FB-24 plan (kind `plan`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_key: Option<String>,
+    /// Changed.
+    pub updated_at: String,
+}
+
+/// Body of `PUT /billing/products/{key}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProductInput {
+    /// Sellable (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// FB-24 add-on key (kind `addon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addon_key: Option<String>,
+    /// Credits per unit (kind `credits`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<i64>,
+    /// Description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What a paid line delivers.
+    pub kind: ProductKind,
+    /// Caller data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    /// Display name.
+    pub name: String,
+    /// FB-24 pack key (kind `usage_pack`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_key: Option<String>,
+    /// FB-24 plan key (kind `plan`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_key: Option<String>,
+}
+
+/// What a paid line of a product delivers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProductKind {
+    #[serde(rename = "plan")]
+    Plan,
+    #[serde(rename = "addon")]
+    Addon,
+    #[serde(rename = "usage_pack")]
+    UsagePack,
+    #[serde(rename = "credits")]
+    Credits,
+    #[serde(rename = "service")]
+    Service,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// The latest progress report of a job.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Progress {
@@ -4009,6 +6218,137 @@ pub struct ProgressReport {
     /// Phase name (at most 128 characters).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+}
+
+/// How to bill a plan change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Proration {
+    #[serde(rename = "always_invoice")]
+    AlwaysInvoice,
+    #[serde(rename = "create_prorations")]
+    CreateProrations,
+    #[serde(rename = "none")]
+    None,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// What `POST /billing/subscriptions/{id}/change` would do, without doing it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProrationPreview {
+    /// The change is scheduled for the period end.
+    pub at_period_end: bool,
+    /// Charge for the remaining time (minor units).
+    pub charge: i64,
+    /// Credit for unused time (positive number, minor units).
+    pub credit: i64,
+    /// Currency of every amount.
+    pub currency: String,
+    /// When the change takes effect.
+    pub effective_at: String,
+    /// Current plan price key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_price: Option<String>,
+    /// An invoice is raised immediately.
+    pub invoiced_now: bool,
+    /// Proration lines (credit for unused time, charge for the rest).
+    #[serde(default)]
+    pub lines: Vec<PreviewLine>,
+    /// `charge - credit`: positive is collected now (`always_invoice`) or at
+    /// renewal (`create_prorations`); negative goes to the customer balance.
+    pub net: i64,
+    /// Amount of the plan price for a whole period at the new price.
+    pub new_period_amount: i64,
+    /// Current period end.
+    pub period_end: String,
+    /// Current period start.
+    pub period_start: String,
+    /// Proration mode that applies (`none` for trials and period-end changes).
+    pub proration: Proration,
+    /// Units after the change.
+    pub quantity: i64,
+    /// Subscription id.
+    pub subscription_id: String,
+    /// New plan price key.
+    pub to_price: String,
+}
+
+/// A configured payment provider (secrets are never returned).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ProviderAccount {
+    /// API base URL override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
+    /// The non-secret provider-specific settings (never `private_key`,
+    /// `service_account` or `platform_keys`).
+    #[serde(default)]
+    pub config: serde_json::Value,
+    /// In use.
+    pub enabled: bool,
+    /// The provider environment: `sandbox`, `xcode` or `local_testing` for the
+    /// App Store, `test` for every other provider.
+    pub environment: String,
+    /// Last characters of the API secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Public key id (Razorpay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    /// `stripe`, `razorpay` or `manual`.
+    pub provider: String,
+    /// Names of the secrets that are stored (`api_key`, `webhook_secret`,
+    /// `config.private_key`, ...). The values are never returned.
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
+    /// Always `true`: only test-mode credentials are accepted (live keys are
+    /// refused when saved).
+    pub test_mode: bool,
+    /// Changed.
+    pub updated_at: String,
+    /// Webhook URL to register at the provider (relative to the public URL).
+    pub webhook_path: String,
+}
+
+/// Body of `PUT /billing/providers/{provider}`. Test-mode credentials only.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ProviderInput {
+    /// API base URL (default: the provider's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
+    /// Stripe secret key (`sk_test_…`) or Razorpay key secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Fields to remove from the stored account: `api_key`, `webhook_secret`,
+    /// `key_id`, `api_base` or `config.<name>`. A secret or config field that
+    /// is omitted, `null` or empty keeps its stored value; list it here to
+    /// clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear: Option<Vec<String>>,
+    /// Provider-specific settings, sealed with the secrets (FB-72): App Store
+    /// `issuer_id`, `key_id`, `private_key`, `bundle_id`, `environment`;
+    /// Google Play `package_name`, `service_account`, `push_audience`,
+    /// `push_service_account`; WeChat Pay `appid`, `merchant_serial`,
+    /// `private_key`, `platform_keys`, `notify_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+    /// In use (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Razorpay key id (`rzp_test_…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    /// Webhook signing secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret: Option<String>,
+}
+
+/// Snapshots removed by a prune.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PruneResult {
+    /// Ids of the deleted snapshots.
+    #[serde(default)]
+    pub deleted: Vec<String>,
 }
 
 /// The public face of a realm: what dashboards and hosted pages need.
@@ -4060,6 +6400,55 @@ pub struct PublishBody {
     pub message: Bin,
 }
 
+/// Body of a publish.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PublishRequest {
+    /// 1 to 1000 messages, published in one transaction.
+    #[serde(default)]
+    pub messages: Vec<NewMessage>,
+}
+
+/// Response of a publish.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PublishResponse {
+    /// One per message, in order.
+    #[serde(default)]
+    pub results: Vec<Published>,
+}
+
+/// The outcome of one published message.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Published {
+    /// `true` when the dedup id was seen inside the window and nothing was stored.
+    pub duplicate: bool,
+    /// Message id (of the first message for a duplicate).
+    pub message_id: String,
+    /// Sequence number in the topic (`0` for a duplicate whose first message expired).
+    pub seq: i64,
+}
+
+/// Body of a pull.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PullRequest {
+    /// Consumer label recorded in the delivery history (default `rest`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer: Option<String>,
+    /// Most messages to return, 1-1000 (default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_messages: Option<i64>,
+    /// Long poll: wait up to this long for a message (default 0, capped by the server).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<i64>,
+}
+
+/// Response of a pull.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PullResponse {
+    /// Possibly empty.
+    #[serde(default)]
+    pub messages: Vec<ReceivedMessage>,
+}
+
 /// Body of `POST .../lists/{key}/push`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PushBody {
@@ -4068,6 +6457,27 @@ pub struct PushBody {
     /// Values, pushed one after the other.
     #[serde(default)]
     pub values: Vec<Bin>,
+}
+
+/// Push delivery of a subscription.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PushConfig {
+    /// Webhook URL (`https://`) or function name.
+    pub endpoint: String,
+    /// `webhook` or `function`.
+    pub kind: PushKind,
+}
+
+/// Kind of push endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PushKind {
+    #[serde(rename = "webhook")]
+    Webhook,
+    #[serde(rename = "function")]
+    Function,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Element type of the ANN index. Canonical vectors are always stored as
@@ -4188,6 +6598,46 @@ pub struct QueueStats {
     pub succeeded: i64,
 }
 
+/// A subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct QueueSubscription {
+    /// Ack deadline in milliseconds.
+    pub ack_deadline_ms: i64,
+    /// Backoff base in milliseconds.
+    pub backoff_base_ms: i64,
+    /// Backoff cap in milliseconds.
+    pub backoff_max_ms: i64,
+    /// Created (RFC 3339).
+    pub created_at: String,
+    /// Creator.
+    pub created_by: String,
+    /// Dead-letter topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_topic: Option<String>,
+    /// Attribute filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
+    /// Labels.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// Attempt limit (`None`: unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_delivery_attempts: Option<i64>,
+    /// Name.
+    pub name: String,
+    /// Ordered delivery per ordering key.
+    pub ordering: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushConfig>,
+    /// Webhook signing secret: returned only when it is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_secret: Option<String>,
+    /// Topic.
+    pub topic: String,
+    /// Last changed (RFC 3339).
+    pub updated_at: String,
+}
+
 /// Enforcement of a feature's limit.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct QuotaPolicy {
@@ -4290,6 +6740,25 @@ pub enum RatePeriod {
     Unknown,
 }
 
+/// Error details.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RealtimeErrorDetail {
+    /// Stable snake_case code.
+    pub code: String,
+    /// Human-readable message.
+    pub message: String,
+    /// Request id.
+    pub request_id: String,
+}
+
+/// A message to publish.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RealtimePublishBody {
+    /// Any JSON value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<ValueModel>,
+}
+
 /// Counters of one instance (also exported as Prometheus metrics).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RealtimeStats {
@@ -4378,6 +6847,19 @@ pub struct RecallRequest {
     pub samples: Option<i64>,
 }
 
+/// A delivered message.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReceivedMessage {
+    /// Deadline (RFC 3339) after which it is redelivered.
+    pub ack_deadline: String,
+    /// Token for ack, nack and deadline changes of this delivery.
+    pub ack_id: String,
+    /// 1 for the first delivery.
+    pub delivery_attempt: i64,
+    /// The message.
+    pub message: Message,
+}
+
 /// What the reconciler did.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ReconcileReport {
@@ -4392,6 +6874,17 @@ pub struct ReconcileReport {
     pub unreferenced_blobs_deleted: i64,
     /// Expired upload sessions aborted.
     pub uploads_aborted: i64,
+}
+
+/// Record changes of a collection relayed from the realtime outbox (FB-40)
+/// into a topic: a message exists exactly when its change committed.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RecordSource {
+    /// Collection name or id.
+    pub collection: String,
+    /// `create`, `update`, `delete`; empty means all three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ops: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -4409,6 +6902,63 @@ pub struct RecordVersionSchema {
 pub struct RecordVersions {
     #[serde(default)]
     pub items: Vec<RecordVersionSchema>,
+}
+
+/// Monthly and annual recurring revenue of one currency.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RecurringRevenue {
+    /// MRR × 12.
+    pub arr: i64,
+    /// Currency.
+    pub currency: String,
+    /// Monthly recurring revenue (yearly prices / 12, after coupons).
+    pub mrr: i64,
+    /// Subscriptions counted (active and past due).
+    pub subscriptions: i64,
+}
+
+/// A refund.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Refund {
+    /// Amount.
+    pub amount: i64,
+    /// Created.
+    pub created_at: String,
+    /// Credit note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_note_id: Option<String>,
+    /// Currency.
+    pub currency: String,
+    /// Id.
+    pub id: String,
+    /// Invoice.
+    pub invoice_id: String,
+    /// Payment refunded.
+    pub payment_id: String,
+    /// Provider.
+    pub provider: String,
+    /// Refund id at the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
+    /// Why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// State.
+    pub status: RefundStatus,
+}
+
+/// Refund state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefundStatus {
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "succeeded")]
+    Succeeded,
+    #[serde(rename = "failed")]
+    Failed,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Body of a lease renewal.
@@ -4472,6 +7022,39 @@ pub struct RestoreBody {
     pub key: String,
     /// Version id.
     pub version_id: String,
+}
+
+/// Which snapshots to keep.
+///
+/// `keep_last` is the number of newest snapshots that are always kept;
+/// `max_age_days` deletes older ones beyond that. With only `keep_last`, the
+/// rest is deleted; with only `max_age_days`, nothing younger is deleted;
+/// with neither, nothing is deleted.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Retention {
+    /// Newest snapshots always kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<i64>,
+    /// Snapshots older than this many days are deleted (beyond `keep_last`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_days: Option<i64>,
+}
+
+/// Revenue of one currency in one bucket.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RevenuePoint {
+    /// Currency.
+    pub currency: String,
+    /// Payments collected.
+    pub gross: i64,
+    /// gross − refunded.
+    pub net: i64,
+    /// Successful payments.
+    pub payments: i64,
+    /// Refunds.
+    pub refunded: i64,
+    /// Bucket start.
+    pub start: String,
 }
 
 /// Result of a reversal: takes back what is left of the top-up or grant, up
@@ -4602,6 +7185,20 @@ pub struct SchemaHistory {
     pub items: Vec<SchemaChangeSchema>,
 }
 
+/// How quantity becomes an amount.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Scheme {
+    #[serde(rename = "per_unit")]
+    PerUnit,
+    #[serde(rename = "graduated")]
+    Graduated,
+    #[serde(rename = "volume")]
+    Volume,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// One scored member.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredMember {
@@ -4707,6 +7304,26 @@ pub struct SecretList {
     /// By name.
     #[serde(default)]
     pub items: Vec<SecretInfo>,
+}
+
+/// Body of a seek: exactly one of `time` and `snapshot`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SeekRequest {
+    /// Restore the acknowledgement state saved in this snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    /// Messages published before this RFC 3339 time count as acknowledged, the rest are delivered again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+}
+
+/// Outcome of a seek.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SeekResult {
+    /// The subscription's cursor afterwards.
+    pub cursor_seq: i64,
+    /// Messages restored from the snapshot (0 for a time seek).
+    pub restored: i64,
 }
 
 /// Sends a templated message through the queue.
@@ -4827,6 +7444,44 @@ pub struct SlowQuerySchema {
     pub sql: String,
 }
 
+/// A saved acknowledgement state of a subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// Created (RFC 3339).
+    pub created_at: String,
+    /// Creator.
+    pub created_by: String,
+    /// Cursor at the time.
+    pub cursor_seq: i64,
+    /// Expires (RFC 3339): the topic's retention after creation.
+    pub expires_at: String,
+    /// Name.
+    pub name: String,
+    /// Subscription.
+    pub subscription: String,
+    /// Topic.
+    pub topic: String,
+    /// Messages that were unacknowledged at the time.
+    pub unacked: i64,
+}
+
+/// Snapshots, newest first.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SnapshotList {
+    /// The snapshots.
+    #[serde(default)]
+    pub items: Vec<SnapshotView>,
+}
+
+/// A snapshot.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SnapshotView {
+    /// Snapshot id (its UTC creation time).
+    pub id: String,
+    /// Manifest with every file's size and SHA-256.
+    pub manifest: Manifest,
+}
+
 /// Body of a direct debit.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SpendInput {
@@ -4890,6 +7545,9 @@ pub struct SqlStatementBody {
     pub sql: String,
 }
 
+/// Where a new subscription starts reading.
+pub type StartPosition = serde_json::Value;
+
 /// Instance totals.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct StorageStats {
@@ -4905,6 +7563,54 @@ pub struct StorageStats {
     pub stored_bytes: i64,
     /// Object versions, including deleted and older ones.
     pub versions: i64,
+}
+
+/// Body of `POST /billing/store/{provider}/checkout` (Creem).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StoreCheckoutInput {
+    /// Sent to the store as the request id.
+    pub idempotency_key: String,
+    /// Price key mapped to a store product.
+    pub price: String,
+    /// Subject (default: the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Where the store returns to (`?checkout_id=` is appended by the store).
+    pub success_url: String,
+}
+
+/// Body of `PUT /billing/store-products/{provider}/{product_id}`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StoreProductInput {
+    /// Price key: recurring for a store subscription, one-time otherwise.
+    pub price: String,
+}
+
+/// Body of `POST /billing/store/{provider}/verify`: what the app received
+/// from the store. Each store reads its own fields.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StoreVerifyInput {
+    /// Creem: the checkout id of the success redirect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_id: Option<String>,
+    /// Google Play: `subscription` (default) or `one_time`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Google Play: the product id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<String>,
+    /// Google Play: the purchase token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase_token: Option<String>,
+    /// App Store: the StoreKit 2 signed transaction (JWS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_transaction: Option<String>,
+    /// Subject the purchase is for (default: the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// App Store: the transaction id (read back with the App Store Server API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
 }
 
 /// How a search was answered.
@@ -4939,6 +7645,20 @@ pub struct StreamAddBody {
     pub maxlen: Option<i64>,
 }
 
+/// A client frame of the WebSocket stream (JSON text).
+pub type StreamClientMessage = serde_json::Value;
+
+/// Body of `POST .../streams/{key}/delete` (`XDEL`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StreamDeleteBody {
+    /// Entry ids (`<ms>-<seq>`).
+    #[serde(default)]
+    pub ids: Vec<String>,
+}
+
+/// A server frame of the WebSocket stream (JSON text).
+pub type StreamServerMessage = serde_json::Value;
+
 /// Body of `PUT /entitlements/addons`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SubjectAddon {
@@ -4948,6 +7668,31 @@ pub struct SubjectAddon {
     pub quantity: i64,
     /// Subject.
     pub subject: String,
+}
+
+/// Body of `POST /billing/subscriptions`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SubscribeInput {
+    /// Coupon code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coupon: Option<String>,
+    /// A replay with the same key returns the first subscription.
+    pub idempotency_key: String,
+    /// Prices (one recurring plan price, add-ons, metered prices).
+    #[serde(default)]
+    pub items: Vec<ItemInput>,
+    /// Caller data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+    /// Where the hosted payment page returns to (no saved payment method).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+    /// Subject (default: the caller's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Trial days (default: the plan price's `trial_days`; 0 = none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_days: Option<i64>,
 }
 
 /// What a subscription listens to.
@@ -5009,6 +7754,96 @@ pub struct Subscription {
     pub trial_ends_at: Option<String>,
     /// Last change.
     pub updated_at: String,
+}
+
+/// One price on a subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SubscriptionItem {
+    /// Id.
+    pub id: String,
+    /// Price key.
+    pub price: String,
+    /// Product key.
+    pub product: String,
+    /// Units (seats).
+    pub quantity: i64,
+}
+
+/// Subscriptions.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SubscriptionList {
+    /// By name.
+    #[serde(default)]
+    pub items: Vec<QueueSubscription>,
+}
+
+/// Metrics of a subscription.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SubscriptionMetrics {
+    /// Average ack rate over the last 5 minutes, per second.
+    pub ack_rate_per_sec: f64,
+    /// Acknowledgements in the last minute.
+    pub acked_last_minute: i64,
+    /// Acknowledgements.
+    pub acked_total: i64,
+    /// Bytes of the backlog.
+    pub backlog_bytes: i64,
+    /// Messages not yet acknowledged (ready, delayed, in flight, and not yet read from the topic).
+    pub backlog_messages: i64,
+    /// Messages dead-lettered.
+    pub dead_lettered_total: i64,
+    /// Dead-letter records kept.
+    pub dead_letters: i64,
+    /// Waiting for a retry backoff.
+    pub delayed: i64,
+    /// Deliveries ever made.
+    pub delivered_total: i64,
+    /// Missed ack deadlines.
+    pub expired_total: i64,
+    /// Handed out and not yet acknowledged.
+    pub in_flight: i64,
+    /// Negative acknowledgements.
+    pub nacked_total: i64,
+    /// Age of the oldest unacknowledged message in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_unacked_age_ms: Option<i64>,
+    /// Deliverable now.
+    pub ready: i64,
+    /// Subscription.
+    pub subscription: String,
+    /// Topic.
+    pub topic: String,
+}
+
+/// Body of a subscription change; absent fields keep their value.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SubscriptionPatch {
+    /// New ack deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_deadline_ms: Option<i64>,
+    /// New backoff base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_base_ms: Option<i64>,
+    /// New backoff cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_max_ms: Option<i64>,
+    /// Removes the dead-letter topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_dead_letter_topic: Option<bool>,
+    /// Turns push off (the subscription becomes a pull subscription).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_push: Option<bool>,
+    /// New dead-letter topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_topic: Option<String>,
+    /// Replaces the labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    /// New attempt limit; `0` removes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_delivery_attempts: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<PushConfig>,
 }
 
 /// Subscription lifecycle (set by billing, FB-70).
@@ -5106,6 +7941,45 @@ pub struct TableList {
     pub items: Vec<TableInfoSchema>,
 }
 
+/// Whether prices include tax.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaxBehavior {
+    #[serde(rename = "exclusive")]
+    Exclusive,
+    #[serde(rename = "inclusive")]
+    Inclusive,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// A tax rate of a region.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TaxRate {
+    /// In use.
+    pub active: bool,
+    /// Id.
+    pub id: String,
+    /// Name on invoices (`GST`, `VAT`).
+    pub name: String,
+    /// Rate in basis points (1800 = 18 %).
+    pub rate_bp: i64,
+    /// Region (`IN`, `DE`, `US-CA`).
+    pub region: String,
+}
+
+/// Body of `PUT /billing/tax-rates/{region}`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TaxRateInput {
+    /// In use (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    /// Name on invoices.
+    pub name: String,
+    /// Basis points (0..=10000).
+    pub rate_bp: i64,
+}
+
 /// Saves a template.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TemplateInput {
@@ -5134,6 +8008,113 @@ pub enum TextOperator {
 pub struct ThresholdBody {
     /// Statements slower than this are logged; `0` logs every statement.
     pub threshold_ms: i64,
+}
+
+/// One pricing tier: units up to `up_to` (inclusive; `None`: no upper
+/// bound) cost `unit_amount` each plus `flat_amount` once.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Tier {
+    /// Fixed fee when the tier is reached, minor units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flat_amount: Option<i64>,
+    /// Price per unit, minor units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_amount: Option<i64>,
+    /// Last unit of the tier (`null`: the rest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to: Option<i64>,
+}
+
+/// A topic.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Topic {
+    /// Created (RFC 3339).
+    pub created_at: String,
+    /// Creator.
+    pub created_by: String,
+    /// Dedup window in milliseconds.
+    pub dedup_window_ms: i64,
+    /// Labels.
+    #[serde(default)]
+    pub labels: std::collections::HashMap<String, String>,
+    /// Largest message in bytes.
+    pub max_message_bytes: i64,
+    /// Name.
+    pub name: String,
+    /// Bytes ever published.
+    pub published_bytes: i64,
+    /// Messages ever published.
+    pub published_total: i64,
+    /// Size limit in bytes (`None`: no limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_bytes: Option<i64>,
+    /// Retention in milliseconds.
+    pub retention_ms: i64,
+    /// JSON Schema of message data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RecordSource>,
+    /// Last changed (RFC 3339).
+    pub updated_at: String,
+}
+
+/// Topics.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopicList {
+    /// By name.
+    #[serde(default)]
+    pub items: Vec<Topic>,
+}
+
+/// Metrics of a topic.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopicMetrics {
+    /// Retained bytes.
+    pub bytes: i64,
+    /// Retained messages.
+    pub messages: i64,
+    /// Age of the oldest retained message in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_message_age_ms: Option<i64>,
+    /// Average publish rate over the last 5 minutes, per second.
+    pub publish_rate_per_sec: f64,
+    /// Bytes ever published.
+    pub published_bytes: i64,
+    /// Messages published in the last minute.
+    pub published_last_minute: i64,
+    /// Messages ever published.
+    pub published_total: i64,
+    /// Subscriptions of the topic.
+    pub subscriptions: i64,
+    /// Topic.
+    pub topic: String,
+}
+
+/// Body of a topic change; absent fields keep their value.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopicPatch {
+    /// Removes the schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_schema: Option<bool>,
+    /// New dedup window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_window_ms: Option<i64>,
+    /// Replaces the labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::HashMap<String, String>>,
+    /// New message size limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_message_bytes: Option<i64>,
+    /// New size limit; `0` removes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_bytes: Option<i64>,
+    /// New retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_ms: Option<i64>,
+    /// New schema (applies to later publishes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
 }
 
 /// Body of `POST /traverse`.
@@ -5425,6 +8406,51 @@ pub struct UsageEventPage {
     pub next: Option<i64>,
 }
 
+/// The counter of one feature of one subject in its current window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageMeter {
+    /// Rolled over from the previous window.
+    pub carried_in: i64,
+    /// Feature key.
+    pub feature: String,
+    /// Limit of the window (`null`: unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// `used` as a percentage of `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    /// Held by reservations.
+    pub reserved: i64,
+    /// Counter scope (`""` for the subject itself).
+    pub scope_key: String,
+    /// 70 / 90 / 100 % state.
+    pub state: MeterState,
+    /// Subject (`org:<id>` or a principal key).
+    pub subject: String,
+    /// Last change.
+    pub updated_at: String,
+    /// Committed usage.
+    pub used: i64,
+    /// Window end.
+    pub window_end: String,
+    /// Window start.
+    pub window_start: String,
+}
+
+/// A page of usage meters.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UsageMeterPage {
+    /// Meters, most used first.
+    #[serde(default)]
+    pub items: Vec<UsageMeter>,
+    /// Page size.
+    pub limit: i64,
+    /// Rows skipped.
+    pub offset: i64,
+    /// All meters matching the filters.
+    pub total: i64,
+}
+
 /// A usage pack of the catalog.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsagePack {
@@ -5572,6 +8598,13 @@ pub struct VectorCollectionList {
     pub items: Vec<VectorCollection>,
 }
 
+/// Outcome of a delete.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct VectorDeleteResult {
+    /// Items removed.
+    pub deleted: i64,
+}
+
 /// A vector field of a collection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VectorField {
@@ -5591,6 +8624,32 @@ pub struct VectorField {
     pub name: String,
     /// Element type of the ANN index.
     pub quantization: Quantization,
+}
+
+/// A new collection.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct VectorNewCollection {
+    /// Free text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Searches over at most this many candidate vectors are exact (brute
+    /// force) instead of approximate. Default from the server configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_threshold: Option<i64>,
+    /// Vector fields (at most 16; more can be added later).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<FieldSpec>>,
+    /// `[A-Za-z][A-Za-z0-9_]{0,62}`, unique in the tenant.
+    pub name: String,
+}
+
+/// Progress of a rebuild.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct VectorProgress {
+    /// Vectors added so far.
+    pub done: i64,
+    /// Vectors to add.
+    pub total: i64,
 }
 
 /// Statistics of the caller's tenant.
@@ -5619,6 +8678,25 @@ pub struct Verification {
     pub record_type: String,
     /// Record value (`forgebase-verify=<token>`).
     pub record_value: String,
+}
+
+/// Outcome of \[`verify`\].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct VerifyReport {
+    /// Bytes hashed.
+    pub bytes_checked: i64,
+    /// Files whose size and hash were checked.
+    pub files_checked: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Manifest>,
+    /// No problems found.
+    pub ok: bool,
+    /// Reasons the backup cannot be restored.
+    #[serde(default)]
+    pub problems: Vec<String>,
+    /// Things worth knowing that do not block a restore.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Result of a verification attempt.
@@ -5706,6 +8784,42 @@ pub enum Visibility {
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
+}
+
+/// A webhook event received.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct WebhookEvent {
+    /// Deliveries seen.
+    pub attempts: i64,
+    /// Provider time of the event.
+    pub event_at: String,
+    /// Event id at the provider.
+    pub event_id: String,
+    /// Event type.
+    pub event_type: String,
+    /// Id.
+    pub id: String,
+    /// Provider.
+    pub provider: String,
+    /// Received.
+    pub received_at: String,
+    /// What happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// `processed`, `ignored` or `failed`.
+    pub status: String,
+}
+
+/// What a webhook delivery did.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct WebhookOutcome {
+    /// Details (`stale`, `unknown_payment`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Event id.
+    pub event_id: String,
+    /// `processed`, `ignored`, `duplicate` (already handled) or `failed`.
+    pub result: String,
 }
 
 /// A worker that registered or claimed jobs.

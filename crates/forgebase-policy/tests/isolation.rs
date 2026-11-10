@@ -46,6 +46,81 @@ async fn ids(env: &Env, ctx: &AccessContext, coll: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// FB-80: a privileged caller's scoped key (an admin service account's API
+/// key) reaches only the collections its scopes name, also through `expand`
+/// and relation filters, which the HTTP path check cannot see.
+#[tokio::test]
+async fn scopes_bind_privileged_callers_across_relations() {
+    let env = Env::new().await;
+    let secrets = env
+        .collection(json!({"name": "vault", "fields": [{"name": "title", "type": "text"}]}))
+        .await;
+    env.collection(json!({"name": "memos", "fields": [
+        {"name": "title", "type": "text"},
+        {"name": "ref", "type": "relation", "collection_id": secrets.id}
+    ]}))
+    .await;
+    let s = env
+        .data
+        .create_record(&admin(), "vault", json!({"title": "top secret"}))
+        .await
+        .unwrap();
+    env.data
+        .create_record(&admin(), "memos", json!({"title": "memo", "ref": s["id"]}))
+        .await
+        .unwrap();
+    let scoped = admin().with_scopes(vec!["collections:read:memos".into()]);
+    assert_eq!(ids(&env, &scoped, "memos").await.len(), 1, "its own collection");
+    assert!(
+        env.data
+            .list_records(&scoped, "vault", &ListQuery::default())
+            .await
+            .is_err()
+    );
+    let expanded = env
+        .data
+        .list_records(
+            &scoped,
+            "memos",
+            &ListQuery {
+                expand: vec!["ref".into()],
+                ..ListQuery::default()
+            },
+        )
+        .await;
+    let text = format!("{expanded:?}");
+    assert!(!text.contains("top secret"), "expand crossed the scope: {text}");
+    let filtered = env
+        .data
+        .list_records(
+            &scoped,
+            "memos",
+            &ListQuery {
+                filter: Some("ref.title = 'top secret'".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await;
+    assert!(
+        filtered.as_ref().map_or(true, |p| p.items.is_empty()),
+        "relation filter crossed the scope: {filtered:?}"
+    );
+    let write = admin().with_scopes(vec!["collections:read".into()]);
+    assert!(
+        env.data
+            .create_record(&write, "memos", json!({"title": "x"}))
+            .await
+            .is_err(),
+        "a read scope does not write, even for an admin"
+    );
+    let unscoped = admin();
+    assert_eq!(
+        ids(&env, &unscoped, "vault").await.len(),
+        1,
+        "unscoped admins are unaffected"
+    );
+}
+
 /// #1 and #9: two organizations, a project each; records stay in their
 /// tenant even when the other tenant knows the id.
 #[tokio::test]

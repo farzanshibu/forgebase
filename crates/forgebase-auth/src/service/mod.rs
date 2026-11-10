@@ -187,6 +187,12 @@ struct AccessClaims {
 
 const ISSUER: &str = "forgebase";
 
+/// Lifetime of an admin known-device token (90 days).
+pub const ADMIN_DEVICE_TTL_SECS: i64 = 90 * 86_400;
+/// Failed admin sign-ins one known device may make per window before its
+/// token stops bypassing the per-IP budget and the account lockout.
+pub(crate) const ADMIN_DEVICE_FAILURES: u32 = 5;
+
 /// The authentication service. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct AuthService {
@@ -317,7 +323,8 @@ impl AuthService {
     fn install_default_http_client(&self) -> Result<(), AuthError> {
         #[cfg(feature = "https")]
         {
-            let client = crate::net::HttpsClient::new(&self.tls_settings()?)?;
+            let client = crate::net::HttpsClient::new(&self.tls_settings()?)?
+                .public_only(!self.inner.cfg.allow_private_outbound);
             self.set_http_client(Arc::new(client));
         }
         Ok(())
@@ -466,6 +473,13 @@ impl AuthService {
                 Duration::from_secs(60),
             )
             .map_err(|retry_after| AuthError::RateLimited { retry_after })
+    }
+
+    /// Gives back the credential attempt of a sign-in that succeeded, so
+    /// the per-IP budget counts failures only (FB-80).
+    pub(crate) fn refund_attempt(&self, ci: &ClientInfo) {
+        let ip = ci.ip.as_deref().unwrap_or("unknown");
+        self.inner.limiter.refund("attempt", ip);
     }
 
     /// Counts one hit of `key` in `bucket` (e.g. SMS sends per number).
@@ -1001,6 +1015,33 @@ impl AuthService {
     /// The CSRF token of a cookie session.
     pub fn csrf_token(&self, session_id: &str) -> String {
         self.inner.keyring.csrf_token(session_id)
+    }
+
+    /// A known-device token for the administrator `email` (FB-80): set as
+    /// an `HttpOnly` cookie after a successful admin sign-in.
+    pub fn admin_device_token(&self, email: &str) -> String {
+        let email = email.trim().to_lowercase();
+        let issued = self.now();
+        format!("{issued}.{}", self.inner.keyring.admin_device_mac(&email, issued))
+    }
+
+    /// Whether `token` is a known-device token for `email`, issued in the
+    /// last [`ADMIN_DEVICE_TTL_SECS`].
+    pub fn admin_device_valid(&self, email: &str, token: &str) -> bool {
+        let email = email.trim().to_lowercase();
+        let Some((issued, mac)) = token.split_once('.') else {
+            return false;
+        };
+        let Ok(issued) = issued.parse::<i64>() else {
+            return false;
+        };
+        let now = self.now();
+        let fresh = issued <= now + 60 && now - issued <= ADMIN_DEVICE_TTL_SECS;
+        fresh
+            && crate::crypto::ct_eq(
+                mac.as_bytes(),
+                self.inner.keyring.admin_device_mac(&email, issued).as_bytes(),
+            )
     }
 
     /// Exchanges a refresh token for a new access token and a new refresh

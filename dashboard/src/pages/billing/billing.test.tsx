@@ -447,7 +447,7 @@ describe("Providers and settings", () => {
     await userEvent.type(within(razor).getByLabelText("razorpay key id"), "rzp_test_id");
     await userEvent.click(within(razor).getByRole("button", { name: "Save razorpay" }));
     expect(await within(razor).findByRole("status")).toHaveTextContent("Saved");
-    expect(st.secrets.razorpay).toEqual({ api_key: "rzp_test_SECRET1234", webhook_secret: "whsec_abc" });
+    expect(st.secrets.razorpay).toMatchObject({ api_key: "rzp_test_SECRET1234", webhook_secret: "whsec_abc" });
     // After saving the form is empty again and the page only knows the hint.
     expect(within(razor).getByLabelText("razorpay secret key (write-only)")).toHaveValue("");
     expect(razor).toHaveTextContent("Key …1234");
@@ -597,6 +597,36 @@ describe("Store and regional provider forms", () => {
     expect(document.body.textContent).not.toContain("SECRETPEM");
   });
 
+  it("reads test mode and config back and keeps a blank secret (app_store)", async () => {
+    const { mock, st } = setup();
+    renderStudio("/billing/settings");
+    const app = await screen.findByRole("region", { name: "app_store provider" });
+    await userEvent.type(within(app).getByLabelText("app_store Issuer id"), "issuer-1");
+    await userEvent.type(within(app).getByLabelText("app_store App Store Connect key id"), "KEY123");
+    await userEvent.type(within(app).getByLabelText("app_store Bundle id"), "com.acme.app");
+    await userEvent.selectOptions(within(app).getByLabelText("app_store Environment"), "xcode");
+    await userEvent.click(within(app).getByLabelText(/^app_store App Store Connect private key/));
+    await userEvent.paste("-----BEGIN PRIVATE KEY-----SECRETPEM");
+    await userEvent.click(within(app).getByRole("button", { name: "Save app_store" }));
+    expect(await within(app).findByRole("status")).toHaveTextContent("Saved");
+    // Test mode and the non-secret config come back from the server; the secret does not.
+    expect(within(app).getByLabelText("app_store test mode")).toHaveTextContent("Test mode (xcode)");
+    expect(within(app).getByLabelText("app_store Bundle id")).toHaveValue("com.acme.app");
+    expect(within(app).getByLabelText("app_store Environment")).toHaveValue("xcode");
+    const pk = within(app).getByLabelText(/^app_store App Store Connect private key/);
+    expect(pk).toHaveValue("");
+    expect(pk).toHaveAttribute("placeholder", "leave blank to keep");
+    expect(pk).not.toBeRequired();
+    // Change one field, leave the secret blank: it is not sent and the server keeps it.
+    await userEvent.clear(within(app).getByLabelText("app_store Bundle id"));
+    await userEvent.type(within(app).getByLabelText("app_store Bundle id"), "com.acme.other");
+    await userEvent.click(within(app).getByRole("button", { name: "Save app_store" }));
+    await waitFor(() => expect(st.secrets.app_store!.config).toMatchObject({ bundle_id: "com.acme.other" }));
+    expect(JSON.stringify(lastBody(mock, "put /api/v1/billing/providers/{p}"))).not.toContain("private_key");
+    expect(st.secrets.app_store!.config).toMatchObject({ private_key: "-----BEGIN PRIVATE KEY-----SECRETPEM", environment: "xcode" });
+    expect(document.body.textContent).not.toContain("SECRETPEM");
+  });
+
   it("saves google_play config", async () => {
     const { st } = setup();
     renderStudio("/billing/settings");
@@ -656,7 +686,7 @@ describe("Store and regional provider forms", () => {
 
   it("removes a store provider after confirming", async () => {
     const { st } = setup();
-    st.providers.push({ provider: "creem", key_id: null, hint: "…1234", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/creem", updated_at: "2026-11-01T00:00:00Z" });
+    st.providers.push({ provider: "creem", key_id: null, hint: "…1234", api_base: null, enabled: true, webhook_path: "/api/v1/billing/webhooks/creem", updated_at: "2026-11-01T00:00:00Z", test_mode: true, environment: "test", config: {}, secrets_set: ["api_key"] });
     renderStudio("/billing/settings");
     const creem = await screen.findByRole("region", { name: "creem provider" });
     await userEvent.click(within(creem).getByRole("button", { name: "Remove creem" }));

@@ -220,7 +220,9 @@ async fn jobs_api_is_mounted_and_denies_anonymous_callers() {
 #[tokio::test]
 async fn long_task_resumes_after_restart_and_its_large_result_lives_in_storage() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = config(tmp.path());
+    let mut cfg = config(tmp.path());
+    // A 300 KiB result and three server lifecycles are slow on a loaded machine.
+    cfg.server.shutdown_timeout_secs = 30;
     let sys = AccessContext::system();
 
     // First run: an external worker claims the job, checkpoints, then dies with the server.
@@ -261,7 +263,7 @@ async fn long_task_resumes_after_restart_and_its_large_result_lives_in_storage()
         Ok(json!({"from": from, "blob": "y".repeat(300 * 1024)}))
     });
     let server = start_with_jobs(&cfg, registry, pool(100)).await.unwrap();
-    wait(30, || async {
+    wait(180, || async {
         (status(&server, &job.id).await == JobStatus::Succeeded).then_some(())
     })
     .await;

@@ -54,6 +54,40 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  sdk-rust:
+    name: sdk/rust (fmt, clippy, test with the live server, deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            sdk/rust -> target
+      - name: Build the dashboard so rust-embed embeds the real assets
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+      - name: Build the server binary the live tests start
+        run: cargo build --locked -p forgebase-cli
+      - name: Check the SDK
+        working-directory: sdk/rust
+        env:
+          FB_LIVE_BIN: ${{ github.workspace }}/target/debug/forgebase
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: sdk/rust/Cargo.toml
+          arguments: --config ${{ github.workspace }}/deny.toml --all-features
+
   deny:
     name: cargo deny (advisories, licences, sources)
     runs-on: ubuntu-24.04

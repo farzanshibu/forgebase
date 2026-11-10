@@ -454,6 +454,7 @@ pub struct SubscriptionPatch {
 
 /// A subscription.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = QueueSubscription)]
 pub struct Subscription {
     /// Name.
     pub name: String,

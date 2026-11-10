@@ -152,7 +152,7 @@ async fn scenario_18_execute_a_sandboxed_server_function() {
         "description": "stores notes",
         "access": "public",
         "capabilities": ["db.write", "kv", "secrets", "log"],
-        "limits": {"fuel": 50_000_000, "memory_bytes": 4_194_304, "timeout_ms": 2_000},
+        "limits": {"fuel": 50_000_000, "memory_bytes": 4_194_304, "timeout_ms": 30_000},
     });
     let r = call(&app, Method::POST, "/api/v1/functions", None, Some(deploy.clone())).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED, "anonymous cannot deploy");

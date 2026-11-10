@@ -345,6 +345,17 @@ pub(crate) fn decide(
     coll: Option<&Collection>,
 ) -> Result<Decision, (Denial, String)> {
     if ctx.is_privileged() {
+        // A privileged caller's scoped API key still only reaches the
+        // collections its scopes name: the HTTP scope check sees the path's
+        // collection only, not those read through `expand` or relation
+        // filters (FB-80).
+        if let Some(c) = coll.filter(|_| rule_index(action).is_some()) {
+            let write = !matches!(action, Action::List | Action::View);
+            if !scopes_allow(ctx, &c.name, write) {
+                let key = data_key(&c.name, &action_name(action));
+                return Err((Denial::at(Step::Permission, "insufficient_scope"), key));
+            }
+        }
         return Ok(Decision::Allow);
     }
     let name = action_name(action);

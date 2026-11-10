@@ -349,10 +349,16 @@ impl KvService {
         let _guard = self.inner.flush_lock.lock().await;
         let changes = lock(&self.inner.store).take_dirty();
         let n = changes.len();
-        if let Err(e) = persist::write(&**backend, &changes).await {
-            lock(&self.inner.store).redirty(changes.into_iter().map(|(id, _)| id));
-            return Err(e);
-        }
+        // Cancellation safety: `shutdown` aborts the background flusher, which may
+        // be in the middle of this very write. The taken keys must then go back
+        // to the dirty set (declared after `_guard`, so it drops first, still
+        // under the flush lock), or the final flush would find nothing to write.
+        let mut pending = Redirty {
+            inner: &self.inner,
+            ids: changes.iter().map(|(id, _)| id.clone()).collect(),
+        };
+        persist::write(&**backend, &changes).await?;
+        pending.ids.clear();
         Ok(n)
     }
 
@@ -393,9 +399,30 @@ impl KvService {
 
     /// Stops the background tasks and writes everything unsaved.
     pub async fn shutdown(&self) -> KvResult<usize> {
-        for t in lock(&self.inner.tasks).drain(..) {
+        let tasks: Vec<_> = lock(&self.inner.tasks).drain(..).collect();
+        for t in &tasks {
             t.abort();
         }
+        // Wait until each task is really gone: one aborted mid-write has then
+        // put its keys back in the dirty set before the final flush looks.
+        for t in tasks {
+            let _ = t.await;
+        }
         self.flush().await
+    }
+}
+
+/// Puts keys back in the dirty set when a flush is dropped before it finished
+/// (the write failed or the future was cancelled).
+struct Redirty<'a> {
+    inner: &'a Inner,
+    ids: Vec<crate::store::KeyId>,
+}
+
+impl Drop for Redirty<'_> {
+    fn drop(&mut self) {
+        if !self.ids.is_empty() {
+            lock(&self.inner.store).redirty(std::mem::take(&mut self.ids));
+        }
     }
 }

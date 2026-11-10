@@ -386,3 +386,13 @@ keeps the tree small and lets tests run against a mock HTTP client.
 
 No App Store, Google or WeChat SDK crate: the drivers speak the few REST
 endpoints they need directly, and tests run against mock HTTP clients.
+
+## FB-81 (benchmarks, recorded in FIX-5, 2026-11-10)
+
+**criterion 0.8.2** (`default-features = false`, features `cargo_bench_support`,
+`async_tokio`), licence Apache-2.0 OR MIT. Dev-only: a dependency of
+`forgebase-bench` for its `benches/` harnesses, never of a shipped crate or
+binary. Chosen because it is the standard statistical benchmark harness for
+Rust (warm-up, outlier handling, baselines) and works on stable; disabling the
+default features drops the plotting and rayon stacks. `cargo deny` passes with
+it under the existing licence allow-list.

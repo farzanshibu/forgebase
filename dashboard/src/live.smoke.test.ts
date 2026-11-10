@@ -24,6 +24,7 @@ import {
 } from "./api/vector";
 import { getMetrics, readingFrom, pointFrom } from "./api/metrics";
 import { getBillingSettings, isBillingDisabled } from "./api/billing";
+import { createBackup, deleteBackup, listBackups, pruneBackups, verifyBackup } from "./api/backups";
 import {
   addDomain, createClient, deleteClient, getBranding, listAgreements, listClients, listDeliveries, listDomains, listRealmIdentities, listTemplates, previewEmail,
   publishAgreement, putBranding, putRealmIdentity, putTemplate, rotateClientSecret, rotateOidcKeys, deleteDomain, listConsents, realmInfo,
@@ -278,6 +279,21 @@ describe.skipIf(!BIN)("live server", () => {
     await vectorStats();
     const b = readingFrom(await getMetrics(), Date.now() + 1000);
     expect(pointFrom(a, b).rps).toBeGreaterThanOrEqual(0);
+  });
+
+  it("drives System Studio backups: snapshot, list, verify, prune, delete", async () => {
+    const m = await createBackup({ label: "smoke" });
+    const first = (await listBackups()).find((x) => x.id === m.id);
+    expect(first?.manifest.label).toBe("smoke");
+    const r = await verifyBackup(m.id);
+    expect(r.problems).toEqual([]);
+    expect(r.ok).toBe(true);
+    const keep = await createBackup({ label: "second" });
+    const pruned = await pruneBackups({ keep_last: 1 });
+    expect(pruned.deleted).toContain(m.id);
+    expect((await listBackups()).map((x) => x.id)).toEqual([keep.id]);
+    await deleteBackup(keep.id);
+    expect(await listBackups()).toEqual([]);
   });
 
   it("ends the session on sign-out", async () => {
