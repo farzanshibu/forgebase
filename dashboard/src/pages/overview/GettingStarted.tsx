@@ -51,11 +51,22 @@ function Shell({ children, headingId }: { children: ReactNode; headingId: string
   );
 }
 
-export function GettingStarted({ project, adminEmail, disabled }: { project: ProjectState | undefined; adminEmail?: string; disabled?: (studioPath: string) => boolean }) {
+export interface GettingStartedProps {
+  project: ProjectState | undefined;
+  adminEmail?: string;
+  disabled?: (studioPath: string) => boolean;
+  /** Controlled "Show again" (Overview widens its layout while the finished checklist is folded); internal when omitted. */
+  showDone?: boolean;
+  onShowDoneChange?: (show: boolean) => void;
+}
+
+export function GettingStarted({ project, adminEmail, disabled, showDone: shown, onShowDoneChange }: GettingStartedProps) {
   const headingId = useId();
   const listId = useId();
   const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [showDone, setShowDone] = useState(false);
+  const [ownShowDone, setOwnShowDone] = useState(false);
+  const showDone = shown ?? ownShowDone;
+  const setShowDone = (v: boolean) => (onShowDoneChange ? onShowDoneChange(v) : setOwnShowDone(v));
   const toggle = () => {
     setCollapsed((c) => {
       writeCollapsed(!c);

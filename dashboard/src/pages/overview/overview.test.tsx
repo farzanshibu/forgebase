@@ -4,11 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError, type CollectionDef } from "../../api";
 import { makeCollection } from "../../test/mockApi";
-import { fn, key } from "../../test/overviewMock";
+import { auditEntry, fn, key } from "../../test/overviewMock";
 import { API_KEY_PLACEHOLDER } from "../../snippets";
 import { ConnectApp } from "./ConnectApp";
 import { GettingStarted } from "./GettingStarted";
-import { ago, eventWords, firstQuerySnippet, gettingStartedSteps, PLACEHOLDER_COLLECTION } from "./model";
+import { ago, eventWords, firstQuerySnippet, gettingStartedSteps, groupActivity, PLACEHOLDER_COLLECTION } from "./model";
 import { liveKeys, newestCollection, type ProjectState } from "./state";
 
 const users: CollectionDef = { ...makeCollection("users", []), type: "auth" };
@@ -208,5 +208,10 @@ describe("RecentActivity helpers", () => {
     expect(ago("2026-11-07T09:59:30Z", now)).toBe("just now");
     expect(ago("2026-11-07T09:55:00Z", now)).toBe("5 min ago");
     expect(ago("2026-11-07T07:00:00Z", now)).toBe("3 h ago");
+  });
+
+  it("folds repeated events into one row with a count", () => {
+    const rows = groupActivity([auditEntry(5, "login"), auditEntry(4, "login"), auditEntry(3, "login"), auditEntry(2, "admin.created", { actor: "cli" }), auditEntry(1, "login")], 2);
+    expect(rows.map((r) => [r.entry.event, r.count])).toEqual([["login", 3], ["admin.created", 1]]);
   });
 });

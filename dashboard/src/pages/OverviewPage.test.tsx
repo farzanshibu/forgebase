@@ -3,7 +3,8 @@ import { act, render, screen, within } from "@testing-library/react";
 import { ServerHealth } from "./overview/ServerHealth";
 import { MockApi, makeCollection } from "../test/mockApi";
 import { renderStudio, signedIn } from "../test/helpers";
-import { auditEntry, installOverview, key } from "../test/overviewMock";
+import { auditEntry, fn, installOverview, key } from "../test/overviewMock";
+import userEvent from "@testing-library/user-event";
 import { resetServerVersion } from "../hooks";
 
 const info = { name: "forgebase", version: "0.1.0", mode: "embedded", data_dir: "/d", started_at: "x", uptime_secs: 65, database: { path: "/d/db", size_bytes: 2048, journal_mode: "wal", schema_version: 3 } };
@@ -144,5 +145,16 @@ describe("OverviewPage", () => {
     expect(await within(gs).findByText(/1 of 3 done/)).toBeInTheDocument();
     expect(within(gs).queryByText(/Upload a file/)).not.toBeInTheDocument();
     expect(within(gs).queryByText(/Deploy a function/)).not.toBeInTheDocument();
+  });
+
+  it("folds a finished checklist into one line, and Show again brings the steps back", async () => {
+    const mock = signedIn(new MockApi({ collections: [makeCollection("notes", [])] }).install());
+    installOverview(mock, { keys: [key()], objects: 2, functions: [fn("hello")] });
+    renderStudio("/");
+    const gs = await screen.findByRole("region", { name: "Getting started" });
+    expect(await within(gs).findByText("All 5 steps are done.")).toBeInTheDocument();
+    await userEvent.setup().click(within(gs).getByRole("button", { name: "Show again" }));
+    expect(within(screen.getByRole("region", { name: "Getting started" })).getAllByRole("listitem")).toHaveLength(5);
+    expect(mock.problems).toEqual([]);
   });
 });

@@ -160,3 +160,20 @@ export function ago(iso: string, now = Date.now()): string {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(t).toLocaleDateString();
 }
+
+/** One row of Recent activity: consecutive entries with the same event, outcome and actor fold into one, with a count. */
+export interface ActivityRow {
+  entry: AuditEntry;
+  count: number;
+}
+
+export function groupActivity(entries: AuditEntry[], max: number): ActivityRow[] {
+  const rows: ActivityRow[] = [];
+  for (const e of entries) {
+    const last = rows[rows.length - 1];
+    if (last && last.entry.event === e.event && last.entry.outcome === e.outcome && last.entry.actor === e.actor) last.count += 1;
+    else if (rows.length < max) rows.push({ entry: e, count: 1 });
+    else break;
+  }
+  return rows;
+}
