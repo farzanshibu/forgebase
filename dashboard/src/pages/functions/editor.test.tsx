@@ -77,7 +77,7 @@ describe("New function", () => {
     expect(screen.getByText("admin only")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("switch", { name: "service_role" }));
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
-    expect(await screen.findByText(/403 forbidden/)).toBeInTheDocument();
+    expect(await screen.findByText("You do not have permission to do this")).toBeInTheDocument();
     expect((mock.bodies["post /api/v1/functions"]![0] as { capabilities: string[] }).capabilities).toContain("service_role");
     expect(st.functions.map((f) => f.name)).not.toContain("power");
   });
