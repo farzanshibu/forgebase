@@ -123,7 +123,11 @@ pub(crate) fn spawn(engine: &EngineDir, pgdata: &Path, ep: &Endpoint, node: &str
     let mut cmd = Command::new(engine.bin("postgres"));
     cmd.arg("-D").arg(pgdata);
     let listen = ep.tcp.map(|a| a.ip().to_string()).unwrap_or_else(|| {
-        if ep.socket_dir.is_none() { "127.0.0.1".into() } else { String::new() }
+        if ep.socket_dir.is_none() {
+            "127.0.0.1".into()
+        } else {
+            String::new()
+        }
     });
     cmd.arg("-c").arg(format!("listen_addresses={listen}"));
     cmd.arg("-c").arg(format!("port={}", ep.port));
@@ -281,7 +285,10 @@ impl Postmaster {
                 .stderr(Stdio::null())
                 .status()
                 .await;
-            if tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await.is_ok() {
+            if tokio::time::timeout(Duration::from_secs(5), self.child.wait())
+                .await
+                .is_ok()
+            {
                 return;
             }
         }
@@ -392,10 +399,7 @@ pub(crate) async fn clear_stale(pgdata: &Path, timeout: Duration) -> Result<()> 
                 None => {
                     return Err(EngineError::Cluster {
                         dir: pgdata.to_path_buf(),
-                        reason: format!(
-                            "postmaster.pid names process {}, which belongs to another user",
-                            pf.pid
-                        ),
+                        reason: format!("postmaster.pid names process {}, which belongs to another user", pf.pid),
                     });
                 }
                 Some(true) if pf.socket_answers() => break,
@@ -451,10 +455,11 @@ pub(crate) async fn wait_pid_ready(pm: &mut Postmaster, pgdata: &Path, deadline:
                 log: log.lines(),
             });
         }
-        if let Some(pf) = PidFile::read(pgdata) {
-            if pf.pid == pm.pid && pf.status.as_deref() == Some("ready") {
-                return Ok(());
-            }
+        if let Some(pf) = PidFile::read(pgdata)
+            && pf.pid == pm.pid
+            && pf.status.as_deref() == Some("ready")
+        {
+            return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(EngineError::Start {
@@ -551,7 +556,10 @@ mod tests {
         let long = dir.path().join("x".repeat(120)).join("run");
         let got = socket_dir(&long, &long, 5432).expect("fallback");
         assert_ne!(got, long);
-        assert!(got.file_name().is_some_and(|n| n.to_string_lossy().starts_with("forgebase-")));
+        assert!(
+            got.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("forgebase-"))
+        );
         assert!(got.join(".s.PGSQL.5432").as_os_str().len() <= socket_path_limit());
         // Same key, same directory.
         assert_eq!(socket_dir(&long, &long, 5432).expect("again"), got);
@@ -570,7 +578,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         // A pid that cannot exist on any system.
         std::fs::write(dir.path().join("postmaster.pid"), "2147483646\n/d\n").expect("write");
-        clear_stale(dir.path(), Duration::from_millis(200)).await.expect("dead pid");
+        clear_stale(dir.path(), Duration::from_millis(200))
+            .await
+            .expect("dead pid");
         assert!(dir.path().join("postmaster.pid").exists());
     }
 
@@ -585,7 +595,9 @@ mod tests {
             format!("{pid}\n/d\n1\n5432\n{}\n", dir.path().display()),
         )
         .expect("write");
-        let err = clear_stale(dir.path(), Duration::from_millis(300)).await.expect_err("refused");
+        let err = clear_stale(dir.path(), Duration::from_millis(300))
+            .await
+            .expect_err("refused");
         assert!(err.to_string().contains("does not answer"), "{err}");
         assert!(dir.path().join("postmaster.pid").exists());
         let _ = sleeper.start_kill();

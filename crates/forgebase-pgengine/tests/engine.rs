@@ -7,12 +7,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use forgebase_pgengine::{
-    archive, Engine, EngineConfig, EngineError, EngineHandle, EngineOrigin, EngineSource, EngineState,
-    ExtensionMode, Layout, NodeKind, RestartPolicy, Role,
+    Engine, EngineConfig, EngineError, EngineHandle, EngineOrigin, EngineSource, EngineState, ExtensionMode, Layout,
+    NodeKind, RestartPolicy, Role, archive,
 };
 use sqlx::{Connection, PgConnection, Row};
 
 fn engine_dir() -> Option<PathBuf> {
+    // `RUST_LOG=forgebase=debug` shows the engine's log and each step.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     match std::env::var_os("FORGEBASE_PG_ENGINE_DIR").filter(|v| !v.is_empty()) {
         Some(d) => Some(PathBuf::from(d)),
         None => {
@@ -125,12 +130,11 @@ async fn primary_is_initialised_configured_and_restartable() {
         assert!(h.warnings().iter().any(|w| w.contains("pg_cron")), "{:?}", h.warnings());
     }
     // Builtin C.UTF-8 locale on the forgebase database.
-    let (provider, locale): (String, Option<String>) = sqlx::query_as(
-        "SELECT datlocprovider::text, datlocale FROM pg_database WHERE datname = 'forgebase'",
-    )
-    .fetch_one(&mut sup)
-    .await
-    .expect("locale");
+    let (provider, locale): (String, Option<String>) =
+        sqlx::query_as("SELECT datlocprovider::text, datlocale FROM pg_database WHERE datname = 'forgebase'")
+            .fetch_one(&mut sup)
+            .await
+            .expect("locale");
     assert_eq!(provider, "b");
     assert_eq!(locale.as_deref(), Some("C.UTF-8"));
     // Roles (rls-coverage §3.2).
@@ -207,7 +211,10 @@ async fn primary_is_initialised_configured_and_restartable() {
     let _ = reader.close().await;
 
     // SCRAM everywhere: a wrong password is refused.
-    let bad = h.url(Role::Server).expose().replacen("forgebase_server:", "forgebase_server:x", 1);
+    let bad = h
+        .url(Role::Server)
+        .expose()
+        .replacen("forgebase_server:", "forgebase_server:x", 1);
     assert!(PgConnection::connect(&bad).await.is_err());
 
     // Stop: fast shutdown, no postmaster.pid, state Stopped; stop is idempotent.
@@ -222,7 +229,10 @@ async fn primary_is_initialised_configured_and_restartable() {
 
     // Second start: existing cluster, same passwords, data kept.
     let h = Engine::prepare(&layout, &cfg).await.expect("second prepare");
-    assert_eq!(std::fs::read_to_string(layout.secrets_file()).expect("secrets"), secrets);
+    assert_eq!(
+        std::fs::read_to_string(layout.secrets_file()).expect("secrets"),
+        secrets
+    );
     let mut server = connect(&h, Role::Server).await;
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM _forgebase_probe")
         .fetch_one(&mut server)
@@ -239,7 +249,9 @@ async fn forgebase_db_opens_the_managed_engine() {
     let Some(engine) = engine_dir() else { return };
     let tmp = tempdir();
     let layout = Layout::primary(tmp.path());
-    let h = Engine::prepare(&layout, &config(&engine, 18_202)).await.expect("prepare");
+    let h = Engine::prepare(&layout, &config(&engine, 18_202))
+        .await
+        .expect("prepare");
     let opts = |url: &str, read_only: bool| DbOptions {
         target: DbTarget::postgres(forgebase_db::SecretString::new(url), true),
         synchronous: forgebase_core::Synchronous::Full,
@@ -248,13 +260,21 @@ async fn forgebase_db_opens_the_managed_engine() {
         create_if_missing: false,
         read_only,
     };
-    let db = Database::open(opts(h.url(Role::Server).expose(), false)).await.expect("open as server");
-    assert_eq!(db.kind(), BackendKind::Postgres);
-    assert!(!db.location().contains(h.url(Role::Server).expose().split(':').nth(2).unwrap_or("x")));
-    let mut tx = db.begin(TxMode::SchemaChange).await.expect("begin");
-    tx.execute(&Statement::new("CREATE TABLE _forgebase_fb132 (k text PRIMARY KEY, v bigint)", vec![]))
+    let db = Database::open(opts(h.url(Role::Server).expose(), false))
         .await
-        .expect("create");
+        .expect("open as server");
+    assert_eq!(db.kind(), BackendKind::Postgres);
+    assert!(
+        !db.location()
+            .contains(h.url(Role::Server).expose().split(':').nth(2).unwrap_or("x"))
+    );
+    let mut tx = db.begin(TxMode::SchemaChange).await.expect("begin");
+    tx.execute(&Statement::new(
+        "CREATE TABLE _forgebase_fb132 (k text PRIMARY KEY, v bigint)",
+        vec![],
+    ))
+    .await
+    .expect("create");
     tx.execute(&Statement::new(
         "INSERT INTO _forgebase_fb132 (k, v) VALUES (?1, ?2)",
         vec![Value::Text("a".into()), Value::Integer(7)],
@@ -264,9 +284,14 @@ async fn forgebase_db_opens_the_managed_engine() {
     tx.commit().await.expect("commit");
     db.close().await;
 
-    let ro = Database::open(opts(h.url(Role::Reader).expose(), true)).await.expect("open as reader");
+    let ro = Database::open(opts(h.url(Role::Reader).expose(), true))
+        .await
+        .expect("open as reader");
     let rows = ro
-        .fetch_all(&Statement::new("SELECT v FROM _forgebase_fb132 WHERE k = ?1", vec![Value::Text("a".into())]))
+        .fetch_all(&Statement::new(
+            "SELECT v FROM _forgebase_fb132 WHERE k = ?1",
+            vec![Value::Text("a".into())],
+        ))
         .await
         .expect("read");
     assert_eq!(rows.rows, vec![vec![Value::Integer(7)]]);
@@ -305,7 +330,9 @@ async fn crashed_postmaster_is_restarted_with_backoff() {
     let health = h.health();
     assert_eq!(health.restarts, 1);
     assert_ne!(health.pid, Some(first));
-    assert!(health.last_error.is_some_and(|e| e.contains("exited unexpectedly")));
+    // The last failure: the crash itself, or a restart attempt that found the
+    // old backends still holding shared memory.
+    assert!(health.last_error.is_some());
     let mut server = connect(&h, Role::Server).await;
     assert_eq!(one(&mut server, "SELECT current_user::text").await, "forgebase_server");
     let _ = server.close().await;
@@ -319,17 +346,25 @@ async fn postmaster_left_by_a_killed_server_is_stopped_first() {
     let tmp = tempdir();
     let layout = Layout::primary(tmp.path());
     let cfg = config(&engine, 18_204);
-    Engine::prepare(&layout, &cfg).await.expect("prepare").stop().await.expect("stop");
+    Engine::prepare(&layout, &cfg)
+        .await
+        .expect("prepare")
+        .stop()
+        .await
+        .expect("stop");
 
-    // A postmaster that no ForgeBase supervises, as after `kill -9` of the server.
-    let mut orphan = tokio::process::Command::new(engine.join("bin/postgres"))
-        .arg("-D")
+    // A postmaster that no ForgeBase supervises, as after `kill -9` of the
+    // server: started through a shell that exits, so it is reparented to
+    // init (a child of this test would linger as a zombie after it stops).
+    let status = tokio::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#""$0" -D "$1" </dev/null >/dev/null 2>&1 &"#)
+        .arg(engine.join("bin/postgres"))
         .arg(layout.pgdata())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .status()
+        .await
         .expect("orphan postmaster");
+    assert!(status.success());
     let socket = layout.run_dir().join(".s.PGSQL.18204");
     tokio::time::timeout(Duration::from_secs(30), async {
         while std::os::unix::net::UnixStream::connect(&socket).is_err() {
@@ -338,15 +373,18 @@ async fn postmaster_left_by_a_killed_server_is_stopped_first() {
     })
     .await
     .expect("orphan listens");
-    let orphan_pid = orphan.id().expect("pid");
+    let pidfile = std::fs::read_to_string(layout.pgdata().join("postmaster.pid")).expect("pid file");
+    let orphan_pid: i32 = pidfile.lines().next().and_then(|l| l.parse().ok()).expect("pid");
+    let orphan_alive =
+        || rustix::process::Pid::from_raw(orphan_pid).is_some_and(|p| rustix::process::test_kill_process(p).is_ok());
+    assert!(orphan_alive());
 
     let h = Engine::prepare(&layout, &cfg).await.expect("prepare over a leftover");
-    assert_ne!(h.pid(), Some(orphan_pid));
-    let status = tokio::time::timeout(Duration::from_secs(5), orphan.wait())
-        .await
-        .expect("orphan stopped")
-        .expect("status");
-    assert!(status.success(), "fast shutdown exits 0: {status}");
+    assert_ne!(h.pid(), u32::try_from(orphan_pid).ok());
+    assert!(!orphan_alive(), "the leftover postmaster was stopped");
+    let mut server = connect(&h, Role::Server).await;
+    assert_eq!(one(&mut server, "SELECT current_user::text").await, "forgebase_server");
+    let _ = server.close().await;
     h.stop().await.expect("stop");
 }
 
@@ -377,7 +415,10 @@ async fn engine_from_an_archive_is_extracted_once_and_old_minors_are_removed() {
     let data = tmp.path().join("data");
     let layout = Layout::primary(&data);
     // An older minor of the same major, and an engine of another major.
-    for name in [format!("{}.0-r1-000000000000", version.major), "16.9-r1-111111111111".to_owned()] {
+    for name in [
+        format!("{}.0-r1-000000000000", version.major),
+        "16.9-r1-111111111111".to_owned(),
+    ] {
         let d = layout.engines_dir().join(name);
         std::fs::create_dir_all(&d).expect("old engine");
         std::fs::write(d.join(archive::MANIFEST_NAME), "{}").expect("manifest");
@@ -393,7 +434,12 @@ async fn engine_from_an_archive_is_extracted_once_and_old_minors_are_removed() {
     assert!(name.starts_with(&format!("{}-t1-", version.text)), "{name}");
     assert!(matches!(h.engine().origin, EngineOrigin::Extracted { fresh: true, .. }));
     archive::verify_extracted(&root).expect("verify");
-    assert!(!layout.engines_dir().join(format!("{}.0-r1-000000000000", version.major)).exists());
+    assert!(
+        !layout
+            .engines_dir()
+            .join(format!("{}.0-r1-000000000000", version.major))
+            .exists()
+    );
     assert!(layout.engines_dir().join("16.9-r1-111111111111").exists());
     let mut server = connect(&h, Role::Server).await;
     assert_eq!(one(&mut server, "SELECT current_user::text").await, "forgebase_server");
@@ -403,14 +449,19 @@ async fn engine_from_an_archive_is_extracted_once_and_old_minors_are_removed() {
 
     let h = Engine::prepare(&layout, &cfg).await.expect("prepare again");
     assert_eq!(h.engine().root, root);
-    assert!(matches!(h.engine().origin, EngineOrigin::Extracted { fresh: false, .. }));
+    assert!(matches!(
+        h.engine().origin,
+        EngineOrigin::Extracted { fresh: false, .. }
+    ));
     h.stop().await.expect("stop");
 }
 
 #[tokio::test]
 async fn cron_modes_and_bad_settings() {
     let Some(engine) = engine_dir() else { return };
-    let probe = forgebase_pgengine::EngineDir::open(&engine, EngineOrigin::Dir).await.expect("engine");
+    let probe = forgebase_pgengine::EngineDir::open(&engine, EngineOrigin::Dir)
+        .await
+        .expect("engine");
     let has_cron = probe.has_module("pg_cron");
     let tmp = tempdir();
     let layout = Layout::primary(tmp.path());
@@ -433,7 +484,11 @@ async fn cron_modes_and_bad_settings() {
     let h = Engine::prepare(&layout, &off).await.expect("cron off");
     assert!(!h.has_cron());
     assert!(h.warnings().iter().all(|w| !w.contains("pg_cron")));
-    assert!(!std::fs::read_to_string(layout.conf_file()).expect("conf").contains("cron."));
+    assert!(
+        !std::fs::read_to_string(layout.conf_file())
+            .expect("conf")
+            .contains("cron.")
+    );
     h.stop().await.expect("stop");
     drop(h);
 
@@ -472,7 +527,9 @@ async fn several_clusters_run_side_by_side_and_a_standby_starts() {
     }
 
     // A standby needs provisioning first (FB-168 does it with pg_basebackup).
-    let err = Engine::prepare(&replica, &cfg).await.expect_err("unprovisioned standby");
+    let err = Engine::prepare(&replica, &cfg)
+        .await
+        .expect_err("unprovisioned standby");
     assert!(err.to_string().contains("pg_basebackup"), "{err}");
     let secrets = forgebase_pgengine::RoleSecrets::load(&primary.secrets_file())
         .expect("load")
@@ -501,4 +558,32 @@ async fn several_clusters_run_side_by_side_and_a_standby_starts() {
     for h in [r, s, p] {
         h.stop().await.expect("stop");
     }
+}
+
+/// Runs only in a build with the `bundled-postgres` feature (the archive
+/// named by `FORGEBASE_PG_ENGINE_ARCHIVE` at build time).
+#[tokio::test]
+async fn embedded_engine_is_extracted_and_runs() {
+    if !forgebase_pgengine::HAS_EMBEDDED {
+        eprintln!("skipped: built without the bundled-postgres feature");
+        return;
+    }
+    let tmp = tempdir();
+    let layout = Layout::primary(tmp.path());
+    let cfg = EngineConfig {
+        source: EngineSource::Embedded,
+        socket_port: 18_208,
+        unsafe_fast: true,
+        ready_timeout: Duration::from_secs(60),
+        ..EngineConfig::default()
+    };
+    let h = Engine::prepare(&layout, &cfg)
+        .await
+        .expect("prepare from the embedded archive");
+    assert!(h.engine().root.starts_with(layout.engines_dir()));
+    assert!(matches!(h.engine().origin, EngineOrigin::Extracted { fresh: true, .. }));
+    let mut server = connect(&h, Role::Server).await;
+    assert_eq!(one(&mut server, "SHOW search_path").await, "forgebase, public");
+    let _ = server.close().await;
+    h.stop().await.expect("stop");
 }

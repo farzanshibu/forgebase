@@ -221,7 +221,10 @@ pub const INCLUDE_LINE: &str = "include_if_exists = '../forgebase-postgres.conf'
 pub fn ensure_include(pgdata: &Path) -> Result<()> {
     let path = pgdata.join("postgresql.conf");
     let text = std::fs::read_to_string(&path).map_err(|e| EngineError::io("read", &path, e))?;
-    if text.lines().any(|l| l.trim_start().starts_with("include_if_exists = '../forgebase-postgres.conf'")) {
+    if text.lines().any(|l| {
+        l.trim_start()
+            .starts_with("include_if_exists = '../forgebase-postgres.conf'")
+    }) {
         return Ok(());
     }
     let mut text = text;
@@ -368,10 +371,7 @@ mod tests {
 
     #[test]
     fn values_are_quoted() {
-        let s = render(&[
-            ("search_path".into(), "a, 'b'".into()),
-            ("x.y".into(), "c:\\d".into()),
-        ]);
+        let s = render(&[("search_path".into(), "a, 'b'".into()), ("x.y".into(), "c:\\d".into())]);
         assert!(s.contains("search_path = 'a, ''b'''\n"), "{s}");
         assert!(s.contains("x.y = 'c:\\\\d'\n"), "{s}");
         assert!(s.starts_with('#'));

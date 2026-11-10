@@ -107,7 +107,14 @@ pub(crate) async fn initdb(engine: &EngineDir, pgdata: &Path, secrets: &RoleSecr
     if !out.status.success() {
         let _ = fsutil::remove_tree(&partial);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let tail: Vec<&str> = stderr.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail: Vec<&str> = stderr
+            .lines()
+            .rev()
+            .take(15)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         return Err(EngineError::Initdb(tail.join("\n")));
     }
     std::fs::rename(&partial, pgdata).map_err(|e| EngineError::io("rename into place", pgdata, e))?;

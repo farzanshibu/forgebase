@@ -92,9 +92,7 @@ impl Manifest {
             )));
         }
         let simple = |s: &str| {
-            !s.is_empty()
-                && s.len() <= 32
-                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+            !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
         };
         if !simple(&self.postgres) || !simple(&self.build) {
             return Err(EngineError::Archive(format!(
@@ -109,7 +107,10 @@ impl Manifest {
                 return Err(EngineError::Archive(format!("manifest lists {} twice", f.path)));
             }
             if f.sha256.len() != 64 || !f.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(EngineError::Archive(format!("manifest hash of {} is not SHA-256 hex", f.path)));
+                return Err(EngineError::Archive(format!(
+                    "manifest hash of {} is not SHA-256 hex",
+                    f.path
+                )));
             }
         }
         for l in &self.links {
@@ -145,7 +146,11 @@ fn rel_key(p: &str) -> Result<String> {
                     .to_owned(),
             ),
             Component::CurDir => {}
-            _ => return Err(EngineError::Archive(format!("path {p:?} must be relative and stay inside"))),
+            _ => {
+                return Err(EngineError::Archive(format!(
+                    "path {p:?} must be relative and stay inside"
+                )));
+            }
         }
     }
     if parts.is_empty() {
@@ -158,7 +163,9 @@ fn rel_key(p: &str) -> Result<String> {
 /// the engine root.
 fn link_stays_inside(link_key: &str, target: &str) -> Result<()> {
     if Path::new(target).is_absolute() || target.starts_with('/') || target.starts_with('\\') {
-        return Err(EngineError::Archive(format!("link {link_key} -> {target}: absolute target")));
+        return Err(EngineError::Archive(format!(
+            "link {link_key} -> {target}: absolute target"
+        )));
     }
     let mut depth: Vec<&str> = link_key.split('/').collect();
     depth.pop();
@@ -275,31 +282,31 @@ pub fn extract(source: &dyn ArchiveSource, engines_dir: &Path, cache_dir: Option
     let name = manifest.dir_name(&sha);
     let mut dest = engines_dir.join(&name);
     let mut in_cache = false;
-    if let Some(loader) = &manifest.loader {
+    if let Some(loader) = &manifest.loader
+        && dest.join(loader).as_os_str().len() > interp::MAX_INTERP_LEN
+    {
+        let cache = cache_engines.ok_or_else(|| {
+            EngineError::Archive(format!(
+                "the engine path {} is too long for the loader and no cache directory is known (set HOME)",
+                dest.display()
+            ))
+        })?;
+        fsutil::private_dir(&cache)?;
+        clean_partials(&cache);
+        dest = cache.join(&name);
         if dest.join(loader).as_os_str().len() > interp::MAX_INTERP_LEN {
-            let cache = cache_engines.ok_or_else(|| {
-                EngineError::Archive(format!(
-                    "the engine path {} is too long for the loader and no cache directory is known (set HOME)",
-                    dest.display()
-                ))
-            })?;
-            fsutil::private_dir(&cache)?;
-            clean_partials(&cache);
-            dest = cache.join(&name);
-            if dest.join(loader).as_os_str().len() > interp::MAX_INTERP_LEN {
-                return Err(EngineError::Archive(format!(
-                    "both {} and the cache path {} are too long for the loader (254 bytes)",
-                    engines_dir.display(),
-                    dest.display()
-                )));
-            }
-            tracing::warn!(
-                target: "forgebase::postgres",
-                engine = %dest.display(),
-                "data directory path is too long for the relocated engine; extracting it under the cache directory"
-            );
-            in_cache = true;
+            return Err(EngineError::Archive(format!(
+                "both {} and the cache path {} are too long for the loader (254 bytes)",
+                engines_dir.display(),
+                dest.display()
+            )));
         }
+        tracing::warn!(
+            target: "forgebase::postgres",
+            engine = %dest.display(),
+            "data directory path is too long for the relocated engine; extracting it under the cache directory"
+        );
+        in_cache = true;
     }
 
     let partial = partial_path(&dest);
@@ -502,7 +509,8 @@ fn unpack_verified(
                     }
                     size += n as u64;
                     hasher.update(&buf[..n]);
-                    file.write_all(&buf[..n]).map_err(|e| EngineError::io("write", &out, e))?;
+                    file.write_all(&buf[..n])
+                        .map_err(|e| EngineError::io("write", &out, e))?;
                 }
                 file.sync_all().map_err(|e| EngineError::io("sync", &out, e))?;
                 let digest: [u8; 32] = hasher.finalize().into();
@@ -632,14 +640,19 @@ fn finish_modes(manifest: &Manifest, root: &Path) -> Result<()> {
 /// The first difference found, or I/O errors.
 pub fn verify_extracted(dir: &Path) -> Result<Manifest> {
     let text = std::fs::read(dir.join(MANIFEST_NAME)).map_err(|e| EngineError::io("read", dir, e))?;
-    let manifest: Manifest = serde_json::from_slice(&text).map_err(|e| EngineError::Archive(format!("manifest: {e}")))?;
+    let manifest: Manifest =
+        serde_json::from_slice(&text).map_err(|e| EngineError::Archive(format!("manifest: {e}")))?;
     manifest.validate()?;
     for f in &manifest.files {
         let key = rel_key(&f.path)?;
         let path = dir.join(&key);
         let meta = std::fs::metadata(&path).map_err(|e| EngineError::io("stat", &path, e))?;
         if meta.len() != f.size {
-            return Err(EngineError::Archive(format!("{key}: size {} vs {}", meta.len(), f.size)));
+            return Err(EngineError::Archive(format!(
+                "{key}: size {} vs {}",
+                meta.len(),
+                f.size
+            )));
         }
         if manifest.loader.is_some() && key.starts_with("bin/") {
             continue;
@@ -828,9 +841,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = |p: &str| {
-                std::fs::metadata(ex.dir.join(p)).expect("meta").permissions().mode() & 0o777
-            };
+            let mode = |p: &str| std::fs::metadata(ex.dir.join(p)).expect("meta").permissions().mode() & 0o777;
             assert_eq!(mode("bin/postgres"), 0o555);
             assert_eq!(mode("lib/libpq.so.5.18") & 0o222, 0);
             assert_eq!(
@@ -842,10 +853,12 @@ mod tests {
         let again = extract(&src_bytes, &engines, None).expect("reuse");
         assert!(again.reused);
         assert_eq!(again.dir, ex.dir);
-        assert!(std::fs::read_dir(&engines)
-            .expect("list")
-            .flatten()
-            .all(|e| !e.file_name().to_string_lossy().ends_with(".partial")));
+        assert!(
+            std::fs::read_dir(&engines)
+                .expect("list")
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".partial"))
+        );
     }
 
     #[test]
@@ -1023,8 +1036,11 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::create_dir_all(src.join("bin")).expect("mkdir");
         std::fs::create_dir_all(src.join("lib")).expect("mkdir");
-        std::fs::write(src.join("bin/postgres"), crate::interp::tests::fake_elf(&crate::interp::tests::placeholder()))
-            .expect("write");
+        std::fs::write(
+            src.join("bin/postgres"),
+            crate::interp::tests::fake_elf(&crate::interp::tests::placeholder()),
+        )
+        .expect("write");
         std::fs::write(src.join("bin/initdb"), b"not an elf").expect("write");
         std::fs::write(src.join("lib/ld-musl-x86_64.so.1"), b"loader").expect("write");
         let mut out = Vec::new();
@@ -1057,9 +1073,11 @@ mod tests {
         assert!(ex.in_cache);
         assert!(ex.dir.starts_with(cache.join("engines")));
         let data = std::fs::read(ex.dir.join("bin/postgres")).expect("read");
-        assert!(crate::interp::read_interp(&data)
-            .expect("interp")
-            .is_some_and(|i| i.starts_with(cache.to_str().expect("utf8"))));
+        assert!(
+            crate::interp::read_interp(&data)
+                .expect("interp")
+                .is_some_and(|i| i.starts_with(cache.to_str().expect("utf8")))
+        );
         // Found again on the next start.
         let again = extract(&source, &deep, Some(&cache)).expect("reuse");
         assert!(again.reused && again.in_cache);

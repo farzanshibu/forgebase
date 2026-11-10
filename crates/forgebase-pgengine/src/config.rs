@@ -144,7 +144,9 @@ impl EngineConfig {
             return Ok(None);
         }
         let addr: SocketAddr = value.parse().map_err(|_| {
-            EngineError::Config(format!("listen {value:?} must be \"\" or an address such as 127.0.0.1:5433"))
+            EngineError::Config(format!(
+                "listen {value:?} must be \"\" or an address such as 127.0.0.1:5433"
+            ))
         })?;
         check_listen(addr)?;
         Ok(Some(addr))

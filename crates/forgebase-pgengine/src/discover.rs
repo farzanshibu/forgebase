@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::archive::{self, ArchiveSource, BytesSource, FileSource};
-use crate::config::{EngineConfig, EngineSource, ENGINE_DIR_ENV};
+use crate::config::{ENGINE_DIR_ENV, EngineConfig, EngineSource};
 use crate::error::{EngineError, Result};
 use crate::layout::Layout;
 
@@ -50,15 +50,11 @@ impl PgVersion {
     pub fn parse(output: &str) -> Option<Self> {
         let token = output
             .split_whitespace()
-            .skip_while(|t| !t.starts_with(|c: char| c.is_ascii_digit()))
-            .next()?;
+            .find(|t| t.starts_with(|c: char| c.is_ascii_digit()))?;
         let digits = |s: &str| s.chars().take_while(char::is_ascii_digit).collect::<String>();
         let major: u32 = digits(token).parse().ok()?;
         let rest = &token[digits(token).len()..];
-        let minor = rest
-            .strip_prefix('.')
-            .and_then(|r| digits(r).parse().ok())
-            .unwrap_or(0);
+        let minor = rest.strip_prefix('.').and_then(|r| digits(r).parse().ok()).unwrap_or(0);
         Some(Self {
             major,
             minor,
@@ -99,7 +95,9 @@ pub struct EngineDir {
 impl EngineDir {
     /// Path of a program in `bin/`.
     pub fn bin(&self, name: &str) -> PathBuf {
-        self.root.join("bin").join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        self.root
+            .join("bin")
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
     }
 
     /// Whether a loadable module (`pg_cron`, `pg_stat_statements`) exists.
@@ -172,17 +170,16 @@ impl EngineDir {
 async fn pkglibdirs(dir: &EngineDir) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let pg_config = dir.bin("pg_config");
-    if pg_config.is_file() {
-        if let Ok(o) = tokio::process::Command::new(&pg_config)
+    if pg_config.is_file()
+        && let Ok(o) = tokio::process::Command::new(&pg_config)
             .arg("--pkglibdir")
             .stdin(std::process::Stdio::null())
             .output()
             .await
-        {
-            let p = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-            if o.status.success() && !p.is_empty() {
-                out.push(PathBuf::from(p));
-            }
+    {
+        let p = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+        if o.status.success() && !p.is_empty() {
+            out.push(PathBuf::from(p));
         }
     }
     out.push(dir.root.join("lib").join("postgresql"));

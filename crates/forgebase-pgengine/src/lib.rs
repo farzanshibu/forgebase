@@ -49,10 +49,10 @@ mod secret;
 
 pub use cluster::{DATABASE, OWNER_ROLE, RLS_ROLE, SEARCH_PATH, SQL_ADMIN_ROLE};
 pub use conf::{DENY as DENIED_SETTINGS, DENY_PREFIXES as DENIED_SETTING_PREFIXES};
-pub use config::{EngineConfig, EngineSource, ExtensionMode, RestartPolicy, ENGINE_DIR_ENV};
-pub use discover::{embedded_archive, EngineDir, EngineOrigin, PgVersion, HAS_EMBEDDED, MIN_MAJOR};
+pub use config::{ENGINE_DIR_ENV, EngineConfig, EngineSource, ExtensionMode, RestartPolicy};
+pub use discover::{EngineDir, EngineOrigin, HAS_EMBEDDED, MIN_MAJOR, PgVersion, embedded_archive};
 pub use error::{EngineError, Result};
-pub use layout::{Layout, NodeKind, CONF_FILE};
+pub use layout::{CONF_FILE, Layout, NodeKind};
 pub use secret::{Role, RoleSecrets, Secret};
 
 use process::{Endpoint, LogTail, Postmaster};
@@ -205,11 +205,11 @@ impl Engine {
             log: LogTail::default(),
         });
         let mut pm = start_once(&ctx).await?;
-        if layout.kind() == NodeKind::Primary {
-            if let Err(e) = cluster::bootstrap(&ctx.endpoint, &ctx.secrets).await {
-                pm.stop(&pgdata, &ctx.engine, ctx.stop_timeout, false).await;
-                return Err(e);
-            }
+        if layout.kind() == NodeKind::Primary
+            && let Err(e) = cluster::bootstrap(&ctx.endpoint, &ctx.secrets).await
+        {
+            pm.stop(&pgdata, &ctx.engine, ctx.stop_timeout, false).await;
+            return Err(e);
         }
         tracing::info!(
             target: "forgebase::postgres",
@@ -297,7 +297,10 @@ fn preloads(engine: &EngineDir, cfg: &EngineConfig) -> Result<(Vec<&'static str>
             )));
         }
         (ExtensionMode::Auto, false) => {
-            warnings.push("pg_cron is not in this engine; it is not preloaded and schedules stay on the ForgeBase scheduler".to_owned());
+            warnings.push(
+                "pg_cron is not in this engine; it is not preloaded and schedules stay on the ForgeBase scheduler"
+                    .to_owned(),
+            );
             false
         }
     };
@@ -366,7 +369,12 @@ async fn start_once(ctx: &Ctx) -> Result<Postmaster> {
     }
 }
 
-async fn supervise(ctx: Arc<Ctx>, mut pm: Postmaster, mut rx: mpsc::Receiver<Cmd>, health: watch::Sender<EngineHealth>) {
+async fn supervise(
+    ctx: Arc<Ctx>,
+    mut pm: Postmaster,
+    mut rx: mpsc::Receiver<Cmd>,
+    health: watch::Sender<EngineHealth>,
+) {
     let pgdata = ctx.layout.pgdata();
     let mut failures: VecDeque<Instant> = VecDeque::new();
     let mut restarts = 0u32;
@@ -496,8 +504,12 @@ fn remove_old_engines(layout: &Layout, engine: &EngineDir) {
             continue;
         }
         match fsutil::remove_tree(&path) {
-            Ok(()) => tracing::info!(target: "forgebase::postgres", engine = %path.display(), "removed the previous engine"),
-            Err(e) => tracing::warn!(target: "forgebase::postgres", engine = %path.display(), error = %e, "could not remove the previous engine"),
+            Ok(()) => {
+                tracing::info!(target: "forgebase::postgres", engine = %path.display(), "removed the previous engine")
+            }
+            Err(e) => {
+                tracing::warn!(target: "forgebase::postgres", engine = %path.display(), error = %e, "could not remove the previous engine")
+            }
         }
     }
 }
@@ -714,10 +726,7 @@ mod tests {
             tcp: Some("[::1]:5433".parse().expect("addr")),
             port: 5433,
         };
-        assert_eq!(
-            build_url(&ep, "r", "p", "d").expose(),
-            "postgres://r:p@[::1]:5433/d"
-        );
+        assert_eq!(build_url(&ep, "r", "p", "d").expose(), "postgres://r:p@[::1]:5433/d");
     }
 
     #[test]

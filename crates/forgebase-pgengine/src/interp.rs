@@ -172,7 +172,10 @@ pub(crate) mod tests {
         let mut elf = fake_elf(&placeholder());
         let len = elf.len();
         let new = "/home/u/project/postgres/engine/18.6-r1-abc/lib/ld-musl-x86_64.so.1";
-        assert_eq!(patch_interp(&mut elf, new, PLACEHOLDER_PREFIX).expect("patch"), Patched::Yes);
+        assert_eq!(
+            patch_interp(&mut elf, new, PLACEHOLDER_PREFIX).expect("patch"),
+            Patched::Yes
+        );
         assert_eq!(elf.len(), len);
         assert_eq!(read_interp(&elf).expect("read").as_deref(), Some(new));
         assert!(elf[120 + new.len()..120 + 256].iter().all(|&b| b == 0));
@@ -191,7 +194,10 @@ pub(crate) mod tests {
         let long = format!("/{}", "a".repeat(255));
         assert!(patch_interp(&mut elf, &long, PLACEHOLDER_PREFIX).is_err());
         let fits = format!("/{}", "a".repeat(MAX_INTERP_LEN - 1));
-        assert_eq!(patch_interp(&mut elf, &fits, PLACEHOLDER_PREFIX).expect("fits"), Patched::Yes);
+        assert_eq!(
+            patch_interp(&mut elf, &fits, PLACEHOLDER_PREFIX).expect("fits"),
+            Patched::Yes
+        );
     }
 
     #[test]
@@ -211,7 +217,10 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let p = dir.path().join("postgres");
         std::fs::write(&p, fake_elf(&placeholder())).expect("write");
-        assert_eq!(patch_file(&p, "/a/ld.so", PLACEHOLDER_PREFIX).expect("patch"), Patched::Yes);
+        assert_eq!(
+            patch_file(&p, "/a/ld.so", PLACEHOLDER_PREFIX).expect("patch"),
+            Patched::Yes
+        );
         let data = std::fs::read(&p).expect("read");
         assert_eq!(read_interp(&data).expect("interp").as_deref(), Some("/a/ld.so"));
     }
