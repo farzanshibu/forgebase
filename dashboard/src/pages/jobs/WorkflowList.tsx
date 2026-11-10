@@ -2,10 +2,11 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { listWorkflows } from "../../api";
 import type { WorkflowStatus } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import { Table } from "panelui-web/table";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const STATUSES: WorkflowStatus[] = ["running", "succeeded", "failed", "compensating", "compensated", "cancelled"];
 
@@ -15,10 +16,7 @@ export default function WorkflowList() {
   return (
     <Panel title="Workflows" actions={<Button onClick={wf.reload}>Refresh</Button>}>
       <label className="mb-3 block text-sm">Status
-        <select className={`${inputCls} ml-2`} value={status} onChange={(e) => setStatus(e.target.value as WorkflowStatus | "")}>
-          <option value="">all</option>
-          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
+        <PanelSelect aria-label="Status" className="ml-2" value={status} onChange={(v) => setStatus(v as WorkflowStatus | "")} options={[{ value: "", label: "all" }, ...STATUSES.map((s) => ({ value: s, label: s }))]} />
       </label>
       <ErrorView error={wf.error} />
       {wf.loading && !wf.error && <Loading what="Loading workflows" />}

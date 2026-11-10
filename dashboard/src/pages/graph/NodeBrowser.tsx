@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { createNode, deleteNode, listNodes, updateNode } from "../../api";
 import type { GraphNode } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { parseJsonObject } from "../vector/util";
 import { usePaged } from "./usePaged";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { Textarea } from "panelui-web/textarea";
 
 const PAGE = 50;
 
@@ -86,7 +87,7 @@ function NodeForm({ node, onDone }: { node?: GraphNode; onDone: () => void }) {
       <form aria-label={node ? "Edit node" : "New node"} onSubmit={(e) => void save(e)} className="space-y-3">
         {!node && <label className="block text-sm">Id (blank = generated)<Input size="sm" className="mt-1 w-full" value={id} onChange={(e) => setId(e.target.value)} /></label>}
         <label className="block text-sm">Label<Input size="sm" className="mt-1 w-full" value={label} onChange={(e) => setLabel(e.target.value)} /></label>
-        <label className="block text-sm">Properties (JSON)<textarea className={`${inputCls} mt-1 h-32 w-full font-mono`} value={props} onChange={(e) => setProps(e.target.value)} /></label>
+        <label className="block text-sm">Properties (JSON)<Textarea size="sm" autoResize={false} className="mt-1 h-32 w-full font-mono" value={props} onChange={(e) => setProps(e.target.value)} /></label>
         <div className="flex gap-2"><Button tone="primary" type="submit">Save node</Button><Button onClick={onDone}>Cancel</Button></div>
       </form>
       <div className="mt-3"><ErrorView error={error} /></div>

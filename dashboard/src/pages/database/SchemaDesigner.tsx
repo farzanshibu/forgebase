@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createCollection, deleteCollection, updateCollection, FIELD_TYPES } from "../../api";
 import type { CollectionDef, FieldDef } from "../../api";
-import { Button, ConfirmButton, ErrorView, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView } from "../../components/ui";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const CORE_KEYS = ["id", "name", "type", "required", "unique", "hidden", "system", "default"];
 
@@ -83,14 +84,10 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
           <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="flex flex-col gap-1">Type
-          <select className={inputCls} value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option>base</option><option>auth</option><option>view</option>
-          </select>
+          <PanelSelect aria-label="Type" value={kind} onChange={setKind} options={[{ value: "base", label: "base" }, { value: "auth", label: "auth" }, { value: "view", label: "view" }]} />
         </label>
         <label className="flex flex-col gap-1">Schema mode
-          <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value)}>
-            <option>strict</option><option>flexible</option>
-          </select>
+          <PanelSelect aria-label="Schema mode" value={mode} onChange={setMode} options={[{ value: "strict", label: "strict" }, { value: "flexible", label: "flexible" }]} />
         </label>
         <label className="flex items-center gap-2 pb-2">
           <input type="checkbox" checked={versioned} onChange={(e) => setVersioned(e.target.checked)} /> Keep record versions
@@ -110,9 +107,7 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
                   <Input size="sm" aria-label={`Field ${i + 1} name`} disabled={locked} className="w-full" value={r.name} onChange={(e) => patch(i, { name: e.target.value })} />
                 </Table.Cell>
                 <Table.Cell className="pr-2">
-                  <select aria-label={`Field ${i + 1} type`} disabled={locked} className={inputCls} value={r.type} onChange={(e) => patch(i, { type: e.target.value })}>
-                    {[...new Set([...FIELD_TYPES, r.type])].map((t) => <option key={t}>{t}</option>)}
-                  </select>
+                  <PanelSelect aria-label={`Field ${i + 1} type`} disabled={locked} value={r.type} onChange={(v) => patch(i, { type: v })} options={[...new Set([...FIELD_TYPES, r.type])].map((t) => ({ value: t, label: t }))} />
                 </Table.Cell>
                 <Table.Cell><input type="checkbox" aria-label={`Field ${i + 1} required`} disabled={locked} checked={r.required} onChange={(e) => patch(i, { required: e.target.checked })} /></Table.Cell>
                 <Table.Cell><input type="checkbox" aria-label={`Field ${i + 1} unique`} disabled={locked} checked={r.unique} onChange={(e) => patch(i, { unique: e.target.checked })} /></Table.Cell>

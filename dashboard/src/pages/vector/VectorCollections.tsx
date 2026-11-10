@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { createVectorCollection, deleteVectorCollection, listVectorCollections, vectorStats } from "../../api";
 import type { Metric, Quantization } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { bytes } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 export default function VectorCollections() {
   const list = useLoad(listVectorCollections, "vector-collections");
@@ -116,14 +117,10 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Field name<Input size="sm" className="mt-1 w-full" value={field} onChange={(e) => setField(e.target.value)} /></label>
         <label className="text-sm">Dimension<Input size="sm" type="number" min={1} max={4096} className="mt-1 w-full" value={dimension} onChange={(e) => setDimension(e.target.value)} /></label>
         <label className="text-sm">Metric
-          <select className={`${inputCls} mt-1 w-full`} value={metric} onChange={(e) => setMetric(e.target.value as Metric)}>
-            <option value="cosine">cosine</option><option value="l2">l2</option><option value="dot">dot</option>
-          </select>
+          <PanelSelect aria-label="Metric" className="mt-1" value={metric} onChange={(v) => setMetric(v as Metric)} options={[{ value: "cosine", label: "cosine" }, { value: "l2", label: "l2" }, { value: "dot", label: "dot" }]} />
         </label>
         <label className="text-sm">Quantization
-          <select className={`${inputCls} mt-1 w-full`} value={quantization} onChange={(e) => setQuantization(e.target.value as Quantization)}>
-            <option value="f32">f32</option><option value="f16">f16</option><option value="i8">i8</option>
-          </select>
+          <PanelSelect aria-label="Quantization" className="mt-1" value={quantization} onChange={(v) => setQuantization(v as Quantization)} options={[{ value: "f32", label: "f32" }, { value: "f16", label: "f16" }, { value: "i8", label: "i8" }]} />
         </label>
         <div className="flex items-end"><Button tone="primary" type="submit" disabled={busy}>Create collection</Button></div>
       </form>

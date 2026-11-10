@@ -8,6 +8,7 @@ import { renderStudio, signedIn } from "../../test/helpers";
 import { installJobs } from "../../test/fnMock";
 import ProgressBar from "./ProgressBar";
 import { layout } from "./WorkflowGraph";
+import { pick } from "../../test/panelSelect";
 
 const NOW = "2026-11-09T10:00:00Z";
 
@@ -173,10 +174,10 @@ describe("Workflows", () => {
     renderStudio("/jobs/workflows");
     const table = await screen.findByRole("table", { name: "Workflows" });
     expect(within(table).getAllByRole("row")).toHaveLength(3);
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "failed");
+    await pick(userEvent, screen.getByLabelText("Status"), "failed");
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Workflows" })).getAllByRole("row")).toHaveLength(2));
     expect(screen.getByRole("link", { name: "cleanup" })).toHaveAttribute("href", "/jobs/w/wf2");
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "cancelled");
+    await pick(userEvent, screen.getByLabelText("Status"), "cancelled");
     expect(await screen.findByText("No workflows match.")).toBeInTheDocument();
   });
 
@@ -184,7 +185,7 @@ describe("Workflows", () => {
     const { st } = setup();
     st.tasks.workflows = [workflow()];
     renderStudio("/jobs");
-    await userEvent.click(await screen.findByRole("link", { name: "Workflows" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "Workflows" }));
     expect(await screen.findByRole("table", { name: "Workflows" })).toBeInTheDocument();
   });
 

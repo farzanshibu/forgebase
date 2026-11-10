@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi, envelope } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installKv } from "../../test/kvMock";
+import { pick } from "../../test/panelSelect";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -30,11 +31,11 @@ describe("Redis key browser", () => {
     await waitFor(() => expect(names()).toEqual(["user:1", "user:2"]));
 
     await userEvent.clear(screen.getByLabelText("Pattern"));
-    await userEvent.selectOptions(screen.getByLabelText("Type"), "zset");
+    await pick(userEvent, screen.getByLabelText("Type"), "zset");
     await userEvent.click(screen.getByRole("button", { name: "Apply filter" }));
     await waitFor(() => expect(names()).toEqual(["board"]));
 
-    await userEvent.selectOptions(screen.getByLabelText("Type"), "");
+    await pick(userEvent, screen.getByLabelText("Type"), "any");
     await userEvent.click(screen.getByRole("button", { name: "Apply filter" }));
     await waitFor(() => expect(names()).toHaveLength(7));
 
@@ -102,7 +103,7 @@ describe("Redis key viewers and editors", () => {
     expect(await screen.findByLabelText("Remaining TTL")).toHaveTextContent("90 s");
     await userEvent.clear(screen.getByLabelText("TTL amount"));
     await userEvent.type(screen.getByLabelText("TTL amount"), "2");
-    await userEvent.selectOptions(screen.getByLabelText("TTL unit"), "minutes");
+    await pick(userEvent, screen.getByLabelText("TTL unit"), "minutes");
     await userEvent.click(screen.getByRole("button", { name: "Set TTL" }));
     await waitFor(() => expect(st.ns.default!["user:1"]!.ttl_ms).toBe(120_000));
     expect(await screen.findByText("2 min")).toBeInTheDocument();

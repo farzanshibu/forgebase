@@ -52,16 +52,16 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   expect(await screen.findByText("gamma")).toBeInTheDocument();
 
   // Index manager.
-  await u.click(within(screen.getByRole("navigation", { name: "Collection sections" })).getByRole("link", { name: "Indexes" }));
+  await u.click(within(screen.getByRole("tablist", { name: "Collection sections" })).getByRole("tab", { name: "Indexes" }));
   await u.type(await screen.findByLabelText(/^Keys/), "body");
   await u.click(screen.getByRole("button", { name: "Create index" }));
   expect(await screen.findByText("idx_notes_body")).toBeInTheDocument();
 
   // SQL editor + slow queries.
-  await u.click(screen.getByRole("link", { name: "SQL editor" }));
+  await u.click(screen.getByRole("tab", { name: "SQL editor" }));
   await u.click(await screen.findByRole("button", { name: "Run" }));
   expect(await screen.findByRole("table", { name: "Result" })).toBeInTheDocument();
-  await u.click(screen.getByRole("link", { name: "Slow queries" }));
+  await u.click(screen.getByRole("tab", { name: "Slow queries" }));
   expect(await screen.findByText(/250\.5 ms/)).toBeInTheDocument();
 
   expect(mock.problems).toEqual([]);

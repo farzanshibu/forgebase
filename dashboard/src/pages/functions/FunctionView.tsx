@@ -1,12 +1,11 @@
-import { NavLink, Route, Routes, useParams } from "react-router-dom";
+import { Route, Routes, useParams } from "react-router-dom";
+import { RouteTabs } from "../panel/RouteTabs";
 import { getFunction } from "../../api";
 import { ErrorView, Loading } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import LogsTab from "./LogsTab";
 import SecretsTab from "./SecretsTab";
 import VersionsTab from "./VersionsTab";
-
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 export default function FunctionView() {
   const { name = "" } = useParams();
@@ -26,11 +25,7 @@ export default function FunctionView() {
       {info.loading && !info.error && <Loading what="Loading function" />}
       {info.data && (
         <>
-          <nav aria-label="Function tabs" className="flex flex-wrap gap-1 border-b border-border">
-            <NavLink to={base} end className={tab}>Versions</NavLink>
-            <NavLink to={`${base}/logs`} className={tab}>Logs</NavLink>
-            <NavLink to={`${base}/secrets`} className={tab}>Secrets</NavLink>
-          </nav>
+          <RouteTabs label="Function tabs" tabs={[{ to: base, label: "Versions", end: true }, { to: `${base}/logs`, label: "Logs" }, { to: `${base}/secrets`, label: "Secrets" }]} />
           <Routes>
             <Route index element={<VersionsTab info={info.data} onChanged={info.reload} />} />
             <Route path="logs" element={<LogsTab name={name} />} />

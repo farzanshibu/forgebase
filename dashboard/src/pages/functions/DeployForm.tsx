@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { FUNCTION_CAPABILITIES, deployFunction, wasmToBase64 } from "../../api";
 import type { Deployed, FunctionInfo, InvokeAccess, VersionConfig } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { csv, formatEnv, formatHooks, parseEnv, parseHooks, readFileBytes } from "./util";
 import { Input } from "panelui-web/input";
+import { Textarea } from "panelui-web/textarea";
+import { PanelSelect } from "../panel/PanelSelect";
 
 interface Props {
   /** Fixed function name (deploying a new version); otherwise the name is typed. */
@@ -78,13 +80,11 @@ export default function DeployForm({ fixedName, info, config, onDone }: Props) {
           <Input size="sm" className="mt-1 w-full" value={name} onChange={(e) => setName(e.target.value)} readOnly={!!fixedName} required pattern="[a-z][a-z0-9_-]{0,47}" title="Lower-case letters, digits, _ or -, starting with a letter" />
         </label>
         <label className="text-sm md:col-span-2">WebAssembly module
-          <input type="file" accept=".wasm,application/wasm" className={`${inputCls} mt-1 w-full`} onChange={(e) => setFile(e.target.files?.[0])} />
+          <Input size="sm" type="file" accept=".wasm,application/wasm" className="mt-1 w-full" onChange={(e) => setFile(e.target.files?.[0])} />
         </label>
         <label className="text-sm md:col-span-2">Description<Input size="sm" className="mt-1 w-full" value={description} onChange={(e) => setDescription(e.target.value)} /></label>
         <label className="text-sm">HTTP access
-          <select className={`${inputCls} mt-1 w-full`} value={access} onChange={(e) => setAccess(e.target.value as InvokeAccess)}>
-            <option value="permission">permission</option><option value="authenticated">authenticated</option><option value="public">public</option>
-          </select>
+          <PanelSelect aria-label="HTTP access" className="mt-1" value={access} onChange={(v) => setAccess(v as InvokeAccess)} options={[{ value: "permission", label: "permission" }, { value: "authenticated", label: "authenticated" }, { value: "public", label: "public" }]} />
         </label>
         <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={activate} onChange={(e) => setActivate(e.target.checked)} />Activate this version</label>
         <fieldset className="md:col-span-4">
@@ -105,10 +105,10 @@ export default function DeployForm({ fixedName, info, config, onDone }: Props) {
         {num("Timeout ms", timeout, setTimeoutMs)}
         {num("Max concurrency", conc, setConc)}
         <label className="text-sm md:col-span-2">Environment (KEY=value per line; not secret)
-          <textarea className={`${inputCls} mt-1 h-24 w-full font-mono text-xs`} value={env} onChange={(e) => setEnv(e.target.value)} />
+          <Textarea size="sm" autoResize={false} className="mt-1 h-24 w-full font-mono text-xs" value={env} onChange={(e) => setEnv(e.target.value)} />
         </label>
         <label className="text-sm md:col-span-2">Record hooks (collection: events per line)
-          <textarea className={`${inputCls} mt-1 h-24 w-full font-mono text-xs`} value={hooks} onChange={(e) => setHooks(e.target.value)} placeholder="orders: after_create, after_update" />
+          <Textarea size="sm" autoResize={false} className="mt-1 h-24 w-full font-mono text-xs" value={hooks} onChange={(e) => setHooks(e.target.value)} placeholder="orders: after_create, after_update" />
         </label>
         <div className="md:col-span-4"><Button tone="primary" type="submit" disabled={busy}>Deploy</Button></div>
       </form>

@@ -1,4 +1,5 @@
-import { NavLink, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
+import { RouteTabs } from "../panel/RouteTabs";
 import EdgeBrowser from "./EdgeBrowser";
 import GraphExplorer from "./GraphExplorer";
 import GraphOverview from "./GraphOverview";
@@ -17,13 +18,7 @@ export default function GraphPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Graph Studio</h1>
-      <nav aria-label="Graph sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
-        {TABS.map((t) => (
-          <NavLink key={t.label} to={t.to} end={t.end} className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-            {t.label}
-          </NavLink>
-        ))}
-      </nav>
+      <RouteTabs label="Graph sections" tabs={TABS} className="mt-4" />
       <div className="mt-6">
         <Routes>
           <Route index element={<GraphOverview />} />

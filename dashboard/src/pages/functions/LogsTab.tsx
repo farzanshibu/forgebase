@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { functionLogs } from "../../api";
-import { Button, ErrorView, Loading, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading } from "../../components/ui";
 import { usePolling } from "../../hooks";
 import { when } from "./util";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const STEP = 50;
 const MAX = 500;
@@ -26,10 +27,7 @@ export default function LogsTab({ name }: { name: string }) {
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <label className="flex items-center gap-1.5"><input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />Live (every 3 s)</label>
         <label className="flex items-center gap-1.5">Status
-          <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">all</option>
-            {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <PanelSelect aria-label="Status" value={status} onChange={setStatus} options={[{ value: "", label: "all" }, ...statuses.map((s) => ({ value: s, label: s }))]} />
         </label>
         <Button onClick={logs.refresh}>Refresh</Button>
         <span className="text-muted-foreground">{logs.data ? `${shown.length} of the newest ${limit} executions` : ""}{logs.updatedAt ? ` · updated ${logs.updatedAt.toLocaleTimeString()}` : ""}</span>

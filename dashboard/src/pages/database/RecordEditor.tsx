@@ -5,6 +5,7 @@ import type { CollectionDef } from "../../api";
 import { useLoad } from "../../hooks";
 import { Button, ErrorView, Loading } from "../../components/ui";
 import { READ_ONLY_KEYS } from "./values";
+import { Textarea } from "panelui-web/textarea";
 
 /** JSON document editor: `r/new` creates, `r/:id` replaces with `If-Match` on the loaded version. */
 export default function RecordEditor({ collection }: { collection: CollectionDef }) {
@@ -59,10 +60,10 @@ function Editor({ collection, id, initial, version }: { collection: CollectionDe
         <span className="text-muted-foreground">{isNew ? "New record" : `Record ${id}${version ? ` · version ${version}` : ""}`}</span>
         <Link className="text-primary hover:underline" to={base}>Back to data</Link>
       </div>
-      <textarea
+      <Textarea size="sm" autoResize={false}
         aria-label="Record JSON"
         spellCheck={false}
-        className="h-96 w-full rounded-md border border-border bg-card p-3 font-mono text-xs"
+        className="h-96 font-mono"
         value={text}
         onChange={(e) => setText(e.target.value)}
       />

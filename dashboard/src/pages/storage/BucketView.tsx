@@ -1,4 +1,5 @@
-import { Link, NavLink, Route, Routes, useParams } from "react-router-dom";
+import { Link, Route, Routes, useParams } from "react-router-dom";
+import { RouteTabs } from "../panel/RouteTabs";
 import { bucketUsage, getBucket } from "../../api";
 import { ErrorView, Loading } from "../../components/ui";
 import { formatBytes } from "../../format";
@@ -7,8 +8,6 @@ import AclEditor from "./AclEditor";
 import BucketSettings from "./BucketSettings";
 import ObjectBrowser from "./ObjectBrowser";
 import SignedUrls from "./SignedUrls";
-
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 export default function BucketView() {
   const { bucket = "" } = useParams();
@@ -27,12 +26,7 @@ export default function BucketView() {
       {b.loading && !b.error && <Loading what="Loading bucket" />}
       {b.data && (
         <>
-          <nav aria-label="Bucket sections" className="flex flex-wrap gap-1 border-b border-border">
-            <NavLink to={base} end className={tab}>Objects</NavLink>
-            <NavLink to={`${base}/settings`} className={tab}>Policy</NavLink>
-            <NavLink to={`${base}/access`} className={tab}>Access (ACL)</NavLink>
-            <NavLink to={`${base}/share`} className={tab}>Signed URLs</NavLink>
-          </nav>
+          <RouteTabs label="Bucket sections" tabs={[{ to: base, label: "Objects", end: true }, { to: `${base}/settings`, label: "Policy" }, { to: `${base}/access`, label: "Access (ACL)" }, { to: `${base}/share`, label: "Signed URLs" }]} />
           <Routes>
             <Route index element={<ObjectBrowser bucket={b.data} />} />
             <Route path="settings" element={<BucketSettings bucket={b.data} onSaved={b.reload} />} />

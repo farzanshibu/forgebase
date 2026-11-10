@@ -1,4 +1,5 @@
-import { NavLink, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
+import { RouteTabs } from "../panel/RouteTabs";
 import VectorCollectionView from "./VectorCollectionView";
 import VectorCollections from "./VectorCollections";
 
@@ -6,11 +7,7 @@ export default function VectorPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Vector Studio</h1>
-      <nav aria-label="Vector sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
-        <NavLink to="/vector" end className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-          Collections
-        </NavLink>
-      </nav>
+      <RouteTabs label="Vector sections" tabs={[{ to: "/vector", label: "Collections", end: true }]} className="mt-4" />
       <div className="mt-6">
         <Routes>
           <Route index element={<VectorCollections />} />

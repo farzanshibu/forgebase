@@ -2,12 +2,14 @@ import { Fragment, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, createQueueSubscription, deleteQueueTopic, listQueueSubscriptions, publishQueueMessages, queueTopicMessages, queueTopicMetrics } from "../../api";
 import type { QueueMessage, QueueSubscription } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad, type LoadState } from "../../hooks";
 import { when } from "../functions/util";
 import { bytes, duration, parseAttrs, parseJson, pretty } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { Textarea } from "panelui-web/textarea";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const PAGE = 25;
 
@@ -86,8 +88,8 @@ function PublishPanel({ topic, onDone }: { topic: string; onDone: () => void }) 
   return (
     <Panel title="Publish">
       <form onSubmit={(e) => void submit(e)} className="space-y-3 text-sm">
-        <label className="block">Data (JSON)<textarea className={`${inputCls} mt-1 block h-24 w-full font-mono text-xs`} value={data} onChange={(e) => setData(e.target.value)} /></label>
-        <label className="block">Attributes (one key=value per line)<textarea className={`${inputCls} mt-1 block h-16 w-full font-mono text-xs`} value={attrs} onChange={(e) => setAttrs(e.target.value)} /></label>
+        <label className="block">Data (JSON)<Textarea size="sm" autoResize={false} className="mt-1 block h-24 w-full font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
+        <label className="block">Attributes (one key=value per line)<Textarea size="sm" autoResize={false} className="mt-1 block h-16 w-full font-mono text-xs" value={attrs} onChange={(e) => setAttrs(e.target.value)} /></label>
         <div className="flex flex-wrap items-end gap-3">
           <label>Ordering key<Input size="sm" className="ml-2 w-40" value={key} onChange={(e) => setKey(e.target.value)} /></label>
           <label>Dedup id<Input size="sm" className="ml-2 w-40" value={dedup} onChange={(e) => setDedup(e.target.value)} /></label>
@@ -201,7 +203,7 @@ function Subscriptions({ topic, subs }: { topic: string; subs: LoadState<QueueSu
         <label>Ack deadline (s)<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>
         <label>Max attempts<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={attempts} onChange={(e) => setAttempts(e.target.value)} /></label>
         <label>Dead-letter topic<Input size="sm" className="ml-2 w-36" value={dlt} onChange={(e) => setDlt(e.target.value)} /></label>
-        <label>Start<select className={`${inputCls} ml-2`} value={start} onChange={(e) => setStart(e.target.value as "latest" | "earliest")}><option value="latest">latest</option><option value="earliest">earliest</option></select></label>
+        <label>Start<PanelSelect aria-label="Start" className="ml-2" value={start} onChange={(v) => setStart(v as "latest" | "earliest")} options={[{ value: "latest", label: "latest" }, { value: "earliest", label: "earliest" }]} /></label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={ordering} onChange={(e) => setOrdering(e.target.checked)} />Ordered</label>
         <Button type="submit" tone="primary" disabled={!name.trim()}>Create subscription</Button>
       </form>

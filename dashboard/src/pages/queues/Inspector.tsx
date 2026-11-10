@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ackQueueMessages, listQueueSubscriptions, listQueueTopics, nackQueueMessages, publishQueueMessages, streamQueueSubscription } from "../../api";
 import type { ReceivedMessage } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { parseJson } from "./util";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 interface Line extends ReceivedMessage { n: number; state: "held" | "acked" | "nacked" }
 
@@ -53,10 +54,7 @@ export default function Inspector() {
       <Panel title="Listen">
         <form onSubmit={start} className="flex flex-wrap items-end gap-3 text-sm">
           <label>Subscription
-            <select className={`${inputCls} ml-2`} value={sub} onChange={(e) => setSub(e.target.value)}>
-              <option value="">choose…</option>
-              {(subs.data ?? []).filter((s) => !s.push).map((s) => <option key={s.name} value={s.name}>{s.name} ({s.topic})</option>)}
-            </select>
+            <PanelSelect aria-label="Subscription" className="ml-2" value={sub} onChange={setSub} options={[{ value: "", label: "choose…" }, ...(subs.data ?? []).filter((s) => !s.push).map((s) => ({ value: s.name, label: `${s.name} (${s.topic})` }))]} />
           </label>
           <label>Most in flight<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label>
           {live ? <Button onClick={stop}>Stop listening</Button> : <Button type="submit" tone="primary" disabled={!sub}>Listen</Button>}
@@ -112,10 +110,7 @@ function Publish({ topics }: { topics: string[] }) {
     <Panel title="Publish">
       <form onSubmit={(e) => void submit(e)} className="flex flex-wrap items-end gap-3 text-sm">
         <label>Topic
-          <select className={`${inputCls} ml-2`} value={topic} onChange={(e) => setTopic(e.target.value)}>
-            <option value="">choose…</option>
-            {topics.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
+          <PanelSelect aria-label="Topic" className="ml-2" value={topic} onChange={setTopic} options={[{ value: "", label: "choose…" }, ...topics.map((t) => ({ value: t, label: t }))]} />
         </label>
         <label>Data (JSON)<Input size="sm" className="ml-2 w-72 font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
         <Button type="submit" disabled={!topic}>Publish</Button>

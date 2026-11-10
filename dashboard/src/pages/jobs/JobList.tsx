@@ -2,12 +2,13 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { JOB_STATUSES, jobStats, listJobQueues, listJobs, pauseJobQueue, resumeJobQueue } from "../../api";
 import type { JobStatus } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import StatusBadge from "./StatusBadge";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const PAGE = 25;
 
@@ -84,10 +85,7 @@ export default function JobList() {
 
       <div className="flex flex-wrap items-end gap-3 text-sm">
         <label>Status
-          <select className={`${inputCls} ml-2`} value={status} onChange={(e) => filter(() => setStatus(e.target.value as JobStatus | ""))()}>
-            <option value="">all</option>
-            {JOB_STATUSES.map((s) => <option key={s} value={s}>{s === "dead" ? "dead (dead-letter)" : s}</option>)}
-          </select>
+          <PanelSelect aria-label="Status" className="ml-2" value={status} onChange={(v) => filter(() => setStatus(v as JobStatus | ""))()} options={[{ value: "", label: "all" }, ...JOB_STATUSES.map((s) => ({ value: s, label: s === "dead" ? "dead (dead-letter)" : s }))]} />
         </label>
         <label>Queue<Input size="sm" className="ml-2 w-36" value={queue} onChange={(e) => filter(() => setQueue(e.target.value))()} /></label>
         <label>Kind<Input size="sm" className="ml-2 w-36" value={kind} onChange={(e) => filter(() => setKind(e.target.value))()} /></label>

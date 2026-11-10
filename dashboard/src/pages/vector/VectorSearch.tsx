@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { vectorHybrid, vectorSearch } from "../../api";
 import type { FilterMode, HybridResponse, SearchResponse, VectorCollection } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { fmt, parseVector } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 type Mode = "similarity" | "hybrid";
 
@@ -56,18 +57,14 @@ export default function VectorSearch({ collection }: { collection: VectorCollect
         </div>
         <form aria-label="Search" onSubmit={(e) => void run(e)} className="grid gap-3 md:grid-cols-3">
           <label className="text-sm">Field
-            <select className={`${inputCls} mt-1 w-full`} value={field} onChange={(e) => setField(e.target.value)}>
-              {collection.fields.map((f) => <option key={f.name} value={f.name}>{f.name}</option>)}
-            </select>
+            <PanelSelect aria-label="Field" className="mt-1" value={field} onChange={setField} options={collection.fields.map((f) => ({ value: f.name, label: f.name }))} />
           </label>
           <label className="text-sm md:col-span-2">Query vector<Input size="sm" className="mt-1 w-full font-mono" value={vector} onChange={(e) => setVector(e.target.value)} placeholder="0.1, 0.2, 0.3" /></label>
           {mode === "hybrid" && (
             <>
               <label className="text-sm md:col-span-2">Query text<Input size="sm" className="mt-1 w-full" value={text} onChange={(e) => setText(e.target.value)} /></label>
               <label className="text-sm">Text operator
-                <select className={`${inputCls} mt-1 w-full`} value={operator} onChange={(e) => setOperator(e.target.value as "or" | "and")}>
-                  <option value="or">or</option><option value="and">and</option>
-                </select>
+                <PanelSelect aria-label="Text operator" className="mt-1" value={operator} onChange={(v) => setOperator(v as "or" | "and")} options={[{ value: "or", label: "or" }, { value: "and", label: "and" }]} />
               </label>
               <label className="text-sm">Vector weight<Input size="sm" type="number" step="any" className="mt-1 w-full" value={wVec} onChange={(e) => setWVec(e.target.value)} /></label>
               <label className="text-sm">Text weight<Input size="sm" type="number" step="any" className="mt-1 w-full" value={wText} onChange={(e) => setWText(e.target.value)} /></label>
@@ -75,9 +72,7 @@ export default function VectorSearch({ collection }: { collection: VectorCollect
           )}
           <label className="text-sm md:col-span-2">Metadata filter<Input size="sm" className="mt-1 w-full font-mono" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder='tag = "a" && year > 2020' /></label>
           <label className="text-sm">Filter mode
-            <select className={`${inputCls} mt-1 w-full`} value={filterMode} onChange={(e) => setFilterMode(e.target.value as FilterMode)}>
-              <option value="auto">auto</option><option value="pre">pre</option><option value="post">post</option>
-            </select>
+            <PanelSelect aria-label="Filter mode" className="mt-1" value={filterMode} onChange={(v) => setFilterMode(v as FilterMode)} options={[{ value: "auto", label: "auto" }, { value: "pre", label: "pre" }, { value: "post", label: "post" }]} />
           </label>
           <label className="text-sm">k<Input size="sm" type="number" min={1} max={1000} className="mt-1 w-full" value={k} onChange={(e) => setK(e.target.value)} /></label>
           {mode === "similarity" && (

@@ -23,12 +23,12 @@ it("storage: create bucket -> enable versioning -> upload twice -> versions -> r
   await u.click(screen.getByRole("button", { name: "Create bucket" }));
   await u.click(await screen.findByRole("link", { name: "smoke-files" }));
 
-  await u.click(await screen.findByRole("link", { name: "Policy" }));
+  await u.click(await screen.findByRole("tab", { name: "Policy" }));
   await u.click(await screen.findByLabelText(/Keep versions/));
   await u.click(screen.getByRole("button", { name: "Save policy" }));
   await screen.findByText("Saved.");
 
-  await u.click(screen.getByRole("link", { name: "Objects" }));
+  await u.click(screen.getByRole("tab", { name: "Objects" }));
   await u.upload(await screen.findByLabelText("Choose files"), new File(["one"], "a.txt", { type: "text/plain" }));
   await u.click(await screen.findByRole("button", { name: "Select a.txt" }));
   await u.upload(screen.getByLabelText("Choose files"), new File(["three"], "a.txt", { type: "text/plain" }));
@@ -41,7 +41,7 @@ it("storage: create bucket -> enable versioning -> upload twice -> versions -> r
   await u.click(screen.getByRole("button", { name: "Generate URL" }));
   expect(((await screen.findByLabelText("Signed URL")) as HTMLTextAreaElement).value).toContain("/signed/smoke-files/a.txt");
 
-  await u.click(screen.getByRole("link", { name: "Access (ACL)" }));
+  await u.click(screen.getByRole("tab", { name: "Access (ACL)" }));
   await u.type(await screen.findByLabelText("Grantee"), "user:bo");
   await u.click(screen.getByRole("button", { name: "Add entry" }));
   expect(await screen.findByText("ACL saved.")).toBeInTheDocument();
@@ -70,14 +70,14 @@ it("redis: create key -> TTL -> hash edit -> console -> stats", async () => {
   await waitFor(() => expect(st.ns.default!.cfg!.ttl_ms).toBe(60_000));
   expect(await screen.findByLabelText("Remaining TTL")).toHaveTextContent("60 s");
 
-  await u.click(screen.getByRole("link", { name: "Console" }));
+  await u.click(screen.getByRole("tab", { name: "Console" }));
   await u.type(await screen.findByLabelText("Command"), "SET h x{enter}");
   await waitFor(() => expect(st.execs).toContainEqual(["SET", "h", "x"]));
 
-  await u.click(screen.getByRole("link", { name: "Keys" }));
+  await u.click(screen.getByRole("tab", { name: "Keys" }));
   expect(await screen.findByRole("button", { name: "h" })).toBeInTheDocument();
 
-  await u.click(screen.getByRole("link", { name: "Memory and stats" }));
+  await u.click(screen.getByRole("tab", { name: "Memory and stats" }));
   expect(await screen.findByLabelText("Memory")).toBeInTheDocument();
   expect(mock.problems).toEqual([]);
 });

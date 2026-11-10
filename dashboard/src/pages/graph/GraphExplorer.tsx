@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getNode, neighbors, shortestPath, traverse } from "../../api";
 import type { Direction, GraphEdge, GraphNode, Neighbor, Page } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { layout, type Pos } from "./layout";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const W = 800;
 const H = 480;
@@ -114,9 +115,7 @@ export default function GraphExplorer() {
           <label className="text-sm">Start node id<Input size="sm" aria-label="Start node id" className="mt-1 block" value={start} onChange={(e) => setStart(e.target.value)} /></label>
           <Button tone="primary" onClick={() => void loadStart(start.trim())} disabled={!start.trim()}>Load node</Button>
           <label className="text-sm">Direction
-            <select aria-label="Direction" className={`${inputCls} mt-1 block`} value={direction} onChange={(e) => setDirection(e.target.value as Direction)}>
-              <option value="both">both</option><option value="out">out</option><option value="in">in</option>
-            </select>
+            <PanelSelect aria-label="Direction" className="mt-1" value={direction} onChange={(v) => setDirection(v as Direction)} options={[{ value: "both", label: "both" }, { value: "out", label: "out" }, { value: "in", label: "in" }]} />
           </label>
           <Button onClick={() => void expand()}>Expand neighbours</Button>
           <label className="text-sm">Depth<Input size="sm" aria-label="Depth" type="number" min={1} max={10} className="mt-1 block w-20" value={depth} onChange={(e) => setDepth(e.target.value)} /></label>
