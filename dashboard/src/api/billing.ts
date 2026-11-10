@@ -143,12 +143,23 @@ export interface CreditNote {
 }
 export interface CreditNoteInput { amount?: number | null; to_balance: boolean; reason?: string | null; idempotency_key: string }
 export interface Collection { invoice: Invoice; payment: Payment | null; payment_url: string | null }
-export interface ProviderAccount { provider: string; key_id: string | null; hint: string | null; api_base: string | null; enabled: boolean; webhook_path: string; updated_at: string }
+export interface ProviderAccount { provider: string; key_id: string | null; hint: string | null; api_base: string | null; enabled: boolean; webhook_path: string; updated_at: string;
+  /** Always true: only test-mode credentials are accepted. */
+  test_mode: boolean;
+  /** `sandbox`, `xcode` or `local_testing` for the App Store, `test` otherwise. */
+  environment: string;
+  /** Non-secret provider settings (never private keys or service accounts). */
+  config: Record<string, unknown>;
+  /** Names of the stored secrets (`api_key`, `config.private_key`, ...), never their values. */
+  secrets_set: string[];
+}
 /** Write-only: the server seals the secrets and never returns them. */
 export interface ProviderInput {
   api_key?: string | null; key_id?: string | null; webhook_secret?: string | null; api_base?: string | null; enabled: boolean;
-  /** Provider-specific settings (FB-72), sealed with the secrets: the server replaces the whole sealed account on every save. */
+  /** Provider-specific settings (FB-72), sealed with the secrets. Blank values keep the stored one. */
   config?: Record<string, unknown> | null;
+  /** Fields to remove: `api_key`, `webhook_secret`, `key_id`, `api_base` or `config.<name>`. Omitted or blank fields keep their stored value. */
+  clear?: string[];
 }
 export type StoreProviderId = "app_store" | "google_play" | "creem";
 export const STORE_PROVIDERS: StoreProviderId[] = ["app_store", "google_play", "creem"];

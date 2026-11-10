@@ -1318,3 +1318,69 @@ async fn creem_checkout_webhooks_renewal_refund_and_cancel() {
     assert_eq!(verify("ann").await.unwrap().purchase_id, "sub_1");
     assert_eq!(code(&verify("bob").await.unwrap_err()), "purchase_owned");
 }
+
+#[tokio::test]
+async fn store_account_config_merges_and_reads_back_without_secrets() {
+    let env = setup().await;
+    let b = &env.billing;
+    let apple = |config: serde_json::Value, clear: &[&str]| ProviderInput {
+        config: Some(config),
+        clear: clear.iter().map(|c| (*c).to_owned()).collect(),
+        ..ProviderInput::default()
+    };
+    let acct = b
+        .put_provider(
+            &admin(),
+            "app_store",
+            apple(
+                json!({"issuer_id": "iss", "key_id": "KID123", "private_key": fixture("asc-key.p8"),
+                       "bundle_id": BUNDLE, "environment": "xcode"}),
+                &[],
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(acct.test_mode);
+    assert_eq!(acct.environment, "xcode");
+    assert_eq!(acct.config["bundle_id"], BUNDLE);
+    assert_eq!(acct.secrets_set, vec!["config.private_key"]);
+    let shown = serde_json::to_string(&b.providers(&admin()).await.unwrap()).unwrap();
+    assert!(
+        !shown.contains("PRIVATE") && !shown.contains("private_key\":"),
+        "{shown}"
+    );
+
+    // Only the changed field is sent; blanks and the missing private key keep
+    // the stored values, so the driver still builds.
+    let acct = b
+        .put_provider(
+            &admin(),
+            "app_store",
+            apple(
+                json!({"issuer_id": "iss2", "bundle_id": "", "private_key": "", "environment": "sandbox"}),
+                &[],
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(acct.config["issuer_id"], "iss2");
+    assert_eq!(acct.config["bundle_id"], BUNDLE);
+    assert_eq!(acct.config["key_id"], "KID123");
+    assert_eq!(acct.environment, "sandbox");
+    assert_eq!(acct.secrets_set, vec!["config.private_key"]);
+    assert!(b.store("app_store").is_some());
+
+    // A config field is cleared by name (a required one cannot be).
+    let e = b
+        .put_provider(&admin(), "app_store", apple(json!({}), &["config.issuer_id"]))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "invalid_config");
+    let acct = b
+        .put_provider(&admin(), "app_store", apple(json!({}), &["config.environment"]))
+        .await
+        .unwrap();
+    assert!(acct.config.get("environment").is_none());
+    assert_eq!(acct.environment, "sandbox");
+    assert_eq!(acct.config["key_id"], "KID123");
+}

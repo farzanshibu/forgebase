@@ -11165,14 +11165,34 @@ export interface components {
             items: {
                 /** @description API base URL override. */
                 api_base?: string | null;
+                /**
+                 * @description The non-secret provider-specific settings (never `private_key`,
+                 *     `service_account` or `platform_keys`).
+                 */
+                config: Record<string, never>;
                 /** @description In use. */
                 enabled: boolean;
+                /**
+                 * @description The provider environment: `sandbox`, `xcode` or `local_testing` for the
+                 *     App Store, `test` for every other provider.
+                 */
+                environment: string;
                 /** @description Last characters of the API secret. */
                 hint?: string | null;
                 /** @description Public key id (Razorpay). */
                 key_id?: string | null;
                 /** @description `stripe`, `razorpay` or `manual`. */
                 provider: string;
+                /**
+                 * @description Names of the secrets that are stored (`api_key`, `webhook_secret`,
+                 *     `config.private_key`, ...). The values are never returned.
+                 */
+                secrets_set: string[];
+                /**
+                 * @description Always `true`: only test-mode credentials are accepted (live keys are
+                 *     refused when saved).
+                 */
+                test_mode: boolean;
                 /** @description Changed. */
                 updated_at: string;
                 /** @description Webhook URL to register at the provider (relative to the public URL). */
@@ -13222,14 +13242,34 @@ export interface components {
         ProviderAccount: {
             /** @description API base URL override. */
             api_base?: string | null;
+            /**
+             * @description The non-secret provider-specific settings (never `private_key`,
+             *     `service_account` or `platform_keys`).
+             */
+            config: Record<string, never>;
             /** @description In use. */
             enabled: boolean;
+            /**
+             * @description The provider environment: `sandbox`, `xcode` or `local_testing` for the
+             *     App Store, `test` for every other provider.
+             */
+            environment: string;
             /** @description Last characters of the API secret. */
             hint?: string | null;
             /** @description Public key id (Razorpay). */
             key_id?: string | null;
             /** @description `stripe`, `razorpay` or `manual`. */
             provider: string;
+            /**
+             * @description Names of the secrets that are stored (`api_key`, `webhook_secret`,
+             *     `config.private_key`, ...). The values are never returned.
+             */
+            secrets_set: string[];
+            /**
+             * @description Always `true`: only test-mode credentials are accepted (live keys are
+             *     refused when saved).
+             */
+            test_mode: boolean;
             /** @description Changed. */
             updated_at: string;
             /** @description Webhook URL to register at the provider (relative to the public URL). */
@@ -13241,6 +13281,13 @@ export interface components {
             api_base?: string | null;
             /** @description Stripe secret key (`sk_test_…`) or Razorpay key secret. */
             api_key?: string | null;
+            /**
+             * @description Fields to remove from the stored account: `api_key`, `webhook_secret`,
+             *     `key_id`, `api_base` or `config.<name>`. A secret or config field that
+             *     is omitted, `null` or empty keeps its stored value; list it here to
+             *     clear it.
+             */
+            clear?: string[];
             /**
              * @description Provider-specific settings, sealed with the secrets (FB-72): App Store
              *     `issuer_id`, `key_id`, `private_key`, `bundle_id`, `environment`;
