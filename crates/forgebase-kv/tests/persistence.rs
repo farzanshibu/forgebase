@@ -132,6 +132,10 @@ async fn a_flush_cancelled_mid_write_keeps_its_keys_for_the_next_flush() {
             "the write needs I/O, so the first poll suspends"
         );
     }
-    assert_eq!(kv.stats(&a).unwrap().unsaved_keys, 1, "the cancelled flush returned its key");
+    assert_eq!(
+        kv.stats(&a).unwrap().unsaved_keys,
+        1,
+        "the cancelled flush returned its key"
+    );
     assert_eq!(kv.shutdown().await.unwrap(), 1, "the final flush writes it");
 }
