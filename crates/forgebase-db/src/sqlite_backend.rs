@@ -200,6 +200,7 @@ impl Backend for Database {
                 conn: Some(conn),
                 mode,
                 db: self.clone(),
+                ddl: false,
             }) as Box<dyn WriteTx>)
         })
     }
@@ -278,6 +279,32 @@ struct SqliteTx {
     conn: Option<PoolConnection<Sqlite>>,
     mode: TxMode,
     db: Database,
+    /// A statement changed the schema (DDL in a `Normal` transaction, such as
+    /// `CREATE INDEX`): readers must reload it after the commit (FB-85).
+    ddl: bool,
+}
+
+/// Whether `sql` changes the schema or the planner's statistics, so pooled
+/// readers must reload their in-memory schema once it commits. Leading
+/// whitespace and SQL comments are skipped; the first keyword decides.
+fn changes_schema(sql: &str) -> bool {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(r) = rest.strip_prefix("--") {
+            rest = r.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(r) = rest.strip_prefix("/*") {
+            rest = r.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            break;
+        }
+    }
+    let word: String = rest
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    matches!(word.as_str(), "CREATE" | "DROP" | "ALTER" | "ANALYZE" | "REINDEX")
 }
 
 impl SqliteTx {
@@ -309,13 +336,14 @@ impl SqliteTx {
                     });
                 }
             }
-            if sql == "COMMIT" && self.mode == TxMode::SchemaChange {
+            let refresh = sql == "COMMIT" && (self.mode == TxMode::SchemaChange || self.ddl);
+            if refresh {
                 // Before and after: a reader acquired between the two is
                 // refreshed again once the commit is visible.
                 db.bump_schema_generation();
             }
             sqlx::query(sql).execute(&mut *conn).await.map_err(|e| db.classify(e))?;
-            if sql == "COMMIT" && self.mode == TxMode::SchemaChange {
+            if refresh {
                 db.bump_schema_generation();
             }
             Ok(())
@@ -356,6 +384,9 @@ impl WriteTx for SqliteTx {
         Box::pin(async move {
             let db = self.db.clone();
             let started = Instant::now();
+            if !self.ddl && changes_schema(&stmt.sql) {
+                self.ddl = true;
+            }
             let done = bind(stmt)
                 .execute(&mut **self.conn()?)
                 .await

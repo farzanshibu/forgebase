@@ -1326,7 +1326,7 @@ fn scenario_15_execute_graph_traversal() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|n| (n["id"].as_str().unwrap().to_owned(), n["depth"].as_i64().unwrap()))
+        .map(|n| (n["node"]["id"].as_str().unwrap().to_owned(), n["depth"].as_i64().unwrap()))
         .collect();
     got.sort();
     assert_eq!(got, [("b".to_owned(), 1), ("c".to_owned(), 2)], "{r}");
@@ -1643,7 +1643,8 @@ fn scenario_19_schedule_and_execute_a_background_job() {
         let j = fb.admin("GET", &format!("/api/v1/jobs/{id}"), None).json();
         (j["status"] == "succeeded").then_some(j)
     });
-    assert_eq!(done["result"]["hello"], "world", "{done}");
+    assert_eq!(done["result"]["status"], 200, "{done}");
+    assert_eq!(done["result"]["body"]["hello"], "world", "{done}");
     assert_eq!(done["attempts"], 1);
     let ev = fb.admin("GET", &format!("/api/v1/jobs/{id}/events"), None).expect(200);
     let names: Vec<&str> = ev["items"]
@@ -2142,10 +2143,19 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
     assert_ne!(me["subject"]["type"], "admin");
     assert_eq!(fb.call("GET", "/api/auth/audit", Some(&user), None).status, 403);
 
-    // Object keys cannot walk out of the bucket.
+    // Object keys cannot walk out of the bucket: they are opaque names in the
+    // database (docs/security.md), so a `..` key is either refused or stored
+    // as a plain name, and no file appears outside the content-addressed
+    // blob store. The database file is untouched.
     fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"}))).expect(201);
     let admin = fb.admin.clone();
-    for key in ["..%2F..%2Fforgebase.db", "%2E%2E/%2E%2E/escape.txt", "a/../../escape.txt"] {
+    let db_len = common::file_len(&fb.data_dir().join("forgebase.db"));
+    for (key, name) in [
+        ("..%2F..%2Fforgebase.db", "../../forgebase.db"),
+        ("%2E%2E/%2E%2E/escape.txt", "../../escape.txt"),
+        ("a/../../escape.txt", "a/../../escape.txt"),
+        ("..%5C..%5Cescape.txt", "..\\..\\escape.txt"),
+    ] {
         let r = fb.send(
             "PUT",
             &format!("/api/v1/storage/buckets/b/objects/{key}"),
@@ -2153,10 +2163,22 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
             &[("Content-Type", "text/plain".to_owned())],
             b"x",
         );
-        assert!(r.status == 400 || r.status == 404, "key {key}: {} {}", r.status, r.text());
+        match r.status {
+            400 | 404 => {}
+            201 => {
+                assert_eq!(r.json()["key"], name, "stored under its literal name: {}", r.text());
+                let back = fb.send("GET", &format!("/api/v1/storage/buckets/b/objects/{key}"), Some(&admin), &[], b"");
+                assert_eq!((back.status, back.body.as_slice()), (200, &b"x"[..]));
+            }
+            s => panic!("key {key}: {s} {}", r.text()),
+        }
     }
-    assert!(!fb.data_dir().join("escape.txt").exists());
-    assert!(!fb.proj.join("escape.txt").exists());
+    for dir in [fb.data_dir(), fb.proj.clone(), fb.data_dir().join("storage")] {
+        assert!(!dir.join("escape.txt").exists(), "{}", dir.display());
+    }
+    assert!(common::file_len(&fb.data_dir().join("forgebase.db")) >= db_len);
+    let ok = fb.admin("POST", "/api/v1/sql", Some(json!({"sql": "SELECT count(*) FROM _forgebase_collections"})));
+    assert_eq!(ok.status, 200, "the database still opens: {}", ok.text());
     // Declared image types must carry image bytes.
     let r = fb.send(
         "PUT",
