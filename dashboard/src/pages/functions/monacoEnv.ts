@@ -1,8 +1,8 @@
 // Monaco with its workers, bundled with the app (Vite `?worker` imports): nothing loads from a CDN.
 // Only CodeEditor imports this file, and CodeEditor is itself lazy, so Monaco lives in its own chunk.
-import * as monaco from "monaco-editor";
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker.js?worker";
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
+import * as monaco from "./monacoSlim";
+import EditorWorker from "monaco-esm/editor/editor.worker.js?worker";
+import TsWorker from "monaco-esm/language/typescript/ts.worker.js?worker";
 
 (self as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
   getWorker: (_id, label) => (label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker()),

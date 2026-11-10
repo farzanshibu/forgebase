@@ -5,19 +5,7 @@ import { Button, ErrorView, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-
-/** `Name: value` per line. */
-export function parseHeaderLines(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [i, raw] of text.split("\n").entries()) {
-    const line = raw.trim();
-    if (!line) continue;
-    const c = line.indexOf(":");
-    if (c < 1) throw new Error(`Header line ${i + 1} must look like Name: value`);
-    out[line.slice(0, c).trim()] = line.slice(c + 1).trim();
-  }
-  return out;
-}
+import { parseHeaderLines } from "./util";
 
 const pretty = (s: string) => {
   try {

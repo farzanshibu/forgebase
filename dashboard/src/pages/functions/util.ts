@@ -79,3 +79,16 @@ export function compileIssues(err: unknown): CompileIssue[] {
   const m = /(?:line\s+)?(\d+)\s*(?::|,\s*(?:col(?:umn)?\s+))\s*(\d+)/i.exec(message);
   return m ? [{ line: Number(m[1]), column: Number(m[2]), message }] : [];
 }
+
+/** `Name: value` per line. */
+export function parseHeaderLines(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [i, raw] of text.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    const c = line.indexOf(":");
+    if (c < 1) throw new Error(`Header line ${i + 1} must look like Name: value`);
+    out[line.slice(0, c).trim()] = line.slice(c + 1).trim();
+  }
+  return out;
+}
