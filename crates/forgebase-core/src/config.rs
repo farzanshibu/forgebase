@@ -1150,10 +1150,26 @@ mod tests {
         std::fs::write(tmp.path().join("forgebase.toml"), "[billing]\nenabled = false\n").unwrap();
         assert!(!ConfigLoader::new(tmp.path()).load().unwrap().config.billing.enabled);
         let on = env(&[("FORGEBASE_BILLING_ENABLED", "true")]);
-        assert!(ConfigLoader::new(tmp.path()).env(on).load().unwrap().config.billing.enabled);
+        assert!(
+            ConfigLoader::new(tmp.path())
+                .env(on)
+                .load()
+                .unwrap()
+                .config
+                .billing
+                .enabled
+        );
         std::fs::write(tmp.path().join("forgebase.toml"), "[billing]\nenabled = true\n").unwrap();
         let off = env(&[("FORGEBASE_BILLING_ENABLED", "false")]);
-        assert!(!ConfigLoader::new(tmp.path()).env(off).load().unwrap().config.billing.enabled);
+        assert!(
+            !ConfigLoader::new(tmp.path())
+                .env(off)
+                .load()
+                .unwrap()
+                .config
+                .billing
+                .enabled
+        );
     }
 
     #[test]
