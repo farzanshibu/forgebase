@@ -9,21 +9,9 @@ import { useId } from "react";
 import { Card } from "panelui-web/card";
 import { CopyButton } from "../../components/ui";
 import { UseFromCode } from "../../components/UseFromCode";
-import { collection as collectionSnippet, serverUrl, type Snippet } from "../../snippets";
+import { serverUrl } from "../../snippets";
 import { LinkButton } from "./LinkButton";
-
-/** The name the snippet uses while the project has no collection. */
-export const PLACEHOLDER_COLLECTION = "posts";
-
-/** Install, connect and list the first page of a collection, in JavaScript, Rust and curl. */
-export function firstQuerySnippet(url: string, name: string): Snippet {
-  const list = collectionSnippet(url, name);
-  return {
-    js: `// Install: npm install @forgebase/sdk\n${list.js}`,
-    rust: `// Install: cargo add forgebase-sdk tokio serde_json\n${list.rust}`,
-    curl: `# List the newest records of ${name}\n${list.curl}`,
-  };
-}
+import { firstQuerySnippet, PLACEHOLDER_COLLECTION } from "./model";
 
 export function ConnectApp({ collection }: { collection?: string }) {
   const headingId = useId();

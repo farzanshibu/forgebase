@@ -6,7 +6,7 @@
  *   <RecentActivity />
  */
 import { useId } from "react";
-import { authAudit, type AuditEntry } from "../../api";
+import { authAudit } from "../../api";
 import { useLoad } from "../../hooks";
 import { Card } from "panelui-web/card";
 import { Badge } from "panelui-web/badge";
@@ -14,52 +14,9 @@ import { EmptyState } from "../../components/EmptyState";
 import { ErrorPanel } from "../../components/ErrorPanel";
 import { SkeletonLines } from "../../components/Skeleton";
 import { LinkButton } from "./LinkButton";
+import { actorWords, ago, EVENT_WORDS, eventWords } from "./model";
 
 const SHOWN = 6;
-
-/** Plain words for the events a new project sees most; anything else shows its event name. */
-const EVENT_WORDS: Record<string, string> = {
-  login: "Signed in",
-  "login.admin": "Administrator sign-in",
-  logout: "Signed out",
-  "admin.created": "Administrator created",
-  "admin.deleted": "Administrator deleted",
-  "admin.password_reset": "Administrator password reset",
-  "signing_key.rotated": "Signing key rotated",
-  "api_key.created": "API key created",
-  "api_key.revoked": "API key revoked",
-  "pat.created": "Personal access token created",
-  "service_account.created": "Service account created",
-  "user.created": "User created",
-  "user.deleted": "User deleted",
-  "mfa.enabled": "Two-step verification turned on",
-  "mfa.disabled": "Two-step verification turned off",
-};
-
-export function eventWords(e: Pick<AuditEntry, "event" | "outcome">): string {
-  const base = EVENT_WORDS[e.event] ?? e.event.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase());
-  return e.outcome && e.outcome !== "success" ? `${base} (${e.outcome})` : base;
-}
-
-/** "cli", "system", "anonymous", "admin:<id>" → words. */
-function actorWords(actor: string, adminEmail?: string, adminId?: string): string {
-  if (actor === "cli") return "command line";
-  if (actor === "system") return "server";
-  if (actor === "anonymous") return "someone not signed in";
-  if (adminId && actor === `admin:${adminId}`) return adminEmail ? `you (${adminEmail})` : "you";
-  return actor;
-}
-
-/** "just now", "5 min ago", "3 h ago", else the date. */
-export function ago(iso: string, now = Date.now()): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  const s = Math.max(0, Math.round((now - t) / 1000));
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return new Date(t).toLocaleDateString();
-}
 
 export function RecentActivity({ adminEmail, adminId }: { adminEmail?: string; adminId?: string }) {
   const headingId = useId();

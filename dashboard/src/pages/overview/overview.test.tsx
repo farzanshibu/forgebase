@@ -6,9 +6,9 @@ import { ApiError, type CollectionDef } from "../../api";
 import { makeCollection } from "../../test/mockApi";
 import { fn, key } from "../../test/overviewMock";
 import { API_KEY_PLACEHOLDER } from "../../snippets";
-import { ConnectApp, firstQuerySnippet, PLACEHOLDER_COLLECTION } from "./ConnectApp";
-import { GettingStarted, gettingStartedSteps } from "./GettingStarted";
-import { ago, eventWords } from "./RecentActivity";
+import { ConnectApp } from "./ConnectApp";
+import { GettingStarted } from "./GettingStarted";
+import { ago, eventWords, firstQuerySnippet, gettingStartedSteps, PLACEHOLDER_COLLECTION } from "./model";
 import { liveKeys, newestCollection, type ProjectState } from "./state";
 
 const users: CollectionDef = { ...makeCollection("users", []), type: "auth" };
