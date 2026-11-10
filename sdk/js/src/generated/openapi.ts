@@ -12032,35 +12032,6 @@ export interface components {
              */
             schema_version: number;
         };
-        /** @description The manifest. */
-        Manifest: {
-            /** @description RFC 3339 creation time (UTC). */
-            created: string;
-            /** @description Every file with size and hash. */
-            files: components["schemas"]["FileEntry"][];
-            /** @description ForgeBase version that wrote it. */
-            forgebase_version: string;
-            /**
-             * Format: int32
-             * @description Manifest format version.
-             */
-            format: number;
-            /** @description Backup id (the directory name for snapshots). */
-            id: string;
-            /** @description Whether derived index files are included. */
-            includes_indexes: boolean;
-            /** @description `backup` (explicit destination) or `snapshot` (managed, with retention). */
-            kind: string;
-            /** @description Free-form label. */
-            label?: string | null;
-            /** @description Master key handling. */
-            master_key: components["schemas"]["KeyInfo"];
-            /**
-             * Format: int64
-             * @description Highest applied system migration in the copied database.
-             */
-            schema_version: number;
-        };
         /** @description Body of `POST /billing/invoices/{id}/mark-paid` (manual billing). */
         MarkPaidInput: {
             /** @description Bank transfer or cheque reference. */

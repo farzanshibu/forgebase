@@ -4062,8 +4062,15 @@ pub struct ItemsProviderAccountItemsItem {
     /// API base URL override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_base: Option<String>,
+    /// The non-secret provider-specific settings (never `private_key`,
+    /// `service_account` or `platform_keys`).
+    #[serde(default)]
+    pub config: serde_json::Value,
     /// In use.
     pub enabled: bool,
+    /// The provider environment: `sandbox`, `xcode` or `local_testing` for the
+    /// App Store, `test` for every other provider.
+    pub environment: String,
     /// Last characters of the API secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
@@ -4072,6 +4079,13 @@ pub struct ItemsProviderAccountItemsItem {
     pub key_id: Option<String>,
     /// `stripe`, `razorpay` or `manual`.
     pub provider: String,
+    /// Names of the secrets that are stored (`api_key`, `webhook_secret`,
+    /// `config.private_key`, ...). The values are never returned.
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
+    /// Always `true`: only test-mode credentials are accepted (live keys are
+    /// refused when saved).
+    pub test_mode: bool,
     /// Changed.
     pub updated_at: String,
     /// Webhook URL to register at the provider (relative to the public URL).
@@ -6266,8 +6280,15 @@ pub struct ProviderAccount {
     /// API base URL override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_base: Option<String>,
+    /// The non-secret provider-specific settings (never `private_key`,
+    /// `service_account` or `platform_keys`).
+    #[serde(default)]
+    pub config: serde_json::Value,
     /// In use.
     pub enabled: bool,
+    /// The provider environment: `sandbox`, `xcode` or `local_testing` for the
+    /// App Store, `test` for every other provider.
+    pub environment: String,
     /// Last characters of the API secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
@@ -6276,6 +6297,13 @@ pub struct ProviderAccount {
     pub key_id: Option<String>,
     /// `stripe`, `razorpay` or `manual`.
     pub provider: String,
+    /// Names of the secrets that are stored (`api_key`, `webhook_secret`,
+    /// `config.private_key`, ...). The values are never returned.
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
+    /// Always `true`: only test-mode credentials are accepted (live keys are
+    /// refused when saved).
+    pub test_mode: bool,
     /// Changed.
     pub updated_at: String,
     /// Webhook URL to register at the provider (relative to the public URL).
@@ -6291,6 +6319,12 @@ pub struct ProviderInput {
     /// Stripe secret key (`sk_test_…`) or Razorpay key secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Fields to remove from the stored account: `api_key`, `webhook_secret`,
+    /// `key_id`, `api_base` or `config.<name>`. A secret or config field that
+    /// is omitted, `null` or empty keeps its stored value; list it here to
+    /// clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear: Option<Vec<String>>,
     /// Provider-specific settings, sealed with the secrets (FB-72): App Store
     /// `issuer_id`, `key_id`, `private_key`, `bundle_id`, `environment`;
     /// Google Play `package_name`, `service_account`, `push_audience`,
