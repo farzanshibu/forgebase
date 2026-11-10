@@ -859,6 +859,7 @@ struct FileConfig {
     billing: FileBilling,
     #[serde(default)]
     realtime: FileRealtime,
+    #[serde(default)]
     auth: FileAuth,
 }
 
