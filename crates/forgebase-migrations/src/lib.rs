@@ -160,6 +160,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "functions_js",
         include_str!("../../../migrations/system/0027_functions_js.sql"),
     ),
+    Migration::new(
+        28,
+        "key_tenant",
+        include_str!("../../../migrations/system/0028_key_tenant.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

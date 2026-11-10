@@ -29,7 +29,7 @@ use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Su
 pub(crate) use flows::normalize_email;
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
 pub use impersonation::{ImpersonationGrant, ImpersonationView};
-pub use machine::{ADMIN_PASSWORD_MIN, AdminView, ApiKeyView, CreatedKey, ServiceAccountView};
+pub use machine::{ADMIN_PASSWORD_MIN, AdminView, ApiKeyView, BoundKey, CreatedKey, KeyOptions, ServiceAccountView};
 
 /// Request metadata recorded with sessions and audit events.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

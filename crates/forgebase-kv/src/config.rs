@@ -21,6 +21,12 @@ pub struct KvConfig {
     /// Memory budget in bytes for all tenants together; `0` means unlimited.
     /// The figure is an estimate of payload plus per-key overhead, not process RSS.
     pub max_memory_bytes: usize,
+    /// Memory budget in bytes of one tenant (every namespace of a tenant
+    /// together, `shared.*` namespaces of a realm together, and the
+    /// privileged `default` scope); `0` means none (FB-138, `[kv]
+    /// tenant_max_bytes`). Above it the tenant's own least recently used keys
+    /// are evicted (by [`KvConfig::eviction`]), never another tenant's.
+    pub tenant_max_bytes: usize,
     /// What to do above the budget.
     pub eviction: EvictionPolicy,
     /// Largest key in bytes.
@@ -44,6 +50,7 @@ impl Default for KvConfig {
     fn default() -> Self {
         Self {
             max_memory_bytes: 256 * 1024 * 1024,
+            tenant_max_bytes: 0,
             eviction: EvictionPolicy::AllKeysLru,
             max_key_bytes: 512,
             max_value_bytes: 16 * 1024 * 1024,

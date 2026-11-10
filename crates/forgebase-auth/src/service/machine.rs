@@ -83,6 +83,45 @@ pub struct ApiKeyView {
     pub last_used_at: Option<String>,
     /// Revoked.
     pub revoked: bool,
+    /// Tenant (environment id) the key is bound to (FB-138); `None` = unbound.
+    pub tenant: Option<String>,
+}
+
+/// Options of a new API key or PAT (FB-138).
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct KeyOptions {
+    /// Bind the key to this tenant (environment id). The owner must be able
+    /// to select it (policy step 2: active member of the tenant's
+    /// organization, owner of its personal project, or granted the
+    /// environment or project); privileged owners only need it to exist.
+    pub tenant: Option<String>,
+}
+
+impl KeyOptions {
+    /// Same options bound to `tenant` (`None` or empty = unbound).
+    #[must_use]
+    pub fn with_tenant(mut self, tenant: Option<String>) -> Self {
+        self.tenant = tenant.filter(|t| !t.trim().is_empty()).map(|t| t.trim().to_owned());
+        self
+    }
+}
+
+/// A resolved API key or PAT with its tenant binding (FB-138).
+#[derive(Debug, Clone)]
+pub struct BoundKey {
+    /// Who the key acts for.
+    pub auth: Authenticated,
+    /// The tenant the key is bound to, validated for the owner just now.
+    pub tenant: Option<String>,
+}
+
+/// Tenant ids: 1-64 of `[A-Za-z0-9_-]`, as the `X-ForgeBase-Tenant` header.
+fn check_tenant_id(t: &str) -> Result<(), AuthError> {
+    if t.is_empty() || t.len() > 64 || !t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return Err(AuthError::invalid("tenant must be 1-64 of [A-Za-z0-9_-]"));
+    }
+    Ok(())
 }
 
 /// A newly created key: the only time `key` is returned.
@@ -108,11 +147,12 @@ pub(super) fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
         expires_at: row.opt_i64("expires_at").map(rfc3339),
         last_used_at: row.opt_i64("last_used_at").map(rfc3339),
         revoked: row.opt_i64("revoked_at").is_some(),
+        tenant: row.opt_str("tenant"),
     }
 }
 
 pub(super) const KEY_COLS: &str =
-    "id, kind, name, owner_type, collection, owner_id, scopes, created_at, expires_at, last_used_at, revoked_at";
+    "id, kind, name, owner_type, collection, owner_id, scopes, created_at, expires_at, last_used_at, revoked_at, tenant";
 
 fn sa_view(row: crate::store::Row<'_>) -> ServiceAccountView {
     ServiceAccountView {
@@ -401,6 +441,7 @@ impl AuthService {
         name: &str,
         scopes: &[String],
         expires_in_days: Option<u32>,
+        opts: &KeyOptions,
     ) -> Result<CreatedKey, AuthError> {
         let name = name.trim();
         if name.is_empty() || name.len() > 100 || name.chars().any(char::is_control) {
@@ -419,6 +460,15 @@ impl AuthService {
         if expires_in_days.is_some_and(|d| d == 0 || d > 3650) {
             return Err(AuthError::invalid("expires_in_days must be 1-3650"));
         }
+        let tenant = opts.tenant.clone();
+        if let Some(t) = &tenant {
+            check_tenant_id(t)?;
+            if !self.tenant_usable_by(owner, t).await? {
+                return Err(AuthError::Forbidden(format!(
+                    "the key's owner cannot use tenant {t:?} (not found, or not a member of its organization or project)"
+                )));
+            }
+        }
         let id = crypto::random_id(KEY_ID_LEN)?;
         let secret = crypto::random_token(32)?;
         let prefix = if kind == "api_key" { API_KEY_PREFIX } else { PAT_PREFIX };
@@ -432,8 +482,8 @@ impl AuthService {
         };
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
-            "INSERT INTO _forgebase_auth_api_keys (id, kind, name, secret_hash, owner_type, collection, owner_id, scopes, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO _forgebase_auth_api_keys (id, kind, name, secret_hash, owner_type, collection, owner_id, scopes, created_at, expires_at, tenant)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             vec![
                 t(id.clone()),
                 t(kind),
@@ -445,6 +495,7 @@ impl AuthService {
                 t(serde_json::to_string(&scope_strs).map_err(|e| AuthError::Internal(e.to_string()))?),
                 i(now),
                 expires_at.map_or(Value::Null, i),
+                ot(tenant.clone()),
             ],
         )
         .await?;
@@ -459,7 +510,7 @@ impl AuthService {
             ci,
             &caller.subject.actor(),
             Some(owner),
-            json!({"key_id": id, "name": name, "scopes": scope_strs}),
+            json!({"key_id": id, "name": name, "scopes": scope_strs, "tenant": tenant}),
         )
         .await?;
         tx.commit().await?;
@@ -477,6 +528,7 @@ impl AuthService {
                 expires_at: expires_at.map(rfc3339),
                 last_used_at: None,
                 revoked: false,
+                tenant,
             },
         })
     }
@@ -491,6 +543,30 @@ impl AuthService {
         scopes: &[String],
         expires_in_days: Option<u32>,
     ) -> Result<CreatedKey, AuthError> {
+        self.create_api_key_with(
+            caller,
+            ci,
+            service_account_id,
+            name,
+            scopes,
+            expires_in_days,
+            &KeyOptions::default(),
+        )
+        .await
+    }
+
+    /// [`AuthService::create_api_key`] with options (a tenant binding, FB-138).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_api_key_with(
+        &self,
+        caller: &Authenticated,
+        ci: &ClientInfo,
+        service_account_id: &str,
+        name: &str,
+        scopes: &[String],
+        expires_in_days: Option<u32>,
+        opts: &KeyOptions,
+    ) -> Result<CreatedKey, AuthError> {
         require_admin(caller)?;
         let sa = self.get_service_account(caller, service_account_id).await?;
         if sa.disabled {
@@ -500,7 +576,7 @@ impl AuthService {
             id: sa.id,
             admin: sa.role == "admin",
         };
-        self.insert_key(caller, ci, "api_key", &owner, name, scopes, expires_in_days)
+        self.insert_key(caller, ci, "api_key", &owner, name, scopes, expires_in_days, opts)
             .await
     }
 
@@ -569,12 +645,26 @@ impl AuthService {
         scopes: &[String],
         expires_in_days: Option<u32>,
     ) -> Result<CreatedKey, AuthError> {
+        self.create_pat_with(caller, ci, name, scopes, expires_in_days, &KeyOptions::default())
+            .await
+    }
+
+    /// [`AuthService::create_pat`] with options (a tenant binding, FB-138).
+    pub async fn create_pat_with(
+        &self,
+        caller: &Authenticated,
+        ci: &ClientInfo,
+        name: &str,
+        scopes: &[String],
+        expires_in_days: Option<u32>,
+        opts: &KeyOptions,
+    ) -> Result<CreatedKey, AuthError> {
         super::reject_impersonated(caller)?;
         if !matches!(caller.subject, Subject::User { .. } | Subject::Admin { .. }) {
             return Err(AuthError::Forbidden("service accounts use API keys".into()));
         }
         let owner = caller.subject.clone();
-        self.insert_key(caller, ci, "pat", &owner, name, scopes, expires_in_days)
+        self.insert_key(caller, ci, "pat", &owner, name, scopes, expires_in_days, opts)
             .await
     }
 
@@ -594,8 +684,17 @@ impl AuthService {
         Ok(rows(&r).map(key_view).collect())
     }
 
-    /// Resolves an API key or PAT (`fbk_…` / `fbp_…`).
+    /// Resolves an API key or PAT (`fbk_…` / `fbp_…`). A tenant binding is
+    /// checked but not returned: callers that act in a tenant use
+    /// [`AuthService::authenticate_key_bound`].
     pub async fn authenticate_key(&self, key: &str) -> Result<Authenticated, AuthError> {
+        self.authenticate_key_bound(key).await.map(|b| b.auth)
+    }
+
+    /// Resolves an API key or PAT with its tenant binding (FB-138). A bound
+    /// key whose owner can no longer use its tenant (membership ended, tenant
+    /// deleted) is refused like a revoked one.
+    pub async fn authenticate_key_bound(&self, key: &str) -> Result<BoundKey, AuthError> {
         let bad = AuthError::InvalidToken("invalid API key");
         let (kind, rest) = if let Some(r) = key.strip_prefix(API_KEY_PREFIX) {
             ("api_key", r)
@@ -610,7 +709,7 @@ impl AuthService {
         let (id, secret) = (&rest[..KEY_ID_LEN], &rest[KEY_ID_LEN + 1..]);
         let r = read(
             self.data().backend(),
-            "SELECT kind, secret_hash, owner_type, collection, owner_id, scopes, expires_at, last_used_at, revoked_at
+            "SELECT kind, secret_hash, owner_type, collection, owner_id, scopes, expires_at, last_used_at, revoked_at, tenant
              FROM _forgebase_auth_api_keys WHERE id = ?1",
             vec![t(id)],
         )
@@ -660,6 +759,12 @@ impl AuthService {
             return Err(AuthError::InvalidToken("API key owner no longer exists"));
         }
         self.ensure_active(&subject).await?;
+        let tenant = row.opt_str("tenant");
+        if let Some(t) = &tenant
+            && !self.tenant_usable_by(&subject, t).await?
+        {
+            return Err(AuthError::InvalidToken("API key tenant binding is no longer valid"));
+        }
         let scopes: Vec<Scope> = serde_json::from_str::<Vec<String>>(&row.str("scopes"))
             .ok()
             .and_then(|v| parse_scopes(&v).ok())
@@ -683,18 +788,79 @@ impl AuthService {
                 }
             });
         }
-        Ok(Authenticated {
-            subject,
-            credential: if kind == "api_key" {
-                CredentialKind::ApiKey
-            } else {
-                CredentialKind::PersonalAccessToken
+        Ok(BoundKey {
+            auth: Authenticated {
+                subject,
+                credential: if kind == "api_key" {
+                    CredentialKind::ApiKey
+                } else {
+                    CredentialKind::PersonalAccessToken
+                },
+                credential_id: id.to_owned(),
+                scopes: Some(scopes),
+                mfa: false,
+                impersonator: None,
             },
-            credential_id: id.to_owned(),
-            scopes: Some(scopes),
-            mfa: false,
-            impersonator: None,
+            tenant,
         })
+    }
+
+    /// Whether `owner` may act in tenant (environment) `tenant`: the same
+    /// conditions as policy step 2 for a signed-in caller (ADR-0008 §4). The
+    /// environment exists, its project is in the owner's home realm, and the
+    /// owner is an active member of the project's organization, owns the
+    /// personal project, or is granted the environment or project directly
+    /// (an allow entry naming the owner). Administrators and admin service
+    /// accounts only need the tenant to exist.
+    pub(crate) async fn tenant_usable_by(&self, owner: &Subject, tenant: &str) -> Result<bool, AuthError> {
+        let r = read(
+            self.data().backend(),
+            "SELECT p.id AS project_id, p.realm_id, p.org_id, p.owner_user
+             FROM _forgebase_environments e JOIN _forgebase_projects p ON p.id = e.project_id
+             WHERE e.id = ?1",
+            vec![t(tenant)],
+        )
+        .await?;
+        let Some(row) = first(&r) else { return Ok(false) };
+        if owner.is_admin() {
+            return Ok(true);
+        }
+        let home = self
+            .realms()
+            .realm_of_subject(owner)
+            .unwrap_or_else(|| forgebase_data::DEFAULT_REALM.to_owned());
+        let realm = row.str("realm_id");
+        if realm != home {
+            return Ok(false);
+        }
+        let principal = owner.access_context().principal_key();
+        let project = row.str("project_id");
+        let member = match (row.opt_str("org_id"), row.opt_str("owner_user")) {
+            (Some(org), _) => {
+                let m = read(
+                    self.data().backend(),
+                    "SELECT 1 AS x FROM _forgebase_memberships WHERE org_id = ?1 AND principal = ?2 AND status = 'active'",
+                    vec![t(org), t(principal.clone())],
+                )
+                .await?;
+                first(&m).is_some()
+            }
+            (None, Some(u)) => u == principal,
+            (None, None) => false,
+        };
+        if member {
+            return Ok(true);
+        }
+        let acl = read(
+            self.data().backend(),
+            "SELECT 1 AS x FROM _forgebase_resource_permissions
+             WHERE realm_id = ?1 AND grantee = ?2 AND effect = 'allow'
+               AND ((resource_type = 'environment' AND lower(resource_id) = lower(?3))
+                 OR (resource_type = 'project' AND lower(resource_id) = lower(?4)))",
+            vec![t(realm), t(principal), t(tenant), t(project)],
+        )
+        .await?;
+        Ok(first(&acl).is_some())
     }
 
     /// Whether `token` looks like an API key or PAT (vs. an access token).
@@ -727,6 +893,18 @@ impl AuthService {
         }
         if let Some(s) = &caller.scopes {
             out["scopes"] = json!(s.iter().map(Scope::as_str).collect::<Vec<_>>());
+        }
+        if matches!(
+            caller.credential,
+            CredentialKind::ApiKey | CredentialKind::PersonalAccessToken
+        ) {
+            let r = read(
+                self.db(),
+                "SELECT tenant FROM _forgebase_auth_api_keys WHERE id = ?1",
+                vec![t(caller.credential_id.clone())],
+            )
+            .await?;
+            out["tenant"] = json!(first(&r).and_then(|row| row.opt_str("tenant")));
         }
         match &caller.subject {
             Subject::User { collection, id } => {
