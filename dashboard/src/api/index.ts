@@ -17,3 +17,4 @@ export * from "./kv";
 export * from "./identity";
 export * from "./customize";
 export * from "./billing";
+export * from "./backups";
