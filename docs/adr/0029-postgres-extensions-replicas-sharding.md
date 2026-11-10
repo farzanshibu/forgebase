@@ -1023,6 +1023,25 @@ Screen spec (every rule of `dashboard-ux.md` applies):
 | pg_cron or logical apply act as second writers | broken single-writer invariants | limited to fixed functions and invisible tenants; FB-146's test pins exactly what is allowed |
 | pgmq internals change between versions | broken claims | pinned version, layout check at start, portable fallback |
 
+## 9a. Human decisions (2026-11-11)
+
+These override the recommendations in section 9 where they differ.
+
+1. **openCypher: full rules now (option B).**
+   - FB-160 carries the three unreleased AGE fixes (#2475, #2561, #2578) as
+     pinned patches in the engine build. Each patch has its upstream link and
+     checksum, and is dropped when AGE releases it.
+   - FB-163 enforces label rules inside Cypher. A caller with label rules is no
+     longer refused: their rules apply to every node and edge in the traversal.
+   - Cypher stays read-only and per tenant, and needs `engine:graph_cypher`.
+   - FB-163 adds differential tests: Cypher results match the REST graph API
+     under the same rules.
+2. **Cross-shard links: keep them and limit rules (option A).** This is as
+   recommended.
+3. **Release gate: hold v0.3.0 for everything (option B).** FB-174 (online
+   moves and rebalance) and FB-178 (topology CI and chaos tests) are in
+   v0.3.0. There is no v0.3.1 split.
+
 ## 9. Open questions for the human
 
 1. **openCypher and graph rules.** AGE 1.8.0 (PG18) skips row-level security

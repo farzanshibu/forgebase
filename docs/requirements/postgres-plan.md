@@ -92,6 +92,11 @@ The human asked for PostgreSQL in the v0.3 release.
    several PostgreSQL servers, and ForgeBase routes requests to it. Citus is
    not used (AGPL). Design: ADR-0029 (FB-158), with packages FB-160 onward.
 
+7. ADR-0029 section 9a: openCypher enforces full label rules (AGE patches in
+   FB-160, enforcement in FB-163); cross-shard links are kept with limited
+   rules; v0.3.0 waits for every package FB-130..FB-179 in the v0.3 cut,
+   including FB-174 and FB-178.
+
 **Disk.** The build machine has about 35 GB free.
 - Rust temps build with `CARGO_PROFILE_DEV_DEBUG=0` and
   `CARGO_PROFILE_TEST_DEBUG=0`, and delete their `target/` at done.
