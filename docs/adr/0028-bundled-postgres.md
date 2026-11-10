@@ -1032,3 +1032,107 @@ understands resource keys too.
   PostgreSQL 18.3; the backend itself arrives with FB-131.
 - Native RLS (FB-152): engine tables stay API-only (rls-coverage §3.4), so
   resource rules are not compiled into PostgreSQL policies.
+
+## Addendum (FB-135, MDF-87): data core and SQL editor fixes
+
+Written 2026-11-11 by FB-135. Closes `rls-coverage.md` G12, G13 and the
+data-core part of G11. Code: `forgebase-data/src/{sql.rs,records.rs}`,
+`forgebase-api/src/v1/sql.rs`; tests:
+`crates/forgebase-server/tests/security_fb135.rs` (each test fails on the
+code before FB-135). FB-134's resource API is not used: these are
+collection records, schema introspection and an administrator-only tool,
+which the collection decision and `ReadSchema`/`ReadSql` already cover.
+
+**G12, `describe_table`.** Callers who are not privileged (anyone but the
+system, administrators and admin service accounts) get the same 404
+`collection_not_found` for a system table (`_forgebase*`, `sqlite_*`, any
+letter case) as for a missing table; the name is checked before any lookup
+and again on the resolved name. `list_tables` already left them out for
+everyone; administrators can still describe them.
+
+**G13, record versions.** `record_versions` always checks visibility:
+- a live record must be readable by the caller (tenant clause and access
+  predicate, record ACL included, as `get_record`);
+- a live record the caller cannot see hides its history;
+- a record that is gone (a tombstone, or removed by an engine cascade, which
+  writes none) is judged by its **last version that holds data**: on a
+  tenant-scoped collection its `_tenant` must be the caller's tenant
+  (privileged callers without a tenant see every tenant), and the access
+  predicate must hold over it. The predicate runs over a one-row derived
+  table that rebuilds the record's columns from the version's data, bound as
+  parameters (`SELECT 1 FROM (SELECT ?1 AS "id", …) AS t WHERE <predicate>`);
+- a record with only a tombstone (versioning switched on after its last
+  write) is visible to unrestricted callers only;
+- an unknown id is `record_not_found` for everyone (it answered `[]` to
+  unrestricted callers before).
+Consequence: the owner of a deleted record keeps its history (it was 404
+before for any caller with a rule or a tenant), and nobody else gets it.
+
+**G13, cascade semantics (documented, unchanged).** A delete checks the
+caller's Delete rule on the record they delete, never on the records a
+cascade reaches. Referencing records are deleted (`cascade_delete`), have the
+id pulled out of a multi-value relation, or block the delete (a required
+relation left empty) without their collection's Delete/Update rules, field
+rules or before-write guards. This is the semantics of PostgreSQL
+foreign-key actions (`ON DELETE CASCADE` / `SET NULL` / `RESTRICT`), which
+bypass row-level security, so native RLS (FB-152) keeps it. Cascades stay
+in the tenant because relations never cross tenants. Multi-value relations
+are walked by the data core (change events and tombstones for what it
+deletes); single-value relations are engine foreign keys, so the engine
+removes or nulls those rows without change events or tombstones.
+
+**G11, SQL editor secrets (data-core part).**
+- Secret columns: `password`, `token_key`, and every password field of the
+  catalog (lower-case names).
+- Results: a column with a secret name reads `"********"` (NULL stays NULL),
+  and so does the value of a secret key inside a JSON document held in a text
+  cell, at any depth (record versions hold `token_key`; JSON fields may hold
+  a `password`), and a secret column of a change snapshot
+  (`{"c": [columns], "v": [values]}`, which holds `token_key`). The result
+  carries `secrets_masked: true`.
+- A statement that names a secret column anywhere (a word of its text:
+  identifiers, quoted identifiers, aliases, filters, `'$.token_key'` JSON
+  paths, writes such as `UPDATE users SET name = token_key`) is refused with
+  403 unless it sets `show_secrets`. This closes aliases, expressions and
+  filter oracles. `explain` is not guarded (a plan holds no values).
+- `"show_secrets": true` (in the body of `POST /sql` or `/sql/batch`;
+  `SqlOptions` with `execute_sql_with` / `execute_sql_batch_with` in Rust,
+  so `SqlStatement` is unchanged) returns the values unmasked, lets the
+  statements name secret columns, and is audited: one `sql.show_secrets` row in
+  `_forgebase_auth_audit` per call (actor, request id, impersonator, realm,
+  detail `{statements, sql: [first 10 statements, 500 characters each]}`),
+  readable at `GET /api/auth/audit?event=sql.show_secrets`. For a single read
+  the row is written after the query and before the result is returned; if
+  it cannot be written the call fails. For a batch it commits with the batch.
+- Limits, on SQLite: this is a guard in front of an administrator-only tool,
+  not a boundary. A name built at run time (`'pass' || 'word'` as a JSON
+  path) or a view created with `show_secrets` is not seen. On PostgreSQL the
+  boundary is the editor's role without `SELECT` on secret columns (FB-153);
+  the masking and the audit stay as the user-facing behaviour.
+
+**For FB-143 (data core on PostgreSQL).**
+- New SQL was checked on PostgreSQL 18.3 with the parameter types
+  `forgebase-db` declares (Text/Null → `text`, Integer → `int8`): the audit
+  insert (`d.now_epoch()`, `CAST(?4 AS d.column_type(Json))` = `jsonb`), the
+  live probe, and the derived-table predicate.
+- The derived table binds JSON fields as text; on PostgreSQL a predicate
+  that compares a `jsonb` column needs the value cast (`CAST(? AS jsonb)` per
+  `Storage::Json`) and booleans stay `smallint` 0/1. Port it with the rest of
+  the compiler's JSON handling.
+- `table_info` still reads `sqlite_master`/`PRAGMA`: switch it to
+  `Dialect::introspect_*` and keep introspection to the project schema, so
+  `pg_catalog` and `information_schema` are never described; the
+  `is_system_table` name check stays in front.
+- The secret-name guard is lexical and backend-neutral; PostgreSQL's
+  case-sensitive quoted identifiers do not change it (names compare
+  lower-case).
+
+**Open, outside FB-135's files.**
+- OpenAPI: `SqlStatementBody` and `SqlResultSchema`
+  (`forgebase-api/src/v1/schemas.rs`) should document `show_secrets` and
+  `secrets_masked`.
+- Dashboard: a "Show secrets" tick in the SQL editor that sends
+  `show_secrets` (until then the dashboard shows masked values).
+- A cascade that pulls an id out of a multi-value relation bumps the
+  referencing record's `_version` without writing a version row (a gap in
+  that record's history, not a visibility issue).

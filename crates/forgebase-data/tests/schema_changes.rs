@@ -420,13 +420,15 @@ async fn auth_view_and_system_collections() {
         .unwrap();
     assert!(u.get("password").is_none(), "passwords are never returned");
     assert_eq!(u["verified"], json!(false));
+    // Secrets are masked in the SQL editor unless asked for (FB-135, G11).
     let stored = svc
-        .execute_sql(
+        .execute_sql_with(
             &ctx,
             SqlStatement {
                 sql: "SELECT password FROM users".into(),
                 params: vec![],
             },
+            forgebase_data::SqlOptions { show_secrets: true },
         )
         .await
         .unwrap();
@@ -452,12 +454,13 @@ async fn auth_view_and_system_collections() {
     .await
     .unwrap();
     let stored = svc
-        .execute_sql(
+        .execute_sql_with(
             &ctx,
             SqlStatement {
                 sql: "SELECT password, verified FROM users".into(),
                 params: vec![],
             },
+            forgebase_data::SqlOptions { show_secrets: true },
         )
         .await
         .unwrap();

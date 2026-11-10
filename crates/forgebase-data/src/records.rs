@@ -19,6 +19,7 @@ use serde_json::{Map, Value as Json};
 
 use crate::access::{TENANT_COLUMN, is_tenant_scoped, reads_tenant_data};
 use crate::changes::ChangeOp;
+use crate::ddl::{SYSTEM_COLUMNS, system_column_names};
 use crate::error::unique_fields;
 use crate::guard::FieldMask;
 use crate::{AccessContext, Action, DataError, DataService, MAX_BATCH, Predicate, finish};
@@ -683,6 +684,22 @@ impl DataService {
         Ok(())
     }
 
+    /// Deletes one record and applies the relation actions of the records
+    /// that reference it.
+    ///
+    /// **Cascade semantics** (rls-coverage G13, ADR-0028 FB-135 addendum):
+    /// the caller's Delete rule is checked on the record they delete, never
+    /// on the records a cascade reaches. Referencing records are deleted
+    /// (`cascade_delete`), have the id pulled out of their multi-value
+    /// relation, or block the delete (a required relation that would be left
+    /// empty), **without** their collection's Delete or Update rules, field rules or
+    /// before-write guards: the same semantics as PostgreSQL foreign-key
+    /// actions (`ON DELETE CASCADE` / `SET NULL` / `RESTRICT`), which bypass
+    /// row-level security. Cascades stay in the tenant, because relations
+    /// never cross tenants. Multi-value relations are walked here (change
+    /// events and tombstones are written for what they delete); single-value
+    /// relations are engine foreign keys, so the engine removes or nulls
+    /// those rows without change events or tombstones.
     fn delete_in_tx<'a>(
         &'a self,
         ctx: &'a AccessContext,
@@ -814,6 +831,10 @@ impl DataService {
     }
 
     /// Stored versions of a record (versioned collections), oldest first.
+    /// Visibility is always checked (rls-coverage G13): a live record must be
+    /// readable by the caller (tenant and access rule); a deleted one through
+    /// its last stored version (that version's `_tenant` and the access rule
+    /// evaluated over its data). An unknown record is not found.
     pub async fn record_versions(
         &self,
         ctx: &AccessContext,
@@ -821,22 +842,6 @@ impl DataService {
         id: &str,
     ) -> Result<Vec<RecordVersion>, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
-        let tenant_bound = is_tenant_scoped(&coll) && ctx.tenant.is_some();
-        if pred.is_some() || tenant_bound {
-            // Restricted callers see history only of records they can see now
-            // (in their tenant).
-            let rows = self
-                .inner
-                .backend
-                .fetch_all(&self.select_by_id(ctx, &coll, id, pred.as_ref())?)
-                .await?;
-            if rows.is_empty() {
-                return Err(DataError::RecordNotFound {
-                    collection: coll.name.clone(),
-                    id: id.to_owned(),
-                });
-            }
-        }
         let rows = self
             .inner
             .backend
@@ -846,7 +851,116 @@ impl DataService {
                 vec![coll.id.clone().into(), id.into()],
             ))
             .await?;
+        if !self.history_visible(ctx, &coll, id, pred.as_ref(), &rows).await? {
+            return Err(DataError::RecordNotFound {
+                collection: coll.name.clone(),
+                id: id.to_owned(),
+            });
+        }
         Ok(versions_from(&coll, &self.mask(ctx, &coll), &rows))
+    }
+
+    /// Whether the caller may read the history of `id` (`versions`: its
+    /// stored versions, oldest first).
+    async fn history_visible(
+        &self,
+        ctx: &AccessContext,
+        coll: &Collection,
+        id: &str,
+        pred: Option<&Predicate>,
+        versions: &Rows,
+    ) -> Result<bool, DataError> {
+        let b = self.inner.backend.as_ref();
+        if !b.fetch_all(&self.select_by_id(ctx, coll, id, pred)?).await?.is_empty() {
+            return Ok(true);
+        }
+        // A live record the caller cannot see hides its history.
+        let d = b.dialect();
+        let live = b
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT 1 FROM {} WHERE {} = ?1",
+                    d.quote_ident(&coll.name),
+                    d.quote_ident("id")
+                ),
+                vec![id.into()],
+            ))
+            .await?;
+        if !live.is_empty() {
+            return Ok(false);
+        }
+        // Deleted (a tombstone) or removed by an engine cascade (no
+        // tombstone): judge it by the last version that holds data.
+        let last = versions.rows.iter().rev().find_map(|r| {
+            r.get(2)
+                .and_then(Value::as_str)
+                .and_then(|s| serde_json::from_str::<Map<String, Json>>(s).ok())
+        });
+        match last {
+            Some(data) => self.snapshot_visible(ctx, coll, &data, pred).await,
+            // Only a tombstone (versioning enabled late): no data to check a
+            // tenant or a rule against, so only unrestricted callers see it.
+            None => Ok(!versions.rows.is_empty()
+                && pred.is_none()
+                && !(is_tenant_scoped(coll) && (ctx.tenant.is_some() || !ctx.is_privileged()))),
+        }
+    }
+
+    /// Whether a stored record document (a version's data) is visible to the
+    /// caller: its `_tenant` must be the caller's tenant (tenant-scoped
+    /// collections) and the access predicate must hold over it. The predicate
+    /// runs over a one-row derived table that rebuilds the record's columns.
+    async fn snapshot_visible(
+        &self,
+        ctx: &AccessContext,
+        coll: &Collection,
+        data: &Map<String, Json>,
+        pred: Option<&Predicate>,
+    ) -> Result<bool, DataError> {
+        if is_tenant_scoped(coll) {
+            match &ctx.tenant {
+                Some(t) if data.get(TENANT_COLUMN).and_then(Json::as_str) == Some(t.as_str()) => {}
+                None if ctx.is_privileged() => {}
+                _ => return Ok(false),
+            }
+        }
+        let Some(p) = pred else { return Ok(true) };
+        let d = self.inner.backend.dialect();
+        let mut b = SqlBuilder::new(d);
+        let mut cols = Vec::new();
+        let mut dynamic = Map::new();
+        for (k, v) in data {
+            if coll.field(k).is_none() && !SYSTEM_COLUMNS.contains(&k.as_str()) && k != TENANT_COLUMN {
+                dynamic.insert(k.clone(), v.clone());
+            }
+        }
+        for name in system_column_names(coll) {
+            let v = match name {
+                "_data" if dynamic.is_empty() => Value::Null,
+                "_data" => Value::Text(Json::Object(dynamic.clone()).to_string()),
+                "_version" => data
+                    .get(name)
+                    .and_then(Json::as_i64)
+                    .map_or(Value::Null, Value::Integer),
+                _ => data.get(name).and_then(Json::as_str).map_or(Value::Null, Value::from),
+            };
+            cols.push(format!("{} AS {}", b.bind(v), d.quote_ident(name)));
+        }
+        for f in &coll.fields {
+            let v = match (&f.kind, data.get(&f.name)) {
+                (FieldKind::Password { .. }, _) | (_, None) => Value::Null,
+                (k, Some(v)) => json_to_sql(k.storage(), v),
+            };
+            cols.push(format!("{} AS {}", b.bind(v), d.quote_ident(&f.name)));
+        }
+        let cond = self.compile_predicate(ctx, &mut b, coll, p)?;
+        let sql = format!("SELECT 1 FROM (SELECT {}) AS t WHERE {cond}", cols.join(", "));
+        Ok(!self
+            .inner
+            .backend
+            .fetch_all(&Statement::new(sql, b.into_params()))
+            .await?
+            .is_empty())
     }
 }
 
