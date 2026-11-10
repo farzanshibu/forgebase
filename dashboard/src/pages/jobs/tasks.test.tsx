@@ -163,7 +163,7 @@ describe("Queue settings in the jobs list", () => {
     installJobs(mock);
     renderStudio("/jobs");
     await userEvent.click(await screen.findByRole("button", { name: "Pause queue mail" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Sign-in required");
+    expect(await screen.findByRole("alert")).toHaveTextContent("You do not have permission to do this");
   });
 });
 

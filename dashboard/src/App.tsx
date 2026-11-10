@@ -1,10 +1,8 @@
-import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { lazy, Suspense, type ComponentType } from "react";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionProvider, useSession } from "./auth/session";
 import Layout from "./components/Layout";
 import RouteLoading from "./components/RouteLoading";
-import StudioPlaceholder from "./components/StudioPlaceholder";
-import { STUDIOS } from "./studios";
 import { Spinner } from "panelui-web/spinner";
 import { Toast } from "panelui-web/toast";
 import ThemeProvider from "./theme/ThemeProvider";
@@ -28,6 +26,25 @@ const GraphPage = lazy(() => import("./pages/graph/GraphPage"));
 const VectorPage = lazy(() => import("./pages/vector/VectorPage"));
 const SetupPage = lazy(() => import("./pages/setup/SetupPage"));
 const SystemStudio = lazy(() => import("./pages/system/SystemStudio"));
+// Dev builds only: every shared component on one page (docs/ux/components.md). Vite drops it from production.
+const PatternsPage = import.meta.env.DEV ? lazy(() => import("./components/PatternsPage")) : null;
+
+/** Studio routes, by path in studios.ts. A studio's page owns everything under its path. */
+const PAGES: { path: string; Page: ComponentType }[] = [
+  { path: "database", Page: DatabasePage },
+  { path: "storage", Page: StoragePage },
+  { path: "functions", Page: FunctionsPage },
+  { path: "redis", Page: RedisPage },
+  { path: "vector", Page: VectorPage },
+  { path: "graph", Page: GraphPage },
+  { path: "queues", Page: QueuesPage },
+  { path: "jobs", Page: JobsPage },
+  { path: "auth", Page: AuthPage },
+  { path: "access", Page: AccessPage },
+  { path: "identity", Page: IdentityPage },
+  { path: "billing", Page: BillingPage },
+  { path: "system", Page: SystemStudio },
+];
 
 export default function App() {
   return (
@@ -76,39 +93,11 @@ function Studios() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        {STUDIOS.map((s) =>
-          s.path === "system" ? (
-            <Route key={s.path} path="system/*" element={<SystemStudio />} />
-          ) : s.path === "database" ? (
-            <Route key={s.path} path="database/*" element={<DatabasePage />} />
-          ) : s.path === "auth" ? (
-            <Route key={s.path} path="auth/*" element={<AuthPage />} />
-          ) : s.path === "access" ? (
-            <Route key={s.path} path="access/*" element={<AccessPage />} />
-          ) : s.path === "vector" ? (
-            <Route key={s.path} path="vector/*" element={<VectorPage />} />
-          ) : s.path === "graph" ? (
-            <Route key={s.path} path="graph/*" element={<GraphPage />} />
-          ) : s.path === "identity" ? (
-            <Route key={s.path} path="identity/*" element={<IdentityPage />} />
-          ) : s.path === "functions" ? (
-            <Route key={s.path} path="functions/*" element={<FunctionsPage />} />
-          ) : s.path === "jobs" ? (
-            <Route key={s.path} path="jobs/*" element={<JobsPage />} />
-          ) : s.path === "queues" ? (
-            <Route key={s.path} path="queues/*" element={<QueuesPage />} />
-          ) : s.path === "billing" ? (
-            <Route key={s.path} path="billing/*" element={<BillingPage />} />
-          ) : s.path === "redis" ? (
-            <Route key={s.path} path="redis/*" element={<RedisPage />} />
-          ) : s.path === "storage" ? (
-            <Route key={s.path} path="storage/*" element={<StoragePage />} />
-          ) : s.path === "" ? (
-            <Route key="index" index element={<OverviewPage />} />
-          ) : (
-            <Route key={s.path} path={s.path} element={<StudioPlaceholder studio={s} />} />
-          ),
-        )}
+        <Route index element={<OverviewPage />} />
+        {PAGES.map(({ path, Page }) => (
+          <Route key={path} path={`${path}/*`} element={<Page />} />
+        ))}
+        {PatternsPage && <Route path="_patterns" element={<PatternsPage />} />}
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
@@ -117,9 +106,15 @@ function Studios() {
 
 function NotFound() {
   return (
-    <div className="p-8">
-      <h1 className="text-xl font-semibold tracking-tight">Page not found</h1>
-      <p className="mt-2 text-muted-foreground">Pick a section from the sidebar.</p>
+    <div className="max-w-xl">
+      <h1 className="text-2xl font-semibold tracking-tight">Page not found</h1>
+      <p className="mt-2 text-sm text-muted-foreground">
+        This address is not a page in the dashboard. Pick a studio from the sidebar, press Ctrl+K (⌘K on a Mac) to search, or go back to{" "}
+        <Link to="/" className="font-medium text-primary underline-offset-2 hover:underline">
+          Overview
+        </Link>
+        .
+      </p>
     </div>
   );
 }
