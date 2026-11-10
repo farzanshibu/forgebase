@@ -6,17 +6,20 @@
 //! * [`config`]: the configuration model and its precedence rules
 //!   (CLI > `FORGEBASE_*` environment > `forgebase.toml` > defaults).
 //! * [`error`]: the error model ([`ErrorKind`] + stable snake_case codes).
+//! * [`features`]: the feature registry, its route patterns and the
+//!   comment-preserving config writer (FB-91, ADR-0026).
 //! * [`layout`]: the on-disk data-directory layout.
 //! * [`build`]: build and version information.
 
 pub mod build;
 pub mod config;
 pub mod error;
+pub mod features;
 pub mod layout;
 
 pub use config::{
-    AuthSettings, BillingConfig, Config, ConfigOverrides, LoadedConfig, LogFormat, OpsAccess, QueueConfig,
-    StorageConfig, StorageDriverKind, Synchronous,
+    AuthSettings, BillingConfig, Config, ConfigOrigin, ConfigOverrides, ConfigSources, LoadedConfig, LogFormat,
+    ModuleSwitch, OpsAccess, QueueConfig, Source, StorageConfig, StorageDriverKind, Synchronous,
 };
 pub use error::{ErrorCode, ErrorKind};
 pub use layout::DataLayout;
