@@ -12,6 +12,11 @@
 //!   completely or not at all. `PRAGMA user_version` mirrors the schema version
 //!   for external tools.
 //! * Running the migrator twice is a no-op the second time.
+//!
+//! PostgreSQL has its own runner and SQL files ([`postgres`]): a baseline for
+//! versions 1–25, then one twin per later SQLite migration.
+
+pub mod postgres;
 
 use std::time::Instant;
 

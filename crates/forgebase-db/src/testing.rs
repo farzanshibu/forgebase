@@ -23,7 +23,7 @@ use sqlx::{AssertSqlSafe, Connection};
 use tokio::sync::OnceCell;
 
 use crate::dialect::{Dialect, PgDialect};
-use crate::{BackendKind, Database, DbError, DbOptions, DbTarget, SecretString};
+use crate::{BackendKind, Database, DbOptions, DbTarget, SecretString};
 
 /// Selects the backend of [`test_backend`]: `sqlite` (default) or `postgres`.
 pub const BACKEND_ENV: &str = "FORGEBASE_TEST_BACKEND";
@@ -167,9 +167,8 @@ async fn sqlite_test_db() -> TestDb {
     TestDb { db, dir, pg: None }
 }
 
-/// A fresh PostgreSQL test database, or `None` when no engine or server is
-/// configured (the caller skips). The database is migrated when the
-/// PostgreSQL migration runner exists; before that it is empty.
+/// A fresh PostgreSQL test database at the newest system migration, or
+/// `None` when no engine or server is configured (the caller skips).
 ///
 /// # Panics
 /// When an engine is configured but cannot be started.
@@ -186,8 +185,10 @@ pub async fn postgres_test_db() -> Option<TestDb> {
         .await
         .unwrap_or_else(|e| panic!("connect to the PostgreSQL test engine: {e}"));
     let create = match &server.template {
+        // FILE_COPY: the migrated template has ~450 relations; copying files
+        // is several times faster than WAL-logging every block (PG 15+).
         Some(t) => format!(
-            "CREATE DATABASE {} TEMPLATE {}",
+            "CREATE DATABASE {} TEMPLATE {} STRATEGY FILE_COPY",
             PgDialect.quote_ident(&name),
             PgDialect.quote_ident(t)
         ),
@@ -219,10 +220,8 @@ pub async fn postgres_test_db() -> Option<TestDb> {
 }
 
 async fn migrate_or_skip(db: &Database) {
-    match db.migrate(None).await {
-        Ok(_) => {}
-        Err(DbError::Unsupported(why)) => tracing::warn!(%why, "PostgreSQL test database left unmigrated"),
-        Err(e) => panic!("migrate the PostgreSQL test database: {e}"),
+    if let Err(e) = db.migrate(None).await {
+        panic!("migrate the PostgreSQL test database: {e}");
     }
 }
 
@@ -278,6 +277,16 @@ async fn start_server() -> Result<Server, String> {
         .execute(&mut admin)
         .await
         .map_err(|e| format!("create the template database: {e}"))?;
+    // The role carries the search_path, as the bundled engine's roles do
+    // (ADR-0028 §7.6): copies of the template do not inherit per-database
+    // settings, role settings apply everywhere.
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "ALTER ROLE CURRENT_USER SET search_path = {}",
+        forgebase_migrations::postgres::SEARCH_PATH
+    )))
+    .execute(&mut admin)
+    .await
+    .map_err(|e| format!("set the test role's search_path: {e}"))?;
     let _ = admin.close().await;
     let db = Database::open(default_options(DbTarget::postgres(
         database_url(&admin_url, &template),
