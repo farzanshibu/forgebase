@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{free_port, http, wait_healthy};
+use common::{free_port, http, startup_timeout, wait_healthy};
 use serde_json::{Value, json};
 
 const WRITERS: usize = 8;
@@ -106,11 +106,11 @@ impl Serve {
             addr: format!("127.0.0.1:{port}"),
         };
         assert!(
-            wait_healthy(&s.addr, Duration::from_secs(30)),
+            wait_healthy(&s.addr, startup_timeout()),
             "server did not become healthy"
         );
         while !matches!(http("GET", &s.addr, "/health/ready"), Ok((200, _, _))) {
-            assert!(t.elapsed() < Duration::from_secs(30), "server never became ready");
+            assert!(t.elapsed() < startup_timeout(), "server never became ready");
             std::thread::sleep(Duration::from_millis(5));
         }
         let ready = t.elapsed();
