@@ -90,6 +90,8 @@ export function missingPermission(error: unknown): string | undefined {
 export function explain(error: unknown): ExplainedError {
   if (error instanceof ApiError) {
     const base = { status: error.status, code: error.code, requestId: error.requestId, message: error.message, raw: error.body ?? { error: { code: error.code, message: error.message } } };
+    // A failed sign-in is a 401 too: its own code (invalid_credentials) has better words than "session ended".
+    if (error.status === 401 && error.code === "invalid_credentials") return { ...base, kind: "invalid", ...ERROR_WORDS.invalid_credentials };
     if (error.status === 401) return { ...base, kind: "session", title: "Your session ended", next: "Sign in again to carry on." };
     if (error.status === 403) {
       const perm = missingPermission(error);
