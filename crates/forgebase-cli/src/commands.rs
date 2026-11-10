@@ -19,7 +19,9 @@ use crate::probe;
 
 /// Logging for one-shot commands: quiet unless asked.
 pub(crate) fn quiet_logging(g: &GlobalArgs) -> anyhow::Result<()> {
-    let level = g.log_level.as_deref().unwrap_or("warn");
+    // The bundled engine's own log (target forgebase::postgres) stays out of
+    // one-off commands: a failure to start is reported with its last lines.
+    let level = g.log_level.as_deref().unwrap_or("warn,forgebase::postgres=off");
     forgebase_observability::init_logging(level, g.log_format.unwrap_or(forgebase_core::LogFormat::Pretty))?;
     Ok(())
 }
@@ -336,7 +338,7 @@ pub async fn init(
         let report = db.migrate(Some(&layout.backups_dir())).await?;
         let instance = db.ensure_instance().await?;
         let version = db.schema_version().await?;
-        db.checkpoint().await?;
+        database::checkpoint(&db).await?;
         // FB-90: the first administrator (may prompt on a terminal), while
         // the engine still runs.
         let admin = crate::admin::init_admin(&config, &db, admin, preset).await?;
@@ -517,7 +519,7 @@ pub async fn migrate(g: &GlobalArgs, status_only: bool) -> anyhow::Result<ExitCo
     let result = async {
         let report = db.migrate(Some(&layout.backups_dir())).await?;
         let version = db.schema_version().await?;
-        db.checkpoint().await?;
+        database::checkpoint(&db).await?;
         anyhow::Ok((report, version))
     }
     .await;

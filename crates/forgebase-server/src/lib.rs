@@ -1060,7 +1060,7 @@ impl RunningServer {
             Ok(n) => tracing::debug!(rows = n, "kv snapshot written"),
             Err(e) => tracing::warn!(error = %e, "final kv snapshot failed; recent kv writes are lost"),
         }
-        if let Err(e) = self.db.checkpoint().await {
+        if let Err(e) = database::checkpoint(&self.db).await {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
         }
         self.db.close().await;

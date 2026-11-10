@@ -92,5 +92,10 @@ path = "../../tests/integration/spec_scenarios.rs"
 name = "setup_e2e"
 path = "../../tests/integration/setup_e2e.rs"
 
+# FB-148: init --database, the backend marker, status, doctor, db status/psql.
+[[test]]
+name = "database_e2e"
+path = "tests/database_e2e.rs"
+
 [lints]
 workspace = true

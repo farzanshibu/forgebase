@@ -633,7 +633,7 @@ pub async fn run_import(g: &GlobalArgs, cmd: ImportCommand) -> anyhow::Result<Ex
                 Ok::<_, anyhow::Error>(transfer::import_bundle(&data, &std::path::absolute(&src)?, opts).await?)
             }
             .await;
-            let _ = db.checkpoint().await;
+            let _ = database::checkpoint(&db).await;
             db.close().await;
             let report = result?;
             if as_json {
@@ -676,7 +676,7 @@ pub async fn run_import(g: &GlobalArgs, cmd: ImportCommand) -> anyhow::Result<Ex
                 )
             }
             .await;
-            let _ = db.checkpoint().await;
+            let _ = database::checkpoint(&db).await;
             db.close().await;
             let (n, skipped) = result?;
             println!("{n} record(s) imported, {skipped} skipped");

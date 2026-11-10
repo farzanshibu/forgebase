@@ -677,7 +677,11 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(
             j,
-            serde_json::json!({"status": "ready", "checks": {"database": "ok", "storage": "ok"}})
+            serde_json::json!({
+                "status": "ready",
+                "checks": {"database": "ok", "storage": "ok"},
+                "database": {"backend": "sqlite", "mode": null, "engine": null},
+            })
         );
 
         let (s, _, j, _) = call(&app, Method::GET, "/api/system/info", &[]).await;
@@ -695,6 +699,99 @@ mod tests {
         );
         assert!(j["database"]["size_bytes"].as_u64().unwrap() > 0);
         assert!(j["database"]["path"].as_str().unwrap().ends_with("forgebase.db"));
+    }
+
+    /// FB-148: the backend, the engine and the feature engines, on the test
+    /// backend (`FORGEBASE_TEST_BACKEND=postgres` for PostgreSQL).
+    #[tokio::test]
+    async fn info_and_readiness_report_the_backend_and_the_engine() {
+        let test = forgebase_db::testing::test_backend().await;
+        let layout = DataLayout::new(test.data_dir().join("data"));
+        layout.ensure().unwrap();
+        let pg = test.kind() == forgebase_db::BackendKind::Postgres;
+        let extensions = vec![
+            ("vector", "vector", "auto"),
+            ("graph", "age", "off"),
+            ("queue", "pgmq", "auto"),
+            ("cron", "pg_cron", "on"),
+            ("trigram", "pg_trgm", "auto"),
+        ];
+        let engine_state = std::sync::Arc::new(std::sync::Mutex::new("ready"));
+        let seen = engine_state.clone();
+        let runtime = DatabaseRuntime {
+            mode: pg.then_some("managed"),
+            location: pg.then(|| "/srv/fb/postgres/data".to_owned()),
+            extensions: if pg { extensions } else { Vec::new() },
+            engine: pg.then(|| {
+                let f: Arc<dyn Fn() -> EngineReport + Send + Sync> = Arc::new(move || EngineReport {
+                    state: *seen.lock().unwrap(),
+                    version: "18.6".into(),
+                    pid: Some(4242),
+                    restarts: 1,
+                    last_error: Some("the postmaster exited unexpectedly".into()),
+                    socket_dir: Some("/srv/fb/postgres/run".into()),
+                    tcp: None,
+                    warnings: Vec::new(),
+                });
+                f
+            }),
+        };
+        let state = AppState::new(test.database().clone(), layout)
+            .await
+            .unwrap()
+            .with_database_runtime(runtime);
+        let app = router(state, RouterOptions::default());
+
+        let (s, _, j, text) = call(&app, Method::GET, "/api/system/info", &[]).await;
+        assert_eq!(s, StatusCode::OK, "{text}");
+        let d = &j["database"];
+        assert_eq!(d["backend"], if pg { "postgres" } else { "sqlite" });
+        assert!(d["server_version"].as_str().is_some_and(|v| !v.is_empty()), "{d}");
+        if pg {
+            assert_eq!(d["mode"], "managed");
+            assert_eq!(d["path"], "/srv/fb/postgres/data");
+            assert_eq!(d["engine"]["state"], "ready");
+            assert_eq!(d["engine"]["version"], "18.6");
+            assert_eq!(d["engine"]["pid"], 4242);
+            assert!(d["connections"].as_u64().is_some(), "{d}");
+            let f = d["features"].as_object().unwrap();
+            assert_eq!(
+                f.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["cron", "graph", "queue", "trigram", "vector"]
+            );
+            for (name, v) in f {
+                assert_eq!(v["engine"], "portable", "{name}: {v}");
+            }
+            assert_eq!(f["graph"]["state"], "off");
+            assert_eq!(f["graph"]["extension"], "age");
+            // pg_trgm is a contrib module: every PostgreSQL has it.
+            assert!(f["trigram"]["available"].as_str().is_some(), "{f:?}");
+            assert!(
+                ["available", "installed"].contains(&f["trigram"]["state"].as_str().unwrap()),
+                "{f:?}"
+            );
+        } else {
+            assert_eq!(d["mode"], serde_json::Value::Null);
+            assert_eq!(d["engine"], serde_json::Value::Null);
+            assert_eq!(d["features"], serde_json::json!({}));
+        }
+
+        let (s, _, j, _) = call(&app, Method::GET, "/health/ready", &[]).await;
+        assert_eq!(s, StatusCode::OK, "{j}");
+        assert_eq!(j["database"]["backend"], d["backend"]);
+        if pg {
+            assert_eq!(j["database"]["engine"], "ready");
+            // A restarting engine fails readiness (ADR-0028 §4.3).
+            *engine_state.lock().unwrap() = "restarting";
+            let (s, _, j, _) = call(&app, Method::GET, "/health/ready", &[]).await;
+            assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{j}");
+            assert_eq!(j["checks"]["database"], "error");
+            assert_eq!(
+                j["errors"]["database"],
+                "the bundled PostgreSQL is restarting: the postmaster exited unexpectedly"
+            );
+            assert_eq!(j["database"]["engine"], "restarting");
+        }
     }
 
     #[tokio::test]

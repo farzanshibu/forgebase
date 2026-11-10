@@ -289,6 +289,16 @@ impl PrimaryDatabase {
         drop(self.lock);
     }
 
+    /// Folds the SQLite WAL into the database file. Nothing on PostgreSQL:
+    /// the engine's fast shutdown checkpoints, and `forgebase_server` is not
+    /// allowed `CHECKPOINT` (no `pg_checkpoint` membership).
+    ///
+    /// # Errors
+    /// SQLite checkpoint errors.
+    pub async fn checkpoint(&self) -> Result<(), forgebase_db::DbError> {
+        checkpoint(&self.db).await
+    }
+
     pub(crate) fn into_parts(self) -> (Database, Option<Arc<EngineHandle>>) {
         (self.db, self.engine)
     }
@@ -299,6 +309,18 @@ impl std::ops::Deref for PrimaryDatabase {
 
     fn deref(&self) -> &Database {
         &self.db
+    }
+}
+
+/// [`Database::checkpoint`] on SQLite only (see [`PrimaryDatabase::checkpoint`]).
+///
+/// # Errors
+/// SQLite checkpoint errors.
+pub async fn checkpoint(db: &Database) -> Result<(), forgebase_db::DbError> {
+    if db.kind() == forgebase_db::BackendKind::Sqlite {
+        db.checkpoint().await
+    } else {
+        Ok(())
     }
 }
 
