@@ -26,6 +26,7 @@ import { Outlet, useHref, useLocation, useNavigate } from "react-router-dom";
 import ImpersonationBanner from "../auth/ImpersonationBanner";
 import { useSession } from "../auth/session";
 import { STUDIOS, type Studio } from "../studios";
+import { disabledStudioPaths, FeaturesContext, useFeatureData } from "../pages/setup/features";
 
 const ThemeMenu = lazy(() => import("./ThemeMenu"));
 
@@ -81,9 +82,12 @@ function StudioItem({ studio, active }: { studio: Studio; active: boolean }) {
 
 export default function Layout() {
   const { admin, signOut } = useSession();
+  const features = useFeatureData();
+  const hidden = disabledStudioPaths(features.snapshot?.features);
   const { pathname } = useLocation();
   const current = STUDIOS.find((s) => s.path !== "" && isActive(s, pathname)) ?? STUDIOS[0];
   return (
+    <FeaturesContext.Provider value={features}>
     <NavRail.Provider storageKey="forgebase.admin.rail" className="h-svh min-h-0">
       <div className="flex h-svh w-full bg-background">
         <NavRail aria-label="Studios" className="border-e border-border bg-card">
@@ -102,11 +106,11 @@ export default function Layout() {
             <NavRail.Trigger />
           </NavRail.Header>
           <NavRail.Content>
-            {GROUPS.map((g) => (
+            {GROUPS.filter((g) => g.paths.some((p) => !hidden.has(p))).map((g) => (
               <NavRail.Group key={g.label} label={g.label}>
                 {g.paths.map((p) => {
                   const s = STUDIOS.find((x) => x.path === p);
-                  return s ? <StudioItem key={p} studio={s} active={isActive(s, pathname)} /> : null;
+                  return s && !hidden.has(s.path) ? <StudioItem key={p} studio={s} active={isActive(s, pathname)} /> : null;
                 })}
               </NavRail.Group>
             ))}
@@ -143,5 +147,6 @@ export default function Layout() {
         </NavRail.Inset>
       </div>
     </NavRail.Provider>
+    </FeaturesContext.Provider>
   );
 }

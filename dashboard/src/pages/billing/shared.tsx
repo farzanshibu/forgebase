@@ -38,7 +38,7 @@ export function Disabled() {
       <h2 className="text-lg font-medium">Billing is disabled on this server</h2>
       <p className="mt-2 text-sm text-muted-foreground">
         Billing is on by default, so it was turned off here (<code className="rounded bg-muted px-1">[billing] enabled = false</code> or <code className="rounded bg-muted px-1">FORGEBASE_BILLING_ENABLED=false</code>),
-        or this server is an older build without it. Set <code className="rounded bg-muted px-1">[billing] enabled = true</code> (or remove the setting) and restart to turn it on.
+        or this server is an older build without it. Set <code className="rounded bg-muted px-1">[billing] enabled = true</code> (or remove the setting) and restart to turn it on, or use <Link className="text-primary underline-offset-2 hover:underline" to="/system/features">Features &amp; settings</Link>.
       </p>
     </div>
   );

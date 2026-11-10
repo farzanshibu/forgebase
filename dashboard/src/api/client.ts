@@ -33,6 +33,24 @@ export class ApiError extends Error {
     return out;
   }
 
+  /** Per-key reasons from `error.details` (`{"<key>": "reason"}`), also read from `details.fields` when the server uses that shape. */
+  get details(): Record<string, string> {
+    const b = this.body as { error?: { details?: unknown } } | undefined;
+    const d = b?.error?.details;
+    if (typeof d !== "object" || d === null) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+      else if (k === "fields" && typeof v === "object" && v !== null) {
+        for (const [fk, fv] of Object.entries(v as Record<string, unknown>)) {
+          const m = typeof fv === "object" && fv !== null ? (fv as { message?: unknown }).message : fv;
+          if (typeof m === "string") out[fk] = m;
+        }
+      }
+    }
+    return out;
+  }
+
   /** 401/403: the server wants credentials the dashboard does not have (the session layer handles 401). */
   get isAuth(): boolean {
     return this.status === 401 || this.status === 403;
