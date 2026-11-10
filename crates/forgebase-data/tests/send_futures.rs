@@ -18,7 +18,7 @@ fn assert_send<T: Send>(_: &T) {}
 async fn service_futures_are_send() {
     let test = test_db().await;
     let db: &Database = &test;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
     let q = ListQuery::default();
     let agg = AggregateQuery::default();

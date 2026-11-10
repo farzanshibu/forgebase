@@ -42,7 +42,7 @@ fn sql(s: &str, params: Vec<Json>) -> SqlStatement {
 async fn scenario_02_create_sql_table() {
     let test = test_db().await;
     let db: &Database = &test;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
     let pg = is_postgres(db);
 
@@ -210,7 +210,7 @@ async fn scenario_02_create_sql_table() {
     // Persistence across reopen.
     db.close().await;
     let db = &reopen(&test).await;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let r = svc
         .execute_sql(&ctx, sql("SELECT count(*) FROM books", vec![]))
         .await
@@ -225,7 +225,7 @@ async fn scenario_02_create_sql_table() {
 async fn scenario_03_create_document_collection() {
     let test = test_db().await;
     let db: &Database = &test;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
 
     let mut products = Collection::documents("products");
@@ -339,7 +339,7 @@ async fn scenario_03_create_document_collection() {
 
     db.close().await;
     let db = &reopen(&test).await;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     assert_eq!(
         svc.count_records(&ctx, "products", None, HashMap::new()).await.unwrap(),
         2
@@ -353,7 +353,7 @@ async fn scenario_03_create_document_collection() {
 async fn scenario_04_insert_and_query_records() {
     let test = test_db().await;
     let db: &Database = &test;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
 
     let authors = svc
@@ -713,7 +713,7 @@ async fn scenario_04_insert_and_query_records() {
 
     db.close().await;
     let db = &reopen(&test).await;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     assert_eq!(
         svc.count_records(&ctx, "posts", Some("author.name = 'Ann'"), HashMap::new())
             .await
@@ -768,7 +768,7 @@ async fn scenario_05_create_composite_index() {
     ) {
         return;
     }
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
     seed_products(&svc, 2000).await;
 
@@ -979,7 +979,7 @@ async fn scenario_05_create_composite_index() {
     // Indexes survive restart; drop works.
     db.close().await;
     let db = &reopen(&test).await;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     svc.drop_index(&ctx, "idx_cheap").await.unwrap();
     assert!(svc.get_index(&ctx, "idx_cheap").await.is_err());
     assert!(svc.get_index(&ctx, "idx_products_cat_price").await.is_ok());
@@ -1001,7 +1001,7 @@ async fn scenario_06_index_usage_in_query_plans() {
     ) {
         return;
     }
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
     seed_products(&svc, 3000).await;
 
@@ -1110,7 +1110,7 @@ async fn scenario_06_index_usage_in_query_plans() {
 async fn scenario_24_concurrent_reads_and_writes() {
     let test = test_db().await;
     let db: &Database = &test;
-    let svc = service(&db).await;
+    let svc = service(db).await;
     let ctx = admin();
     svc.create_collection(
         &ctx,

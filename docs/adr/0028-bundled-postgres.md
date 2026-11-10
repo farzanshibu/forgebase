@@ -1586,3 +1586,201 @@ the build; `deploy/postgres-engine/extensions/README.md` describes the hook
 (patches, extra make arguments, `post-install.sh` for `lib/plugins/`, or a
 `build.sh` that replaces the PGXS build) and what else AGE needs (source pin,
 licence and `NOTICE`, `graph_cypher` flag, smoke checks).
+
+## Addendum: FB-143, query compiler, records, lists and SQL editor on PostgreSQL (2026-11-11)
+
+Built as §7.4 and §7.5 describe for `forgebase-query` and the data core's
+records, lists and SQL editor. What the next packages need to know, and where
+the code differs from the text above.
+
+**Files.** `crates/forgebase-query/src/{compile.rs,sql.rs,lib.rs}`;
+`crates/forgebase-data/src/{list.rs,records.rs,sql.rs,changes.rs}`; the data
+tests `tests/{common/mod.rs,scenarios.rs,security.rs,send_futures.rs}`;
+`forgebase-api/src/v1/schemas.rs` (OpenAPI). `guard.rs` needed no change.
+Shared edits are listed at the end.
+
+**Compiler: typed operands.** `Compiler::scalar_typed` returns the SQL and
+a `ScalarType` (`Text`, `Integer`, `Real`, `Bool`, `Json`). SQLite is
+dynamically typed, so its output is byte for byte what it was (the existing
+tests pin it), except `!~`, now `NOT (coalesce(v, '') LIKE p ESCAPE '\')`
+on both engines (same meaning). On PostgreSQL:
+- **JSON paths are `jsonb`**: `nullif((expr)::jsonb->'a'->0->'b',
+  'null'::jsonb)`. *Differs from §7.5 and FB-131's `json_extract`*
+  (`->>`, text): a text extraction sorts `'10'` before `'9'` and cannot be
+  compared with a number parameter. `jsonb` compares and sorts numbers as
+  numbers and strings as strings; `nullif` turns the `'null'::jsonb` that
+  `->` returns for JSON `null` into SQL NULL, like a missing key, as
+  `json_extract` does. The `::jsonb` cast is a no-op on `jsonb` columns and
+  accepts JSON kept in `text` (the collection DDL still declares `_data` as
+  `TEXT`, see below). Expression indexes built through `Compiler::scalar`
+  (FB-144's index manager does this) get the same expression, so they match;
+  the `((_data->'metadata'->>'brand'))` example of §7.5 is superseded.
+- **Constants against a JSON value** are `jsonb` values: `CAST(? AS jsonb)`
+  with the constant's JSON text bound (`5`, `"x"`, `true`), or
+  `'…'::jsonb` in index definitions. Literals keep their kind, so `= true`
+  matches JSON `true` (SQLite: `json_extract` gives 1 and `1 = 1`).
+- **Other constants** are parameters the server types from the column; a
+  fraction against an integer or boolean column is
+  `CAST(? AS double precision)` (an `int8` parameter would refuse 2.5).
+- **Array items** iterate as `jsonb`:
+  `jsonb_array_elements(CASE WHEN jsonb_typeof((c)::jsonb) = 'array' THEN
+  (c)::jsonb END) AS j1(value)` (a non-array or NULL yields no rows instead of
+  an error); select, file and relation values (strings) use
+  `Dialect::json_array_elements` (text).
+- **`~`** is `Dialect::like_ci` (`ILIKE … ESCAPE '\'`) over text: JSON values
+  through `#>> '{}'`, numbers and booleans through `CAST(… AS text)`;
+  `:lower` and `:length` convert the same way.
+- **Path to path**: a JSON value against anything else compares as `jsonb`
+  (`to_jsonb(other)`), text against a number as text.
+- **Sort keys** use `Dialect::order_nulls` (`ASC NULLS FIRST`,
+  `DESC NULLS LAST`), SQLite's order, which keyset cursors rely on.
+- Differences that remain (documented, asserted per engine where tested):
+  across JSON types `jsonb` orders strings before numbers before booleans,
+  SQLite orders numbers before text; JSON `true` does not equal `1`;
+  a non-numeric text constant against a number column is a 400 (the server
+  cannot bind `'abc'` as `bigint`; SQLite returns no rows); `ILIKE` folds
+  what the database's ctype folds (Unicode with the bundled engine's builtin
+  `C.UTF-8`, ASCII with libc `C`, which the test engine uses).
+
+**SQL tokenizer (`forgebase_query::sql`).** `SqlFlavor` (`Sqlite`,
+`Postgres`; `SqlFlavor::of(dialect)`), `tokenize_for`,
+`split_statements_for`, `analyze_statement_for`; the old functions are the
+SQLite flavour (FB-144's view checks in `collections.rs` still call them).
+PostgreSQL lexing: `$tag$…$tag$` and `$$…$$` strings (a `DollarString`
+token), `E'…'` escapes, nested `/* */` comments (must close), `[`, `` ` ``,
+`:` and `@` are operators, `$1` and `?N` are parameters; `BEGIN ATOMIC …
+END` routine bodies do not split. Classification: `SELECT`, `VALUES`,
+`WITH`, `TABLE`, `SHOW`, `EXPLAIN` read; `INSERT`, `UPDATE`, `DELETE`,
+`MERGE`, `TRUNCATE`, `CALL` write; `CREATE`, `ALTER`, `DROP`, `COMMENT`
+and a top-level `SELECT … INTO` schema; `ANALYZE`, `REINDEX`, `REFRESH`
+maintenance. Refused (`statement_not_allowed`), §7.5's list plus:
+- transaction control (`BEGIN`, `START`, `COMMIT`, `END`, `ROLLBACK`,
+  `ABORT`, `SAVEPOINT`, `RELEASE`, `PREPARE`);
+- **every** `SET`, `RESET` and `DISCARD`, not only the role forms: the
+  writer is one long-lived connection, so a session setting would change every
+  later ForgeBase statement;
+- `COPY` (all forms), `ALTER SYSTEM`, `LOAD`, `LISTEN`/`NOTIFY`/`UNLISTEN`,
+  `VACUUM`, `CHECKPOINT`, `CLUSTER`, `DO` (anonymous blocks would hide the
+  function list), `GRANT`, `REVOKE`, `REASSIGN`, `SECURITY LABEL`,
+  `EXECUTE`/`DEALLOCATE`, cursors, `LOCK`, `IMPORT FOREIGN SCHEMA`,
+  `EXPLAIN ANALYZE` (it runs the statement), `PRAGMA`, `ATTACH`;
+- creating, altering or dropping extensions, roles/users/groups, databases,
+  tablespaces, schemas, subscriptions, publications, servers, foreign data
+  wrappers, event triggers, languages, default privileges, access methods,
+  transforms, large objects; temporary objects; `LANGUAGE c` / `internal`;
+  `SECURITY DEFINER`; `OWNER TO`;
+- calls (also quoted or schema-qualified, also inside dollar-quoted routine
+  bodies) of `pg_read_file`, `pg_read_binary_file`, `pg_ls_*`,
+  `pg_stat_file`, `pg_file_*`, `lo_import`, `lo_export`,
+  `pg_terminate_backend`, `pg_cancel_backend`, `pg_reload_conf`,
+  `pg_rotate_logfile`, `pg_promote`, `pg_switch_wal`, `pg_backup_*`,
+  replication and logical-decoding functions, `dblink*`, every
+  `set_config` (not only `forgebase.*`), `pg_advisory*`/`pg_try_advisory*`
+  (session locks on the shared writer), `pg_sleep*` (the single writer),
+  and the functions that run a query given as text (`query_to_xml*`,
+  `cursor_to_xml*`, `ts_stat`), which would hide everything else.
+`touches_system_tables` on PostgreSQL: `_forgebase*` names, names qualified by
+`forgebase.`, `pg_catalog.`, `information_schema.` or `pg_toast.`, and
+`pg_*` relation names (not calls). As §7.5 says, this list is defence in
+depth; the boundary is the editor's role (FB-153).
+
+**SQL editor service.** Reads run on the read pool in `READ ONLY`
+transactions (the reader role in managed mode): a write the classifier cannot
+see, such as a `SELECT` of a function that inserts, fails with
+`statement_not_read_only` and writes nothing (tested). `TABLE` reads are
+wrapped with the row limit like `SELECT`. Every editor write transaction on
+PostgreSQL starts with `SET LOCAL search_path = public, forgebase`, so
+unqualified tables, views and functions the editor creates land in `public`,
+never in ForgeBase's schema, and ForgeBase's own statements in the same
+transaction still resolve (tested). `last_insert_id` is `None` on
+PostgreSQL (`RETURNING` returns the key; the result then carries rows).
+`list_tables` and `describe_table` use `Dialect::introspect_tables`,
+`introspect_columns` and `introspect_indexes` on PostgreSQL, so only the
+schemas on ForgeBase's search path (`forgebase`, `public`;
+`current_schemas(false)`) are visible, never `pg_catalog` or
+`information_schema` (tested); an exact name wins over a case-insensitive
+match (quoted names are case-sensitive there); `is_system_table` still runs
+first. The SQLite path is unchanged (`sqlite_master`). OpenAPI:
+`SqlStatementBody.show_secrets`, `SqlBatchBody.show_secrets` and
+`SqlResultSchema.secrets_masked` are documented.
+
+**Lists and aggregates.** Full-text search goes through
+`Dialect::fulltext_match("t", "_forgebase_fts_<index>", ?)`: on PostgreSQL
+that name is the `tsvector` column FB-144 creates, so FB-144 must keep it (or
+change `list.rs` with it); the query text is passed to `websearch_to_tsquery`
+as the user's words (it never fails), on SQLite each word is quoted for FTS5
+as before. Keyset cursors use `Dialect::null_safe_eq`; a JSON sort key's
+cursor value is the JSON text the previous page returned, which binds back as
+`jsonb`. Aggregates on PostgreSQL: `sum`/`avg` over JSON values sum the JSON
+numbers (`numeric`), a whole sum reads as an integer as on SQLite; `min`/`max`
+over JSON use `jsonb` order (`(array_agg(x ORDER BY x) FILTER (WHERE x IS NOT
+NULL))[1]`; `jsonb` has no `min`); integer sums are `CAST(sum(x) AS bigint)`
+(PostgreSQL sums `bigint` as `numeric`); JSON group keys come back as JSON;
+groups order `NULLS FIRST`.
+
+**Records, versions, change snapshots.** The multi-value relation pull on
+delete uses `Dialect::json_array_elements`, `json_array_agg`,
+`json_array_length` and `null_safe_ne`. The one-row derived tables that run
+access rules over a stored row (`snapshot_visible` for record history,
+`view_snapshot` for realtime) cast every column to its table type
+(`records::column_sql_type`: `Dialect::column_type`, so `jsonb`,
+`smallint`, `bigint`, `double precision` on PostgreSQL and the SQLite types
+as before), as FB-135 asked. Inserts, updates, expand and versions needed no
+change: `forgebase-db` binds text into `jsonb` and integers into `smallint`.
+
+**Tests.** `forgebase-data`'s `tests/common` gives `test_db()` (=
+`forgebase_db::testing::test_backend()`), `reopen(&TestDb)`,
+`is_postgres`, `skip_on_postgres(db, why)`; `open_db(dir)` stays, SQLite
+only, for `schema_changes.rs` until FB-144 moves it. New on both backends:
+`semantics_shared_by_both_engines` (§7.4: NULL order with offset and cursor
+pages ascending and descending, typed JSON comparison and sort with cursors,
+JSON null, booleans, array items, `~`, JSON round trip, aggregate result
+types, a NOCASE/`citext` column, quoted identifiers, introspection limits) and
+`rules_over_stored_rows_see_typed_columns`; scenario 2 runs PostgreSQL SQL
+(identity keys, a PL/pgSQL trigger, `RETURNING`) on PostgreSQL; the editor
+restrictions test runs the PostgreSQL deny list there. Skipped on PostgreSQL
+until FB-144 ports the index manager: scenarios 5 and 6 and the index half of
+`names_and_index_definitions_cannot_inject` (they call
+`skip_on_postgres` with the reason). Identity sequences after convert
+(FB-151) and commit-ordered cursors (FB-146) are not in these crates.
+`forgebase-api` and `forgebase-server` test helpers open SQLite whatever
+`FORGEBASE_TEST_BACKEND` says (FB-148 owns them), so their suites ran on
+SQLite under both settings.
+
+**Shared edits outside Owns** (minimal; FB-144 owns the files):
+`forgebase-data/src/ddl.rs` (`STRICT` only on SQLite;
+`verify_collections` reads columns through `Dialect::introspect_columns`;
+`object_exists(d, tx, name)` asks `pg_class` on PostgreSQL),
+`collections.rs` and `indexes.rs` (the `object_exists` call sites, and
+`schema_history`'s `CAST(?1 AS TEXT) IS NULL OR collection_id = ?1`:
+PostgreSQL cannot type `?1 IS NULL OR c = ?1`, SQLSTATE 42P18, and
+`forgebase-db`'s parameter learning did not rescue it on that read),
+`forgebase-data/Cargo.toml` (dev-dependency `forgebase-db` with
+`testing`), `forgebase-api/src/v1/schemas.rs` (OpenAPI).
+
+**For FB-144.** Collection DDL still declares `_data TEXT` (make it
+`d.column_type(Json)`, `jsonb`) and `_version INTEGER` (`int4` on
+PostgreSQL; `bigint` matches the type mapping), and creates tables without a
+schema, so they land in `forgebase` (first on the search path): name
+`public`. Build JSON-path index keys through `Compiler::scalar` (they then
+match the `jsonb` filters) and keep the full-text column name above. Views
+(`infer_view_fields`), index listing and stats, `explain` and the
+recommendations still read `PRAGMA`/`sqlite_master`. Un-skip the tests
+listed above and switch `schema_changes.rs` to `common::test_db()`. Any
+`?N IS NULL OR …` pattern needs a `CAST`.
+
+**For FB-152 (native RLS).** Access predicates compile through the same
+`Compiler`, so a policy generated from a rule can reuse
+`Compiler::filter` with the PostgreSQL dialect; its JSON paths are `jsonb`
+expressions and its constants `CAST(? AS jsonb)` or column-typed parameters
+(inline them as literals, `inline_literals`, for `CREATE POLICY`). The
+derived-table checks (history of deleted records, realtime snapshots) run
+rules outside any table, so RLS on the tables does not replace them.
+
+**For FB-153 (SQL editor roles).** The editor's reads use the read pool and
+its writes the writer: give the editor its own role (no `SELECT` on secret
+columns, no `pg_read_server_files`/`pg_execute_server_program`, `CREATE` on
+`public` only) and keep `SET LOCAL search_path = public, forgebase` (or set
+it on that role). The deny list stays as defence in depth; it refuses every
+`SET`, `DO` and `GRANT`, so role and privilege changes must go through an
+admin API.
