@@ -179,10 +179,15 @@ describe("ConnectApp", () => {
     expect(screen.getByText(/You have no collection yet/)).toBeInTheDocument();
   });
 
-  it("puts the install command at the top of each SDK snippet and never a real key", () => {
+  it("shows the install command above each SDK snippet, and the snippets never hold a real key", async () => {
+    const u = userEvent.setup();
+    ui(<ConnectApp collection="notes" />);
+    const panel = screen.getByRole("region", { name: "First query" });
+    expect(within(panel).getByText("npm install @forgebase/sdk")).toBeInTheDocument();
+    await u.click(within(panel).getByRole("tab", { name: "Rust" }));
+    expect(within(panel).getByText("cargo add forgebase-sdk tokio serde_json")).toBeInTheDocument();
     const s = firstQuerySnippet("http://example.test", "notes");
-    expect(s.js.split("\n")[0]).toBe("// Install: npm install @forgebase/sdk");
-    expect(s.rust.split("\n")[0]).toBe("// Install: cargo add forgebase-sdk tokio serde_json");
+    expect(s.js).toContain('fb.collection("notes").list(');
     for (const text of [s.js, s.rust, s.curl]) {
       expect(text).toContain("http://example.test");
       expect(text).toContain(API_KEY_PLACEHOLDER);

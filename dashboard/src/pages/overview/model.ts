@@ -109,14 +109,10 @@ export function gettingStartedSteps(project: ProjectState, opts: { adminEmail?: 
 /** The name the snippet uses while the project has no collection. */
 export const PLACEHOLDER_COLLECTION = "posts";
 
-/** Install, connect and list the first page of a collection, in JavaScript, Rust and curl. */
+/** Connect and list the first page of a collection, in JavaScript, Rust and curl. UseFromCode shows the install command above each tab. */
 export function firstQuerySnippet(url: string, name: string): Snippet {
   const list = collectionSnippet(url, name);
-  return {
-    js: `// Install: npm install @forgebase/sdk\n${list.js}`,
-    rust: `// Install: cargo add forgebase-sdk tokio serde_json\n${list.rust}`,
-    curl: `# List the newest records of ${name}\n${list.curl}`,
-  };
+  return { ...list, curl: `# The newest records of ${name}\n${list.curl}` };
 }
 
 // ---- Recent activity
