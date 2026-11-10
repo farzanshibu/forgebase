@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionProvider, useSession } from "./auth/session";
 import Layout from "./components/Layout";
 import RouteLoading from "./components/RouteLoading";
@@ -9,6 +9,7 @@ import { Spinner } from "panelui-web/spinner";
 import { Toast } from "panelui-web/toast";
 import ThemeProvider from "./theme/ThemeProvider";
 import { toaster } from "./toaster";
+import { useSetupStatus } from "./pages/setup/useSetupStatus";
 
 // Each studio is its own chunk, fetched when its route is first opened.
 const LoginPage = lazy(() => import("./pages/LoginPage"));
@@ -25,6 +26,7 @@ const RedisPage = lazy(() => import("./pages/redis/RedisPage"));
 const StoragePage = lazy(() => import("./pages/storage/StoragePage"));
 const GraphPage = lazy(() => import("./pages/graph/GraphPage"));
 const VectorPage = lazy(() => import("./pages/vector/VectorPage"));
+const SetupPage = lazy(() => import("./pages/setup/SetupPage"));
 const SystemStudio = lazy(() => import("./pages/system/SystemStudio"));
 
 export default function App() {
@@ -41,19 +43,33 @@ export default function App() {
 
 function Gate() {
   const { status } = useSession();
+  const { pathname } = useLocation();
+  if (status !== "loading" && pathname.replace(/\/+$/, "") === "/setup")
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <SetupPage />
+      </Suspense>
+    );
   if (status === "loading")
     return (
       <p className="flex min-h-svh items-center justify-center gap-2 text-sm text-muted-foreground">
         <Spinner aria-hidden="true" role="presentation" /> Loading…
       </p>
     );
-  if (status === "anonymous")
-    return (
-      <Suspense fallback={<RouteLoading />}>
-        <LoginPage />
-      </Suspense>
-    );
+  if (status === "anonymous") return <SignIn />;
   return <Studios />;
+}
+
+/** Sign-in, or the first-run setup while the server has no administrator. */
+function SignIn() {
+  const setup = useSetupStatus();
+  if (setup.loading) return <RouteLoading />;
+  if (setup.required) return <Navigate to="/setup" replace />;
+  return (
+    <Suspense fallback={<RouteLoading />}>
+      <LoginPage />
+    </Suspense>
+  );
 }
 
 function Studios() {

@@ -18,3 +18,4 @@ export * from "./identity";
 export * from "./customize";
 export * from "./billing";
 export * from "./backups";
+export * from "./setup";

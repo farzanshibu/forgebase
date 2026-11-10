@@ -4,6 +4,7 @@ import { AlertDialog } from "panelui-web/alert-dialog";
 import { Button as PanelButton } from "panelui-web/button";
 import { Card } from "panelui-web/card";
 import { Spinner } from "panelui-web/spinner";
+import { Link, useInRouterContext } from "react-router-dom";
 import { ApiError } from "../api";
 
 /** The dashboard's button: PanelUI Button, with the three tones the studios use. */
@@ -31,9 +32,26 @@ export function ConfirmButton({ label, onConfirm, disabled }: { label: string; o
   );
 }
 
+/** A module the administrator switched off: say so, and point at where to switch it back on. */
+export function FeatureDisabled({ message }: { message: string }) {
+  const inRouter = useInRouterContext();
+  return (
+    <section aria-label="Feature disabled" className="max-w-xl rounded-lg border border-dashed border-border p-6">
+      <p className="font-medium">{message}</p>
+      <p className="mt-1 text-sm text-muted-foreground">An administrator turned this feature off, so the server does not run it.</p>
+      {inRouter ? (
+        <Link to="/system/features" className="mt-3 inline-block text-sm font-medium text-primary underline-offset-2 hover:underline">
+          Open Features &amp; settings
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
 /** Sign-in-required state for 401/403, otherwise the PLAN section 5 envelope with per-field errors. */
 export function ErrorView({ error }: { error: unknown }) {
   if (!error) return null;
+  if (error instanceof ApiError && error.code === "feature_disabled") return <FeatureDisabled message={error.message} />;
   if (error instanceof ApiError && error.isAuth) {
     return (
       <Alert tone="warning" variant="plain">

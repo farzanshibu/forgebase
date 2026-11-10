@@ -23,6 +23,8 @@ export interface Session {
   signIn: (email: string, password: string) => Promise<void>;
   submitMfa: (code: string) => Promise<void>;
   signOut: () => Promise<void>;
+  /** Take over a session another call created (the first-run setup answers like a sign-in). */
+  adoptSession: (s: LoginSession) => Promise<void>;
   impersonation: ImpersonationState | null;
   startImpersonation: (principal: string, reason: string, ttlMinutes?: number) => Promise<void>;
   endImpersonation: () => Promise<void>;
@@ -173,10 +175,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Session>(
     () => ({
-      status, admin, mfaRequired: mfaToken !== null, expiredNotice, signIn, submitMfa, signOut,
+      status, admin, mfaRequired: mfaToken !== null, expiredNotice, signIn, submitMfa, signOut, adoptSession: finish,
       impersonation, startImpersonation, endImpersonation,
     }),
-    [status, admin, mfaToken, expiredNotice, signIn, submitMfa, signOut, impersonation, startImpersonation, endImpersonation],
+    [status, admin, mfaToken, expiredNotice, signIn, submitMfa, signOut, finish, impersonation, startImpersonation, endImpersonation],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
