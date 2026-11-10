@@ -1,5 +1,5 @@
 //! SPEC §27 scenario 20, "process a billing webhook idempotently", through
-//! the real server: billing is off by default; enabled, a signed Stripe
+//! the real server: billing is on by default and off only when configured off; a signed Stripe
 //! webhook sent over HTTP pays the invoice once, a redelivery changes
 //! nothing, and after a restart the stored event still makes it a duplicate
 //! (the provider account, with its sealed secret, is loaded from the
@@ -90,7 +90,25 @@ fn now_secs() -> i64 {
 }
 
 #[tokio::test]
-async fn billing_is_off_by_default() {
+async fn billing_is_on_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    // No billing setting, no provider keys: the stock defaults.
+    let mut cfg = Config::defaults(dir.path());
+    cfg.server.host = "127.0.0.1".into();
+    cfg.server.port = 0;
+    cfg.server.shutdown_timeout_secs = 5;
+    let server = forgebase_server::start(&cfg).await.unwrap();
+    assert!(server.billing().is_some());
+    let (s, body) = http(server.local_addr(), "GET", "/api/openapi.json", &[], "").await;
+    assert_eq!(s, 200);
+    assert!(body.contains("/api/v1/billing/"), "billing is documented by default");
+    let (s, _) = http(server.local_addr(), "GET", "/api/v1/billing/settings", &[], "").await;
+    assert_eq!(s, 401, "mounted: needs an admin, not 404");
+    server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn billing_can_be_turned_off() {
     let dir = tempfile::tempdir().unwrap();
     let server = forgebase_server::start(&config(dir.path(), false)).await.unwrap();
     assert!(server.billing().is_none());

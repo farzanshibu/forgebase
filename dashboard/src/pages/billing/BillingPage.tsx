@@ -36,7 +36,7 @@ const TABS: { to: string; label: string; end?: boolean }[] = [
 ];
 
 export default function BillingPage() {
-  // Billing is off by default and its routes then answer 404: one probe decides between the studio and the disabled state.
+  // Billing can be turned off and its routes then answer 404: one probe decides between the studio and the disabled state.
   const probe = useLoad(getBillingSettings, "billing-probe");
   const disabled = isBillingDisabled(probe.error);
   return (

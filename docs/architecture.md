@@ -47,7 +47,7 @@ authoritative description of each crate is its `lib.rs` module docs.
 | Background work | `forgebase-jobs` | Durable jobs, schedules, leases, retries, dead-letter queue, queues, workflows (ADR-0007, ADR-0023). |
 | | `forgebase-realtime` | Transactional outbox, WebSocket and SSE delivery, channels, presence (ADR-0011). |
 | Money | `forgebase-credits` | Append-only credit ledger per subject; top-ups, spend, expiry (ADR-0016). |
-| | `forgebase-billing` | Catalog, subscriptions, invoices, payments, provider webhooks. Off by default (ADR-0021). |
+| | `forgebase-billing` | Catalog, subscriptions, invoices, payments, provider webhooks. On by default (ADR-0021); `[billing] enabled = false` turns it off. |
 | Product | `forgebase-customize` | Custom domains, branding, transactional email, legal agreements (ADR-0020). |
 | Surface | `forgebase-api` | Axum router, error envelope, request ids, middleware, OpenAPI document, embedded dashboard. |
 | | `forgebase-server` | Startup sequence, data-directory lock, listeners, graceful shutdown. |
@@ -68,7 +68,7 @@ crate only through its public API (ADR-0001 §1).
 4. Open the database, check the migration checksums, write a snapshot to
    `backups/` if migrations are pending, and apply them.
 5. Start the services: auth, policy, entitlements, data, KV, storage,
-   functions, jobs, realtime, credits, and billing when enabled.
+   functions, jobs, realtime, credits, and billing unless disabled.
 6. Bind the HTTP listener, and the RESP listener if enabled.
 
 On SIGTERM or Ctrl-C the server stops accepting work, drains in-flight
@@ -142,7 +142,7 @@ audit or outbox row, and any usage metering commit together:
 | Realtime | ADR-0011 | `/api/v1/realtime/*` |
 | Entitlements and quotas | ADR-0010 | `/api/v1/entitlements`, `/api/v1/plans`, `/api/v1/features`, `/api/v1/quota-policies` |
 | Credits | ADR-0016 | `/api/v1/credits/*` |
-| Billing | ADR-0021 | `/api/v1/billing/*` (when enabled) |
+| Billing | ADR-0021 | `/api/v1/billing/*` (unless `[billing] enabled = false`) |
 | Product customization | ADR-0020 | `/api/v1/customize/*` |
 | Dashboard | ADR-0014 | `/admin/` |
 

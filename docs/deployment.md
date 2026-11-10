@@ -138,8 +138,7 @@ and unknown `FORGEBASE_*` variables are errors**, so a typo stops startup
 instead of being ignored. Values are range-checked.
 
 [`forgebase.example.toml`](../forgebase.example.toml) lists every key with its
-default and its environment variable. It does not yet include a `[billing]`
-section; see §7.
+default and its environment variable.
 
 ### 3.2 Flags
 
@@ -158,8 +157,9 @@ Global flags work with every subcommand:
 | `--resp-port <PORT>` | `resp.port` | `FORGEBASE_RESP_PORT` |
 | `--billing` | `billing.enabled` | `FORGEBASE_BILLING_ENABLED` |
 
-`--resp` and `--billing` are switches that turn the feature on. To turn it off,
-set the config key or environment variable to `false`.
+`--resp` and `--billing` are switches that turn the feature on (billing is
+already on by default). To turn billing or RESP off, set the config key or
+environment variable to `false`.
 
 ### 3.3 Environment variables
 
@@ -360,18 +360,18 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.reconcile_grace_secs` | `3600` | |
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
 | `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
-| `billing.enabled` | `false` | Mounts `/api/v1/billing/*` and the provider webhooks. |
+| `billing.enabled` | `true` | Mounts `/api/v1/billing/*` and the provider webhooks. |
 | `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
 | `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |
 
-Example `[billing]` section, which the example file does not yet include:
+Example `[billing]` section (turns billing off):
 
 ```toml
 [billing]
-enabled = false   # FORGEBASE_BILLING_ENABLED
+enabled = false   # FORGEBASE_BILLING_ENABLED (default: true)
 ```
 
-Billing is off by default. Live payment-provider keys are refused; only
+Billing is on by default (a fresh server serves `/api/v1/billing/*` with no provider keys; add test-mode keys at runtime). Set `billing.enabled = false` or `FORGEBASE_BILLING_ENABLED=false` to turn it off. Live payment-provider keys are refused; only
 test-mode keys are accepted (see [security.md §3](security.md#3-trust-boundaries-and-controls)).
 
 ## 8. Release checklist

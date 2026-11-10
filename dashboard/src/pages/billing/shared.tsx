@@ -25,14 +25,14 @@ export const Money = ({ amount, currency }: { amount: number; currency: string }
 
 export const Th = ({ children }: { children?: ReactNode }) => <th className="py-2 pr-3">{children}</th>;
 
-/** The billing routes answer 404 while billing is off (the default): say so instead of showing a raw error. */
+/** The billing routes answer 404 while billing is off: say so instead of showing a raw error. */
 export function Disabled() {
   return (
     <div role="status" aria-label="Billing disabled" className="rounded-lg border border-zinc-700 bg-zinc-900/60 p-6">
       <h2 className="text-lg font-medium">Billing is disabled on this server</h2>
       <p className="mt-2 text-sm text-zinc-400">
-        The billing API is off by default. Set <code className="rounded bg-zinc-800 px-1">[billing] enabled = true</code> in the server configuration
-        (or <code className="rounded bg-zinc-800 px-1">FORGEBASE_BILLING_ENABLED=true</code>) and restart to turn it on.
+        Billing is on by default, so it was turned off here (<code className="rounded bg-zinc-800 px-1">[billing] enabled = false</code> or <code className="rounded bg-zinc-800 px-1">FORGEBASE_BILLING_ENABLED=false</code>),
+        or this server is an older build without it. Set <code className="rounded bg-zinc-800 px-1">[billing] enabled = true</code> (or remove the setting) and restart to turn it on.
       </p>
     </div>
   );

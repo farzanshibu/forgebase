@@ -1,4 +1,4 @@
-//! ForgeBase billing (FB-70, ADR-0021). Off by default (`[billing] enabled`).
+//! ForgeBase billing (FB-70, ADR-0021). On by default (`[billing] enabled`).
 //!
 //! A billing application on top of the entitlement engine (FB-24) and the
 //! credit ledger (FB-73):

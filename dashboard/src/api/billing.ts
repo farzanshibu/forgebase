@@ -241,7 +241,7 @@ export const BILLING_OPERATIONS = [
   "get /api/v1/billing/refunds", "get /api/v1/billing/webhook-events", "get /api/v1/billing/stats", "post /api/v1/billing/maintenance",
 ] as const;
 
-/** Billing is off by default: its routes then answer 404. */
+/** With billing turned off (`[billing] enabled = false`) its routes answer 404. */
 export const isBillingDisabled = (e: unknown) => e instanceof ApiError && e.status === 404;
 
 function qs(params: Record<string, string | number | boolean | undefined | null>): string {

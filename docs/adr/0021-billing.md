@@ -22,7 +22,7 @@ on it.
 
 | Crate | Change | Compatibility |
 |---|---|---|
-| `forgebase-core` | `Config::billing` (`[billing] enabled = false`, `FORGEBASE_BILLING_ENABLED`) | additive; default off |
+| `forgebase-core` | `Config::billing` (`[billing] enabled = true`, `FORGEBASE_BILLING_ENABLED`) | additive; default on (FIX-12; was off) |
 | `forgebase-migrations` | migration 20 `billing` (after 16; 17–19 belong to parallel cards, the migrator applies gaps) | append-only |
 | `forgebase-server` | when enabled: opens `BillingService` (keyring of the data directory, FB-25 `HttpsClient`), attaches jobs, creates the schedule, registers the handler, mounts the extension; `RunningServer::billing()`; `ServerError::Billing` | additive |
 
@@ -234,7 +234,7 @@ Apple's root; no test reaches the network.
 
 ## Consequences
 
-- Off by default: with `[billing] enabled = false` nothing is mounted and no job runs (the migration still
+- On by default since FIX-12 (it was off when FB-70 landed): with `[billing] enabled = false` nothing is mounted and no job runs (the migration still
   creates the empty tables).
 - Prices on a subscription cannot change their amounts (`409 price_in_use`): new prices and plan changes keep
   invoices reproducible.
