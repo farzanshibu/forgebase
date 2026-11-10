@@ -93,6 +93,12 @@ trust_forwarded_for = false     # FORGEBASE_AUTH_TRUST_FORWARDED_FOR
 # Let OAuth/OIDC, SMS and Turnstile requests reach loopback, private and
 # link-local addresses (an identity provider on your own network).
 allow_private_outbound = false  # FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND
+
+# Modules are on by default. To turn one off, add its section with
+# enabled = false (or set FORGEBASE_<SECTION>_ENABLED=false): its routes then
+# answer 404 feature_disabled and its workers do not start. Sections: storage,
+# functions, queue, realtime, vector, graph, identity, access (ADR-0026).
+# Administrators can also change settings in the dashboard (Features & settings).
 "#;
 
 /// SQLite `synchronous` setting for the primary database.
@@ -506,10 +512,7 @@ impl Config {
             invalid("server.host", format!("invalid host {:?}", self.server.host));
         }
         if !(1..=3600).contains(&self.server.request_timeout_secs) {
-            invalid(
-                "server.request_timeout_secs",
-                "must be between 1 and 3600".into(),
-            );
+            invalid("server.request_timeout_secs", "must be between 1 and 3600".into());
         }
         if self.server.shutdown_timeout_secs > 3600 {
             invalid("server.shutdown_timeout_secs", "must be at most 3600".into());
@@ -557,10 +560,7 @@ impl Config {
         }
         let q = &self.queue;
         if !(64..=10 * 1024 * 1024).contains(&q.max_message_bytes) {
-            invalid(
-                "queue.max_message_bytes",
-                "must be between 64 and 10485760".into(),
-            );
+            invalid("queue.max_message_bytes", "must be between 64 and 10485760".into());
         }
         if q.default_retention_secs < 60 || q.max_retention_secs < q.default_retention_secs {
             invalid(
@@ -852,7 +852,8 @@ impl ConfigOverrides {
                         Some(parse_bool(&value).map_err(bad)?);
                 }
                 "QUEUE_ENABLED" => {
-                    o.queue.get_or_insert_with(QueueOverrides::default).enabled = Some(parse_bool(&value).map_err(bad)?);
+                    o.queue.get_or_insert_with(QueueOverrides::default).enabled =
+                        Some(parse_bool(&value).map_err(bad)?);
                 }
                 "REALTIME_ENABLED" => o.realtime_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "FUNCTIONS_ENABLED" => o.functions_enabled = Some(parse_bool(&value).map_err(bad)?),
@@ -890,7 +891,10 @@ impl ConfigOverrides {
         put(self.shutdown_timeout_secs.is_some(), "server.shutdown_timeout_secs");
         put(self.ops_access.is_some(), "server.ops_access");
         put(self.auth_trust_forwarded_for.is_some(), "auth.trust_forwarded_for");
-        put(self.auth_allow_private_outbound.is_some(), "auth.allow_private_outbound");
+        put(
+            self.auth_allow_private_outbound.is_some(),
+            "auth.allow_private_outbound",
+        );
         put(self.synchronous.is_some(), "database.synchronous");
         put(self.busy_timeout_ms.is_some(), "database.busy_timeout_ms");
         put(self.read_pool_size.is_some(), "database.read_pool_size");
@@ -925,7 +929,10 @@ impl ConfigOverrides {
             put(q.push_timeout_secs.is_some(), "queue.push_timeout_secs");
             put(q.push_concurrency.is_some(), "queue.push_concurrency");
             put(q.allow_http_push.is_some(), "queue.allow_http_push");
-            put(q.dead_letter_retention_days.is_some(), "queue.dead_letter_retention_days");
+            put(
+                q.dead_letter_retention_days.is_some(),
+                "queue.dead_letter_retention_days",
+            );
         }
         put(self.billing_enabled.is_some(), "billing.enabled");
         put(

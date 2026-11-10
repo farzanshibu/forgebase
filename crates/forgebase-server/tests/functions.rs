@@ -78,7 +78,8 @@ async fn functions_run_on_the_live_server_from_http_and_jobs_and_survive_a_resta
 
     let admin = AccessContext::admin("root");
     let d = server
-        .functions().unwrap()
+        .functions()
+        .unwrap()
         .deploy(
             &admin,
             DeployRequest {
@@ -129,6 +130,9 @@ async fn functions_run_on_the_live_server_from_http_and_jobs_and_survive_a_resta
     let server = forgebase_server::start(&cfg).await.unwrap();
     let (s, body) = http(server.local_addr(), "GET", "/api/v1/functions/hello/invoke", "").await;
     assert_eq!(s, 200, "{body}");
-    assert_eq!(server.functions().unwrap().get(&admin, "hello").unwrap().active_version, 1);
+    assert_eq!(
+        server.functions().unwrap().get(&admin, "hello").unwrap().active_version,
+        1
+    );
     server.shutdown().await.unwrap();
 }

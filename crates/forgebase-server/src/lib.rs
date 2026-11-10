@@ -133,7 +133,11 @@ async fn start_full(
     pool: PoolConfig,
 ) -> Result<RunningServer, ServerError> {
     let (origin, sources) = origin.unwrap_or_else(|| (ConfigOrigin::embedded(config), ConfigSources::default()));
-    let system_config = Arc::new(forgebase_api::features::SystemConfig::new(config.clone(), origin, sources));
+    let system_config = Arc::new(forgebase_api::features::SystemConfig::new(
+        config.clone(),
+        origin,
+        sources,
+    ));
     let layout = DataLayout::new(&config.data_dir);
     layout.ensure().map_err(|source| ServerError::Io {
         path: layout.root().to_path_buf(),
@@ -759,6 +763,12 @@ impl RunningServer {
     /// The primary database.
     pub fn database(&self) -> &Database {
         &self.db
+    }
+
+    /// The realtime service. With `[realtime] enabled = false` it only
+    /// writes and prunes the record-change outbox (no dispatcher, no routes).
+    pub fn realtime(&self) -> &forgebase_realtime::RealtimeService {
+        &self.realtime
     }
 
     /// The job queue of this instance (enqueue, inspect, claim as the system

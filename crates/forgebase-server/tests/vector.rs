@@ -41,7 +41,8 @@ fn search(v: [f64; 3]) -> SearchRequest {
 
 async fn top(server: &RunningServer, v: [f64; 3]) -> Vec<String> {
     let r = server
-        .vector().unwrap()
+        .vector()
+        .unwrap()
         .search(&AccessContext::system(), "kb", search(v))
         .await
         .unwrap();
@@ -59,7 +60,8 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
     assert_eq!(status, 401, "anonymous is denied: {body}");
     assert!(body.contains("unauthenticated"));
     server
-        .vector().unwrap()
+        .vector()
+        .unwrap()
         .create_collection(
             &sys,
             NewCollection {
@@ -104,7 +106,8 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
     let server = start(&cfg).await.unwrap();
     assert!(
         server
-            .vector().unwrap()
+            .vector()
+            .unwrap()
             .wait_ready(&sys, "kb", Duration::from_secs(30))
             .await
             .unwrap()
@@ -120,7 +123,8 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
     let server = start(&cfg).await.unwrap();
     assert!(
         server
-            .vector().unwrap()
+            .vector()
+            .unwrap()
             .wait_ready(&sys, "kb", Duration::from_secs(30))
             .await
             .unwrap()

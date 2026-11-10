@@ -73,8 +73,7 @@ impl SystemConfig {
             Ok((c, s)) => (c, s, None),
             Err(e) => (self.running.clone(), self.startup_sources.clone(), Some(e.to_string())),
         };
-        let restart_pending =
-            self.restart_pending.load(Ordering::Relaxed) || error.is_some() || config != self.running;
+        let restart_pending = self.restart_pending.load(Ordering::Relaxed) || error.is_some() || config != self.running;
         SystemFeatures {
             config_file: file.display().to_string(),
             restart_pending,

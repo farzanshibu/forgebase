@@ -67,8 +67,9 @@ crate only through its public API (ADR-0001 §1).
    same directory refuses to start.
 4. Open the database, check the migration checksums, write a snapshot to
    `backups/` if migrations are pending, and apply them.
-5. Start the services: auth, policy, entitlements, data, KV, storage,
-   functions, jobs, realtime, credits, and billing unless disabled.
+5. Start the services: auth, policy, entitlements, data, KV, jobs, credits,
+   and each switchable module that is on (storage, functions, queues,
+   realtime, vector, billing; see §6).
 6. Bind the HTTP listener, and the RESP listener if enabled.
 
 On SIGTERM or Ctrl-C the server stops accepting work, drains in-flight
@@ -82,6 +83,8 @@ The HTTP middleware runs outermost first, as documented in
 
 1. **Request context**: request id (`x-request-id`), error envelope, security
    headers.
+   **Feature gate**: a route of a switched-off module answers
+   `404 feature_disabled` here, before authentication (§6).
 2. **Tracing span** and **metrics** for the route.
 3. **Panic catcher**. A panic returns a 500 envelope, not a dropped connection.
 4. **Timeout**: `request_timeout_secs`.
@@ -149,14 +152,54 @@ audit or outbox row, and any usage metering commit together:
 The exact paths are in the OpenAPI document served by the running server,
 at `GET /api/openapi.json`. See [api.md](api.md#10-openapi).
 
-## 6. Where to change things
+## 6. Feature flags
+
+Every module is in one registry, `forgebase_core::features::FEATURES`
+(ADR-0026): id, name, whether it can be switched off, the HTTP routes it owns
+and its typed settings. `GET /api/system/features` (administrators) returns it
+with each setting's value, default and source (`default`, `file`, `env`,
+`flag`); `PATCH /api/system/config` writes settings to the config file.
+
+Switchable modules, each `[<section>] enabled` (default `true`) and
+`FORGEBASE_<SECTION>_ENABLED`:
+
+| Feature id | Switch | When off |
+|---|---|---|
+| `storage` | `storage.enabled` | Not opened; no reconcile job; its schedule paused. |
+| `functions` | `functions.enabled` | Not opened: no record hooks, no after-hook dispatcher, no function jobs. |
+| `queues` | `queue.enabled` | Not opened; no maintenance or push task. |
+| `realtime` | `realtime.enabled` | No routes, no dispatcher. The record-change outbox is still written (functions and queues read it). |
+| `vector` | `vector.enabled` | Not opened; no index warm-up or saver. |
+| `graph` | `graph.enabled` | Not mounted. |
+| `identity` | `identity.enabled` | OIDC provider and realm management off; existing realms still sign in. |
+| `access` | `access.enabled` | Policy, role, org, team, project, ACL and suspension APIs off; stored rules still enforced. |
+| `resp` | `resp.enabled` (default `false`) | Listener not bound. |
+| `billing` | `billing.enabled` | Not opened; maintenance schedule paused. |
+
+A disabled module's routes answer
+`404 {"error":{"code":"feature_disabled","message":"<Name> is disabled on this server"}}`
+and leave the OpenAPI document. `server`, `database`, `auth`, `kv`, `jobs`,
+`entitlements`, `credits`, `customize` and `backups` are always on; ADR-0026 §2
+says why for each.
+
+Changes written through the API take effect after a restart
+(`restart_required: true`, `restart_pending` until then). Precedence is
+unchanged: a setting from a flag or the environment cannot be changed in the
+file (`409 setting_overridden`), and secrets are never listed or written.
+
+To add a module: give it a `[<section>] enabled` switch in the config model,
+an entry with its route patterns in `FEATURES`, and skip opening it in
+`forgebase-server` when it is off.
+
+## 7. Where to change things
 
 - A new REST operation: the handler in `forgebase-api` calls a service method.
   The service method enforces the pipeline. Add the path to the OpenAPI
   document through `utoipa` annotations.
 - A new table: a new migration under `migrations/system/`. See
   [database.md](database.md#4-system-migrations).
-- A new configuration key: `forgebase-core` config model, the example file,
-  and [deployment.md](deployment.md#3-configuration).
+- A new configuration key: `forgebase-core` config model, the feature
+  registry (`features.rs`; a test fails otherwise), the example file, and
+  [deployment.md](deployment.md#3-configuration).
 - A new decision: a new ADR under `docs/adr/`. ADRs are not edited after
   acceptance except to add addenda.

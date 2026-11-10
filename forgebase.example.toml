@@ -6,6 +6,12 @@
 #
 # Precedence (highest first): command-line flags > FORGEBASE_* environment
 # variables > this file > built-in defaults. Unknown keys are errors.
+#
+# Modules (ADR-0026): every `[<section>] enabled` below is a switch, on by
+# default except the Redis listener. A module that is off answers
+# 404 feature_disabled on its routes and starts no workers. Administrators can
+# read and change these settings with GET /api/system/features and
+# PATCH /api/system/config (applied after a restart).
 
 # Data directory: the database, storage/, indexes/, backups/, tmp/.
 # Relative paths resolve against the directory of this file.
@@ -82,6 +88,10 @@ max_bulk_bytes = 16777216
 idle_timeout_secs = 300
 
 [storage]
+# Object storage: /api/v1/storage and its blob reconciler.
+# Env: FORGEBASE_STORAGE_ENABLED
+enabled = true
+
 # Object storage (ADR-0018). "local" keeps blobs under <data_dir>/storage;
 # "s3" uses an S3-compatible service. S3 credentials come from the
 # environment only: FORGEBASE_STORAGE_S3_ACCESS_KEY, FORGEBASE_STORAGE_S3_SECRET_KEY
@@ -105,6 +115,11 @@ reconcile_grace_secs = 3600
 # s3_part_size = 8388608
 
 [realtime]
+# WebSocket, SSE and channels under /api/v1/realtime. Off, record changes are
+# still logged (server functions and queues read them) but not delivered.
+# Env: FORGEBASE_REALTIME_ENABLED
+enabled = true
+
 # Most simultaneous realtime (WebSocket) connections one principal (user or
 # API key) may hold. The next one is refused with 429 too_many_connections.
 # Range 1 to 1000000. Env: FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL
@@ -118,6 +133,7 @@ enabled = true
 
 [queue]
 # Durable topics and queues (ADR-0022): /api/v1/queues and its background task.
+# Env: FORGEBASE_QUEUE_ENABLED
 enabled = true
 
 # Largest message in bytes (data JSON + attributes + ordering key); also the
@@ -147,3 +163,31 @@ allow_http_push = false
 
 # Days dead-letter records are kept.
 dead_letter_retention_days = 14
+
+[functions]
+# Server functions (ADR-0017): /api/v1/functions, record hooks and the
+# after-hook dispatcher. Off, record writes skip function hooks.
+# Env: FORGEBASE_FUNCTIONS_ENABLED
+enabled = true
+
+[vector]
+# Vector search (ADR-0012): /api/v1/vector, index warm-up and saving.
+# Env: FORGEBASE_VECTOR_ENABLED
+enabled = true
+
+[graph]
+# Graph API (ADR-0006): nodes, edges and traversals under /api/v1/graph.
+# Env: FORGEBASE_GRAPH_ENABLED
+enabled = true
+
+[identity]
+# OIDC provider for your apps (ADR-0019: /api/auth/oidc, clients, consents,
+# signing keys) and realm management (/api/v1/realms). Off, existing realms
+# keep signing in. Env: FORGEBASE_IDENTITY_ENABLED
+enabled = true
+
+[access]
+# Policies, roles, ACLs, organisations, teams, projects and suspensions
+# (ADR-0008). Off, the API is gone but stored rules are still enforced.
+# Env: FORGEBASE_ACCESS_ENABLED
+enabled = true

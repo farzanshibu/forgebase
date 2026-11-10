@@ -183,21 +183,16 @@ stops startup with an error.
 | `FORGEBASE_RESP_ENABLED`, `FORGEBASE_RESP_HOST`, `FORGEBASE_RESP_PORT` | Redis protocol listener. |
 | `FORGEBASE_RESP_MAX_CONNECTIONS`, `FORGEBASE_RESP_MAX_BULK_BYTES`, `FORGEBASE_RESP_IDLE_TIMEOUT_SECS` | Redis protocol limits. |
 | `FORGEBASE_BILLING_ENABLED` | Mount the billing API. |
+| `FORGEBASE_STORAGE_ENABLED`, `FORGEBASE_FUNCTIONS_ENABLED`, `FORGEBASE_QUEUE_ENABLED`, `FORGEBASE_REALTIME_ENABLED`, `FORGEBASE_VECTOR_ENABLED`, `FORGEBASE_GRAPH_ENABLED`, `FORGEBASE_IDENTITY_ENABLED`, `FORGEBASE_ACCESS_ENABLED` | Switch a module on or off (default on; ADR-0026, [architecture.md §6](architecture.md#6-feature-flags)). |
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
-| `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, intended to be read from the environment only. **Known bug:** the CLI's environment parser rejects these names, so every `forgebase` command fails while they are set. See the note below. |
+| `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, read from the environment only (the storage driver reads them; the config loader only notes that they are set). |
 
 `FORGEBASE_TEST_REDIS_URL` is used by the test suite. The same parser rejects
 it, so do not set it on a host that runs ForgeBase.
 
-Storage settings other than the S3 credentials (driver, limits, endpoint) are
-set in the TOML file only.
-
-**Known issue (S3 credentials).** `ConfigOverrides::from_env`
-(`crates/forgebase-core/src/config.rs`) rejects any `FORGEBASE_*` name it does
-not list, and `forgebase-cli` passes it the whole process environment. The
-server reads the S3 keys directly (`crates/forgebase-server/src/lib.rs`), so
-the S3 driver cannot be used with keys in the environment until the parser
-allows those names. Until that is fixed, use `driver = "local"`.
+Storage settings other than the S3 credentials and `enabled` (driver, limits,
+endpoint) are set in the TOML file only. The S3 credential names were rejected
+by the environment parser before FB-91; they are accepted now.
 
 ### 3.4 `.env` files
 
@@ -361,6 +356,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
 | `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
 | `billing.enabled` | `true` | Mounts `/api/v1/billing/*` and the provider webhooks. |
+| `storage.enabled`, `functions.enabled`, `queue.enabled`, `realtime.enabled`, `vector.enabled`, `graph.enabled`, `identity.enabled`, `access.enabled` | `true` | Switch a module off: its routes answer `404 feature_disabled` and its workers do not start ([architecture.md §6](architecture.md#6-feature-flags), ADR-0026). |
 | `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
 | `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |
 

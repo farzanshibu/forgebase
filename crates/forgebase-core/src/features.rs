@@ -806,7 +806,10 @@ pub fn setting(key: &str) -> Option<&'static SettingDef> {
 
 /// The modules that are off in `config`.
 pub fn disabled(config: &Config) -> Vec<&'static FeatureDef> {
-    FEATURES.iter().filter(|f| f.can_disable && !f.enabled(config)).collect()
+    FEATURES
+        .iter()
+        .filter(|f| f.can_disable && !f.enabled(config))
+        .collect()
 }
 
 /// Whether a route `pattern` (`*` = one segment, trailing `**` = any number
@@ -1019,7 +1022,9 @@ pub fn apply_patch(
     })?;
     let mut keys: Vec<String> = changes.iter().map(|(k, _)| (*k).to_owned()).collect();
     keys.sort();
-    let restart_required = changes.iter().any(|(k, _)| setting(k).is_some_and(|s| s.restart_required));
+    let restart_required = changes
+        .iter()
+        .any(|(k, _)| setting(k).is_some_and(|s| s.restart_required));
     Ok(PatchOutcome {
         written: path,
         keys,
@@ -1060,7 +1065,10 @@ fn parse_reason(e: &ConfigError) -> String {
 /// Checks `value` against `def` and converts it to a TOML value.
 fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
     match def.ty {
-        SettingType::Bool => value.as_bool().map(toml_edit::Value::from).ok_or_else(|| "expected true or false".to_owned()),
+        SettingType::Bool => value
+            .as_bool()
+            .map(toml_edit::Value::from)
+            .ok_or_else(|| "expected true or false".to_owned()),
         SettingType::Int => value
             .as_i64()
             .filter(|n| *n >= 0)
@@ -1085,7 +1093,9 @@ fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
             _ => Err("expected a duration such as \"30s\", \"500ms\", \"5m\" or \"1h\"".to_owned()),
         },
         SettingType::List => {
-            let items = value.as_array().ok_or_else(|| "expected a list of strings".to_owned())?;
+            let items = value
+                .as_array()
+                .ok_or_else(|| "expected a list of strings".to_owned())?;
             let mut arr = toml_edit::Array::new();
             for i in items {
                 arr.push(i.as_str().ok_or_else(|| "expected a list of strings".to_owned())?);
@@ -1143,7 +1153,10 @@ pub fn set_keys(text: &str, changes: &[(&str, toml_edit::Value)]) -> Result<Stri
 /// the target (and the directory fsynced on Unix).
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("forgebase.toml");
     let tmp = dir.join(format!(".{name}.tmp-{}", std::process::id()));
@@ -1192,8 +1205,20 @@ mod tests {
     fn registry_lists_every_module_and_every_example_setting() {
         let ids: Vec<&str> = FEATURES.iter().map(|f| f.id).collect();
         for id in [
-            "server", "database", "auth", "storage", "functions", "jobs", "queues", "realtime", "vector", "graph",
-            "identity", "access", "resp", "billing",
+            "server",
+            "database",
+            "auth",
+            "storage",
+            "functions",
+            "jobs",
+            "queues",
+            "realtime",
+            "vector",
+            "graph",
+            "identity",
+            "access",
+            "resp",
+            "billing",
         ] {
             assert!(ids.contains(&id), "{id} listed");
         }
@@ -1210,7 +1235,10 @@ mod tests {
         let keys = keys_of(&uncommented);
         assert!(keys.len() > 30, "{keys:?}");
         for k in &keys {
-            assert!(setting(k).is_some(), "{k} from forgebase.example.toml is in the registry");
+            assert!(
+                setting(k).is_some(),
+                "{k} from forgebase.example.toml is in the registry"
+            );
         }
         // And every key `forgebase init` writes.
         for k in keys_of(crate::config::CONFIG_TEMPLATE) {
@@ -1264,9 +1292,15 @@ mod tests {
         assert!(route_matches("/api/v1/storage/**", "//api/v1//storage/"));
         assert!(!route_matches("/api/v1/storage/**", "/api/v1/storagex"));
         assert!(!route_matches("/api/v1/storage/**", "/api/v1/stats"));
-        assert!(route_matches("/api/auth/realms/*/keys/**", "/api/auth/realms/{realm}/keys"));
+        assert!(route_matches(
+            "/api/auth/realms/*/keys/**",
+            "/api/auth/realms/{realm}/keys"
+        ));
         assert!(!route_matches("/api/auth/realms/*/keys/**", "/api/auth/realms/default"));
-        assert!(!route_matches("/api/auth/realms/*/keys/**", "/api/auth/realms/default/oauth-providers"));
+        assert!(!route_matches(
+            "/api/auth/realms/*/keys/**",
+            "/api/auth/realms/default/oauth-providers"
+        ));
         let cfg = {
             let mut c = Config::defaults(Path::new("/x"));
             c.identity.enabled = false;
@@ -1274,16 +1308,25 @@ mod tests {
             c
         };
         let off = disabled(&cfg);
-        assert_eq!(off.iter().map(|f| f.id).collect::<Vec<_>>(), ["storage", "identity", "resp"]);
+        assert_eq!(
+            off.iter().map(|f| f.id).collect::<Vec<_>>(),
+            ["storage", "identity", "resp"]
+        );
         assert_eq!(owner_of(&off, "/api/auth/oidc/default/token").unwrap().id, "identity");
         assert_eq!(owner_of(&off, "/api/v1/storage/buckets").unwrap().id, "storage");
-        assert!(owner_of(&off, "/api/auth/realms/default").is_none(), "realm sign-in settings stay with auth");
+        assert!(
+            owner_of(&off, "/api/auth/realms/default").is_none(),
+            "realm sign-in settings stay with auth"
+        );
         assert!(owner_of(&off, "/api/auth/login").is_none());
         assert_eq!(
             feature("storage").unwrap().disabled_message(),
             "Object storage is disabled on this server"
         );
-        assert_eq!(feature("billing").unwrap().disabled_message(), "Billing is disabled on this server");
+        assert_eq!(
+            feature("billing").unwrap().disabled_message(),
+            "Billing is disabled on this server"
+        );
     }
 
     fn load(dir: &Path, env: &[(&str, &str)], cli: ConfigOverrides) -> crate::config::LoadedConfig {
@@ -1336,7 +1379,11 @@ mod tests {
         // keys() and the file shape agree for every setting: write each one
         // and check that the loader reports it from the file.
         let tmp = tempfile::tempdir().unwrap();
-        for s in FEATURES.iter().flat_map(|f| f.settings.iter()).filter(|s| s.editable && !s.secret) {
+        for s in FEATURES
+            .iter()
+            .flat_map(|f| f.settings.iter())
+            .filter(|s| s.editable && !s.secret)
+        {
             let v = setting_value(&Config::defaults(tmp.path()), s.key).unwrap();
             let text = set_keys("", &[(s.key, to_toml(s, &v).unwrap())]).unwrap();
             std::fs::write(tmp.path().join("forgebase.toml"), &text).unwrap();
@@ -1367,25 +1414,39 @@ mod tests {
                 ("storage.enabled", Json::from(false)),
                 ("storage.max_object_bytes", Json::from(1024)),
                 ("log.format", Json::from("json")),
-                ("graph.enabled", Json::from(false)),
+                ("auth.trust_forwarded_for", Json::from(true)),
             ]),
         )
         .unwrap();
         assert_eq!(out.written, file);
         assert_eq!(
             out.keys,
-            ["graph.enabled", "log.format", "storage.enabled", "storage.max_object_bytes"]
+            [
+                "auth.trust_forwarded_for",
+                "log.format",
+                "storage.enabled",
+                "storage.max_object_bytes"
+            ]
         );
         assert!(out.restart_required);
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with("# forgebase.example.toml: every configuration key"), "header kept");
+        assert!(
+            text.starts_with("# forgebase.example.toml: every configuration key"),
+            "header kept"
+        );
         assert!(text.contains("# \"pretty\" (human-readable) or \"json\" (one object per line).\n"));
         assert!(text.contains("format = \"json\""));
         assert!(text.contains("max_object_bytes = 1024"));
-        assert!(text.contains("# s3_endpoint = \"https://s3.eu-central-1.amazonaws.com\""), "commented keys kept");
-        assert!(text.contains("[graph]\nenabled = false"), "new section appended");
+        assert!(
+            text.contains("# s3_endpoint = \"https://s3.eu-central-1.amazonaws.com\""),
+            "commented keys kept"
+        );
+        assert!(
+            text.contains("[auth]\ntrust_forwarded_for = true"),
+            "new section appended"
+        );
         // Every other line of the example is still there, in order.
-        let replaced = ["format = \"pretty\"", "max_object_bytes = 5368709120"];
+        let replaced = ["format = \"pretty\"", "max_object_bytes = 5368709120", "enabled = true"];
         let mut have = text.lines();
         for want in EXAMPLE.lines().filter(|l| !replaced.contains(l)) {
             assert!(have.any(|h| h == want), "kept in order: {want:?}\n{text}");
@@ -1397,7 +1458,7 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "no temporary file left");
         let loaded = load(tmp.path(), &[], ConfigOverrides::default());
-        assert!(!loaded.config.storage.enabled && !loaded.config.graph.enabled);
+        assert!(!loaded.config.storage.enabled && loaded.config.auth.trust_forwarded_for);
         assert_eq!(loaded.config.storage.max_object_bytes, 1024);
     }
 
@@ -1409,7 +1470,10 @@ mod tests {
         let (origin, data_dir) = origin(tmp.path());
         apply_patch(&origin, &data_dir, &set(&[("database.read_pool_size", Json::from(4))])).unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.contains("read_pool_size = 4          # FORGEBASE_DB_READ_POOL_SIZE"), "{text}");
+        assert!(
+            text.contains("read_pool_size = 4          # FORGEBASE_DB_READ_POOL_SIZE"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1440,7 +1504,11 @@ mod tests {
         assert_eq!(d["log.format"], "expected one of pretty, json");
         assert_eq!(d["storage.enabled"], "expected true or false");
         assert_eq!(d["server.request_timeout_secs"], "expected a non-negative integer");
-        assert!(d["resp.port"].contains("u16") || d["resp.port"].contains("invalid"), "{}", d["resp.port"]);
+        assert!(
+            d["resp.port"].contains("u16") || d["resp.port"].contains("invalid"),
+            "{}",
+            d["resp.port"]
+        );
         assert!(d["storage.s3_secret_key"].contains("FORGEBASE_STORAGE_S3_SECRET_KEY"));
         assert!(d.contains_key("data_dir"));
         assert!(d.contains_key("storage.s3_endpoint"));
@@ -1524,16 +1592,25 @@ mod tests {
     #[test]
     fn precedence_is_unchanged_for_the_new_switches() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("forgebase.toml"), "[functions]\nenabled = false\n[queue]\nenabled = false\n")
-            .unwrap();
+        std::fs::write(
+            tmp.path().join("forgebase.toml"),
+            "[functions]\nenabled = false\n[queue]\nenabled = false\n",
+        )
+        .unwrap();
         let file_only = load(tmp.path(), &[], ConfigOverrides::default());
         assert!(!file_only.config.functions.enabled && !file_only.config.queue.enabled);
         let env_on = load(
             tmp.path(),
-            &[("FORGEBASE_FUNCTIONS_ENABLED", "true"), ("FORGEBASE_QUEUE_ENABLED", "1")],
+            &[
+                ("FORGEBASE_FUNCTIONS_ENABLED", "true"),
+                ("FORGEBASE_QUEUE_ENABLED", "1"),
+            ],
             ConfigOverrides::default(),
         );
-        assert!(env_on.config.functions.enabled && env_on.config.queue.enabled, "env beats file");
+        assert!(
+            env_on.config.functions.enabled && env_on.config.queue.enabled,
+            "env beats file"
+        );
         let flag_off = load(
             tmp.path(),
             &[("FORGEBASE_FUNCTIONS_ENABLED", "true")],

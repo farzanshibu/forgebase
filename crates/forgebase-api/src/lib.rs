@@ -414,10 +414,7 @@ pub fn router_with(
         doc.paths.paths.retain(|path, _| off.owner(path).is_none());
     }
     let doc = Arc::new(doc);
-    let graph_on = opts
-        .system_config
-        .as_ref()
-        .is_none_or(|c| c.running().graph.enabled);
+    let graph_on = opts.system_config.as_ref().is_none_or(|c| c.running().graph.enabled);
     let graph = if graph_on {
         Router::new().nest_service(
             "/api/v1/graph",
