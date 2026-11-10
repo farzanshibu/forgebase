@@ -1249,7 +1249,7 @@
         return Object.freeze({
           search: (q = {}) => {
             const a = { as, collection: c, k: q.k ?? 10 };
-            for (const [from, to] of [["vector", "vector"], ["text", "text"], ["filter", "filter"], ["params", "params"], ["field", "field"], ["includeVectors", "include_vectors"], ["includeText", "include_text"]])
+            for (const [from, to] of [["vector", "vector"], ["text", "text"], ["filter", "filter"], ["params", "params"], ["field", "field"], ["includeVectors", "include_vectors"], ["includeText", "include_text"], ["exact", "exact"]])
               if (q[from] !== undefined) a[to] = q[from];
             return call("vector.search", a);
           },

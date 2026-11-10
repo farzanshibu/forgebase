@@ -54,6 +54,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  js-engine:
+    name: functions JavaScript engine (reproducible build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .cache/js-engine-tools
+          key: js-engine-tools-${{ hashFiles('scripts/build-js-engine.sh') }}
+      # Rebuilds QuickJS + engine.c + prelude.js with the pinned wasi-sdk and
+      # fails if the result differs from the committed forgebase-js.wasm.
+      - run: scripts/build-js-engine.sh --check
+
   sdk-rust:
     name: sdk/rust (fmt, clippy, test with the live server, deny)
     runs-on: ubuntu-24.04

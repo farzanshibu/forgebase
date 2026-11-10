@@ -429,7 +429,7 @@ async fn vector(env: &HostEnv, ctx: &AccessContext, op: &str, v: Json) -> HostRe
             } else {
                 let req: forgebase_vector::model::SearchRequest = take(pick(
                     o,
-                    &["field", "vector", "k", "filter", "params", "include_vectors", "include_text"],
+                    &["field", "vector", "k", "filter", "params", "include_vectors", "include_text", "exact"],
                 ))?;
                 out(&svc.search(ctx, &coll, req).await.map_err(err)?)
             }
