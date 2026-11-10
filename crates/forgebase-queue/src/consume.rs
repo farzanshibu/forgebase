@@ -33,7 +33,41 @@ const MATERIALIZE_MAX: i64 = 2000;
 const PUSH_HISTORY: &str = "json_insert(CASE WHEN json_array_length(history) >= 25 THEN json_remove(history, '$[0]') \
     ELSE history END, '$[#]', json_object('attempt', attempts + 1, 'at', ?3, 'consumer', ?4))";
 
+/// The query that picks the oldest ready deliveries of a subscription.
+///
+/// `+d.available_at` keeps the planner on the `(subscription, state, seq)`
+/// index (migration 0025): rows come in `seq` order, so a pull reads only as
+/// many rows as it claims and never sorts the backlog (FIX-9).
+fn ready_claim_sql(ordering: bool) -> String {
+    let order = if ordering {
+        "AND (d.ordering_key IS NULL OR NOT EXISTS (SELECT 1 FROM _forgebase_queue_deliveries e \
+         WHERE e.subscription = d.subscription AND e.ordering_key = d.ordering_key AND e.seq < d.seq))"
+    } else {
+        ""
+    };
+    format!(
+        "SELECT {MESSAGE_COLS}, d.attempts AS d_attempts FROM _forgebase_queue_deliveries d \
+         JOIN _forgebase_queue_messages m ON m.seq = d.seq \
+         WHERE d.subscription = ?1 AND d.state = 'ready' AND +d.available_at <= ?2 {order} \
+         ORDER BY d.seq LIMIT ?3"
+    )
+}
+
 impl QueueService {
+    /// Query plan of the claim query, one line per step (regression guard: it
+    /// must not contain a sort of the backlog).
+    #[doc(hidden)]
+    pub async fn explain_claim_plan(&self, ordering: bool) -> Result<Vec<String>> {
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                format!("EXPLAIN QUERY PLAN {}", ready_claim_sql(ordering)),
+                vec!["s".into(), 0_i64.into(), 10_i64.into()],
+            ))
+            .await?;
+        Ok(Row::all(&rows).map(|r| r.text("detail")).collect())
+    }
+
     /// Reads up to `MATERIALIZE_MAX` new topic messages into delivery rows of
     /// `sub` and advances its cursor. Returns the rows created.
     pub(crate) async fn materialize_tx(&self, tx: &mut dyn WriteTx, sub: &SubRow, now: i64) -> Result<i64> {
@@ -179,6 +213,8 @@ impl QueueService {
     ) -> Result<()> {
         let rows = tx
             .fetch_all(&Statement::new(
+                // `+d.available_at` keeps the planner on the (subscription, state, seq)
+                // index: rows come in `seq` order, with no sort of the backlog.
                 format!(
                     "SELECT {MESSAGE_COLS}, d.attempts AS d_attempts, d.history AS d_history \
                      FROM _forgebase_queue_deliveries d JOIN _forgebase_queue_messages m ON m.seq = d.seq \
@@ -297,20 +333,9 @@ impl QueueService {
         let sub = sub_row(&mut Db::Tx(&mut *tx), name).await?;
         self.reap_tx(tx, &sub, now).await?;
         self.materialize_tx(tx, &sub, now).await?;
-        let order = if sub.ordering {
-            "AND (d.ordering_key IS NULL OR NOT EXISTS (SELECT 1 FROM _forgebase_queue_deliveries e \
-             WHERE e.subscription = d.subscription AND e.ordering_key = d.ordering_key AND e.seq < d.seq))"
-        } else {
-            ""
-        };
         let rows = tx
             .fetch_all(&Statement::new(
-                format!(
-                    "SELECT {MESSAGE_COLS}, d.attempts AS d_attempts FROM _forgebase_queue_deliveries d \
-                     JOIN _forgebase_queue_messages m ON m.seq = d.seq \
-                     WHERE d.subscription = ?1 AND d.state = 'ready' AND d.available_at <= ?2 {order} \
-                     ORDER BY d.seq LIMIT ?3"
-                ),
+                ready_claim_sql(sub.ordering),
                 vec![name.into(), now.into(), max.min(MAX_PULL).into()],
             ))
             .await?;
