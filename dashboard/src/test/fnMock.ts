@@ -134,11 +134,14 @@ export function installFunctions(mock: MockApi): FnState {
     return src ? { status: 200, body: src } : envelope(404, "not_found", "no source: WebAssembly version");
   });
   for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
-    route(mock, method, `${F}/{name}/invoke`, ({ params, query, headers, body, method: m }) => {
-      if (!find(params.name!)) return nf();
-      st.invokes.push({ method: m, path: `${F}/${params.name}/invoke`, query: query.toString(), headers, body });
-      return { status: st.invokeReply.status, headers: st.invokeReply.headers, body: st.invokeReply.body };
-    });
+    // The function root and any sub-path below it (the test panel's "path").
+    for (const tpl of [`${F}/{name}/invoke`, `${F}/{name}/invoke/{*rest}`]) {
+      route(mock, method, tpl, ({ params, path, query, headers, body, method: m }) => {
+        if (!find(params.name!)) return nf();
+        st.invokes.push({ method: m, path, query: query.toString(), headers, body });
+        return { status: st.invokeReply.status, headers: st.invokeReply.headers, body: st.invokeReply.body };
+      });
+    }
   }
   route(mock, "GET", `${F}/{name}/logs`, ({ params, query }) => {
     const limit = Number(query.get("limit") ?? 50);

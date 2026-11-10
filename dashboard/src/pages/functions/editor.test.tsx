@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
@@ -77,7 +77,7 @@ describe("New function", () => {
     expect(screen.getByText("admin only")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("switch", { name: "service_role" }));
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
-    expect(await screen.findByText(/service_role needs an administrator/)).toBeInTheDocument();
+    expect(await screen.findByText(/403 forbidden/)).toBeInTheDocument();
     expect((mock.bodies["post /api/v1/functions"]![0] as { capabilities: string[] }).capabilities).toContain("service_role");
     expect(st.functions.map((f) => f.name)).not.toContain("power");
   });
@@ -173,7 +173,7 @@ describe("Editor", () => {
     expect(JSON.parse(localStorage.getItem("forgebase.fn-draft.new:drafty")!).source).toBe("// my work in progress\n");
 
     // "Reload": a fresh render of the same screen.
-    document.body.innerHTML = "";
+    cleanup();
     const again = await openNew("drafty");
     void again;
     const ta2 = await editor("drafty");
@@ -235,7 +235,7 @@ describe("Test panel", () => {
     expect(within(result).getByLabelText("Response body")).toHaveTextContent('"hello": "world"');
     expect(await within(result).findByText("[info] echo ran")).toBeInTheDocument();
     const call = st.invokes[0]!;
-    expect(call).toMatchObject({ method: "PUT", path: "/api/v1/functions/echo/invoke", body: { n: 1 } });
+    expect(call).toMatchObject({ method: "PUT", path: "/api/v1/functions/echo/invoke/items", body: { n: 1 } });
     expect(new URLSearchParams(call.query).get("name")).toBe("Ada");
     expect(call.headers).toMatchObject({ "X-Test": "yes", "Content-Type": "application/json" });
     expect(new URLSearchParams(call.query).has("version")).toBe(false);
