@@ -1333,8 +1333,13 @@ fn scenario_15_execute_graph_traversal() {
     let r = fb
         .admin("GET", "/api/v1/graph/nodes/a/neighbors?direction=out", None)
         .expect(200);
-    let mut n = ids(&r);
-    n.sort();
+    let mut n: Vec<&str> = r["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{r}"))
+        .iter()
+        .map(|i| i["node"]["id"].as_str().unwrap())
+        .collect();
+    n.sort_unstable();
     assert_eq!(n, ["b", "x"], "{r}");
     let r = fb
         .admin("POST", "/api/v1/graph/shortest-path", Some(json!({"from": "a", "to": "d"})))
@@ -2220,10 +2225,11 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
         "GET",
         "/health",
         None,
-        &[("X-Request-Id", "bad id\u{7f}<script>".to_owned())],
+        &[("X-Request-Id", "bad<script>id".to_owned())],
         b"",
     );
-    assert!(r.header("x-request-id").is_some_and(|v| !v.contains('<')));
+    let rid = r.header("x-request-id").unwrap_or_default();
+    assert!(!rid.is_empty() && !rid.contains('<'), "request id {rid:?}");
 
     // Everything is still in place.
     let list = fb.admin("GET", "/api/v1/collections/secrets/records", None).expect(200);

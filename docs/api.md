@@ -18,9 +18,9 @@ Decisions behind these conventions: [ADR-0001 §6–7](adr/0001-architecture.md)
 |---|---|---|
 | `GET /health` | Liveness: the process answers HTTP. | Stable |
 | `GET /health/ready` | Readiness: database and storage answer. `200` when ready. | Stable |
-| `GET /metrics` | Prometheus text format. | Stable |
+| `GET /metrics` | Prometheus text format. Access follows `[server] ops_access` ([§11.3](#113-operational-endpoints-ops_access)). | Stable |
 | `GET /api/openapi.json` | OpenAPI 3 document. | Stable |
-| `/api/system/*` | Instance information and management. Changes are additive. | No version prefix |
+| `/api/system/*` | Instance information and management. Changes are additive. Access follows `[server] ops_access`. | No version prefix |
 | `/api/auth/*` | Sign-in, sessions, tokens, MFA, OAuth, OIDC, passkeys, API keys, service accounts. | Unversioned; see ADR-0004 §12 |
 | `/api/v1/*` | Data and product APIs: collections, KV, storage, jobs, billing, and so on. | Versioned |
 | `/api/v1/realtime/*` | WebSocket (`/ws`), Server-Sent Events (`/sse`), channels and presence. | Versioned |
@@ -168,3 +168,70 @@ it, so it cannot drift from the server.
 
 Security schemes in the document: `bearer`, `api_key` (`X-API-Key`) and
 `session_cookie`. Each `/api/v1` operation accepts any one of them, or none.
+
+## 11. Queues, backups and operational access
+
+These groups are in the OpenAPI document like every other route. This section
+gives the shape of each group and the rules that the schema alone does not
+show.
+
+### 11.1 Queues (`/api/v1/queues`)
+
+Durable topics with independent subscriptions (FB-63, FB-65,
+[ADR-0022](adr/0022-queues-pubsub.md)). The routes exist when `[queue] enabled = true`
+(the default). Messages are kept per topic for its retention; each subscription
+has its own cursor, so a slow consumer does not hold back others.
+
+| Route | Purpose |
+|---|---|
+| `GET`/`POST /queues/topics` | List or create topics (retention, message size limit, dedup window). |
+| `GET`/`PATCH`/`DELETE /queues/topics/{topic}` | Read, change or delete a topic. A topic with subscriptions answers `409 topic_has_subscriptions` unless `?force=true`, which deletes them too. |
+| `POST /queues/topics/{topic}/publish` | `{"messages": [{"data": <json>, "attributes": {...}, "ordering_key": "...", "dedup_id": "..."}]}`. Each result has `message_id`, `seq` and `duplicate`. A repeated `dedup_id` inside the dedup window is accepted once. |
+| `GET /queues/topics/{topic}/messages` | Messages in order, from `after` (a `seq`). |
+| `GET`/`POST /queues/subscriptions` | List (optionally `?topic=`) or create subscriptions: pull or push, ack deadline, max delivery attempts, dead-letter topic, filter. |
+| `GET`/`PATCH`/`DELETE /queues/subscriptions/{sub}` | Read, change or delete a subscription. |
+| `POST /queues/subscriptions/{sub}/pull` | `{"max_messages": n, "wait_ms": ms}` long-polls. Each message has an `ack_id`, `delivery_attempt` and `ack_deadline`. |
+| `POST .../ack`, `.../nack`, `.../modify-deadline` | `{"ack_ids": [...]}` (plus the new deadline for modify). An unacknowledged message is redelivered after its deadline; after the last attempt it goes to the dead-letter list. |
+| `POST /queues/subscriptions/{sub}/seek` | Move the cursor to a time or to a snapshot. |
+| `GET .../stream`, `.../events` | Streaming pull with flow control (`max_messages`, `max_bytes` unacknowledged): `stream` is a WebSocket, `events` is Server-Sent Events. Pull subscriptions only (`409 push_subscription`). |
+| `GET .../dead-letters`, `GET .../metrics`, `GET /queues/topics/{topic}/metrics` | Dead letters and counters (backlog, oldest unacked age, deliveries). |
+| `GET`/`POST /queues/snapshots`, `DELETE /queues/snapshots/{snapshot}` | Named copies of a subscription's acknowledgement state, for `seek`. |
+
+Permissions are the policy keys `engine:queue_read`, `engine:queue_publish`,
+`engine:queue_consume` and `engine:queue_admin`. Push subscriptions call their
+endpoint through the same outbound address guard as functions `fetch`
+([security.md](security.md)).
+
+### 11.2 Backups (`/api/v1/system/backups`)
+
+Snapshots of the database and storage over HTTP (FB-83). Administrators only.
+
+| Route | Purpose |
+|---|---|
+| `GET /system/backups` | Snapshots, newest first: id, label, created time, size, whether derived index files are included. |
+| `POST /system/backups` | Take a snapshot now while the server keeps serving. Body (all optional): `{"label": "nightly", "include_indexes": true, "retention": {"keep_last": 7, "max_age_days": 30}}`. Retention runs after the snapshot is written. |
+| `GET`/`DELETE /system/backups/{id}` | Read or delete one snapshot. `latest` names the newest. |
+| `POST /system/backups/{id}/verify` | Check the manifest, every file's size and SHA-256, that no extra files exist, and open the copied database read-only (integrity, foreign keys, migration state). |
+| `POST /system/backups/prune` | Apply a retention policy (`keep_last`, `max_age_days`). |
+
+Restore is not an HTTP operation, because it replaces files the running server
+has open. Stop the server and run `forgebase restore <id|latest> --force`
+([deployment.md](deployment.md)). `forgebase backup`, `backup list`,
+`backup verify` and `doctor` are the CLI forms of the routes above.
+
+### 11.3 Operational endpoints (`ops_access`)
+
+`/metrics` and `/api/system/*` show the data directory, the database path and
+load figures, so FB-80 gates them with `[server] ops_access`
+(`FORGEBASE_OPS_ACCESS`, [security.md §5](security.md)):
+
+| Value | Who may read them |
+|---|---|
+| `loopback` (default) | Administrators and admin service accounts from anywhere, plus unauthenticated requests whose socket peer is a loopback address and that carry no `Forwarded`, `X-Forwarded-For` or `X-Real-IP` header (a Prometheus on the same host). |
+| `admin` | Administrators only. |
+| `public` | Anyone. Use only behind a proxy that restricts these paths itself. |
+
+A refused anonymous request gets `401`, a signed-in non-administrator `403`.
+For `/metrics`, a scoped API key needs the scope `system:read`.
+`/health` and `/health/ready` are never gated.
+

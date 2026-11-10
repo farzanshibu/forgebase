@@ -9,8 +9,8 @@ does not repeat it.
 
 | SDK | Location | Status |
 |---|---|---|
-| JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, realtime, and entitlements. |
-| Rust | Not in the repository yet | In progress as work package FB-82, which depends on FB-41. |
+| JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, realtime, entitlements, billing, jobs and queues. |
+| Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. Covers auth, records, KV, storage, realtime, functions, jobs, queues, billing and entitlements. See [sdk/rust/README.md](../sdk/rust/README.md). |
 | Dart / Flutter | Not planned for this release | Skipped by decision on 2026-11-10. |
 
 ## 2. JavaScript / TypeScript SDK
@@ -38,7 +38,9 @@ browsers, Deno and Bun provide. It ships ESM, CJS and type declarations.
 | Collections and records | `fb.collection<T>(name)` | Create, read, update with optimistic concurrency, replace, delete, list with filter, sort, expand and fields, and iterators over pages. See [§3](#3-collections-and-records). |
 | Realtime | `fb.realtime` | One connection for every subscription. WebSocket with SSE fallback. Automatic resume from the last cursor. Channels, presence and publish. See [sdk/js/README.md#realtime](../sdk/js/README.md#realtime). |
 | Entitlements and quotas | `fb.entitlements` | See [sdk/js/README.md#entitlements-and-quotas](../sdk/js/README.md#entitlements-and-quotas). |
-| Raw requests | `fb.request(path, options)` | For routes the SDK does not wrap yet, such as passkeys. |
+| Queues and pub/sub | `fb.queues` | Topics, subscriptions, publish (attributes, ordering key, dedup id), pull, ack, nack, deadlines, streaming pull with automatic reconnect, seek and snapshots, dead letters. See [§3.1](#31-queues). |
+| Jobs and long tasks | `fb.jobs` | Enqueue, progress, wait, workflows. See [sdk/js/README.md#jobs-and-long-tasks](../sdk/js/README.md#jobs-and-long-tasks). |
+| Raw requests | `fb.request(path, options)` | For routes the SDK does not wrap yet, such as passkeys and backups ([§3.2](#32-backups-and-operational-endpoints)). |
 
 ### 2.3 Retries and errors
 
@@ -76,6 +78,61 @@ The filter language, sort keys and pagination are described in
 [database.md §6](database.md#6-query-language) and
 [api.md §7](api.md#7-lists-and-pagination). The SDK's `list` options map onto
 those query parameters.
+
+### 3.1 Queues
+
+Both SDKs wrap `/api/v1/queues` ([api.md §11.1](api.md#111-queues-apiv1queues)).
+
+```ts
+await fb.queues.createTopic("orders");
+await fb.queues.createSubscription("billing", "orders", { ackDeadlineMs: 30_000, maxDeliveryAttempts: 5 });
+await fb.queues.publish("orders", { id: 1 }, { attributes: { kind: "rush" }, orderingKey: "u1", dedupId: "o-1" });
+
+// Streaming pull: resolve = ack, throw = nack (redelivered after the backoff).
+const stream = fb.queues.subscribe<{ id: number }>("billing", async (d) => charge(d.data.id), { maxMessages: 50 });
+stream.unsubscribe();
+
+// Manual pull and ack
+for (const m of await fb.queues.pull("billing", { maxMessages: 10, waitMs: 2000 })) {
+  await fb.queues.ack("billing", [m.ack_id]);
+}
+await fb.queues.seek("billing", { time: new Date(Date.now() - 3_600_000) }); // replay the last hour
+```
+
+```rust
+let q = fb.queues();
+q.create_topic(&NewTopic::new("orders")).await?;
+q.create_subscription(&NewSubscription::new("billing", "orders")).await?;
+q.publish("orders", &NewMessage::new(json!({"id": 1})).attr("kind", "rush").dedup_id("o-1")).await?;
+for m in q.pull("billing", &PullOptions { max_messages: Some(10), wait_ms: Some(2000), ..Default::default() }).await? {
+    q.ack("billing", &[m.ack_id]).await?;
+}
+```
+
+A repeated `dedupId` inside the topic's dedup window is stored once; the
+repeat's result has `duplicate: true`. Unacknowledged messages come back after the
+ack deadline; after `maxDeliveryAttempts` they move to the dead letters
+(`fb.queues.deadLetters(...)`).
+
+### 3.2 Backups and operational endpoints
+
+Neither SDK wraps the backup routes (FB-83) or `/metrics`. They are
+administrator operations; call them with an administrator session or an admin
+service-account key:
+
+```ts
+const snap = await fb.request("/api/v1/system/backups", {
+  method: "POST",
+  body: { label: "before-migration", retention: { keep_last: 7 } },
+});
+await fb.request(`/api/v1/system/backups/${snap.id}/verify`, { method: "POST" });
+```
+
+Restore has no HTTP route: stop the server and run `forgebase restore`
+([api.md §11.2](api.md#112-backups-apiv1systembackups)). `/metrics` and
+`/api/system/*` follow `[server] ops_access` (default `loopback`): from another
+host, only administrators can read them, and a scoped key needs `system:read`
+([api.md §11.3](api.md#113-operational-endpoints-ops_access)).
 
 ## 4. Types
 
