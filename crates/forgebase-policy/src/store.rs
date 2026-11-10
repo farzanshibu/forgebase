@@ -82,7 +82,7 @@ fn json_list(v: &[String]) -> Value {
 
 /// Whether a caller's permission set covers a pattern they want to grant.
 fn covers(caller: &PermissionSet, pattern: &str) -> bool {
-    caller.allow.iter().any(|a| perm::matches(a, pattern)) && !caller.deny.iter().any(|d| perm::matches(d, pattern))
+    caller.allow.iter().any(|a| perm::grants(a, pattern)) && !caller.deny.iter().any(|d| perm::grants(d, pattern))
 }
 
 /// Input of role definitions.
@@ -125,6 +125,39 @@ pub struct PolicyInput {
     /// Field rules.
     #[serde(default)]
     pub fields: HashMap<String, FieldRuleText>,
+}
+
+/// Input of engine resource rules (FB-134): rule action (`list`, `view`,
+/// `create`, `update`, `delete`, `read`, `write`) → rule (`null` locked,
+/// `""` everyone).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ResourceRulesInput {
+    /// Rules by action.
+    #[serde(default)]
+    pub rules: std::collections::BTreeMap<String, Option<String>>,
+}
+
+/// Longest resource name in a rule (`*`: every resource of the kind).
+pub const MAX_RESOURCE_NAME_LEN: usize = 200;
+
+fn resource_kind(kind: &str) -> Result<forgebase_data::ResourceKind, PolicyError> {
+    forgebase_data::ResourceKind::parse(kind).ok_or_else(|| {
+        let known: Vec<&str> = forgebase_data::ResourceKind::ALL.iter().map(|k| k.as_str()).collect();
+        PolicyError::invalid(
+            "invalid_resource_kind",
+            format!("unknown resource kind {kind:?}; use one of {}", known.join(", ")),
+        )
+    })
+}
+
+fn check_resource_name(name: &str) -> Result<(), PolicyError> {
+    if name.is_empty() || name.len() > MAX_RESOURCE_NAME_LEN || name.chars().any(char::is_control) {
+        return Err(PolicyError::invalid(
+            "invalid_resource",
+            format!("resource names are 1-{MAX_RESOURCE_NAME_LEN} characters without control characters, or *"),
+        ));
+    }
+    Ok(())
 }
 
 impl PolicyService {
@@ -1195,6 +1228,149 @@ impl PolicyService {
         self.write(vec![Statement::new(
             "DELETE FROM _forgebase_collection_policies WHERE collection_id = ?1",
             vec![coll.id.into()],
+        )])
+        .await
+    }
+
+    // ----- engine resource rules (FB-134) -------------------------------------------
+
+    /// Replaces the rules of one engine resource (super-admins). `name` `*`
+    /// holds the rules of every resource of the kind without rules of its
+    /// own. Every rule is parsed and, when it reads item fields, compiled
+    /// against the kind's [`forgebase_data::ResourceSchema`] (registered by
+    /// the engine, else the default); actions must be operations the schema
+    /// allows.
+    pub async fn put_resource_rules(
+        &self,
+        ctx: &AccessContext,
+        kind: &str,
+        name: &str,
+        input: &ResourceRulesInput,
+    ) -> Result<Json, PolicyError> {
+        self.require_super_admin(ctx, "policies:manage")?;
+        let k = resource_kind(kind)?;
+        check_resource_name(name)?;
+        let schema = self.resource_schema(k);
+        if input.rules.is_empty() {
+            return Err(PolicyError::invalid(
+                "invalid_rule",
+                "give at least one rule; DELETE removes them all",
+            ));
+        }
+        let dialect = self.backend().dialect();
+        for (action, text) in &input.rules {
+            let ops = forgebase_data::ResourceOp::expand(action).ok_or_else(|| {
+                PolicyError::invalid(
+                    "invalid_action",
+                    format!("unknown rule action {action:?}; use list, view, create, update, delete, read or write"),
+                )
+            })?;
+            if let Some(op) = ops.iter().find(|o| !schema.ops.contains(o)) {
+                return Err(PolicyError::invalid(
+                    "invalid_action",
+                    format!("{k} resources have no {op} operation"),
+                ));
+            }
+            if let Some(crate::snapshot::RuleSpec::Expr(rule)) = rule_spec(text.as_deref())?
+                && rule.reads_records()
+            {
+                schema
+                    .validate(dialect, &rule.sample(&Json::String("x".into())).into_predicate())
+                    .map_err(|e| PolicyError::invalid("invalid_rule", format!("{action}: {e}")))?;
+            }
+        }
+        let mut stmts = vec![Statement::new(
+            "DELETE FROM _forgebase_resource_rules WHERE kind = ?1 AND name = ?2",
+            vec![kind.into(), name.into()],
+        )];
+        for (action, text) in &input.rules {
+            stmts.push(Statement::new(
+                "INSERT INTO _forgebase_resource_rules (kind, name, action, rule, updated_by, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                vec![
+                    kind.into(),
+                    name.into(),
+                    action.clone().into(),
+                    text.clone().into(),
+                    ctx.actor().into(),
+                    now().into(),
+                ],
+            ));
+        }
+        self.write(stmts).await?;
+        self.get_resource_rules(ctx, kind, name).await
+    }
+
+    /// The rules of one engine resource (super-admins): `{kind, name, rules}`.
+    pub async fn get_resource_rules(&self, ctx: &AccessContext, kind: &str, name: &str) -> Result<Json, PolicyError> {
+        self.require_super_admin(ctx, "policies:read")?;
+        resource_kind(kind)?;
+        check_resource_name(name)?;
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT action, rule FROM _forgebase_resource_rules WHERE kind = ?1 AND name = ?2 ORDER BY action",
+                vec![kind.into(), name.into()],
+            ))
+            .await?;
+        let rules: serde_json::Map<String, Json> = rows
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r[0].as_str().unwrap_or_default().to_owned(),
+                    r[1].as_str().map_or(Json::Null, |t| Json::String(t.to_owned())),
+                )
+            })
+            .collect();
+        Ok(json!({"kind": kind, "name": name, "rules": rules}))
+    }
+
+    /// The rule-readable fields and operations of a kind, and every resource
+    /// of the kind with rules (super-admins).
+    pub async fn list_resource_rules(&self, ctx: &AccessContext, kind: &str) -> Result<Json, PolicyError> {
+        self.require_super_admin(ctx, "policies:read")?;
+        let schema = self.resource_schema(resource_kind(kind)?);
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT name, action, rule FROM _forgebase_resource_rules WHERE kind = ?1 ORDER BY name, action",
+                vec![kind.into()],
+            ))
+            .await?;
+        let mut items: Vec<(String, serde_json::Map<String, Json>)> = Vec::new();
+        for r in &rows.rows {
+            let name = r[0].as_str().unwrap_or_default().to_owned();
+            let rule = r[2].as_str().map_or(Json::Null, |t| Json::String(t.to_owned()));
+            match items.last_mut() {
+                Some((n, m)) if *n == name => {
+                    m.insert(r[1].as_str().unwrap_or_default().to_owned(), rule);
+                }
+                _ => {
+                    let mut m = serde_json::Map::new();
+                    m.insert(r[1].as_str().unwrap_or_default().to_owned(), rule);
+                    items.push((name, m));
+                }
+            }
+        }
+        Ok(json!({
+            "kind": kind,
+            "fields": schema.fields.iter().map(|f| json!({"name": f.name, "type": f.ty.as_str()})).collect::<Vec<_>>(),
+            "operations": schema.ops.iter().map(|o| o.as_str()).collect::<Vec<_>>(),
+            "actions": schema.kind.actions().iter().map(|a| crate::engine::action_name(*a)).collect::<Vec<_>>(),
+            "items": items.into_iter().map(|(name, rules)| json!({"name": name, "rules": rules})).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// Removes every rule of one engine resource (back to locked, or to the
+    /// `*` rules; super-admins).
+    pub async fn delete_resource_rules(&self, ctx: &AccessContext, kind: &str, name: &str) -> Result<(), PolicyError> {
+        self.require_super_admin(ctx, "policies:manage")?;
+        resource_kind(kind)?;
+        check_resource_name(name)?;
+        self.write(vec![Statement::new(
+            "DELETE FROM _forgebase_resource_rules WHERE kind = ?1 AND name = ?2",
+            vec![kind.into(), name.into()],
         )])
         .await
     }

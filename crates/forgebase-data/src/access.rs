@@ -19,8 +19,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
-use forgebase_query::Expr;
-use forgebase_schema::Collection;
+use forgebase_db::Dialect;
+use forgebase_query::{CompileOptions, Compiler, Expr, QueryError, SqlBuilder};
+use forgebase_schema::{Collection, Field, FieldKind};
 use serde_json::Value as Json;
 
 /// Who is calling.
@@ -405,6 +406,29 @@ pub trait Authorizer: Send + Sync + fmt::Debug {
     /// not about one collection, e.g. SQL and index-wide operations).
     fn authorize(&self, ctx: &AccessContext, action: Action, collection: Option<&Collection>) -> Decision;
 
+    /// The decision for `action` on one named engine resource (FB-134): a KV
+    /// namespace, vector collection, graph label, bucket, topic or
+    /// subscription. A `Decision::Filter` holds a predicate over the item
+    /// fields of the resource's [`ResourceSchema`]; compile it with
+    /// [`ResourceSchema::compile`] into the statement that reads or writes the
+    /// items. An engine that cannot apply a predicate treats it as a denial.
+    ///
+    /// Defaults to `authorize(ctx, action, None)`, so authorizers written
+    /// before FB-134 (and their wrappers) keep their answers; the policy
+    /// engine overrides it with resource permission keys
+    /// (`engine:<action>:<name>`) and resource rules.
+    fn authorize_resource(&self, ctx: &AccessContext, action: Action, resource: &ResourceRef) -> Decision {
+        let _ = resource;
+        self.authorize(ctx, action, None)
+    }
+
+    /// Tells the authorizer which item fields resource rules of
+    /// `schema.kind` may read (FB-134). Engines call it once when they start;
+    /// rules are validated against it when saved. Default: ignored.
+    fn register_resource_schema(&self, schema: ResourceSchema) {
+        let _ = schema;
+    }
+
     /// The decision for `action` on the realtime channel `channel` (FB-40).
     /// Defaults to `authorize(ctx, action, None)`; a policy engine overrides
     /// it to write rules per channel name.
@@ -461,4 +485,406 @@ impl Authorizer for DefaultAuthorizer {
 pub trait SecretHasher: Send + Sync + fmt::Debug {
     /// Returns the encoded hash of `secret`.
     fn hash(&self, secret: &str) -> Result<String, String>;
+}
+
+// ---------------------------------------------------------------------------
+// Engine resources (FB-134)
+// ---------------------------------------------------------------------------
+
+/// Kind of a named engine resource (FB-134). Permission keys name a resource
+/// as `engine:<action>:<name>` (`engine:kv_read:cache`); resource rules are
+/// stored per (kind, name, operation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum ResourceKind {
+    /// A key-value namespace ([`Action::KvRead`], `KvWrite`, `KvAdmin`).
+    KvNamespace,
+    /// A vector collection ([`Action::VectorRead`], `VectorWrite`, `VectorAdmin`).
+    VectorCollection,
+    /// A graph node label ([`Action::GraphRead`], `GraphWrite`).
+    GraphLabel,
+    /// A graph edge type ([`Action::GraphRead`], `GraphWrite`).
+    GraphEdgeType,
+    /// An object-storage bucket ([`Action::StorageRead`], `StorageWrite`, `StorageAdmin`).
+    Bucket,
+    /// A queue topic ([`Action::QueuePublish`], `QueueRead`, `QueueAdmin`).
+    Topic,
+    /// A queue subscription ([`Action::QueueConsume`], `QueueRead`, `QueueAdmin`).
+    Subscription,
+}
+
+impl ResourceKind {
+    /// Every kind.
+    pub const ALL: [ResourceKind; 7] = [
+        ResourceKind::KvNamespace,
+        ResourceKind::VectorCollection,
+        ResourceKind::GraphLabel,
+        ResourceKind::GraphEdgeType,
+        ResourceKind::Bucket,
+        ResourceKind::Topic,
+        ResourceKind::Subscription,
+    ];
+
+    /// Stored and URL name: `kv_namespace`, `vector_collection`,
+    /// `graph_label`, `graph_edge_type`, `bucket`, `queue_topic`,
+    /// `queue_subscription`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResourceKind::KvNamespace => "kv_namespace",
+            ResourceKind::VectorCollection => "vector_collection",
+            ResourceKind::GraphLabel => "graph_label",
+            ResourceKind::GraphEdgeType => "graph_edge_type",
+            ResourceKind::Bucket => "bucket",
+            ResourceKind::Topic => "queue_topic",
+            ResourceKind::Subscription => "queue_subscription",
+        }
+    }
+
+    /// The kind with this name.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// Engine actions asked about resources of this kind.
+    pub fn actions(self) -> &'static [Action] {
+        match self {
+            ResourceKind::KvNamespace => &[Action::KvRead, Action::KvWrite, Action::KvAdmin],
+            ResourceKind::VectorCollection => &[Action::VectorRead, Action::VectorWrite, Action::VectorAdmin],
+            ResourceKind::GraphLabel | ResourceKind::GraphEdgeType => &[Action::GraphRead, Action::GraphWrite],
+            ResourceKind::Bucket => &[Action::StorageRead, Action::StorageWrite, Action::StorageAdmin],
+            ResourceKind::Topic => &[Action::QueuePublish, Action::QueueRead, Action::QueueAdmin],
+            ResourceKind::Subscription => &[Action::QueueConsume, Action::QueueRead, Action::QueueAdmin],
+        }
+    }
+
+    /// The item fields resource rules may read until the engine registers its
+    /// own schema ([`Authorizer::register_resource_schema`]):
+    ///
+    /// | kind | fields |
+    /// |---|---|
+    /// | `kv_namespace` | `key` |
+    /// | `vector_collection` | `id`, `metadata` (JSON) |
+    /// | `graph_label` | `id`, `label`, `properties` (JSON) |
+    /// | `graph_edge_type` | `id`, `type`, `source`, `target`, `properties` (JSON) |
+    /// | `bucket` | `key`, `created_by`, `size`, `content_type`, `folders` (JSON array of the key's folder names) |
+    /// | `queue_topic`, `queue_subscription` | none (rules may use `@request` only) |
+    pub fn default_schema(self) -> ResourceSchema {
+        use ResourceFieldType::{Json as J, Number as N, Text as T};
+        let s = ResourceSchema::new(self);
+        match self {
+            ResourceKind::KvNamespace => s.field("key", T),
+            ResourceKind::VectorCollection => s.field("id", T).field("metadata", J),
+            ResourceKind::GraphLabel => s.field("id", T).field("label", T).field("properties", J),
+            ResourceKind::GraphEdgeType => s
+                .field("id", T)
+                .field("type", T)
+                .field("source", T)
+                .field("target", T)
+                .field("properties", J),
+            ResourceKind::Bucket => s
+                .field("key", T)
+                .field("created_by", T)
+                .field("size", N)
+                .field("content_type", T)
+                .field("folders", J),
+            ResourceKind::Topic | ResourceKind::Subscription => s,
+        }
+    }
+}
+
+impl fmt::Display for ResourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What an operation does to the items of a resource: the action of a
+/// resource rule, with the same names as collection rules. Rules may also be
+/// saved for `read` (list and view) and `write` (create, update and delete);
+/// a rule for the exact operation wins over its alias.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ResourceOp {
+    /// Enumerate or search items (KV scans, vector searches, object listings).
+    List,
+    /// Read one item.
+    View,
+    /// Add an item (KV set of a new key, upsert of a new vector, upload, publish).
+    Create,
+    /// Change an item.
+    Update,
+    /// Remove an item.
+    Delete,
+}
+
+impl ResourceOp {
+    /// Every operation.
+    pub const ALL: [ResourceOp; 5] = [
+        ResourceOp::List,
+        ResourceOp::View,
+        ResourceOp::Create,
+        ResourceOp::Update,
+        ResourceOp::Delete,
+    ];
+
+    /// `list`, `view`, `create`, `update` or `delete`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResourceOp::List => "list",
+            ResourceOp::View => "view",
+            ResourceOp::Create => "create",
+            ResourceOp::Update => "update",
+            ResourceOp::Delete => "delete",
+        }
+    }
+
+    /// The operation with this name.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|o| o.as_str() == s)
+    }
+
+    /// The alias covering this operation: `read` or `write`.
+    pub fn alias(self) -> &'static str {
+        match self {
+            ResourceOp::List | ResourceOp::View => "read",
+            _ => "write",
+        }
+    }
+
+    /// The operations a rule action names (`read` and `write` expand).
+    pub fn expand(action: &str) -> Option<Vec<ResourceOp>> {
+        match action {
+            "read" => Some(vec![ResourceOp::List, ResourceOp::View]),
+            "write" => Some(vec![ResourceOp::Create, ResourceOp::Update, ResourceOp::Delete]),
+            a => Self::parse(a).map(|o| vec![o]),
+        }
+    }
+}
+
+impl fmt::Display for ResourceOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One named engine resource an operation acts on, for
+/// [`Authorizer::authorize_resource`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ResourceRef {
+    /// Kind.
+    pub kind: ResourceKind,
+    /// Name as the engine stores it (namespace, collection, label, bucket,
+    /// topic, subscription). Names are compared case-sensitively.
+    pub name: String,
+    /// What the operation does to the resource's items.
+    pub op: ResourceOp,
+    /// Principal key of the resource's owner (a subscription's creator):
+    /// the owner holds every permission on it, an explicit deny still wins.
+    pub owner: Option<String>,
+}
+
+impl ResourceRef {
+    /// A resource without an owner.
+    pub fn new(kind: ResourceKind, name: impl Into<String>, op: ResourceOp) -> Self {
+        Self {
+            kind,
+            name: name.into(),
+            op,
+            owner: None,
+        }
+    }
+
+    /// Same resource owned by `principal_key` ([`AccessContext::principal_key`]).
+    pub fn with_owner(mut self, principal_key: impl Into<String>) -> Self {
+        self.owner = Some(principal_key.into());
+        self
+    }
+}
+
+impl fmt::Display for ResourceRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.kind, self.name)
+    }
+}
+
+/// Type of an item field readable by resource rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceFieldType {
+    /// Text.
+    Text,
+    /// A number.
+    Number,
+    /// `true` / `false` (stored as 0 / 1).
+    Bool,
+    /// A UTC timestamp in ForgeBase's text format (compares with `@now`).
+    Date,
+    /// A JSON value; rules read into it by path (`metadata.team`).
+    Json,
+}
+
+impl ResourceFieldType {
+    /// `text`, `number`, `bool`, `date` or `json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResourceFieldType::Text => "text",
+            ResourceFieldType::Number => "number",
+            ResourceFieldType::Bool => "bool",
+            ResourceFieldType::Date => "date",
+            ResourceFieldType::Json => "json",
+        }
+    }
+
+    fn field_kind(self) -> FieldKind {
+        match self {
+            ResourceFieldType::Text => FieldKind::Text {
+                min_length: None,
+                max_length: None,
+            },
+            ResourceFieldType::Number => FieldKind::Number {
+                min: None,
+                max: None,
+                integer: false,
+            },
+            ResourceFieldType::Bool => FieldKind::Bool,
+            ResourceFieldType::Date => FieldKind::Date,
+            ResourceFieldType::Json => FieldKind::Json { max_size: None },
+        }
+    }
+}
+
+/// One item field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceField {
+    /// Name, as rules write it and as the engine's row exposes it.
+    pub name: String,
+    /// Type.
+    pub ty: ResourceFieldType,
+}
+
+/// The item fields of one resource kind that resource rules may read, and
+/// the operations rules may be written for. The engine supplies it
+/// ([`Authorizer::register_resource_schema`]; until then
+/// [`ResourceKind::default_schema`]).
+///
+/// A `Decision::Filter` from [`Authorizer::authorize_resource`] is compiled
+/// with [`ResourceSchema::compile`]: the SQL names every field as a column of
+/// the row alias, so the engine selects its items as a derived table (or
+/// view) exposing exactly these column names. Field names are compared
+/// case-insensitively.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceSchema {
+    /// Kind.
+    pub kind: ResourceKind,
+    /// Readable item fields.
+    pub fields: Vec<ResourceField>,
+    /// Operations rules may be saved for (default: all five).
+    pub ops: Vec<ResourceOp>,
+}
+
+impl ResourceSchema {
+    /// A schema without fields (rules may use `@request` values only).
+    pub fn new(kind: ResourceKind) -> Self {
+        Self {
+            kind,
+            fields: Vec::new(),
+            ops: ResourceOp::ALL.to_vec(),
+        }
+    }
+
+    /// Same schema with another field.
+    pub fn field(mut self, name: impl Into<String>, ty: ResourceFieldType) -> Self {
+        self.fields.push(ResourceField { name: name.into(), ty });
+        self
+    }
+
+    /// Same schema with only these operations.
+    pub fn with_ops(mut self, ops: &[ResourceOp]) -> Self {
+        self.ops = ops.to_vec();
+        self
+    }
+
+    /// The field with this name (case-insensitive).
+    pub fn get(&self, name: &str) -> Option<&ResourceField> {
+        self.fields.iter().find(|f| f.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The fields as a strict collection named after the kind, for the
+    /// filter compiler.
+    pub fn collection(&self) -> Collection {
+        self.fields.iter().fold(Collection::base(self.kind.as_str()), |c, f| {
+            c.with_field(Field::new(f.name.clone(), f.ty.field_kind()))
+        })
+    }
+
+    /// Checks that `p` reads only declared fields and compiles.
+    pub fn validate(&self, dialect: &dyn Dialect, p: &Predicate) -> Result<(), QueryError> {
+        let mut b = SqlBuilder::new(dialect);
+        self.compile(&mut b, "t", p).map(|_| ())
+    }
+
+    /// Compiles a predicate of a `Decision::Filter` into a boolean SQL
+    /// expression over the row aliased `alias` (an empty alias: bare column
+    /// names); parameters are bound into `b`.
+    pub fn compile(&self, b: &mut SqlBuilder<'_>, alias: &str, p: &Predicate) -> Result<String, QueryError> {
+        let mut unknown = None;
+        let mut expr = p.filter.clone();
+        expr.for_each_path_mut(&mut |path| {
+            if let Some(forgebase_query::PathSeg::Name(n)) = path.segments.first()
+                && self.get(n).is_none()
+                && unknown.is_none()
+            {
+                unknown = Some(n.clone());
+            }
+        });
+        if let Some(n) = unknown {
+            return Err(QueryError::UnknownField(n));
+        }
+        let opts = CompileOptions {
+            allow_hidden: true,
+            params: p.params.clone(),
+            ..CompileOptions::default()
+        };
+        let catalog: HashMap<String, Collection> = HashMap::new();
+        Compiler::new(&catalog, &opts).filter(b, &self.collection(), alias, &expr)
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn kinds_and_ops_round_trip() {
+        for k in ResourceKind::ALL {
+            assert_eq!(ResourceKind::parse(k.as_str()), Some(k));
+            assert!(!k.actions().is_empty());
+        }
+        for o in ResourceOp::ALL {
+            assert_eq!(ResourceOp::parse(o.as_str()), Some(o));
+            assert!(ResourceOp::expand(o.alias()).unwrap().contains(&o));
+        }
+        assert_eq!(ResourceOp::expand("admin"), None);
+    }
+
+    #[test]
+    fn schemas_compile_declared_fields_only() {
+        let s = ResourceKind::Bucket.default_schema();
+        let d = forgebase_db::SqliteDialect;
+        let ok = Predicate::parse(
+            "created_by = {:me} && size < 100",
+            [("me".to_owned(), Json::from("u1"))].into(),
+        )
+        .unwrap();
+        let mut b = SqlBuilder::new(&d);
+        let sql = s.compile(&mut b, "o", &ok).unwrap();
+        assert!(sql.contains("o.\"created_by\""), "{sql}");
+        assert_eq!(b.params().len(), 2);
+        for bad in ["id = 'x'", "created = @now", "nope = 1"] {
+            let p = Predicate::parse(bad, HashMap::new()).unwrap();
+            assert!(s.validate(&d, &p).is_err(), "{bad} must be refused");
+        }
+        let json = ResourceKind::VectorCollection.default_schema();
+        let p = Predicate::parse("metadata.team = 'a'", HashMap::new()).unwrap();
+        json.validate(&d, &p).unwrap();
+    }
 }

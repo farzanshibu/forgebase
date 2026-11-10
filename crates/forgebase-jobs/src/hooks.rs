@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use forgebase_data::schema::Collection;
-use forgebase_data::{AccessContext, Action, Authorizer, Decision, FieldAccess};
+use forgebase_data::{AccessContext, Action, Authorizer, Decision, FieldAccess, ResourceRef, ResourceSchema};
 use forgebase_db::BoxFuture;
 use serde_json::Value as Json;
 
@@ -122,6 +122,14 @@ impl Authorizer for JobChannelAuthorizer {
             }
             _ => Decision::Deny,
         }
+    }
+
+    fn authorize_resource(&self, ctx: &AccessContext, action: Action, resource: &ResourceRef) -> Decision {
+        self.inner.authorize_resource(ctx, action, resource)
+    }
+
+    fn register_resource_schema(&self, schema: ResourceSchema) {
+        self.inner.register_resource_schema(schema);
     }
 
     fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {

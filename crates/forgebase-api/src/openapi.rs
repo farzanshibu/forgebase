@@ -96,7 +96,8 @@ fn doc_openapi() {}
         pd::delete_realm_role, pd::put_realm_role_set, pd::put_realm_binding, pd::add_override,
         pd::delete_override, pd::list_acl, pd::put_acl, pd::delete_acl, pd::suspend, pd::unsuspend,
         pd::get_policy, pd::put_policy, pd::delete_policy, pd::invite, pd::accept, pd::me, pd::check,
-        pd::audit,
+        pd::audit, pd::list_resource_rules, pd::get_resource_rules, pd::put_resource_rules,
+        pd::delete_resource_rules, pd::check_resource,
     ),
     components(schemas(
         ErrorEnvelope, ErrorDetail,
