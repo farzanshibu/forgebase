@@ -124,12 +124,14 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
             <Input className="w-full" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
             {fieldErr("confirm")}
           </label>
-          <label className="block space-y-1.5 text-sm">
-            <span className="font-medium">Setup token</span>
-            <Input className="w-full font-mono" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" spellCheck={false} required />
-            <span className="block text-xs text-muted-foreground">Printed by <code>forgebase serve</code> as the setup link; it fills in when you open that link.</span>
+          <div className="space-y-1.5 text-sm">
+            <label className="block space-y-1.5">
+              <span className="font-medium">Setup token</span>
+              <Input className="w-full font-mono" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" spellCheck={false} aria-describedby="setup-token-help" required />
+            </label>
+            <span id="setup-token-help" className="block text-xs text-muted-foreground">Printed by <code>forgebase serve</code> as the setup link; it fills in when you open that link.</span>
             {fieldErr("token")}
-          </label>
+          </div>
           {error !== undefined &&
             (error instanceof ApiError && error.code === "setup_complete" ? (
               <Alert tone="info" variant="plain">

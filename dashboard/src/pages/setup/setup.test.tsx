@@ -109,7 +109,7 @@ describe("step 2: feature map", () => {
     setup();
     renderStudio("/system/features");
     await screen.findByRole("region", { name: "Feature map" });
-    expect(within(card("resp")).getByRole("switch", { name: "Redis protocol enabled" })).toBeDisabled();
+    expect(within(card("resp")).getByRole("switch", { name: "Redis protocol enabled" })).toHaveAttribute("aria-disabled", "true");
     expect(within(card("resp")).getByText(/Set by an environment variable: read-only/)).toBeInTheDocument();
   });
 
@@ -205,7 +205,7 @@ describe("step 3: configure", () => {
     const cfg = await toConfigure();
     await userEvent.type(within(cfg).getByLabelText("Largest object"), "x");
     expect(within(cfg).getByText(/Enter a whole number/)).toBeInTheDocument();
-    expect(within(cfg).getByRole("button", { name: "Save and finish" })).toBeDisabled();
+    expect(within(cfg).getByRole("button", { name: "Finish" })).toBeDisabled();
     expect(st.patches).toEqual([]);
   });
 
