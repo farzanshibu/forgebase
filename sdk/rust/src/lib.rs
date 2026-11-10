@@ -1,6 +1,6 @@
 //! # ForgeBase Rust SDK
 //!
-//! An async client for [ForgeBase](https://github.com/forgebase/forgebase) built on `reqwest` and
+//! An async client for [ForgeBase](https://github.com/farzanshibu/forgebase) built on `reqwest` and
 //! `rustls` (no OpenSSL). It covers auth, collections and records, realtime subscriptions
 //! (WebSocket with SSE fallback), object storage, key-value, server functions, jobs, entitlements and store billing receipts.
 //!

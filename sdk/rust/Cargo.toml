@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.97"
 publish = false
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/forgebase/forgebase"
+repository = "https://github.com/farzanshibu/forgebase"
 description = "Async Rust client for ForgeBase: auth, records, realtime, storage, KV, functions, jobs, entitlements"
 readme = "README.md"
 
