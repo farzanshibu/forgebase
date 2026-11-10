@@ -465,7 +465,10 @@ pub async fn ensure_search_path(conn: &mut PgConnection) -> Result<bool, Migrati
         )))
         .execute(&mut *conn)
         .await?;
-        tracing::info!(search_path = SEARCH_PATH, "set the default search_path of the database user");
+        tracing::info!(
+            search_path = SEARCH_PATH,
+            "set the default search_path of the database user"
+        );
     }
     sqlx::raw_sql(AssertSqlSafe(format!("SET search_path = {SEARCH_PATH}")))
         .execute(&mut *conn)
@@ -475,9 +478,7 @@ pub async fn ensure_search_path(conn: &mut PgConnection) -> Result<bool, Migrati
 
 /// Whether a `search_path` value (`"$user", public`) names `schema`.
 fn search_path_has_schema(path: &str, schema: &str) -> bool {
-    path.split(',')
-        .map(|s| s.trim().trim_matches('"'))
-        .any(|s| s == schema)
+    path.split(',').map(|s| s.trim().trim_matches('"')).any(|s| s == schema)
 }
 
 fn quote_ident(s: &str) -> String {
@@ -584,7 +585,11 @@ mod tests {
         assert!(p[0].contains("add migrations/postgres/0003_functions_js.sql"));
         assert!(p[1].contains("the twins must have the same name"));
         assert!(p[2].contains("migrations/postgres/0005_pg_only.sql has no SQLite twin"));
-        assert!(pairing_problems_of(SQLITE, &PG[..1], 3).iter().any(|s| s.contains("baseline")));
+        assert!(
+            pairing_problems_of(SQLITE, &PG[..1], 3)
+                .iter()
+                .any(|s| s.contains("baseline"))
+        );
     }
 
     #[test]

@@ -188,7 +188,9 @@ fn check_bodies(create_sql: &str) -> Vec<String> {
         if before.is_ascii_alphanumeric() || before == '_' {
             continue;
         }
-        let Some(open) = upper[from..].find('(').map(|o| from + o) else { break };
+        let Some(open) = upper[from..].find('(').map(|o| from + o) else {
+            break;
+        };
         if !upper[from..open].trim().is_empty() {
             continue;
         }
@@ -216,8 +218,7 @@ fn check_bodies(create_sql: &str) -> Vec<String> {
 /// A check PostgreSQL enforces through the `jsonb` type instead.
 fn is_json_only_check(body: &str) -> bool {
     let n = norm_expr(body);
-    n.starts_with("json_valid") && !n.contains("and")
-        || (n.contains("isnullorjson_valid") && !n.contains("and"))
+    n.starts_with("json_valid") && !n.contains("and") || (n.contains("isnullorjson_valid") && !n.contains("and"))
 }
 
 fn sqlite_type(table_sql: &str, def: &str, name: &str, declared: &str, rowid_alias: bool) -> String {
@@ -294,11 +295,12 @@ fn fk_action(s: &str) -> String {
 
 async fn sqlite_schema(conn: &mut SqliteConnection) -> Schema {
     let mut schema = Schema::default();
-    let tables: Vec<(String, String)> =
-        sqlx::query_as("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'")
-            .fetch_all(&mut *conn)
-            .await
-            .unwrap();
+    let tables: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
     let virtuals: Vec<&str> = tables
         .iter()
         .filter(|(_, sql)| sql.to_uppercase().starts_with("CREATE VIRTUAL TABLE"))
@@ -445,10 +447,12 @@ async fn sqlite_schema(conn: &mut SqliteConnection) -> Schema {
                 .collect::<Vec<_>>()
                 .join(", ");
             let order = (1..=cols.len()).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
-            let rows = sqlx::query(AssertSqlSafe(format!("SELECT {select} FROM \"{name}\" ORDER BY {order}")))
-                .fetch_all(&mut *conn)
-                .await
-                .unwrap();
+            let rows = sqlx::query(AssertSqlSafe(format!(
+                "SELECT {select} FROM \"{name}\" ORDER BY {order}"
+            )))
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
             t.rows = Some(
                 rows.iter()
                     .map(|r| {
@@ -533,7 +537,11 @@ async fn pg_schema(conn: &mut PgConnection) -> Schema {
              JOIN pg_attribute a ON a.attnum = k.attnum
              WHERE con.conrelid = $1::bigint::oid AND a.attrelid = con.conrelid AND con.contype = 'p'
              GROUP BY con.oid";
-        t.primary_key = pg_names(conn, KEY_COLS, *oid).await.into_iter().next().unwrap_or_default();
+        t.primary_key = pg_names(conn, KEY_COLS, *oid)
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         const UNIQUE_COLS: &str = "SELECT array_agg(a.attname::text ORDER BY k.ord)
              FROM pg_constraint con, unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
              JOIN pg_attribute a ON a.attnum = k.attnum
@@ -592,7 +600,11 @@ async fn pg_schema(conn: &mut PgConnection) -> Schema {
             };
             t.indexes.insert(
                 r.get(0),
-                (r.get(1), norm_expr(body), pred.as_deref().map(norm_expr).unwrap_or_default()),
+                (
+                    r.get(1),
+                    norm_expr(body),
+                    pred.as_deref().map(norm_expr).unwrap_or_default(),
+                ),
             );
         }
         t.checks = sqlx::query_scalar::<_, i64>(
@@ -605,7 +617,8 @@ async fn pg_schema(conn: &mut PgConnection) -> Schema {
         // Allowed difference: the rowid stand-in column.
         if ROWID_TABLES.contains(&name.as_str()) {
             let before = t.columns.len();
-            t.columns.retain(|c| !(c.name == "_rowid" && c.ty == "bigint identity" && c.not_null));
+            t.columns
+                .retain(|c| !(c.name == "_rowid" && c.ty == "bigint identity" && c.not_null));
             assert_eq!(before - 1, t.columns.len(), "{name} needs a _rowid identity column");
         }
         t.row_count = sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM forgebase.\"{name}\"")))
@@ -692,7 +705,11 @@ fn diff(sqlite: &Schema, pg: &Schema) -> Vec<String> {
             out.push(format!("{name}: unique {u:?} only on {side}"));
         }
         for f in s.foreign_keys.symmetric_difference(&p.foreign_keys) {
-            let side = if s.foreign_keys.contains(f) { "SQLite" } else { "PostgreSQL" };
+            let side = if s.foreign_keys.contains(f) {
+                "SQLite"
+            } else {
+                "PostgreSQL"
+            };
             out.push(format!("{name}: foreign key {f:?} only on {side}"));
         }
         for (i, si) in &s.indexes {
@@ -724,7 +741,11 @@ fn diff(sqlite: &Schema, pg: &Schema) -> Vec<String> {
         }
     }
     for t in sqlite.triggers.symmetric_difference(&pg.triggers) {
-        let side = if sqlite.triggers.contains(t) { "SQLite" } else { "PostgreSQL" };
+        let side = if sqlite.triggers.contains(t) {
+            "SQLite"
+        } else {
+            "PostgreSQL"
+        };
         out.push(format!("trigger {t}: only on {side}"));
     }
     out
@@ -754,7 +775,10 @@ fn url_with(url: &str, database: &str, user: Option<&str>) -> String {
     let path = base[scheme_end..].find('/').map_or(base.len(), |p| p + scheme_end);
     let mut authority = base[scheme_end..path].to_owned();
     if let Some(u) = user {
-        let host = authority.split_once('@').map_or(authority.as_str(), |(_, h)| h).to_owned();
+        let host = authority
+            .split_once('@')
+            .map_or(authority.as_str(), |(_, h)| h)
+            .to_owned();
         authority = format!("{u}@{host}");
     }
     let mut out = format!("{}{authority}/{database}", &base[..scheme_end]);
@@ -862,7 +886,10 @@ fn the_comparison_catches_differences() {
 
 #[test]
 fn normalisation() {
-    assert_eq!(norm_expr("COALESCE(org_id, ''::text)"), norm_expr("coalesce(org_id, '')"));
+    assert_eq!(
+        norm_expr("COALESCE(org_id, ''::text)"),
+        norm_expr("coalesce(org_id, '')")
+    );
     assert_eq!(
         norm_expr("((status = 'running'::text) AND (deadline_at IS NOT NULL))"),
         norm_expr("status = 'running' AND deadline_at IS NOT NULL")
@@ -924,14 +951,20 @@ async fn postgres_runner_applies_the_baseline_once() {
     let before = postgres::status(&mut conn).await.unwrap();
     assert_eq!(before.current_version, 0);
     assert_eq!(before.pending.len(), postgres::baseline_covers().len());
-    assert!(!regclass_exists(&mut conn, "forgebase._forgebase_migrations").await, "status writes nothing");
+    assert!(
+        !regclass_exists(&mut conn, "forgebase._forgebase_migrations").await,
+        "status writes nothing"
+    );
 
     let first = postgres::migrate(&mut conn).await.unwrap();
     assert_eq!(first.len(), postgres::baseline_covers().len());
     let rows = bookkeeping(&mut conn).await;
     let baseline = postgres::POSTGRES_MIGRATIONS[0].checksum();
     for (row, cover) in rows.iter().zip(postgres::baseline_covers()) {
-        assert_eq!((row.0, row.1.as_str(), row.2.as_str()), (cover.version, cover.name, baseline.as_str()));
+        assert_eq!(
+            (row.0, row.1.as_str(), row.2.as_str()),
+            (cover.version, cover.name, baseline.as_str())
+        );
     }
     let status = postgres::status(&mut conn).await.unwrap();
     assert!(status.is_up_to_date());
@@ -957,7 +990,11 @@ async fn postgres_runner_rolls_back_a_failing_migration() {
     static COVERS: &[Migration] = &[Migration::new(1, "one", "")];
     static SET: &[Migration] = &[
         Migration::new(1, "baseline", "CREATE TABLE a (x bigint);"),
-        Migration::new(2, "two", "CREATE TABLE b (x bigint); INSERT INTO missing_table VALUES (1);"),
+        Migration::new(
+            2,
+            "two",
+            "CREATE TABLE b (x bigint); INSERT INTO missing_table VALUES (1);",
+        ),
     ];
     let url = pg_url(&db);
     let mut admin = pg_connect(&url).await;
@@ -966,16 +1003,29 @@ async fn postgres_runner_rolls_back_a_failing_migration() {
     let migrator = PgMigrator::new(SET, COVERS).unwrap();
     let err = migrator.run(&mut conn).await.unwrap_err();
     assert!(matches!(err, MigrationError::Failed { version: 2, .. }), "{err}");
-    assert!(regclass_exists(&mut conn, "forgebase.a").await, "migration 1 committed, in schema forgebase");
-    assert!(!regclass_exists(&mut conn, "forgebase.b").await, "migration 2 rolled back");
+    assert!(
+        regclass_exists(&mut conn, "forgebase.a").await,
+        "migration 1 committed, in schema forgebase"
+    );
+    assert!(
+        !regclass_exists(&mut conn, "forgebase.b").await,
+        "migration 2 rolled back"
+    );
     let status = migrator.status(&mut conn).await.unwrap();
     assert_eq!(status.current_version, 1);
     assert_eq!(status.pending.len(), 1);
 
     // An edited migration is refused; a newer database is refused.
     static EDITED: &[Migration] = &[Migration::new(1, "baseline", "CREATE TABLE a (x text);")];
-    let err = PgMigrator::new(EDITED, COVERS).unwrap().run(&mut conn).await.unwrap_err();
-    assert!(matches!(err, MigrationError::ChecksumMismatch { version: 1, .. }), "{err}");
+    let err = PgMigrator::new(EDITED, COVERS)
+        .unwrap()
+        .run(&mut conn)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, MigrationError::ChecksumMismatch { version: 1, .. }),
+        "{err}"
+    );
     static FIXED: &[Migration] = &[
         Migration::new(1, "baseline", "CREATE TABLE a (x bigint);"),
         Migration::new(2, "two", "CREATE TABLE b (x bigint);"),
@@ -1002,7 +1052,11 @@ async fn postgres_runners_racing_apply_each_migration_once() {
     let mut b = pg_connect(&target).await;
     let (ra, rb) = tokio::join!(postgres::migrate(&mut a), postgres::migrate(&mut b));
     let (ra, rb) = (ra.unwrap(), rb.unwrap());
-    assert_eq!(ra.len() + rb.len(), postgres::baseline_covers().len(), "applied exactly once");
+    assert_eq!(
+        ra.len() + rb.len(),
+        postgres::baseline_covers().len(),
+        "applied exactly once"
+    );
     assert_eq!(bookkeeping(&mut a).await.len(), postgres::baseline_covers().len());
 }
 
@@ -1032,15 +1086,19 @@ async fn postgres_external_owner_role_migrates_and_gets_the_search_path() {
     postgres::migrate(&mut conn).await.unwrap();
     // This session predates the setting; the catalog has it now.
     assert!(!postgres::ensure_search_path(&mut conn).await.unwrap(), "set once");
-    let owner: String = sqlx::query_scalar("SELECT tableowner::text FROM pg_tables WHERE tablename = '_forgebase_jobs'")
-        .fetch_one(&mut conn)
-        .await
-        .unwrap();
+    let owner: String =
+        sqlx::query_scalar("SELECT tableowner::text FROM pg_tables WHERE tablename = '_forgebase_jobs'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
     assert_eq!(owner, role);
     let _ = conn.close().await;
 
     let mut fresh = pg_connect(&target).await;
-    let path: String = sqlx::query_scalar("SHOW search_path").fetch_one(&mut fresh).await.unwrap();
+    let path: String = sqlx::query_scalar("SHOW search_path")
+        .fetch_one(&mut fresh)
+        .await
+        .unwrap();
     assert_eq!(path, "forgebase, public");
     assert!(!postgres::ensure_search_path(&mut fresh).await.unwrap(), "already set");
     let _ = fresh.close().await;

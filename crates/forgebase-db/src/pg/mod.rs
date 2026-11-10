@@ -319,7 +319,13 @@ impl PgDatabase {
 
     /// Applied / pending migrations, read without changing anything.
     pub(crate) async fn migration_status(&self) -> Result<MigrationStatus, DbError> {
-        let mut conn = self.inner.reader.primary.acquire().await.map_err(|e| self.classify(e))?;
+        let mut conn = self
+            .inner
+            .reader
+            .primary
+            .acquire()
+            .await
+            .map_err(|e| self.classify(e))?;
         Ok(PgMigrator::system().status(&mut conn).await?)
     }
 
