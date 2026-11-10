@@ -49,3 +49,33 @@ export function when(iso: string | null | undefined): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
 }
+
+export interface CompileIssue { line: number; column: number; message: string }
+
+/**
+ * Line/column issues of a `400 function_compile_failed` answer. The envelope may carry `error.details` as
+ * `{line, column}`, as a list under `errors`/`diagnostics`, or only the position inside the message ("3:14" or "line 3, column 14").
+ */
+export function compileIssues(err: unknown): CompileIssue[] {
+  const e = err as { code?: unknown; message?: unknown; body?: unknown };
+  if (!e || e.code !== "function_compile_failed") return [];
+  const message = typeof e.message === "string" ? e.message : "Compile error";
+  const details = (e.body as { error?: { details?: Record<string, unknown> } } | undefined)?.error?.details ?? {};
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : undefined);
+  const one = (o: Record<string, unknown>, fallback: string): CompileIssue | undefined => {
+    const line = num(o.line);
+    if (line === undefined) return undefined;
+    return { line, column: num(o.column ?? o.col) ?? 1, message: typeof o.message === "string" ? o.message : fallback };
+  };
+  for (const key of ["errors", "diagnostics"]) {
+    const list = details[key];
+    if (Array.isArray(list)) {
+      const out = list.map((x) => (typeof x === "object" && x ? one(x as Record<string, unknown>, message) : undefined)).filter((x): x is CompileIssue => !!x);
+      if (out.length) return out;
+    }
+  }
+  const direct = one(details, message);
+  if (direct) return [{ ...direct, message }];
+  const m = /(?:line\s+)?(\d+)\s*(?::|,\s*(?:col(?:umn)?\s+))\s*(\d+)/i.exec(message);
+  return m ? [{ line: Number(m[1]), column: Number(m[2]), message }] : [];
+}

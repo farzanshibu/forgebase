@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { RouteTabs } from "../../components/controls";
 import FunctionList from "./FunctionList";
+import NewFunction from "./NewFunction";
 import FunctionView from "./FunctionView";
 
 export default function FunctionsPage() {
@@ -11,6 +12,7 @@ export default function FunctionsPage() {
       <div className="mt-6">
         <Routes>
           <Route index element={<FunctionList />} />
+          <Route path="new" element={<NewFunction />} />
           <Route path="f/:name/*" element={<FunctionView />} />
           <Route path="*" element={<p className="text-muted-foreground">No such page in Functions Studio.</p>} />
         </Routes>
