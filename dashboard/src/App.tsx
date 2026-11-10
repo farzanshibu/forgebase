@@ -1,27 +1,31 @@
+import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 import { SessionProvider, useSession } from "./auth/session";
 import Layout from "./components/Layout";
-import LoginPage from "./pages/LoginPage";
+import RouteLoading from "./components/RouteLoading";
 import StudioPlaceholder from "./components/StudioPlaceholder";
-import OverviewPage from "./pages/OverviewPage";
-import AccessPage from "./pages/access/AccessPage";
-import BillingPage from "./pages/billing/BillingPage";
-import AuthPage from "./pages/auth/AuthPage";
-import DatabasePage from "./pages/database/DatabasePage";
-import IdentityPage from "./pages/identity/IdentityPage";
-import FunctionsPage from "./pages/functions/FunctionsPage";
-import JobsPage from "./pages/jobs/JobsPage";
-import QueuesPage from "./pages/queues/QueuesPage";
-import RedisPage from "./pages/redis/RedisPage";
-import StoragePage from "./pages/storage/StoragePage";
-import GraphPage from "./pages/graph/GraphPage";
-import VectorPage from "./pages/vector/VectorPage";
-import SystemStudio from "./pages/system/SystemStudio";
 import { STUDIOS } from "./studios";
 import { Spinner } from "panelui-web/spinner";
 import { Toast } from "panelui-web/toast";
 import ThemeProvider from "./theme/ThemeProvider";
 import { toaster } from "./toaster";
+
+// Each studio is its own chunk, fetched when its route is first opened.
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const OverviewPage = lazy(() => import("./pages/OverviewPage"));
+const AccessPage = lazy(() => import("./pages/access/AccessPage"));
+const BillingPage = lazy(() => import("./pages/billing/BillingPage"));
+const AuthPage = lazy(() => import("./pages/auth/AuthPage"));
+const DatabasePage = lazy(() => import("./pages/database/DatabasePage"));
+const IdentityPage = lazy(() => import("./pages/identity/IdentityPage"));
+const FunctionsPage = lazy(() => import("./pages/functions/FunctionsPage"));
+const JobsPage = lazy(() => import("./pages/jobs/JobsPage"));
+const QueuesPage = lazy(() => import("./pages/queues/QueuesPage"));
+const RedisPage = lazy(() => import("./pages/redis/RedisPage"));
+const StoragePage = lazy(() => import("./pages/storage/StoragePage"));
+const GraphPage = lazy(() => import("./pages/graph/GraphPage"));
+const VectorPage = lazy(() => import("./pages/vector/VectorPage"));
+const SystemStudio = lazy(() => import("./pages/system/SystemStudio"));
 
 export default function App() {
   return (
@@ -43,7 +47,12 @@ function Gate() {
         <Spinner aria-hidden="true" role="presentation" /> Loading…
       </p>
     );
-  if (status === "anonymous") return <LoginPage />;
+  if (status === "anonymous")
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <LoginPage />
+      </Suspense>
+    );
   return <Studios />;
 }
 
