@@ -395,6 +395,10 @@ fn a_restart_issues_a_new_token_and_attempts_are_rate_limited() {
         text(&out.stdout)
     );
     let project = root.join("app");
+    assert!(
+        !project.join("forgebase-data/auth/master.key").exists(),
+        "init without an administrator leaves the master key to the first start"
+    );
 
     let mut first = Serve::start(&project, &root.join("a.log"));
     let old = first.setup_token(startup_timeout()).unwrap();

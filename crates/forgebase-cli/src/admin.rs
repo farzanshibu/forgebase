@@ -255,35 +255,44 @@ pub async fn init_admin(
     if args.no_admin {
         return Ok(InitAdmin::Skipped("--no-admin".into()));
     }
-    let (db, auth) = open_config(config).await?;
-    let res = async {
-        if !auth.setup_required().await? {
-            return anyhow::Ok(InitAdmin::Exists);
-        }
-        let creds = match preset {
-            Some(c) => Some(c),
-            None if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) => {
-                return Ok(InitAdmin::Skipped("no terminal to prompt on".into()));
-            }
-            None => {
-                let stdin = std::io::stdin();
-                let mut input = stdin.lock();
-                let mut out = std::io::stdout();
-                match prompt_admin(&mut input, &mut out, &mut set_echo) {
-                    Ok(c) => c,
-                    Err(e) => return Ok(InitAdmin::Skipped(format!("{e:#}"))),
-                }
-            }
-        };
-        let Some((email, pw)) = creds else {
-            return Ok(InitAdmin::Skipped("declined".into()));
-        };
-        let admin = auth.create_admin(&email, &pw, "cli", &cli_client()).await?;
-        Ok(InitAdmin::Created(admin.email))
+    // A plain read: opening the auth service creates the master key, which
+    // `init` leaves to the first start unless it creates an administrator.
+    if admin_exists(config).await? {
+        return Ok(InitAdmin::Exists);
     }
-    .await;
+    let creds = match preset {
+        Some(c) => Some(c),
+        None if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) => {
+            return Ok(InitAdmin::Skipped("no terminal to prompt on".into()));
+        }
+        None => {
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut out = std::io::stdout();
+            match prompt_admin(&mut input, &mut out, &mut set_echo) {
+                Ok(c) => c,
+                Err(e) => return Ok(InitAdmin::Skipped(format!("{e:#}"))),
+            }
+        }
+    };
+    let Some((email, pw)) = creds else {
+        return Ok(InitAdmin::Skipped("declined".into()));
+    };
+    let (db, auth) = open_config(config).await?;
+    let res = auth.create_admin(&email, &pw, "cli", &cli_client()).await;
     db.close().await;
-    res
+    Ok(InitAdmin::Created(res?.email))
+}
+
+/// Whether the data directory of `config` has an administrator, over a
+/// read-only connection.
+async fn admin_exists(config: &Config) -> anyhow::Result<bool> {
+    let layout = DataLayout::new(&config.data_dir);
+    let db = Database::open(DbOptions::from_config(&config.database, layout.database_path()).read_only()).await?;
+    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+    let res = forgebase_auth::setup::admin_exists(&backend).await;
+    db.close().await;
+    Ok(res?)
 }
 
 /// Attempts at a valid email and matching passwords before giving up.
