@@ -283,7 +283,11 @@ const FORGEBASE_DTS: &str = include_str!("../../../sdk/functions/forgebase.d.ts"
 const MAX_SOURCE: u64 = 1 << 20;
 
 fn template(ts: bool) -> String {
-    let (req, ret) = if ts { (": Request", ": Promise<Response>") } else { ("", "") };
+    let (req, ret) = if ts {
+        (": Request", ": Promise<Response>")
+    } else {
+        ("", "")
+    };
     format!(
         r#"/// <reference path="./forgebase.d.ts" />
 import {{ serve }} from "forgebase";
@@ -369,7 +373,11 @@ fn code_of(path: &Path) -> anyhow::Result<Code> {
         bail!("{} is not a file", path.display());
     }
     if meta.len() > MAX_SOURCE {
-        bail!("{} is {} bytes; sources are limited to {MAX_SOURCE}", path.display(), meta.len());
+        bail!(
+            "{} is {} bytes; sources are limited to {MAX_SOURCE}",
+            path.display(),
+            meta.len()
+        );
     }
     let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {} as UTF-8", path.display()))?;
     Ok(Code::Source { language, text })
@@ -679,7 +687,13 @@ mod tests {
         assert!(b.get("wasm").is_none());
         let js = dir.path().join("index.mjs");
         std::fs::write(&js, "x").unwrap();
-        assert!(matches!(code_of(&js).unwrap(), Code::Source { language: "javascript", .. }));
+        assert!(matches!(
+            code_of(&js).unwrap(),
+            Code::Source {
+                language: "javascript",
+                ..
+            }
+        ));
         assert!(matches!(code_of(&wasm_file(dir.path())).unwrap(), Code::Wasm(_)));
     }
 
@@ -754,7 +768,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "deployed hello v3 (8 bytes), active\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "deployed hello v3 (wasm, 8 bytes), active\n"
+        );
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0].request_line, "POST /api/v1/functions HTTP/1.1");
         assert!(seen[0].headers.contains("Authorization: Bearer fbk_secret"));

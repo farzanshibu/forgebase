@@ -328,7 +328,9 @@ pub(crate) async fn execute(
                 let have = mem.data_size(&store);
                 if have < snap.memory.len() {
                     let page = mem.page_size(&store);
-                    let pages = u64::try_from(snap.memory.len() - have).unwrap_or(u64::MAX).div_ceil(page);
+                    let pages = u64::try_from(snap.memory.len() - have)
+                        .unwrap_or(u64::MAX)
+                        .div_ceil(page);
                     mem.grow(&mut store, pages)?;
                 }
                 mem.write(&mut store, 0, &snap.memory)?;

@@ -92,9 +92,8 @@ impl JsRuntime {
         self.snapshot
             .get_or_try_init(|| async {
                 let module = self.module().await?;
-                let fail = |e: wasmtime::Error| {
-                    FunctionError::Internal(format!("the JavaScript engine does not start: {e}"))
-                };
+                let fail =
+                    |e: wasmtime::Error| FunctionError::Internal(format!("the JavaScript engine does not start: {e}"));
                 let mut linker: Linker<InitLog> = Linker::new(&self.engine);
                 define_wasi(&mut linker).map_err(fail)?;
                 linker.define_unknown_imports_as_traps(&module).map_err(fail)?;
@@ -126,7 +125,9 @@ impl JsRuntime {
                         .get_global(&mut store, "__stack_pointer")
                         .ok_or_else(|| wasmtime::Error::msg("no __stack_pointer export"))?
                         .get(&mut store);
-                    let stack_pointer = sp.i32().ok_or_else(|| wasmtime::Error::msg("__stack_pointer is not i32"))?;
+                    let stack_pointer = sp
+                        .i32()
+                        .ok_or_else(|| wasmtime::Error::msg("__stack_pointer is not i32"))?;
                     Ok(MemorySnapshot { memory, stack_pointer })
                 };
                 let snap = tokio::time::timeout(INIT_TIMEOUT, run)
@@ -221,7 +222,10 @@ async fn js_call(
         )));
     }
     let Some(op) = read_guest_max(caller, op_ptr, op_len, 64).and_then(|b| String::from_utf8(b).ok()) else {
-        return Ok(finish(caller, Err(HostError::new("bad_argument", "invalid operation name"))));
+        return Ok(finish(
+            caller,
+            Err(HostError::new("bad_argument", "invalid operation name")),
+        ));
     };
     let Some(args) = read_guest_max(caller, arg_ptr, arg_len, MAX_JS_ARG) else {
         return Ok(finish(
@@ -351,9 +355,7 @@ fn define_wasi<T: EngineLog + 'static>(linker: &mut Linker<T>) -> wasmtime::Resu
         "clock_time_get",
         |mut caller: Caller<'_, T>, id: i32, _precision: i64, out: i32| -> i32 {
             let ns: u128 = match id {
-                0 => SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
+                0 => SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos()),
                 1..=3 => monotonic_base().elapsed().as_nanos(),
                 _ => return ERRNO_INVAL,
             };
@@ -370,7 +372,9 @@ fn define_wasi<T: EngineLog + 'static>(linker: &mut Linker<T>) -> wasmtime::Resu
         "random_get",
         |mut caller: Caller<'_, T>, ptr: i32, len: i32| -> wasmtime::Result<i32> {
             charge_any(&mut caller, HOST_CALL_FUEL)?;
-            let Ok(n) = usize::try_from(len) else { return Ok(ERRNO_INVAL) };
+            let Ok(n) = usize::try_from(len) else {
+                return Ok(ERRNO_INVAL);
+            };
             if n > 65_536 {
                 return Ok(ERRNO_INVAL);
             }
@@ -378,7 +382,11 @@ fn define_wasi<T: EngineLog + 'static>(linker: &mut Linker<T>) -> wasmtime::Resu
             if getrandom::fill(&mut buf).is_err() {
                 return Err(Trap::UnreachableCodeReached.into());
             }
-            Ok(if mem_write(&mut caller, ptr, &buf) { 0 } else { ERRNO_FAULT })
+            Ok(if mem_write(&mut caller, ptr, &buf) {
+                0
+            } else {
+                ERRNO_FAULT
+            })
         },
     )?;
     linker.func_wrap(
@@ -418,11 +426,9 @@ fn define_wasi<T: EngineLog + 'static>(linker: &mut Linker<T>) -> wasmtime::Resu
         },
     )?;
     linker.func_wrap(W, "fd_close", |_: Caller<'_, T>, _fd: i32| -> i32 { ERRNO_BADF })?;
-    linker.func_wrap(
-        W,
-        "fd_fdstat_get",
-        |_: Caller<'_, T>, _fd: i32, _out: i32| -> i32 { ERRNO_BADF },
-    )?;
+    linker.func_wrap(W, "fd_fdstat_get", |_: Caller<'_, T>, _fd: i32, _out: i32| -> i32 {
+        ERRNO_BADF
+    })?;
     linker.func_wrap(
         W,
         "fd_seek",

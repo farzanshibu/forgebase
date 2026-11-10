@@ -350,9 +350,42 @@ fn reply_json(r: forgebase_kv::Reply) -> Json {
 
 /// Commands that only read (a `read` namespace rule allows only these).
 const KV_READ: &[&str] = &[
-    "GET", "MGET", "EXISTS", "TTL", "PTTL", "STRLEN", "TYPE", "SCAN", "KEYS", "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS",
-    "HLEN", "HEXISTS", "LRANGE", "LLEN", "LINDEX", "SMEMBERS", "SISMEMBER", "SCARD", "SUNION", "SINTER", "SDIFF", "ZRANGE",
-    "ZREVRANGE", "ZRANGEBYSCORE", "ZSCORE", "ZCARD", "ZCOUNT", "ZRANK", "ZREVRANK", "XRANGE", "XREVRANGE", "XLEN",
+    "GET",
+    "MGET",
+    "EXISTS",
+    "TTL",
+    "PTTL",
+    "STRLEN",
+    "TYPE",
+    "SCAN",
+    "KEYS",
+    "HGET",
+    "HMGET",
+    "HGETALL",
+    "HKEYS",
+    "HVALS",
+    "HLEN",
+    "HEXISTS",
+    "LRANGE",
+    "LLEN",
+    "LINDEX",
+    "SMEMBERS",
+    "SISMEMBER",
+    "SCARD",
+    "SUNION",
+    "SINTER",
+    "SDIFF",
+    "ZRANGE",
+    "ZREVRANGE",
+    "ZRANGEBYSCORE",
+    "ZSCORE",
+    "ZCARD",
+    "ZCOUNT",
+    "ZRANK",
+    "ZREVRANK",
+    "XRANGE",
+    "XREVRANGE",
+    "XLEN",
     "PING",
 ];
 
@@ -395,9 +428,10 @@ fn kv(env: &HostEnv, ctx: &AccessContext, as_admin: bool, v: Json) -> HostResult
         Some(ns) => {
             if !as_admin {
                 let read_only = KV_READ.contains(&name.as_str());
-                let allowed = env.kv_rules.iter().any(|r| {
-                    pattern_matches(&r.namespace, &ns) && (read_only || matches!(r.access, KvAccess::Write))
-                });
+                let allowed = env
+                    .kv_rules
+                    .iter()
+                    .any(|r| pattern_matches(&r.namespace, &ns) && (read_only || matches!(r.access, KvAccess::Write)));
                 if !allowed {
                     return Err(HostError::new(
                         "kv_namespace_denied",
@@ -429,7 +463,16 @@ async fn vector(env: &HostEnv, ctx: &AccessContext, op: &str, v: Json) -> HostRe
             } else {
                 let req: forgebase_vector::model::SearchRequest = take(pick(
                     o,
-                    &["field", "vector", "k", "filter", "params", "include_vectors", "include_text", "exact"],
+                    &[
+                        "field",
+                        "vector",
+                        "k",
+                        "filter",
+                        "params",
+                        "include_vectors",
+                        "include_text",
+                        "exact",
+                    ],
                 ))?;
                 out(&svc.search(ctx, &coll, req).await.map_err(err)?)
             }
@@ -616,7 +659,11 @@ mod tests {
 
     #[test]
     fn digests_and_hmac() {
-        let d = crypto("crypto.digest", &json!({"algorithm": "sha-256", "data_base64": b64().encode(b"abc")})).unwrap();
+        let d = crypto(
+            "crypto.digest",
+            &json!({"algorithm": "sha-256", "data_base64": b64().encode(b"abc")}),
+        )
+        .unwrap();
         let v: Json = serde_json::from_slice(&d).unwrap();
         assert_eq!(
             b64().decode(v["base64"].as_str().unwrap()).unwrap(),
@@ -636,6 +683,9 @@ mod tests {
     }
 
     fn hex_bytes(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 }

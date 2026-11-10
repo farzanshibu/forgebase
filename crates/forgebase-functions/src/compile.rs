@@ -18,8 +18,8 @@ use std::path::Path;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression, ImportDeclaration,
-    ImportExpression, StaticMemberExpression, TSImportEqualsDeclaration,
+    CallExpression, ExportAllDeclaration, ExportFromDeclaration, Expression, ImportDeclaration, ImportExpression,
+    StaticMemberExpression, TSImportEqualsDeclaration,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_codegen::Codegen;
@@ -259,7 +259,20 @@ fn handle_method(service: &str, method: &str) -> Option<(&'static str, &'static 
 }
 
 const KV_METHODS: &[&str] = &[
-    "get", "set", "del", "incr", "decr", "expire", "ttl", "exists", "keys", "hget", "hset", "hdel", "hgetall", "command",
+    "get",
+    "set",
+    "del",
+    "incr",
+    "decr",
+    "expire",
+    "ttl",
+    "exists",
+    "keys",
+    "hget",
+    "hset",
+    "hdel",
+    "hgetall",
+    "command",
     "namespace",
 ];
 
@@ -391,7 +404,12 @@ pub fn unmet(compiled: &Compiled, has: impl Fn(&str) -> bool) -> Vec<CompileDiag
         if n.any_of.iter().any(|c| has(c)) {
             continue;
         }
-        let caps = n.any_of.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(" or ");
+        let caps = n
+            .any_of
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
         let message = format!(
             "the code uses {} but the capability {caps} is not granted: add it under Capabilities and deploy again",
             n.what
@@ -477,7 +495,11 @@ mod tests {
         ] {
             assert!(whats.contains(&w), "{w} missing from {whats:?}");
         }
-        let c = compile("serve((r, ctx) => ctx.db.from(\"t\").create({}));", Language::Javascript).unwrap();
+        let c = compile(
+            "serve((r, ctx) => ctx.db.from(\"t\").create({}));",
+            Language::Javascript,
+        )
+        .unwrap();
         let missing = unmet(&c, |c| c == "db.read");
         assert_eq!(missing.len(), 1);
         assert!(missing[0].message.contains("db.write"));
@@ -492,7 +514,9 @@ mod tests {
         // Find where the generated code has the throw.
         let (gl, line) = c.js.lines().enumerate().find(|(_, l)| l.contains("throw")).unwrap();
         let gc = line.find("throw").unwrap();
-        let (sl, sc) = map.lookup(u32::try_from(gl + 1).unwrap(), u32::try_from(gc + 1).unwrap()).unwrap();
+        let (sl, sc) = map
+            .lookup(u32::try_from(gl + 1).unwrap(), u32::try_from(gc + 1).unwrap())
+            .unwrap();
         assert_eq!((sl, sc), (8, 3), "{}", c.js);
         let t = remap_trace(
             &format!("Error: x\n    at <anonymous> (index.js:{}:{})", gl + 1, gc + 1),
@@ -500,12 +524,19 @@ mod tests {
             "index.ts",
         );
         assert_eq!(t, "Error: x\n    at <anonymous> (index.ts:8:3)");
-        assert_eq!(remap_trace("at f (index.js:3:4) index.js:x", None, "index.js"), "at f (index.js:3:4) index.js:x");
+        assert_eq!(
+            remap_trace("at f (index.js:3:4) index.js:x", None, "index.js"),
+            "at f (index.js:3:4) index.js:x"
+        );
     }
 
     #[test]
     fn enums_compile() {
-        let c = compile("enum Color { Red = \"r\", Green = \"g\" }\nexport const c = Color.Red;\n", Language::Typescript).unwrap();
+        let c = compile(
+            "enum Color { Red = \"r\", Green = \"g\" }\nexport const c = Color.Red;\n",
+            Language::Typescript,
+        )
+        .unwrap();
         assert!(c.js.contains("Color"), "{}", c.js);
     }
 

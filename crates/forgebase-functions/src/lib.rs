@@ -24,9 +24,9 @@ pub mod fetch;
 pub mod hooks;
 pub mod host;
 pub mod http;
+pub mod jobs;
 pub mod js;
 mod jsops;
-pub mod jobs;
 pub mod model;
 pub mod runtime;
 pub mod services;
@@ -358,8 +358,25 @@ impl FunctionService {
         Ok(svc)
     }
 
-    /// Starts the after-hook dispatcher.
+    /// Starts the after-hook dispatcher, and compiles and initialises the
+    /// JavaScript engine in the background when JavaScript functions exist
+    /// (so their first request does not wait for it).
     pub fn start_background(&self) {
+        if self
+            .registry()
+            .by_name
+            .values()
+            .any(|e| e.config.runtime == FunctionRuntime::Js)
+        {
+            let weak = Arc::downgrade(&self.inner);
+            let warm = tokio::spawn(async move {
+                let Some(inner) = weak.upgrade() else { return };
+                if let Err(e) = inner.js.snapshot().await {
+                    tracing::warn!(error = %e, "JavaScript engine warm-up failed; the first JavaScript call retries");
+                }
+            });
+            self.inner.tasks.lock().unwrap_or_else(|p| p.into_inner()).push(warm);
+        }
         let weak = Arc::downgrade(&self.inner);
         let every = self.inner.cfg.after_hook_interval;
         let task = tokio::spawn(async move {
@@ -715,17 +732,13 @@ impl FunctionService {
                 .insert((id.clone(), version), module);
         }
         if let Some(js) = script {
-            self.inner
-                .scripts
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(
-                    (id.clone(), version),
-                    Arc::new(Script {
-                        js: js.into_bytes(),
-                        map,
-                    }),
-                );
+            self.inner.scripts.lock().unwrap_or_else(|p| p.into_inner()).insert(
+                (id.clone(), version),
+                Arc::new(Script {
+                    js: js.into_bytes(),
+                    map,
+                }),
+            );
         }
         self.reload().await?;
         let entry = self.entry(&req.name)?;

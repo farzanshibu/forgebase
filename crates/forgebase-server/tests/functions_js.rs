@@ -91,7 +91,9 @@ async fn every_ctx_service_runs_as_the_caller_and_service_role_bypasses() {
     .await
     .unwrap();
     for owner in ["u1", "u2"] {
-        data.create_record(&admin, "notes", json!({"owner": owner})).await.unwrap();
+        data.create_record(&admin, "notes", json!({"owner": owner}))
+            .await
+            .unwrap();
     }
     policy
         .put_policy(
@@ -108,8 +110,10 @@ async fn every_ctx_service_runs_as_the_caller_and_service_role_bypasses() {
         .vector()
         .create_collection(
             &admin,
-            serde_json::from_value(json!({"name": "docs", "fields": [{"name": "v", "dimension": 2, "metric": "cosine"}]}))
-                .unwrap(),
+            serde_json::from_value(
+                json!({"name": "docs", "fields": [{"name": "v", "dimension": 2, "metric": "cosine"}]}),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -197,8 +201,10 @@ async fn every_ctx_service_runs_as_the_caller_and_service_role_bypasses() {
         .set_acl(
             &admin,
             "files",
-            serde_json::from_value(json!({"entries": [{"prefix": "", "grantee": "user:users/u1", "permission": "write"}]}))
-                .unwrap(),
+            serde_json::from_value(
+                json!({"entries": [{"prefix": "", "grantee": "user:users/u1", "permission": "write"}]}),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();

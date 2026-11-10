@@ -396,3 +396,45 @@ binary. Chosen because it is the standard statistical benchmark harness for
 Rust (warm-up, outlier handling, baselines) and works on stable; disabling the
 default features drops the plotting and rayon stacks. `cargo deny` passes with
 it under the existing licence allow-list.
+
+## FB-93 (JavaScript and TypeScript functions, ADR-0027, 2026-11-11)
+
+TypeScript is type-stripped on the server with **oxc**, all crates pinned to
+**=0.155.0** (released 2026-10-19), licence MIT, used by
+`forgebase-functions`:
+
+| Crate | Purpose |
+|---|---|
+| oxc_allocator, oxc_ast, oxc_ast_visit, oxc_span | arena, AST, visitor (import and capability scan) |
+| oxc_parser | ES2023 / TypeScript parser with positioned errors |
+| oxc_semantic | syntax checks and scoping (enum evaluation) for the transform |
+| oxc_transformer | the TypeScript transform (types, enums, namespaces, parameter properties) |
+| oxc_codegen (`sourcemap`) | JavaScript printer and source map (oxc_sourcemap 9.0.0, MIT) |
+| oxc_diagnostics | error type with labelled spans |
+
+Transitive packages new in `Cargo.lock` (oxc's own crates and their
+helpers): `oxc_ast_macros`, `oxc_compat`, `oxc_data_structures`,
+`oxc_ecmascript`, `oxc_estree`, `oxc_index`, `oxc_regular_expression`,
+`oxc_str`, `oxc_syntax`, `oxc_traverse`, `oxc-browserslist`, `compact_str`,
+`castaway`, `cow-utils`, `dragonbox_ecma`, `nonmax`, `seq-macro`,
+`static_assertions`, `unicode-id-start`, `ropey`, `str_indices`,
+`textwrap`, `smawk`, `unicode-segmentation`, `self_cell`, `phf` (+
+`phf_generator`, `phf_macros`, `phf_shared`, `siphasher`), `itertools 0.15`,
+`base64 0.23`, `base64-simd`, `vsimd`, `outref`, `json-escape-simd`,
+`escape-simd`, `bytecount`, `miniz_oxide 0.9`, `adler2`,
+`hmac-sha1-compact`, `icu_segmenter` / `icu_locale_fallback` (+ data);
+all MIT, Apache-2.0, BSD, Zlib, ISC or Unicode-3.0 (`cargo deny check`
+passes).
+
+Workspace crates already in the tree become direct dependencies of
+`forgebase-functions`: `forgebase-vector`, `forgebase-storage`,
+`forgebase-policy` (the `ctx` services), `getrandom` (WASI `random_get`
+shim), `hmac` + `sha1` (`crypto.subtle` digests and HMAC).
+
+**Not a crate:** the JavaScript engine itself is a committed WebAssembly
+artifact (`crates/forgebase-functions/js/forgebase-js.wasm`): QuickJS
+(quickjs-ng 0.17.0, MIT) and wasi-libc from **wasi-sdk 34.0**, built by
+`scripts/build-js-engine.sh` with pinned SHA-256s; notices in
+`crates/forgebase-functions/js/LICENSES.md`. No `rquickjs`/`boa`/V8 crate:
+running QuickJS inside the existing Wasmtime sandbox keeps one trust boundary
+and the ADR-0017 limits.

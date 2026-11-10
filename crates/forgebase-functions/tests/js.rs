@@ -159,7 +159,13 @@ async fn a_typescript_http_function_runs_end_to_end_as_the_caller() {
     let h = harness().await;
     todos(&h).await;
     let app = app(&h);
-    let d = deploy_ok(&app, "todos", TODOS, json!({"capabilities": ["db.read", "db.write", "log"]})).await;
+    let d = deploy_ok(
+        &app,
+        "todos",
+        TODOS,
+        json!({"capabilities": ["db.read", "db.write", "log"]}),
+    )
+    .await;
     assert_eq!(d["version"]["runtime"], "js");
     assert_eq!(d["version"]["language"], "typescript");
 
@@ -175,11 +181,25 @@ async fn a_typescript_http_function_runs_end_to_end_as_the_caller() {
         assert_eq!(r.status, StatusCode::CREATED, "{}", r.text());
     }
     // Anonymous callers pass no create rule.
-    let r = call(&app, Method::POST, "/api/v1/functions/todos/invoke", "anon", Some(json!({"title": "x"}))).await;
+    let r = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions/todos/invoke",
+        "anon",
+        Some(json!({"title": "x"})),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
 
     // Each caller sees only their rows (list rule), through the sub-path route.
-    let r = call(&app, Method::GET, "/api/v1/functions/todos/invoke/items/all?q=1", "user:u1", None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/todos/invoke/items/all?q=1",
+        "user:u1",
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     assert_eq!(
         r.json(),
@@ -194,14 +214,26 @@ async fn a_typescript_http_function_runs_end_to_end_as_the_caller() {
     let r3 = call(&app, Method::GET, "/api/v1/functions/todos/invoke", "anon", None).await;
     assert_eq!(r3.status, StatusCode::BAD_GATEWAY);
     let msg = r3.json()["error"]["message"].as_str().unwrap().to_owned();
-    assert!(msg.contains("authentication required") && msg.contains("index.ts:"), "{msg}");
+    assert!(
+        msg.contains("authentication required") && msg.contains("index.ts:"),
+        "{msg}"
+    );
     assert!(!msg.contains("forgebase:prelude"), "{msg}");
 
     // The response's x-request-id is the execution's log entry.
-    let logs = call(&app, Method::GET, "/api/v1/functions/todos/logs?limit=20", "admin", None).await;
+    let logs = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/todos/logs?limit=20",
+        "admin",
+        None,
+    )
+    .await;
     let items = logs.json()["items"].as_array().cloned().unwrap();
     assert!(
-        items.iter().any(|e| e["request_id"] == json!(rid) && e["status"] == "ok"),
+        items
+            .iter()
+            .any(|e| e["request_id"] == json!(rid) && e["status"] == "ok"),
         "{rid} not in {items:?}"
     );
 
@@ -209,19 +241,37 @@ async fn a_typescript_http_function_runs_end_to_end_as_the_caller() {
     let v = call(&app, Method::GET, "/api/v1/functions/todos/versions", "admin", None).await;
     assert_eq!(v.json()["items"][0]["runtime"], "js");
     assert_eq!(v.json()["items"][0]["language"], "typescript");
-    let src = call(&app, Method::GET, "/api/v1/functions/todos/versions/1/source", "admin", None).await;
+    let src = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/todos/versions/1/source",
+        "admin",
+        None,
+    )
+    .await;
     assert_eq!(src.status, StatusCode::OK);
     assert_eq!(src.json(), json!({"language": "typescript", "source": TODOS}));
     assert_eq!(
-        call(&app, Method::GET, "/api/v1/functions/todos/versions/9/source", "admin", None)
-            .await
-            .status,
+        call(
+            &app,
+            Method::GET,
+            "/api/v1/functions/todos/versions/9/source",
+            "admin",
+            None
+        )
+        .await
+        .status,
         StatusCode::NOT_FOUND
     );
     // The types for editors, as text.
     let t = call(&app, Method::GET, "/api/v1/functions/types", "admin", None).await;
     assert_eq!(t.status, StatusCode::OK);
-    assert!(t.headers["content-type"].to_str().unwrap().starts_with("application/typescript"));
+    assert!(
+        t.headers["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("application/typescript")
+    );
     assert!(t.text().contains("declare module \"forgebase\""));
     assert_eq!(t.text(), forgebase_functions::FORGEBASE_DTS);
 }
@@ -235,7 +285,14 @@ async fn a_webassembly_version_has_no_source_and_old_configs_read_as_wasm() {
     let v = call(&app, Method::GET, "/api/v1/functions/plain/versions", "admin", None).await;
     assert_eq!(v.json()["items"][0]["runtime"], "wasm");
     assert_eq!(v.json()["items"][0]["language"], "wasm");
-    let r = call(&app, Method::GET, "/api/v1/functions/plain/versions/1/source", "admin", None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/plain/versions/1/source",
+        "admin",
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     assert_eq!(r.json()["error"]["code"], "function_source_not_found");
     // A version row written before 0026 (no runtime/language in its config).
@@ -249,7 +306,13 @@ async fn a_webassembly_version_has_no_source_and_old_configs_read_as_wasm() {
 async fn compile_errors_carry_line_and_column() {
     let h = harness().await;
     let app = app(&h);
-    let r = deploy(&app, "bad", "import { serve } from \"forgebase\";\nserve((req) => {\n  return new Response(;\n});\n", json!({})).await;
+    let r = deploy(
+        &app,
+        "bad",
+        "import { serve } from \"forgebase\";\nserve((req) => {\n  return new Response(;\n});\n",
+        json!({}),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text());
     let e = &r.json()["error"];
     assert_eq!(e["code"], "function_compile_failed");
@@ -260,7 +323,13 @@ async fn compile_errors_carry_line_and_column() {
     assert!(e["message"].as_str().unwrap().contains("line 3"));
 
     // Imports other than "forgebase" are compile errors at their position.
-    let r = deploy(&app, "imp", "import x from \"./util.ts\";\nimport y from \"npm:left-pad\";\n", json!({})).await;
+    let r = deploy(
+        &app,
+        "imp",
+        "import x from \"./util.ts\";\nimport y from \"npm:left-pad\";\n",
+        json!({}),
+    )
+    .await;
     let e = &r.json()["error"];
     assert_eq!(e["code"], "function_compile_failed");
     assert_eq!(e["details"]["errors"].as_array().unwrap().len(), 2);
@@ -270,7 +339,9 @@ async fn compile_errors_carry_line_and_column() {
     assert_eq!(r.json()["error"]["code"], "function_compile_failed");
     // Nothing was created.
     assert_eq!(
-        call(&app, Method::GET, "/api/v1/functions/bad", "admin", None).await.status,
+        call(&app, Method::GET, "/api/v1/functions/bad", "admin", None)
+            .await
+            .status,
         StatusCode::NOT_FOUND
     );
     // Both or neither code field.
@@ -283,7 +354,14 @@ async fn compile_errors_carry_line_and_column() {
     )
     .await;
     assert_eq!(r.json()["error"]["code"], "invalid_deploy");
-    let r = call(&app, Method::POST, "/api/v1/functions", "admin", Some(json!({"name": "x"}))).await;
+    let r = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions",
+        "admin",
+        Some(json!({"name": "x"})),
+    )
+    .await;
     assert_eq!(r.json()["error"]["code"], "invalid_deploy");
     // "types" is a route, not a function name.
     let r = deploy(&app, "types", "1", json!({})).await;
@@ -332,7 +410,10 @@ serve(async (req, ctx) => {
     let msg = "serve(async (r, ctx) => { try { await ctx[\"kv\"].get(\"a\"); } catch (e) { return new Response(e.message); } });";
     deploy_ok(&app, "kvmsg", msg, json!({"language": "javascript"})).await;
     let r = call(&app, Method::GET, "/api/v1/functions/kvmsg/invoke", "anon", None).await;
-    assert_eq!(r.text(), "ctx.kv needs the 'kv' capability: add it under Capabilities and deploy again");
+    assert_eq!(
+        r.text(),
+        "ctx.kv needs the 'kv' capability: add it under Capabilities and deploy again"
+    );
     let r = call(&app, Method::GET, "/api/v1/functions/hidden/invoke", "user:u1", None).await;
     assert_eq!(
         r.json(),
@@ -390,9 +471,8 @@ serve(async (req, ctx) => {
     let r = call(&app, Method::GET, "/api/v1/functions/adm/invoke", "user:u1", None).await;
     assert_eq!(r.json(), json!({"mine": 1, "all": ["a", "b"]}), "{}", r.text());
     // Every deploy that grants it is audited.
-    let rows = h
-        .db
-        .fetch_all(&forgebase_data::db::Statement::new(
+    let rows =
+        h.db.fetch_all(&forgebase_data::db::Statement::new(
             "SELECT actor, detail FROM _forgebase_auth_audit WHERE event = 'functions.service_role_granted'",
             vec![],
         ))
@@ -413,7 +493,13 @@ serve(async (req, ctx) => {
 async fn limits_stop_javascript_loops_allocations_and_waits() {
     let h = harness().await;
     let app = app(&h);
-    deploy_ok(&app, "spin", "serve(() => { while (true) {} });", json!({"language": "javascript"})).await;
+    deploy_ok(
+        &app,
+        "spin",
+        "serve(() => { while (true) {} });",
+        json!({"language": "javascript"}),
+    )
+    .await;
     let r = call(&app, Method::GET, "/api/v1/functions/spin/invoke", "anon", None).await;
     assert_eq!(r.status, StatusCode::BAD_GATEWAY, "{}", r.text());
     assert_eq!(r.json()["error"]["code"], "function_fuel_exhausted");
@@ -469,11 +555,23 @@ async fn limits_stop_javascript_loops_allocations_and_waits() {
     );
 
     // Memory limits below the engine's own need are refused at deploy.
-    let r = deploy(&app, "tiny", "1", json!({"language": "javascript", "limits": {"memory_bytes": 1048576}})).await;
+    let r = deploy(
+        &app,
+        "tiny",
+        "1",
+        json!({"language": "javascript", "limits": {"memory_bytes": 1048576}}),
+    )
+    .await;
     assert_eq!(r.json()["error"]["code"], "memory_limit_too_small");
 
     // An uncaught exception fails the execution with its message and position.
-    deploy_ok(&app, "boom", "serve(() => {\n  throw new Error(\"kaput\");\n});", json!({"language": "javascript"})).await;
+    deploy_ok(
+        &app,
+        "boom",
+        "serve(() => {\n  throw new Error(\"kaput\");\n});",
+        json!({"language": "javascript"}),
+    )
+    .await;
     let r = call(&app, Method::GET, "/api/v1/functions/boom/invoke", "anon", None).await;
     assert_eq!(r.status, StatusCode::BAD_GATEWAY);
     assert_eq!(r.json()["error"]["code"], "function_failed");
@@ -485,16 +583,29 @@ async fn limits_stop_javascript_loops_allocations_and_waits() {
     deploy_ok(&app, "tsboom", ts, json!({})).await;
     let r = call(&app, Method::GET, "/api/v1/functions/tsboom/invoke", "anon", None).await;
     let msg = r.json()["error"]["message"].as_str().unwrap().to_owned();
-    assert!(msg.contains("uncaught exception") && msg.contains("TypeError: bad 7"), "{msg}");
+    assert!(
+        msg.contains("uncaught exception") && msg.contains("TypeError: bad 7"),
+        "{msg}"
+    );
     assert!(msg.contains("index.ts:8:"), "{msg}");
     assert!(!msg.contains("index.js"), "{msg}");
     let logs = h.svc.logs(&admin(), "tsboom", 1).await.unwrap();
     let line = logs[0].logs.last().unwrap();
     assert_eq!(line.level, "error");
-    assert!(line.message.starts_with("Uncaught TypeError: bad 7") && line.message.contains("index.ts:8:"), "{line:?}");
+    assert!(
+        line.message.starts_with("Uncaught TypeError: bad 7") && line.message.contains("index.ts:8:"),
+        "{line:?}"
+    );
     // Limit errors say how to fix them.
     let r = call(&app, Method::GET, "/api/v1/functions/spin/invoke", "anon", None).await;
-    assert!(r.json()["error"]["message"].as_str().unwrap().contains("raise limits.fuel"), "{}", r.text());
+    assert!(
+        r.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("raise limits.fuel"),
+        "{}",
+        r.text()
+    );
 }
 
 const WEB: &str = r#"import { serve, ForgeBaseError } from "forgebase";
@@ -590,7 +701,10 @@ async fn web_apis_behave_like_other_runtimes() {
     assert_eq!(v["rand"], 8);
     assert_eq!(v["clone"], json!([true, 2, 2]));
     assert_eq!(v["order"], json!(["micro", "t1", "t2"]));
-    assert_eq!(v["response"], json!([201, "text/plain;charset=UTF-8", "text body", true]));
+    assert_eq!(
+        v["response"],
+        json!([201, "text/plain;charset=UTF-8", "text body", true])
+    );
     assert_eq!(v["json"], json!(["application/json", {"k": 1}]));
     assert_eq!(v["req"], json!(["POST", "c", "raw body"]));
     assert_eq!(v["isError"], true);
@@ -598,15 +712,31 @@ async fn web_apis_behave_like_other_runtimes() {
     assert_eq!(v["function"], json!({"name": "web", "version": 1}));
     assert_eq!(v["trigger"], "http");
     // Math.random is seeded per execution (the engine snapshot is shared).
-    let again = call(&app, Method::POST, "/api/v1/functions/web/invoke", "anon", Some(json!({}))).await;
+    let again = call(
+        &app,
+        Method::POST,
+        "/api/v1/functions/web/invoke",
+        "anon",
+        Some(json!({})),
+    )
+    .await;
     assert_ne!(again.json()["random"], v["random"]);
     // console.* became execution log lines with their levels.
     let logs = h.svc.logs(&admin(), "web", 5).await.unwrap();
     let last = logs.iter().find(|l| l.status == "ok").unwrap();
-    let levels: Vec<(&str, &str)> = last.logs.iter().map(|l| (l.level.as_str(), l.message.as_str())).collect();
+    let levels: Vec<(&str, &str)> = last
+        .logs
+        .iter()
+        .map(|l| (l.level.as_str(), l.message.as_str()))
+        .collect();
     assert_eq!(
         levels,
-        vec![("debug", "dbg"), ("info", "info { n: 1 }"), ("warn", "warn"), ("error", "err e1")]
+        vec![
+            ("debug", "dbg"),
+            ("info", "info { n: 1 }"),
+            ("warn", "warn"),
+            ("error", "err e1")
+        ]
     );
     assert!(last.fuel_used < 30_000_000, "fuel {}", last.fuel_used);
 }
@@ -632,7 +762,13 @@ serve(async (req, ctx) => {
   return Response.json({ n, h, keys, exists: await ctx.kv.exists("t"), app });
 });
 "#;
-    deploy_ok(&app, "counter", src, json!({"language": "javascript", "capabilities": ["kv"]})).await;
+    deploy_ok(
+        &app,
+        "counter",
+        src,
+        json!({"language": "javascript", "capabilities": ["kv"]}),
+    )
+    .await;
     // The private namespace needs only the capability, even for anonymous callers.
     let r = call(&app, Method::GET, "/api/v1/functions/counter/invoke", "anon", None).await;
     assert_eq!(
@@ -644,9 +780,23 @@ serve(async (req, ctx) => {
     // Rules are for administrators only.
     grant(&h, "user:users/dev", "engine:manage_functions").await;
     let rules = json!({"items": [{"namespace": "app", "access": "write"}]});
-    let r = call(&app, Method::PUT, "/api/v1/functions/counter/kv-rules", "user:dev", Some(rules.clone())).await;
+    let r = call(
+        &app,
+        Method::PUT,
+        "/api/v1/functions/counter/kv-rules",
+        "user:dev",
+        Some(rules.clone()),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text());
-    let r = call(&app, Method::PUT, "/api/v1/functions/counter/kv-rules", "admin", Some(rules.clone())).await;
+    let r = call(
+        &app,
+        Method::PUT,
+        "/api/v1/functions/counter/kv-rules",
+        "admin",
+        Some(rules.clone()),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     assert_eq!(r.json(), rules);
     // With the rule, the caller's own key-value permission still decides.
@@ -659,7 +809,14 @@ serve(async (req, ctx) => {
     assert_eq!(r.json()["app"], "1", "{}", r.text());
     // A read rule allows reads only.
     let ro = json!({"items": [{"namespace": "app*", "access": "read"}]});
-    call(&app, Method::PUT, "/api/v1/functions/counter/kv-rules", "admin", Some(ro)).await;
+    call(
+        &app,
+        Method::PUT,
+        "/api/v1/functions/counter/kv-rules",
+        "admin",
+        Some(ro),
+    )
+    .await;
     let r = call(&app, Method::GET, "/api/v1/functions/counter/invoke", "user:u1", None).await;
     assert_eq!(r.json()["app"], "kv_namespace_denied");
     let r = call(
@@ -734,7 +891,13 @@ serve(async (req, ctx) => {
 async fn administrators_test_a_specific_version() {
     let h = harness().await;
     let app = app(&h);
-    deploy_ok(&app, "ver", "serve(() => new Response('one'));", json!({"language": "javascript"})).await;
+    deploy_ok(
+        &app,
+        "ver",
+        "serve(() => new Response('one'));",
+        json!({"language": "javascript"}),
+    )
+    .await;
     deploy_ok(
         &app,
         "ver",
@@ -742,12 +905,218 @@ async fn administrators_test_a_specific_version() {
         json!({"language": "javascript", "activate": false}),
     )
     .await;
-    let r = call(&app, Method::GET, "/api/v1/functions/ver/invoke?version=2&a=b", "admin", None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/ver/invoke?version=2&a=b",
+        "admin",
+        None,
+    )
+    .await;
     assert_eq!(r.text(), "two ?a=b");
-    let r = call(&app, Method::GET, "/api/v1/functions/ver/invoke?version=2", "anon", None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/ver/invoke?version=2",
+        "anon",
+        None,
+    )
+    .await;
     assert_eq!(r.text(), "one", "others get the active version");
-    let r = call(&app, Method::GET, "/api/v1/functions/ver/invoke?version=7", "admin", None).await;
+    let r = call(
+        &app,
+        Method::GET,
+        "/api/v1/functions/ver/invoke?version=7",
+        "admin",
+        None,
+    )
+    .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     let logs = h.svc.logs(&admin(), "ver", 5).await.unwrap();
     assert!(logs.iter().any(|l| l.version == 2 && l.trigger == "test"));
+}
+
+mod net {
+    use std::io;
+    use std::net::{IpAddr, SocketAddr};
+
+    use forgebase_db::BoxFuture;
+    use forgebase_functions::fetch::{Connector, Resolver};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    pub const PUBLIC: &str = "93.184.215.14";
+
+    /// `api.test` and `other.test` are public, `evil.test` is loopback.
+    #[derive(Debug)]
+    pub struct Names;
+
+    impl Resolver for Names {
+        fn resolve<'a>(&'a self, host: &'a str, _port: u16) -> BoxFuture<'a, io::Result<Vec<IpAddr>>> {
+            let ip = match host {
+                "api.test" | "other.test" => Some(PUBLIC),
+                "evil.test" => Some("127.0.0.1"),
+                _ => None,
+            };
+            Box::pin(async move {
+                ip.map(|i| vec![i.parse().unwrap()])
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such host"))
+            })
+        }
+    }
+
+    /// Routes the public address to `mock`.
+    #[derive(Debug)]
+    pub struct Route(pub SocketAddr);
+
+    impl Connector for Route {
+        fn connect(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<TcpStream>> {
+            let target = if addr.ip().to_string() == PUBLIC { self.0 } else { addr };
+            Box::pin(TcpStream::connect(target))
+        }
+    }
+
+    /// Answers every request with `{"method", "body"}` as JSON.
+    pub async fn echo() -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        let n = s.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).to_string();
+                        if let Some(i) = text.find("\r\n\r\n") {
+                            let len = text[..i]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= i + 4 + len {
+                                let method = text.split(' ').next().unwrap_or("").to_owned();
+                                let body = String::from_utf8_lossy(&buf[i + 4..i + 4 + len]).to_string();
+                                let out = serde_json::json!({"method": method, "body": body}).to_string();
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                                    out.len()
+                                );
+                                let _ = s.write_all(resp.as_bytes()).await;
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+}
+
+#[tokio::test]
+async fn fetch_goes_through_the_ssrf_guard_and_the_host_list() {
+    use forgebase_functions::fetch::{FetchConfig, Fetcher};
+    let mock = net::echo().await;
+    let fetcher = Fetcher::with(
+        &forgebase_auth::net::TlsSettings::new(),
+        FetchConfig::default(),
+        std::sync::Arc::new(net::Names),
+        std::sync::Arc::new(net::Route(mock)),
+    )
+    .unwrap();
+    let h = common::harness_with(forgebase_functions::FunctionsConfig {
+        fetcher: Some(fetcher),
+        ..forgebase_functions::FunctionsConfig::default()
+    })
+    .await;
+    let app = app(&h);
+    let src = r#"serve(async () => {
+  const out = {};
+  const r = await fetch("http://api.test/echo", { method: "POST", body: "hi", headers: { "content-type": "text/plain" } });
+  out.ok = [r.status, r.ok, await r.json()];
+  for (const u of ["http://evil.test/", "http://169.254.169.254/latest/meta-data/", "http://other.test/", "file:///etc/passwd"]) {
+    try { await fetch(u); out[u] = "reached"; } catch (e) { out[u] = e.name + ":" + (e.code ?? "-"); }
+  }
+  return Response.json(out);
+});"#;
+    deploy_ok(
+        &app,
+        "fetcher",
+        src,
+        json!({"language": "javascript", "capabilities": ["fetch"], "fetch_hosts": ["api.test", "evil.test"]}),
+    )
+    .await;
+    let r = call(&app, Method::GET, "/api/v1/functions/fetcher/invoke", "anon", None).await;
+    let v = r.json();
+    assert_eq!(
+        v["ok"],
+        json!([200, true, {"method": "POST", "body": "hi"}]),
+        "{}",
+        r.text()
+    );
+    for u in [
+        "http://evil.test/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://other.test/",
+    ] {
+        let got = v[u].as_str().unwrap();
+        assert!(got.starts_with("TypeError:") && !got.ends_with(":-"), "{u}: {got}");
+    }
+    assert!(
+        v["file:///etc/passwd"].as_str().unwrap().starts_with("TypeError"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn javascript_after_hooks_run_for_committed_changes() {
+    let h = harness().await;
+    h.collection(json!({"name": "orders", "fields": [{"name": "n", "type": "number"}]}))
+        .await;
+    let app = app(&h);
+    let src = r#"serve(async (req, ctx) => {
+  const ev = await req.json();
+  await ctx.kv.incr(`${ev.event}:${ev.collection}`);
+  await ctx.kv.set("last", String(ev.record.n));
+  return new Response(null, { status: 204 });
+});"#;
+    deploy_ok(
+        &app,
+        "counter",
+        src,
+        json!({"language": "javascript", "capabilities": ["kv"], "hooks": [{"collection": "orders", "events": ["after_create", "after_update"]}]}),
+    )
+    .await;
+    let rec = h.data.create_record(&admin(), "orders", json!({"n": 1})).await.unwrap();
+    let id = rec["id"].as_str().unwrap().to_owned();
+    h.data
+        .update_record(
+            &admin(),
+            "orders",
+            &id,
+            json!({"n": 2}),
+            forgebase_data::UpdateOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(h.svc.run_after_hooks().await.unwrap(), 2);
+    let get = |k: &str| {
+        h.kv.exec(
+            &AccessContext::system(),
+            "fn.counter",
+            &[b"GET".to_vec(), k.as_bytes().to_vec()],
+        )
+        .unwrap()
+    };
+    assert_eq!(get("after_create:orders"), forgebase_kv::Reply::Bulk(b"1".to_vec()));
+    assert_eq!(get("after_update:orders"), forgebase_kv::Reply::Bulk(b"1".to_vec()));
+    assert_eq!(get("last"), forgebase_kv::Reply::Bulk(b"2".to_vec()));
 }

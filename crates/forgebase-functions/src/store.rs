@@ -131,7 +131,11 @@ async fn version_text(db: &dyn Backend, function_id: &str, version: i64, column:
 }
 
 /// The JavaScript the engine runs for a JS/TS version, with its source map (TypeScript).
-pub(crate) async fn script(db: &dyn Backend, function_id: &str, version: i64) -> Result<Option<(String, Option<String>)>> {
+pub(crate) async fn script(
+    db: &dyn Backend,
+    function_id: &str,
+    version: i64,
+) -> Result<Option<(String, Option<String>)>> {
     let rows = db
         .fetch_all(&Statement::new(
             "SELECT js, source_map FROM _forgebase_function_versions WHERE function_id = ?1 AND version = ?2",

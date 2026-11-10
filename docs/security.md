@@ -127,6 +127,9 @@ and run against a live server; the others are crate tests.
 | SSRF through `fetch` | Blocked ranges after resolution, vetted address only, redirects re-checked, per-function host allow-list, credentials dropped across origins | `ssrf` tests (5); `security_bypass::outbound_clients_never_reach_internal_addresses` |
 | Reading another function's secrets | Secrets sealed per function; values never returned by the API | `security_bypass::secrets_never_reach_logs_or_api_output` |
 | Deploying code without permission | `Action::ManageFunctions` through the policy engine (administrators by default) | `security_bypass::administrative_endpoints_…` |
+| JavaScript escaping the engine (ADR-0027) | QuickJS runs **inside** the same Wasmtime sandbox; its only WASI imports are shims (clock, CSPRNG, log; no files, env, sockets, exit); a fresh instance per execution from a pre-user-code snapshot | `js::tests::engine_imports_only_the_shimmed_functions`; `tests/js.rs` limits |
+| JavaScript `ctx` services widening access | Every service runs **as the caller** (rules, field rules, ACLs, tenancy, bucket ACLs, policies); application KV namespaces need an admin-managed rule (deny by default) | `tests/js.rs`; `forgebase-server/tests/functions_js.rs` |
+| A non-admin granting the `service_role` bypass | Only administrators deploy versions with `service_role` (403 otherwise); each such deploy is in `_forgebase_auth_audit` | `tests/js.rs::service_role_is_granted_only_by_administrators_and_bypasses_rules` |
 
 ### 4.6 Realtime (`forgebase-realtime`, ADR-0011)
 

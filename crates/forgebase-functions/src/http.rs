@@ -34,9 +34,9 @@ use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{OpenApi, ToSchema};
 
 use crate::FunctionService;
+use crate::compile::CompileDiagnostic;
 use crate::error::{ExecError, FunctionError};
 use crate::hooks::auth_json;
-use crate::compile::CompileDiagnostic;
 use crate::model::{
     DeployRequest, Deployed, ExecutionLog, FunctionInfo, FunctionRuntime, HookEvent, HookSpec, InvokeAccess, KvAccess,
     KvRule, Language, Limits, LimitsInput, LogLine, SecretInfo, Trigger, VersionConfig, VersionInfo, VersionSource,
@@ -680,7 +680,10 @@ impl FunctionService {
             let rest: Vec<(String, String)> = url::form_urlencoded::parse(req.query.as_bytes())
                 .into_owned()
                 .filter(|(k, v)| {
-                    if k == "version" && version.is_none() && let Ok(n) = v.parse::<i64>() {
+                    if k == "version"
+                        && version.is_none()
+                        && let Ok(n) = v.parse::<i64>()
+                    {
                         version = Some(n);
                         return false;
                     }
