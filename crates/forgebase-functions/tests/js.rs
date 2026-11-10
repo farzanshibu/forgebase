@@ -741,6 +741,7 @@ async fn web_apis_behave_like_other_runtimes() {
     assert!(last.fuel_used < 30_000_000, "fuel {}", last.fuel_used);
 }
 
+// FB-138: callers without a tenant reach application data in shared.* namespaces.
 #[tokio::test]
 async fn key_value_namespaces_are_private_by_default_and_ruled_for_applications() {
     let h = harness().await;
@@ -754,8 +755,8 @@ serve(async (req, ctx) => {
   const keys = await ctx.kv.keys("");
   let app;
   try {
-    await ctx.kv.namespace("app").set("shared", "1");
-    app = await ctx.kv.namespace("app").get("shared");
+    await ctx.kv.namespace("shared.app").set("shared", "1");
+    app = await ctx.kv.namespace("shared.app").get("shared");
   } catch (e) {
     app = e.code;
   }

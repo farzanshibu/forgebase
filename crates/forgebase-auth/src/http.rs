@@ -297,7 +297,10 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
             // it on the context; another tenant is refused (FB-138).
             if let Some(t) = &bound {
                 const TENANT_HEADER: &str = "x-forgebase-tenant";
-                let sent = req.headers().get(TENANT_HEADER).map(|v| v.to_str().unwrap_or("").trim().to_owned());
+                let sent = req
+                    .headers()
+                    .get(TENANT_HEADER)
+                    .map(|v| v.to_str().unwrap_or("").trim().to_owned());
                 if sent.as_deref().is_some_and(|s| s != t) {
                     return HttpError::new(
                         AuthError::Forbidden(format!("tenant_mismatch: this key is bound to tenant {t}")),

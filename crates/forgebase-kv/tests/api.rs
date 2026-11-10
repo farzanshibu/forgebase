@@ -204,7 +204,9 @@ async fn each_command_asks_for_the_action_it_needs() {
     .await
     .expect(StatusCode::FORBIDDEN);
     // an SSE stream never ends: check the status only, do not read the body
-    let sse = h.raw(Method::GET, "/api/v1/kv/shared.app/subscribe/c", &user, None).await;
+    let sse = h
+        .raw(Method::GET, "/api/v1/kv/shared.app/subscribe/c", &user, None)
+        .await;
     assert_eq!(sse.status(), StatusCode::OK);
 }
 

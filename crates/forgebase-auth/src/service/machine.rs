@@ -151,8 +151,7 @@ pub(super) fn key_view(row: crate::store::Row<'_>) -> ApiKeyView {
     }
 }
 
-pub(super) const KEY_COLS: &str =
-    "id, kind, name, owner_type, collection, owner_id, scopes, created_at, expires_at, last_used_at, revoked_at, tenant";
+pub(super) const KEY_COLS: &str = "id, kind, name, owner_type, collection, owner_id, scopes, created_at, expires_at, last_used_at, revoked_at, tenant";
 
 fn sa_view(row: crate::store::Row<'_>) -> ServiceAccountView {
     ServiceAccountView {

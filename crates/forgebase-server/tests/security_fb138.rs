@@ -16,7 +16,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// A user's organization with one project; returns (org id, production tenant).
 async fn org(env: &Env, token: &str, slug: &str) -> (String, String) {
     let r = env
-        .as_(token, "POST", "/api/v1/orgs", &[], Some(json!({"slug": slug, "name": slug})))
+        .as_(
+            token,
+            "POST",
+            "/api/v1/orgs",
+            &[],
+            Some(json!({"slug": slug, "name": slug})),
+        )
         .await;
     assert_eq!(r.status, 201, "org: {}", r.text());
     let id = r.json()["id"].as_str().unwrap().to_owned();
@@ -178,7 +184,10 @@ async fn g6_callers_without_a_tenant_need_one_or_a_shared_namespace() {
     let r = put(&env, &alice, None, "cache", "k", "x").await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert_eq!(r.code(), "tenant_required");
-    assert_eq!(get(&env, Some(&bob), None, "cache", "k").await.code(), "tenant_required");
+    assert_eq!(
+        get(&env, Some(&bob), None, "cache", "k").await.code(),
+        "tenant_required"
+    );
 
     // An explicit shared namespace is realm-wide: the same keys with or
     // without a tenant.
@@ -200,7 +209,10 @@ async fn g6_callers_without_a_tenant_need_one_or_a_shared_namespace() {
 
     // Privileged callers keep the legacy shared scope.
     assert_eq!(put(&env, &admin, None, "cache", "k", "admin").await.status, 200);
-    assert_eq!(get(&env, Some(&admin), None, "cache", "k").await.json()["value"], "admin");
+    assert_eq!(
+        get(&env, Some(&admin), None, "cache", "k").await.json()["value"],
+        "admin"
+    );
     env.shutdown().await;
 }
 
@@ -238,8 +250,19 @@ async fn g6_resp_sessions_run_in_the_key_tenant() {
     let admin = env.admin("fb138-resp@example.com").await;
     let (alice, alice_pk) = env.user("alice@example.com").await;
     let (_, ta) = org(&env, &alice, "alpha").await;
-    realm_role(&env, &admin, &alice_pk, "kv_rw", &["engine:kv_read", "engine:kv_write"], &[]).await;
-    let bound = pat(&env, &alice, Some(&ta)).await.json()["key"].as_str().unwrap().to_owned();
+    realm_role(
+        &env,
+        &admin,
+        &alice_pk,
+        "kv_rw",
+        &["engine:kv_read", "engine:kv_write"],
+        &[],
+    )
+    .await;
+    let bound = pat(&env, &alice, Some(&ta)).await.json()["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let unbound = pat(&env, &alice, None).await.json()["key"].as_str().unwrap().to_owned();
     let addr = env.server.resp_addr().expect("listener is enabled");
 
@@ -341,11 +364,23 @@ async fn g7_namespace_permissions_and_rules_apply_to_kv() {
 
     // A function's private namespace is not reachable directly.
     let r = env
-        .as_(&alice, "GET", "/api/v1/kv/fn.billing/keys", &[("X-ForgeBase-Tenant", &ta)], None)
+        .as_(
+            &alice,
+            "GET",
+            "/api/v1/kv/fn.billing/keys",
+            &[("X-ForgeBase-Tenant", &ta)],
+            None,
+        )
         .await;
     assert_eq!(r.status, 403, "{}", r.text());
     let r = env
-        .as_(&admin, "GET", "/api/v1/kv/fn.billing/keys", &[("X-ForgeBase-Tenant", &ta)], None)
+        .as_(
+            &admin,
+            "GET",
+            "/api/v1/kv/fn.billing/keys",
+            &[("X-ForgeBase-Tenant", &ta)],
+            None,
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     env.shutdown().await;

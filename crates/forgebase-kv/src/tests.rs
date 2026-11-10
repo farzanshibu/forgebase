@@ -757,15 +757,27 @@ fn commands_map_to_resource_operations() {
     assert_eq!(needs("GET k", None), vec![(Action::KvRead, ResourceOp::View)]);
     assert_eq!(needs("SCAN 0", None), vec![(Action::KvRead, ResourceOp::List)]);
     assert_eq!(needs("KEYS *", None), vec![(Action::KvRead, ResourceOp::List)]);
-    assert_eq!(needs("SET new v", Some(&old)), vec![(Action::KvWrite, ResourceOp::Create)]);
-    assert_eq!(needs("SET old v", Some(&old)), vec![(Action::KvWrite, ResourceOp::Update)]);
+    assert_eq!(
+        needs("SET new v", Some(&old)),
+        vec![(Action::KvWrite, ResourceOp::Create)]
+    );
+    assert_eq!(
+        needs("SET old v", Some(&old)),
+        vec![(Action::KvWrite, ResourceOp::Update)]
+    );
     assert_eq!(
         needs("MSET old 1 new 2", Some(&old)),
-        vec![(Action::KvWrite, ResourceOp::Update), (Action::KvWrite, ResourceOp::Create)]
+        vec![
+            (Action::KvWrite, ResourceOp::Update),
+            (Action::KvWrite, ResourceOp::Create)
+        ]
     );
     assert_eq!(
         needs("SET k v", None),
-        vec![(Action::KvWrite, ResourceOp::Create), (Action::KvWrite, ResourceOp::Update)]
+        vec![
+            (Action::KvWrite, ResourceOp::Create),
+            (Action::KvWrite, ResourceOp::Update)
+        ]
     );
     assert_eq!(needs("EXPIRE k 10", None), vec![(Action::KvWrite, ResourceOp::Update)]);
     assert_eq!(needs("DEL a b", None), vec![(Action::KvWrite, ResourceOp::Delete)]);
