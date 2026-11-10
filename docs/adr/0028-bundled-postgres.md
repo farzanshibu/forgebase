@@ -1032,3 +1032,190 @@ understands resource keys too.
   PostgreSQL 18.3; the backend itself arrives with FB-131.
 - Native RLS (FB-152): engine tables stay API-only (rls-coverage §3.4), so
   resource rules are not compiled into PostgreSQL policies.
+
+## Addendum: FB-132, the engine in `forgebase-pgengine` (2026-11-11)
+
+Built as §2.3, §3.1 and §4.1–§4.5 describe, with the ADR-0029 §1.3
+settings. What callers and the next packages need, and where the code
+differs from the text above.
+
+**API.** `Engine::prepare(&Layout, &EngineConfig) -> EngineHandle`.
+`Layout::primary(data_dir)` is `<data_dir>/postgres/{data,run,forgebase-postgres.conf}`;
+`Layout::node(data_dir, name, NodeKind::Primary | NodeKind::Standby)` is
+`postgres/nodes/<name>/…` with the same `postgres/engine/` and
+`postgres/roles.secret`. `EngineConfig { source: Auto | Dir(path) |
+Archive(path) | Embedded, listen, socket_port, settings, cron: ExtensionMode
+(Auto | On | Off), slow_query, ready_timeout, stop_timeout, restart:
+RestartPolicy, cache_dir, remove_old_engines, unsafe_fast }`.
+`EngineHandle`: `url(Role) -> Secret` (database `forgebase`), `url_for(role,
+db)`, `stop()` (fast), `stop_immediate()`, `health() -> EngineHealth { state:
+Ready | Restarting | Failed | Stopped, pid, restarts, last_error }`,
+`watch_health()`, `version()`, `engine()`, `socket_dir()`, `tcp_addr()`,
+`port()`, `preloaded()`, `has_cron()`, `warnings()`, `recent_log()`.
+`Role::{Super, Server, Reader}` are the login roles; `Secret` redacts in
+`Debug`/`Display`. The caller holds `.forgebase.lock`.
+
+**Engine sources.** `Auto` is the embedded archive (feature
+`bundled-postgres`), else `FORGEBASE_PG_ENGINE_DIR`, else an error that
+names `engine_dir`, external mode and the standard release. A `Dir` is used
+in place and never modified. Every engine is checked with `postgres
+--version` (which also proves the binary runs on the host); the managed
+engine needs PostgreSQL 17 or later (the `builtin` locale), and a cluster
+whose `PG_VERSION` differs from the engine's major is refused (§4.6).
+Modules are looked up in `pg_config --pkglibdir` (when the engine has it),
+`lib/postgresql/` and `lib/`.
+
+**Archive format (FB-130 builds to this).** `tar` + `zstd`.
+`forgebase-engine.json` (format 1), preferably the first entry: `postgres`
+(`18.6`), `build` (`r1`), `target`, optional `loader`
+(`lib/ld-musl-x86_64.so.1`) and `interp_placeholder` (default
+`/forgebase-pg-loader-`), `features` (free map, e.g. `graph_cypher`),
+`files: [{path, size, sha256, mode}]`, `links: [{path, target}]`. Entries may
+sit under one top-level directory. Extraction refuses anything not in the
+manifest, size or hash differences, missing files, absolute paths, `..`,
+links whose target leaves the engine, and other entry types. It extracts into
+`postgres/engine/<postgres>-<build>-<sha12>.partial`, patches `PT_INTERP` of
+every ELF file in `bin/` when `loader` is set (to the final path), drops all
+write bits, writes `forgebase-engine.sha256`, and renames. The long-path
+fallback (loader path over 254 bytes) extracts into
+`$XDG_CACHE_HOME/forgebase/engines/` or `$HOME/.cache/forgebase/engines/`.
+`archive::verify_extracted` re-checks a directory for `doctor` (relocated
+executables by size). `examples/pack_engine.rs` packs a directory and prints
+the SHA-256.
+
+**`engine.lock` (read by `build.rs`).** `[archives."<target triple>"]
+sha256 = "<hex>"` (a `file` key is allowed and ignored); other tables are
+ignored. `build.rs` reads `FORGEBASE_PG_ENGINE_ARCHIVE` and `engine.lock`
+(or `FORGEBASE_PG_ENGINE_LOCK`) and fails the build, naming the variable or
+both hashes, when the archive is missing, unpinned or different. Checked with
+a packed Homebrew 18.3 engine: the embedded archive extracts and runs.
+
+**`initdb`** has the flags of §4.2 plus `--locale=C` (the libc categories:
+messages, numbers, money and time stay host-independent; collation and
+ctype come from the builtin provider) and `--no-instructions`, runs with
+`TZ=UTC`, writes into `data.partial` and renames, so an interrupted
+`initdb` leaves nothing half-made. The password file is 0600 and deleted
+afterwards.
+
+**Bootstrap** runs on every start of a writable cluster, idempotently, as
+`forgebase_super` (so a later ForgeBase can add roles or grants to existing
+clusters): `forgebase_owner` (NOLOGIN, BYPASSRLS), `forgebase_rls` (NOLOGIN,
+no BYPASSRLS), `forgebase_sql_admin` (NOLOGIN, BYPASSRLS),
+`forgebase_server` (LOGIN, BYPASSRLS, member of owner and rls) and
+`forgebase_reader` (LOGIN, BYPASSRLS, `default_transaction_read_only = on`);
+none is a superuser or can create roles or databases. Server and reader get
+`search_path = forgebase, public` (§7.6) and their passwords from
+`roles.secret` (`role=password` lines, 0600; a file other users can read is
+refused). Database `forgebase` (also `cron.database_name`) is owned by
+`forgebase_owner`; `PUBLIC` loses all rights on it; the reader gets
+`CONNECT` (the server has the owner's rights through membership). Schemas
+`forgebase` and `public` are owned by `forgebase_owner`; the reader gets
+`USAGE` and default `SELECT` on tables created by the owner or the server.
+The bootstrap session sets `log_statement = none` and
+`log_min_error_statement = panic`, so a failing statement never writes a
+password into the log.
+
+**Settings** (`forgebase-postgres.conf`, rewritten every start;
+`include_if_exists = '../forgebase-postgres.conf'` is appended once to
+`postgresql.conf`, relative so node layouts and moved data directories
+work): `listen_addresses = ''`, `port`, `unix_socket_directories`,
+`unix_socket_permissions = 0700`, `max_connections = 64`, `shared_buffers =
+128MB`, `password_encryption = scram-sha-256`, `wal_level = logical`,
+`max_wal_senders = 16`, `max_replication_slots = 16`,
+`max_prepared_transactions = 16`, `max_worker_processes = 16`,
+`synchronous_commit = on`, `shared_preload_libraries` (pg_stat_statements
+and pg_cron, each only when the engine has the module), `cron.database_name
+= 'forgebase'`, `cron.use_background_workers = on`, `cron.log_run = off`
+(only when pg_cron is preloaded), `log_destination = stderr`,
+`logging_collector = off`, `log_line_prefix = '[%p] '`, `lc_messages = C`,
+`timezone` and `log_timezone = UTC`, `log_min_duration_statement` from the
+slow-query threshold; standbys add `hot_standby`, `hot_standby_feedback` and
+`max_standby_streaming_delay = 30s`. The three network keys are also passed
+as `-c` options, so no file can widen what the engine listens on. User
+settings replace defaults of the same name.
+
+**pg_cron.** `cron = auto` with an engine that lacks it (Homebrew 18.3) logs a
+warning, lists it in `warnings()`, and writes no `cron.*`; `on` refuses
+before `initdb`; `off` never preloads it. Without the check, a missing
+preload library stops the postmaster (`FATAL: could not access file
+"pg_cron"`, seen on 18.3).
+
+**Deny list** (`DENIED_SETTINGS`, plus every `cron.*` and `include*` key): the
+§4.3 keys, the ADR-0029 §1.3 keys, and keys that run programs or load
+libraries as the server's OS user (`archive_command`, `archive_library`,
+`restore_command`, `archive_cleanup_command`, `recovery_end_command`,
+`ssl_passphrase_command`, `dynamic_library_path`, `session_preload_libraries`,
+`local_preload_libraries`, `jit_provider`), file and socket keys
+(`config_file`, `ident_file`, `external_pid_file`, `unix_socket_group`,
+`unix_socket_permissions`), replication wiring that carries credentials
+(`primary_conninfo`, `primary_slot_name`; FB-168 writes them) and the log
+format ForgeBase parses. Settings become editable from the dashboard
+(FB-91), so a setting that runs a program would turn a ForgeBase
+administrator into an OS shell. Keys must be PostgreSQL parameter names and
+values one line.
+
+**Process.** `postgres -D` is spawned directly in its own process group (a
+terminal Ctrl-C reaches ForgeBase, which stops the engine in order). Its
+stderr goes to `tracing` (target `forgebase::postgres`, field `node`;
+`PANIC`/`FATAL`/`ERROR` → error, `WARNING` → warn, `LOG`/`INFO`/`NOTICE` →
+info, `DEBUGn` → debug; `DETAIL`, `HINT`, `STATEMENT` keep the previous
+level), and the last 40 lines are kept for error messages. Readiness is
+`postmaster.pid` reporting `ready` for the pid we started (no failed-login
+noise in the log), then one SCRAM login as `forgebase_super`; a timeout or
+an early exit fails `prepare` with the engine's last lines (for example
+`invalid value for parameter "shared_buffers"`). Stop: `SIGINT`, `SIGQUIT`
+after `stop_timeout` (30 s), `SIGKILL` 5 s later; Windows `pg_ctl stop -m
+fast`. Crash restart follows §4.3 (`RestartPolicy`, default 1 s doubling to
+30 s, `Failed` after 5 failures in 10 minutes); a restart attempt that finds
+the old backends still holding shared memory counts as a failure and is
+retried.
+
+**Stale `postmaster.pid`.** A dead pid is left to PostgreSQL, which removes
+the file itself. A live pid whose socket (from the file) accepts a
+connection is a leftover postmaster and gets a fast shutdown. A live pid that
+never answers within the stop timeout is refused, never deleted: removing the
+file under a live postmaster can corrupt the cluster.
+
+**Differs from the text above.**
+- *Parent death.* `PR_SET_PDEATHSIG` must be set in the child between fork
+  and exec, which needs `Command::pre_exec`, an `unsafe fn` in std and
+  tokio; the workspace has `unsafe_code = "forbid"`. Instead, on every Unix
+  (macOS included, which the text said has no equivalent) a `/bin/sh`
+  watcher blocks reading a pipe that only ForgeBase writes. When ForgeBase
+  exits for any reason, `SIGKILL` included, the pipe closes and the watcher
+  sends `SIGINT`, then `SIGQUIT` after 30 s. Hosts without `/bin/sh`
+  (distroless) rely on the stale check at the next start; a container's
+  processes stop with its PID 1 anyway.
+- *Windows job object* is not built: it needs `windows-sys` with `unsafe` or a
+  crate outside the offline cache. The stale check covers it. The Windows
+  code paths (loopback TCP on a free port, `pg_ctl stop`) compile by
+  construction but were not built or run here (no Windows toolchain);
+  `postgres` refuses to start for a user with administrator rights, so
+  FB-149 must test as a normal user.
+- *Root refusal* checks the effective uid (`rustix`); Windows is not checked.
+- *Listening.* `listen` accepts loopback addresses only until FB-153 brings
+  TLS. The socket fallback directory under the temp dir must be owned by the
+  user with mode 0700, so another user cannot pre-create it on a shared
+  `/tmp`.
+- *Minor upgrade.* After a clean start from an extracted engine (primary
+  layout only), extracted engines of the same major are deleted; other majors
+  stay for `upgrade-engine`, and engines in the cache fallback are kept.
+
+**Seams for FB-168 and FB-174.** A `NodeKind::Standby` layout skips `initdb`
+and the bootstrap and writes the hot-standby settings; its data directory
+must exist (`pg_basebackup -R`), as the test does against a running primary.
+A shard is `Layout::node(.., NodeKind::Primary)`: its own `initdb`, the same
+passwords. FB-168 adds `forgebase_replicator` (a `Role` variant and a line
+in `roles.secret`, which `RoleSecrets::fill_missing` creates for existing
+clusters), slots, `primary_conninfo`, `max_slot_wal_keep_size` and
+`idle_replication_slot_timeout`.
+
+**Tests.** 44 unit tests (archive verification and tampering, relocation and
+the long-path fallback, settings and deny list, socket fallback, stale pid,
+secrets, URLs, `engine.lock`). Integration tests (skip without
+`FORGEBASE_PG_ENGINE_DIR`): settings, roles, grants, locale and checksums;
+stop and restart; `forgebase_db::Database` opened with the server and
+reader URLs; crash restart; a leftover postmaster stopped first; an engine
+from an archive extracted once with old minors removed; pg_cron modes and
+bad settings; a primary, a shard and a standby side by side; and the
+embedded archive (only in a `bundled-postgres` build).

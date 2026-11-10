@@ -16,6 +16,7 @@ forgebase-core = { path = "crates/forgebase-core" }
 forgebase-observability = { path = "crates/forgebase-observability" }
 forgebase-migrations = { path = "crates/forgebase-migrations" }
 forgebase-db = { path = "crates/forgebase-db" }
+forgebase-pgengine = { path = "crates/forgebase-pgengine" }
 forgebase-api = { path = "crates/forgebase-api" }
 forgebase-server = { path = "crates/forgebase-server" }
 forgebase-schema = { path = "crates/forgebase-schema" }
