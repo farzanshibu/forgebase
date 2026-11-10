@@ -58,7 +58,7 @@ export function CommandPalette({ studios }: { studios: Studio[] }) {
     navigate(to);
   };
 
-  const groupLabel = (s: Studio) => GROUPS.find((g) => g.id === s.group)?.label ?? "Overview";
+  const groupLabel = (s: Studio) => GROUPS.find((g) => g.id === s.group)?.label ?? "";
   const creates = CREATE_ACTIONS.filter((a) => paths.includes(a.studio));
   return (
     <Command.Dialog
@@ -86,7 +86,7 @@ export function CommandPalette({ studios }: { studios: Studio[] }) {
           <Command.Empty>Nothing matches “{search}”. Try a studio name, such as Storage, or a resource name.</Command.Empty>
           <Command.Group heading="Go to">
             {studios.map((s) => (
-              <Command.Item key={`go:${s.path}`} value={`go:${s.path}`} textValue={s.label} keywords={[s.title, groupLabel(s), s.summary]} subtitle={groupLabel(s)} kind="Studio" onSelect={() => go(studioHref(s))}>
+              <Command.Item key={`go:${s.path}`} value={`go:${s.path}`} textValue={s.label} keywords={[s.title, groupLabel(s), s.summary].filter(Boolean)} subtitle={s.group ? groupLabel(s) : undefined} onSelect={() => go(studioHref(s))}>
                 {s.label}
               </Command.Item>
             ))}

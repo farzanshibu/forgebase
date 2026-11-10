@@ -80,6 +80,14 @@ describe("CommandPalette", () => {
     expect(mock.problems).toEqual([]);
   });
 
+  it("keeps Key-value while the Redis protocol is off, because the key-value store itself is on", () => {
+    const f = (id: string, enabled: boolean, always_on: boolean) => ({ id, name: id, summary: "", always_on, can_disable: !always_on, enabled, studio_path: "/redis", settings: [] });
+    expect(visibleStudios([f("kv", true, true), f("resp", false, false)])).toContain(studio("redis"));
+    expect(visibleStudios([f("kv", false, false), f("resp", false, false)])).not.toContain(studio("redis"));
+    // System stays while backups (also at /system) is on.
+    expect(visibleStudios([{ ...f("server", true, true), studio_path: "/system" }, { ...f("backups", true, true), studio_path: "/system" }])).toContain(studio("system"));
+  });
+
   it("hides studios whose feature is off, with their create actions and resources", async () => {
     const studios = visibleStudios([{ id: "storage", name: "Storage", summary: "", always_on: false, can_disable: true, enabled: false, studio_path: "/storage", settings: [] }]);
     expect(studios).not.toContain(studio("storage"));

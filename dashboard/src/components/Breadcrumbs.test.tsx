@@ -21,6 +21,7 @@ describe("crumbsFor", () => {
     expect(crumbsFor("/system/features")).toEqual([{ label: "System", to: "/system" }, { label: "Features and settings" }]);
     expect(crumbsFor("/system/backups")).toEqual([{ label: "System", to: "/system" }, { label: "Backups" }]);
     expect(crumbsFor("/nowhere")).toEqual([{ label: "Page not found" }]);
+    expect(crumbsFor("/_patterns")).toEqual([{ label: "Shared patterns" }]);
   });
 });
 

@@ -62,6 +62,7 @@ const words = (seg: string) => SEGMENTS[seg] ?? decode(seg).replace(/[-_]/g, " "
 /** The trail for a location. Exported for tests and for pages that want to extend it. */
 export function crumbsFor(pathname: string): Crumb[] {
   const here = pathname.replace(/\/+$/, "") || "/";
+  if (here === "/_patterns") return [{ label: "Shared patterns" }];
   const s = studioAt(here);
   if (!s) return [{ label: "Page not found" }];
   if (s.path === "") return [{ label: s.label }];

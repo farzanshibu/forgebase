@@ -54,7 +54,7 @@ export const STUDIOS: Studio[] = [
   { path: "storage", label: "Storage", title: "Storage", group: "build", docs: "docs/adr/0018-object-storage.md", feature: "storage", summary: "Buckets that hold the files your app uploads, such as avatars or exports." },
   { path: "functions", label: "Functions", title: "Functions", group: "build", docs: "docs/adr/0017-functions.md", feature: "functions", summary: "Edge functions: your code, run next to your data on each request." },
   {
-    path: "redis", label: "Key-value", title: "Key-value", group: "build", docs: "docs/adr/0005-kv.md", feature: "resp",
+    path: "redis", label: "Key-value", title: "Key-value", group: "build", docs: "docs/adr/0005-kv.md", feature: "kv",
     summary: "Redis compatible key-value store for caches, counters and sessions.",
     tabs: [{ to: "/redis", label: "Keys" }, { to: "/redis/console", label: "Console" }, { to: "/redis/pubsub", label: "Pub/Sub" }, { to: "/redis/stats", label: "Memory and stats" }],
   },
@@ -146,14 +146,20 @@ export function studioAt(pathname: string): Studio | undefined {
   return best;
 }
 
-/** Whether the server switched this studio's feature off (FB-92). Unknown features and a missing list count as on. */
+/**
+ * Whether the server switched this studio off (FB-92): its own `feature` is off, or every feature the server maps to
+ * its path is off. Several features can share a path: `kv` (always on) and `resp` (the Redis wire protocol, often
+ * off) both point at /redis, and the studio must stay while the key-value store runs. A missing list counts as on.
+ */
 export function isStudioDisabled(s: Studio, features: ServerFeature[] | undefined): boolean {
-  for (const f of features ?? []) {
-    if (f.enabled || f.always_on) continue;
-    const p = (f.studio_path ?? "").replace(/^\/+|\/+$/g, "");
-    if ((s.feature && f.id === s.feature) || (p !== "" && p === s.path)) return true;
+  const list = features ?? [];
+  const on = (f: ServerFeature) => f.enabled || f.always_on;
+  if (s.feature) {
+    const own = list.find((f) => f.id === s.feature);
+    if (own) return !on(own);
   }
-  return false;
+  const atPath = list.filter((f) => (f.studio_path ?? "").replace(/^\/+|\/+$/g, "") === s.path);
+  return atPath.length > 0 && atPath.every((f) => !on(f));
 }
 
 /** The studios the nav and the palette show: every studio whose feature is on. */

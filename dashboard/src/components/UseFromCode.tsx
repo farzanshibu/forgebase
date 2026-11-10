@@ -19,8 +19,8 @@ import { Button, CopyButton } from "./Button";
 type Source = { kind: SnippetKind; name: string; snippet?: undefined } | { snippet: Snippet; kind?: undefined; name?: undefined };
 
 export type UseFromCodeProps = Source & {
-  /** Heading above the tabs; default "Use from code". */
-  title?: string;
+  /** Heading above the tabs; default "Use from code". `null` drops it (the side sheet has its own). */
+  title?: string | null;
   className?: string;
 };
 
@@ -36,12 +36,13 @@ function resolve(p: Source): Snippet {
 
 export function UseFromCode(props: UseFromCodeProps) {
   const { title = "Use from code", className = "" } = props;
+  const name = title ?? "Use from code";
   const code = resolve(props);
   const [lang, setLang] = useState<string>("js");
   return (
-    <section aria-label={title} className={`min-w-0 space-y-2 ${className}`.trim()}>
+    <section aria-label={name} className={`min-w-0 space-y-2 ${className}`.trim()}>
       <div>
-        <h2 className="text-sm font-medium">{title}</h2>
+        {title !== null && <h2 className="text-sm font-medium">{title}</h2>}
         <p className="text-xs text-muted-foreground">
           Replace <code className="font-mono">&lt;YOUR_API_KEY&gt;</code> with a key from Authentication › API keys &amp; tokens. Keep keys on the server, never in a browser app.
         </p>
@@ -79,7 +80,7 @@ export function UseFromCodeButton(props: Source & { label?: string }) {
       <Sheet.Trigger render={<Button type="button" />}>{label}</Sheet.Trigger>
       <Sheet.Content size="auto" className="w-full max-w-2xl">
         <Sheet.Header title={label} description={name ? `Snippets for ${name}, filled in with this server's address.` : "Snippets filled in with this server's address."} />
-        <Sheet.Body>{props.kind ? <UseFromCode kind={props.kind} name={props.name} title="Snippets" /> : <UseFromCode snippet={props.snippet!} title="Snippets" />}</Sheet.Body>
+        <Sheet.Body>{props.kind ? <UseFromCode kind={props.kind} name={props.name} title={null} /> : <UseFromCode snippet={props.snippet!} title={null} />}</Sheet.Body>
       </Sheet.Content>
     </Sheet>
   );

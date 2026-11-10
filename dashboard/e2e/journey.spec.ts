@@ -218,6 +218,7 @@ test.describe.serial("first journey", () => {
   });
 
   // A-04: an error shows plain words, the next step and a copyable request id, with raw JSON behind Details.
+  // ErrorPanel (FB-98) does this; CollectionView still draws its own "No collection named …" line (FB-100).
   test.fixme("6b. an error explains its fix and offers the request id", async () => {
     await page.goto("/admin/database/c/does_not_exist");
     const err = page.getByRole("alert");
