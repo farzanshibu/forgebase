@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { creditBalance, getCustomer, listCustomers, listSubscriptions, putCustomer } from "../../api";
 import type { Customer } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
@@ -73,9 +74,7 @@ export default function Customers() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 text-sm">
         <label>Type
-          <select className={`${inputCls} ml-2`} value={filter} onChange={(e) => setFilter(e.target.value as "" | "user" | "org")}>
-            <option value="">all</option><option value="user">users</option><option value="org">organizations</option>
-          </select>
+          <Sel value={filter} onChange={(v) => setFilter(v as "" | "user" | "org")} options={[{ value: "", label: "all" }, { value: "user", label: "users" }, { value: "org", label: "organizations" }]} className="ml-2" />
         </label>
         <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); setParams(lookup ? { subject: lookup } : {}); }}>
           <label>Subject<Input size="sm" className="ml-2 w-56" value={lookup} onChange={(e) => setLookup(e.target.value)} placeholder="org:acme or a user key" /></label>

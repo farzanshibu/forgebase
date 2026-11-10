@@ -96,12 +96,12 @@ describe("Service accounts", () => {
 
     const row = screen.getByText("deploy").closest("tr")!;
     await userEvent.click(within(row).getByRole("button", { name: "Revoke" }));
-    await userEvent.click(within(row).getByRole("button", { name: /confirm revoke/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm revoke/i }));
     await waitFor(() => expect(fake.keys.find((k) => k.id === "k1")?.revoked).toBe(true));
 
     const sarow = screen.getByText("etl").closest("tr")!;
     await userEvent.click(within(sarow).getByRole("button", { name: "Delete" }));
-    await userEvent.click(within(sarow).getByRole("button", { name: /confirm delete/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
     await waitFor(() => expect(screen.queryByText("etl")).not.toBeInTheDocument());
   });
 });
@@ -119,7 +119,7 @@ describe("API keys and PATs", () => {
     expect(screen.queryByText(/PATSECRET/)).not.toBeInTheDocument();
     const row = (await screen.findByText("cli")).closest("tr")!;
     await userEvent.click(within(row).getByRole("button", { name: "Revoke" }));
-    await userEvent.click(within(row).getByRole("button", { name: /confirm revoke/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm revoke/i }));
     expect(await screen.findByText("revoked")).toBeInTheDocument();
   });
 });

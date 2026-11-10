@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ENTRY_KINDS, creditAudit, creditBalance, creditConsumption, creditGrant, creditLedger, creditLots, creditSummary, creditTopUp, listCreditRates } from "../../api";
 import type { EntryKind } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatCount } from "./money";
 import { BillingError, Empty, Field, Th } from "./shared";
@@ -87,7 +88,7 @@ function Ledger({ subject }: { subject: string }) {
         </ul>
       )}
       <div className="mt-4 text-sm">
-        <label>Entry kind<select className={`${inputCls} ml-2`} value={kind} onChange={(e) => setKind(e.target.value as EntryKind | "")}><option value="">all</option>{ENTRY_KINDS.map((k) => <option key={k}>{k}</option>)}</select></label>
+        <label>Entry kind<Sel value={kind} onChange={(v) => setKind(v as EntryKind | "")} options={[{ value: "", label: "all" }, ...ENTRY_KINDS]} className="ml-2" /></label>
       </div>
       {ledger.data && ledger.data.items.length === 0 && <Empty>No ledger entries.</Empty>}
       {ledger.data && ledger.data.items.length > 0 && (

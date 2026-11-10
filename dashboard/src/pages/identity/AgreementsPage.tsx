@@ -1,6 +1,8 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { listAcceptances, listAgreements, publishAgreement, type Agreement } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, Field, TextField } from "../access/shared";
 import { useRun } from "../access/util";
@@ -53,16 +55,14 @@ export default function AgreementsPage() {
             <TextField label="Title" value={title} onChange={setTitle} />
             <TextField label="URL (optional)" value={url} onChange={setUrl} />
           </div>
-          <Field label="Body"><textarea aria-label="Body" rows={6} className={`${inputCls} font-mono`} value={body} onChange={(e) => setBody(e.target.value)} /></Field>
+          <Field label="Body"><Textarea aria-label="Body" minRows={6} className="font-mono" value={body} onChange={(e) => setBody(e.target.value)} /></Field>
           <Button type="submit" tone="primary" disabled={busy || !kind || !title || !body}>Publish version</Button>
           {kind && <Note>Publishing creates version {latest(kind) + 1} of “{kind}”. Users are asked to accept it at their next sign-in.</Note>}
           <ActionError error={error} />
         </form>
       </Panel>
       <Panel title="Acceptances" actions={
-        <select aria-label="Acceptance kind" className={inputCls} value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="">all kinds</option>{kinds.map((k) => <option key={k} value={k}>{k}</option>)}
-        </select>}>
+        <Sel aria-label="Acceptance kind" value={filter} onChange={setFilter} options={[{ value: "", label: "all kinds" }, ...kinds.map((k) => ({ value: k, label: k }))]} />}>
         <ErrorView error={acc.error} />
         {acc.data?.length === 0 && <Empty>No acceptances recorded.</Empty>}
         {acc.data && acc.data.length > 0 && (

@@ -1,6 +1,8 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { createClient, deleteClient, GRANT_TYPES, listClients, OIDC_SCOPES, rotateClientSecret, updateClient, type ClientApp, type ClientInput, type ClientType } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, Field, MultiPick } from "../access/shared";
 import { useRun } from "../access/util";
@@ -43,9 +45,7 @@ export default function ClientsPage() {
                     <Button aria-label={`Edit ${c.name}`} onClick={() => setEditing(c.client_id)}>Edit</Button>
                     {c.type === "confidential" && (
                       <>
-                        <select aria-label={`Grace for ${c.name}`} className={inputCls} value={grace} onChange={(e) => setGrace(Number(e.target.value))}>
-                          {GRACE.map((g) => <option key={g.s} value={g.s}>{g.l}</option>)}
-                        </select>
+                        <Sel aria-label={`Grace for ${c.name}`} value={String(grace)} onChange={(v) => setGrace(Number(v))} options={GRACE.map((g) => ({ value: String(g.s), label: g.l }))} />
                         <ConfirmButton label={`Rotate secret ${c.name}`} onConfirm={() => void run(async () => {
                           const out = await rotateClientSecret(c.client_id, grace);
                           if (out.client_secret) setSecret({ label: `New secret for ${c.name}`, value: out.client_secret });
@@ -99,14 +99,12 @@ function ClientForm({ realm, existing, onDone, onSecret }: { realm?: string; exi
           <Field label="Description"><Input size="sm" aria-label="Description" value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
           {!existing && (
             <Field label="Type">
-              <select aria-label="Type" className={inputCls} value={type} onChange={(e) => setType(e.target.value as ClientType)}>
-                <option value="confidential">confidential (server, has a secret)</option><option value="public">public (browser or native, PKCE)</option>
-              </select>
+              <Sel aria-label="Type" value={type} onChange={(v) => setType(v as ClientType)} options={[{ value: "confidential", label: "confidential (server, has a secret)" }, { value: "public", label: "public (browser or native, PKCE)" }]} />
             </Field>
           )}
         </div>
-        <Field label="Redirect URIs (one per line, exact match)"><textarea aria-label="Redirect URIs" rows={3} className={`${inputCls} font-mono`} value={redirects} onChange={(e) => setRedirects(e.target.value)} /></Field>
-        <Field label="Post-logout redirect URIs (one per line)"><textarea aria-label="Post-logout redirect URIs" rows={2} className={`${inputCls} font-mono`} value={logout} onChange={(e) => setLogout(e.target.value)} /></Field>
+        <Field label="Redirect URIs (one per line, exact match)"><Textarea aria-label="Redirect URIs" minRows={3} className="font-mono" value={redirects} onChange={(e) => setRedirects(e.target.value)} /></Field>
+        <Field label="Post-logout redirect URIs (one per line)"><Textarea aria-label="Post-logout redirect URIs" minRows={2} className="font-mono" value={logout} onChange={(e) => setLogout(e.target.value)} /></Field>
         <MultiPick label="Grant types" options={[...GRANT_TYPES]} value={grants} onChange={setGrants} />
         <MultiPick label="Scopes" options={[...OIDC_SCOPES]} value={scopes} onChange={setScopes} />
         <div className="flex flex-wrap items-end gap-3">

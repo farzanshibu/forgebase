@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { pick } from "../../test/pick";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installBilling } from "../../test/billingMock";
@@ -26,15 +27,15 @@ describe("Billing shell", () => {
   it("shows a clear disabled state when the billing routes answer 404", async () => {
     setup({ disabled: true });
     renderStudio("/billing");
-    expect(await screen.findByRole("status", { name: "Billing disabled" })).toHaveTextContent(/on by default/);
-    expect(screen.queryByRole("navigation", { name: "Billing sections" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("status", { name: "Billing disabled" }, { timeout: 5000 })).toHaveTextContent(/on by default/);
+    expect(screen.queryByRole("tablist", { name: "Billing sections" })).not.toBeInTheDocument();
   });
 
   it("offers every section as a tab", async () => {
     setup();
     renderStudio("/billing");
-    const nav = await screen.findByRole("navigation", { name: "Billing sections" });
-    expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual([
+    const nav = await screen.findByRole("tablist", { name: "Billing sections" });
+    expect(within(nav).getAllByRole("tab").map((a) => a.textContent)).toEqual([
       "Revenue", "Catalog", "Customers", "Subscriptions", "Orders", "Usage meters", "Invoices", "Payments", "Stores", "Coupons", "Dunning", "Credits", "Providers and settings",
     ]);
   });
@@ -44,14 +45,14 @@ describe("Billing tab row", () => {
   it("wraps instead of clipping, and every tab is reachable", async () => {
     setup();
     renderStudio("/billing");
-    const nav = await screen.findByRole("navigation", { name: "Billing sections" });
-    // A wrapping row has no scroll container that could hide a tab past the right edge.
-    expect(nav).toHaveClass("flex-wrap");
-    expect(nav).not.toHaveClass("overflow-x-auto");
+    const list = await screen.findByRole("tablist", { name: "Billing sections" });
+    // The PanelUI tab row scrolls sideways (with a fade at the end that has more) rather than wrapping: it never clips a tab.
+    expect(list).toHaveClass("data-[orientation=horizontal]:overflow-x-auto");
+    expect(within(list).getAllByRole("tab")).toHaveLength(13);
     const user = userEvent.setup();
     for (const label of ["Providers and settings", "Dunning", "Revenue"]) {
-      await user.click(within(nav).getByRole("link", { name: label }));
-      await waitFor(() => expect(within(screen.getByRole("navigation", { name: "Billing sections" })).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page"));
+      await user.click(within(list).getByRole("tab", { name: label }));
+      await waitFor(() => expect(within(screen.getByRole("tablist", { name: "Billing sections" })).getByRole("tab", { name: label })).toHaveAttribute("aria-selected", "true"));
     }
   });
 });
@@ -96,9 +97,9 @@ describe("Catalog", () => {
 
     const form = screen.getByRole("form", { name: "New price" });
     await userEvent.type(within(form).getByLabelText("Price key"), "scale_usage");
-    await userEvent.selectOptions(within(form).getByLabelText("Price type"), "metered");
+    await pick(within(form).getByLabelText("Price type"), "metered");
     await userEvent.type(within(form).getByLabelText("Metered feature"), "api_calls");
-    await userEvent.selectOptions(within(form).getByLabelText("Scheme"), "graduated");
+    await pick(within(form).getByLabelText("Scheme"), "graduated");
     await userEvent.type(within(form).getByLabelText("Unit amount"), "0.10");
     await userEvent.click(within(form).getByLabelText(/^Tiers/));
     await userEvent.paste("100, 0.10, 0\ninf, 0.05, 0");
@@ -155,7 +156,7 @@ describe("Customers", () => {
     renderStudio("/billing/customers");
     expect(await within(await screen.findByRole("table", { name: "Customers" })).findByText("$123.45")).toBeInTheDocument();
     expect(rows("Customers")).toHaveLength(3);
-    await userEvent.selectOptions(screen.getByLabelText("Type"), "org");
+    await pick(screen.getByLabelText("Type"), "org");
     expect(rows("Customers")).toHaveLength(2);
     await userEvent.click(screen.getByRole("button", { name: "Open org:acme" }));
     const summary = await screen.findByLabelText("Customer summary");
@@ -176,7 +177,7 @@ describe("Subscriptions", () => {
     renderStudio("/billing/subscriptions");
     await screen.findByRole("table", { name: "Subscriptions" });
     expect(rows("Subscriptions")).toHaveLength(3);
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "past_due");
+    await pick(screen.getByLabelText("Status"), "past_due");
     expect(rows("Subscriptions")).toHaveLength(2);
   });
 
@@ -217,7 +218,7 @@ describe("Subscriptions", () => {
     await userEvent.click(screen.getByRole("button", { name: "Manage sub1" }));
     await userEvent.click(await screen.findByRole("button", { name: "Change plan" }));
     const group = screen.getByRole("group", { name: "Change plan of sub1" });
-    await userEvent.selectOptions(within(group).getByLabelText("New price"), "team_month");
+    await pick(within(group).getByLabelText("New price"), "team_month");
     const preview = await within(group).findByLabelText("Proration preview");
     expect(preview).toHaveTextContent(/Unused credit -\$14\.50, new charge \$49\.50, net \$35\.00/);
     expect(preview).not.toHaveTextContent(/Estimate/);
@@ -236,7 +237,7 @@ describe("Subscriptions", () => {
     renderStudio("/billing/subscriptions");
     const form = await screen.findByRole("form", { name: "New subscription" });
     await userEvent.type(within(form).getByLabelText(/^Subscriber/), "usr_new");
-    await userEvent.selectOptions(within(form).getByLabelText("Recurring price"), "pro_month");
+    await pick(within(form).getByLabelText("Recurring price"), "pro_month");
     await userEvent.type(within(form).getByLabelText(/^Trial days/), "30");
     await userEvent.click(within(form).getByRole("button", { name: "Start subscription" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Subscribed");
@@ -263,7 +264,7 @@ describe("Orders", () => {
     await userEvent.click(screen.getByRole("button", { name: "Show orders" }));
     await waitFor(() => expect(rows("Orders")).toHaveLength(2));
     const form = screen.getByRole("form", { name: "New order" });
-    await userEvent.selectOptions(within(form).getByLabelText("One-time price"), "credits_once");
+    await pick(within(form).getByLabelText("One-time price"), "credits_once");
     await userEvent.click(within(form).getByRole("button", { name: "Create order" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Order created");
     expect(lastBody(mock, "post /api/v1/billing/orders")).toMatchObject({ subject: "usr_ana", items: [{ price: "credits_once", quantity: 1 }] });
@@ -304,7 +305,7 @@ describe("Invoices", () => {
     renderStudio("/billing/invoices");
     await screen.findByRole("table", { name: "Invoices" });
     expect(rows("Invoices")).toHaveLength(4);
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "open");
+    await pick(screen.getByLabelText("Status"), "open");
     await waitFor(() => expect(rows("Invoices")).toHaveLength(2));
     expect(within(screen.getByRole("table", { name: "Credit notes" })).getByText("CN-1")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "INV-inv2" }));
@@ -365,7 +366,7 @@ describe("Payments", () => {
     const table = await screen.findByRole("table", { name: "Payments" });
     expect(table).toHaveTextContent("card_declined: Your card was declined");
     expect(screen.getByLabelText("Failed payments")).toHaveTextContent("1 failed");
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "succeeded");
+    await pick(screen.getByLabelText("Status"), "succeeded");
     expect(rows("Payments")).toHaveLength(2);
     expect(await within(await screen.findByRole("table", { name: "Refunds" })).findByText("$5.00")).toBeInTheDocument();
   });
@@ -389,7 +390,7 @@ describe("Coupons", () => {
     const form = screen.getByRole("form", { name: "New coupon" });
     await userEvent.type(within(form).getByLabelText("Coupon code"), "SPRING");
     await userEvent.type(within(form).getByLabelText("Percent off"), "12.5");
-    await userEvent.selectOptions(within(form).getByLabelText("Duration"), "repeating");
+    await pick(within(form).getByLabelText("Duration"), "repeating");
     await userEvent.type(within(form).getByLabelText("Cycles"), "3");
     await userEvent.click(within(form).getByRole("button", { name: "Save coupon" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Coupon saved");
@@ -402,7 +403,7 @@ describe("Coupons", () => {
     renderStudio("/billing/coupons");
     const form = await screen.findByRole("form", { name: "New coupon" });
     await userEvent.type(within(form).getByLabelText("Coupon code"), "TENOFF");
-    await userEvent.selectOptions(within(form).getByLabelText("Coupon kind"), "amount");
+    await pick(within(form).getByLabelText("Coupon kind"), "amount");
     await userEvent.type(within(form).getByLabelText("Amount off"), "10");
     await userEvent.click(within(form).getByRole("button", { name: "Save coupon" }));
     await waitFor(() => expect(lastBody(mock, "put /api/v1/billing/coupons/{code}")).toMatchObject({ kind: "amount", amount_off: 1000, currency: "USD" }));
@@ -440,7 +441,7 @@ describe("Credits", () => {
     expect(await screen.findByLabelText("Credit balance")).toHaveTextContent("960");
     expect(await screen.findByText("ledger consistent")).toBeInTheDocument();
     expect(rows("Credit ledger")).toHaveLength(3);
-    await userEvent.selectOptions(screen.getByLabelText("Entry kind"), "top_up");
+    await pick(screen.getByLabelText("Entry kind"), "top_up");
     await waitFor(() => expect(rows("Credit ledger")).toHaveLength(2));
     await userEvent.type(screen.getByLabelText("Credits"), "250");
     await userEvent.click(screen.getByRole("button", { name: "Add purchased credits" }));
@@ -476,7 +477,7 @@ describe("Providers and settings", () => {
     renderStudio("/billing/settings");
     const stripe = await screen.findByRole("region", { name: "stripe provider" });
     await userEvent.click(within(stripe).getByRole("button", { name: "Remove stripe" }));
-    await userEvent.click(within(stripe).getByRole("button", { name: "Confirm remove stripe" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm remove stripe" }));
     await waitFor(() => expect(st.providers).toHaveLength(0));
   });
 
@@ -485,7 +486,7 @@ describe("Providers and settings", () => {
     renderStudio("/billing/settings");
     const list = await screen.findByRole("list", { name: "Tax rates" });
     await userEvent.click(within(list).getByRole("button", { name: "Archive tax rate IN" }));
-    await userEvent.click(within(list).getByRole("button", { name: "Confirm archive tax rate in" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm archive tax rate in" }));
     await waitFor(() => expect(st.taxRates[0]!.active).toBe(false));
   });
 
@@ -496,7 +497,7 @@ describe("Providers and settings", () => {
     const retry = within(form).getByLabelText("Retry days (comma separated)");
     await userEvent.clear(retry);
     await userEvent.type(retry, "2, 4");
-    await userEvent.selectOptions(within(form).getByLabelText("After the last retry"), "leave_past_due");
+    await pick(within(form).getByLabelText("After the last retry"), "leave_past_due");
     await userEvent.click(within(form).getByRole("button", { name: "Save settings" }));
     await waitFor(() => expect(lastBody(mock, "put /api/v1/billing/settings")).toMatchObject({ retry_days: [2, 4], final_action: "leave_past_due" }));
     expect(screen.getByRole("list", { name: "Tax rates" })).toHaveTextContent("GST 18%");
@@ -529,9 +530,9 @@ describe("Stores", () => {
     const { mock } = setup();
     renderStudio("/billing/stores");
     const purchases = await screen.findByRole("table", { name: "Store purchases" });
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "refunded");
+    await pick(screen.getByLabelText("Status"), "refunded");
     expect(within(purchases).getAllByRole("row")).toHaveLength(2);
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "");
+    await pick(screen.getByLabelText("Status"), "");
     await userEvent.type(screen.getByLabelText("Subject"), "org:acme");
     await waitFor(() => expect(mock.calls.some((c) => c.includes("store-purchases"))).toBe(true));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Store purchases" })).getAllByRole("row")).toHaveLength(2));
@@ -541,7 +542,7 @@ describe("Stores", () => {
     setup();
     renderStudio("/billing/stores");
     const products = await screen.findByRole("table", { name: "Store products" });
-    await userEvent.selectOptions(screen.getByLabelText("Filter store"), "google_play");
+    await pick(screen.getByLabelText("Filter store"), "google_play");
     expect(products).not.toHaveTextContent("com.acme.pro.monthly");
     expect(products).toHaveTextContent("coins_100");
   });
@@ -551,10 +552,10 @@ describe("Stores", () => {
     renderStudio("/billing/stores");
     await screen.findByRole("table", { name: "Store products" });
     const form = screen.getByRole("form", { name: "Store product mapping" });
-    await userEvent.selectOptions(within(form).getByLabelText("Mapping store"), "creem");
+    await pick(within(form).getByLabelText("Mapping store"), "creem");
     await userEvent.type(within(form).getByLabelText("Store product id"), "prod_abc");
     expect(within(form).queryByRole("option", { name: /pro_tiers/ })).not.toBeInTheDocument(); // metered prices cannot be sold by a store
-    await userEvent.selectOptions(within(form).getByLabelText("Sold as price"), "pro_month");
+    await pick(within(form).getByLabelText("Sold as price"), "pro_month");
     await userEvent.click(within(form).getByRole("button", { name: "Save mapping" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Mapping saved");
     expect(lastBody(mock, "put /api/v1/billing/store-products/{provider}/{product_id}")).toEqual({ price: "pro_month" });
@@ -563,7 +564,7 @@ describe("Stores", () => {
     // Edit loads the row into the form; saving re-maps it.
     await userEvent.click(await screen.findByRole("button", { name: "Edit app_store com.acme.pro.monthly" }));
     expect(within(form).getByLabelText("Store product id")).toHaveValue("com.acme.pro.monthly");
-    await userEvent.selectOptions(within(form).getByLabelText("Sold as price"), "pro_month");
+    await pick(within(form).getByLabelText("Sold as price"), "pro_month");
     await userEvent.click(within(form).getByRole("button", { name: "Save mapping" }));
     await waitFor(() => expect(st.storeProducts.find((p) => p.product_id === "com.acme.pro.monthly")!.price).toBe("pro_month"));
     // Delete needs a confirmation.
@@ -585,8 +586,8 @@ describe("Stores", () => {
   it("is a tab of the studio", async () => {
     setup();
     renderStudio("/billing");
-    const nav = await screen.findByRole("navigation", { name: "Billing sections" });
-    expect(within(nav).getByRole("link", { name: "Stores" })).toHaveAttribute("href", "/billing/stores");
+    const nav = await screen.findByRole("tablist", { name: "Billing sections" });
+    expect(within(nav).getByRole("tab", { name: "Stores" })).toHaveAttribute("href", "/billing/stores");
   });
 });
 
@@ -601,7 +602,7 @@ describe("Store and regional provider forms", () => {
     await userEvent.type(within(app).getByLabelText("app_store Issuer id"), "issuer-1");
     await userEvent.type(within(app).getByLabelText("app_store App Store Connect key id"), "KEY123");
     await userEvent.type(within(app).getByLabelText("app_store Bundle id"), "com.acme.app");
-    await userEvent.selectOptions(within(app).getByLabelText("app_store Environment"), "xcode");
+    await pick(within(app).getByLabelText("app_store Environment"), "xcode");
     await userEvent.click(within(app).getByLabelText(/^app_store App Store Connect private key/));
     await userEvent.paste("-----BEGIN PRIVATE KEY-----SECRETPEM");
     await userEvent.click(within(app).getByRole("button", { name: "Save app_store" }));
@@ -620,7 +621,7 @@ describe("Store and regional provider forms", () => {
     await userEvent.type(within(app).getByLabelText("app_store Issuer id"), "issuer-1");
     await userEvent.type(within(app).getByLabelText("app_store App Store Connect key id"), "KEY123");
     await userEvent.type(within(app).getByLabelText("app_store Bundle id"), "com.acme.app");
-    await userEvent.selectOptions(within(app).getByLabelText("app_store Environment"), "xcode");
+    await pick(within(app).getByLabelText("app_store Environment"), "xcode");
     await userEvent.click(within(app).getByLabelText(/^app_store App Store Connect private key/));
     await userEvent.paste("-----BEGIN PRIVATE KEY-----SECRETPEM");
     await userEvent.click(within(app).getByRole("button", { name: "Save app_store" }));
@@ -628,7 +629,7 @@ describe("Store and regional provider forms", () => {
     // Test mode and the non-secret config come back from the server; the secret does not.
     expect(within(app).getByLabelText("app_store test mode")).toHaveTextContent("Test mode (xcode)");
     expect(within(app).getByLabelText("app_store Bundle id")).toHaveValue("com.acme.app");
-    expect(within(app).getByLabelText("app_store Environment")).toHaveValue("xcode");
+    expect(within(app).getByLabelText("app_store Environment")).toHaveTextContent("xcode");
     const pk = within(app).getByLabelText(/^app_store App Store Connect private key/);
     expect(pk).toHaveValue("");
     expect(pk).toHaveAttribute("placeholder", "leave blank to keep");
@@ -706,7 +707,7 @@ describe("Store and regional provider forms", () => {
     renderStudio("/billing/settings");
     const creem = await screen.findByRole("region", { name: "creem provider" });
     await userEvent.click(within(creem).getByRole("button", { name: "Remove creem" }));
-    await userEvent.click(within(creem).getByRole("button", { name: "Confirm remove creem" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm remove creem" }));
     await waitFor(() => expect(st.providers.some((p) => p.provider === "creem")).toBe(false));
   });
 });

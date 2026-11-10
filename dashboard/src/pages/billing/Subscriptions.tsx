@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { SUBSCRIPTION_STATUSES, cancelSubscription, changePlan, listPrices, previewPlanChange, listSubscriptions, pauseSubscription, resumeSubscription, subscribe } from "../../api";
 import type { Price, Proration, Subscription, SubscriptionStatus } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatMoney } from "./money";
 import { Badge, BillingError, Empty, Field, Th, SubjectLink } from "./shared";
@@ -36,14 +37,10 @@ function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]
         <div className="space-y-2 rounded border border-border p-3" role="group" aria-label={`Change plan of ${sub.id}`}>
           <div className={FORM_GRID}>
             <Field label="New price">
-              <select className={inputCls} value={target} onChange={(e) => setTarget(e.target.value)}>
-                <option value="">choose…</option>{candidates.map((p) => <option key={p.key} value={p.key}>{p.key}</option>)}
-              </select>
+              <Sel value={target} onChange={setTarget} options={[{ value: "", label: "choose…" }, ...candidates.map((p) => ({ value: p.key, label: p.key }))]} />
             </Field>
             <Field label="Proration">
-              <select className={inputCls} value={proration} onChange={(e) => setProration(e.target.value as Proration)}>
-                <option value="create_prorations">create prorations</option><option value="always_invoice">invoice now</option><option value="none">none</option>
-              </select>
+              <Sel value={proration} onChange={(v) => setProration(v as Proration)} options={[{ value: "create_prorations", label: "create prorations" }, { value: "always_invoice", label: "invoice now" }, "none"]} />
             </Field>
             <label className="flex items-center gap-2 pt-6 text-sm text-foreground/80"><input type="checkbox" checked={atEnd} onChange={(e) => setAtEnd(e.target.checked)} />At period end</label>
           </div>
@@ -80,7 +77,7 @@ function NewSubscription({ prices, onDone }: { prices: Price[]; onDone: () => vo
     <form onSubmit={submit} aria-label="New subscription" className="space-y-3">
       <div className={FORM_GRID}>
         <Field label="Subscriber (org:<id> or user key)"><Input size="sm" value={subject} onChange={(e) => setSubject(e.target.value)} required /></Field>
-        <Field label="Recurring price"><select className={inputCls} value={price} onChange={(e) => setPrice(e.target.value)} required><option value="">choose…</option>{prices.filter((p) => p.type !== "one_time").map((p) => <option key={p.key} value={p.key}>{p.key}</option>)}</select></Field>
+        <Field label="Recurring price"><Sel value={price} onChange={setPrice} options={[{ value: "", label: "choose…" }, ...prices.filter((p) => p.type !== "one_time").map((p) => ({ value: p.key, label: p.key }))]} required /></Field>
         <Field label="Trial days (blank: price default)"><Input size="sm" inputMode="numeric" value={trial} onChange={(e) => setTrial(e.target.value)} /></Field>
         <Field label="Coupon"><Input size="sm" value={coupon} onChange={(e) => setCoupon(e.target.value)} /></Field>
       </div>
@@ -102,9 +99,7 @@ export default function Subscriptions() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 text-sm">
         <label>Status
-          <select className={`${inputCls} ml-2`} value={status} onChange={(e) => setStatus(e.target.value as SubscriptionStatus | "")}>
-            <option value="">all</option>{SUBSCRIPTION_STATUSES.map((s) => <option key={s}>{s}</option>)}
-          </select>
+          <Sel value={status} onChange={(v) => setStatus(v as SubscriptionStatus | "")} options={[{ value: "", label: "all" }, ...SUBSCRIPTION_STATUSES]} className="ml-2" />
         </label>
         <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
         <Button onClick={subs.reload}>Refresh</Button>

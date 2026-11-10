@@ -1,7 +1,9 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { PRICE_TYPES, PRODUCT_KINDS, SCHEMES, listAddons, listFeatures, listPlans, listPrices, listProducts, listUsagePacks, putPrice, putProduct, archivePrice, archiveProduct } from "../../api";
 import type { BillingInterval, PriceInput, PriceScheme, PriceType, Product, ProductKind } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { describePrice, parseCurrencyOptions, parseTiers } from "./catalogUtil";
 import { formatMoney, parseMinor } from "./money";
@@ -33,7 +35,7 @@ function ProductForm({ onSaved }: { onSaved: () => void }) {
         <Field label="Product key"><Input size="sm" value={key} onChange={(e) => setKey(e.target.value)} required /></Field>
         <Field label="Product name"><Input size="sm" value={name} onChange={(e) => setName(e.target.value)} required /></Field>
         <Field label="Product kind">
-          <select className={inputCls} value={kind} onChange={(e) => setKind(e.target.value as ProductKind)}>{PRODUCT_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
+          <Sel value={kind} onChange={(v) => setKind(v as ProductKind)} options={PRODUCT_KINDS} />
         </Field>
         {(kind === "plan" || kind === "addon" || kind === "usage_pack") && (
           <Field label="Entitlement key"><Input size="sm" value={ref} onChange={(e) => setRef(e.target.value)} placeholder={`${kind} key in Entitlements`} /></Field>
@@ -83,19 +85,19 @@ function PriceForm({ products, onSaved }: { products: Product[]; onSaved: () => 
       <div className={FORM_GRID}>
         <Field label="Price key"><Input size="sm" value={key} onChange={(e) => setKey(e.target.value)} required /></Field>
         <Field label="Price product">
-          <select className={inputCls} value={product} onChange={(e) => setProduct(e.target.value)}>{products.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}</select>
+          <Sel value={product} onChange={setProduct} options={products.map((p) => ({ value: p.key, label: p.name }))} />
         </Field>
-        <Field label="Price type"><select className={inputCls} value={type} onChange={(e) => setType(e.target.value as PriceType)}>{PRICE_TYPES.map((t) => <option key={t}>{t}</option>)}</select></Field>
-        {type === "recurring" && <Field label="Interval"><select className={inputCls} value={interval} onChange={(e) => setInterval_(e.target.value as BillingInterval)}><option>month</option><option>year</option></select></Field>}
-        <Field label="Scheme"><select className={inputCls} value={scheme} onChange={(e) => setScheme(e.target.value as PriceScheme)}>{SCHEMES.map((t) => <option key={t}>{t}</option>)}</select></Field>
+        <Field label="Price type"><Sel value={type} onChange={(v) => setType(v as PriceType)} options={PRICE_TYPES} /></Field>
+        {type === "recurring" && <Field label="Interval"><Sel value={interval} onChange={(v) => setInterval_(v as BillingInterval)} options={["month", "year"]} /></Field>}
+        <Field label="Scheme"><Sel value={scheme} onChange={(v) => setScheme(v as PriceScheme)} options={SCHEMES} /></Field>
         <Field label="Currency"><Input size="sm" value={currency} maxLength={3} onChange={(e) => setCurrency(e.target.value)} /></Field>
         <Field label="Unit amount"><Input size="sm" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="12.50" /></Field>
         <Field label="Trial days"><Input size="sm" inputMode="numeric" value={trial} onChange={(e) => setTrial(e.target.value)} /></Field>
         {type === "metered" && <Field label="Metered feature"><Input size="sm" value={feature} onChange={(e) => setFeature(e.target.value)} /></Field>}
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Other currencies (one per line, EUR=9.00)"><textarea className={`${inputCls} h-20 w-full font-mono`} value={extra} onChange={(e) => setExtra(e.target.value)} /></Field>
-        {scheme !== "per_unit" && <Field label="Tiers (up_to, unit, flat per line)"><textarea className={`${inputCls} h-20 w-full font-mono`} value={tiers} onChange={(e) => setTiers(e.target.value)} placeholder={"100, 5.00, 0\ninf, 4.00, 0"} /></Field>}
+        <Field label="Other currencies (one per line, EUR=9.00)"><Textarea minRows={4} className="w-full font-mono" value={extra} onChange={(e) => setExtra(e.target.value)} /></Field>
+        {scheme !== "per_unit" && <Field label="Tiers (up_to, unit, flat per line)"><Textarea minRows={4} className="w-full font-mono" value={tiers} onChange={(e) => setTiers(e.target.value)} placeholder={"100, 5.00, 0\ninf, 4.00, 0"} /></Field>}
       </div>
       {localError && <p role="alert" className="text-sm text-destructive">{localError}</p>}
       <ErrorView error={act.error} />

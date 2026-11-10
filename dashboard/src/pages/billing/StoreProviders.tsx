@@ -1,7 +1,9 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { deleteProvider, putProvider } from "../../api";
 import type { ProviderAccount } from "../../api";
-import { Button, ConfirmButton, ErrorView, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { Badge, Field } from "./shared";
 import { useAct } from "./useAct";
 import { Input } from "panelui-web/input";
@@ -120,9 +122,9 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
           {card.fields.map((f) => (
             <Field key={f.name} label={`${card.id} ${f.label}`} className={f.multiline ? "sm:col-span-2" : ""}>
               {f.options ? (
-                <select className={inputCls} value={values[f.name] ?? (shown(f) || f.options[0])} onChange={(e) => set(f.name, e.target.value)}>{f.options.map((o) => <option key={o}>{o}</option>)}</select>
+                <Sel value={values[f.name] ?? (shown(f) || f.options[0]) ?? ""} onChange={(v) => set(f.name, v)} options={f.options} />
               ) : f.multiline ? (
-                <textarea className={`${inputCls} h-24 font-mono text-xs`} autoComplete="off" spellCheck={false} value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
+                <Textarea minRows={5} className="font-mono text-xs" autoComplete="off" spellCheck={false} value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
               ) : (
                 <Input size="sm" type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
               )}

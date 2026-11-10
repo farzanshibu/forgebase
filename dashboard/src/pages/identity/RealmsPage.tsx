@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createRealmWithIdentity, DEFAULT_LDAP, listOidcKeys, putRealmIdentity, type LoginMethods, type RealmConfig, type RealmIdentity } from "../../api";
-import { Button, Panel, inputCls } from "../../components/ui";
+import { Button, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { ActionError, Empty, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { useLoad } from "../../hooks";
@@ -81,11 +82,7 @@ function RealmSettings({ realm, onSaved }: { realm: RealmIdentity; onSaved: () =
         <Check label="Allow sign-up" checked={cfg.signup} onChange={(v) => setCfg({ ...cfg, signup: v })} hint="new accounts via password, social, LDAP or phone" />
         <label className="flex items-center gap-2 text-sm text-foreground/80">
           Require verified email
-          <select aria-label="Require verified email" className={inputCls}
-            value={cfg.require_verified_email === null ? "inherit" : String(cfg.require_verified_email)}
-            onChange={(e) => setCfg({ ...cfg, require_verified_email: e.target.value === "inherit" ? null : e.target.value === "true" })}>
-            <option value="inherit">server default</option><option value="true">yes</option><option value="false">no</option>
-          </select>
+          <Sel aria-label="Require verified email" value={cfg.require_verified_email === null ? "inherit" : String(cfg.require_verified_email)} onChange={(v) => setCfg({ ...cfg, require_verified_email: v === "inherit" ? null : v === "true" })} options={[{ value: "inherit", label: "server default" }, { value: "true", label: "yes" }, { value: "false", label: "no" }]} />
         </label>
         <fieldset className="space-y-1"><legend className="text-xs text-muted-foreground">Sign-in methods</legend>
           <div className="flex flex-wrap gap-x-4 gap-y-1">

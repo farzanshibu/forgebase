@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { pick } from "./test/pick";
 import { renderStudio, signedIn } from "./test/helpers";
 import { MockApi } from "./test/mockApi";
 import { installIdentity } from "./test/idMock";
@@ -74,18 +75,18 @@ it("Identity Studio: realm -> public client app -> branding preview -> publish a
   const u = userEvent.setup();
   expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
 
-  await u.click(screen.getByRole("link", { name: "Client apps" }));
+  await u.click(screen.getByRole("tab", { name: "Client apps" }));
   await screen.findByText("app_web");
   await u.type(screen.getByLabelText("Name"), "Mobile");
-  await u.selectOptions(screen.getByLabelText("Type"), "public");
+  await pick(screen.getByLabelText("Type"), "public");
   await u.click(screen.getByRole("button", { name: "Create client app" }));
   await waitFor(() => expect(st.clients.map((c) => c.name)).toContain("Mobile"));
 
-  await u.click(screen.getByRole("link", { name: "Branding" }));
+  await u.click(screen.getByRole("tab", { name: "Branding" }));
   await u.type(await screen.findByLabelText("Sign-in title"), "Hello");
   expect(screen.getByLabelText("Sign-in preview")).toHaveTextContent("Hello");
 
-  await u.click(screen.getByRole("link", { name: "Legal agreements" }));
+  await u.click(screen.getByRole("tab", { name: "Legal agreements" }));
   const form = await screen.findByRole("form", { name: "Publish agreement" });
   await u.type(within(form).getByLabelText("Kind"), "privacy");
   await u.type(within(form).getByLabelText("Title"), "Privacy");

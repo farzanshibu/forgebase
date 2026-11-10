@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { createOrg, deleteOrg, getOrg, listOrgs, renameOrg } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { RouteTabs } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import RolesPanel from "./RolesPanel";
 import RoleSetsPanel from "./RoleSetsPanel";
@@ -73,14 +74,7 @@ export function OrgDetail() {
             </div>
           </div>
           <ActionError error={error} />
-          <nav aria-label="Organization sections" className="flex flex-wrap gap-1 border-b border-border">
-            {TABS.map(([p, label]) => (
-              <NavLink key={p} to={`/access/orgs/${encodeURIComponent(org)}/${p}`}
-                className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-                {label}
-              </NavLink>
-            ))}
-          </nav>
+          <RouteTabs label="Organization sections" tabs={TABS.map(([p, label]) => ({ to: `/access/orgs/${encodeURIComponent(org)}/${p}`, label }))} />
           <Routes>
             <Route index element={<Navigate to="projects" replace />} />
             <Route path="projects" element={<ProjectsTab org={org} />} />

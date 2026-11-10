@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { pick } from "../../test/pick";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockApi, makeCollection } from "../../test/mockApi";
@@ -133,7 +134,7 @@ describe("teams", () => {
     expect(screen.getByText("deny: billing:manage")).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("Team key"), "qa");
-    await userEvent.selectOptions(screen.getByLabelText("Parent team"), "backend");
+    await pick(screen.getByLabelText("Parent team"), "backend");
     await userEvent.click(screen.getByRole("button", { name: "Create team" }));
     await waitFor(() => expect(tree.querySelector('[data-team="qa"]')).not.toBeNull());
     expect(last("post /api/v1/orgs/{org}/teams")).toMatchObject({ key: "qa", parent_id: "t_be" });
@@ -196,7 +197,7 @@ describe("roles and the permission matrix", () => {
     const row = await rowOf("auditor");
     expect(last("put /api/v1/orgs/{org}/roles")).toMatchObject({ key: "auditor", allow: ["org:read"], deny: [] });
     await userEvent.click(within(row).getByRole("button", { name: "Delete" }));
-    await userEvent.click(within(row).getByRole("button", { name: /confirm delete/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
     await waitFor(() => expect(st.roles.some((r) => r.key === "auditor")).toBe(false));
   });
 
@@ -266,7 +267,7 @@ describe("user overrides", () => {
     expect(last("post /api/v1/overrides")).toEqual({ org_id: "org_acme", principal: "user:users/zed", permission: "teams:delete", effect: "deny" });
 
     await userEvent.click(within(deny).getByRole("button", { name: "Delete" }));
-    await userEvent.click(within(deny).getByRole("button", { name: /confirm delete/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
     await waitFor(() => expect(st.overrides.some((o) => o.id === "ov1")).toBe(false));
   });
 });
@@ -283,13 +284,13 @@ describe("resource ACL", () => {
 
     await userEvent.type(screen.getByLabelText("Grantee"), "user:users/zed");
     await userEvent.type(screen.getByLabelText("ACL permission"), "projects:share");
-    await userEvent.selectOptions(screen.getByLabelText("ACL effect"), "deny");
+    await pick(screen.getByLabelText("ACL effect"), "deny");
     await userEvent.click(screen.getByRole("button", { name: "Add ACL entry" }));
     expect(await screen.findByText("user:users/zed")).toBeInTheDocument();
     expect(last("post /api/v1/acl")).toEqual({ resource_type: "project", resource_id: "prj_web", grantee: "user:users/zed", permission: "projects:share", effect: "deny" });
 
     await userEvent.click(within(deny).getByRole("button", { name: "Remove" }));
-    await userEvent.click(within(deny).getByRole("button", { name: /confirm remove/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm remove/i }));
     await waitFor(() => expect(screen.queryByText("user:users/dave")).toBeNull());
   });
 
@@ -317,7 +318,7 @@ describe("realm level", () => {
     const row = (await screen.findByText("user:users/mallory")).closest("tr")!;
     expect(row.className).toMatch(/destructive/);
     await userEvent.click(within(row).getByRole("button", { name: "Lift" }));
-    await userEvent.click(within(row).getByRole("button", { name: /confirm lift/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm lift/i }));
     await waitFor(() => expect(st.suspensions).toHaveLength(0));
     await userEvent.type(screen.getByLabelText("Suspend principal"), "user:users/eve");
     await userEvent.type(screen.getByLabelText("Reason"), "fraud");
@@ -328,29 +329,29 @@ describe("realm level", () => {
 });
 
 describe("collection rules", () => {
-  const pick = async () => {
+  const pickPosts = async () => {
     open("/access/rules");
-    await userEvent.selectOptions(await screen.findByLabelText("Collection"), "posts");
+    await pick(await screen.findByRole("combobox", { name: "Collection" }), "posts");
     await screen.findByText("Rules of posts");
   };
 
   it("loads rules: null is Locked, empty is Everyone, text is an expression", async () => {
-    await pick();
-    expect(screen.getByLabelText("List mode")).toHaveValue("open");
-    expect(screen.getByLabelText("Update mode")).toHaveValue("none");
-    expect(screen.getByLabelText("Create mode")).toHaveValue("expr");
+    await pickPosts();
+    expect(screen.getByLabelText("List mode")).toHaveTextContent("Everyone");
+    expect(screen.getByLabelText("Update mode")).toHaveTextContent("Locked");
+    expect(screen.getByLabelText("Create mode")).toHaveTextContent("Expression");
     expect(screen.getByLabelText("Create expression")).toHaveValue('@request.auth.id != ""');
     expect(screen.getByLabelText("secret read expression")).toHaveValue('@request.auth.type = "admin"');
   });
 
   it("saves edited rules and field rules", async () => {
-    await pick();
-    await userEvent.selectOptions(screen.getByLabelText("List mode"), "none");
-    await userEvent.selectOptions(screen.getByLabelText("Update mode"), "expr");
+    await pickPosts();
+    await pick(screen.getByLabelText("List mode"), "none");
+    await pick(screen.getByLabelText("Update mode"), "expr");
     const upd = screen.getByLabelText("Update expression");
     await userEvent.clear(upd);
     await userEvent.type(upd, "owner = @request.auth.id");
-    await userEvent.selectOptions(screen.getByLabelText("title write mode"), "open");
+    await pick(screen.getByLabelText("title write mode"), "open");
     await userEvent.click(screen.getByRole("button", { name: "Save rules" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Saved");
     expect(last("put /api/v1/policies/{collection}")).toEqual({
@@ -360,8 +361,8 @@ describe("collection rules", () => {
   });
 
   it("shows the server's validation error for a bad rule", async () => {
-    await pick();
-    await userEvent.selectOptions(screen.getByLabelText("Delete mode"), "expr");
+    await pickPosts();
+    await pick(screen.getByLabelText("Delete mode"), "expr");
     const del = screen.getByLabelText("Delete expression");
     await userEvent.clear(del);
     await userEvent.type(del, "nosuchfield = 1");
@@ -373,11 +374,11 @@ describe("collection rules", () => {
   });
 
   it("locks all rules with the delete action", async () => {
-    await pick();
+    await pickPosts();
     await userEvent.click(screen.getByRole("button", { name: "Lock all rules" }));
     await userEvent.click(screen.getByRole("button", { name: /confirm lock all rules/i }));
     await waitFor(() => expect(st.policies.posts).toBeUndefined());
-    await waitFor(() => expect(screen.getByLabelText("List mode")).toHaveValue("none"));
+    await waitFor(() => expect(screen.getByLabelText("List mode")).toHaveTextContent("Locked"));
   });
 });
 
