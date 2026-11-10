@@ -67,16 +67,25 @@ async fn scenario_02_create_sql_table() {
         ]
     } else {
         vec![
-            sql("CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", vec![]),
+            sql(
+                "CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)",
+                vec![],
+            ),
             sql(
                 "CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL REFERENCES authors(id),
                  title TEXT NOT NULL, pages INTEGER CHECK (pages > 0))",
                 vec![],
             ),
             sql("CREATE INDEX books_author ON books (author_id)", vec![]),
-            sql("CREATE VIEW author_pages AS SELECT a.name, sum(b.pages) AS pages FROM authors a JOIN books b ON b.author_id = a.id GROUP BY a.name", vec![]),
+            sql(
+                "CREATE VIEW author_pages AS SELECT a.name, sum(b.pages) AS pages FROM authors a JOIN books b ON b.author_id = a.id GROUP BY a.name",
+                vec![],
+            ),
             sql("CREATE TABLE audit (msg TEXT)", vec![]),
-            sql("CREATE TRIGGER books_audit AFTER INSERT ON books BEGIN INSERT INTO audit VALUES ('book ' || new.title); END", vec![]),
+            sql(
+                "CREATE TRIGGER books_audit AFTER INSERT ON books BEGIN INSERT INTO audit VALUES ('book ' || new.title); END",
+                vec![],
+            ),
         ]
     };
     let created = svc.execute_sql_batch(&ctx, ddl).await.unwrap();
@@ -753,7 +762,10 @@ async fn seed_products(svc: &forgebase_data::DataService, n: usize) {
 async fn scenario_05_create_composite_index() {
     let test = test_db().await;
     let db: &Database = &test;
-    if skip_on_postgres(db, "the index manager (indexes, full text, plans) on PostgreSQL is FB-144's") {
+    if skip_on_postgres(
+        db,
+        "the index manager (indexes, full text, plans) on PostgreSQL is FB-144's",
+    ) {
         return;
     }
     let svc = service(&db).await;
@@ -983,7 +995,10 @@ async fn scenario_05_create_composite_index() {
 async fn scenario_06_index_usage_in_query_plans() {
     let test = test_db().await;
     let db: &Database = &test;
-    if skip_on_postgres(db, "the index manager (indexes, full text, plans) on PostgreSQL is FB-144's") {
+    if skip_on_postgres(
+        db,
+        "the index manager (indexes, full text, plans) on PostgreSQL is FB-144's",
+    ) {
         return;
     }
     let svc = service(&db).await;
@@ -1207,5 +1222,325 @@ async fn scenario_24_concurrent_reads_and_writes() {
         WRITERS as u64
     );
     assert!(db.integrity_check().await.unwrap().is_empty());
+    db.close().await;
+}
+
+/// Every id of a listing, following cursors page by page.
+async fn walk(svc: &forgebase_data::DataService, coll: &str, sort: &str, filter: Option<&str>) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = svc
+            .list_records(
+                &admin(),
+                coll,
+                &ListQuery {
+                    sort: Some(sort.into()),
+                    filter: filter.map(str::to_owned),
+                    per_page: Some(2),
+                    cursor: cursor.clone(),
+                    ..ListQuery::default()
+                },
+            )
+            .await
+            .unwrap();
+        ids.extend(page.items.iter().map(|r| r["id"].as_str().unwrap().to_owned()));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return ids,
+        }
+    }
+}
+
+/// The ids of one offset page holding everything.
+async fn ordered(svc: &forgebase_data::DataService, coll: &str, sort: &str) -> Vec<String> {
+    let q = ListQuery {
+        sort: Some(sort.into()),
+        ..ListQuery::default()
+    };
+    let page = svc.list_records(&admin(), coll, &q).await.unwrap();
+    page.items
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// ADR-0028 §7.4: the semantics both engines keep, run on each backend
+/// (`FORGEBASE_TEST_BACKEND`). Differences that are documented, not hidden,
+/// are asserted per engine.
+#[tokio::test]
+async fn semantics_shared_by_both_engines() {
+    let test = test_db().await;
+    let db: &Database = &test;
+    let svc = service(db).await;
+    let ctx = admin();
+    let pg = is_postgres(db);
+    svc.create_collection(
+        &ctx,
+        Collection::base("items")
+            .with_field(Field::new("title", text()))
+            .with_field(Field::new("rank", number()))
+            .with_field(Field::new("flag", FieldKind::Bool))
+            .with_field(Field::new("meta", FieldKind::Json { max_size: None }))
+            .with_field(Field::new(
+                "scores",
+                FieldKind::Array {
+                    items: forgebase_data::schema::ArrayItems::Number,
+                    min_items: None,
+                    max_items: None,
+                },
+            )),
+    )
+    .await
+    .unwrap();
+    for rec in [
+        json!({"id": "r1", "title": "alpha", "rank": 3, "flag": true,
+               "meta": {"n": 9, "s": "x", "deep": {"k": [1, {"z": true}]}}, "scores": [1, 5]}),
+        json!({"id": "r2", "title": "Beta", "flag": false, "meta": {"n": 10, "s": null}, "scores": [10]}),
+        json!({"id": "r3", "title": "école", "rank": 1, "flag": true, "meta": {"n": 100}, "scores": []}),
+        json!({"id": "r4", "title": "delta", "flag": false, "meta": {"s": "Y"}, "scores": [2]}),
+        json!({"id": "r5", "title": "eta", "rank": 2, "meta": {}}),
+    ] {
+        svc.create_record(&ctx, "items", rec).await.unwrap();
+    }
+    let count = |f: &'static str| {
+        let svc = svc.clone();
+        async move {
+            svc.count_records(&admin(), "items", Some(f), HashMap::new())
+                .await
+                .unwrap()
+        }
+    };
+
+    // NULLs sort first ascending and last descending; cursors walk the same
+    // order as offset pages.
+    let asc = vec!["r2", "r4", "r3", "r5", "r1"];
+    let desc = vec!["r1", "r5", "r3", "r2", "r4"];
+    assert_eq!(ordered(&svc, "items", "rank").await, asc);
+    assert_eq!(walk(&svc, "items", "rank", None).await, asc);
+    assert_eq!(ordered(&svc, "items", "-rank").await, desc);
+    assert_eq!(walk(&svc, "items", "-rank", None).await, desc);
+
+    // JSON values compare and sort by type: numbers as numbers (10 > 9),
+    // a missing key and JSON null both as NULL.
+    assert_eq!(count("meta.n > 9").await, 2);
+    assert_eq!(count("meta.n >= 9 && meta.n < 100").await, 2);
+    assert_eq!(count("meta.s = null").await, 3);
+    assert_eq!(count("meta.s = 'x'").await, 1);
+    assert_eq!(count("meta.deep.k.1.z = true").await, 1);
+    let by_n = vec!["r4", "r5", "r1", "r2", "r3"];
+    assert_eq!(ordered(&svc, "items", "meta.n").await, by_n);
+    assert_eq!(walk(&svc, "items", "meta.n", None).await, by_n);
+    assert_eq!(
+        walk(&svc, "items", "-meta.n", Some("meta.n != null")).await,
+        vec!["r3", "r2", "r1"]
+    );
+    // Array items are typed too.
+    assert_eq!(count("scores ?> 4").await, 2);
+    assert_eq!(count("scores:length = 0").await, 2);
+    // Booleans are 0/1 on both engines.
+    assert_eq!(count("flag = true").await, 2);
+    assert_eq!(count("flag = false").await, 2);
+
+    // `~` is a case-insensitive substring match: ASCII letters on SQLite;
+    // on PostgreSQL `ILIKE` folds what the database's ctype folds (Unicode
+    // with the bundled engine's builtin C.UTF-8, ASCII with libc "C", as the
+    // test engine runs), so only ASCII folding is asserted here.
+    assert_eq!(count("title ~ 'BET'").await, 1);
+    assert_eq!(count("title !~ 'a'").await, 1);
+    assert_eq!(count("title ~ 'éco'").await, 1);
+    assert_eq!(count("title:lower = 'beta'").await, 1);
+
+    // JSON round trip: the document comes back as JSON (key order may differ).
+    let r1 = svc
+        .get_record(&ctx, "items", "r1", &GetOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(r1["meta"], json!({"deep": {"k": [1, {"z": true}]}, "s": "x", "n": 9}));
+    assert_eq!(r1["scores"], json!([1, 5]));
+    assert_eq!(r1["flag"], json!(true));
+
+    // Aggregates keep SQLite's result types.
+    let agg = svc
+        .aggregate(
+            &ctx,
+            "items",
+            &AggregateQuery {
+                group_by: vec!["meta.s".into()],
+                aggregates: vec![
+                    AggregateSpec {
+                        function: AggregateFunction::Count,
+                        field: None,
+                        alias: Some("n".into()),
+                    },
+                    AggregateSpec {
+                        function: AggregateFunction::Sum,
+                        field: Some("meta.n".into()),
+                        alias: Some("sum".into()),
+                    },
+                    AggregateSpec {
+                        function: AggregateFunction::Max,
+                        field: Some("meta.n".into()),
+                        alias: Some("max".into()),
+                    },
+                ],
+                ..AggregateQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        agg.into_iter().map(Json::Object).collect::<Vec<_>>(),
+        vec![
+            json!({"meta.s": null, "n": 3, "sum": 110, "max": 100}),
+            json!({"meta.s": "Y", "n": 1, "sum": null, "max": null}),
+            json!({"meta.s": "x", "n": 1, "sum": 9, "max": 9}),
+        ]
+    );
+
+    // NOCASE columns (citext on PostgreSQL) compare case-insensitively.
+    let r = svc
+        .execute_sql(
+            &ctx,
+            sql(
+                "SELECT count(*) FROM _forgebase_collections WHERE name = ?1",
+                vec![json!("ITEMS")],
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0][0], json!(1));
+
+    // Identifiers: SQLite folds quoted names, PostgreSQL does not (the SQL
+    // editor needs the stored name, as ForgeBase's own SQL always quotes it).
+    svc.create_collection(&ctx, Collection::base("Notes").with_field(Field::new("body", text())))
+        .await
+        .unwrap();
+    let quoted = svc
+        .execute_sql(&ctx, sql("SELECT count(*) FROM \"Notes\"", vec![]))
+        .await;
+    assert_eq!(quoted.unwrap().rows[0][0], json!(0));
+    let folded = svc.execute_sql(&ctx, sql("SELECT count(*) FROM notes", vec![])).await;
+    assert_eq!(folded.is_ok(), !pg, "{folded:?}");
+
+    // Introspection stays on ForgeBase's schemas: never the engine catalog.
+    for name in ["pg_class", "sqlite_master", "information_schema.tables", "tables"] {
+        assert!(
+            matches!(
+                svc.describe_table(&ctx, name).await,
+                Err(DataError::CollectionNotFound(_))
+            ),
+            "{name}"
+        );
+    }
+    let items = svc.describe_table(&ctx, "items").await.unwrap();
+    assert_eq!(items.collection.as_deref(), Some("items"));
+    assert!(items.columns.iter().any(|c| c.name == "meta"));
+    db.close().await;
+}
+
+/// Users see rows they own whose `meta.level` is at least 1 and whose `flag`
+/// is set: a rule over text, JSON and boolean columns.
+#[derive(Debug)]
+struct OwnerLevelRule;
+
+impl forgebase_data::Authorizer for OwnerLevelRule {
+    fn authorize(
+        &self,
+        ctx: &forgebase_data::AccessContext,
+        _action: forgebase_data::Action,
+        _c: Option<&Collection>,
+    ) -> forgebase_data::Decision {
+        match &ctx.principal {
+            forgebase_data::Principal::User { id, .. } => forgebase_data::Decision::Filter(
+                forgebase_data::Predicate::parse(
+                    "owner = {:me} && meta.level >= 1 && flag = true",
+                    HashMap::from([("me".to_string(), json!(id))]),
+                )
+                .unwrap(),
+            ),
+            _ => forgebase_data::Decision::Allow,
+        }
+    }
+}
+
+/// Access rules over a stored row (a deleted record's last version, a
+/// change snapshot) run over a one-row derived table whose columns are cast
+/// to the table's types: `jsonb` and `smallint` on PostgreSQL (FB-135 note).
+#[tokio::test]
+async fn rules_over_stored_rows_see_typed_columns() {
+    let test = test_db().await;
+    let db: &Database = &test;
+    let svc = common::service_with(db, std::sync::Arc::new(OwnerLevelRule), None).await;
+    let ctx = admin();
+    let mut def = Collection::base("docs")
+        .with_field(Field::new("owner", text()))
+        .with_field(Field::new("meta", FieldKind::Json { max_size: None }))
+        .with_field(Field::new("flag", FieldKind::Bool))
+        .with_field(Field::new("rank", number()));
+    def.versioned = true;
+    let coll = svc.create_collection(&ctx, def).await.unwrap();
+    svc.create_record(
+        &ctx,
+        "docs",
+        json!({"id": "d1", "owner": "u1", "meta": {"level": 2}, "flag": true, "rank": 1.5}),
+    )
+    .await
+    .unwrap();
+    let u1 = forgebase_data::AccessContext::user("users", "u1");
+    let u2 = forgebase_data::AccessContext::user("users", "u2");
+    assert_eq!(svc.record_versions(&u1, "docs", "d1").await.unwrap().len(), 1);
+    svc.delete_record(&ctx, "docs", "d1", None).await.unwrap();
+    // The owner keeps the deleted record's history; nobody else sees it.
+    let history = svc.record_versions(&u1, "docs", "d1").await.unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(
+        svc.record_versions(&u2, "docs", "d1").await,
+        Err(DataError::RecordNotFound { .. })
+    ));
+
+    // A change snapshot as the engine returns it (JSON as text, booleans 0/1).
+    use forgebase_data::db::Value;
+    let row = forgebase_data::RowSnapshot {
+        columns: [
+            "id", "created", "updated", "_version", "_data", "owner", "meta", "flag", "rank",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        values: vec![
+            Value::Text("d2".into()),
+            Value::Text("2026-01-01T00:00:00.000Z".into()),
+            Value::Text("2026-01-01T00:00:00.000Z".into()),
+            Value::Integer(1),
+            Value::Null,
+            Value::Text("u1".into()),
+            Value::Text(r#"{"level":3}"#.into()),
+            Value::Integer(1),
+            Value::Real(2.5),
+        ],
+    };
+    let filter = forgebase_data::query::parse_filter("meta.level > 2 && rank > 2")
+        .unwrap()
+        .unwrap();
+    let params = HashMap::new();
+    let seen = svc
+        .view_snapshot(
+            &u1,
+            forgebase_data::Action::View,
+            &coll.id,
+            &row,
+            Some((&filter, &params)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(seen.unwrap()["meta"], json!({"level": 3}));
+    {
+        let who = &u2;
+        let hidden = svc
+            .view_snapshot(who, forgebase_data::Action::View, &coll.id, &row, None)
+            .await
+            .unwrap();
+        assert!(hidden.is_none());
+    }
     db.close().await;
 }

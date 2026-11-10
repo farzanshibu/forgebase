@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use common::{admin, is_postgres, service, service_with, skip_on_postgres, test_db};
-use forgebase_data::db::testing::TestDb;
 use forgebase_core::ErrorCode;
+use forgebase_data::db::testing::TestDb;
 use forgebase_data::schema::{Collection, Field, FieldKind};
 use forgebase_data::{
     AccessContext, Action, Authorizer, DataError, Decision, GetOptions, IndexDefinition, ListQuery, Predicate,
@@ -329,6 +329,34 @@ async fn sql_editor_restrictions() {
             "{bad}: {err:?}"
         );
     }
+    if is_postgres(&db) {
+        // A write the classifier cannot see (inside a function called from a
+        // SELECT) runs on the read path, in a READ ONLY transaction, and
+        // fails instead of writing (ADR-0028 §7.3).
+        svc.execute_sql_batch(
+            &ctx,
+            vec![
+                run("CREATE TABLE sink (x bigint)"),
+                run("CREATE FUNCTION sneaky() RETURNS bigint LANGUAGE sql AS $$ INSERT INTO sink VALUES (1) RETURNING x $$"),
+            ],
+        )
+        .await
+        .unwrap();
+        let err = svc.execute_sql(&ctx, run("SELECT sneaky()")).await.unwrap_err();
+        assert_eq!(err.code(), "statement_not_read_only", "{err:?}");
+        let n = svc.execute_sql(&ctx, run("SELECT count(*) FROM sink")).await.unwrap();
+        assert_eq!(n.rows[0][0], json!(0));
+        // The editor's tables land in `public`, never in ForgeBase's schema.
+        let r = svc
+            .execute_sql(
+                &ctx,
+                run("SELECT table_schema FROM information_schema.tables WHERE table_name = 'sink'"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.rows, vec![vec![json!("public")]]);
+    }
+
     // Administrators may read system tables, not write them.
     let r = svc
         .execute_sql(&ctx, run("SELECT count(*) FROM _forgebase_collections"))

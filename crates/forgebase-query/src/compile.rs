@@ -204,7 +204,10 @@ fn json_get(d: &dyn Dialect, base: &str, path: &[JsonPathSeg]) -> String {
         match seg {
             JsonPathSeg::Key(k) => {
                 // Defence in depth: keys are validated identifiers.
-                assert!(forgebase_db::dialect::is_safe_ident(k), "json path keys are validated identifiers");
+                assert!(
+                    forgebase_db::dialect::is_safe_ident(k),
+                    "json path keys are validated identifiers"
+                );
                 out.push_str(&format!("->'{k}'"));
             }
             JsonPathSeg::Index(i) => out.push_str(&format!("->{i}")),
@@ -584,11 +587,21 @@ impl<'a> Compiler<'a> {
                 let (a, z) = coerce_pair(d, (a, ta), (z, tz));
                 Ok(format!("{a} {sym} {z}"))
             }
-            (Res::Multi { from, value, ty: ta, .. }, Res::Scalar { sql: z, ty: tz, .. }) => {
+            (
+                Res::Multi {
+                    from, value, ty: ta, ..
+                },
+                Res::Scalar { sql: z, ty: tz, .. },
+            ) => {
                 let (value, z) = coerce_pair(d, (value, ta), (z, tz));
                 Ok(self.quantified(c.any, &from, &format!("{value} {sym} {z}")))
             }
-            (Res::Scalar { sql: a, ty: ta, .. }, Res::Multi { from, value, ty: tz, .. }) => {
+            (
+                Res::Scalar { sql: a, ty: ta, .. },
+                Res::Multi {
+                    from, value, ty: tz, ..
+                },
+            ) => {
                 let flipped = match op.flipped() {
                     Op::Gt => ">",
                     Op::Ge => ">=",
@@ -774,7 +787,12 @@ impl<'a> Compiler<'a> {
                         array: None,
                         ty,
                     },
-                    (Some(f), Res::Multi { from: more, value, ty, .. }) => {
+                    (
+                        Some(f),
+                        Res::Multi {
+                            from: more, value, ty, ..
+                        },
+                    ) => {
                         let mut all = vec![f];
                         all.extend(more);
                         Res::Multi {
@@ -1014,7 +1032,11 @@ mod tests {
         );
         assert_eq!(
             params,
-            vec![Value::Text("5".into()), Value::Text("\"x\"".into()), Value::Text("true".into())]
+            vec![
+                Value::Text("5".into()),
+                Value::Text("\"x\"".into()),
+                Value::Text("true".into())
+            ]
         );
         let (sql, _) = pg("d", "metadata.specs.0.ram >= 16 && metadata.brand = null");
         assert_eq!(
@@ -1049,7 +1071,12 @@ mod tests {
         );
         // Path to path: a JSON value against text compares as jsonb.
         let (sql, _) = pg("p", "meta.t = title && title:lower = 'x'");
-        assert!(sql.starts_with("(nullif((t.\"meta\")::jsonb->'t', 'null'::jsonb) IS NOT DISTINCT FROM to_jsonb(t.\"title\"))"), "{sql}");
+        assert!(
+            sql.starts_with(
+                "(nullif((t.\"meta\")::jsonb->'t', 'null'::jsonb) IS NOT DISTINCT FROM to_jsonb(t.\"title\"))"
+            ),
+            "{sql}"
+        );
         assert!(sql.ends_with("(lower(t.\"title\") = $1)"), "{sql}");
     }
 
@@ -1074,14 +1101,23 @@ mod tests {
         let keys = crate::filter::parse_sort("-title,meta.n").unwrap();
         let o = CompileOptions::default();
         for (d, want) in [
-            (&SqliteDialect as &dyn Dialect, vec!["t.\"title\" DESC", "json_extract(t.\"meta\", '$.n') ASC"]),
+            (
+                &SqliteDialect as &dyn Dialect,
+                vec!["t.\"title\" DESC", "json_extract(t.\"meta\", '$.n') ASC"],
+            ),
             (
                 &PgDialect,
-                vec!["t.\"title\" DESC NULLS LAST", "nullif((t.\"meta\")::jsonb->'n', 'null'::jsonb) ASC NULLS FIRST"],
+                vec![
+                    "t.\"title\" DESC NULLS LAST",
+                    "nullif((t.\"meta\")::jsonb->'n', 'null'::jsonb) ASC NULLS FIRST",
+                ],
             ),
         ] {
             let mut b = SqlBuilder::new(d);
-            assert_eq!(Compiler::new(&cat, &o).order_by(&mut b, &root, "t", &keys).unwrap(), want);
+            assert_eq!(
+                Compiler::new(&cat, &o).order_by(&mut b, &root, "t", &keys).unwrap(),
+                want
+            );
         }
     }
 

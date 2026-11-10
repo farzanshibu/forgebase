@@ -147,11 +147,16 @@ fn fts_query(text: &str, flavor: SqlFlavor) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" "))
 }
 
-/// A JSON value read back from a [`ScalarType::Json`] expression: PostgreSQL
-/// returns `jsonb` as JSON text, SQLite returns the scalar itself.
+/// A value read back from an expression of type `ty`: PostgreSQL returns
+/// `jsonb` as JSON text (SQLite returns the scalar itself), and a `numeric`
+/// sum that should be an integer (SQLite sums integers as integers) as a
+/// float.
 fn typed_json(flavor: SqlFlavor, ty: ScalarType, v: &Value) -> Json {
     match (flavor, ty, v) {
         (SqlFlavor::Postgres, ScalarType::Json, Value::Text(s)) => serde_json::from_str(s).unwrap_or(Json::Null),
+        (SqlFlavor::Postgres, ScalarType::Integer, Value::Real(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => {
+            Json::from(*f as i64)
+        }
         _ => sql_to_json(v),
     }
 }
@@ -494,15 +499,22 @@ impl DataService {
             // `jsonb` order, and integer sums stay integers.
             let (expr, out_ty) = match (pg, a.function, ty) {
                 (true, AggregateFunction::Sum | AggregateFunction::Avg, ScalarType::Json) => (
-                    format!(
-                        "{f}(CASE WHEN jsonb_typeof({arg}) = 'number' THEN ({arg} #>> '{{}}')::numeric END)"
-                    ),
-                    ScalarType::Real,
+                    format!("{f}(CASE WHEN jsonb_typeof({arg}) = 'number' THEN ({arg} #>> '{{}}')::numeric END)"),
+                    // A whole sum reads as an integer, as SQLite sums integers.
+                    if a.function == AggregateFunction::Sum {
+                        ScalarType::Integer
+                    } else {
+                        ScalarType::Real
+                    },
                 ),
                 (true, AggregateFunction::Min | AggregateFunction::Max, ScalarType::Json) => (
                     format!(
                         "(array_agg({arg} ORDER BY {arg} {}) FILTER (WHERE {arg} IS NOT NULL))[1]",
-                        if a.function == AggregateFunction::Min { "ASC" } else { "DESC" }
+                        if a.function == AggregateFunction::Min {
+                            "ASC"
+                        } else {
+                            "DESC"
+                        }
                     ),
                     ScalarType::Json,
                 ),
@@ -542,7 +554,11 @@ impl DataService {
         }
         if !groups.is_empty() {
             let order: Vec<String> = groups.iter().map(|g| format!("{g} {}", d.order_nulls(false))).collect();
-            sql.push_str(&format!(" GROUP BY {} ORDER BY {}", groups.join(", "), order.join(", ")));
+            sql.push_str(&format!(
+                " GROUP BY {} ORDER BY {}",
+                groups.join(", "),
+                order.join(", ")
+            ));
         }
         let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
         sql.push_str(&format!(" LIMIT {}", b.bind(i64::from(limit))));

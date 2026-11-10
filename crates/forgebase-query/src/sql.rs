@@ -776,7 +776,11 @@ fn analyze_pg(stmt: &str) -> Result<StatementInfo, QueryError> {
             let call = tokens.get(i + 1).is_some_and(|n| n.text == "(");
             // `_forgebase*` tables, the `forgebase` schema and the catalogs.
             if lower.starts_with("_forgebase")
-                || (qualifier && matches!(lower.as_str(), "forgebase" | "pg_catalog" | "information_schema" | "pg_toast"))
+                || (qualifier
+                    && matches!(
+                        lower.as_str(),
+                        "forgebase" | "pg_catalog" | "information_schema" | "pg_toast"
+                    ))
                 || (lower.starts_with("pg_") && !call)
             {
                 touches_system_tables = true;
@@ -906,13 +910,22 @@ mod tests {
             ("SHOW server_version", StatementKind::Read),
             ("EXPLAIN SELECT 1", StatementKind::Read),
             ("WITH x AS (SELECT 1) SELECT * FROM x", StatementKind::Read),
-            ("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x", StatementKind::Read),
+            (
+                "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+                StatementKind::Read,
+            ),
             ("SELECT a INTO t2 FROM t", StatementKind::Schema),
             ("INSERT INTO t SELECT a FROM u", StatementKind::Write),
-            ("MERGE INTO t USING u ON t.id = u.id WHEN MATCHED THEN DELETE", StatementKind::Write),
+            (
+                "MERGE INTO t USING u ON t.id = u.id WHEN MATCHED THEN DELETE",
+                StatementKind::Write,
+            ),
             ("TRUNCATE t", StatementKind::Write),
             ("CREATE TABLE t (x bigint)", StatementKind::Schema),
-            ("CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$", StatementKind::Schema),
+            (
+                "CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$",
+                StatementKind::Schema,
+            ),
             ("COMMENT ON TABLE t IS 'x'", StatementKind::Schema),
             ("ANALYZE t", StatementKind::Maintenance),
             ("REFRESH MATERIALIZED VIEW v", StatementKind::Maintenance),
@@ -991,7 +1004,10 @@ mod tests {
             assert!(pg(bad).is_err(), "{bad}");
         }
         assert!(pg("SELECT pg_typeof(1), current_setting('server_version')").is_ok());
-        assert!(pg("SELECT pg_advisory_xact_lock_shared").is_ok(), "a column name, not a call");
+        assert!(
+            pg("SELECT pg_advisory_xact_lock_shared").is_ok(),
+            "a column name, not a call"
+        );
     }
 
     #[test]
@@ -1006,7 +1022,11 @@ mod tests {
         ] {
             assert!(pg(s).unwrap().touches_system_tables, "{s}");
         }
-        for s in ["SELECT '_forgebase_x'", "SELECT pg_typeof(1)", "UPDATE forgebase_notes SET a = 1"] {
+        for s in [
+            "SELECT '_forgebase_x'",
+            "SELECT pg_typeof(1)",
+            "UPDATE forgebase_notes SET a = 1",
+        ] {
             assert!(!pg(s).unwrap().touches_system_tables, "{s}");
         }
     }
