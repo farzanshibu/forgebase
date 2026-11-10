@@ -12,7 +12,7 @@ export default function QueuesPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Queues</h1>
-      <nav aria-label="Queues sections" className="mt-4 flex gap-1 border-b border-border">
+      <nav aria-label="Queues sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
         <NavLink to="/queues" end className={tab}>Topics</NavLink>
         <NavLink to="/queues/subscriptions" className={tab}>Subscriptions</NavLink>
         <NavLink to="/queues/inspector" className={tab}>Pub/Sub inspector</NavLink>

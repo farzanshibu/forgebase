@@ -47,7 +47,7 @@ export default function VectorSearch({ collection }: { collection: VectorCollect
   return (
     <div className="space-y-4">
       <Panel title="Search playground">
-        <div role="tablist" aria-label="Search mode" className="mb-3 flex gap-2">
+        <div role="tablist" aria-label="Search mode" className="mb-3 flex flex-wrap gap-2">
           {(["similarity", "hybrid"] as const).map((m) => (
             <button key={m} type="button" role="tab" aria-selected={mode === m} onClick={() => setMode(m)} className={`rounded-md border px-3 py-1 text-sm ${mode === m ? "border-primary text-warning" : "border-border text-muted-foreground"}`}>
               {m === "similarity" ? "Similarity" : "Hybrid"}

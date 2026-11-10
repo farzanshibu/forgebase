@@ -7,7 +7,21 @@ const BACKEND = "http://127.0.0.1:8090";
 export default defineConfig({
   base: "/admin/",
   plugins: [react(), tailwindcss()],
-  build: { outDir: "dist", emptyOutDir: true },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        // Long-lived vendor chunks cache across releases; app code changes without invalidating them.
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 30 },
+            { name: "router", test: /node_modules[\\/](react-router|react-router-dom)[\\/]/, priority: 20 },
+          ],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       "/health": BACKEND,

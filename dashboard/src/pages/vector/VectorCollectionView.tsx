@@ -23,7 +23,7 @@ export default function VectorCollectionView() {
       <p className="text-sm text-muted-foreground">
         {data.description || "No description"} · {data.items} items · fields: {data.fields.map((f) => `${f.name} (${f.dimension}, ${f.metric}, ${f.quantization})`).join(", ") || "none"}
       </p>
-      <nav aria-label="Collection sections" className="mt-3 flex gap-1 border-b border-border">
+      <nav aria-label="Collection sections" className="mt-3 flex flex-wrap gap-1 border-b border-border">
         {tabs.map((t) => (
           <NavLink key={t.label} to={t.to} end={t.end} className={({ isActive }) => `-mb-px border-b-2 px-3 py-1.5 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
             {t.label}

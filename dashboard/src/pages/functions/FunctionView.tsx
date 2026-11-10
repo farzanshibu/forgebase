@@ -26,7 +26,7 @@ export default function FunctionView() {
       {info.loading && !info.error && <Loading what="Loading function" />}
       {info.data && (
         <>
-          <nav aria-label="Function tabs" className="flex gap-1 border-b border-border">
+          <nav aria-label="Function tabs" className="flex flex-wrap gap-1 border-b border-border">
             <NavLink to={base} end className={tab}>Versions</NavLink>
             <NavLink to={`${base}/logs`} className={tab}>Logs</NavLink>
             <NavLink to={`${base}/secrets`} className={tab}>Secrets</NavLink>

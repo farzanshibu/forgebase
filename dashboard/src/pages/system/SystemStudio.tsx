@@ -8,7 +8,7 @@ const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-
 export default function SystemStudio() {
   return (
     <div>
-      <nav aria-label="System sections" className="mb-6 flex gap-1 border-b border-border">
+      <nav aria-label="System sections" className="mb-6 flex flex-wrap gap-1 border-b border-border">
         <NavLink to="/system" end className={tab}>Health</NavLink>
         <NavLink to="/system/backups" className={tab}>Backups</NavLink>
       </nav>

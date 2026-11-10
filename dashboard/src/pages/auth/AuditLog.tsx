@@ -10,7 +10,7 @@ export default function AuditLog() {
   const [kind, setKind] = useState<"auth" | "authz">("auth");
   return (
     <div>
-      <div className="mb-4 flex gap-1" role="tablist" aria-label="Audit logs">
+      <div className="mb-4 flex flex-wrap gap-1" role="tablist" aria-label="Audit logs">
         {(["auth", "authz"] as const).map((k) => (
           <button
             key={k}

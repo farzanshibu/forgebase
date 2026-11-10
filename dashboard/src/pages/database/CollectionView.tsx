@@ -22,7 +22,7 @@ export default function CollectionView() {
   return (
     <div>
       <h2 className="text-lg font-medium">{name}</h2>
-      <nav aria-label="Collection sections" className="mt-2 mb-4 flex gap-4 text-sm">
+      <nav aria-label="Collection sections" className="mt-2 mb-4 flex flex-wrap gap-x-4 gap-y-1 text-sm">
         {TABS.map((t) => (
           <NavLink key={t.label} to={`/database/c/${encodeURIComponent(name)}${t.to}`} end={t.end} className={({ isActive }) => (isActive ? "text-warning" : "text-muted-foreground hover:text-foreground")}>
             {t.label}

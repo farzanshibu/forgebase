@@ -19,11 +19,15 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { NavRail } from "panelui-web/nav-rail";
 import type { MouseEvent } from "react";
+import { Suspense, lazy } from "react";
+import RouteLoading from "./RouteLoading";
+
 import { Outlet, useHref, useLocation, useNavigate } from "react-router-dom";
 import ImpersonationBanner from "../auth/ImpersonationBanner";
 import { useSession } from "../auth/session";
 import { STUDIOS, type Studio } from "../studios";
-import ThemeMenu from "./ThemeMenu";
+
+const ThemeMenu = lazy(() => import("./ThemeMenu"));
 
 const ICONS: Record<string, IconSvgElement> = {
   "": DashboardSquare01Icon,
@@ -127,10 +131,14 @@ export default function Layout() {
             <p className="hidden max-w-56 truncate text-xs text-muted-foreground sm:block" title={admin?.email}>
               {admin?.email}
             </p>
-            <ThemeMenu />
+            <Suspense fallback={<span className="size-8" aria-hidden="true" />}>
+              <ThemeMenu />
+            </Suspense>
           </header>
           <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 md:p-8">
-            <Outlet />
+            <Suspense fallback={<RouteLoading />}>
+              <Outlet />
+            </Suspense>
           </main>
         </NavRail.Inset>
       </div>

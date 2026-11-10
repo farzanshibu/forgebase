@@ -22,6 +22,13 @@ describe("App shell", () => {
     expect(screen.queryByText(/Arrives in phase/)).not.toBeInTheDocument();
   });
 
+  it("renders a lazily loaded studio route once its chunk arrives", async () => {
+    signedIn(new MockApi().install());
+    render(<MemoryRouter initialEntries={["/system"]}><App /></MemoryRouter>);
+    // The lazy route renders once its chunk has loaded.
+    expect(await screen.findByRole("navigation", { name: "System sections" })).toBeInTheDocument();
+  });
+
   it("builds every studio: none is left as a placeholder", () => {
     for (const s of STUDIOS) expect(s.phase).toBeNull();
   });
