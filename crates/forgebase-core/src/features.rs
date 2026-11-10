@@ -506,6 +506,14 @@ const REALTIME: &[SettingDef] = &[
     .env("FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL"),
 ];
 
+const KV: &[SettingDef] = &[SettingDef::new(
+    "kv.tenant_max_bytes",
+    "Memory per tenant",
+    Int,
+    "Most memory one tenant's keys may use, in bytes; 0 means no per-tenant limit. Above it the tenant's own least recently used keys are evicted, never another tenant's.",
+)
+.env("FORGEBASE_KV_TENANT_MAX_BYTES")];
+
 const VECTOR: &[SettingDef] = &[SettingDef::new(
     "vector.enabled",
     "Vector search",
@@ -641,7 +649,7 @@ pub const FEATURES: &[FeatureDef] = &[
         studio_path: Some("/redis"),
         docs: "docs/adr/0005-kv.md#adr-0005-key-value-engine-and-its-persistence",
         routes: &[],
-        settings: &[],
+        settings: KV,
     },
     FeatureDef {
         id: "storage",
