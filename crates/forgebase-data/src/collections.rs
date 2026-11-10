@@ -90,7 +90,7 @@ impl DataService {
             .backend
             .fetch_all(&Statement::new(
                 "SELECT id, collection_id, collection, version, action, statements, before, after, actor, applied_at
-                 FROM _forgebase_schema_history WHERE ?1 IS NULL OR collection_id = ?1 ORDER BY id",
+                 FROM _forgebase_schema_history WHERE CAST(?1 AS TEXT) IS NULL OR collection_id = ?1 ORDER BY id",
                 vec![id.into()],
             ))
             .await?;

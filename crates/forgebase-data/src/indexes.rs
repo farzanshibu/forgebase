@@ -18,6 +18,7 @@ use forgebase_db::{Dialect, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMo
 use forgebase_query::{CompileOptions, Compiler, FieldPath, SqlBuilder, parse_filter};
 use forgebase_schema::{Collection, FieldKind};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
 use crate::access::{TENANT_COLUMN, is_tenant_scoped};
 use crate::catalog::CatalogSnapshot;
@@ -176,30 +177,12 @@ pub struct QueryPlan {
 
 impl QueryPlan {
     /// Reads SQLite's `EXPLAIN QUERY PLAN` details (`SEARCH t USING INDEX i`,
-    /// `SCAN t`) and the PostgreSQL steps `forgebase-db` renders from
-    /// `EXPLAIN (FORMAT JSON)` (`Index Scan using i on items t`, `Seq Scan on
-    /// items t`). Full scans name the alias, as on SQLite.
+    /// `SCAN t`).
     pub(crate) fn from_steps(sql: String, steps: Vec<PlanStep>) -> Self {
         let mut indexes_used = Vec::new();
         let mut full_scans = Vec::new();
         for s in &steps {
             let d = &s.detail;
-            if let Some(rest) = d.split(" using ").nth(1) {
-                let name = rest.split(' ').next().unwrap_or_default().to_owned();
-                if !name.is_empty() && !indexes_used.contains(&name) {
-                    indexes_used.push(name);
-                }
-                continue;
-            }
-            if let Some(rest) = d.strip_prefix("Seq Scan on ") {
-                let mut words = rest.split(' ');
-                let relation = words.next().unwrap_or_default();
-                let alias = words.next().filter(|w| !w.starts_with('(')).unwrap_or(relation).to_owned();
-                if !full_scans.contains(&alias) {
-                    full_scans.push(alias);
-                }
-                continue;
-            }
             for marker in ["USING COVERING INDEX ", "USING INDEX "] {
                 if let Some(rest) = d.split(marker).nth(1) {
                     let name = rest.split([' ', '(']).next().unwrap_or_default().to_owned();
@@ -219,6 +202,62 @@ impl QueryPlan {
                     full_scans.push(table);
                 }
             }
+        }
+        Self {
+            sql,
+            steps,
+            indexes_used,
+            full_scans,
+        }
+    }
+
+    /// Reads a PostgreSQL `EXPLAIN (FORMAT JSON)` plan (its `Plan` node).
+    ///
+    /// A full scan is a `Seq Scan`, or an `Index Scan` / `Index Only Scan`
+    /// with no `Index Cond`: a walk of the whole table in index order (what
+    /// SQLite calls `SCAN t USING INDEX i`). Steps keep `forgebase-db`'s
+    /// wording, with the filter shown apart from the index condition.
+    pub(crate) fn from_pg_json(sql: String, plan: Option<&Json>) -> Self {
+        fn walk(node: &Json, parent: i64, steps: &mut Vec<PlanStep>, used: &mut Vec<String>, scans: &mut Vec<String>) {
+            let id = i64::try_from(steps.len()).unwrap_or(i64::MAX) + 1;
+            let field = |k: &str| node.get(k).and_then(Json::as_str);
+            let kind = field("Node Type").unwrap_or("?");
+            let mut detail = kind.to_owned();
+            if let Some(op) = field("Operation") {
+                detail.push_str(&format!(" ({op})"));
+            }
+            if let Some(index) = field("Index Name") {
+                detail.push_str(&format!(" using {index}"));
+                if !used.iter().any(|u| u == index) {
+                    used.push(index.to_owned());
+                }
+            }
+            if let Some(rel) = field("Relation Name") {
+                detail.push_str(&format!(" on {rel}"));
+                let alias = field("Alias").unwrap_or(rel);
+                if alias != rel {
+                    detail.push_str(&format!(" {alias}"));
+                }
+                let whole = kind == "Seq Scan"
+                    || (matches!(kind, "Index Scan" | "Index Only Scan") && field("Index Cond").is_none());
+                if whole && !scans.iter().any(|s| s == alias) {
+                    scans.push(alias.to_owned());
+                }
+            }
+            if let Some(cond) = field("Index Cond") {
+                detail.push_str(&format!(" ({cond})"));
+            }
+            if let Some(filter) = field("Filter") {
+                detail.push_str(&format!(" filter {filter}"));
+            }
+            steps.push(PlanStep { id, parent, detail });
+            for child in node.get("Plans").and_then(Json::as_array).into_iter().flatten() {
+                walk(child, id, steps, used, scans);
+            }
+        }
+        let (mut steps, mut indexes_used, mut full_scans) = (Vec::new(), Vec::new(), Vec::new());
+        if let Some(p) = plan {
+            walk(p, 0, &mut steps, &mut indexes_used, &mut full_scans);
         }
         Self {
             sql,
@@ -1010,8 +1049,30 @@ impl DataService {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
-        let steps = self.inner.backend.explain(&built.select).await?;
-        Ok(QueryPlan::from_steps(built.select.sql.clone(), steps))
+        self.plan(&built.select).await
+    }
+
+    /// The plan of `stmt`. PostgreSQL's plan is read here from `EXPLAIN
+    /// (FORMAT JSON)` ([`QueryPlan::from_pg_json`]): telling a full index walk
+    /// from a lookup needs the index condition apart from the filter.
+    async fn plan(&self, stmt: &Statement) -> Result<QueryPlan, DataError> {
+        let b = self.inner.backend.as_ref();
+        let d = b.dialect();
+        if !is_pg(d) {
+            return Ok(QueryPlan::from_steps(stmt.sql.clone(), b.explain(stmt).await?));
+        }
+        let mut explain = stmt.clone();
+        explain.sql = format!("{}{}", d.explain_prefix(), stmt.sql);
+        explain.cache = false;
+        explain.label = None; // never a slow query to recommend for
+        let rows = b.fetch_all(&explain).await?;
+        let text = rows.scalar().and_then(Value::as_str).unwrap_or("[]");
+        let json: Json = serde_json::from_str(text)
+            .map_err(|e| DataError::Internal(format!("unreadable query plan: {e}")))?;
+        Ok(QueryPlan::from_pg_json(
+            stmt.sql.clone(),
+            json.get(0).and_then(|p| p.get("Plan")),
+        ))
     }
 
     /// Recent slow statements.
@@ -1053,12 +1114,17 @@ impl DataService {
                 continue;
             };
             if planned.insert(sq.sql.clone()) {
-                let probe = Statement::new(sq.sql.clone(), vec![Value::Null; sq.param_count]);
-                if let Ok(steps) = self.inner.backend.explain(&probe).await
-                    && QueryPlan::from_steps(sq.sql.clone(), steps)
-                        .full_scans
-                        .iter()
-                        .any(|t| t == "t")
+                // The log keeps no values. PostgreSQL folds `x = NULL` to
+                // a constant (no scan in the plan), so it gets a neutral
+                // value that converts to every parameter type ForgeBase binds.
+                let filler = if is_pg(self.inner.backend.dialect()) {
+                    Value::Text("0".into())
+                } else {
+                    Value::Null
+                };
+                let probe = Statement::new(sq.sql.clone(), vec![filler; sq.param_count]);
+                if let Ok(plan) = self.plan(&probe).await
+                    && plan.full_scans.iter().any(|t| t == "t")
                 {
                     scans.insert(sq.sql.clone());
                 }
@@ -1176,9 +1242,39 @@ mod tests {
     }
 
     #[test]
+    fn postgres_plan_parsing() {
+        let plan = serde_json::json!({
+            "Node Type": "Limit",
+            "Plans": [{
+                "Node Type": "Nested Loop",
+                "Plans": [
+                    {"Node Type": "Index Scan", "Index Name": "items_pkey", "Relation Name": "items",
+                     "Alias": "t", "Filter": "(other = '3'::bigint)"},
+                    {"Node Type": "Index Scan", "Index Name": "idx_a", "Relation Name": "orders",
+                     "Alias": "r1", "Index Cond": "(a = t.id)"},
+                    {"Node Type": "Bitmap Heap Scan", "Relation Name": "tags", "Alias": "g",
+                     "Plans": [{"Node Type": "Bitmap Index Scan", "Index Name": "idx_g", "Index Cond": "(x = 1)"}]},
+                    {"Node Type": "Seq Scan", "Relation Name": "events", "Alias": "events"}
+                ]
+            }]
+        });
+        let p = QueryPlan::from_pg_json(String::new(), Some(&plan));
+        assert_eq!(p.indexes_used, vec!["items_pkey", "idx_a", "idx_g"]);
+        assert_eq!(p.full_scans, vec!["t", "events"], "an index walk with only a filter reads everything");
+        assert_eq!(p.steps.len(), 7);
+        assert_eq!(p.steps[2].detail, "Index Scan using items_pkey on items t filter (other = '3'::bigint)");
+        assert_eq!(p.steps[3].detail, "Index Scan using idx_a on orders r1 ((a = t.id))");
+        assert_eq!(p.steps[5].parent, p.steps[4].id);
+        assert!(QueryPlan::from_pg_json(String::new(), None).steps.is_empty());
+    }
+
+    #[test]
     fn index_names() {
         assert!(validate_index_name("idx_products_price").is_ok());
         assert!(validate_index_name("auto_x").is_err());
+        assert!(validate_index_name("pg_x").is_err());
+        assert!(validate_index_name(&"a".repeat(63)).is_ok());
+        assert!(validate_index_name(&"a".repeat(64)).is_err());
         assert!(validate_index_name("x\"; DROP").is_err());
     }
 }
