@@ -7357,6 +7357,29 @@ pub struct SetBody {
     pub xx: Option<bool>,
 }
 
+/// `POST /api/setup/admin` body.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SetupAdminRequest {
+    /// Cookie session (default `true`); `false` returns bearer tokens instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookie: Option<bool>,
+    /// Name for the device list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    pub email: String,
+    /// At least 10 characters.
+    pub password: String,
+    /// The setup token from the link `forgebase serve` printed.
+    pub token: String,
+}
+
+/// `GET /api/setup/status` response.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SetupStatus {
+    /// `true` while no administrator exists.
+    pub setup_required: bool,
+}
+
 /// Which end of a list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
@@ -7918,6 +7941,111 @@ pub struct SyncOutcome {
     pub status: SubscriptionStatus,
     /// Subject.
     pub subject: String,
+}
+
+/// `PATCH /api/system/config` body.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SystemConfigPatch {
+    /// Dotted keys from the registry and their new values.
+    #[serde(default)]
+    pub set: serde_json::Value,
+}
+
+/// `PATCH /api/system/config` answer.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SystemConfigPatched {
+    /// Keys that took effect without a restart (none in this version).
+    #[serde(default)]
+    pub applied: Vec<String>,
+    /// The registry after the change.
+    #[serde(default)]
+    pub features: Vec<SystemFeature>,
+    /// The change needs a restart.
+    pub restart_required: bool,
+    /// The file that was written.
+    pub written: String,
+}
+
+/// One module.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SystemFeature {
+    /// No switch: the module is part of every server.
+    pub always_on: bool,
+    /// `[<section>] enabled` switches it.
+    pub can_disable: bool,
+    /// Documentation, relative to the repository root, with a heading
+    /// anchor (`docs/adr/0018-object-storage.md#adr-0018-object-storage`).
+    pub docs: String,
+    /// Whether it is on (after a restart, when `restart_pending`).
+    pub enabled: bool,
+    /// Stable id (`storage`).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// The switch first (when `can_disable`), then the module's settings.
+    #[serde(default)]
+    pub settings: Vec<SystemSetting>,
+    /// Dashboard route of its studio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub studio_path: Option<String>,
+    /// One line on what it does.
+    pub summary: String,
+}
+
+/// `GET /api/system/features`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SystemFeatures {
+    /// Set when the config file cannot be read; values are then the running ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_error: Option<String>,
+    /// Absolute path of the config file (`PATCH` creates it when missing).
+    pub config_file: String,
+    /// Every module, in display order.
+    #[serde(default)]
+    pub features: Vec<SystemFeature>,
+    /// The file differs from what the server runs: restart to apply it.
+    pub restart_pending: bool,
+}
+
+/// One setting.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SystemSetting {
+    /// Built-in default; `null` for a secret.
+    #[serde(default)]
+    pub default: serde_json::Value,
+    /// Whether `PATCH /api/system/config` may change it (never for `env`,
+    /// `flag` or secrets).
+    pub editable: bool,
+    /// Environment variable that sets it (`FORGEBASE_PORT`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    /// Command-line flag of `forgebase serve` that sets it (`--port`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<String>,
+    /// What the setting changes and a sensible value, in plain words;
+    /// shown as-is.
+    pub help: String,
+    /// Dotted key (`storage.max_object_bytes`), as in `forgebase.toml`.
+    pub key: String,
+    /// Short label, sentence case; shown as-is.
+    pub label: String,
+    /// Allowed values of an `enum`; `null` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    /// A change takes effect after a restart.
+    pub restart_required: bool,
+    /// Never listed with a value nor written by the API.
+    pub secret: bool,
+    /// `default`, `file`, `env` or `flag`.
+    pub source: String,
+    /// `bool`, `int`, `string`, `enum`, `duration`, `list` or `url`.
+    pub r#type: String,
+    /// Unit of an integer: `bytes`, `seconds`, `ms`, `days`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Current value; `null` for a secret.
+    #[serde(default)]
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

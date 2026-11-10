@@ -1688,6 +1688,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/setup/admin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create the first administrator with the one-time setup token `forgebase serve` printed, and sign them in. Answers like `POST /api/auth/admins/login` (cookie session unless `cookie` is `false`), with status 201. Rate limited per client address. */
+        post: operations["setup_admin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/setup/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether the server is in first-run setup mode (no administrator exists yet). No authentication. */
+        get: operations["setup_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Write settings to the config file: every key is validated first, then all
+         *     are written in one atomic, comment-preserving replace (administrators
+         *     only; FB-91). Changes apply after a restart.
+         */
+        patch: operations["doc_system_config"];
+        trace?: never;
+    };
+    "/api/system/features": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The feature registry: every module, whether it is on, and its typed
+         *     settings with value, default and source (administrators only; FB-91).
+         */
+        get: operations["doc_system_features"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/info": {
         parameters: {
             query?: never;
@@ -14299,6 +14374,23 @@ export interface components {
             /** @description Only set when the key exists. */
             xx?: boolean;
         };
+        /** @description `POST /api/setup/admin` body. */
+        SetupAdminRequest: {
+            /** @description Cookie session (default `true`); `false` returns bearer tokens instead. */
+            cookie?: boolean | null;
+            /** @description Name for the device list. */
+            device_name?: string | null;
+            email: string;
+            /** @description At least 10 characters. */
+            password: string;
+            /** @description The setup token from the link `forgebase serve` printed. */
+            token: string;
+        };
+        /** @description `GET /api/setup/status` response. */
+        SetupStatus: {
+            /** @description `true` while no administrator exists. */
+            setup_required: boolean;
+        };
         /**
          * @description Which end of a list.
          * @enum {string}
@@ -14867,6 +14959,94 @@ export interface components {
             status: components["schemas"]["SubscriptionStatus"];
             /** @description Subject. */
             subject: string;
+        };
+        /** @description `PATCH /api/system/config` body. */
+        SystemConfigPatch: {
+            /** @description Dotted keys from the registry and their new values. */
+            set: Record<string, never>;
+        };
+        /** @description `PATCH /api/system/config` answer. */
+        SystemConfigPatched: {
+            /** @description Keys that took effect without a restart (none in this version). */
+            applied: string[];
+            /** @description The registry after the change. */
+            features: components["schemas"]["SystemFeature"][];
+            /** @description The change needs a restart. */
+            restart_required: boolean;
+            /** @description The file that was written. */
+            written: string;
+        };
+        /** @description One module. */
+        SystemFeature: {
+            /** @description No switch: the module is part of every server. */
+            always_on: boolean;
+            /** @description `[<section>] enabled` switches it. */
+            can_disable: boolean;
+            /**
+             * @description Documentation, relative to the repository root, with a heading
+             *     anchor (`docs/adr/0018-object-storage.md#adr-0018-object-storage`).
+             */
+            docs: string;
+            /** @description Whether it is on (after a restart, when `restart_pending`). */
+            enabled: boolean;
+            /** @description Stable id (`storage`). */
+            id: string;
+            /** @description Display name. */
+            name: string;
+            /** @description The switch first (when `can_disable`), then the module's settings. */
+            settings: components["schemas"]["SystemSetting"][];
+            /** @description Dashboard route of its studio. */
+            studio_path?: string | null;
+            /** @description One line on what it does. */
+            summary: string;
+        };
+        /** @description `GET /api/system/features`. */
+        SystemFeatures: {
+            /** @description Set when the config file cannot be read; values are then the running ones. */
+            config_error?: string | null;
+            /** @description Absolute path of the config file (`PATCH` creates it when missing). */
+            config_file: string;
+            /** @description Every module, in display order. */
+            features: components["schemas"]["SystemFeature"][];
+            /** @description The file differs from what the server runs: restart to apply it. */
+            restart_pending: boolean;
+        };
+        /** @description One setting. */
+        SystemSetting: {
+            /** @description Built-in default; `null` for a secret. */
+            default: Record<string, never>;
+            /**
+             * @description Whether `PATCH /api/system/config` may change it (never for `env`,
+             *     `flag` or secrets).
+             */
+            editable: boolean;
+            /** @description Environment variable that sets it (`FORGEBASE_PORT`), if any. */
+            env?: string | null;
+            /** @description Command-line flag of `forgebase serve` that sets it (`--port`), if any. */
+            flag?: string | null;
+            /**
+             * @description What the setting changes and a sensible value, in plain words;
+             *     shown as-is.
+             */
+            help: string;
+            /** @description Dotted key (`storage.max_object_bytes`), as in `forgebase.toml`. */
+            key: string;
+            /** @description Short label, sentence case; shown as-is. */
+            label: string;
+            /** @description Allowed values of an `enum`; `null` otherwise. */
+            options?: string[] | null;
+            /** @description A change takes effect after a restart. */
+            restart_required: boolean;
+            /** @description Never listed with a value nor written by the API. */
+            secret: boolean;
+            /** @description `default`, `file`, `env` or `flag`. */
+            source: string;
+            /** @description `bool`, `int`, `string`, `enum`, `duration`, `list` or `url`. */
+            type: string;
+            /** @description Unit of an integer: `bytes`, `seconds`, `ms`, `days`. */
+            unit?: string | null;
+            /** @description Current value; `null` for a secret. */
+            value: Record<string, never>;
         };
         TableInfoSchema: {
             collection?: string | null;
@@ -22897,6 +23077,184 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    setup_admin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupAdminRequest"];
+            };
+        };
+        responses: {
+            /** @description Administrator created and signed in */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description validation_failed: email or password does not meet the rules of `forgebase admin create` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description invalid_setup_token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description setup_complete: an administrator already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Too many attempts from this address */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    setup_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Setup state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupStatus"];
+                };
+            };
+        };
+    };
+    doc_system_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemConfigPatch"];
+            };
+        };
+        responses: {
+            /** @description Written; `restart_required` says whether a restart is needed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemConfigPatched"];
+                };
+            };
+            /** @description `validation_failed`, `details: {"<key>": "reason"}` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not an administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description `setting_overridden`: set by an environment variable or flag (`details` per key) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    doc_system_features: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Modules and settings; secrets have `value: null` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemFeatures"];
+                };
+            };
+            /** @description No credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not an administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
         };
