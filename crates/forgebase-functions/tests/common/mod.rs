@@ -101,7 +101,9 @@ impl H {
 pub fn req(name: &str, wasm: &str, caps: &[&str]) -> DeployRequest {
     DeployRequest {
         name: name.into(),
-        wasm: wasm.into(),
+        wasm: Some(wasm.into()),
+        source: None,
+        language: None,
         description: None,
         access: None,
         capabilities: caps.iter().map(|c| (*c).to_owned()).collect(),

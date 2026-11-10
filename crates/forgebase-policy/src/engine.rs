@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use forgebase_data::{
-    AccessContext, Action, DEFAULT_REALM, Decision, FieldAccess, Predicate, Principal, SubjectRef, is_tenant_scoped,
+    AccessContext, Action, DEFAULT_REALM, Decision, FieldAccess, Predicate, Principal, ResourceRef as EngineResource,
+    SubjectRef, is_tenant_scoped,
 };
 use forgebase_query::{Compare, Expr, Op, Operand};
 use forgebase_schema::Collection;
 use serde_json::Value as Json;
 
-use crate::perm::{Grant, data_key};
+use crate::perm::{self, Grant, data_key};
 use crate::pipeline::{Denial, HookOutcome, HookRequest, Hooks, ResourceRef, Step};
 use crate::rules::{Eval, RequestRef, RequestValue, RequestValues};
 use crate::snapshot::{Effective, RuleSpec, Snapshot};
@@ -480,37 +481,7 @@ fn decide_engine(
         }
         _ => format!("engine:{name}"),
     };
-    // Engines (KV, graph, jobs) scope their data by `ctx.tenant`, so the
-    // tenant is validated here as strictly as for records: it must exist in
-    // the caller's realm, belong to the active organization if one is set,
-    // and be the caller's (membership via step 2, or personal ownership, or
-    // an ACL grant on the environment / project).
-    let fail = |why: &str| (Denial::at(Step::Tenant, why), key.clone());
-    let (org, owner) = match &ctx.tenant {
-        None => (ctx.org_id.clone(), None),
-        Some(t) => {
-            let Some((env, p)) = snap.tenant(t) else {
-                return Err(fail("unknown tenant"));
-            };
-            if p.realm_id != ctx.realm_id {
-                return Err(fail("cross-realm access is denied"));
-            }
-            if ctx.org_id.is_some() && ctx.org_id != p.org_id {
-                return Err(fail("the tenant belongs to another organization"));
-            }
-            if let Some(u) = &p.owner_user {
-                let principal = ctx.principal_key();
-                if *u != principal {
-                    let eff = snap.effective(&principal, &ctx.realm_id, None);
-                    let shared = acl_chain(snap, ctx, &ResourceRef::new("environment", &env.id), &key, &eff);
-                    if shared != Grant::Granted {
-                        return Err(fail("this tenant is not yours"));
-                    }
-                }
-            }
-            (p.org_id.clone(), p.owner_user.clone())
-        }
-    };
+    let (org, owner) = engine_tenant(snap, ctx, &key).map_err(|d| (d, key.clone()))?;
     let check = Check {
         permission: key.clone(),
         org: if owner.is_some() { None } else { org },
@@ -519,6 +490,134 @@ fn decide_engine(
         allow_anonymous: false,
     };
     run_check(snap, h, ctx, &check).map_err(|d| (d, key))
+}
+
+/// (organization, personal owner) of the caller's tenant for an engine
+/// action. Engines (KV, graph, jobs, ...) scope their data by `ctx.tenant`,
+/// so the tenant is validated as strictly as for records: it must exist in
+/// the caller's realm, belong to the active organization if one is set, and
+/// be the caller's (membership via step 2, or personal ownership, or an ACL
+/// grant on the environment / project). Without a tenant: the active
+/// organization.
+fn engine_tenant(snap: &Snapshot, ctx: &AccessContext, key: &str) -> Result<(Option<String>, Option<String>), Denial> {
+    let fail = |why: &str| Denial::at(Step::Tenant, why);
+    let Some(t) = &ctx.tenant else {
+        return Ok((ctx.org_id.clone(), None));
+    };
+    let Some((env, p)) = snap.tenant(t) else {
+        return Err(fail("unknown tenant"));
+    };
+    if p.realm_id != ctx.realm_id {
+        return Err(fail("cross-realm access is denied"));
+    }
+    if ctx.org_id.is_some() && ctx.org_id != p.org_id {
+        return Err(fail("the tenant belongs to another organization"));
+    }
+    if let Some(u) = &p.owner_user {
+        let principal = ctx.principal_key();
+        // Anonymous callers own nothing; only a resource rule can grant them
+        // anything (FB-134), as for records.
+        if *u != principal && ctx.principal != Principal::Anonymous {
+            let eff = snap.effective(&principal, &ctx.realm_id, None);
+            let shared = acl_chain(snap, ctx, &ResourceRef::new("environment", &env.id), key, &eff);
+            if shared != Grant::Granted {
+                return Err(fail("this tenant is not yours"));
+            }
+        }
+    }
+    Ok((p.org_id.clone(), p.owner_user.clone()))
+}
+
+/// Engine actions that only a permission grants: resource rules never do.
+fn admin_only(action: Action) -> bool {
+    matches!(
+        action,
+        Action::KvAdmin | Action::VectorAdmin | Action::StorageAdmin | Action::QueueAdmin
+    )
+}
+
+/// The decision for an engine action on one named resource (FB-134,
+/// `Authorizer::authorize_resource`). In pipeline order:
+///
+/// 1. authentication (anonymous callers continue: only a rule can grant
+///    them anything);
+/// 2. realm and tenant as for [`decide_engine`]; signed-in callers must be
+///    members of the tenant's (or active) organization;
+/// 3. permission: `engine:<action>:<name>` or `engine:<action>` (every
+///    resource); the resource's owner holds every permission on it; an
+///    explicit deny of either key wins;
+/// 4. entitlement hook (asked with `engine:<action>` and the resource);
+/// 5. resource rule, when no permission grants: the rule of the operation
+///    ([`Snapshot::resource_rule`]); none is a denial, and admin actions
+///    are never granted by a rule;
+/// 6. quota hook.
+///
+/// Actions without resource keys get the plain [`decide`] answer.
+pub(crate) fn decide_resource(
+    snap: &Snapshot,
+    h: &Hooks,
+    ctx: &AccessContext,
+    action: Action,
+    r: &EngineResource,
+) -> Result<Decision, (Denial, String)> {
+    let name = action_name(action);
+    if !perm::RESOURCE_ACTIONS.contains(&name.as_str()) {
+        return decide(snap, h, ctx, action, None);
+    }
+    if ctx.is_privileged() {
+        return Ok(Decision::Allow);
+    }
+    let base = format!("engine:{name}");
+    let key = perm::resource_key(&name, &r.name);
+    let fail = |d: Denial| (d, key.clone());
+    step_authentication(snap, ctx, true).map_err(fail)?;
+    if !snap.realms.contains_key(&ctx.realm_id) {
+        return Err(fail(Denial::at(Step::Tenant, "unknown realm")));
+    }
+    if ctx.realm_id != home_realm(snap, ctx) {
+        return Err(fail(Denial::at(Step::Tenant, "cross-realm access is denied")));
+    }
+    let (org, tenant_owner) = engine_tenant(snap, ctx, &key).map_err(fail)?;
+    let principal = ctx.principal_key();
+    let personal = tenant_owner.is_some();
+    if ctx.principal != Principal::Anonymous && !personal {
+        step_tenant(snap, ctx, org.as_deref()).map_err(fail)?;
+    }
+    let org = if personal { None } else { org };
+    let mut eff = effective(snap, ctx, org.as_deref(), tenant_owner.as_deref());
+    if r.owner.as_deref().is_some_and(|o| o == principal) && ctx.principal != Principal::Anonymous {
+        let mut e = (*eff).clone();
+        e.perms.allow.insert("*".into());
+        e.roles.insert("owner".into());
+        eff = Arc::new(e);
+    }
+    let anonymous = ctx.principal == Principal::Anonymous;
+    let perm = if anonymous { Grant::None } else { eff.perms.check(&key) };
+    if perm == Grant::Denied {
+        return Err(fail(Denial::at(Step::Permission, format!("{key} is denied"))));
+    }
+    let subject = subject_of(ctx, org.as_deref());
+    let hook_ref = ResourceRef::new(r.kind.as_str(), r.name.clone());
+    hooks(h, ctx, &subject, &base, Some(&hook_ref), Step::Entitlement).map_err(fail)?;
+    let decision = if perm == Grant::Granted {
+        Decision::Allow
+    } else if admin_only(action) {
+        return Err(fail(Denial::at(Step::Permission, format!("missing permission {key}"))));
+    } else {
+        let Some(spec) = snap.resource_rule(r.kind.as_str(), &r.name, r.op) else {
+            return Err(fail(Denial::at(
+                Step::Resource,
+                format!("missing permission {key} and no rule grants {} on {}", r.op, r),
+            )));
+        };
+        match eval_rule(spec, ctx, &eff) {
+            Ok(None) => Decision::Allow,
+            Ok(Some(p)) => Decision::Filter(p),
+            Err(()) => return Err(fail(Denial::at(Step::Resource, "the resource rule does not match"))),
+        }
+    };
+    hooks(h, ctx, &subject, &base, Some(&hook_ref), Step::Quota).map_err(fail)?;
+    Ok(decision)
 }
 
 /// Field-level access from static field rules.

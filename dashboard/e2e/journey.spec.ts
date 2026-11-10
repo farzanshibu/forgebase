@@ -218,6 +218,7 @@ test.describe.serial("first journey", () => {
   });
 
   // A-04: an error shows plain words, the next step and a copyable request id, with raw JSON behind Details.
+  // ErrorPanel (FB-98) does this; CollectionView still draws its own "No collection named …" line (FB-100).
   test.fixme("6b. an error explains its fix and offers the request id", async () => {
     await page.goto("/admin/database/c/does_not_exist");
     const err = page.getByRole("alert");
@@ -226,11 +227,13 @@ test.describe.serial("first journey", () => {
   });
 
   // A-06: Cmd/Ctrl+K opens a command palette that jumps to any studio, resource or action.
-  test.fixme("command palette jumps to the new collection", async () => {
+  test("command palette jumps to the new collection", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
     await page.getByRole("combobox", { name: /search/i }).fill(n.collection);
+    // Resources load when the palette opens; Enter picks the highlighted match once it is listed.
+    await expect(page.getByRole("option", { name: new RegExp(n.collection) })).toBeVisible();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(n.collection));
   });

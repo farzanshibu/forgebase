@@ -37,6 +37,7 @@
 //! writes changed vector indexes to disk, checkpoints the WAL into the main database file, closes the pools and
 //! releases the lock.
 
+mod function_services;
 mod job_results;
 mod lock;
 
@@ -300,6 +301,7 @@ async fn start_full(
         None
     };
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
+    let (fn_auth, fn_policy) = (auth.clone(), policy.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
         .with_policy(policy);
@@ -383,6 +385,19 @@ async fn start_full(
     } else {
         None
     };
+    // FB-93: the engines JavaScript functions reach through `ctx`. A module
+    // switched off (FB-91) leaves its `ctx` service unset.
+    if let Some(f) = &functions {
+        f.attach_services(function_services::services(
+            vector.as_ref(),
+            storage.as_ref(),
+            queue.as_ref(),
+            &jobs,
+            &realtime,
+            &fn_auth,
+            &fn_policy,
+        ));
+    }
     let mut extensions = vec![
         forgebase_jobs::extension(jobs.clone()),
         forgebase_entitlements::extension(entitlements.clone()),

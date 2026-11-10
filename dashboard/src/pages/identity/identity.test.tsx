@@ -24,7 +24,7 @@ describe("Identity Studio shell", () => {
   it("is reachable from the sidebar and switches realm", async () => {
     const { mock } = setup();
     renderStudio("/");
-    await userEvent.click(await screen.findByRole("link", { name: /Identity & Tenant Studio/ }));
+    await userEvent.click(await screen.findByRole("link", { name: "Identity" }));
     expect(await screen.findByRole("heading", { name: "Identity and Tenant Studio" })).toBeInTheDocument();
     expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
     await pick(screen.getByLabelText("Realm"), "acme");

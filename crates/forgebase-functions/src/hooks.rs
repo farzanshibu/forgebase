@@ -112,9 +112,12 @@ impl WriteGuard for HookGuard {
                 let res = svc
                     .execute(
                         &entry,
+                        None,
                         Trigger::Hook,
                         bytes.clone(),
                         write.ctx.request_id.clone(),
+                        // JavaScript hooks act as the writer.
+                        Some(write.ctx.clone()),
                         |out| {
                             let v = rejection(out);
                             let status = match &v {

@@ -42,7 +42,8 @@ export interface MockRequest {
   body: unknown;
   headers: Record<string, string>;
 }
-export type MockReply = { status: number; body?: unknown };
+/** A JSON reply, or plain `text` (with optional response `headers`). */
+export type MockReply = { status: number; body?: unknown; text?: string; headers?: Record<string, string> };
 export type MockHandler = (req: MockRequest) => MockReply | Promise<MockReply>;
 
 export class MockApi {
@@ -124,7 +125,8 @@ export class MockApi {
       }
       (this.bodies[`${method.toLowerCase()} ${custom.c.template}`] ??= []).push(cb);
       const reply = await custom.c.handler({ method, path: u.pathname, params: custom.params, query: u.searchParams, body: cb, headers });
-      return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status });
+      if (reply.text !== undefined) return new Response(reply.text, { status: reply.status, headers: reply.headers });
+      return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status, headers: reply.headers });
     }
     const route = matchRoute(method, u.pathname);
     if (!route) {

@@ -66,7 +66,7 @@ describe("organizations", () => {
   it("shows an error state when the server refuses", async () => {
     override("GET", "/api/v1/orgs", () => ({ status: 401, body: { error: { code: "unauthenticated", message: "no", request_id: "r" } } }));
     open("/access");
-    expect(await screen.findByRole("alert")).toHaveTextContent(/sign-in required/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Your session ended/);
   });
 });
 

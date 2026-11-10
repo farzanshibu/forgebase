@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { ConfirmButton } from "./ui";
-import { RouteTabs, Sel, activeTab } from "./controls";
+import { Check, RouteTabs, Sel, Toggle, activeTab } from "./controls";
 import { pick } from "../test/pick";
 
 const TABS = [
@@ -138,5 +138,36 @@ describe("Sel with numbers", () => {
     await pick(trigger, "5 minutes");
     expect(onChange).toHaveBeenCalledWith(300);
     expect(screen.getByRole("combobox", { name: "Expires in" })).toHaveTextContent("5 minutes");
+  });
+});
+
+describe("Check and Toggle", () => {
+  it("are PanelUI controls with a value-in, value-out API and a visible label", async () => {
+    const onCheck = vi.fn();
+    const onToggle = vi.fn();
+    function Harness() {
+      const [c, setC] = useState(false);
+      const [t, setT] = useState(true);
+      return (
+        <>
+          <Check checked={c} onChange={(v) => { setC(v); onCheck(v); }} label="Also delete its files" />
+          <Toggle checked={t} onChange={(v) => { setT(v); onToggle(v); }} label="Versioning" description="Keep earlier versions." />
+          <Check checked={false} onChange={() => {}} aria-label="Select row 1" />
+        </>
+      );
+    }
+    render(<Harness />);
+    const box = screen.getByRole("checkbox", { name: "Also delete its files" });
+    expect(box).not.toBeChecked();
+    await userEvent.click(box);
+    expect(onCheck).toHaveBeenCalledWith(true);
+    expect(box).toBeChecked();
+    await userEvent.click(screen.getByText("Also delete its files"));
+    expect(onCheck).toHaveBeenLastCalledWith(false);
+    const sw = screen.getByRole("switch", { name: "Versioning" });
+    expect(sw).toBeChecked();
+    await userEvent.click(sw);
+    expect(onToggle).toHaveBeenCalledWith(false);
+    expect(screen.getByRole("checkbox", { name: "Select row 1" })).toBeInTheDocument();
   });
 });

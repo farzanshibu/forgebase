@@ -57,7 +57,7 @@ describe("Queues topics", () => {
     const mock = signedIn(new MockApi().install());
     mock.on("GET", "/api/v1/queues/topics", () => ({ status: 403, body: { error: { code: "forbidden", message: "no", request_id: "r" } } }));
     renderStudio("/queues");
-    expect(await screen.findByRole("alert")).toHaveTextContent("Sign-in required");
+    expect(await screen.findByRole("alert")).toHaveTextContent("You do not have permission to do this");
   });
 });
 
@@ -330,6 +330,6 @@ describe("Queues studio navigation", () => {
     setup();
     renderStudio("/queues/nope");
     expect(await screen.findByText("No such page in Queues.")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /Queues Studio/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "Queues" }).length).toBeGreaterThan(0);
   });
 });

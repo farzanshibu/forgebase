@@ -69,11 +69,23 @@ CREATE TABLE IF NOT EXISTS forgebase._forgebase_migrations (
 /// ForgeBase's PostgreSQL schema, in order: the baseline (standing for SQLite
 /// versions 1–[`BASELINE_VERSION`]), then one twin per later SQLite migration,
 /// with the same version and name. Append only; never edit a shipped entry.
-pub static POSTGRES_MIGRATIONS: &[Migration] = &[Migration::new(
-    BASELINE_VERSION,
-    "baseline",
-    include_str!("../../../migrations/postgres/0025_baseline.sql"),
-)];
+pub static POSTGRES_MIGRATIONS: &[Migration] = &[
+    Migration::new(
+        BASELINE_VERSION,
+        "baseline",
+        include_str!("../../../migrations/postgres/0025_baseline.sql"),
+    ),
+    Migration::new(
+        26,
+        "resource_rules",
+        include_str!("../../../migrations/postgres/0026_resource_rules.sql"),
+    ),
+    Migration::new(
+        27,
+        "functions_js",
+        include_str!("../../../migrations/postgres/0027_functions_js.sql"),
+    ),
+];
 
 /// The SQLite migrations the baseline stands for (versions up to
 /// [`BASELINE_VERSION`]).

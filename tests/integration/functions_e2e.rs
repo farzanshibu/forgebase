@@ -323,6 +323,136 @@ fn deploy_invoke_and_read_logs_through_the_cli() {
 }
 
 #[test]
+fn new_writes_a_typescript_function_that_deploys_and_runs_as_is() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    assert!(run(&root, &["init", "app"]).status.success());
+    let project = root.join("app");
+    let mut create = forgebase(&project)
+        .args(["admin", "create", "--email", "root@example.com", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    create.stdin.take().unwrap().write_all(b"root password 1\n").unwrap();
+    assert!(create.wait_with_output().unwrap().status.success());
+
+    // `functions new` needs no server.
+    let out = ok(&run(&project, &["functions", "new", "hello"]));
+    assert!(out.contains("index.ts") && out.contains("forgebase.d.ts"), "{out}");
+    let index = project.join("functions/hello/index.ts");
+    assert!(index.is_file() && project.join("functions/hello/forgebase.d.ts").is_file());
+    let o = run(&project, &["functions", "new", "hello"]);
+    assert!(
+        !o.status.success() && text(&o.stderr).contains("--force"),
+        "{}",
+        text(&o.stderr)
+    );
+    let out = ok(&run(&project, &["functions", "new", "plain", "--js"]));
+    assert!(out.contains("index.js"), "{out}");
+
+    let port = free_port();
+    let server = Serve::start(&project, port);
+    let addr = server.addr.clone();
+    let url = format!("http://{addr}");
+    let (s, j) = call(
+        &addr,
+        "POST",
+        "/api/auth/admins/login",
+        None,
+        Some(json!({"email": "root@example.com", "password": "root password 1"})),
+    );
+    assert_eq!(s, 200, "{j}");
+    let token = j["access_token"].as_str().unwrap().to_owned();
+
+    // The template deploys and runs unchanged.
+    let index_s = index.to_str().unwrap();
+    let out = ok(&run(
+        &project,
+        &[
+            "functions",
+            "--server",
+            &url,
+            "--token",
+            &token,
+            "deploy",
+            "hello",
+            index_s,
+            "--access",
+            "public",
+            "--capability",
+            "log",
+        ],
+    ));
+    assert!(
+        out.contains("deployed hello v1 (typescript,") && out.contains("active"),
+        "{out}"
+    );
+    let (s, j) = call(&addr, "GET", "/api/v1/functions/hello/invoke?name=you", None, None);
+    assert_eq!(s, 200, "{j}");
+    assert_eq!(j, json!({"message": "Hello, you!", "caller": null}));
+    let (s, j) = call(&addr, "GET", "/api/v1/functions/hello/versions", Some(&token), None);
+    assert_eq!(s, 200);
+    assert_eq!(j["items"][0]["runtime"], "js");
+    let logs = ok(&run(
+        &project,
+        &["functions", "--server", &url, "--token", &token, "logs", "hello"],
+    ));
+    assert!(logs.contains("greeting you"), "{logs}");
+
+    // The JavaScript template too.
+    let js = project.join("functions/plain/index.js");
+    let out = ok(&run(
+        &project,
+        &[
+            "functions",
+            "--server",
+            &url,
+            "--token",
+            &token,
+            "deploy",
+            "plain",
+            js.to_str().unwrap(),
+            "--access",
+            "public",
+            "--capability",
+            "log",
+        ],
+    ));
+    assert!(out.contains("(javascript,"), "{out}");
+    let (s, j) = call(&addr, "GET", "/api/v1/functions/plain/invoke", None, None);
+    assert_eq!((s, j["message"].clone()), (200, json!("Hello, world!")));
+
+    // A compile error names the line and column.
+    let broken = project.join("broken.ts");
+    std::fs::write(
+        &broken,
+        "import { serve } from \"forgebase\";\nserve(() => {\n  return new Response(;\n});\n",
+    )
+    .unwrap();
+    let o = run(
+        &project,
+        &[
+            "functions",
+            "--server",
+            &url,
+            "--token",
+            &token,
+            "deploy",
+            "broken",
+            broken.to_str().unwrap(),
+        ],
+    );
+    assert!(!o.status.success());
+    let err = text(&o.stderr);
+    assert!(
+        err.contains("function_compile_failed") && err.contains("line 3"),
+        "{err}"
+    );
+}
+
+#[test]
 fn deploy_refuses_a_missing_or_non_wasm_file_before_connecting() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();

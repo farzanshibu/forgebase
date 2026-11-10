@@ -1,12 +1,17 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath } from "node:url";
 
 const BACKEND = "http://127.0.0.1:8090";
 
 export default defineConfig({
   base: "/admin/",
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // monaco-editor only exports its package root and a few path patterns; the editor imports exactly the pieces it uses.
+    alias: { "monaco-esm": fileURLToPath(new URL("./node_modules/monaco-editor/esm/vs", import.meta.url)) },
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
@@ -34,5 +39,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // e2e/ is Playwright (its own package and runner); vitest must not collect journey.spec.ts.
+    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
   },
 });

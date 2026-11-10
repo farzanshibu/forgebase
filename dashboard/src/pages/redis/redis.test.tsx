@@ -345,7 +345,7 @@ describe("Redis Pub/Sub inspector", () => {
     renderStudio("/redis/pubsub");
     await userEvent.type(await screen.findByLabelText("Channel"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Listen" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Sign-in required");
+    expect(await screen.findByRole("alert")).toHaveTextContent("You do not have permission to do this");
     await act(async () => undefined);
     expect(screen.getByRole("button", { name: "Listen" })).toBeInTheDocument();
   });
@@ -370,6 +370,6 @@ describe("Redis memory and stats", () => {
     mock.custom = mock.custom.filter((c) => !c.template.endsWith("/_info"));
     mock.on("GET", "/api/v1/kv/_info", () => envelope(403, "forbidden", "administrators only"));
     renderStudio("/redis/stats");
-    expect(await screen.findByText("Sign-in required")).toBeInTheDocument();
+    expect(await screen.findByText("You do not have permission to do this")).toBeInTheDocument();
   });
 });

@@ -1,102 +1,44 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { Alert } from "panelui-web/alert";
-import { AlertDialog } from "panelui-web/alert-dialog";
-import { Button as PanelButton } from "panelui-web/button";
+/**
+ * Small shared pieces every studio uses. The bigger patterns live in their own files (see docs/ux/components.md).
+ *
+ * Usage:
+ *   <Button tone="primary">Save</Button>
+ *   <ConfirmButton label="Delete bucket docs" confirmText="docs" consequence="Its files are deleted too." onConfirm={…} />
+ *   <ErrorView error={e} />          // = ErrorPanel: plain words, next step, request id, Details
+ *   <Panel title="Buckets" actions={…}>…</Panel>
+ *   <Loading what="Loading keys" />  // small inline wait; lists and tables use Skeleton
+ */
+import type { ReactNode } from "react";
 import { Card } from "panelui-web/card";
 import { Spinner } from "panelui-web/spinner";
-import { Link, useInRouterContext } from "react-router-dom";
-import { ApiError } from "../api";
+import { Button } from "./Button";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { ErrorPanel, FeatureDisabled } from "./ErrorPanel";
 
-/** The dashboard's button: PanelUI Button, with the three tones the studios use. */
-export function Button({ tone = "default", className = "", ...p }: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "default" | "primary" | "danger" }) {
-  // Danger stays an outline in the destructive colour: a filled destructive button needs white text,
-  // which fails AA on the light red the dark theme uses.
-  const danger = tone === "danger" ? "border-destructive/50 text-destructive hover:not-disabled:bg-destructive/10 hover:not-disabled:text-destructive" : "";
-  return <PanelButton size="sm" variant={tone === "primary" ? "default" : "outline"} {...p} className={`${danger} ${className}`.trim()} />;
-}
+export { Button, CopyButton } from "./Button";
+export { FeatureDisabled };
 
-/** Destructive button: opens a PanelUI alert dialog, and `onConfirm` runs only from its action. */
-export function ConfirmButton({ label, onConfirm, disabled }: { label: string; onConfirm: () => void; disabled?: boolean }) {
+/**
+ * One-line destructive button: opens ConfirmDialog, and `onConfirm` runs only from its action. Kept so studios can
+ * move to ConfirmDialog gradually; new code passes `consequence` (what is lost) and, for an irreversible action,
+ * `confirmText` (the name to type).
+ */
+export function ConfirmButton({ label, onConfirm, disabled, consequence = "This cannot be undone.", confirmText }: { label: string; onConfirm: () => void | Promise<unknown>; disabled?: boolean; consequence?: ReactNode; confirmText?: string }) {
   return (
-    <AlertDialog>
-      <AlertDialog.Trigger render={<Button tone="danger" disabled={disabled} />}>{label}</AlertDialog.Trigger>
-      <AlertDialog.Content tone="destructive" size="sm">
-        <AlertDialog.Title>{label}?</AlertDialog.Title>
-        <AlertDialog.Description>This cannot be undone.</AlertDialog.Description>
-        <AlertDialog.Footer>
-          <AlertDialog.Cancel />
-          <AlertDialog.Action onClick={() => onConfirm()}>Confirm {label.toLowerCase()}</AlertDialog.Action>
-        </AlertDialog.Footer>
-      </AlertDialog.Content>
-    </AlertDialog>
+    <ConfirmDialog
+      trigger={<Button tone="danger" disabled={disabled} />}
+      triggerLabel={label}
+      title={`${label}?`}
+      consequence={consequence}
+      confirmLabel={`Confirm ${label.toLowerCase()}`}
+      confirmText={confirmText}
+      onConfirm={onConfirm}
+    />
   );
 }
 
-/** A module the administrator switched off: say so, and point at where to switch it back on. */
-export function FeatureDisabled({ message }: { message: string }) {
-  const inRouter = useInRouterContext();
-  return (
-    <section aria-label="Feature disabled" className="max-w-xl rounded-lg border border-dashed border-border p-6">
-      <p className="font-medium">{message}</p>
-      <p className="mt-1 text-sm text-muted-foreground">An administrator turned this feature off, so the server does not run it.</p>
-      {inRouter ? (
-        <Link to="/system/features" className="mt-3 inline-block text-sm font-medium text-primary underline-offset-2 hover:underline">
-          Open Features &amp; settings
-        </Link>
-      ) : null}
-    </section>
-  );
-}
-
-/** Sign-in-required state for 401/403, otherwise the PLAN section 5 envelope with per-field errors. */
-export function ErrorView({ error }: { error: unknown }) {
-  if (!error) return null;
-  if (error instanceof ApiError && error.code === "feature_disabled") return <FeatureDisabled message={error.message} />;
-  if (error instanceof ApiError && error.isAuth) {
-    return (
-      <Alert tone="warning" variant="plain">
-        <Alert.Icon />
-        <Alert.Title>Sign-in required</Alert.Title>
-        <Alert.Description>
-          The server refused this request ({error.status} {error.code}). Your account may lack the permission, or the session ended:
-          sign in again or ask an administrator.
-          {error.requestId && <span className="mt-2 block font-mono text-xs">request {error.requestId}</span>}
-        </Alert.Description>
-      </Alert>
-    );
-  }
-  if (error instanceof ApiError) {
-    const fields = Object.entries(error.fields);
-    return (
-      <Alert tone="destructive" variant="plain">
-        <Alert.Icon />
-        <Alert.Title>
-          <span className="font-mono">{error.code}</span>: {error.message}
-        </Alert.Title>
-        {(fields.length > 0 || error.requestId) && (
-          <Alert.Description>
-            {fields.length > 0 && (
-              <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                {fields.map(([name, f]) => (
-                  <li key={name}>
-                    <span className="font-mono text-foreground">{name}</span>: {f.message || f.code} <span>({f.code})</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {error.requestId && <span className="mt-2 block font-mono text-xs">request {error.requestId}</span>}
-          </Alert.Description>
-        )}
-      </Alert>
-    );
-  }
-  return (
-    <Alert tone="destructive" variant="plain">
-      <Alert.Icon />
-      <Alert.Title>{error instanceof Error ? error.message : String(error)}</Alert.Title>
-    </Alert>
-  );
-}
+/** The error display every screen uses: ErrorPanel under its old name. */
+export const ErrorView = ErrorPanel;
 
 export function Loading({ what = "Loading" }: { what?: string }) {
   return (

@@ -26,8 +26,11 @@ export default function FunctionList() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Sandboxed WebAssembly functions of your tenant.</p>
-        <Button tone="primary" onClick={() => setDeploying((d) => !d)}>{deploying ? "Cancel" : "Deploy function"}</Button>
+        <p className="text-sm text-muted-foreground">Sandboxed TypeScript, JavaScript and WebAssembly functions of your tenant.</p>
+        <div className="flex gap-2">
+          <Button tone="primary" onClick={() => nav("/functions/new")}>New function</Button>
+          <Button onClick={() => setDeploying((d) => !d)}>{deploying ? "Cancel" : "Deploy function"}</Button>
+        </div>
       </div>
       {deploying && <DeployForm onDone={(d) => nav(`/functions/f/${encodeURIComponent(d.function.name)}`)} />}
       <ErrorView error={error ?? list.error} />

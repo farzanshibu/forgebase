@@ -14,7 +14,7 @@ it("walks every Billing Studio screen from the sidebar and runs one real action 
   renderStudio("/");
   const u = userEvent.setup();
 
-  await u.click(await screen.findByRole("link", { name: "Billing Studio" }));
+  await u.click(await screen.findByRole("link", { name: "Billing" }));
   expect(await screen.findByRole("region", { name: "Recurring revenue" })).toHaveTextContent("$1,299.00");
   const nav = screen.getByRole("tablist", { name: "Billing sections" });
   const go = (name: string) => u.click(within(nav).getByRole("tab", { name }));
