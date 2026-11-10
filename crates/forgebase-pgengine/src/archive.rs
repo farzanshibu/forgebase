@@ -318,21 +318,35 @@ pub fn extract(source: &dyn ArchiveSource, engines_dir: &Path, cache_dir: Option
         .and_then(|()| {
             std::fs::write(partial.join(SHA_FILE), format!("{sha}\n"))
                 .map_err(|e| EngineError::io("write", &partial.join(SHA_FILE), e))
-        });
+        })
+        // Crash safety: everything is on disk before the rename publishes
+        // the directory, so a renamed engine is always complete (FB-148: one
+        // barrier for the tree instead of a full sync per file).
+        .and_then(|()| sync_extracted(&manifest, &partial));
     if let Err(e) = result {
         let _ = fsutil::remove_tree(&partial);
         return Err(e);
     }
     match std::fs::rename(&partial, &dest) {
         Ok(()) => {}
-        Err(_) if dest.join(MANIFEST_NAME).exists() => {
+        Err(_) if sha_recorded(&dest, &sha) => {
             // Extracted concurrently by someone else: keep theirs.
             let _ = fsutil::remove_tree(&partial);
         }
-        Err(e) => {
-            let _ = fsutil::remove_tree(&partial);
-            return Err(EngineError::io("rename into place", &dest, e));
+        Err(first) => {
+            // A directory without a matching SHA file is not a finished
+            // extraction (an older build renamed before syncing it): replace it.
+            let retried = dest.exists()
+                && fsutil::remove_tree(&dest).is_ok()
+                && std::fs::rename(&partial, &dest).is_ok();
+            if !retried {
+                let _ = fsutil::remove_tree(&partial);
+                return Err(EngineError::io("rename into place", &dest, first));
+            }
         }
+    }
+    if let Some(parent) = dest.parent() {
+        fsutil::sync_dir(parent);
     }
     tracing::info!(target: "forgebase::postgres", engine = %dest.display(), version = %manifest.postgres, "extracted PostgreSQL engine");
     Ok(Extracted {
@@ -345,6 +359,25 @@ pub fn extract(source: &dyn ArchiveSource, engines_dir: &Path, cache_dir: Option
 
 /// File inside an extracted engine recording the archive's SHA-256.
 pub const SHA_FILE: &str = "forgebase-engine.sha256";
+
+/// Whether `dir` is a finished extraction of the archive with `sha`.
+fn sha_recorded(dir: &Path, sha: &str) -> bool {
+    std::fs::read_to_string(dir.join(SHA_FILE)).is_ok_and(|r| r.trim() == sha)
+}
+
+/// The durability barrier before the rename: every file of the manifest,
+/// the manifest itself and the SHA file.
+fn sync_extracted(manifest: &Manifest, partial: &Path) -> Result<()> {
+    let keys: Vec<String> = manifest
+        .files
+        .iter()
+        .map(|f| rel_key(&f.path))
+        .collect::<Result<_>>()?;
+    let mut files: Vec<&str> = keys.iter().map(String::as_str).collect();
+    files.push(MANIFEST_NAME);
+    files.push(SHA_FILE);
+    fsutil::sync_tree(partial, &files)
+}
 
 fn partial_path(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_owned();
@@ -376,8 +409,7 @@ fn find_extracted(base: &Path, sha: &str, in_cache: bool) -> Result<Option<Extra
             continue;
         }
         let dir = e.path();
-        let recorded = std::fs::read_to_string(dir.join(SHA_FILE)).unwrap_or_default();
-        if recorded.trim() != sha {
+        if !sha_recorded(&dir, sha) {
             continue;
         }
         let text = std::fs::read(dir.join(MANIFEST_NAME)).map_err(|e| EngineError::io("read", &dir, e))?;
@@ -512,7 +544,9 @@ fn unpack_verified(
                     file.write_all(&buf[..n])
                         .map_err(|e| EngineError::io("write", &out, e))?;
                 }
-                file.sync_all().map_err(|e| EngineError::io("sync", &out, e))?;
+                if fsutil::SYNC_EACH_FILE {
+                    file.sync_all().map_err(|e| EngineError::io("sync", &out, e))?;
+                }
                 let digest: [u8; 32] = hasher.finalize().into();
                 let got = fsutil::hex(&digest);
                 if size != want.size || !got.eq_ignore_ascii_case(&want.sha256) {
