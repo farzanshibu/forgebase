@@ -180,6 +180,7 @@ stops startup with an error.
 | `FORGEBASE_RESP_ENABLED`, `FORGEBASE_RESP_HOST`, `FORGEBASE_RESP_PORT` | Redis protocol listener. |
 | `FORGEBASE_RESP_MAX_CONNECTIONS`, `FORGEBASE_RESP_MAX_BULK_BYTES`, `FORGEBASE_RESP_IDLE_TIMEOUT_SECS` | Redis protocol limits. |
 | `FORGEBASE_BILLING_ENABLED` | Mount the billing API. |
+| `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
 | `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, intended to be read from the environment only. **Known bug:** the CLI's environment parser rejects these names, so every `forgebase` command fails while they are set. See the note below. |
 
 `FORGEBASE_TEST_REDIS_URL` is used by the test suite. The same parser rejects
@@ -341,6 +342,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.upload_ttl_secs` | `86400` | |
 | `storage.reconcile_grace_secs` | `3600` | |
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
+| `realtime.max_connections_per_principal` | `32` | `1`–`1000000`. Most simultaneous realtime (WebSocket) connections for one user or API key; the next one gets `429 too_many_connections`. Raise it for a shared service identity that fans out many subscribers. |
 | `billing.enabled` | `false` | Mounts `/api/v1/billing/*` and the provider webhooks. |
 
 Example `[billing]` section, which the example file does not yet include:

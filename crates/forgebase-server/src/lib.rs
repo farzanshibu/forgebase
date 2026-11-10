@@ -184,7 +184,11 @@ pub async fn start_with_jobs(
     let realtime = match forgebase_realtime::RealtimeService::start(
         auth.data().clone(),
         Some(auth.clone()),
-        forgebase_realtime::RealtimeConfig::default(),
+        forgebase_realtime::RealtimeConfig {
+            max_connections_per_principal: usize::try_from(config.realtime.max_connections_per_principal)
+                .unwrap_or(usize::MAX),
+            ..forgebase_realtime::RealtimeConfig::default()
+        },
         None,
     )
     .await

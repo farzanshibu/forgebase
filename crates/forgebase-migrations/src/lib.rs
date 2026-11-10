@@ -145,6 +145,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "billing_stores",
         include_str!("../../../migrations/system/0024_billing_stores.sql"),
     ),
+    Migration::new(
+        25,
+        "queue_ready_order",
+        include_str!("../../../migrations/system/0025_queue_ready_order.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
