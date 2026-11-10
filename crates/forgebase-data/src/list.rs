@@ -10,7 +10,7 @@ use forgebase_schema::Collection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
 
-use crate::indexes::{FTS_PREFIX, IndexDefinition, IndexKind};
+use crate::indexes::{IndexDefinition, IndexKind};
 use crate::records::{Record, project, row_to_record, sql_to_json};
 use crate::{AccessContext, Action, DEFAULT_PER_PAGE, DataError, DataService, MAX_PER_PAGE, Predicate};
 
@@ -188,11 +188,10 @@ impl DataService {
                     ));
                 }
             }
-            let t = d.quote_ident(&format!("{FTS_PREFIX}{}", fts.name));
-            wheres.push(format!(
-                "t.rowid IN (SELECT rowid FROM {t} WHERE {t} MATCH {})",
-                b.bind(text)
-            ));
+            // FB-144 (minimal shared edit): the index manager renders the
+            // match (FTS5 on SQLite, the GIN-indexed tsvector on PostgreSQL).
+            let p = b.bind(text);
+            wheres.push(crate::indexes::fulltext_match(d, &cat, coll, fts, "t", &p)?);
         }
 
         let mut sort: Vec<SortKey> = parse_sort(q.sort.as_deref().unwrap_or(""))?;
