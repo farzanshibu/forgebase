@@ -61,4 +61,4 @@ pub use realtime::{
     RecordEvent, ResetEvent, SubscribeOptions, Subscription,
 };
 pub use records::{CollectionsApi, ListOptions, ListResult, Records, TransferFormat, WriteOptions};
-pub use storage::{DeleteOutcome, ListObjects, ObjectStream, PutOptions, StorageApi};
+pub use storage::{ListObjects, ObjectStream, PutOptions, StorageApi};
