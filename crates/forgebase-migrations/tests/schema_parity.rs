@@ -923,6 +923,12 @@ fn normalisation() {
 // The PostgreSQL runner
 // ---------------------------------------------------------------------------
 
+/// Rows a fresh migration records: one per version the baseline stands for,
+/// then one per later twin.
+fn recorded_versions() -> usize {
+    postgres::baseline_covers().len() + postgres::POSTGRES_MIGRATIONS.len() - 1
+}
+
 async fn bookkeeping(conn: &mut PgConnection) -> Vec<(i64, String, String)> {
     sqlx::query_as("SELECT version, name, checksum FROM forgebase._forgebase_migrations ORDER BY version")
         .fetch_all(&mut *conn)
@@ -950,14 +956,14 @@ async fn postgres_runner_applies_the_baseline_once() {
 
     let before = postgres::status(&mut conn).await.unwrap();
     assert_eq!(before.current_version, 0);
-    assert_eq!(before.pending.len(), postgres::baseline_covers().len());
+    assert_eq!(before.pending.len(), recorded_versions());
     assert!(
         !regclass_exists(&mut conn, "forgebase._forgebase_migrations").await,
         "status writes nothing"
     );
 
     let first = postgres::migrate(&mut conn).await.unwrap();
-    assert_eq!(first.len(), postgres::baseline_covers().len());
+    assert_eq!(first.len(), recorded_versions());
     let rows = bookkeeping(&mut conn).await;
     let baseline = postgres::POSTGRES_MIGRATIONS[0].checksum();
     for (row, cover) in rows.iter().zip(postgres::baseline_covers()) {
@@ -1052,12 +1058,8 @@ async fn postgres_runners_racing_apply_each_migration_once() {
     let mut b = pg_connect(&target).await;
     let (ra, rb) = tokio::join!(postgres::migrate(&mut a), postgres::migrate(&mut b));
     let (ra, rb) = (ra.unwrap(), rb.unwrap());
-    assert_eq!(
-        ra.len() + rb.len(),
-        postgres::baseline_covers().len(),
-        "applied exactly once"
-    );
-    assert_eq!(bookkeeping(&mut a).await.len(), postgres::baseline_covers().len());
+    assert_eq!(ra.len() + rb.len(), recorded_versions(), "applied exactly once");
+    assert_eq!(bookkeeping(&mut a).await.len(), recorded_versions());
 }
 
 /// An external server: an ordinary role that owns its database (no
