@@ -403,7 +403,7 @@ fn define_wasi<T: EngineLog + 'static>(linker: &mut Linker<T>) -> wasmtime::Resu
             };
             let mut text = Vec::new();
             let mut total: u32 = 0;
-            for v in vecs.chunks_exact(8) {
+            for v in vecs.as_chunks::<8>().0 {
                 let ptr = i32::from_le_bytes([v[0], v[1], v[2], v[3]]);
                 let len = i32::from_le_bytes([v[4], v[5], v[6], v[7]]);
                 total = total.saturating_add(u32::try_from(len.max(0)).unwrap_or(0));
