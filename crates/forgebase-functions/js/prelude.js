@@ -1164,7 +1164,9 @@
   }
 
   const envGet = (name) => hostJson("env.get", { name: String(name) }).value ?? undefined;
-  define(globalThis, "Deno", Object.freeze({ env: Object.freeze({ get: envGet }) }));
+  // `serve` is also a global (and Deno.serve), for code written without the import.
+  define(globalThis, "serve", serve);
+  define(globalThis, "Deno", Object.freeze({ env: Object.freeze({ get: envGet }), serve }));
 
   const strValue = (v) => (typeof v === "string" ? v : typeof v === "number" || typeof v === "bigint" || typeof v === "boolean" ? String(v) : JSON.stringify(v));
   const kvApi = (as, namespace) => {

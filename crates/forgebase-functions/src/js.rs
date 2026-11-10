@@ -176,8 +176,24 @@ impl JsRuntime {
         let mut data = StoreData::new(limits, env, input);
         data.source = js;
         data.max_output = MAX_JS_OUTPUT;
-        runtime::execute(&self.engine, &self.linker, &module, limits, data, Some(&snap)).await
+        let mut run = runtime::execute(&self.engine, &self.linker, &module, limits, data, Some(&snap)).await;
+        if let Err(ExecError::Failed { message: Some(m), .. }) = &mut run.result {
+            *m = own_frames(m);
+        }
+        run
     }
+}
+
+/// A JavaScript error trace without the prelude's frames.
+fn own_frames(message: &str) -> String {
+    message
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("at ") && (t.contains("(forgebase:prelude") || t.ends_with("(native)")))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn monotonic_base() -> Instant {
@@ -420,6 +436,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+
+    #[test]
+    fn traces_keep_the_functions_frames() {
+        let m = "Error: x\n    at host (forgebase:prelude:38:73)\n    at Promise (native)\n    at <anonymous> (index.js:20:27)";
+        assert_eq!(own_frames(m), "Error: x\n    at <anonymous> (index.js:20:27)");
+    }
 
     #[test]
     fn embedded_engine_matches_its_checksum() {

@@ -13,6 +13,8 @@
 
 ALTER TABLE _forgebase_function_versions ADD COLUMN source TEXT;
 ALTER TABLE _forgebase_function_versions ADD COLUMN js TEXT;
+-- TypeScript: generated -> source positions (JSON), for stack traces.
+ALTER TABLE _forgebase_function_versions ADD COLUMN source_map TEXT;
 
 CREATE TABLE _forgebase_function_kv_rules (
     function_id TEXT NOT NULL REFERENCES _forgebase_functions (id) ON DELETE CASCADE,

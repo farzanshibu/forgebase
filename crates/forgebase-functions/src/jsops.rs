@@ -49,14 +49,32 @@ fn bad(m: impl Into<String>) -> HostError {
     HostError::new("bad_argument", m)
 }
 
+/// `capability_denied`, saying which API needs what and how to fix it.
 fn denied(cap: &str) -> HostError {
-    HostError::new("capability_denied", format!("the capability {cap:?} is not granted"))
+    let what = match cap {
+        "db.read" => "ctx.db reads (get, list)",
+        "db.write" => "ctx.db writes (create, update, delete)",
+        "kv" => "ctx.kv",
+        "vector.read" => "ctx.vector reads (search, get)",
+        "vector.write" => "ctx.vector writes (upsert, delete)",
+        "storage.read" => "ctx.storage reads (get, list, signedUrl)",
+        "storage.write" => "ctx.storage writes (put, delete, upload URLs)",
+        "queues.publish" => "ctx.queues.publish",
+        "jobs.enqueue" => "ctx.jobs.enqueue",
+        "realtime.publish" => "ctx.realtime.broadcast",
+        "fetch" => "fetch()",
+        other => other,
+    };
+    HostError::new(
+        "capability_denied",
+        format!("{what} needs the '{cap}' capability: add it under Capabilities and deploy again"),
+    )
 }
 
 fn unavailable(service: &str) -> HostError {
     HostError::new(
         format!("{service}_unavailable"),
-        format!("the {service} engine is not running"),
+        format!("the {service} engine is not running on this server: enable it in the server configuration"),
     )
 }
 
@@ -160,7 +178,8 @@ pub(crate) async fn run(env: &HostEnv, op: &str, args: &[u8]) -> HostResult {
     if as_admin && !env.config.has(SERVICE_ROLE) {
         return Err(HostError::new(
             "capability_denied",
-            "ctx.admin needs the service_role capability, granted by an administrator at deploy",
+            "ctx.admin needs the 'service_role' capability, which only an administrator can grant: \
+             ask an administrator to deploy this function with it",
         ));
     }
     let ctx = if as_admin { &env.admin } else { &env.caller };
@@ -298,7 +317,8 @@ pub(crate) async fn run(env: &HostEnv, op: &str, args: &[u8]) -> HostResult {
             if !env_ok && !sec_ok {
                 return Err(HostError::new(
                     "capability_denied",
-                    "reading environment values needs the env (plain values) or secrets capability",
+                    "ctx.env.get needs the 'env' capability (plain values) or 'secrets' (sealed secrets): \
+                     add one under Capabilities and deploy again",
                 ));
             }
             let value = env_ok

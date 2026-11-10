@@ -94,7 +94,7 @@ wat = "=1.261.0"
 oxc_allocator = "=0.155.0"
 oxc_ast = "=0.155.0"
 oxc_ast_visit = "=0.155.0"
-oxc_codegen = { version = "=0.155.0", default-features = false }
+oxc_codegen = { version = "=0.155.0", default-features = false, features = ["sourcemap"] }
 oxc_diagnostics = "=0.155.0"
 oxc_parser = "=0.155.0"
 oxc_semantic = "=0.155.0"

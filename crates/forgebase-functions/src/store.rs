@@ -130,9 +130,18 @@ async fn version_text(db: &dyn Backend, function_id: &str, version: i64, column:
         .map(str::to_owned))
 }
 
-/// The JavaScript the engine runs for a JS/TS version.
-pub(crate) async fn script(db: &dyn Backend, function_id: &str, version: i64) -> Result<Option<String>> {
-    version_text(db, function_id, version, "js").await
+/// The JavaScript the engine runs for a JS/TS version, with its source map (TypeScript).
+pub(crate) async fn script(db: &dyn Backend, function_id: &str, version: i64) -> Result<Option<(String, Option<String>)>> {
+    let rows = db
+        .fetch_all(&Statement::new(
+            "SELECT js, source_map FROM _forgebase_function_versions WHERE function_id = ?1 AND version = ?2",
+            vec![function_id.into(), version.into()],
+        ))
+        .await?;
+    Ok(rows.rows.first().and_then(|r| {
+        let js = r.first().and_then(Value::as_str)?.to_owned();
+        Some((js, r.get(1).and_then(Value::as_str).map(str::to_owned)))
+    }))
 }
 
 /// The source of a JS/TS version as deployed.

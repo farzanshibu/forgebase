@@ -66,6 +66,60 @@ pub struct Compiled {
     pub js: String,
     /// Capabilities the code visibly needs, in source order.
     pub needs: Vec<Need>,
+    /// For TypeScript: generated position -> source position (see [`SourceMap`]).
+    pub map: Option<SourceMap>,
+}
+
+/// A compact source map of the generated JavaScript: sorted
+/// `[generated line, generated column, source line, source column]`
+/// entries, all 0-based. Stored with the version as JSON.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SourceMap(pub Vec<[u32; 4]>);
+
+impl SourceMap {
+    /// The source position (1-based line and column) of a generated one (1-based).
+    pub fn lookup(&self, line: u32, column: u32) -> Option<(u32, u32)> {
+        let key = [line.checked_sub(1)?, column.saturating_sub(1)];
+        let i = self.0.partition_point(|e| [e[0], e[1]] <= key);
+        let e = self.0.get(i.checked_sub(1)?)?;
+        (e[0] == key[0]).then(|| (e[2] + 1, e[3] + 1))
+    }
+}
+
+/// Rewrites `index.js:<line>:<column>` positions in a trace to the user's
+/// source (`index.ts` through `map` for TypeScript).
+pub fn remap_trace(text: &str, map: Option<&SourceMap>, file: &str) -> String {
+    const NEEDLE: &str = "index.js:";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(NEEDLE) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + NEEDLE.len()..];
+        let num = |s: &str| {
+            let n: String = s.chars().take_while(char::is_ascii_digit).collect();
+            n.parse::<u32>().ok().map(|v| (v, n.len()))
+        };
+        let parsed = num(after).and_then(|(l, ll)| {
+            let tail = after[ll..].strip_prefix(':')?;
+            num(tail).map(|(c, cl)| (l, c, ll + 1 + cl))
+        });
+        match parsed {
+            Some((l, c, used)) => {
+                let (l, c) = match map {
+                    Some(m) => m.lookup(l, c).unwrap_or((l, c)),
+                    None => (l, c),
+                };
+                out.push_str(&format!("{file}:{l}:{c}"));
+                rest = &after[used..];
+            }
+            None => {
+                out.push_str(NEEDLE);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Line and column (1-based, characters) of a byte offset.
@@ -130,7 +184,10 @@ pub fn compile(source: &str, language: Language) -> Result<Compiled, Vec<Compile
         return Err(errors);
     }
     let mut program = parsed.program;
-    let semantic = SemanticBuilder::new().with_check_syntax_error(true).build(&program);
+    let semantic = SemanticBuilder::new()
+        .with_check_syntax_error(true)
+        .with_enum_eval(true)
+        .build(&program);
     errors.extend(semantic.diagnostics.errors().map(|d| from_oxc(source, d)));
     let mut scan = Scan {
         source,
@@ -145,6 +202,7 @@ pub fn compile(source: &str, language: Language) -> Result<Compiled, Vec<Compile
         return Err(errors);
     }
     let needs = scan.needs;
+    let mut map = None;
     let js = if matches!(language, Language::Typescript) {
         let scoping = semantic.semantic.into_scoping();
         let options = TransformOptions::default();
@@ -154,11 +212,26 @@ pub fn compile(source: &str, language: Language) -> Result<Compiled, Vec<Compile
             errors.truncate(20);
             return Err(errors);
         }
-        Codegen::new().build(&program).code
+        let ret = Codegen::new()
+            .with_options(oxc_codegen::CodegenOptions {
+                source_map_path: Some(std::path::PathBuf::from(path)),
+                ..oxc_codegen::CodegenOptions::default()
+            })
+            .build(&program);
+        if let Some(m) = ret.map {
+            let mut entries: Vec<[u32; 4]> = m
+                .get_tokens()
+                .map(|t| [t.get_dst_line(), t.get_dst_col(), t.get_src_line(), t.get_src_col()])
+                .collect();
+            entries.sort_unstable();
+            entries.dedup_by(|a, b| a[0] == b[0] && a[1] == b[1]);
+            map = Some(SourceMap(entries));
+        }
+        ret.code
     } else {
         source.to_owned()
     };
-    Ok(Compiled { js, needs })
+    Ok(Compiled { js, needs, map })
 }
 
 /// Services reachable through `ctx` and the capabilities that satisfy them.
@@ -319,7 +392,10 @@ pub fn unmet(compiled: &Compiled, has: impl Fn(&str) -> bool) -> Vec<CompileDiag
             continue;
         }
         let caps = n.any_of.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(" or ");
-        let message = format!("the code uses {} but the capability {caps} is not granted", n.what);
+        let message = format!(
+            "the code uses {} but the capability {caps} is not granted: add it under Capabilities and deploy again",
+            n.what
+        );
         if !out.iter().any(|d| d.message == message) {
             out.push(CompileDiagnostic {
                 line: n.line,
@@ -406,6 +482,31 @@ mod tests {
         assert_eq!(missing.len(), 1);
         assert!(missing[0].message.contains("db.write"));
         assert!(unmet(&c, |c| c == "db.write").is_empty());
+    }
+
+    #[test]
+    fn traces_point_at_the_typescript_source() {
+        let src = "import { serve } from \"forgebase\";\n\ninterface A {\n  a: number;\n}\n\nserve(() => {\n  throw new Error(\"x\");\n});\n";
+        let c = compile(src, Language::Typescript).unwrap();
+        let map = c.map.as_ref().unwrap();
+        // Find where the generated code has the throw.
+        let (gl, line) = c.js.lines().enumerate().find(|(_, l)| l.contains("throw")).unwrap();
+        let gc = line.find("throw").unwrap();
+        let (sl, sc) = map.lookup(u32::try_from(gl + 1).unwrap(), u32::try_from(gc + 1).unwrap()).unwrap();
+        assert_eq!((sl, sc), (8, 3), "{}", c.js);
+        let t = remap_trace(
+            &format!("Error: x\n    at <anonymous> (index.js:{}:{})", gl + 1, gc + 1),
+            Some(map),
+            "index.ts",
+        );
+        assert_eq!(t, "Error: x\n    at <anonymous> (index.ts:8:3)");
+        assert_eq!(remap_trace("at f (index.js:3:4) index.js:x", None, "index.js"), "at f (index.js:3:4) index.js:x");
+    }
+
+    #[test]
+    fn enums_compile() {
+        let c = compile("enum Color { Red = \"r\", Green = \"g\" }\nexport const c = Color.Red;\n", Language::Typescript).unwrap();
+        assert!(c.js.contains("Color"), "{}", c.js);
     }
 
     #[test]

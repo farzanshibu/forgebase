@@ -204,6 +204,13 @@ pub(crate) struct Target {
     pub(crate) config: Arc<VersionConfig>,
 }
 
+/// The JavaScript of a JS/TS version and its source map.
+#[derive(Debug)]
+pub(crate) struct Script {
+    pub(crate) js: Vec<u8>,
+    pub(crate) map: Option<compile::SourceMap>,
+}
+
 /// Code of a deploy.
 enum Code {
     Wasm(Vec<u8>),
@@ -227,7 +234,7 @@ pub(crate) struct Inner {
     registry: RwLock<Arc<Registry>>,
     modules: Mutex<HashMap<(String, i64), wasmtime::Module>>,
     /// JavaScript of `(function id, version)`.
-    scripts: Mutex<HashMap<(String, i64), Arc<Vec<u8>>>>,
+    scripts: Mutex<HashMap<(String, i64), Arc<Script>>>,
     /// Key-value namespace rules by function id.
     kv_rules: RwLock<HashMap<String, Arc<Vec<KvRule>>>>,
     services: RwLock<Arc<Services>>,
@@ -386,6 +393,11 @@ impl FunctionService {
     /// (replacing earlier ones).
     pub fn attach_services(&self, services: Services) {
         *self.inner.services.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(services);
+    }
+
+    /// The engines attached with [`FunctionService::attach_services`].
+    pub fn attached_services(&self) -> Arc<Services> {
+        self.services()
     }
 
     pub(crate) fn services(&self) -> Arc<Services> {
@@ -553,11 +565,12 @@ impl FunctionService {
             language,
         };
         let grants_service_role = config.has(SERVICE_ROLE);
-        // (module, stored wasm, source, javascript)
-        let (module, wasm, source, script) = match code {
+        // (module, stored wasm, source, javascript, source map)
+        let (module, wasm, source, script, map) = match code {
             Code::Wasm(wasm) => (
                 Some(self.inner.runtime.compile(wasm.clone(), &config).await?),
                 wasm,
+                None,
                 None,
                 None,
             ),
@@ -582,9 +595,14 @@ impl FunctionService {
                 }
                 // Fail the deploy, not the first call, if the engine cannot load.
                 self.inner.js.module().await?;
-                (None, Vec::new(), Some(source), Some(compiled.js))
+                (None, Vec::new(), Some(source), Some(compiled.js), compiled.map)
             }
         };
+        let map_json = map
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| FunctionError::Internal(format!("source map encode: {e}")))?;
         let digest_of = source.as_ref().map_or(wasm.as_slice(), |s| s.as_bytes());
         let sha = hex(&Sha256::digest(digest_of));
         let size = i64::try_from(digest_of.len()).unwrap_or(i64::MAX);
@@ -638,8 +656,8 @@ impl FunctionService {
             };
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_function_versions
-                     (function_id, version, wasm, sha256, config, created_at, created_by, source, js)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     (function_id, version, wasm, sha256, config, created_at, created_by, source, js, source_map)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 vec![
                     id.clone().into(),
                     version.into(),
@@ -650,6 +668,7 @@ impl FunctionService {
                     actor.clone().into(),
                     source.clone().into(),
                     script.clone().into(),
+                    map_json.clone().into(),
                 ],
             ))
             .await?;
@@ -700,7 +719,13 @@ impl FunctionService {
                 .scripts
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .insert((id.clone(), version), Arc::new(js.into_bytes()));
+                .insert(
+                    (id.clone(), version),
+                    Arc::new(Script {
+                        js: js.into_bytes(),
+                        map,
+                    }),
+                );
         }
         self.reload().await?;
         let entry = self.entry(&req.name)?;
@@ -916,15 +941,18 @@ impl FunctionService {
     }
 
     /// The JavaScript of a JS/TS version.
-    async fn script(&self, e: &Entry, t: &Target) -> Result<Arc<Vec<u8>>> {
+    async fn script(&self, e: &Entry, t: &Target) -> Result<Arc<Script>> {
         let key = (e.row.id.clone(), t.version);
         if let Some(m) = self.inner.scripts.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
             return Ok(m.clone());
         }
-        let js = store::script(self.backend().as_ref(), &e.row.id, t.version)
+        let (js, map) = store::script(self.backend().as_ref(), &e.row.id, t.version)
             .await?
             .ok_or_else(|| FunctionError::Internal(format!("JavaScript of {} is missing", e.row.name)))?;
-        let js = Arc::new(js.into_bytes());
+        let js = Arc::new(Script {
+            js: js.into_bytes(),
+            map: map.and_then(|m| serde_json::from_str(&m).ok()),
+        });
         let mut cache = self.inner.scripts.lock().unwrap_or_else(|p| p.into_inner());
         if cache.len() >= 256 {
             cache.clear();
@@ -1200,13 +1228,36 @@ impl FunctionService {
                     .await
             }
             FunctionRuntime::Js => {
-                let js = self.script(e, &target).await?;
-                DEPTH
+                let script = self.script(e, &target).await?;
+                let mut run = DEPTH
                     .scope(
                         depth + 1,
-                        self.inner.js.run(&config.limits, env, js.as_ref().clone(), input),
+                        self.inner.js.run(&config.limits, env, script.js.clone(), input),
                     )
-                    .await
+                    .await;
+                // Positions in traces point at the user's source.
+                let file = if config.language == Language::Typescript {
+                    "index.ts"
+                } else {
+                    "index.js"
+                };
+                let fix = |t: &str| compile::remap_trace(t, script.map.as_ref(), file);
+                for l in &mut run.logs {
+                    if l.message.contains("index.js:") {
+                        l.message = fix(&l.message);
+                    }
+                }
+                if let Err(ExecError::Failed { status: 1, message }) = &run.result {
+                    let trace = fix(message.as_deref().unwrap_or("an exception"));
+                    if run.logs.len() < host::MAX_LOG_LINES {
+                        run.logs.push(LogLine {
+                            level: "error".into(),
+                            message: format!("Uncaught {trace}"),
+                        });
+                    }
+                    run.result = Err(ExecError::Uncaught(trace));
+                }
+                run
             }
         };
         let elapsed = start.elapsed();

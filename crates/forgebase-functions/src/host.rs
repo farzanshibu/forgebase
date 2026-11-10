@@ -330,7 +330,7 @@ async fn fetch(env: &HostEnv, args: &[u8]) -> HostResult {
     let Some(fetcher) = &env.fetcher else {
         return Err(HostError::new(
             "fetch_unavailable",
-            "outbound requests are not configured",
+            "outbound requests are not configured on this server",
         ));
     };
     let a: FetchArgs = parse(args)?;
