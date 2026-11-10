@@ -1163,6 +1163,7 @@ pub struct UsageAlert {
 
 /// What a maintenance run did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(as = EntitlementsMaintenanceReport)]
 pub struct MaintenanceReport {
     /// Reservations released because they expired.
     pub reservations_expired: u64,

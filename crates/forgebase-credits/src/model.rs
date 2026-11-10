@@ -481,6 +481,7 @@ pub struct ExpiryReport {
 
 /// What a maintenance run did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = CreditsMaintenanceReport)]
 pub struct MaintenanceReport {
     /// Expiries.
     pub expired: ExpiryReport,

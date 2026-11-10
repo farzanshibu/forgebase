@@ -141,6 +141,7 @@ pub struct VectorField {
 /// A new collection.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = VectorNewCollection)]
 pub struct NewCollection {
     /// `[A-Za-z][A-Za-z0-9_]{0,62}`, unique in the tenant.
     pub name: String,
@@ -258,6 +259,7 @@ pub struct DeleteRequest {
 
 /// Outcome of a delete.
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[schema(as = VectorDeleteResult)]
 pub struct DeleteResult {
     /// Items removed.
     pub deleted: u64,
@@ -533,6 +535,7 @@ pub enum IndexState {
 
 /// Progress of a rebuild.
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[schema(as = VectorProgress)]
 pub struct Progress {
     /// Vectors added so far.
     pub done: u64,
