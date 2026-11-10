@@ -101,7 +101,7 @@ can accept or move them. Pass or miss is against these.
 | Vector | top-10, exact (brute force), same data | 6.34 ms | 158/s | informational | n/a |
 | Queue | publish 1 message | 166 µs | 6.0 k/s | < 5 ms | Pass |
 | Queue | publish batch of 100 | 4.36 ms | 22.9 k msg/s | n/a | n/a |
-| Queue | pull 10 + ack | 27.5 ms | 363 msg/s | < 10 ms | **Miss** |
+| Queue | pull 10 + ack | 27.5 ms before FIX-9; 0.93 ms after (10 000-message backlog, internal disk) | 10.8 k msg/s | < 10 ms | Pass |
 | Jobs | enqueue | 250 µs | 4.0 k/s | < 5 ms | Pass |
 | Jobs | claim + complete (1 job) | 3.19 ms | 313/s | < 10 ms | Pass |
 
@@ -187,29 +187,46 @@ inside the flush window are not durable and were not tested).
 | Authentication | token verify 27 µs; sign-in 15 ms | < 100 µs; < 250 ms | Pass |
 | API throughput | 8.7 k requests/s mixed records CRUD on 16 connections | > 1 k/s | Pass |
 | Recovery time | 0.55 s, 0 acknowledged writes lost | < 5 s; 0 lost | Pass |
-| Queue pull + ack | 27.5 ms for 10 messages in process | < 10 ms | **Miss** |
+| Queue pull + ack | 27.5 ms before FIX-9; 0.93 ms after, 10 messages in process | < 10 ms | Pass |
 | Object uploads and downloads | not measured | n/a | Not measured |
 | Graph traversals | not measured | n/a | Not measured |
 | CPU, disk I/O, index size | not sampled | n/a | Not measured |
 
 ## 6. Misses and findings (for god; nothing was changed)
 
-1. **Queue pull + ack is the slow queue path: 27.5 ms for 10 messages
-   in process** (publish is 166 µs, jobs claim 3.2 ms). Over HTTP the batch of
-   100 takes 10.4 ms p50, so the cost is mostly per call, not per message.
-   Profile: the sum of two transactions (pull marks deliveries, ack deletes)
-   cannot explain 27 ms at a 65 µs commit cost, so look first for a fixed wait
-   or timer in the pull path and for the cost that grows with the backlog (the
-   bench subscription held the whole backlog of earlier publishes). Not
-   investigated further, as instructed.
+1. **Queue pull + ack (fixed in FIX-9, ADR-0025).** It was 27.5 ms for 10
+   messages in process (publish 166 µs, jobs claim 3.2 ms). Cause: no fixed wait
+   or timer (a pull with `wait_ms = 0` never sleeps, and no transaction is held
+   across a wait). The claim query filtered on `(subscription, state,
+   available_at)` and ordered by `seq`, so SQLite read every ready row, joined
+   it to its message and sorted all of them (`USE TEMP B-TREE FOR ORDER BY`)
+   inside the write transaction. The bench subscription held the whole backlog
+   of the earlier publish benches, so the cost grew with it. Migration 0025 adds
+   an index on `(subscription, state, seq)` and the query now reads only the rows
+   it claims. Delivery guarantees and ordering are unchanged.
+
+   Before and after, same bench (`cargo bench -p forgebase-bench --bench
+   queue_jobs -- queue_pull`, internal disk, pull 10 + ack with a standing
+   backlog, 10 publishes outside the timing per iteration):
+
+   | Standing backlog | Before | After |
+   |---|---|---|
+   | about 2 000 messages | 1.00 ms | 0.99 ms |
+   | about 20 000 messages | 2.21 ms | 0.93 ms |
+
+   After the fix the time no longer depends on the backlog; the remaining 0.9 ms
+   is the two commits (pull, ack). On the external disk the same bench is
+   dominated by flush stalls (15 to 150 ms run to run), see §1. Guard:
+   `pull_claim_query_does_not_sort_the_backlog` (queue tests) fails if the plan
+   gains a sort or loses the index.
 2. **Per-IP sign-in limiter caps HTTP sign-in.** Only 26 sign-ins per 10 s were
    accepted from one address; the rest are `429` (by design, ADR-0004). Also a
    tripped limiter makes the *administrator* login fail for the same address for
    up to a minute, so a load test from one host locks itself out of the admin
    login. `ip_attempts_per_minute` is not a config-file option. Worth knowing for
    anyone load-testing.
-3. **Realtime per-principal cap: 32 connections** (`max_connections_per_principal`),
-   not configurable from `forgebase.toml`. The fan-out test used 30 subscribers
+3. **Realtime per-principal cap: 32 connections** by default; since FIX-9 it is
+   `realtime.max_connections_per_principal` in `forgebase.toml`. The fan-out test used 30 subscribers
    on one identity; a 100-subscriber run failed with `429 too_many_connections`.
 4. **Write latency depends on the device** (§1, §4.1). A disk with stalls turns
    a 2 ms create into seconds. Nothing in the server was at fault in those runs.
