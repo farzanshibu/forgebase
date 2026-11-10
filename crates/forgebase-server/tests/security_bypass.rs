@@ -687,6 +687,7 @@ async fn outbound_clients_never_reach_internal_addresses() {
     ] {
         env.server
             .functions()
+            .unwrap()
             .deploy(
                 &forgebase_data::AccessContext::admin("root"),
                 forgebase_functions::DeployRequest {
@@ -707,6 +708,7 @@ async fn outbound_clients_never_reach_internal_addresses() {
         let out: Json = env
             .server
             .functions()
+            .unwrap()
             .invoke(name, forgebase_functions::Trigger::Direct, &json!({}), None)
             .await
             .unwrap()
@@ -1354,6 +1356,7 @@ async fn secrets_never_reach_logs_or_api_output() {
     secrets.push(fsecret.to_owned());
     env.server
         .functions()
+        .unwrap()
         .deploy(
             &forgebase_data::AccessContext::admin("root"),
             forgebase_functions::DeployRequest {

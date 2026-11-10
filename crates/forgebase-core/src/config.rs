@@ -49,6 +49,9 @@ host = "127.0.0.1"          # FORGEBASE_HOST
 port = 8090                 # FORGEBASE_PORT
 request_timeout_secs = 30   # FORGEBASE_REQUEST_TIMEOUT_SECS
 shutdown_timeout_secs = 30  # FORGEBASE_SHUTDOWN_TIMEOUT_SECS
+# Address people and apps reach this server at, with no path; links the
+# server hands out (such as the setup link) use it. Unset: the bound address.
+# public_url = "https://forgebase.example.com"  # FORGEBASE_PUBLIC_URL
 # Who may read /metrics and /api/system/*: "loopback" (administrators, plus
 # unauthenticated callers on this host that are not behind a proxy),
 # "admin" (administrators only) or "public".
@@ -93,6 +96,12 @@ trust_forwarded_for = false     # FORGEBASE_AUTH_TRUST_FORWARDED_FOR
 # Let OAuth/OIDC, SMS and Turnstile requests reach loopback, private and
 # link-local addresses (an identity provider on your own network).
 allow_private_outbound = false  # FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND
+
+# Modules are on by default. To turn one off, add its section with
+# enabled = false (or set FORGEBASE_<SECTION>_ENABLED=false): its routes then
+# answer 404 feature_disabled and its workers do not start. Sections: storage,
+# functions, queue, realtime, vector, graph, identity, access (ADR-0026).
+# Administrators can also change settings in the dashboard (Features & settings).
 "#;
 
 /// SQLite `synchronous` setting for the primary database.
@@ -254,6 +263,30 @@ pub struct Config {
     pub realtime: RealtimeSettings,
     /// Authentication deployment settings.
     pub auth: AuthSettings,
+    /// Server functions (FB-60), `[functions]`.
+    pub functions: ModuleSwitch,
+    /// Vector search (FB-50), `[vector]`.
+    pub vector: ModuleSwitch,
+    /// Graph API (FB-12), `[graph]`.
+    pub graph: ModuleSwitch,
+    /// OIDC provider and realm management (FB-25, FB-26), `[identity]`.
+    pub identity: ModuleSwitch,
+    /// Policies, organisations and tenancy management (FB-21), `[access]`.
+    pub access: ModuleSwitch,
+}
+
+/// `[<module>] enabled` of a module that has no other settings (FB-91,
+/// ADR-0026). On by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ModuleSwitch {
+    /// Whether the module's routes are served and its workers run.
+    pub enabled: bool,
+}
+
+impl Default for ModuleSwitch {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Default most realtime connections one principal may hold (FIX-9).
@@ -262,6 +295,10 @@ pub const DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL: u32 = 32;
 /// Settings of the realtime service (FIX-9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RealtimeSettings {
+    /// Whether `/api/v1/realtime` and its dispatcher run (FB-91). The
+    /// record-change outbox keeps being written either way: server functions
+    /// and queues read it.
+    pub enabled: bool,
     /// Most simultaneous realtime connections one principal (user or key) may
     /// hold; further ones get `429 too_many_connections`.
     pub max_connections_per_principal: u32,
@@ -317,6 +354,8 @@ pub enum StorageDriverKind {
 /// `FORGEBASE_STORAGE_S3_SESSION_TOKEN`) in the environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StorageConfig {
+    /// Whether `/api/v1/storage` and its reconciler run (FB-91).
+    pub enabled: bool,
     /// `local` (default) or `s3`.
     pub driver: StorageDriverKind,
     /// Largest object in bytes.
@@ -368,6 +407,10 @@ pub struct ServerConfig {
     pub shutdown_timeout_secs: u64,
     /// Who may read `/metrics` and `/api/system/*`.
     pub ops_access: OpsAccess,
+    /// Public origin of the server (`https://forgebase.example.com`): an
+    /// absolute http(s) URL without a path or trailing slash. `None` (the
+    /// default, or an empty value) means links use the bound address.
+    pub public_url: Option<String>,
 }
 
 /// Primary database settings.
@@ -401,6 +444,7 @@ impl Config {
                 request_timeout_secs: 30,
                 shutdown_timeout_secs: 30,
                 ops_access: OpsAccess::Loopback,
+                public_url: None,
             },
             database: DatabaseConfig {
                 synchronous: Synchronous::Full,
@@ -420,6 +464,7 @@ impl Config {
                 idle_timeout_secs: 300,
             },
             storage: StorageConfig {
+                enabled: true,
                 driver: StorageDriverKind::Local,
                 max_object_bytes: 5 * 1024 * 1024 * 1024,
                 upload_ttl_secs: 24 * 3600,
@@ -445,98 +490,199 @@ impl Config {
             },
             billing: BillingConfig { enabled: true },
             realtime: RealtimeSettings {
+                enabled: true,
                 max_connections_per_principal: DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL,
             },
             auth: AuthSettings::default(),
+            functions: ModuleSwitch::default(),
+            vector: ModuleSwitch::default(),
+            graph: ModuleSwitch::default(),
+            identity: ModuleSwitch::default(),
+            access: ModuleSwitch::default(),
         }
     }
 
     /// Checks value ranges. Called by the loader; call it again after
-    /// mutating a config by hand.
+    /// mutating a config by hand. Returns the first problem.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let invalid = |field: &'static str, message: String| ConfigError::Invalid { field, message };
-        if self.server.host.trim().is_empty() || self.server.host.contains(char::is_whitespace) {
-            return Err(invalid("server.host", format!("invalid host {:?}", self.server.host)));
+        match self.problems().into_iter().next() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Every out-of-range value, in a stable order (FB-91: the config API
+    /// reports them all at once). Each is a [`ConfigError::Invalid`].
+    pub fn problems(&self) -> Vec<ConfigError> {
+        // Every message says what to enter instead, with the default as the
+        // example (FB-91, dashboard UX bar): it is shown next to the field.
+        let d = Config::defaults(Path::new(""));
+        let mut out = Vec::new();
+        let mut invalid = |field: &'static str, message: String| out.push(ConfigError::Invalid { field, message });
+        let host = |h: &str| h.trim().is_empty() || h.contains(char::is_whitespace);
+        if host(&self.server.host) {
+            invalid(
+                "server.host",
+                format!(
+                    "must be a host name or IP address without spaces, such as {}",
+                    d.server.host
+                ),
+            );
+        }
+        if self.server.public_url.as_deref().is_some_and(|u| !is_origin_url(u)) {
+            invalid(
+                "server.public_url",
+                "must be an address that starts with https:// or http://, with no path, such as https://forgebase.example.com".into(),
+            );
         }
         if !(1..=3600).contains(&self.server.request_timeout_secs) {
-            return Err(invalid(
+            invalid(
                 "server.request_timeout_secs",
-                "must be between 1 and 3600".into(),
-            ));
+                whole(1, 3600, "seconds", d.server.request_timeout_secs),
+            );
         }
         if self.server.shutdown_timeout_secs > 3600 {
-            return Err(invalid("server.shutdown_timeout_secs", "must be at most 3600".into()));
+            invalid(
+                "server.shutdown_timeout_secs",
+                whole(0, 3600, "seconds", d.server.shutdown_timeout_secs),
+            );
         }
         if !(1..=64).contains(&self.database.read_pool_size) {
-            return Err(invalid("database.read_pool_size", "must be between 1 and 64".into()));
+            invalid(
+                "database.read_pool_size",
+                whole(1, 64, "", d.database.read_pool_size as u64),
+            );
         }
         if self.database.busy_timeout_ms > 600_000 {
-            return Err(invalid("database.busy_timeout_ms", "must be at most 600000".into()));
+            invalid(
+                "database.busy_timeout_ms",
+                whole(0, 600_000, "milliseconds", d.database.busy_timeout_ms),
+            );
         }
         if self.log.level.trim().is_empty() {
-            return Err(invalid("log.level", "must not be empty".into()));
+            invalid(
+                "log.level",
+                format!("must be a log filter such as {} or forgebase=debug", d.log.level),
+            );
         }
-        if self.resp.host.trim().is_empty() || self.resp.host.contains(char::is_whitespace) {
-            return Err(invalid("resp.host", format!("invalid host {:?}", self.resp.host)));
+        if host(&self.resp.host) {
+            invalid(
+                "resp.host",
+                format!(
+                    "must be a host name or IP address without spaces, such as {}",
+                    d.resp.host
+                ),
+            );
         }
         if !(1..=1_000_000).contains(&self.resp.max_connections) {
-            return Err(invalid("resp.max_connections", "must be between 1 and 1000000".into()));
+            invalid(
+                "resp.max_connections",
+                whole(1, 1_000_000, "", d.resp.max_connections as u64),
+            );
         }
         if !(1..=512 * 1024 * 1024).contains(&self.resp.max_bulk_bytes) {
-            return Err(invalid("resp.max_bulk_bytes", "must be between 1 and 536870912".into()));
+            invalid(
+                "resp.max_bulk_bytes",
+                whole(1, 512 * 1024 * 1024, "bytes", d.resp.max_bulk_bytes),
+            );
         }
-        if self.storage.driver == StorageDriverKind::S3
-            && (self.storage.s3_endpoint.trim().is_empty() || self.storage.s3_bucket.trim().is_empty())
-        {
-            return Err(invalid(
-                "storage.s3_endpoint",
-                "the s3 driver needs s3_endpoint and s3_bucket".into(),
-            ));
+        if self.storage.driver == StorageDriverKind::S3 {
+            if self.storage.s3_endpoint.trim().is_empty() {
+                invalid(
+                    "storage.s3_endpoint",
+                    "must be set when the driver is s3, such as https://s3.eu-central-1.amazonaws.com".into(),
+                );
+            }
+            if self.storage.s3_bucket.trim().is_empty() {
+                invalid(
+                    "storage.s3_bucket",
+                    "must be set when the driver is s3, such as my-app-files".into(),
+                );
+            }
         }
-        if self.storage.max_object_bytes == 0 || self.storage.s3_part_size < 1024 {
-            return Err(invalid(
+        if self.storage.max_object_bytes == 0 {
+            invalid(
                 "storage.max_object_bytes",
-                "max_object_bytes must be positive and s3_part_size at least 1024".into(),
-            ));
+                whole(1, u64::MAX, "bytes", d.storage.max_object_bytes),
+            );
+        }
+        if self.storage.s3_part_size < 1024 {
+            invalid(
+                "storage.s3_part_size",
+                format!(
+                    "must be at least 1024 bytes (S3 itself needs 5242880, 5 MiB), such as {}",
+                    d.storage.s3_part_size
+                ),
+            );
         }
         if self.resp.idle_timeout_secs > 86_400 {
-            return Err(invalid("resp.idle_timeout_secs", "must be at most 86400".into()));
+            invalid(
+                "resp.idle_timeout_secs",
+                whole(0, 86_400, "seconds", d.resp.idle_timeout_secs),
+            );
         }
         if !(1..=1_000_000).contains(&self.realtime.max_connections_per_principal) {
-            return Err(invalid(
+            invalid(
                 "realtime.max_connections_per_principal",
-                "must be between 1 and 1000000".into(),
-            ));
+                whole(1, 1_000_000, "", u64::from(d.realtime.max_connections_per_principal)),
+            );
         }
         let q = &self.queue;
         if !(64..=10 * 1024 * 1024).contains(&q.max_message_bytes) {
-            return Err(invalid(
+            invalid(
                 "queue.max_message_bytes",
-                "must be between 64 and 10485760".into(),
-            ));
+                whole(64, 10 * 1024 * 1024, "bytes", d.queue.max_message_bytes),
+            );
         }
-        if q.default_retention_secs < 60 || q.max_retention_secs < q.default_retention_secs {
-            return Err(invalid(
+        if q.default_retention_secs < 60 {
+            invalid(
                 "queue.default_retention_secs",
-                "must be at least 60 and at most max_retention_secs".into(),
-            ));
+                format!(
+                    "must be at least 60 seconds, such as {}",
+                    d.queue.default_retention_secs
+                ),
+            );
+        } else if q.max_retention_secs < q.default_retention_secs {
+            invalid(
+                "queue.max_retention_secs",
+                format!(
+                    "must be at least the default retention ({} seconds), such as {}",
+                    q.default_retention_secs,
+                    d.queue.max_retention_secs.max(q.default_retention_secs)
+                ),
+            );
         }
         if !(1..=86_400).contains(&q.dedup_window_secs) {
-            return Err(invalid("queue.dedup_window_secs", "must be between 1 and 86400".into()));
+            invalid(
+                "queue.dedup_window_secs",
+                whole(1, 86_400, "seconds", d.queue.dedup_window_secs),
+            );
         }
         if q.max_pull_wait_ms > 300_000 {
-            return Err(invalid("queue.max_pull_wait_ms", "must be at most 300000".into()));
+            invalid(
+                "queue.max_pull_wait_ms",
+                whole(0, 300_000, "milliseconds", d.queue.max_pull_wait_ms),
+            );
         }
         if !(10..=60_000).contains(&q.poll_interval_ms) {
-            return Err(invalid("queue.poll_interval_ms", "must be between 10 and 60000".into()));
+            invalid(
+                "queue.poll_interval_ms",
+                whole(10, 60_000, "milliseconds", d.queue.poll_interval_ms),
+            );
         }
-        if !(1..=300).contains(&q.push_timeout_secs) || !(1..=256).contains(&q.push_concurrency) {
-            return Err(invalid(
+        if !(1..=300).contains(&q.push_timeout_secs) {
+            invalid(
                 "queue.push_timeout_secs",
-                "push_timeout_secs must be 1-300 and push_concurrency 1-256".into(),
-            ));
+                whole(1, 300, "seconds", d.queue.push_timeout_secs),
+            );
         }
-        Ok(())
+        if !(1..=256).contains(&q.push_concurrency) {
+            invalid(
+                "queue.push_concurrency",
+                whole(1, 256, "", d.queue.push_concurrency as u64),
+            );
+        }
+        out
     }
 
     fn apply(&mut self, o: &ConfigOverrides, base_dir: &Path) {
@@ -557,6 +703,12 @@ impl Config {
         }
         if let Some(v) = o.ops_access {
             self.server.ops_access = v;
+        }
+        if let Some(v) = &o.public_url {
+            // One trailing slash is dropped so links can append a path.
+            let v = v.trim();
+            let v = v.strip_suffix('/').unwrap_or(v);
+            self.server.public_url = (!v.is_empty()).then(|| v.to_owned());
         }
         if let Some(v) = o.auth_trust_forwarded_for {
             self.auth.trust_forwarded_for = v;
@@ -580,6 +732,9 @@ impl Config {
             self.log.format = v;
         }
         if let Some(st) = &o.storage {
+            if let Some(v) = st.enabled {
+                self.storage.enabled = v;
+            }
             if let Some(v) = st.driver {
                 self.storage.driver = v;
             }
@@ -668,6 +823,20 @@ impl Config {
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
+        if let Some(v) = o.realtime_enabled {
+            self.realtime.enabled = v;
+        }
+        for (switch, value) in [
+            (&mut self.functions, o.functions_enabled),
+            (&mut self.vector, o.vector_enabled),
+            (&mut self.graph, o.graph_enabled),
+            (&mut self.identity, o.identity_enabled),
+            (&mut self.access, o.access_enabled),
+        ] {
+            if let Some(v) = value {
+                switch.enabled = v;
+            }
+        }
     }
 }
 
@@ -688,6 +857,8 @@ pub struct ConfigOverrides {
     pub shutdown_timeout_secs: Option<u64>,
     /// Who may read `/metrics` and `/api/system/*`.
     pub ops_access: Option<OpsAccess>,
+    /// `[server] public_url`; an empty value unsets it.
+    pub public_url: Option<String>,
     /// `[auth] trust_forwarded_for`.
     pub auth_trust_forwarded_for: Option<bool>,
     /// `[auth] allow_private_outbound`.
@@ -722,6 +893,22 @@ pub struct ConfigOverrides {
     pub billing_enabled: Option<bool>,
     /// Most realtime connections per principal.
     pub realtime_max_connections_per_principal: Option<u32>,
+    /// `[realtime] enabled`.
+    pub realtime_enabled: Option<bool>,
+    /// `[functions] enabled`.
+    pub functions_enabled: Option<bool>,
+    /// `[vector] enabled`.
+    pub vector_enabled: Option<bool>,
+    /// `[graph] enabled`.
+    pub graph_enabled: Option<bool>,
+    /// `[identity] enabled`.
+    pub identity_enabled: Option<bool>,
+    /// `[access] enabled`.
+    pub access_enabled: Option<bool>,
+    /// Secret environment variables that were set (names only, never values),
+    /// such as `FORGEBASE_STORAGE_S3_SECRET_KEY`. The loader does not read
+    /// them; the feature registry reports them as set by the environment.
+    pub secrets_set: Vec<String>,
 }
 
 impl ConfigOverrides {
@@ -748,6 +935,7 @@ impl ConfigOverrides {
                 "REQUEST_TIMEOUT_SECS" => o.request_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "SHUTDOWN_TIMEOUT_SECS" => o.shutdown_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "OPS_ACCESS" => o.ops_access = Some(value.parse().map_err(bad)?),
+                "PUBLIC_URL" => o.public_url = Some(value),
                 "AUTH_TRUST_FORWARDED_FOR" => o.auth_trust_forwarded_for = Some(parse_bool(&value).map_err(bad)?),
                 "AUTH_ALLOW_PRIVATE_OUTBOUND" => {
                     o.auth_allow_private_outbound = Some(parse_bool(&value).map_err(bad)?);
@@ -767,11 +955,297 @@ impl ConfigOverrides {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
                 "BILLING_ENABLED" => o.billing_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "STORAGE_ENABLED" => {
+                    o.storage.get_or_insert_with(StorageOverrides::default).enabled =
+                        Some(parse_bool(&value).map_err(bad)?);
+                }
+                "QUEUE_ENABLED" => {
+                    o.queue.get_or_insert_with(QueueOverrides::default).enabled =
+                        Some(parse_bool(&value).map_err(bad)?);
+                }
+                "REALTIME_ENABLED" => o.realtime_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "FUNCTIONS_ENABLED" => o.functions_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "VECTOR_ENABLED" => o.vector_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "GRAPH_ENABLED" => o.graph_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "IDENTITY_ENABLED" => o.identity_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "ACCESS_ENABLED" => o.access_enabled = Some(parse_bool(&value).map_err(bad)?),
+                // Read by the storage driver, never by the loader (ADR-0018).
+                "STORAGE_S3_ACCESS_KEY" | "STORAGE_S3_SECRET_KEY" | "STORAGE_S3_SESSION_TOKEN" => {
+                    if !value.is_empty() {
+                        o.secrets_set.push(name.clone());
+                    }
+                }
                 _ => return Err(bad("unknown ForgeBase environment variable".into())),
             }
         }
         Ok(o)
     }
+}
+
+impl ConfigOverrides {
+    /// Dotted keys (as in the feature registry, e.g. `server.port`) this
+    /// layer sets. `config_file` is not a setting and is not listed.
+    pub fn keys(&self) -> Vec<&'static str> {
+        let mut k = Vec::new();
+        let mut put = |set: bool, key: &'static str| {
+            if set {
+                k.push(key);
+            }
+        };
+        put(self.data_dir.is_some(), "data_dir");
+        put(self.host.is_some(), "server.host");
+        put(self.port.is_some(), "server.port");
+        put(self.request_timeout_secs.is_some(), "server.request_timeout_secs");
+        put(self.shutdown_timeout_secs.is_some(), "server.shutdown_timeout_secs");
+        put(self.ops_access.is_some(), "server.ops_access");
+        put(self.public_url.is_some(), "server.public_url");
+        put(self.auth_trust_forwarded_for.is_some(), "auth.trust_forwarded_for");
+        put(
+            self.auth_allow_private_outbound.is_some(),
+            "auth.allow_private_outbound",
+        );
+        put(self.synchronous.is_some(), "database.synchronous");
+        put(self.busy_timeout_ms.is_some(), "database.busy_timeout_ms");
+        put(self.read_pool_size.is_some(), "database.read_pool_size");
+        put(self.log_level.is_some(), "log.level");
+        put(self.log_format.is_some(), "log.format");
+        put(self.resp_enabled.is_some(), "resp.enabled");
+        put(self.resp_host.is_some(), "resp.host");
+        put(self.resp_port.is_some(), "resp.port");
+        put(self.resp_max_connections.is_some(), "resp.max_connections");
+        put(self.resp_max_bulk_bytes.is_some(), "resp.max_bulk_bytes");
+        put(self.resp_idle_timeout_secs.is_some(), "resp.idle_timeout_secs");
+        if let Some(st) = &self.storage {
+            put(st.enabled.is_some(), "storage.enabled");
+            put(st.driver.is_some(), "storage.driver");
+            put(st.max_object_bytes.is_some(), "storage.max_object_bytes");
+            put(st.upload_ttl_secs.is_some(), "storage.upload_ttl_secs");
+            put(st.reconcile_grace_secs.is_some(), "storage.reconcile_grace_secs");
+            put(st.s3_endpoint.is_some(), "storage.s3_endpoint");
+            put(st.s3_region.is_some(), "storage.s3_region");
+            put(st.s3_bucket.is_some(), "storage.s3_bucket");
+            put(st.s3_prefix.is_some(), "storage.s3_prefix");
+            put(st.s3_part_size.is_some(), "storage.s3_part_size");
+        }
+        if let Some(q) = &self.queue {
+            put(q.enabled.is_some(), "queue.enabled");
+            put(q.max_message_bytes.is_some(), "queue.max_message_bytes");
+            put(q.default_retention_secs.is_some(), "queue.default_retention_secs");
+            put(q.max_retention_secs.is_some(), "queue.max_retention_secs");
+            put(q.dedup_window_secs.is_some(), "queue.dedup_window_secs");
+            put(q.max_pull_wait_ms.is_some(), "queue.max_pull_wait_ms");
+            put(q.poll_interval_ms.is_some(), "queue.poll_interval_ms");
+            put(q.push_timeout_secs.is_some(), "queue.push_timeout_secs");
+            put(q.push_concurrency.is_some(), "queue.push_concurrency");
+            put(q.allow_http_push.is_some(), "queue.allow_http_push");
+            put(
+                q.dead_letter_retention_days.is_some(),
+                "queue.dead_letter_retention_days",
+            );
+        }
+        put(self.billing_enabled.is_some(), "billing.enabled");
+        put(
+            self.realtime_max_connections_per_principal.is_some(),
+            "realtime.max_connections_per_principal",
+        );
+        put(self.realtime_enabled.is_some(), "realtime.enabled");
+        put(self.functions_enabled.is_some(), "functions.enabled");
+        put(self.vector_enabled.is_some(), "vector.enabled");
+        put(self.graph_enabled.is_some(), "graph.enabled");
+        put(self.identity_enabled.is_some(), "identity.enabled");
+        put(self.access_enabled.is_some(), "access.enabled");
+        k
+    }
+}
+
+/// Where the value of a setting came from (FB-91).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// The built-in default.
+    Default,
+    /// The config file.
+    File,
+    /// A `FORGEBASE_*` environment variable.
+    Env,
+    /// A command-line flag.
+    Flag,
+}
+
+impl Source {
+    /// Lowercase name, as in the feature registry.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Default => "default",
+            Source::File => "file",
+            Source::Env => "env",
+            Source::Flag => "flag",
+        }
+    }
+}
+
+/// The source of every setting that does not come from the defaults, keyed
+/// by dotted key (`server.port`). Secret environment variables are listed by
+/// variable name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigSources {
+    map: std::collections::BTreeMap<String, Source>,
+}
+
+impl ConfigSources {
+    /// Source of `key`; [`Source::Default`] when no layer set it.
+    pub fn get(&self, key: &str) -> Source {
+        self.map.get(key).copied().unwrap_or(Source::Default)
+    }
+
+    /// Keys set by a layer, with their source.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, Source)> {
+        self.map.iter().map(|(k, v)| (k.as_str(), *v))
+    }
+
+    fn record(&mut self, layer: &ConfigOverrides, source: Source) {
+        for k in layer.keys() {
+            self.map.insert(k.to_owned(), source);
+        }
+        for name in &layer.secrets_set {
+            self.map.insert(name.clone(), source);
+        }
+    }
+}
+
+/// Everything needed to resolve the configuration again: the layers the
+/// loader saw (FB-91). The server keeps it to report the source of every
+/// setting and to re-read the file after `PATCH /api/system/config`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigOrigin {
+    cwd: PathBuf,
+    file: Option<PathBuf>,
+    env: ConfigOverrides,
+    cli: ConfigOverrides,
+    /// The configuration the layers apply to: the built-in defaults when
+    /// `None`, otherwise a configuration built in code (`forgebase_server::start`).
+    base: Option<Box<Config>>,
+}
+
+impl ConfigOrigin {
+    /// The origin of a configuration built in code (no loader): the given
+    /// configuration is the base, and only the config file next to its data
+    /// directory, when one exists, is layered on top.
+    pub fn embedded(config: &Config) -> Self {
+        let cwd = config
+            .data_dir
+            .parent()
+            .map_or_else(|| config.data_dir.clone(), Path::to_path_buf);
+        Self {
+            cwd,
+            file: None,
+            env: ConfigOverrides::default(),
+            cli: ConfigOverrides::default(),
+            base: Some(Box::new(config.clone())),
+        }
+    }
+
+    /// The config file that was loaded, if any.
+    pub fn loaded_file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
+    /// The file `PATCH /api/system/config` writes: the loaded file, else
+    /// `forgebase.toml` next to the data directory `data_dir`.
+    pub fn target_file(&self, data_dir: &Path) -> PathBuf {
+        match &self.file {
+            Some(f) => f.clone(),
+            None => {
+                let dir = data_dir.parent().unwrap_or(data_dir);
+                normalize(&dir.join(DEFAULT_CONFIG_FILE))
+            }
+        }
+    }
+
+    /// The environment layer.
+    pub fn env(&self) -> &ConfigOverrides {
+        &self.env
+    }
+
+    /// The command-line layer.
+    pub fn cli(&self) -> &ConfigOverrides {
+        &self.cli
+    }
+
+    /// Resolves the configuration again from the current contents of `file`
+    /// (the loaded or target file; a missing file is no layer) with the
+    /// environment and command-line layers seen at load time.
+    pub fn resolve(&self, file: &Path) -> Result<(Config, ConfigSources), ConfigError> {
+        let text = if file.is_file() {
+            Some(std::fs::read_to_string(file).map_err(|source| ConfigError::Read {
+                path: file.to_path_buf(),
+                source,
+            })?)
+        } else {
+            None
+        };
+        self.resolve_text(file, text.as_deref())
+    }
+
+    /// Like [`ConfigOrigin::resolve`] with `text` as the contents of `file`
+    /// (`None`: no file). Used to validate a change before it is written.
+    pub fn resolve_text(&self, file: &Path, text: Option<&str>) -> Result<(Config, ConfigSources), ConfigError> {
+        let (config, sources) = self.candidate(file, text)?;
+        config.validate()?;
+        Ok((config, sources))
+    }
+
+    /// Like [`ConfigOrigin::resolve_text`] without the range checks (only
+    /// TOML syntax, unknown keys and types are errors): call
+    /// [`Config::problems`] on the result to see every range problem.
+    pub fn candidate(&self, file: &Path, text: Option<&str>) -> Result<(Config, ConfigSources), ConfigError> {
+        let file_layer = match text {
+            Some(t) => Some(parse_file(file, t)?),
+            None => None,
+        };
+        let dir = file.parent().map_or_else(|| self.cwd.clone(), Path::to_path_buf);
+        let base = match &self.base {
+            Some(b) => (**b).clone(),
+            None if file_layer.is_some() => Config::defaults(&dir),
+            None => Config::defaults(&self.cwd),
+        };
+        Ok(layer_config(
+            base,
+            file_layer.as_ref().map(|l| (l, dir.as_path())),
+            &self.env,
+            &self.cli,
+            &self.cwd,
+        ))
+    }
+}
+
+fn parse_file(path: &Path, text: &str) -> Result<ConfigOverrides, ConfigError> {
+    let parsed: FileConfig = toml::from_str(text).map_err(|e| ConfigError::Parse {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    Ok(ConfigOverrides::from(parsed))
+}
+
+/// Applies the layers in precedence order (file < env < flags) to `base`
+/// and records which layer set each key. Does not validate.
+fn layer_config(
+    mut config: Config,
+    file: Option<(&ConfigOverrides, &Path)>,
+    env: &ConfigOverrides,
+    cli: &ConfigOverrides,
+    cwd: &Path,
+) -> (Config, ConfigSources) {
+    let mut sources = ConfigSources::default();
+    if let Some((layer, dir)) = file {
+        config.apply(layer, dir);
+        sources.record(layer, Source::File);
+    }
+    config.apply(env, cwd);
+    sources.record(env, Source::Env);
+    config.apply(cli, cwd);
+    sources.record(cli, Source::Flag);
+    (config, sources)
 }
 
 fn parse_bool(value: &str) -> Result<bool, String> {
@@ -793,6 +1267,8 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StorageOverrides {
+    /// Serve `/api/v1/storage` and run its reconciler.
+    pub enabled: Option<bool>,
     /// `local` or `s3`.
     pub driver: Option<StorageDriverKind>,
     /// Largest object in bytes.
@@ -862,11 +1338,28 @@ struct FileConfig {
     realtime: FileRealtime,
     #[serde(default)]
     auth: FileAuth,
+    #[serde(default)]
+    functions: FileSwitch,
+    #[serde(default)]
+    vector: FileSwitch,
+    #[serde(default)]
+    graph: FileSwitch,
+    #[serde(default)]
+    identity: FileSwitch,
+    #[serde(default)]
+    access: FileSwitch,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileSwitch {
+    enabled: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileRealtime {
+    enabled: Option<bool>,
     max_connections_per_principal: Option<u32>,
 }
 
@@ -902,6 +1395,7 @@ struct FileServer {
     request_timeout_secs: Option<u64>,
     shutdown_timeout_secs: Option<u64>,
     ops_access: Option<OpsAccess>,
+    public_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -929,6 +1423,7 @@ impl From<FileConfig> for ConfigOverrides {
             request_timeout_secs: f.server.request_timeout_secs,
             shutdown_timeout_secs: f.server.shutdown_timeout_secs,
             ops_access: f.server.ops_access,
+            public_url: f.server.public_url,
             auth_trust_forwarded_for: f.auth.trust_forwarded_for,
             auth_allow_private_outbound: f.auth.allow_private_outbound,
             synchronous: f.database.synchronous,
@@ -946,6 +1441,13 @@ impl From<FileConfig> for ConfigOverrides {
             queue: f.queue,
             billing_enabled: f.billing.enabled,
             realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
+            realtime_enabled: f.realtime.enabled,
+            functions_enabled: f.functions.enabled,
+            vector_enabled: f.vector.enabled,
+            graph_enabled: f.graph.enabled,
+            identity_enabled: f.identity.enabled,
+            access_enabled: f.access.enabled,
+            secrets_set: Vec::new(),
         }
     }
 }
@@ -957,6 +1459,10 @@ pub struct LoadedConfig {
     pub config: Config,
     /// Absolute path of the TOML file that was read, if one was.
     pub file: Option<PathBuf>,
+    /// Which layer set each setting (FB-91).
+    pub sources: ConfigSources,
+    /// The layers, to resolve the configuration again (FB-91).
+    pub origin: ConfigOrigin,
 }
 
 /// Loads configuration from all sources with the documented precedence.
@@ -1018,29 +1524,28 @@ impl ConfigLoader {
             None => None,
         };
 
-        let (mut config, file_layer) = match &file {
-            Some(path) => {
-                let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.cwd.clone());
-                let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
-                    path: path.clone(),
-                    source,
-                })?;
-                let parsed: FileConfig = toml::from_str(&text).map_err(|e| ConfigError::Parse {
-                    path: path.clone(),
-                    message: e.to_string(),
-                })?;
-                (Config::defaults(&dir), Some((ConfigOverrides::from(parsed), dir)))
-            }
-            None => (Config::defaults(&self.cwd), None),
+        let origin = ConfigOrigin {
+            cwd: self.cwd.clone(),
+            file: file.clone(),
+            env: self.env,
+            cli: self.cli,
+            base: None,
         };
-
-        if let Some((layer, dir)) = &file_layer {
-            config.apply(layer, dir);
-        }
-        config.apply(&self.env, &self.cwd);
-        config.apply(&self.cli, &self.cwd);
-        config.validate()?;
-        Ok(LoadedConfig { config, file })
+        let (config, sources) = match &file {
+            Some(path) => origin.resolve(path)?,
+            None => {
+                let (env, cli) = (&origin.env, &origin.cli);
+                let (config, sources) = layer_config(Config::defaults(&origin.cwd), None, env, cli, &origin.cwd);
+                config.validate()?;
+                (config, sources)
+            }
+        };
+        Ok(LoadedConfig {
+            config,
+            file,
+            sources,
+            origin,
+        })
     }
 }
 
@@ -1060,6 +1565,58 @@ pub fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// An absolute `http(s)://host[:port]` URL with no path, query, fragment or
+/// user info (`[server] public_url`).
+pub fn is_origin_url(u: &str) -> bool {
+    let Some(authority) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) else {
+        return false;
+    };
+    if authority.is_empty()
+        || authority.contains(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '@' | '\\'))
+    {
+        return false;
+    }
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let Some((h, after)) = v6.split_once(']') else {
+            return false;
+        };
+        match after {
+            "" => (h, None),
+            p => match p.strip_prefix(':') {
+                Some(p) => (h, Some(p)),
+                None => return false,
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, _)) if h.contains(':') => return false,
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return false;
+    }
+    match port {
+        Some(p) => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok(),
+        None => true,
+    }
+}
+
+/// "must be a whole number from 1 to 3600 seconds, such as 30".
+fn whole(lo: u64, hi: u64, unit: &str, example: u64) -> String {
+    let unit = if unit.is_empty() {
+        String::new()
+    } else {
+        format!(" {unit}")
+    };
+    if hi == u64::MAX {
+        format!("must be a whole number of at least {lo}{unit}, such as {example}")
+    } else {
+        format!("must be a whole number from {lo} to {hi}{unit}, such as {example}")
+    }
 }
 
 /// Configuration errors.
@@ -1323,6 +1880,62 @@ mod tests {
         std::fs::write(tmp.path().join("forgebase.toml"), CONFIG_TEMPLATE).unwrap();
         let c = ConfigLoader::new(tmp.path()).load().unwrap().config;
         assert_eq!(c, Config::defaults(tmp.path()));
+    }
+
+    #[test]
+    fn public_url_is_optional_validated_and_set_by_env() {
+        let d = Config::defaults(Path::new("/srv"));
+        assert_eq!(d.server.public_url, None, "unset by default");
+        for ok in [
+            "https://forgebase.example.com",
+            "http://127.0.0.1:8090",
+            "https://[::1]:8443",
+            "https://a.example",
+        ] {
+            assert!(is_origin_url(ok), "{ok}");
+        }
+        for bad in [
+            "forgebase.example.com",
+            "ftp://x.example",
+            "https://",
+            "https://x.example/app",
+            "https://x.example?a=1",
+            "https://x.example#top",
+            "https://user@x.example",
+            "https://x.example:",
+            "https://x.example:99999",
+            "https://a:b:c",
+            "https://[::1",
+            "https://x .example",
+        ] {
+            assert!(!is_origin_url(bad), "{bad}");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("forgebase.toml");
+        let load = |text: &str, env: ConfigOverrides| {
+            std::fs::write(&file, text).unwrap();
+            ConfigLoader::new(tmp.path()).env(env).load().map(|l| l.config)
+        };
+        // A trailing slash is dropped; an empty value means unset.
+        let c = load(
+            "[server]\npublic_url = \"https://fb.example.com/\"\n",
+            ConfigOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(c.server.public_url.as_deref(), Some("https://fb.example.com"));
+        let c = load("[server]\npublic_url = \"\"\n", ConfigOverrides::default()).unwrap();
+        assert_eq!(c.server.public_url, None);
+        let err = load(
+            "[server]\npublic_url = \"https://fb.example.com/app\"\n",
+            ConfigOverrides::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("server.public_url"), "{err}");
+        // The environment wins over the file.
+        let o = env(&[("FORGEBASE_PUBLIC_URL", "https://env.example.com")]);
+        assert_eq!(o.keys(), vec!["server.public_url"]);
+        let c = load("[server]\npublic_url = \"https://fb.example.com\"\n", o).unwrap();
+        assert_eq!(c.server.public_url.as_deref(), Some("https://env.example.com"));
     }
 
     #[test]

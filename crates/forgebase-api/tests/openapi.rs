@@ -15,6 +15,9 @@ const EXPECTED: &[(&str, &str)] = &[
     ("get", "/health/ready"),
     ("get", "/metrics"),
     ("get", "/api/system/info"),
+    // Feature registry and configuration (FB-91, ADR-0026).
+    ("get", "/api/system/features"),
+    ("patch", "/api/system/config"),
     ("get", "/api/openapi.json"),
     ("get", "/api/v1/collections"),
     ("post", "/api/v1/collections"),

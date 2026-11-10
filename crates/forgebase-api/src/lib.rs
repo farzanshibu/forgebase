@@ -8,6 +8,8 @@
 //! | `GET /health/ready` | readiness (database + storage) |
 //! | `GET /metrics` | Prometheus metrics |
 //! | `GET /api/system/info` | instance information |
+//! | `GET /api/system/features` | feature registry and settings (administrators; FB-91) |
+//! | `PATCH /api/system/config` | write settings to the config file (administrators; FB-91) |
 //! | `/api/auth/*` | authentication (forgebase-auth, ADR-0004) |
 //! | `/api/v1/realtime/*` | WebSocket, SSE, channels (forgebase-realtime, ADR-0011) |
 //! | `/admin/` | embedded admin dashboard |
@@ -18,7 +20,8 @@
 //! See ADR-0001.
 //!
 //! Middleware, outermost first: request context (request id, error
-//! envelope, security headers) → tracing span → metrics → panic catcher →
+//! envelope, security headers) → feature gate (`404 feature_disabled` for
+//! the routes of a switched-off module; FB-91) → tracing span → metrics → panic catcher →
 //! request timeout → authentication (credential → `AccessContext`
 //! extension) → tenancy (realm, organization, tenant, roles; FB-21) →
 //! request gates (plan-based rate limits; FB-24) → handler.
@@ -26,6 +29,7 @@
 pub mod admin;
 pub mod context;
 pub mod error;
+pub mod features;
 pub mod gate;
 pub mod http;
 pub mod openapi;
@@ -42,7 +46,7 @@ use axum::Router;
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::get;
+use axum::routing::{get, patch};
 use forgebase_auth::AuthService;
 use forgebase_core::DataLayout;
 use forgebase_data::{Authorizer, DataError, DataService, DefaultAuthorizer};
@@ -284,6 +288,11 @@ pub struct RouterOptions {
     pub gates: Vec<Arc<dyn RequestGate>>,
     /// Who may read `/metrics` and `/api/system/*` ([`routes::ops_gate`]).
     pub ops_access: forgebase_core::OpsAccess,
+    /// The running configuration and its layers (FB-91): serves
+    /// `GET /api/system/features` and `PATCH /api/system/config`, and turns
+    /// the routes of disabled modules into `404 feature_disabled`. Without
+    /// it nothing is gated and both endpoints answer `503`.
+    pub system_config: Option<Arc<features::SystemConfig>>,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -314,6 +323,7 @@ impl Default for RouterOptions {
             extensions: Vec::new(),
             gates: Vec::new(),
             ops_access: forgebase_core::OpsAccess::default(),
+            system_config: None,
         }
     }
 }
@@ -387,13 +397,32 @@ pub fn router_with(
         v1 = v1.merge(ext.routes.clone());
     }
     let auth_doc = auth.as_ref().map(|_| forgebase_auth::openapi());
-    let doc = Arc::new(openapi::document_with(
+    let disabled = opts
+        .system_config
+        .as_ref()
+        .map(|c| features::DisabledFeatures::of(c.running()))
+        .filter(|d| !d.is_empty());
+    let mut doc = openapi::document_with(
         opts.extensions
             .iter()
             .map(|e| &e.openapi)
             .chain(extra_openapi.as_ref())
             .chain(auth_doc.as_ref()),
-    ));
+    );
+    // A disabled module is not documented (its routes answer 404).
+    if let Some(off) = &disabled {
+        doc.paths.paths.retain(|path, _| off.owner(path).is_none());
+    }
+    let doc = Arc::new(doc);
+    let graph_on = opts.system_config.as_ref().is_none_or(|c| c.running().graph.enabled);
+    let graph = if graph_on {
+        Router::new().nest_service(
+            "/api/v1/graph",
+            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
+        )
+    } else {
+        Router::new()
+    };
     let app = Router::new()
         .route("/health", get(routes::health))
         .route("/health/ready", get(routes::ready))
@@ -403,12 +432,15 @@ pub fn router_with(
                 .route("/api/system/info", get(routes::system_info))
                 .route_layer(middleware::from_fn_with_state(opts.ops_access, routes::ops_gate)),
         )
+        .merge(
+            Router::new()
+                .route("/api/system/features", get(features::get_features))
+                .route("/api/system/config", patch(features::patch_config))
+                .with_state(opts.system_config.clone()),
+        )
         .route("/api/openapi.json", get(move || openapi::serve(doc.clone())))
         .nest("/api/v1", v1)
-        .nest_service(
-            "/api/v1/graph",
-            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
-        )
+        .merge(graph)
         .merge(extra)
         .nest_service("/api/v1/realtime", realtime_router(state.realtime()))
         .route("/admin", get(admin::redirect))
@@ -449,6 +481,10 @@ pub fn router_with(
         );
     let app = match cors_layer(&opts.cors_allowed_origins) {
         Some(cors) => app.layer(cors),
+        None => app,
+    };
+    let app = match disabled {
+        Some(off) => app.layer(middleware::from_fn_with_state(off, features::gate)),
         None => app,
     };
     app.layer(middleware::from_fn(context::request_context))
