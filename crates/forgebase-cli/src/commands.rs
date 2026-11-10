@@ -21,8 +21,10 @@ pub(crate) fn quiet_logging(g: &GlobalArgs) -> anyhow::Result<()> {
 }
 
 /// `forgebase init [DIR]`.
-pub async fn init(g: &GlobalArgs, dir: &Path) -> anyhow::Result<ExitCode> {
+pub async fn init(g: &GlobalArgs, dir: &Path, admin: &crate::admin::InitAdminArgs) -> anyhow::Result<ExitCode> {
     quiet_logging(g)?;
+    // `--admin-password-stdin`: read and check it before touching the disk.
+    let preset = crate::admin::preset_admin(admin)?;
     let cwd = std::env::current_dir()?;
     let project = normalize(&cwd.join(dir));
     std::fs::create_dir_all(&project).with_context(|| format!("cannot create {}", project.display()))?;
@@ -72,6 +74,9 @@ pub async fn init(g: &GlobalArgs, dir: &Path) -> anyhow::Result<ExitCode> {
         report.applied.len()
     );
     println!("  instance:  {}", instance.instance_id);
+    // FB-90: the first administrator (may prompt on a terminal).
+    let admin = crate::admin::init_admin(&config, admin, preset).await?;
+    println!("  admin:     {}", admin.describe());
     println!();
     let rel = dir.display().to_string();
     if rel == "." {
@@ -125,8 +130,21 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
         println!("  redis:     redis://{resp} (RESP2/RESP3; AUTH with an API key or personal access token)");
     }
     println!("  data dir:  {}", config.data_dir.display());
+    if let Some(token) = server.setup_token() {
+        // FB-90: standard output only, never the log.
+        println!();
+        println!(
+            "First run: create the administrator at {}",
+            setup_link(&format!("http://{addr}"), token)
+        );
+    }
     server.run_until_signal().await?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The first-run setup link: the dashboard's setup page with the token.
+fn setup_link(base: &str, token: &str) -> String {
+    format!("{}/admin/setup?token={token}", base.trim_end_matches('/'))
 }
 
 /// `forgebase migrate [--status]`.
@@ -209,6 +227,7 @@ pub async fn status(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
         "exists": layout.is_initialized(),
     });
     let mut instance_id = None;
+    let mut setup_required: Option<bool> = None;
     if layout.is_initialized() {
         match Database::open(DbOptions::from_config(&config.database, layout.database_path()).read_only()).await {
             Ok(db) => {
@@ -224,6 +243,12 @@ pub async fn status(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
                     database["migration_problems"] = json!(s.problems.len());
                 }
                 instance_id = db.meta_get("instance_id").await.ok().flatten();
+                // FB-90: setup mode while no administrator exists.
+                let backend: std::sync::Arc<dyn forgebase_db::Backend> = std::sync::Arc::new(db.clone());
+                setup_required = forgebase_auth::setup::admin_exists(&backend)
+                    .await
+                    .ok()
+                    .map(|exists| !exists);
                 db.close().await;
             }
             Err(e) => database["error"] = json!(e.to_string()),
@@ -250,6 +275,7 @@ pub async fn status(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
         "data_dir_exists": layout.root().is_dir(),
         "instance_id": instance_id,
         "database": database,
+        "setup_required": setup_required,
         "server": server,
     });
     if as_json {
@@ -295,6 +321,11 @@ pub async fn status(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
     }
     if let Some(id) = &out["instance_id"].as_str() {
         println!("  instance:  {id}");
+    }
+    match setup_required {
+        Some(true) => println!("  setup:     pending (no administrator)"),
+        Some(false) => println!("  setup:     complete"),
+        None => {}
     }
     match (&owner, healthy) {
         (Some(o), true) => println!(

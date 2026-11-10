@@ -29,7 +29,7 @@ use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Su
 pub(crate) use flows::normalize_email;
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
 pub use impersonation::{ImpersonationGrant, ImpersonationView};
-pub use machine::{AdminView, ApiKeyView, CreatedKey, ServiceAccountView};
+pub use machine::{ADMIN_PASSWORD_MIN, AdminView, ApiKeyView, CreatedKey, ServiceAccountView};
 
 /// Request metadata recorded with sessions and audit events.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -217,6 +217,8 @@ struct Inner {
     change_hook: RwLock<Option<Hook>>,
     realm_creator: RwLock<Option<Creator>>,
     idp: crate::idp::IdpState,
+    /// First-run setup token (FB-90).
+    setup: crate::setup::SetupState,
 }
 
 #[derive(Clone)]
@@ -294,6 +296,7 @@ impl AuthService {
                 change_hook: RwLock::new(None),
                 realm_creator: RwLock::new(None),
                 idp: crate::idp::IdpState::default(),
+                setup: crate::setup::SetupState::default(),
             }),
         };
         svc.install_default_http_client()?;
@@ -1015,6 +1018,11 @@ impl AuthService {
     /// The CSRF token of a cookie session.
     pub fn csrf_token(&self, session_id: &str) -> String {
         self.inner.keyring.csrf_token(session_id)
+    }
+
+    /// First-run setup state (FB-90).
+    pub(crate) fn setup_state(&self) -> &crate::setup::SetupState {
+        &self.inner.setup
     }
 
     /// A known-device token for the administrator `email` (FB-80): set as
