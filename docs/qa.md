@@ -54,14 +54,14 @@ Checks that ran on the same commit: `cargo fmt --all --check`,
 | Item | Value |
 |---|---|
 | Date | 2026-11-10 (UTC) |
-| Commit | `dac846b` on `agent/worker-fb85`: `main` at `3a0866e` (includes FIX-5) plus the FB-85 harness and the `forgebase-db` fix below. FIX-9 had not landed. |
+| Commit | `3de8877` on `agent/worker-fb85`: `main` at `0fd04b4` (the final merge, with FIX-5 and FIX-9: migration 0025 queue claim index, ADR-0025, `realtime.max_connections_per_principal`) plus the FB-85 harness and the `forgebase-db` fix below |
 | Machine | Apple silicon (arm64), 10 cores, 16 GiB RAM, macOS 27.0.1 (26A434) |
 | Toolchain | rustc 1.99.0 (b940084d7 2026-09-28), cargo 1.99.0; workspace `rust-version` 1.97 |
-| Build | Debug profile, `CARGO_INCREMENTAL=0`, fresh `git clone` into an empty directory with an empty `CARGO_TARGET_DIR`: 335 crates compiled from scratch, no compiler cache, 2 min 39 s; target directory 2.0 GB |
+| Build | Debug profile, `CARGO_INCREMENTAL=0`, fresh `git clone` into an empty directory with an empty `CARGO_TARGET_DIR`: 335 crates compiled from scratch, no compiler cache, 1 min 43 s (binary) plus 18 s (test binary, 5 more crates); target directory 2.0 GB |
 | State | No `~/.forgebase`; child processes get an empty `HOME`; no `FORGEBASE_*` variables; every test has its own temporary data directory |
 | SQLite | bundled through `libsqlite3-sys` 0.37.0 |
-| Runs | A: 25 passed, 0 failed, 39.5 s. B: 25 passed, 0 failed, 55.2 s (`--test-threads=6`) |
-| Gates on this commit | `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test -p forgebase-db -p forgebase-data -p forgebase-api -p forgebase-cli --no-fail-fast` 164 passed, 0 failed |
+| Runs | A: 25 passed, 0 failed, 32.7 s. B: 25 passed, 0 failed, 27.4 s (`--test-threads=6`). An earlier clean run on `dac846b` (`main` at `3a0866e`, before FIX-9) also passed 25/25 twice (39.5 s, 55.2 s) |
+| Gates on this commit | `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test -p forgebase-db -p forgebase-data -p forgebase-api -p forgebase-cli -p forgebase-queue --no-fail-fast` 198 passed, 0 failed |
 
 ## 4. Results
 
