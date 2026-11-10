@@ -693,3 +693,83 @@ fn memory_accounting_tracks_growth_and_shrinkage() {
     assert_eq!(d.store.used_memory(), 0, "everything given back");
     assert_eq!(d.store.key_count(), 0);
 }
+
+// ---- per-tenant budget and operations (FB-138) -------------------------------------
+
+#[test]
+fn the_tenant_budget_evicts_only_that_tenants_keys() {
+    let cost = one_entry_cost();
+    let mut d = db_with(KvConfig {
+        tenant_max_bytes: cost * 2 + cost / 2,
+        ..KvConfig::default()
+    });
+    let other = scope("t:b", "main");
+    for i in 0..2 {
+        let args: Vec<Vec<u8>> = format!("SET key0{i} vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")
+            .split_whitespace()
+            .map(|s| s.as_bytes().to_vec())
+            .collect();
+        d.store.exec(&other, &args, d.now).unwrap();
+    }
+    for i in 0..5 {
+        d.ok(&format!("SET key0{i} vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"));
+    }
+    let a = d.store.tenant_use("t:a");
+    assert_eq!(a.keys, 2, "tenant a stays within its budget");
+    assert!(a.used <= cost * 2 + cost / 2);
+    assert_eq!(a.stats.evicted, 3);
+    assert_eq!(d.ok("EXISTS key00"), int(0));
+    assert_eq!(d.ok("EXISTS key04"), int(1));
+    let b = d.store.tenant_use("t:b");
+    assert_eq!((b.keys, b.stats.evicted), (2, 0), "tenant b was never evicted");
+    assert_eq!(d.store.key_count(), 4);
+}
+
+#[test]
+fn the_tenant_budget_with_noeviction_refuses_writes_of_that_tenant_only() {
+    let cost = one_entry_cost();
+    let mut d = db_with(KvConfig {
+        tenant_max_bytes: cost + cost / 2,
+        eviction: EvictionPolicy::NoEviction,
+        ..KvConfig::default()
+    });
+    d.ok("SET key00 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv");
+    d.ok("SET key01 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv");
+    assert!(matches!(
+        d.err("SET key02 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"),
+        KvError::OutOfMemory
+    ));
+    d.scope = scope("t:b", "main");
+    d.ok("SET key00 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvv");
+}
+
+#[test]
+fn commands_map_to_resource_operations() {
+    use crate::service::KvService;
+    use forgebase_data::{Action, ResourceOp};
+    let c = |line: &str| -> Vec<Vec<u8>> { line.split_whitespace().map(|s| s.as_bytes().to_vec()).collect() };
+    let needs = |line: &str, exists: Option<&dyn Fn(&[u8]) -> bool>| {
+        let mut out = Vec::new();
+        KvService::command_needs(&c(line), exists, &mut out).unwrap();
+        out
+    };
+    let old = |k: &[u8]| k == b"old";
+    assert_eq!(needs("GET k", None), vec![(Action::KvRead, ResourceOp::View)]);
+    assert_eq!(needs("SCAN 0", None), vec![(Action::KvRead, ResourceOp::List)]);
+    assert_eq!(needs("KEYS *", None), vec![(Action::KvRead, ResourceOp::List)]);
+    assert_eq!(needs("SET new v", Some(&old)), vec![(Action::KvWrite, ResourceOp::Create)]);
+    assert_eq!(needs("SET old v", Some(&old)), vec![(Action::KvWrite, ResourceOp::Update)]);
+    assert_eq!(
+        needs("MSET old 1 new 2", Some(&old)),
+        vec![(Action::KvWrite, ResourceOp::Update), (Action::KvWrite, ResourceOp::Create)]
+    );
+    assert_eq!(
+        needs("SET k v", None),
+        vec![(Action::KvWrite, ResourceOp::Create), (Action::KvWrite, ResourceOp::Update)]
+    );
+    assert_eq!(needs("EXPIRE k 10", None), vec![(Action::KvWrite, ResourceOp::Update)]);
+    assert_eq!(needs("DEL a b", None), vec![(Action::KvWrite, ResourceOp::Delete)]);
+    assert_eq!(needs("PUBLISH c m", None), vec![(Action::KvWrite, ResourceOp::Create)]);
+    assert_eq!(needs("FLUSHDB", None), vec![(Action::KvAdmin, ResourceOp::Delete)]);
+    assert_eq!(needs("NOSUCH x", None), vec![(Action::KvRead, ResourceOp::View)]);
+}

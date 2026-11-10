@@ -1455,3 +1455,90 @@ logs a warning and returns `backup: None` (FB-150, with FB-132's engine
 handle). Text columns use the database's default collation; the bundled
 engine's `builtin` C.UTF-8 sorts as SQLite does, an external server with a
 libc locale may not (FB-148 may refuse or warn).
+
+## Addendum (FB-138): key-value and RESP tenancy and namespace rules
+
+Written 2026-11-11 by FB-138. Closes `rls-coverage.md` G6, G7 and G8 for
+the built-in KV engine, its REST API and the RESP listener (and the
+optional external-Redis backend). Backend-neutral: the only SQL is the key
+binding column and the validation reads below, valid on both engines.
+
+**Tenant binding of keys (G6).** `_forgebase_auth_api_keys.tenant`
+(migration 0028 pair, NULL = unbound). `POST /api/auth/tokens` and
+`POST /api/auth/service-accounts/{id}/keys` take an optional `tenant`
+(`AuthService::create_pat_with` / `create_api_key_with` with
+`KeyOptions::with_tenant`). The binding is validated with the conditions
+of policy step 2 for the key's **owner**, at creation and at every use
+(`AuthService::authenticate_key_bound`, one or two reads): the
+environment exists, its project is in the owner's home realm, and the
+owner is an active member of the project's organization, owns the
+personal project, or holds an allow entry naming them on the environment
+or project; administrators and admin service accounts only need the
+tenant to exist. A key whose owner left the organization is refused like
+a revoked one (`401`). Unknown and foreign tenants give the same `403` at
+creation, so creation is no existence oracle. Over HTTP the auth layer
+selects the bound tenant (it sets `X-ForgeBase-Tenant`, so the tenancy
+layer runs step 2 as for any request) and refuses another one with
+`403 tenant_mismatch`; `/api/auth/me` shows `tenant`. RESP sessions run
+in the key's home realm (they used `default` before) and bound tenant;
+`still_valid` re-checks the binding every 30 s. `authenticate_key` keeps
+its signature and drops the binding: realtime in-band authentication and
+functions' `ctx.auth.verify` use it and do not apply bindings yet (FB-136,
+FB-142).
+
+**Scopes (G6).** A KV scope is `(tenant, namespace)`:
+- `t:<tenant>` for a caller with a tenant;
+- `shared:<realm>` for namespaces named `shared.<name>`: realm-wide, the
+  same keys with or without a tenant (the realm's tenants share them by
+  design). Reached with `engine:kv_<action>:shared.<name>` or the plain key;
+- `default` (the pre-FB-138 shared scope, now global per instance) for
+  privileged callers without a tenant only, so admin tools and functions'
+  system context keep their data;
+- anything else is `400 tenant_required` (RESP: `-NOPERM tenant_required`),
+  checked after authorisation so a denied caller learns nothing.
+`fn.<name>` namespaces (functions' private data, edge-functions.md §2)
+are refused to non-privileged callers; functions reach them as the system
+context in the caller's tenant, unchanged. `GET /api/v1/kv/_namespaces`
+lists the caller's tenant (or `default`) plus the realm's `shared.*`.
+
+**Namespace permissions and rules (G7).** Every command asks
+`Authorizer::authorize_resource(ctx, KvRead|KvWrite|KvAdmin,
+kv_namespace <ns>, op)` once per needed pair (`KvService::command_needs`,
+public so the external backend applies the same mapping): `KEYS`, `SCAN`,
+`DBSIZE` and channel listings are `list`; other reads and subscriptions
+`view`; `DEL`, `UNLINK`, `GETDEL`, `FLUSHDB` `delete`; `PUBLISH` `create`;
+writes that may add a key are `create` for a key that does not exist yet
+and `update` for one that does (checked under the store lock; the
+external backend asks both); other writes `update`. Listing namespaces and
+statistics keep the plain `authorize` (only the plain key grants them).
+KV registers a `kv_namespace` schema with **no item fields**: rules are
+namespace-level (`@request` only), a rule naming `key` is refused when
+saved, and a `Filter` decision can never be needed (it would be a denial).
+
+**Per-tenant statistics and budget (G8).** The store keeps keys, memory,
+hits, misses, expiries and evictions per scope tenant and a per-tenant LRU
+index. `GET /api/v1/kv/_info` (`kv_admin`) answers `scope: tenant` with
+the figures of the caller's tenant when a tenant is selected, and `scope:
+engine` (every tenant) only for a privileged caller without one;
+`KvStats` gained `scope` and `tenant`. `[kv] tenant_max_bytes`
+(`FORGEBASE_KV_TENANT_MAX_BYTES`, default `0` = none) caps one scope
+tenant; above it that tenant's own least recently used keys are evicted
+by the eviction policy (`noeviction` refuses that tenant's growing writes
+with `OOM`), never another tenant's. The global `max_memory_bytes`
+eviction still picks across tenants; per-tenant budgets are the defence.
+
+**Breaking.** Non-privileged callers without a tenant (users, non-admin
+service accounts, unbound keys over RESP) lose the shared `default`
+scope: they select a tenant, bind their key, or move the data to a
+`shared.<name>` namespace. Existing keys in `default` stay readable by
+administrators (dashboard KV studio) for copying.
+
+**For FB-145 (KV on PostgreSQL).** The persisted row keeps the scope
+tenant string (`t:<id>`, `shared:<realm>`, `default`) as today; per-tenant
+accounting is in memory and rebuilt at load. If KV storage moves to a
+PostgreSQL table with native RLS, `shared:<realm>` rows need a realm
+column or prefix match, and `default` rows are privileged-only. The
+binding column is plain `text` on both engines. **For the dashboard KV
+studio (FB-100).** Show `scope`/`tenant` from `_info`, list `shared.*`
+next to tenant namespaces, offer `kv_namespace` rules with `@request`
+only (no item fields), and offer a tenant when creating keys and PATs.
