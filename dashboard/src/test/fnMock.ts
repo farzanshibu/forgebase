@@ -33,6 +33,33 @@ export interface FnState {
   secrets: Record<string, SecretInfo[]>;
   secretValues: Record<string, string>;
   logs: Record<string, ExecutionLog[]>;
+  /** Whether the caller is an administrator (may grant service_role). */
+  admin: boolean;
+  /** Source of JS/TS versions by function and version. */
+  sources: Record<string, Record<number, { language: "typescript" | "javascript"; source: string }>>;
+  /** Body of `GET /functions/types`; `null` makes it fail. */
+  types: string | null;
+  /** What the test-invoke route received. */
+  invokes: { method: string; path: string; query: string; headers: Record<string, string>; body: unknown }[];
+  /** Answer for the test-invoke route. */
+  invokeReply: { status: number; headers?: Record<string, string>; body: unknown };
+}
+
+/** Marker the mock treats as a syntax error (line 2, column 7). */
+export const SYNTAX_ERROR = "@@syntax-error@@";
+
+/** Add a TypeScript function `echo` (v1 old, v2 active) with sources to the mock. */
+export function addJsFunction(st: FnState, name = "echo") {
+  st.functions.push({ id: `f_${name}`, name, description: "Echo", access: "permission", active_version: 2, latest_version: 2, principal: `service:function.${name}`, created_at: NOW, updated_at: NOW, created_by: "admin" });
+  st.versions[name] = [
+    { version: 2, sha256: "e".repeat(64), size: 40, ...cfg(["log", "kv"]), active: true, created_at: NOW, created_by: "admin", runtime: "js", language: "typescript" },
+    { version: 1, sha256: "d".repeat(64), size: 30, ...cfg(["log"]), active: false, created_at: NOW, created_by: "admin", runtime: "js", language: "typescript" },
+  ];
+  st.sources[name] = {
+    1: { language: "typescript", source: 'serve(async () => new Response("one"));\n' },
+    2: { language: "typescript", source: 'serve(async () => new Response("two"));\n' },
+  };
+  st.logs[name] = [{ id: 9, function: name, version: 2, trigger: "http", status: "ok", duration_ms: 2, fuel_used: 9, error: null, logs: [{ level: "info", message: "echo ran" }], request_id: "req-echo", created_at: NOW }];
 }
 
 export function installFunctions(mock: MockApi): FnState {
@@ -46,6 +73,11 @@ export function installFunctions(mock: MockApi): FnState {
     },
     secrets: { hello: [{ name: "API_KEY", created_at: NOW, updated_at: NOW }] },
     secretValues: {},
+    sources: {},
+    admin: true,
+    types: 'declare module "forgebase" { export function serve(h: unknown): void }',
+    invokes: [],
+    invokeReply: { status: 200, headers: { "content-type": "application/json", "x-request-id": "req-echo" }, body: { hello: "world" } },
     logs: {
       hello: [
         { id: 2, function: "hello", version: 2, trigger: "http", status: "trap", duration_ms: 9, fuel_used: 55, error: "unreachable executed", logs: [], request_id: "r2", created_at: NOW },
@@ -57,9 +89,12 @@ export function installFunctions(mock: MockApi): FnState {
   const nf = () => envelope(404, "not_found", "no such function");
   const find = (n: string) => st.functions.find((f) => f.name === n);
   route(mock, "GET", F, () => ({ status: 200, body: { items: st.functions } }));
+  route(mock, "GET", `${F}/types`, () => (st.types === null ? envelope(500, "internal", "internal error") : { status: 200, text: st.types, headers: { "content-type": "text/plain" } }));
   route(mock, "POST", F, ({ body }) => {
-    const b = body as { name: string; wasm: string; description?: string; access?: FunctionInfo["access"]; capabilities?: string[]; activate?: boolean };
+    const b = body as { name: string; wasm?: string; source?: string; language?: "typescript" | "javascript"; description?: string; access?: FunctionInfo["access"]; capabilities?: string[]; activate?: boolean };
     if (!/^[a-z][a-z0-9_-]*$/.test(b.name)) return envelope(400, "invalid_function_name", "bad name");
+    if (b.source !== undefined && b.source.includes(SYNTAX_ERROR)) return envelope(400, "function_compile_failed", "unexpected token at 2:7", { line: 2, column: 7 });
+    if (b.source !== undefined && (b.capabilities ?? []).includes("service_role") && !st.admin) return envelope(403, "forbidden", "service_role needs an administrator");
     let fn = find(b.name);
     const vs = (st.versions[b.name] ??= []);
     const version = (vs[0]?.version ?? 0) + 1;
@@ -70,7 +105,9 @@ export function installFunctions(mock: MockApi): FnState {
     }
     fn.latest_version = version;
     if (activate) { fn.active_version = version; vs.forEach((v) => (v.active = false)); }
-    const v: VersionInfo = { version, sha256: "c".repeat(64), size: atob(b.wasm).length, ...cfg(b.capabilities), active: activate, created_at: NOW, created_by: "admin" };
+    const js = b.source !== undefined;
+    const v: VersionInfo = { version, sha256: "c".repeat(64), size: js ? b.source!.length : atob(b.wasm ?? "").length, ...cfg(b.capabilities), active: activate, created_at: NOW, created_by: "admin", runtime: js ? "js" : "wasm", language: js ? b.language : null };
+    if (js) (st.sources[b.name] ??= {})[version] = { language: b.language ?? "typescript", source: b.source! };
     vs.unshift(v);
     return { status: 201, body: { function: fn, version: v } };
   });
@@ -92,6 +129,17 @@ export function installFunctions(mock: MockApi): FnState {
     fn.active_version = target.version;
     return { status: 200, body: fn };
   });
+  route(mock, "GET", `${F}/{name}/versions/{version}/source`, ({ params }) => {
+    const src = st.sources[params.name!]?.[Number(params.version)];
+    return src ? { status: 200, body: src } : envelope(404, "not_found", "no source: WebAssembly version");
+  });
+  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+    route(mock, method, `${F}/{name}/invoke`, ({ params, query, headers, body, method: m }) => {
+      if (!find(params.name!)) return nf();
+      st.invokes.push({ method: m, path: `${F}/${params.name}/invoke`, query: query.toString(), headers, body });
+      return { status: st.invokeReply.status, headers: st.invokeReply.headers, body: st.invokeReply.body };
+    });
+  }
   route(mock, "GET", `${F}/{name}/logs`, ({ params, query }) => {
     const limit = Number(query.get("limit") ?? 50);
     return { status: 200, body: { items: (st.logs[params.name!] ?? []).slice(0, limit) } };
