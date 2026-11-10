@@ -1847,7 +1847,7 @@ fn scenario_19_schedule_and_execute_a_background_job() {
 fn scenario_20_process_a_billing_webhook_idempotently() {
     const KEY: &str = "sk_test_51fb85scenario20";
     const WHSEC: &str = "whsec_fb85_scenario_20";
-    let mut fb = Fb::start_with(&[("FORGEBASE_BILLING_ENABLED", "true")]);
+    let mut fb = Fb::start();
     fb.admin(
         "PUT",
         "/api/v1/plans/pro",

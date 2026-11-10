@@ -26,7 +26,7 @@ describe("Billing shell", () => {
   it("shows a clear disabled state when the billing routes answer 404", async () => {
     setup({ disabled: true });
     renderStudio("/billing");
-    expect(await screen.findByRole("status", { name: "Billing disabled" })).toHaveTextContent(/off by default/);
+    expect(await screen.findByRole("status", { name: "Billing disabled" })).toHaveTextContent(/on by default/);
     expect(screen.queryByRole("navigation", { name: "Billing sections" })).not.toBeInTheDocument();
   });
 

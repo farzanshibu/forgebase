@@ -208,7 +208,7 @@ pub async fn start_with_jobs(
             return Err(e);
         }
     };
-    // Billing (FB-70): off by default.
+    // Billing (FB-70): on by default, `[billing] enabled = false` turns it off.
     let billing = if config.billing.enabled {
         match open_billing(&db, &auth, &policy, &entitlements, &credits).await {
             Ok(b) => Some(b),

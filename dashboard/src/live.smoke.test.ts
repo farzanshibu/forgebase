@@ -172,10 +172,10 @@ describe.skipIf(!BIN)("live server", () => {
     expect(st.edge_types[0]).toMatchObject({ type: "KNOWS", count: 2 });
   });
 
-  it("reports billing as disabled while the server has it off (default): the routes answer 404", async () => {
+  it("serves the billing API on a fresh server (billing is on by default, FIX-12)", async () => {
     const err = await getBillingSettings().then(() => undefined, (e: unknown) => e);
-    // A binary built before FB-70 has no billing routes either; both answer 404.
-    expect(isBillingDisabled(err)).toBe(true);
+    expect(isBillingDisabled(err)).toBe(false);
+    expect(err).toBeUndefined();
   });
 
   it("drives Storage Studio: buckets, upload, folders, versions, copy, signed URL, ACL, reconcile", async () => {

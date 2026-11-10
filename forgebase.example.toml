@@ -110,6 +110,12 @@ reconcile_grace_secs = 3600
 # Range 1 to 1000000. Env: FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL
 max_connections_per_principal = 32
 
+[billing]
+# Billing (ADR-0021): plans, subscriptions, invoices, provider webhooks under
+# /api/v1/billing. On by default, test mode only: live provider keys are
+# refused. Set false to turn it off. Env: FORGEBASE_BILLING_ENABLED
+enabled = true
+
 [queue]
 # Durable topics and queues (ADR-0022): /api/v1/queues and its background task.
 enabled = true

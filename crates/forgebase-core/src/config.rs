@@ -76,10 +76,11 @@ max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
 idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
 
 # Billing (subscriptions, orders, invoices, Stripe and Razorpay webhooks).
-# Off by default. Provider keys are configured at runtime through
+# On by default (test mode only); set enabled = false to turn it off.
+# Provider keys are configured at runtime through
 # PUT /api/v1/billing/providers/{provider} (test-mode keys only, sealed).
 [billing]
-enabled = false             # FORGEBASE_BILLING_ENABLED
+enabled = true              # FORGEBASE_BILLING_ENABLED
 
 # Realtime (WebSocket) limits.
 [realtime]
@@ -296,7 +297,7 @@ pub struct QueueConfig {
 /// Settings of the billing application (FB-70, ADR-0021).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BillingConfig {
-    /// Whether billing is mounted and its maintenance job runs. Off by default.
+    /// Whether billing is mounted and its maintenance job runs. On by default.
     pub enabled: bool,
 }
 
@@ -442,7 +443,7 @@ impl Config {
                 allow_http_push: false,
                 dead_letter_retention_days: 14,
             },
-            billing: BillingConfig { enabled: false },
+            billing: BillingConfig { enabled: true },
             realtime: RealtimeSettings {
                 max_connections_per_principal: DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL,
             },
@@ -1135,6 +1136,24 @@ mod tests {
         assert_eq!(loaded.config.server.host, "127.0.0.1");
         assert_eq!(loaded.config.server.port, 8090);
         assert_eq!(loaded.config.data_dir, tmp.path().join("forgebase-data"));
+    }
+
+    #[test]
+    fn billing_is_on_by_default_and_can_be_turned_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(Config::defaults(tmp.path()).billing.enabled, "default on");
+        assert!(ConfigLoader::new(tmp.path()).load().unwrap().config.billing.enabled);
+        // The template `forgebase init` writes keeps the default.
+        std::fs::write(tmp.path().join("forgebase.toml"), CONFIG_TEMPLATE).unwrap();
+        assert!(ConfigLoader::new(tmp.path()).load().unwrap().config.billing.enabled);
+        // File off, env on beats the file, env off beats a file that says on.
+        std::fs::write(tmp.path().join("forgebase.toml"), "[billing]\nenabled = false\n").unwrap();
+        assert!(!ConfigLoader::new(tmp.path()).load().unwrap().config.billing.enabled);
+        let on = env(&[("FORGEBASE_BILLING_ENABLED", "true")]);
+        assert!(ConfigLoader::new(tmp.path()).env(on).load().unwrap().config.billing.enabled);
+        std::fs::write(tmp.path().join("forgebase.toml"), "[billing]\nenabled = true\n").unwrap();
+        let off = env(&[("FORGEBASE_BILLING_ENABLED", "false")]);
+        assert!(!ConfigLoader::new(tmp.path()).env(off).load().unwrap().config.billing.enabled);
     }
 
     #[test]
