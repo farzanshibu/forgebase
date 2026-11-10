@@ -34,8 +34,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 futures-util = { workspace = true, features = ["sink"] }
+sha2.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
+wat.workspace = true
 
 # Workspace-level integration tests live in /tests (owned by the repo, not by
 # one crate). They are attached here because this package builds the binary
@@ -71,6 +73,11 @@ path = "../../tests/integration/queues_e2e.rs"
 [[test]]
 name = "recovery"
 path = "../../tests/integration/recovery.rs"
+
+# FB-85: the 25 SPEC §27 scenarios against the built binary (docs/qa.md).
+[[test]]
+name = "spec_scenarios"
+path = "../../tests/integration/spec_scenarios.rs"
 
 [lints]
 workspace = true
