@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
-use common::{file_len, free_port, get_json, wait_healthy};
+use common::{file_len, free_port, get_json, startup_timeout, wait_healthy};
 use forgebase_db::{Database, DbOptions};
 
 /// `forgebase` with a clean environment (no inherited `FORGEBASE_*`).
@@ -56,7 +56,7 @@ impl Serve {
             addr,
         };
         assert!(
-            wait_healthy(&serve.addr, Duration::from_secs(20)),
+            wait_healthy(&serve.addr, startup_timeout()),
             "server did not become healthy"
         );
         serve
@@ -252,7 +252,7 @@ fn serve_flags_override_config_and_a_second_server_is_refused() {
         child: Some(child),
         addr: format!("127.0.0.1:{port}"),
     };
-    assert!(wait_healthy(&server.addr, Duration::from_secs(20)));
+    assert!(wait_healthy(&server.addr, startup_timeout()));
     let (_, info) = get_json(&server.addr, "/api/system/info");
     assert_eq!(info["data_dir"], root.join("custom-data").display().to_string());
 
@@ -309,7 +309,7 @@ fn the_resp_listener_is_off_unless_asked_and_serve_flags_turn_it_on() {
         child: Some(child),
         addr: format!("127.0.0.1:{port}"),
     };
-    assert!(wait_healthy(&on.addr, Duration::from_secs(20)));
+    assert!(wait_healthy(&on.addr, startup_timeout()));
     let addr = format!("127.0.0.1:{resp_port}");
     assert_eq!(ping(&addr).as_deref(), Some("+PONG\r\n"));
     let mut s = std::net::TcpStream::connect(&addr).unwrap();
@@ -331,7 +331,7 @@ fn the_resp_listener_is_off_unless_asked_and_serve_flags_turn_it_on() {
         child: Some(child),
         addr: format!("127.0.0.1:{port}"),
     };
-    assert!(wait_healthy(&env_on.addr, Duration::from_secs(20)));
+    assert!(wait_healthy(&env_on.addr, startup_timeout()));
     assert_eq!(ping(&addr).as_deref(), Some("+PONG\r\n"));
     env_on.stop();
 }

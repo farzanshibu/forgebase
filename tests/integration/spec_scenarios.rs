@@ -308,7 +308,7 @@ impl Fb {
                 }
             }
         });
-        let addr = rx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| {
+        let addr = rx.recv_timeout(common::startup_timeout()).unwrap_or_else(|_| {
             let _ = child.kill();
             panic!(
                 "server did not report its address; log:\n{}",
@@ -317,7 +317,7 @@ impl Fb {
         });
         self.child = Some(child);
         assert!(
-            common::wait_healthy(&addr, Duration::from_secs(60)),
+            common::wait_healthy(&addr, common::startup_timeout()),
             "server not healthy; log:\n{}",
             std::fs::read_to_string(self.log_path()).unwrap_or_default()
         );

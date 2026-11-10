@@ -20,7 +20,7 @@ The crate is not published yet. Depend on it by path or git:
 ```toml
 [dependencies]
 forgebase-sdk = { path = "sdk/rust" }          # inside this repository
-# forgebase-sdk = { git = "https://github.com/forgebase/forgebase", package = "forgebase-sdk" }
+# forgebase-sdk = { git = "https://github.com/farzanshibu/forgebase", package = "forgebase-sdk" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json = "1"
 ```

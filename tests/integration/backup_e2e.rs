@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
-use common::{free_port, wait_healthy};
+use common::{free_port, startup_timeout, wait_healthy};
 use forgebase_data::schema::{Collection, Field, FieldKind};
 use serde_json::{Value as Json, json};
 
@@ -67,7 +67,7 @@ impl Serve {
             .spawn()
             .unwrap();
         assert!(
-            wait_healthy(&format!("127.0.0.1:{port}"), Duration::from_secs(30)),
+            wait_healthy(&format!("127.0.0.1:{port}"), startup_timeout()),
             "server not healthy"
         );
         Self { child: Some(child) }

@@ -39,6 +39,16 @@ pub fn get_json(addr: &str, path: &str) -> (u16, serde_json::Value) {
     (status, serde_json::from_str(&body).unwrap_or(serde_json::Value::Null))
 }
 
+/// Start-up budget for a freshly started server to report healthy.
+/// 120 s by default, since a first start on a fresh data dir under load can take minutes.
+/// Override with env `FB_TEST_STARTUP_SECS` (whole seconds).
+pub fn startup_timeout() -> Duration {
+    std::env::var("FB_TEST_STARTUP_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map_or(Duration::from_secs(120), Duration::from_secs)
+}
+
 /// Polls `/health` until it answers 200 or the timeout passes.
 pub fn wait_healthy(addr: &str, timeout: Duration) -> bool {
     let start = Instant::now();
