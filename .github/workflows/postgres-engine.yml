@@ -1,0 +1,236 @@
+name: PostgreSQL engine
+
+# Builds the bundled PostgreSQL engine (FB-130, ADR-0028 §2.2, ADR-0029 §1.3)
+# for the five ForgeBase targets from the sources pinned in engine.lock,
+# smoke-tests every archive (and the Linux ones on a distro matrix), and
+# publishes them as the GitHub release named by engine.lock's
+# engine.release, with SHA256SUMS, build-provenance attestations and the
+# [archives.*] fragment to paste into engine.lock.
+#
+# Trigger: push a tag engine-pg<version>-r<n> (must equal engine.release), or
+# run the workflow by hand. A manual run builds, tests and uploads the
+# archives as workflow artifacts but does not create a release.
+
+on:
+  push:
+    tags: ["engine-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-engine-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: engine.lock, licences, scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every component in engine.lock has a licence file
+        run: python3 deploy/postgres-engine/engine.py licences --os all
+
+      - name: The tag matches engine.lock
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          want=$(python3 deploy/postgres-engine/engine.py get engine.release)
+          if [ "$TAG" != "$want" ]; then
+            echo "tag $TAG does not match engine.lock engine.release = $want" >&2
+            exit 1
+          fi
+
+      - name: Lint the build scripts
+        run: |
+          set -euo pipefail
+          shellcheck -S warning deploy/postgres-engine/*.sh
+          python3 -m py_compile deploy/postgres-engine/engine.py
+
+  unix:
+    name: engine ${{ matrix.target }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            kind: linux
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            kind: linux
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            kind: macos
+          - target: aarch64-apple-darwin
+            os: macos-15
+            kind: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work directories
+        run: |
+          echo "WORK=$RUNNER_TEMP/engine" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/engine/src
+          key: engine-src-${{ matrix.kind }}-${{ hashFiles('engine.lock') }}
+
+      - name: Build (Linux, in the Alpine image)
+        if: matrix.kind == 'linux'
+        run: deploy/postgres-engine/build-linux.sh "$TARGET" "$WORK" "$OUT"
+
+      - name: Build (macOS)
+        if: matrix.kind == 'macos'
+        env:
+          FB_ENGINE_SOURCES: ${{ runner.temp }}/engine/src
+        run: deploy/postgres-engine/build-unix.sh "$TARGET" "$WORK/build" "$OUT"
+
+      - name: Smoke test from the archive on the runner
+        run: |
+          set -euo pipefail
+          archive=$(ls "$OUT"/*.tar.zst)
+          rm -rf "$RUNNER_TEMP/x"
+          # The pinned zstd built for packing runs on macOS hosts; the Linux
+          # one is a musl program, so Linux runners use their own zstd.
+          if [ "${{ matrix.kind }}" = macos ]; then export FB_ZSTD="$WORK/build/deps/bin/zstd"; fi
+          python3 deploy/postgres-engine/engine.py extract "$archive" "$RUNNER_TEMP/x/engine"
+          deploy/postgres-engine/smoke.sh "$RUNNER_TEMP/x/engine" "$RUNNER_TEMP/x/w"
+          {
+            echo "### $TARGET"
+            echo
+            echo "- archive: $(basename "$archive"), $(wc -c < "$archive") bytes"
+            echo "- unpacked: $(du -sk "$RUNNER_TEMP/x/engine" | cut -f1) KiB"
+            echo "- idle RSS: $(sed -n 's/IDLE_RSS_KIB=//p' "$RUNNER_TEMP/x/w/measurements") KiB"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Linux distro matrix (Debian 12, Ubuntu 22.04, UBI 9, Alpine 3.20, distroless)
+        if: matrix.kind == 'linux'
+        run: |
+          set -euo pipefail
+          deploy/postgres-engine/distros.sh "$(ls "$OUT"/*.tar.zst)" "$RUNNER_TEMP/distros"
+          { echo; echo '```'; cat "$RUNNER_TEMP/distros/distros.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/out/*.tar.zst
+            ${{ runner.temp }}/out/*.tar.zst.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: engine x86_64-pc-windows-msvc
+    needs: check
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work directory
+        shell: pwsh
+        run: Add-Content $env:GITHUB_ENV "WORK=$env:RUNNER_TEMP\engine"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\engine\src
+          key: engine-src-windows-${{ hashFiles('engine.lock') }}
+
+      - name: Build tools
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check meson==1.9.1 ninja==1.13.0
+          choco install winflexbison3 -y --no-progress
+          Get-Command perl, pkg-config, win_bison, win_flex, cmake -ErrorAction Continue | Format-Table Name, Source
+
+      - name: Build
+        shell: pwsh
+        run: deploy/postgres-engine/build-windows.ps1 -Work $env:WORK -Out "$env:WORK\out"
+
+      - name: Smoke test from the archive
+        shell: pwsh
+        run: |
+          $archive = (Get-ChildItem "$env:WORK\out\*.tar.zst").FullName
+          python deploy/postgres-engine/engine.py extract --zstd "$env:WORK\deps\bin\zstd.exe" $archive "$env:RUNNER_TEMP\x\engine"
+          deploy/postgres-engine/smoke-windows.ps1 -Engine "$env:RUNNER_TEMP\x\engine" -Work "$env:RUNNER_TEMP\x\w"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-x86_64-pc-windows-msvc
+          path: |
+            ${{ runner.temp }}\engine\out\*.tar.zst
+            ${{ runner.temp }}\engine\out\*.tar.zst.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: checksums, attestations and release
+    needs: [unix, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: engine-*
+          path: dist
+          merge-multiple: true
+
+      - name: SHA256SUMS and the engine.lock fragment
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq zstd >/dev/null
+          rm -f dist/*.sha256
+          (cd dist && sha256sum -- *.tar.zst > SHA256SUMS && cat SHA256SUMS)
+          python3 deploy/postgres-engine/engine.py lock-fragment dist/*.tar.zst > dist/engine.lock.archives
+          cat dist/engine.lock.archives
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-release-files
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create or update the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Bundled PostgreSQL engine archives built by \`.github/workflows/postgres-engine.yml\` from the sources pinned in \`engine.lock\` (ADR-0028)."
+            echo
+            echo "Replace the \`[archives.*]\` tables of \`engine.lock\` with:"
+            echo
+            echo '```toml'
+            cat dist/engine.lock.archives
+            echo '```'
+          } > notes.md
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md
+          gh release upload "$TAG" dist/* --clobber
