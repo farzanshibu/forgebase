@@ -692,7 +692,9 @@ async fn outbound_clients_never_reach_internal_addresses() {
                 &forgebase_data::AccessContext::admin("root"),
                 forgebase_functions::DeployRequest {
                     name: name.into(),
-                    wasm: fetch_module(&url),
+                    wasm: Some(fetch_module(&url)),
+                    source: None,
+                    language: None,
                     description: None,
                     access: Some(forgebase_functions::InvokeAccess::Public),
                     capabilities: vec!["fetch".into()],
@@ -1361,7 +1363,9 @@ async fn secrets_never_reach_logs_or_api_output() {
             &forgebase_data::AccessContext::admin("root"),
             forgebase_functions::DeployRequest {
                 name: "sf".into(),
-                wasm: fetch_module("https://example.com/"),
+                wasm: Some(fetch_module("https://example.com/")),
+                source: None,
+                language: None,
                 description: None,
                 access: None,
                 capabilities: vec!["fetch".into(), "env".into()],

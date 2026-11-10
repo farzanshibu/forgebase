@@ -92,6 +92,16 @@ uuid = { version = "1.29.1", features = ["v4"] }
 # Wasm runtime for server functions (FB-60, ADR-0017). Apache-2.0 WITH LLVM-exception.
 wasmtime = { version = "50.0.1", default-features = false, features = ["runtime", "cranelift", "async", "std"] }
 wat = "=1.261.0"
+# TypeScript to JavaScript for JS/TS functions (FB-93, ADR-0027). MIT.
+oxc_allocator = "=0.155.0"
+oxc_ast = "=0.155.0"
+oxc_ast_visit = "=0.155.0"
+oxc_codegen = { version = "=0.155.0", default-features = false, features = ["sourcemap"] }
+oxc_diagnostics = "=0.155.0"
+oxc_parser = "=0.155.0"
+oxc_semantic = "=0.155.0"
+oxc_span = "=0.155.0"
+oxc_transformer = "=0.155.0"
 webpki-roots = "1.0.11"
 
 [workspace.lints.rust]

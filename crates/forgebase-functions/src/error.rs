@@ -9,14 +9,20 @@ use forgebase_db::DbError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecError {
     /// The function used all of its fuel (CPU budget).
-    #[error("the function used all of its fuel ({0} units)")]
+    #[error(
+        "the function used all of its fuel ({0} units): look for an endless loop, or raise limits.fuel (at most 20000000000) and deploy again"
+    )]
     FuelExhausted(u64),
     /// The function tried to grow its memory beyond the limit, or its
     /// initial memory is larger than the limit.
-    #[error("the function exceeded its memory limit of {0} bytes")]
+    #[error(
+        "the function exceeded its memory limit of {0} bytes: keep less in memory, or raise limits.memory_bytes (at most 536870912) and deploy again"
+    )]
     MemoryLimit(u64),
     /// The function ran longer than its wall-clock limit.
-    #[error("the function exceeded its time limit of {0} ms")]
+    #[error(
+        "the function exceeded its time limit of {0} ms: make it finish sooner (fewer or faster awaits), or raise limits.timeout_ms (at most 60000) and deploy again"
+    )]
     Timeout(u64),
     /// The module trapped (unreachable, out-of-bounds access, stack overflow, ...).
     #[error("the function trapped: {0}")]
@@ -32,6 +38,9 @@ pub enum ExecError {
     /// The function's output is not what its trigger expects.
     #[error("the function returned an invalid response: {0}")]
     BadOutput(String),
+    /// A JavaScript exception nobody caught (the trace points at the source).
+    #[error("the function threw an uncaught exception (catch it, or fix the line shown): {0}")]
+    Uncaught(String),
 }
 
 impl ExecError {
@@ -42,7 +51,7 @@ impl ExecError {
             ExecError::MemoryLimit(_) => "function_memory_limit",
             ExecError::Timeout(_) => "function_timeout",
             ExecError::Trap(_) => "function_trap",
-            ExecError::Failed { .. } => "function_failed",
+            ExecError::Failed { .. } | ExecError::Uncaught(_) => "function_failed",
             ExecError::BadOutput(_) => "function_bad_output",
         }
     }
@@ -54,7 +63,7 @@ impl ExecError {
             ExecError::MemoryLimit(_) => "memory_limit",
             ExecError::Timeout(_) => "timeout",
             ExecError::Trap(_) => "trap",
-            ExecError::Failed { .. } => "failed",
+            ExecError::Failed { .. } | ExecError::Uncaught(_) => "failed",
             ExecError::BadOutput(_) => "bad_output",
         }
     }
@@ -100,6 +109,42 @@ pub enum FunctionError {
     /// A bug or unexpected failure.
     #[error("internal functions error: {0}")]
     Internal(String),
+    /// JavaScript or TypeScript that does not compile (`400 function_compile_failed`).
+    #[error("{}", compile_message(.0))]
+    Compile(Vec<crate::compile::CompileDiagnostic>),
+    /// The code uses services whose capabilities are not granted (`400 capability_not_granted`).
+    #[error("{}", compile_message(.0))]
+    Unmet(Vec<crate::compile::CompileDiagnostic>),
+    /// A WebAssembly version has no source (`404`).
+    #[error("version {version} of function {name:?} is WebAssembly and has no source")]
+    NoSource {
+        /// Function.
+        name: String,
+        /// Version.
+        version: i64,
+    },
+    /// The caller may not do this (`403`).
+    #[error("{message}")]
+    Forbidden {
+        /// Error code.
+        code: &'static str,
+        /// Message.
+        message: String,
+    },
+}
+
+fn compile_message(errors: &[crate::compile::CompileDiagnostic]) -> String {
+    match errors.first() {
+        Some(e) => {
+            let more = if errors.len() > 1 {
+                format!(" (and {} more)", errors.len() - 1)
+            } else {
+                String::new()
+            };
+            format!("line {}, column {}: {}{more}", e.line, e.column, e.message)
+        }
+        None => "the source does not compile".into(),
+    }
 }
 
 impl FunctionError {
@@ -142,6 +187,10 @@ impl ErrorCode for FunctionError {
             FunctionError::Busy(_) => "function_busy",
             FunctionError::Execution(e) => e.code(),
             FunctionError::Internal(_) => "internal_error",
+            FunctionError::Compile(_) => "function_compile_failed",
+            FunctionError::Unmet(_) => "capability_not_granted",
+            FunctionError::NoSource { .. } => "function_source_not_found",
+            FunctionError::Forbidden { code, .. } => code,
         }
     }
 
@@ -149,7 +198,11 @@ impl ErrorCode for FunctionError {
         match self {
             FunctionError::Data(e) => e.kind(),
             FunctionError::Db(e) => e.kind(),
-            FunctionError::Invalid { .. } => ErrorKind::InvalidInput,
+            FunctionError::Invalid { .. } | FunctionError::Compile(_) | FunctionError::Unmet(_) => {
+                ErrorKind::InvalidInput
+            }
+            FunctionError::NoSource { .. } => ErrorKind::NotFound,
+            FunctionError::Forbidden { .. } => ErrorKind::Forbidden,
             FunctionError::NotFound(_) | FunctionError::VersionNotFound { .. } | FunctionError::SecretNotFound(_) => {
                 ErrorKind::NotFound
             }

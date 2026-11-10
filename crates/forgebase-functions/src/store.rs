@@ -4,7 +4,10 @@ use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::Value as Json;
 
 use crate::error::{FunctionError, Result};
-use crate::model::{ExecutionLog, InvokeAccess, LogLine, SecretInfo, VersionConfig, VersionInfo};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::model::{ExecutionLog, InvokeAccess, KvAccess, KvRule, LogLine, SecretInfo, VersionConfig, VersionInfo};
 
 /// A function row with its active version's configuration.
 #[derive(Debug, Clone)]
@@ -111,11 +114,80 @@ pub(crate) async fn wasm(db: &dyn Backend, function_id: &str, version: i64) -> R
     }))
 }
 
+/// A text column of one version (`source` or `js`).
+async fn version_text(db: &dyn Backend, function_id: &str, version: i64, column: &str) -> Result<Option<String>> {
+    let rows = db
+        .fetch_all(&Statement::new(
+            format!("SELECT {column} FROM _forgebase_function_versions WHERE function_id = ?1 AND version = ?2"),
+            vec![function_id.into(), version.into()],
+        ))
+        .await?;
+    Ok(rows
+        .rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+/// The JavaScript the engine runs for a JS/TS version, with its source map (TypeScript).
+pub(crate) async fn script(
+    db: &dyn Backend,
+    function_id: &str,
+    version: i64,
+) -> Result<Option<(String, Option<String>)>> {
+    let rows = db
+        .fetch_all(&Statement::new(
+            "SELECT js, source_map FROM _forgebase_function_versions WHERE function_id = ?1 AND version = ?2",
+            vec![function_id.into(), version.into()],
+        ))
+        .await?;
+    Ok(rows.rows.first().and_then(|r| {
+        let js = r.first().and_then(Value::as_str)?.to_owned();
+        Some((js, r.get(1).and_then(Value::as_str).map(str::to_owned)))
+    }))
+}
+
+/// The source of a JS/TS version as deployed.
+pub(crate) async fn source(db: &dyn Backend, function_id: &str, version: i64) -> Result<Option<String>> {
+    version_text(db, function_id, version, "source").await
+}
+
+/// The configuration of one version.
+pub(crate) async fn version_config(db: &dyn Backend, function_id: &str, version: i64) -> Result<Option<VersionConfig>> {
+    version_text(db, function_id, version, "config")
+        .await?
+        .map(|c| config_of(&c))
+        .transpose()
+}
+
+/// Key-value namespace rules of every function, by function id.
+pub(crate) async fn kv_rules(db: &dyn Backend) -> Result<HashMap<String, Arc<Vec<KvRule>>>> {
+    let rows = db
+        .fetch_all(&Statement::new(
+            "SELECT function_id, namespace, access FROM _forgebase_function_kv_rules ORDER BY function_id, namespace",
+            vec![],
+        ))
+        .await?;
+    let mut out: HashMap<String, Vec<KvRule>> = HashMap::new();
+    for r in &rows.rows {
+        out.entry(text(r, 0)).or_default().push(KvRule {
+            namespace: text(r, 1),
+            access: if text(r, 2) == "write" {
+                KvAccess::Write
+            } else {
+                KvAccess::Read
+            },
+        });
+    }
+    Ok(out.into_iter().map(|(k, v)| (k, Arc::new(v))).collect())
+}
+
 /// Versions of a function, newest first.
 pub(crate) async fn versions(db: &dyn Backend, function_id: &str, active: i64) -> Result<Vec<VersionInfo>> {
     let rows = db
         .fetch_all(&Statement::new(
-            "SELECT version, sha256, length(wasm), config, created_at, created_by
+            "SELECT version, sha256, coalesce(length(CAST(source AS BLOB)), length(wasm)), config, created_at, created_by
              FROM _forgebase_function_versions WHERE function_id = ?1 ORDER BY version DESC",
             vec![function_id.into()],
         ))

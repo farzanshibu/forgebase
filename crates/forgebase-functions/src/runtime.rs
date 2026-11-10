@@ -133,7 +133,7 @@ pub const HOST_FUNCTIONS: &[HostFunction] = &[
 /// Per-execution memory limiter.
 #[derive(Debug)]
 pub(crate) struct MemLimiter {
-    max: usize,
+    pub(crate) max: usize,
     pub(crate) hit: bool,
 }
 
@@ -174,6 +174,34 @@ pub(crate) struct StoreData {
     pub(crate) log_bytes: usize,
     pub(crate) calls: u32,
     pub(crate) fetches: u32,
+    /// JavaScript the engine runs (empty for WebAssembly functions).
+    pub(crate) source: Vec<u8>,
+    /// When the execution's time limit ends (bounds `sleep`).
+    pub(crate) deadline: std::time::Instant,
+    /// Largest output.
+    pub(crate) max_output: usize,
+}
+
+impl StoreData {
+    pub(crate) fn new(limits: &Limits, env: Arc<HostEnv>, input: Vec<u8>) -> Self {
+        Self {
+            limiter: MemLimiter {
+                max: usize::try_from(limits.memory_bytes).unwrap_or(usize::MAX),
+                hit: false,
+            },
+            env,
+            input,
+            output: None,
+            result: Vec::new(),
+            logs: Vec::new(),
+            log_bytes: 0,
+            calls: 0,
+            fetches: 0,
+            source: Vec::new(),
+            deadline: std::time::Instant::now() + Duration::from_millis(limits.timeout_ms),
+            max_output: MAX_OUTPUT_BYTES,
+        }
+    }
 }
 
 /// What an execution produced.
@@ -197,7 +225,7 @@ impl std::fmt::Debug for Runtime {
     }
 }
 
-fn start_ticker(engine: &Engine) -> Result<()> {
+pub(crate) fn start_ticker(engine: &Engine) -> Result<()> {
     let weak = engine.weak();
     std::thread::Builder::new()
         .name("forgebase-wasm-epoch".into())
@@ -250,21 +278,32 @@ impl Runtime {
 
     /// Runs `handle` once with `input`.
     pub(crate) async fn run(&self, module: &Module, limits: &Limits, env: Arc<HostEnv>, input: Vec<u8>) -> RunResult {
-        let data = StoreData {
-            limiter: MemLimiter {
-                max: usize::try_from(limits.memory_bytes).unwrap_or(usize::MAX),
-                hit: false,
-            },
-            env,
-            input,
-            output: None,
-            result: Vec::new(),
-            logs: Vec::new(),
-            log_bytes: 0,
-            calls: 0,
-            fetches: 0,
-        };
-        let mut store = Store::new(&self.engine, data);
+        let data = StoreData::new(limits, env, input);
+        execute(&self.engine, &self.linker, module, limits, data, None).await
+    }
+}
+
+/// A memory image of an initialised instance: linear memory and the stack
+/// pointer (the module's only mutable global).
+#[derive(Debug)]
+pub(crate) struct MemorySnapshot {
+    pub(crate) memory: Vec<u8>,
+    pub(crate) stack_pointer: i32,
+}
+
+/// Runs `handle` of `module` once in a fresh store holding `data`. With
+/// `restore`, the fresh instance's memory and stack pointer are first set
+/// to the snapshot (the JavaScript engine after its one-time `init`).
+pub(crate) async fn execute(
+    engine: &Engine,
+    linker: &Arc<Linker<StoreData>>,
+    module: &Module,
+    limits: &Limits,
+    data: StoreData,
+    restore: Option<&MemorySnapshot>,
+) -> RunResult {
+    {
+        let mut store = Store::new(engine, data);
         store.limiter(|d| &mut d.limiter);
         let setup = store
             .set_fuel(limits.fuel)
@@ -278,10 +317,28 @@ impl Runtime {
         }
         store.set_epoch_deadline(limits.timeout_ms.div_ceil(TICK.as_millis() as u64) + 1);
         store.epoch_deadline_trap();
-        let linker = self.linker.clone();
+        let linker = linker.clone();
         let timeout = Duration::from_millis(limits.timeout_ms);
         let outcome = tokio::time::timeout(timeout, async {
             let instance = linker.instantiate_async(&mut store, module).await?;
+            if let Some(snap) = restore {
+                let mem = instance
+                    .get_memory(&mut store, "memory")
+                    .ok_or_else(|| wasmtime::Error::msg("the engine exports no memory"))?;
+                let have = mem.data_size(&store);
+                if have < snap.memory.len() {
+                    let page = mem.page_size(&store);
+                    let pages = u64::try_from(snap.memory.len() - have)
+                        .unwrap_or(u64::MAX)
+                        .div_ceil(page);
+                    mem.grow(&mut store, pages)?;
+                }
+                mem.write(&mut store, 0, &snap.memory)?;
+                instance
+                    .get_global(&mut store, "__stack_pointer")
+                    .ok_or_else(|| wasmtime::Error::msg("the engine exports no stack pointer"))?
+                    .set(&mut store, wasmtime::Val::I32(snap.stack_pointer))?;
+            }
             let handle = instance.get_typed_func::<(), i32>(&mut store, "handle")?;
             handle.call_async(&mut store, ()).await
         })
@@ -295,12 +352,7 @@ impl Runtime {
             Ok(Ok(0)) => Ok(data.output),
             Ok(Ok(status)) => Err(ExecError::Failed {
                 status,
-                message: data
-                    .output
-                    .as_deref()
-                    .filter(|o| o.len() <= 1024)
-                    .and_then(|o| std::str::from_utf8(o).ok())
-                    .map(str::to_owned),
+                message: data.output.as_deref().map(|o| clip(&String::from_utf8_lossy(o), 2000)),
             }),
         };
         RunResult {
@@ -311,7 +363,19 @@ impl Runtime {
     }
 }
 
-fn short(s: &str) -> String {
+/// `s` cut to at most `max` bytes (on a character boundary), marked with `...`.
+pub(crate) fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
+}
+
+pub(crate) fn short(s: &str) -> String {
     let s = s.lines().next().unwrap_or_default();
     if s.len() > 300 {
         let mut end = 300;
@@ -420,9 +484,14 @@ fn memory_of(caller: &mut Caller<'_, StoreData>) -> Option<wasmtime::Memory> {
     caller.get_export("memory").and_then(wasmtime::Extern::into_memory)
 }
 
-fn read_guest(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Option<Vec<u8>> {
+pub(crate) fn read_guest(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Option<Vec<u8>> {
+    read_guest_max(caller, ptr, len, MAX_ARG_BYTES)
+}
+
+/// Copies `len` bytes at `ptr` out of the guest's memory (at most `max`).
+pub(crate) fn read_guest_max(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32, max: usize) -> Option<Vec<u8>> {
     let (ptr, len) = (usize::try_from(ptr).ok()?, usize::try_from(len).ok()?);
-    if len > MAX_ARG_BYTES {
+    if len > max {
         return None;
     }
     let mem = memory_of(caller)?;
@@ -431,13 +500,13 @@ fn read_guest(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Option<
     Some(buf)
 }
 
-fn write_guest(caller: &mut Caller<'_, StoreData>, ptr: i32, bytes: &[u8]) -> bool {
+pub(crate) fn write_guest(caller: &mut Caller<'_, StoreData>, ptr: i32, bytes: &[u8]) -> bool {
     let Ok(ptr) = usize::try_from(ptr) else { return false };
     let Some(mem) = memory_of(caller) else { return false };
     mem.write(&mut *caller, ptr, bytes).is_ok()
 }
 
-fn charge(caller: &mut Caller<'_, StoreData>, cost: u64) -> wasmtime::Result<()> {
+pub(crate) fn charge(caller: &mut Caller<'_, StoreData>, cost: u64) -> wasmtime::Result<()> {
     let left = caller.get_fuel()?;
     if left < cost {
         caller.set_fuel(0)?;
@@ -446,12 +515,12 @@ fn charge(caller: &mut Caller<'_, StoreData>, cost: u64) -> wasmtime::Result<()>
     caller.set_fuel(left - cost)
 }
 
-fn to_i32(n: usize) -> i32 {
+pub(crate) fn to_i32(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
 }
 
 /// Stores `res` as the call result and returns the ABI status.
-fn finish(caller: &mut Caller<'_, StoreData>, res: std::result::Result<Vec<u8>, host::HostError>) -> i32 {
+pub(crate) fn finish(caller: &mut Caller<'_, StoreData>, res: std::result::Result<Vec<u8>, host::HostError>) -> i32 {
     match res {
         Ok(bytes) => {
             let n = to_i32(bytes.len());
@@ -513,6 +582,33 @@ async fn call(caller: &mut Caller<'_, StoreData>, op: Op, ptr: i32, len: i32) ->
 }
 
 fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
+    define_io(linker, true)?;
+    for (name, op) in [
+        ("db_get", Op::DbGet),
+        ("db_list", Op::DbList),
+        ("db_create", Op::DbCreate),
+        ("db_update", Op::DbUpdate),
+        ("db_delete", Op::DbDelete),
+        ("kv", Op::Kv),
+        ("env_get", Op::EnvGet),
+        ("secret_get", Op::SecretGet),
+        ("fetch", Op::Fetch),
+    ] {
+        linker.func_wrap_async(
+            "forgebase",
+            name,
+            move |mut caller: Caller<'_, StoreData>, (ptr, len): (i32, i32)| {
+                Box::new(async move { call(&mut caller, op, ptr, len).await })
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Input, output, result and log functions (module `forgebase`). With
+/// `log_capability`, `log` needs the `log` capability (WebAssembly ABI);
+/// the JavaScript engine's console always logs.
+pub(crate) fn define_io(linker: &mut Linker<StoreData>, log_capability: bool) -> wasmtime::Result<()> {
     const M: &str = "forgebase";
     linker.func_wrap(M, "input_len", |caller: Caller<'_, StoreData>| -> i32 {
         to_i32(caller.data().input.len())
@@ -553,10 +649,11 @@ fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
                 &mut caller,
                 HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)),
             )?;
-            if usize::try_from(len).unwrap_or(usize::MAX) > MAX_OUTPUT_BYTES {
+            if usize::try_from(len).unwrap_or(usize::MAX) > caller.data().max_output {
                 return Ok(-1);
             }
-            match read_guest(&mut caller, ptr, len) {
+            let max = caller.data().max_output;
+            match read_guest_max(&mut caller, ptr, len, max) {
                 Some(bytes) => {
                     caller.data_mut().output = Some(bytes);
                     Ok(0)
@@ -568,15 +665,15 @@ fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
     linker.func_wrap(
         M,
         "log",
-        |mut caller: Caller<'_, StoreData>, level: i32, ptr: i32, len: i32| -> wasmtime::Result<i32> {
+        move |mut caller: Caller<'_, StoreData>, level: i32, ptr: i32, len: i32| -> wasmtime::Result<i32> {
             charge(
                 &mut caller,
                 HOST_CALL_FUEL.saturating_add(u64::try_from(len.max(0)).unwrap_or(0)),
             )?;
-            if !caller.data().env.config.has("log") {
+            if log_capability && !caller.data().env.config.has("log") {
                 return Ok(-1);
             }
-            let Some(bytes) = read_guest(&mut caller, ptr, len.min(4096)) else {
+            let Some(bytes) = read_guest(&mut caller, ptr, len.min(16 * 1024)) else {
                 return Ok(-1);
             };
             let level = match level {
@@ -589,24 +686,5 @@ fn define_host(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
             Ok(0)
         },
     )?;
-    for (name, op) in [
-        ("db_get", Op::DbGet),
-        ("db_list", Op::DbList),
-        ("db_create", Op::DbCreate),
-        ("db_update", Op::DbUpdate),
-        ("db_delete", Op::DbDelete),
-        ("kv", Op::Kv),
-        ("env_get", Op::EnvGet),
-        ("secret_get", Op::SecretGet),
-        ("fetch", Op::Fetch),
-    ] {
-        linker.func_wrap_async(
-            M,
-            name,
-            move |mut caller: Caller<'_, StoreData>, (ptr, len): (i32, i32)| {
-                Box::new(async move { call(&mut caller, op, ptr, len).await })
-            },
-        )?;
-    }
     Ok(())
 }
