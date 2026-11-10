@@ -323,6 +323,8 @@ async fn registry_lists_every_module_with_typed_settings_and_sources() {
                 "key",
                 "label",
                 "help",
+                "env",
+                "flag",
                 "type",
                 "unit",
                 "options",
@@ -520,9 +522,9 @@ async fn patch_validates_everything_and_refuses_overridden_settings() {
         r.text()
     );
     let d = &r.json()["error"]["details"];
-    assert_eq!(d["storage.enabled"], "expected true or false");
-    assert_eq!(d["log.format"], "expected one of pretty, json");
-    assert_eq!(d["no.such"], "unknown setting");
+    assert_eq!(d["storage.enabled"], "must be true or false");
+    assert_eq!(d["log.format"], "must be one of pretty or json");
+    assert!(d["no.such"].as_str().unwrap().starts_with("is not a setting"));
     assert!(
         d["storage.s3_secret_key"]
             .as_str()
@@ -542,7 +544,7 @@ async fn patch_validates_everything_and_refuses_overridden_settings() {
     assert_eq!(r.status, 400);
     assert_eq!(
         r.json()["error"]["details"]["server.request_timeout_secs"],
-        "must be between 1 and 3600"
+        "must be a whole number from 1 to 3600 seconds, such as 30"
     );
 
     for key in ["database.read_pool_size", "server.port"] {

@@ -25,9 +25,9 @@ each setting with its type, value and origin, and can change the file.
 
 `forgebase_core::features::FEATURES` lists every module in display order:
 id, name, one-line summary, whether it can be switched off, the setting that
-switches it, its studio route, its documentation, the HTTP route patterns it
-owns, and its settings. A setting has a dotted key (as in `forgebase.toml`),
-label, help (naming its environment variable and flag), type (`bool`, `int`,
+switches it, its studio route, its documentation (a file and a heading
+anchor), the HTTP route patterns it owns, and its settings. A setting has a dotted key (as in `forgebase.toml`),
+label, help, environment variable, flag, type (`bool`, `int`,
 `string`, `enum` with options, `duration`, `list`, `url`), unit, and whether it
 is a secret, editable or needs a restart.
 
@@ -36,6 +36,14 @@ dotted key, so a setting cannot be listed with a value the server does not use.
 Tests check that every key in `forgebase.example.toml` and in the `forgebase
 init` template is in the registry, and that every registry setting written to
 a file is reported with source `file`.
+
+Name, summary, label and help are shown as-is in the setup wizard and in
+Features & settings (docs/requirements/dashboard-ux.md), so they are written
+for a developer new to ForgeBase: sentence case, plain words, abbreviations
+such as OIDC, RESP, SSE and ACL spelled out where they are used, and each help
+line says what the setting changes and gives a sensible value (the default for
+numbers and choices). A test enforces these rules, the default in every help
+line, and that each docs anchor is a heading of its file.
 
 ### 2. Which modules can be switched off, and why not the others
 
@@ -109,7 +117,9 @@ driver reads the values), which fixes the startup error they caused.
   If the file cannot be read, values are the running ones and `config_error`
   says why.
 - `PATCH` checks every key (unknown, secret, read-only, type, enum options, URL
-  scheme, TOML type such as a port above 65535), then refuses keys set by the
+  scheme, TOML type such as a port above 65535); each refusal is a detail
+  keyed by the setting that says what to enter instead ("must be a whole
+  number from 1 to 3600 seconds, such as 30"), then refuses keys set by the
   environment or a flag with `409 setting_overridden`, then validates the whole
   resolved configuration and reports every range problem at once
   (`Config::problems`). Only then does it write all keys in one atomic replace:

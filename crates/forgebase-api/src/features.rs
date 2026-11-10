@@ -114,7 +114,8 @@ pub struct SystemFeature {
     pub enabled: bool,
     /// Dashboard route of its studio.
     pub studio_path: Option<String>,
-    /// Documentation, relative to the repository root.
+    /// Documentation, relative to the repository root, with a heading
+    /// anchor (`docs/adr/0018-object-storage.md#adr-0018-object-storage`).
     pub docs: String,
     /// The switch first (when `can_disable`), then the module's settings.
     pub settings: Vec<SystemSetting>,
@@ -125,10 +126,15 @@ pub struct SystemFeature {
 pub struct SystemSetting {
     /// Dotted key (`storage.max_object_bytes`), as in `forgebase.toml`.
     pub key: String,
-    /// Short label.
+    /// Short label, sentence case; shown as-is.
     pub label: String,
-    /// One or two sentences; names the environment variable and flag.
+    /// What the setting changes and a sensible value, in plain words;
+    /// shown as-is.
     pub help: String,
+    /// Environment variable that sets it (`FORGEBASE_PORT`), if any.
+    pub env: Option<String>,
+    /// Command-line flag of `forgebase serve` that sets it (`--port`), if any.
+    pub flag: Option<String>,
     /// `bool`, `int`, `string`, `enum`, `duration`, `list` or `url`.
     #[serde(rename = "type")]
     pub ty: String,
@@ -196,6 +202,8 @@ pub fn feature_views(config: &Config, sources: &ConfigSources) -> Vec<SystemFeat
                     key: s.key.to_owned(),
                     label: s.label.to_owned(),
                     help: s.help.to_owned(),
+                    env: s.env.map(str::to_owned),
+                    flag: s.flag.map(str::to_owned),
                     ty: s.ty.as_str().to_owned(),
                     unit: s.unit.map(str::to_owned),
                     options: (!s.options.is_empty()).then(|| s.options.iter().map(|o| (*o).to_owned()).collect()),

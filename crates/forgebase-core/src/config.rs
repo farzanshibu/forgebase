@@ -506,81 +506,166 @@ impl Config {
     /// Every out-of-range value, in a stable order (FB-91: the config API
     /// reports them all at once). Each is a [`ConfigError::Invalid`].
     pub fn problems(&self) -> Vec<ConfigError> {
+        // Every message says what to enter instead, with the default as the
+        // example (FB-91, dashboard UX bar): it is shown next to the field.
+        let d = Config::defaults(Path::new(""));
         let mut out = Vec::new();
         let mut invalid = |field: &'static str, message: String| out.push(ConfigError::Invalid { field, message });
-        if self.server.host.trim().is_empty() || self.server.host.contains(char::is_whitespace) {
-            invalid("server.host", format!("invalid host {:?}", self.server.host));
-        }
-        if !(1..=3600).contains(&self.server.request_timeout_secs) {
-            invalid("server.request_timeout_secs", "must be between 1 and 3600".into());
-        }
-        if self.server.shutdown_timeout_secs > 3600 {
-            invalid("server.shutdown_timeout_secs", "must be at most 3600".into());
-        }
-        if !(1..=64).contains(&self.database.read_pool_size) {
-            invalid("database.read_pool_size", "must be between 1 and 64".into());
-        }
-        if self.database.busy_timeout_ms > 600_000 {
-            invalid("database.busy_timeout_ms", "must be at most 600000".into());
-        }
-        if self.log.level.trim().is_empty() {
-            invalid("log.level", "must not be empty".into());
-        }
-        if self.resp.host.trim().is_empty() || self.resp.host.contains(char::is_whitespace) {
-            invalid("resp.host", format!("invalid host {:?}", self.resp.host));
-        }
-        if !(1..=1_000_000).contains(&self.resp.max_connections) {
-            invalid("resp.max_connections", "must be between 1 and 1000000".into());
-        }
-        if !(1..=512 * 1024 * 1024).contains(&self.resp.max_bulk_bytes) {
-            invalid("resp.max_bulk_bytes", "must be between 1 and 536870912".into());
-        }
-        if self.storage.driver == StorageDriverKind::S3
-            && (self.storage.s3_endpoint.trim().is_empty() || self.storage.s3_bucket.trim().is_empty())
-        {
+        let host = |h: &str| h.trim().is_empty() || h.contains(char::is_whitespace);
+        if host(&self.server.host) {
             invalid(
-                "storage.s3_endpoint",
-                "the s3 driver needs s3_endpoint and s3_bucket".into(),
+                "server.host",
+                format!(
+                    "must be a host name or IP address without spaces, such as {}",
+                    d.server.host
+                ),
             );
         }
-        if self.storage.max_object_bytes == 0 || self.storage.s3_part_size < 1024 {
+        if !(1..=3600).contains(&self.server.request_timeout_secs) {
+            invalid(
+                "server.request_timeout_secs",
+                whole(1, 3600, "seconds", d.server.request_timeout_secs),
+            );
+        }
+        if self.server.shutdown_timeout_secs > 3600 {
+            invalid(
+                "server.shutdown_timeout_secs",
+                whole(0, 3600, "seconds", d.server.shutdown_timeout_secs),
+            );
+        }
+        if !(1..=64).contains(&self.database.read_pool_size) {
+            invalid(
+                "database.read_pool_size",
+                whole(1, 64, "", d.database.read_pool_size as u64),
+            );
+        }
+        if self.database.busy_timeout_ms > 600_000 {
+            invalid(
+                "database.busy_timeout_ms",
+                whole(0, 600_000, "milliseconds", d.database.busy_timeout_ms),
+            );
+        }
+        if self.log.level.trim().is_empty() {
+            invalid(
+                "log.level",
+                format!("must be a log filter such as {} or forgebase=debug", d.log.level),
+            );
+        }
+        if host(&self.resp.host) {
+            invalid(
+                "resp.host",
+                format!(
+                    "must be a host name or IP address without spaces, such as {}",
+                    d.resp.host
+                ),
+            );
+        }
+        if !(1..=1_000_000).contains(&self.resp.max_connections) {
+            invalid(
+                "resp.max_connections",
+                whole(1, 1_000_000, "", d.resp.max_connections as u64),
+            );
+        }
+        if !(1..=512 * 1024 * 1024).contains(&self.resp.max_bulk_bytes) {
+            invalid(
+                "resp.max_bulk_bytes",
+                whole(1, 512 * 1024 * 1024, "bytes", d.resp.max_bulk_bytes),
+            );
+        }
+        if self.storage.driver == StorageDriverKind::S3 {
+            if self.storage.s3_endpoint.trim().is_empty() {
+                invalid(
+                    "storage.s3_endpoint",
+                    "must be set when the driver is s3, such as https://s3.eu-central-1.amazonaws.com".into(),
+                );
+            }
+            if self.storage.s3_bucket.trim().is_empty() {
+                invalid(
+                    "storage.s3_bucket",
+                    "must be set when the driver is s3, such as my-app-files".into(),
+                );
+            }
+        }
+        if self.storage.max_object_bytes == 0 {
             invalid(
                 "storage.max_object_bytes",
-                "max_object_bytes must be positive and s3_part_size at least 1024".into(),
+                whole(1, u64::MAX, "bytes", d.storage.max_object_bytes),
+            );
+        }
+        if self.storage.s3_part_size < 1024 {
+            invalid(
+                "storage.s3_part_size",
+                format!(
+                    "must be at least 1024 bytes (S3 itself needs 5242880, 5 MiB), such as {}",
+                    d.storage.s3_part_size
+                ),
             );
         }
         if self.resp.idle_timeout_secs > 86_400 {
-            invalid("resp.idle_timeout_secs", "must be at most 86400".into());
+            invalid(
+                "resp.idle_timeout_secs",
+                whole(0, 86_400, "seconds", d.resp.idle_timeout_secs),
+            );
         }
         if !(1..=1_000_000).contains(&self.realtime.max_connections_per_principal) {
             invalid(
                 "realtime.max_connections_per_principal",
-                "must be between 1 and 1000000".into(),
+                whole(1, 1_000_000, "", u64::from(d.realtime.max_connections_per_principal)),
             );
         }
         let q = &self.queue;
         if !(64..=10 * 1024 * 1024).contains(&q.max_message_bytes) {
-            invalid("queue.max_message_bytes", "must be between 64 and 10485760".into());
+            invalid(
+                "queue.max_message_bytes",
+                whole(64, 10 * 1024 * 1024, "bytes", d.queue.max_message_bytes),
+            );
         }
-        if q.default_retention_secs < 60 || q.max_retention_secs < q.default_retention_secs {
+        if q.default_retention_secs < 60 {
             invalid(
                 "queue.default_retention_secs",
-                "must be at least 60 and at most max_retention_secs".into(),
+                format!(
+                    "must be at least 60 seconds, such as {}",
+                    d.queue.default_retention_secs
+                ),
+            );
+        } else if q.max_retention_secs < q.default_retention_secs {
+            invalid(
+                "queue.max_retention_secs",
+                format!(
+                    "must be at least the default retention ({} seconds), such as {}",
+                    q.default_retention_secs,
+                    d.queue.max_retention_secs.max(q.default_retention_secs)
+                ),
             );
         }
         if !(1..=86_400).contains(&q.dedup_window_secs) {
-            invalid("queue.dedup_window_secs", "must be between 1 and 86400".into());
+            invalid(
+                "queue.dedup_window_secs",
+                whole(1, 86_400, "seconds", d.queue.dedup_window_secs),
+            );
         }
         if q.max_pull_wait_ms > 300_000 {
-            invalid("queue.max_pull_wait_ms", "must be at most 300000".into());
+            invalid(
+                "queue.max_pull_wait_ms",
+                whole(0, 300_000, "milliseconds", d.queue.max_pull_wait_ms),
+            );
         }
         if !(10..=60_000).contains(&q.poll_interval_ms) {
-            invalid("queue.poll_interval_ms", "must be between 10 and 60000".into());
+            invalid(
+                "queue.poll_interval_ms",
+                whole(10, 60_000, "milliseconds", d.queue.poll_interval_ms),
+            );
         }
-        if !(1..=300).contains(&q.push_timeout_secs) || !(1..=256).contains(&q.push_concurrency) {
+        if !(1..=300).contains(&q.push_timeout_secs) {
             invalid(
                 "queue.push_timeout_secs",
-                "push_timeout_secs must be 1-300 and push_concurrency 1-256".into(),
+                whole(1, 300, "seconds", d.queue.push_timeout_secs),
+            );
+        }
+        if !(1..=256).contains(&q.push_concurrency) {
+            invalid(
+                "queue.push_concurrency",
+                whole(1, 256, "", d.queue.push_concurrency as u64),
             );
         }
         out
@@ -1454,6 +1539,20 @@ pub fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// "must be a whole number from 1 to 3600 seconds, such as 30".
+fn whole(lo: u64, hi: u64, unit: &str, example: u64) -> String {
+    let unit = if unit.is_empty() {
+        String::new()
+    } else {
+        format!(" {unit}")
+    };
+    if hi == u64::MAX {
+        format!("must be a whole number of at least {lo}{unit}, such as {example}")
+    } else {
+        format!("must be a whole number from {lo} to {hi}{unit}, such as {example}")
+    }
 }
 
 /// Configuration errors.

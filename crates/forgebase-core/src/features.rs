@@ -54,9 +54,11 @@ impl SettingType {
 pub struct SettingDef {
     /// Dotted key, as in `forgebase.toml` (`storage.max_object_bytes`).
     pub key: &'static str,
-    /// Short label.
+    /// Short label, sentence case. Shown as-is in the dashboard.
     pub label: &'static str,
-    /// One or two sentences; names the environment variable and flag.
+    /// What the setting changes and a sensible value, in plain words with
+    /// jargon spelled out. Shown as-is in the dashboard; the environment
+    /// variable and flag are separate fields.
     pub help: &'static str,
     /// Value type.
     pub ty: SettingType,
@@ -142,9 +144,10 @@ impl SettingDef {
 pub struct FeatureDef {
     /// Stable id (`storage`).
     pub id: &'static str,
-    /// Display name, also used in the `feature_disabled` message.
+    /// Display name (sentence case), also used in the `feature_disabled`
+    /// message.
     pub name: &'static str,
-    /// One line on what it does.
+    /// One plain sentence on what it does, for a developer new to ForgeBase.
     pub summary: &'static str,
     /// Whether `[<section>] enabled = false` turns it off. When `false`, the
     /// module is always on (ADR-0026 says why for each).
@@ -153,7 +156,8 @@ pub struct FeatureDef {
     pub enable_key: Option<&'static str>,
     /// Dashboard route of its studio.
     pub studio_path: Option<&'static str>,
-    /// Documentation, relative to the repository root.
+    /// Documentation, relative to the repository root, with the anchor of
+    /// an existing heading (`docs/adr/0018-object-storage.md#adr-0018-object-storage`).
     pub docs: &'static str,
     /// HTTP routes it owns; answered with `404 feature_disabled` when off.
     pub routes: &'static [&'static str],
@@ -184,16 +188,16 @@ const SERVER: &[SettingDef] = &[
         "data_dir",
         "Data directory",
         Text,
-        "Where the database, storage/, indexes/ and backups/ live. Set it with --data-dir or FORGEBASE_DATA_DIR; it is not editable here because a new value points the server at other data.",
+        "Folder that holds the database, uploaded files, search indexes and backups. The default forgebase-data, next to the config file, suits most installs. Change it when starting the server, not here: a new folder means different data.",
     )
     .env("FORGEBASE_DATA_DIR")
     .flag("--data-dir")
     .read_only(),
     SettingDef::new(
         "server.host",
-        "Bind address",
+        "Listen address",
         Text,
-        "Address the HTTP server listens on; loopback by default (put a TLS proxy in front). Env FORGEBASE_HOST, flag --host.",
+        "Network address the HTTP server listens on. Keep 127.0.0.1 and put a reverse proxy that handles HTTPS in front; use 0.0.0.0 only to listen on every network interface.",
     )
     .env("FORGEBASE_HOST")
     .flag("--host"),
@@ -201,7 +205,7 @@ const SERVER: &[SettingDef] = &[
         "server.port",
         "Port",
         Int,
-        "TCP port of the HTTP server; 0 picks a free port. Env FORGEBASE_PORT, flag --port.",
+        "TCP port of the HTTP server, such as 8090 (the default). 0 picks a free port.",
     )
     .env("FORGEBASE_PORT")
     .flag("--port"),
@@ -209,31 +213,31 @@ const SERVER: &[SettingDef] = &[
         "server.request_timeout_secs",
         "Request timeout",
         Int,
-        "Longest a request may run, 1 to 3600 seconds. Env FORGEBASE_REQUEST_TIMEOUT_SECS.",
+        "Longest time one request may run before it is cancelled, from 1 to 3600 seconds. 30 suits most apps.",
     )
     .unit("seconds")
     .env("FORGEBASE_REQUEST_TIMEOUT_SECS"),
     SettingDef::new(
         "server.shutdown_timeout_secs",
-        "Shutdown grace",
+        "Shutdown grace period",
         Int,
-        "How long shutdown waits for in-flight requests, at most 3600 seconds. Env FORGEBASE_SHUTDOWN_TIMEOUT_SECS.",
+        "How long the server waits for running requests to finish when it stops, up to 3600 seconds. 30 is a good value.",
     )
     .unit("seconds")
     .env("FORGEBASE_SHUTDOWN_TIMEOUT_SECS"),
     SettingDef::new(
         "server.ops_access",
-        "Operational endpoints",
+        "Who can read metrics",
         Enum,
-        "Who may read /metrics and /api/system/info: loopback (administrators, plus callers on this host), admin or public. Env FORGEBASE_OPS_ACCESS.",
+        "Who may read /metrics and /api/system/info: loopback (administrators and programs on this machine), admin (administrators only) or public (anyone). Keep loopback unless a monitoring tool on another machine needs them.",
     )
     .options(&["loopback", "admin", "public"])
     .env("FORGEBASE_OPS_ACCESS"),
     SettingDef::new(
         "log.level",
-        "Log filter",
+        "Log level",
         Text,
-        "Tracing filter such as info or forgebase=debug; must not be empty. Env FORGEBASE_LOG_LEVEL, flag --log-level.",
+        "Which log lines are written: error, warn, info, debug or trace, also per module such as forgebase=debug. Use info day to day and debug while you look into a problem.",
     )
     .env("FORGEBASE_LOG_LEVEL")
     .flag("--log-level"),
@@ -241,24 +245,24 @@ const SERVER: &[SettingDef] = &[
         "log.format",
         "Log format",
         Enum,
-        "pretty for people, json for one object per line. Env FORGEBASE_LOG_FORMAT, flag --log-format.",
+        "How log lines look: pretty is easy to read in a terminal; json writes one JSON object per line for log collectors. Use pretty on your machine and json in production.",
     )
     .options(&["pretty", "json"])
     .env("FORGEBASE_LOG_FORMAT")
     .flag("--log-format"),
     SettingDef::new(
         "database.synchronous",
-        "Durability",
+        "Write durability",
         Enum,
-        "full fsyncs the WAL on every commit; normal is faster but a power cut can lose the last commits. Env FORGEBASE_DB_SYNCHRONOUS.",
+        "How safely commits are written: full writes every commit to disk before answering, so a power cut loses nothing; normal is faster, but a power cut can lose the last few commits. Keep full unless losing recent writes is acceptable.",
     )
     .options(&["full", "normal"])
     .env("FORGEBASE_DB_SYNCHRONOUS"),
     SettingDef::new(
         "database.busy_timeout_ms",
-        "Lock wait",
+        "Lock wait time",
         Int,
-        "How long a connection waits for another process's lock (CLI, backups), at most 600000 ms. Env FORGEBASE_DB_BUSY_TIMEOUT_MS.",
+        "How long the database waits while another process (the command line tool or a backup) holds a lock, up to 600000 milliseconds. 5000 (5 seconds) is a good value.",
     )
     .unit("ms")
     .env("FORGEBASE_DB_BUSY_TIMEOUT_MS"),
@@ -266,7 +270,7 @@ const SERVER: &[SettingDef] = &[
         "database.read_pool_size",
         "Read connections",
         Int,
-        "Parallel read-only database connections, 1 to 64. Env FORGEBASE_DB_READ_POOL_SIZE.",
+        "Number of database connections that serve reads in parallel, from 1 to 64. 8 suits most servers; raise it on machines with many CPU cores.",
     )
     .env("FORGEBASE_DB_READ_POOL_SIZE"),
 ];
@@ -276,21 +280,21 @@ const AUTH: &[SettingDef] = &[
         "auth.trust_forwarded_for",
         "Trust X-Forwarded-For",
         Bool,
-        "Take the client address from the last X-Forwarded-For entry; only behind a reverse proxy you run. Env FORGEBASE_AUTH_TRUST_FORWARDED_FOR.",
+        "Take the client's IP address from the X-Forwarded-For header that a reverse proxy adds. Turn it on only behind a proxy you run; leave it off when clients connect directly, or they can fake their address.",
     )
     .env("FORGEBASE_AUTH_TRUST_FORWARDED_FOR"),
     SettingDef::new(
         "auth.allow_private_outbound",
-        "Private outbound addresses",
+        "Allow private network calls",
         Bool,
-        "Let OAuth/OIDC, SMS and Turnstile requests reach loopback and private addresses (an identity provider on your own network). Env FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND.",
+        "Let sign-in providers (OAuth, OpenID Connect), SMS gateways and Cloudflare Turnstile checks reach this machine or your private network. Leave it off unless such a service runs on your own network.",
     )
     .env("FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND"),
     SettingDef::secret(
         "auth.master_key",
         "Master key",
         None,
-        "Seals stored secrets. It is the file <data dir>/auth/master.key, created on first start; no environment variable sets it. Back it up with the data directory.",
+        "Encrypts stored secrets such as sign-in provider keys. It is the file <data dir>/auth/master.key, created on first start, and cannot be set here. Back it up with the data directory.",
     ),
 ];
 
@@ -299,70 +303,85 @@ const STORAGE: &[SettingDef] = &[
         "storage.enabled",
         "Object storage",
         Bool,
-        "Serve /api/v1/storage and run the blob reconciler. Env FORGEBASE_STORAGE_ENABLED.",
+        "Turns file storage on or off: buckets, uploads and downloads under /api/v1/storage, and the cleanup of unused files. Leave it on unless your app stores no files.",
     )
     .env("FORGEBASE_STORAGE_ENABLED"),
     SettingDef::new(
         "storage.driver",
-        "Driver",
+        "Storage driver",
         Enum,
-        "local keeps blobs under <data dir>/storage; s3 uses an S3-compatible service (needs s3_endpoint and s3_bucket).",
+        "Where files are kept: local stores them under <data dir>/storage; s3 uses Amazon S3 or an S3-compatible service and needs an endpoint and a bucket. Start with local.",
     )
     .options(&["local", "s3"]),
     SettingDef::new(
         "storage.max_object_bytes",
-        "Largest object",
+        "Largest file",
         Int,
-        "Largest object in bytes; a bucket may set a lower limit.",
+        "Largest file one upload may store, in bytes; a bucket can set a lower limit. The default 5368709120 is 5 GiB.",
     )
     .unit("bytes"),
     SettingDef::new(
         "storage.upload_ttl_secs",
         "Upload session lifetime",
         Int,
-        "Seconds a multipart or resumable upload session lives.",
+        "How long an unfinished multipart or resumable upload can be continued, in seconds. 86400 (one day) is a good value.",
     )
     .unit("seconds"),
     SettingDef::new(
         "storage.reconcile_grace_secs",
-        "Reconciler grace",
+        "Cleanup grace period",
         Int,
-        "Seconds before the reconciler removes unreferenced blobs and stale staged files.",
+        "How long a file must be unused before the cleanup job deletes it, in seconds, so uploads in progress are never removed. 3600 (one hour) is a good value.",
     )
     .unit("seconds"),
     SettingDef::new(
         "storage.s3_endpoint",
         "S3 endpoint",
         Url,
-        "S3 only: endpoint URL such as https://s3.eu-central-1.amazonaws.com.",
+        "S3 driver only: address of the S3 service, such as https://s3.eu-central-1.amazonaws.com, or the address of an S3-compatible service.",
     ),
-    SettingDef::new("storage.s3_region", "S3 region", Text, "S3 only: signing region."),
-    SettingDef::new("storage.s3_bucket", "S3 bucket", Text, "S3 only: bucket that holds the blobs."),
-    SettingDef::new("storage.s3_prefix", "S3 key prefix", Text, "S3 only: key prefix inside the bucket."),
+    SettingDef::new(
+        "storage.s3_region",
+        "S3 region",
+        Text,
+        "S3 driver only: region of the bucket, used to sign requests, such as us-east-1 (the default) or eu-central-1.",
+    ),
+    SettingDef::new(
+        "storage.s3_bucket",
+        "S3 bucket",
+        Text,
+        "S3 driver only: name of the bucket that holds the files, such as my-app-files. Create the bucket in your S3 service first.",
+    ),
+    SettingDef::new(
+        "storage.s3_prefix",
+        "S3 folder prefix",
+        Text,
+        "S3 driver only: folder inside the bucket for ForgeBase's files, such as forgebase/. Leave it empty to use the whole bucket.",
+    ),
     SettingDef::new(
         "storage.s3_part_size",
-        "S3 part size",
+        "S3 upload part size",
         Int,
-        "S3 only: multipart part size in bytes (S3 needs at least 5 MiB).",
+        "S3 driver only: size of each part of a large upload, in bytes. S3 needs at least 5242880 (5 MiB); the default 8388608 (8 MiB) suits most services.",
     )
     .unit("bytes"),
     SettingDef::secret(
         "storage.s3_access_key",
         "S3 access key",
         Some("FORGEBASE_STORAGE_S3_ACCESS_KEY"),
-        "S3 only: set with the environment variable FORGEBASE_STORAGE_S3_ACCESS_KEY.",
+        "S3 driver only: the access key id. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_S3_ACCESS_KEY, not here.",
     ),
     SettingDef::secret(
         "storage.s3_secret_key",
         "S3 secret key",
         Some("FORGEBASE_STORAGE_S3_SECRET_KEY"),
-        "S3 only: set with the environment variable FORGEBASE_STORAGE_S3_SECRET_KEY.",
+        "S3 driver only: the secret access key. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_S3_SECRET_KEY, not here.",
     ),
     SettingDef::secret(
         "storage.s3_session_token",
         "S3 session token",
         Some("FORGEBASE_STORAGE_S3_SESSION_TOKEN"),
-        "S3 only, optional: set with the environment variable FORGEBASE_STORAGE_S3_SESSION_TOKEN.",
+        "S3 driver only, optional: a temporary session token. It is a secret, so set it with the environment variable FORGEBASE_STORAGE_S3_SESSION_TOKEN, not here.",
     ),
 ];
 
@@ -370,7 +389,7 @@ const FUNCTIONS: &[SettingDef] = &[SettingDef::new(
     "functions.enabled",
     "Server functions",
     Bool,
-    "Serve /api/v1/functions, run data hooks and the after-hook dispatcher. Off, record writes skip function hooks. Env FORGEBASE_FUNCTIONS_ENABLED.",
+    "Turns server functions on or off: /api/v1/functions, record hooks, and functions run by schedules or queues. When off, record writes skip their hooks. Leave it on if you deploy functions.",
 )
 .env("FORGEBASE_FUNCTIONS_ENABLED")];
 
@@ -379,75 +398,75 @@ const QUEUES: &[SettingDef] = &[
         "queue.enabled",
         "Queues and topics",
         Bool,
-        "Serve /api/v1/queues and run its maintenance and push task. Env FORGEBASE_QUEUE_ENABLED.",
+        "Turns queues on or off: /api/v1/queues, delivery to webhooks and functions, and queue cleanup. Leave it on if your app publishes messages.",
     )
     .env("FORGEBASE_QUEUE_ENABLED"),
     SettingDef::new(
         "queue.max_message_bytes",
         "Largest message",
         Int,
-        "Largest message (data, attributes, ordering key) and the default limit of a topic, 64 to 10485760 bytes.",
+        "Largest message (data, attributes and ordering key) a topic accepts unless it sets its own limit, from 64 to 10485760 bytes. The default 1048576 is 1 MiB.",
     )
     .unit("bytes"),
     SettingDef::new(
         "queue.default_retention_secs",
         "Default retention",
         Int,
-        "Retention of topics that do not set one, at least 60 seconds.",
+        "How long messages are kept in topics that do not set their own retention, at least 60 seconds. The default 604800 is 7 days.",
     )
     .unit("seconds"),
     SettingDef::new(
         "queue.max_retention_secs",
         "Longest retention",
         Int,
-        "Longest retention a topic may set; at least the default retention.",
+        "Longest retention a topic may ask for, at least the default retention. The default 2678400 is 31 days.",
     )
     .unit("seconds"),
     SettingDef::new(
         "queue.dedup_window_secs",
-        "Dedup window",
+        "Duplicate detection window",
         Int,
-        "A repeated dedup_id inside this window is accepted once, 1 to 86400 seconds.",
+        "A message sent again with the same dedup_id within this time is stored once, from 1 to 86400 seconds. 600 (10 minutes) is a good value.",
     )
     .unit("seconds"),
     SettingDef::new(
         "queue.max_pull_wait_ms",
         "Longest pull wait",
         Int,
-        "Longest long-poll wait of a pull, at most 300000 ms; keep it below the request timeout.",
+        "Longest time a pull request waits for new messages before it answers with none, up to 300000 milliseconds. Keep it below the request timeout; the default 20000 is 20 seconds.",
     )
     .unit("ms"),
     SettingDef::new(
         "queue.poll_interval_ms",
         "Maintenance interval",
         Int,
-        "Interval of maintenance (expired leases, retention) and push rounds, 10 to 60000 ms.",
+        "How often expired leases and old messages are cleaned up and push deliveries run, from 10 to 60000 milliseconds. 1000 (one second) is a good value.",
     )
     .unit("ms"),
     SettingDef::new(
         "queue.push_timeout_secs",
         "Push timeout",
         Int,
-        "Timeout of one webhook or function push, 1 to 300 seconds.",
+        "Longest time one delivery to a webhook or function may take, from 1 to 300 seconds. 10 is a good value.",
     )
     .unit("seconds"),
     SettingDef::new(
         "queue.push_concurrency",
-        "Push concurrency",
+        "Parallel pushes",
         Int,
-        "Push subscriptions served at once, 1 to 256.",
+        "Number of push subscriptions delivered at the same time, from 1 to 256. 8 suits most servers.",
     ),
     SettingDef::new(
         "queue.allow_http_push",
         "Allow http:// webhooks",
         Bool,
-        "Accept http:// webhook endpoints; local development only.",
+        "Accept webhook addresses that start with http:// instead of https://. Turn it on only for local development; leave it off in production.",
     ),
     SettingDef::new(
         "queue.dead_letter_retention_days",
         "Dead-letter retention",
         Int,
-        "Days dead-letter records are kept.",
+        "How many days messages that failed delivery too many times (dead letters) are kept for inspection and replay. 14 is a good value.",
     )
     .unit("days"),
 ];
@@ -457,14 +476,14 @@ const REALTIME: &[SettingDef] = &[
         "realtime.enabled",
         "Realtime",
         Bool,
-        "Serve WebSocket, SSE and channels under /api/v1/realtime. The record-change log keeps being written when off (functions and queues read it). Env FORGEBASE_REALTIME_ENABLED.",
+        "Turns live updates on or off: WebSocket, server-sent events (SSE) and channels under /api/v1/realtime. When off, the change log that functions and queues read is still written. Leave it on if your app shows live data.",
     )
     .env("FORGEBASE_REALTIME_ENABLED"),
     SettingDef::new(
         "realtime.max_connections_per_principal",
-        "Connections per principal",
+        "Connections per user or key",
         Int,
-        "Most simultaneous realtime connections one user or API key may hold, 1 to 1000000. Env FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL.",
+        "Most live connections one user or API key may hold at once, from 1 to 1000000. 32 covers several open tabs and devices.",
     )
     .env("FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL"),
 ];
@@ -473,7 +492,7 @@ const VECTOR: &[SettingDef] = &[SettingDef::new(
     "vector.enabled",
     "Vector search",
     Bool,
-    "Serve /api/v1/vector and load, warm and save vector indexes. Env FORGEBASE_VECTOR_ENABLED.",
+    "Turns vector search on or off: /api/v1/vector and loading its search indexes at start. Leave it on if you store embeddings for similarity search.",
 )
 .env("FORGEBASE_VECTOR_ENABLED")];
 
@@ -481,7 +500,7 @@ const GRAPH: &[SettingDef] = &[SettingDef::new(
     "graph.enabled",
     "Graph",
     Bool,
-    "Serve the node and edge API under /api/v1/graph. Env FORGEBASE_GRAPH_ENABLED.",
+    "Turns the graph API (nodes and edges under /api/v1/graph) on or off. It runs nothing in the background, so leaving it on costs little.",
 )
 .env("FORGEBASE_GRAPH_ENABLED")];
 
@@ -489,7 +508,7 @@ const IDENTITY: &[SettingDef] = &[SettingDef::new(
     "identity.enabled",
     "Identity provider",
     Bool,
-    "Serve the OIDC provider (/api/auth/oidc, clients, consents, signing keys) and realm management (/api/v1/realms). Existing realms keep signing in when off. Env FORGEBASE_IDENTITY_ENABLED.",
+    "Turns the OpenID Connect (OIDC) provider and realm management on or off: sign-in for your other apps (/api/auth/oidc, clients, consents, signing keys) and /api/v1/realms. Users of existing realms keep signing in when off. Leave it on if other apps sign in through ForgeBase.",
 )
 .env("FORGEBASE_IDENTITY_ENABLED")];
 
@@ -497,7 +516,7 @@ const ACCESS: &[SettingDef] = &[SettingDef::new(
     "access.enabled",
     "Access control API",
     Bool,
-    "Serve policies, roles, organisations, teams, projects and suspensions under /api/v1. The policy engine keeps enforcing the stored rules when off. Env FORGEBASE_ACCESS_ENABLED.",
+    "Turns the API for policies, roles, access control lists (ACLs), organisations, teams, projects and suspensions on or off. The stored rules are still enforced when off. Leave it on while you manage access.",
 )
 .env("FORGEBASE_ACCESS_ENABLED")];
 
@@ -506,15 +525,15 @@ const RESP: &[SettingDef] = &[
         "resp.enabled",
         "Redis protocol listener",
         Bool,
-        "Bind a RESP2/RESP3 listener for the key-value store; off by default, no TLS. Env FORGEBASE_RESP_ENABLED, flag --resp.",
+        "Opens a second port that speaks the Redis serialization protocol (RESP), so redis-cli and Redis client libraries can use the key-value store. Off by default because it does not encrypt traffic; turn it on only on a trusted network.",
     )
     .env("FORGEBASE_RESP_ENABLED")
     .flag("--resp"),
     SettingDef::new(
         "resp.host",
-        "Bind address",
+        "Listen address",
         Text,
-        "Address of the RESP listener; keep it on loopback or behind a tunnel. Env FORGEBASE_RESP_HOST, flag --resp-host.",
+        "Network address the Redis protocol listener listens on. Keep 127.0.0.1 (the default) or reach it through a secure tunnel, because it does not encrypt traffic.",
     )
     .env("FORGEBASE_RESP_HOST")
     .flag("--resp-host"),
@@ -522,7 +541,7 @@ const RESP: &[SettingDef] = &[
         "resp.port",
         "Port",
         Int,
-        "TCP port of the RESP listener; 0 picks a free port. Env FORGEBASE_RESP_PORT, flag --resp-port.",
+        "TCP port of the Redis protocol listener, such as 6380 (the default; Redis itself uses 6379). 0 picks a free port.",
     )
     .env("FORGEBASE_RESP_PORT")
     .flag("--resp-port"),
@@ -530,14 +549,14 @@ const RESP: &[SettingDef] = &[
         "resp.max_connections",
         "Most connections",
         Int,
-        "Most simultaneous connections, 1 to 1000000; further ones are refused. Env FORGEBASE_RESP_MAX_CONNECTIONS.",
+        "Most clients connected at once, from 1 to 1000000; further ones are refused. 1024 suits most servers.",
     )
     .env("FORGEBASE_RESP_MAX_CONNECTIONS"),
     SettingDef::new(
         "resp.max_bulk_bytes",
-        "Largest argument",
+        "Largest value",
         Int,
-        "Largest single argument, 1 to 536870912 bytes. Env FORGEBASE_RESP_MAX_BULK_BYTES.",
+        "Largest single value or argument a client may send, from 1 to 536870912 bytes. The default 16777216 is 16 MiB.",
     )
     .unit("bytes")
     .env("FORGEBASE_RESP_MAX_BULK_BYTES"),
@@ -545,7 +564,7 @@ const RESP: &[SettingDef] = &[
         "resp.idle_timeout_secs",
         "Idle timeout",
         Int,
-        "Close a connection idle this long, at most 86400 seconds (0 = never; subscribed connections are exempt). Env FORGEBASE_RESP_IDLE_TIMEOUT_SECS.",
+        "Closes a connection that sends nothing for this long, up to 86400 seconds; 0 never closes it. Connections waiting on a subscription stay open. 300 (5 minutes) is a good value.",
     )
     .unit("seconds")
     .env("FORGEBASE_RESP_IDLE_TIMEOUT_SECS"),
@@ -555,7 +574,7 @@ const BILLING: &[SettingDef] = &[SettingDef::new(
     "billing.enabled",
     "Billing",
     Bool,
-    "Serve plans, subscriptions, invoices and provider webhooks under /api/v1/billing (test mode only). Env FORGEBASE_BILLING_ENABLED, flag --billing.",
+    "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
 )
 .env("FORGEBASE_BILLING_ENABLED")
 .flag("--billing")];
@@ -565,132 +584,132 @@ pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         id: "server",
         name: "Server",
-        summary: "HTTP listener, logging and database connection settings shared by every module.",
+        summary: "Where the server listens, how it logs and how it uses its database. Shared by every module.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/system"),
-        docs: "docs/deployment.md",
+        docs: "docs/deployment.md#7-configuration-keys",
         routes: &[],
         settings: SERVER,
     },
     FeatureDef {
         id: "database",
         name: "Database",
-        summary: "Collections, records, schemas, indexes and SQL on the embedded SQLite database.",
+        summary: "Collections (tables), records, schemas, indexes and SQL queries on the built-in SQLite database.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/database"),
-        docs: "docs/adr/0003-data-core.md",
+        docs: "docs/adr/0003-data-core.md#adr-0003-phase-2-data-core",
         routes: &[],
         settings: &[],
     },
     FeatureDef {
         id: "auth",
         name: "Authentication",
-        summary: "Administrators, users, sessions, API keys and sign-in methods.",
+        summary: "Administrators, users, sign-in methods, sessions and API keys.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/auth"),
-        docs: "docs/adr/0004-auth.md",
+        docs: "docs/adr/0004-auth.md#adr-0004-authentication-core",
         routes: &[],
         settings: AUTH,
     },
     FeatureDef {
         id: "kv",
         name: "Key-value store",
-        summary: "Redis-style keys, hashes, lists and counters under /api/v1/kv; functions and the Redis listener use it.",
+        summary: "Fast Redis-style keys, hashes, lists and counters under /api/v1/kv. Server functions and the Redis protocol listener use it.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/redis"),
-        docs: "docs/adr/0005-kv.md",
+        docs: "docs/adr/0005-kv.md#adr-0005-key-value-engine-and-its-persistence",
         routes: &[],
         settings: &[],
     },
     FeatureDef {
         id: "storage",
         name: "Object storage",
-        summary: "Buckets and objects on local disk or S3, with uploads, signed links and a reconciler.",
+        summary: "Files in buckets on local disk or Amazon S3, with uploads, signed download links and automatic cleanup.",
         can_disable: true,
         enable_key: Some("storage.enabled"),
         studio_path: Some("/storage"),
-        docs: "docs/adr/0018-object-storage.md",
+        docs: "docs/adr/0018-object-storage.md#adr-0018-object-storage",
         routes: &["/api/v1/storage/**"],
         settings: STORAGE,
     },
     FeatureDef {
         id: "functions",
         name: "Server functions",
-        summary: "WebAssembly functions run on HTTP calls, record hooks, schedules and queue pushes.",
+        summary: "Your own code, compiled to WebAssembly, run on HTTP calls, record changes, schedules and queue messages.",
         can_disable: true,
         enable_key: Some("functions.enabled"),
         studio_path: Some("/functions"),
-        docs: "docs/adr/0017-functions.md",
+        docs: "docs/adr/0017-functions.md#adr-0017-server-functions-on-wasmtime",
         routes: &["/api/v1/functions/**"],
         settings: FUNCTIONS,
     },
     FeatureDef {
         id: "jobs",
         name: "Jobs",
-        summary: "Durable background jobs, schedules and workflows; every module's maintenance runs on it.",
+        summary: "Background jobs, schedules and workflows that survive restarts. Every module's maintenance runs on them.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/jobs"),
-        docs: "docs/adr/0007-jobs.md",
+        docs: "docs/adr/0007-jobs.md#adr-0007-durable-jobs",
         routes: &[],
         settings: &[],
     },
     FeatureDef {
         id: "queues",
         name: "Queues and topics",
-        summary: "Durable topics with pull and push subscriptions, dead letters and replay.",
+        summary: "Topics that keep messages, with pull and push delivery, retries, dead letters and replay.",
         can_disable: true,
         enable_key: Some("queue.enabled"),
         studio_path: Some("/queues"),
-        docs: "docs/adr/0022-queues-pubsub.md",
+        docs: "docs/adr/0022-queues-pubsub.md#adr-0022-durable-topics-and-queues-publishsubscribe",
         routes: &["/api/v1/queues/**"],
         settings: QUEUES,
     },
     FeatureDef {
         id: "realtime",
         name: "Realtime",
-        summary: "Record changes, channels and presence over WebSocket and server-sent events.",
+        summary: "Live record changes, channels and presence over WebSocket and server-sent events (SSE).",
         can_disable: true,
         enable_key: Some("realtime.enabled"),
         studio_path: None,
-        docs: "docs/adr/0011-realtime.md",
+        docs: "docs/adr/0011-realtime.md#adr-0011-realtime-engine",
         routes: &["/api/v1/realtime/**"],
         settings: REALTIME,
     },
     FeatureDef {
         id: "vector",
         name: "Vector search",
-        summary: "Embedding collections with approximate nearest-neighbour search.",
+        summary: "Collections of embeddings with fast similarity search (approximate nearest neighbours).",
         can_disable: true,
         enable_key: Some("vector.enabled"),
         studio_path: Some("/vector"),
-        docs: "docs/adr/0012-vector.md",
+        docs: "docs/adr/0012-vector.md#adr-0012-vector-search",
         routes: &["/api/v1/vector/**"],
         settings: VECTOR,
     },
     FeatureDef {
         id: "graph",
         name: "Graph",
-        summary: "Nodes, edges, traversals and shortest paths over records.",
+        summary: "Nodes and edges between records, with traversals and shortest paths.",
         can_disable: true,
         enable_key: Some("graph.enabled"),
         studio_path: Some("/graph"),
-        docs: "docs/adr/0006-graph.md",
+        docs: "docs/adr/0006-graph.md#adr-0006-graph-model",
         routes: &["/api/v1/graph/**"],
         settings: GRAPH,
     },
     FeatureDef {
         id: "identity",
         name: "Identity provider",
-        summary: "OpenID Connect provider for your own apps, and realms (separate user pools).",
+        summary: "An OpenID Connect (OIDC) provider so your other apps can sign users in through ForgeBase, and realms (separate user pools).",
         can_disable: true,
         enable_key: Some("identity.enabled"),
         studio_path: Some("/identity"),
-        docs: "docs/adr/0019-identity-provider.md",
+        docs: "docs/adr/0019-identity-provider.md#adr-0019-forgebase-as-identity-provider-oauth-20-authorization-server-openid-connect",
         routes: &[
             "/api/auth/oidc/**",
             "/api/auth/clients/**",
@@ -706,11 +725,11 @@ pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         id: "access",
         name: "Access control",
-        summary: "Policies, roles, ACLs, organisations, teams, projects, invitations and suspensions.",
+        summary: "Policies, roles, access control lists (ACLs), organisations, teams, projects, invitations and suspensions.",
         can_disable: true,
         enable_key: Some("access.enabled"),
         studio_path: Some("/access"),
-        docs: "docs/adr/0008-policy.md",
+        docs: "docs/adr/0008-policy.md#adr-0008-authorization-tenancy-and-the-evaluation-pipeline",
         routes: &[
             "/api/v1/acl/**",
             "/api/v1/authz/**",
@@ -729,33 +748,33 @@ pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         id: "resp",
         name: "Redis protocol",
-        summary: "A RESP2/RESP3 listener so redis-cli and Redis clients reach the key-value store.",
+        summary: "A Redis serialization protocol (RESP) listener so redis-cli and Redis client libraries can use the key-value store.",
         can_disable: true,
         enable_key: Some("resp.enabled"),
         studio_path: Some("/redis"),
-        docs: "docs/adr/0013-resp.md",
+        docs: "docs/adr/0013-resp.md#adr-0013-resp-listener-and-the-redisvalkey-adapter",
         routes: &[],
         settings: RESP,
     },
     FeatureDef {
         id: "billing",
         name: "Billing",
-        summary: "Plans, prices, subscriptions, invoices and Stripe, Razorpay and store webhooks (test mode).",
+        summary: "Plans, prices, subscriptions and invoices, with Stripe, Razorpay and app store webhooks (test mode only).",
         can_disable: true,
         enable_key: Some("billing.enabled"),
         studio_path: Some("/billing"),
-        docs: "docs/adr/0021-billing.md",
+        docs: "docs/adr/0021-billing.md#adr-0021-billing",
         routes: &["/api/v1/billing/**"],
         settings: BILLING,
     },
     FeatureDef {
         id: "entitlements",
         name: "Plans and quotas",
-        summary: "Features, plans, add-ons, usage limits and plan-based rate limits.",
+        summary: "Features, plans, add-ons, usage limits and rate limits that depend on a user's plan.",
         can_disable: false,
         enable_key: None,
         studio_path: None,
-        docs: "docs/adr/0010-entitlements.md",
+        docs: "docs/adr/0010-entitlements.md#adr-0010-entitlements-and-quotas",
         routes: &[],
         settings: &[],
     },
@@ -766,29 +785,29 @@ pub const FEATURES: &[FeatureDef] = &[
         can_disable: false,
         enable_key: None,
         studio_path: None,
-        docs: "docs/adr/0016-credits.md",
+        docs: "docs/adr/0016-credits.md#adr-0016-credits",
         routes: &[],
         settings: &[],
     },
     FeatureDef {
         id: "customize",
         name: "Customization",
-        summary: "Custom domains, branding, email templates and agreements.",
+        summary: "Custom domains, branding, email templates and the terms your users accept.",
         can_disable: false,
         enable_key: None,
         studio_path: None,
-        docs: "docs/adr/0020-product-customization.md",
+        docs: "docs/adr/0020-product-customization.md#adr-0020-product-customization",
         routes: &[],
         settings: &[],
     },
     FeatureDef {
         id: "backups",
         name: "Backups",
-        summary: "Online snapshots of the data directory under /api/v1/system/backups.",
+        summary: "Snapshots of the data directory, taken while the server runs, under /api/v1/system/backups.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/system"),
-        docs: "docs/adr/0024-backup-restore.md",
+        docs: "docs/adr/0024-backup-restore.md#adr-0024-backup-restore-snapshots-exportimport-and-doctor",
         routes: &[],
         settings: &[],
     },
@@ -949,11 +968,17 @@ pub fn apply_patch(
     let mut overridden = BTreeMap::new();
     let mut changes = Vec::new();
     if set.is_empty() {
-        invalid.insert("set".to_owned(), "no settings given".to_owned());
+        invalid.insert(
+            "set".to_owned(),
+            "give at least one setting to change, such as {\"log.level\": \"debug\"}".to_owned(),
+        );
     }
     for (key, value) in set {
         let Some(def) = setting(key) else {
-            invalid.insert(key.clone(), "unknown setting".to_owned());
+            invalid.insert(
+                key.clone(),
+                "is not a setting: use a key listed by GET /api/system/features, such as log.level".to_owned(),
+            );
             continue;
         };
         if def.secret {
@@ -961,7 +986,7 @@ pub fn apply_patch(
             continue;
         }
         if !def.editable {
-            invalid.insert(key.clone(), "read-only here; see the setting's help".to_owned());
+            invalid.insert(key.clone(), read_only_reason(def));
             continue;
         }
         let item = match to_toml(def, value) {
@@ -976,7 +1001,7 @@ pub fn apply_patch(
         match set_keys(&base_text, std::slice::from_ref(&(def.key, item.clone()))) {
             Ok(text) => {
                 if let Err(e) = origin.candidate(&path, Some(&text)) {
-                    invalid.insert(key.clone(), parse_reason(&e));
+                    invalid.insert(key.clone(), parse_reason(def, &e));
                     continue;
                 }
             }
@@ -1034,71 +1059,124 @@ pub fn apply_patch(
 
 fn secret_reason(def: &SettingDef) -> String {
     match def.env {
-        Some(var) => format!("a secret: set it with the environment variable {var}"),
-        None => "a secret: it cannot be set through the API".to_owned(),
+        Some(var) => format!("is a secret and cannot be saved here: set the environment variable {var} and restart"),
+        None => "is a secret kept in <data dir>/auth/master.key and cannot be changed here".to_owned(),
+    }
+}
+
+fn read_only_reason(def: &SettingDef) -> String {
+    match (def.flag, def.env) {
+        (Some(flag), Some(env)) => {
+            format!("cannot be changed here: start the server with {flag} or the environment variable {env} instead")
+        }
+        (Some(flag), None) => format!("cannot be changed here: start the server with {flag} instead"),
+        (None, Some(env)) => format!("cannot be changed here: set the environment variable {env} instead"),
+        (None, None) => "cannot be changed here".to_owned(),
     }
 }
 
 fn overridden_reason(def: &SettingDef, what: &str, name: Option<&str>) -> String {
-    match name {
-        Some(n) => format!("set by {what} ({n}), which the config file cannot override"),
-        None => format!("{} is set by {what}, which the config file cannot override", def.key),
+    let name = name.unwrap_or(def.key);
+    format!(
+        "is set by {what} ({name}), which wins over the config file: change or remove {name} where the server is started, then restart"
+    )
+}
+
+/// The default of `def` as an example value ("30", "info"), if it has one.
+fn example(def: &SettingDef) -> Option<String> {
+    let v = default_values().remove(def.key)?;
+    match v {
+        Json::String(s) if !s.is_empty() => Some(s),
+        Json::Number(n) => Some(n.to_string()),
+        Json::Bool(b) => Some(b.to_string()),
+        _ => None,
     }
 }
 
-fn parse_reason(e: &ConfigError) -> String {
+fn such_as(def: &SettingDef) -> String {
+    example(def).map(|e| format!(", such as {e}")).unwrap_or_default()
+}
+
+/// "seconds" for a unit, as words.
+fn unit_words(def: &SettingDef) -> &'static str {
+    match def.unit {
+        Some("bytes") => " of bytes",
+        Some("seconds") => " of seconds",
+        Some("ms") => " of milliseconds",
+        Some("days") => " of days",
+        _ => "",
+    }
+}
+
+/// `a, b or c`.
+fn one_of(options: &[&str]) -> String {
+    match options.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+fn parse_reason(def: &SettingDef, e: &ConfigError) -> String {
     match e {
         ConfigError::Parse { message, .. } => {
             // toml's message starts with the location; the last line is the reason.
-            message
+            let reason = message
                 .lines()
                 .rev()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or(message)
-                .trim()
-                .to_owned()
+                .trim();
+            let max = [("u8", "255"), ("u16", "65535"), ("u32", "4294967295")]
+                .into_iter()
+                .find(|(ty, _)| reason.ends_with(&format!("expected {ty}")))
+                .map(|(_, max)| max);
+            match max {
+                Some(max) => format!("must be a whole number from 0 to {max}{}", such_as(def)),
+                None => format!("is not a valid value ({reason}); enter a value{}", such_as(def)),
+            }
         }
         other => other.to_string(),
     }
 }
 
-/// Checks `value` against `def` and converts it to a TOML value.
+/// Checks `value` against `def` and converts it to a TOML value. Each
+/// refusal says what to enter instead.
 fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
     match def.ty {
         SettingType::Bool => value
             .as_bool()
             .map(toml_edit::Value::from)
-            .ok_or_else(|| "expected true or false".to_owned()),
+            .ok_or_else(|| "must be true or false".to_owned()),
         SettingType::Int => value
             .as_i64()
             .filter(|n| *n >= 0)
             .map(toml_edit::Value::from)
-            .ok_or_else(|| "expected a non-negative integer".to_owned()),
+            .ok_or_else(|| format!("must be a whole number{}{}", unit_words(def), such_as(def))),
         SettingType::String => value
             .as_str()
             .map(toml_edit::Value::from)
-            .ok_or_else(|| "expected a string".to_owned()),
+            .ok_or_else(|| format!("must be text{}", such_as(def))),
         SettingType::Enum => match value.as_str() {
             Some(s) if def.options.contains(&s) => Ok(toml_edit::Value::from(s)),
-            _ => Err(format!("expected one of {}", def.options.join(", "))),
+            _ => Err(format!("must be one of {}", one_of(def.options))),
         },
         SettingType::Url => match value.as_str() {
             Some(s) if s.is_empty() || s.starts_with("https://") || s.starts_with("http://") => {
                 Ok(toml_edit::Value::from(s))
             }
-            _ => Err("expected an http:// or https:// URL".to_owned()),
+            _ => Err("must be an address that starts with https:// or http://, such as https://s3.eu-central-1.amazonaws.com".to_owned()),
         },
         SettingType::Duration => match value.as_str() {
             Some(s) if is_duration(s) => Ok(toml_edit::Value::from(s)),
-            _ => Err("expected a duration such as \"30s\", \"500ms\", \"5m\" or \"1h\"".to_owned()),
+            _ => Err("must be a duration such as 30s, 500ms, 5m or 1h".to_owned()),
         },
         SettingType::List => {
-            let items = value
-                .as_array()
-                .ok_or_else(|| "expected a list of strings".to_owned())?;
+            let wrong = || "must be a list of text values, such as [\"a\", \"b\"]".to_owned();
+            let items = value.as_array().ok_or_else(wrong)?;
             let mut arr = toml_edit::Array::new();
             for i in items {
-                arr.push(i.as_str().ok_or_else(|| "expected a list of strings".to_owned())?);
+                arr.push(i.as_str().ok_or_else(wrong)?);
             }
             Ok(toml_edit::Value::Array(arr))
         }
@@ -1476,6 +1554,194 @@ mod tests {
         );
     }
 
+    /// Name, summary, label and help appear as-is in the setup wizard and in
+    /// Features & settings (docs/requirements/dashboard-ux.md): sentence
+    /// case, jargon spelled out, a sensible value in every help line.
+    #[test]
+    fn copy_is_plain_and_gives_sensible_values() {
+        const PROPER: &[&str] = &[
+            "API",
+            "HTTP",
+            "IP",
+            "S3",
+            "TCP",
+            "X-Forwarded-For",
+            "Redis",
+            "OpenID",
+            "Connect",
+        ];
+        const JARGON: &[(&str, &str)] = &[
+            ("OIDC", "OpenID Connect"),
+            ("RESP", "Redis serialization protocol"),
+            ("SSE", "server-sent events"),
+            ("ACL", "access control list"),
+            ("TTL", "time to live"),
+            ("RLS", "row-level security"),
+            ("WAL", "write-ahead log"),
+            ("TLS", "Transport Layer Security"),
+            ("ANN", "nearest neighbour"),
+            ("JWT", "JSON Web Token"),
+        ];
+        let sentence_case = |what: &str, text: &str| {
+            let mut words = text.split(' ');
+            let first = words.next().unwrap_or_default();
+            assert!(
+                first.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit()),
+                "{what}: {text:?}"
+            );
+            for w in words {
+                assert!(
+                    !w.starts_with(char::is_uppercase) || PROPER.contains(&w),
+                    "{what}: {text:?} is sentence case ({w})"
+                );
+            }
+        };
+        let plain = |what: &str, text: &str| {
+            assert!(!text.trim().is_empty(), "{what} is empty");
+            for (abbr, long) in JARGON {
+                let used = text
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|w| w.trim_end_matches('s') == *abbr);
+                if used {
+                    assert!(text.contains(long), "{what}: {text:?} spells out {abbr} ({long})");
+                }
+            }
+        };
+        let sentence = |what: &str, text: &str| {
+            plain(what, text);
+            assert!(text.starts_with(char::is_uppercase), "{what}: {text:?}");
+            assert!(text.ends_with('.'), "{what}: {text:?} ends with a full stop");
+        };
+        let defaults = default_values();
+        for f in FEATURES {
+            sentence_case(f.id, f.name);
+            plain(f.id, f.name);
+            sentence(f.id, f.summary);
+            for s in f.settings {
+                sentence_case(s.key, s.label);
+                plain(s.key, s.label);
+                sentence(s.key, s.help);
+                match defaults.get(s.key) {
+                    Some(Json::Number(n)) => {
+                        assert!(s.help.contains(&n.to_string()), "{} help gives the default {n}", s.key)
+                    }
+                    Some(Json::String(v)) if !v.is_empty() => {
+                        assert!(s.help.contains(v.as_str()), "{} help gives the default {v}", s.key)
+                    }
+                    Some(Json::Bool(_)) => {
+                        let h = s.help.to_lowercase();
+                        assert!(
+                            ["leave it", "turn it", "leaving it"].iter().any(|p| h.contains(p)),
+                            "{} help says whether to turn it on",
+                            s.key
+                        );
+                    }
+                    _ => assert!(
+                        s.secret || s.help.contains("such as"),
+                        "{} help gives an example",
+                        s.key
+                    ),
+                }
+            }
+        }
+    }
+
+    /// GitHub's heading anchor: lower case, spaces to `-`, punctuation dropped.
+    fn anchor_of(heading: &str) -> String {
+        heading
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter_map(|c| match c {
+                ' ' => Some('-'),
+                c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_feature_links_to_an_existing_docs_anchor() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for f in FEATURES {
+            let (file, anchor) = f
+                .docs
+                .split_once('#')
+                .unwrap_or_else(|| panic!("{} docs has an anchor", f.id));
+            let text = std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("{}: {file}: {e}", f.id));
+            let anchors: Vec<String> = text
+                .lines()
+                .filter_map(|l| {
+                    l.trim_start_matches('#')
+                        .strip_prefix(' ')
+                        .filter(|_| l.starts_with('#'))
+                })
+                .map(anchor_of)
+                .collect();
+            assert!(
+                anchors.iter().any(|a| a == anchor),
+                "{}: #{anchor} is a heading of {file}",
+                f.id
+            );
+        }
+    }
+
+    /// Every validation message says what to enter instead.
+    #[test]
+    fn validation_messages_say_what_to_enter() {
+        for s in FEATURES.iter().flat_map(|f| f.settings.iter()).filter(|s| !s.secret) {
+            let wrong = if s.ty == SettingType::String {
+                Json::from(1)
+            } else {
+                Json::Null
+            };
+            let msg = to_toml(s, &wrong).unwrap_err();
+            assert!(msg.starts_with("must be "), "{}: {msg}", s.key);
+            let says_what = ["such as", "one of", "true or false"].iter().any(|p| msg.contains(p))
+                || (s.ty == SettingType::String && msg == "must be text");
+            assert!(says_what, "{}: {msg}", s.key);
+        }
+        let mut c = Config::defaults(Path::new("/srv/fb"));
+        c.server.host = " ".into();
+        c.server.request_timeout_secs = 0;
+        c.server.shutdown_timeout_secs = 4000;
+        c.database.read_pool_size = 0;
+        c.database.busy_timeout_ms = 700_000;
+        c.log.level = String::new();
+        c.resp.host = String::new();
+        c.resp.max_connections = 0;
+        c.resp.max_bulk_bytes = 0;
+        c.resp.idle_timeout_secs = 90_000;
+        c.storage.driver = crate::config::StorageDriverKind::S3;
+        c.storage.max_object_bytes = 0;
+        c.storage.s3_part_size = 0;
+        c.realtime.max_connections_per_principal = 0;
+        c.queue.max_message_bytes = 0;
+        c.queue.default_retention_secs = 0;
+        c.queue.dedup_window_secs = 0;
+        c.queue.max_pull_wait_ms = 400_000;
+        c.queue.poll_interval_ms = 0;
+        c.queue.push_timeout_secs = 0;
+        c.queue.push_concurrency = 0;
+        let problems = c.problems();
+        assert_eq!(problems.len(), 22, "{problems:?}");
+        for p in problems {
+            let ConfigError::Invalid { field, message } = p else {
+                panic!("{p}")
+            };
+            assert!(setting(field).is_some(), "{field} is a registry key");
+            assert!(message.starts_with("must be "), "{field}: {message}");
+            assert!(message.contains("such as"), "{field}: {message}");
+        }
+        let mut c = Config::defaults(Path::new("/srv/fb"));
+        c.queue.max_retention_secs = 60;
+        let [ConfigError::Invalid { field, message }] = &c.problems()[..] else {
+            panic!("one problem")
+        };
+        assert_eq!(*field, "queue.max_retention_secs");
+        assert!(message.contains("such as 2678400"), "{message}");
+    }
+
     #[test]
     fn patch_validates_every_key_before_writing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1500,15 +1766,15 @@ mod tests {
         ) else {
             panic!("refused")
         };
-        assert_eq!(d["nope.key"], "unknown setting");
-        assert_eq!(d["log.format"], "expected one of pretty, json");
-        assert_eq!(d["storage.enabled"], "expected true or false");
-        assert_eq!(d["server.request_timeout_secs"], "expected a non-negative integer");
-        assert!(
-            d["resp.port"].contains("u16") || d["resp.port"].contains("invalid"),
-            "{}",
-            d["resp.port"]
+        assert!(d["nope.key"].starts_with("is not a setting"), "{}", d["nope.key"]);
+        assert_eq!(d["log.format"], "must be one of pretty or json");
+        assert_eq!(d["storage.enabled"], "must be true or false");
+        assert_eq!(
+            d["server.request_timeout_secs"],
+            "must be a whole number of seconds, such as 30"
         );
+        assert_eq!(d["resp.port"], "must be a whole number from 0 to 65535, such as 6380");
+        assert!(d["data_dir"].contains("--data-dir"), "{}", d["data_dir"]);
         assert!(d["storage.s3_secret_key"].contains("FORGEBASE_STORAGE_S3_SECRET_KEY"));
         assert!(d.contains_key("data_dir"));
         assert!(d.contains_key("storage.s3_endpoint"));
@@ -1527,9 +1793,16 @@ mod tests {
         ) else {
             panic!("refused")
         };
-        assert_eq!(d["server.request_timeout_secs"], "must be between 1 and 3600");
-        assert_eq!(d["database.read_pool_size"], "must be between 1 and 64");
-        assert!(d["storage.s3_endpoint"].contains("s3_endpoint and s3_bucket"));
+        assert_eq!(
+            d["server.request_timeout_secs"],
+            "must be a whole number from 1 to 3600 seconds, such as 30"
+        );
+        assert_eq!(
+            d["database.read_pool_size"],
+            "must be a whole number from 1 to 64, such as 8"
+        );
+        assert!(d["storage.s3_endpoint"].starts_with("must be set when the driver is s3"));
+        assert!(d["storage.s3_bucket"].starts_with("must be set when the driver is s3"));
         // Cross-field changes pass together.
         apply_patch(
             &origin,
