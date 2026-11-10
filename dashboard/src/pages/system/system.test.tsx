@@ -131,6 +131,6 @@ describe("System Studio backups", () => {
     const { st } = setup();
     st.forbidden = true;
     renderStudio("/system/backups");
-    expect(await screen.findByText("Sign-in required")).toBeInTheDocument();
+    expect(await screen.findByText("You do not have permission to do this")).toBeInTheDocument();
   });
 });

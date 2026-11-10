@@ -1,9 +1,22 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { Checkbox } from "panelui-web/checkbox";
 import { Select } from "panelui-web/select";
+import { Switch } from "panelui-web/switch";
 import { Tabs } from "panelui-web/tabs";
 
-// Form and navigation controls used by the studios. Kept out of ui.tsx so the first-load chunk does not carry Select and Tabs.
+/**
+ * Form and navigation controls used by the studios, each with a value-in, value-out API (audit A-24: no native
+ * checkboxes). Kept out of ui.tsx so the first-load chunk does not carry Select and Tabs.
+ *
+ * Usage:
+ *   <Sel aria-label="Visibility" value={v} onChange={setV} options={["private", "public"]} />
+ *   <Check checked={force} onChange={setForce} label="Also delete its files" />
+ *   <Toggle checked={enabled} onChange={setEnabled} label="Versioning" description="Keep earlier versions of each file." />
+ *   <RouteTabs label="Queues sections" tabs={[{ to: "/queues", label: "Topics", end: true }, …]} />
+ *
+ * Inside FormField, spread its props: {(p) => <Check {...p} checked={x} onChange={setX} label="Required" />}.
+ */
 
 export type SelectOption<T extends string | number = string> = T | { value: T; label: ReactNode };
 
@@ -39,6 +52,70 @@ export function Sel<T extends string | number = string>({ value, onChange, optio
         ))}
       </Select.Content>
     </Select>
+  );
+}
+
+interface BoolControl {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  /** Visible words next to the control (also its accessible name). */
+  label?: ReactNode;
+  /** Accessible name when there are no visible words. */
+  "aria-label"?: string;
+  /** A quieter line under the label. */
+  description?: ReactNode;
+  disabled?: boolean;
+  name?: string;
+  id?: string;
+  className?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: true;
+}
+
+function BoolRow({ id, label, description, className = "", control }: { id: string; label?: ReactNode; description?: ReactNode; className?: string; control: ReactNode }) {
+  if (!label && !description) return <>{control}</>;
+  return (
+    <span className={`inline-flex items-start gap-2 text-sm ${className}`.trim()}>
+      {control}
+      <span className="flex flex-col">
+        {label && (
+          <label htmlFor={id} className="cursor-pointer leading-5">
+            {label}
+          </label>
+        )}
+        {description && <span className="text-xs text-muted-foreground">{description}</span>}
+      </span>
+    </span>
+  );
+}
+
+/** PanelUI Checkbox with `checked` in and `onChange(boolean)` out. */
+export function Check({ checked, onChange, label, description, disabled, name, id, className, "aria-label": ariaLabel, ...aria }: BoolControl) {
+  const auto = useId();
+  const cid = id ?? `chk${auto.replace(/:/g, "")}`;
+  return (
+    <BoolRow
+      id={cid}
+      label={label}
+      description={description}
+      className={className}
+      control={<Checkbox id={cid} size="sm" checked={checked} onCheckedChange={(v) => onChange(v === true)} disabled={disabled} name={name} label={label ? undefined : ariaLabel} {...aria} className="mt-0.5" />}
+    />
+  );
+}
+
+/** PanelUI Switch with `checked` in and `onChange(boolean)` out, for settings that apply at once. */
+export function Toggle({ checked, onChange, label, description, disabled, name, id, className, pending, "aria-label": ariaLabel, ...aria }: BoolControl & { pending?: boolean }) {
+  const auto = useId();
+  const cid = id ?? `tgl${auto.replace(/:/g, "")}`;
+  return (
+    <BoolRow
+      id={cid}
+      label={label}
+      description={description}
+      className={className}
+      control={<Switch id={cid} size="sm" checked={checked} onCheckedChange={(v) => onChange(v)} disabled={disabled} name={name} pending={pending} label={label ? undefined : ariaLabel} {...aria} />}
+    />
   );
 }
 
