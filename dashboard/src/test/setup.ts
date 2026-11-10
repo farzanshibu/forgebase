@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 
 // jsdom lacks these browser APIs; PanelUI (NavRail, Menu) and the theme code use them.
-if (typeof window.matchMedia !== "function") {
+// Files that run in the node environment (live.smoke.test.ts) have no window at all.
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     writable: true,
