@@ -40,6 +40,22 @@ describe("Billing shell", () => {
   });
 });
 
+describe("Billing tab row", () => {
+  it("wraps instead of clipping, and every tab is reachable", async () => {
+    setup();
+    renderStudio("/billing");
+    const nav = await screen.findByRole("navigation", { name: "Billing sections" });
+    // A wrapping row has no scroll container that could hide a tab past the right edge.
+    expect(nav).toHaveClass("flex-wrap");
+    expect(nav).not.toHaveClass("overflow-x-auto");
+    const user = userEvent.setup();
+    for (const label of ["Providers and settings", "Dunning", "Revenue"]) {
+      await user.click(within(nav).getByRole("link", { name: label }));
+      await waitFor(() => expect(within(screen.getByRole("navigation", { name: "Billing sections" })).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page"));
+    }
+  });
+});
+
 describe("Revenue", () => {
   it("shows MRR, ARR, churn and revenue by currency", async () => {
     setup();
