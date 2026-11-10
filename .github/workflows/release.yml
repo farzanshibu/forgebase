@@ -60,11 +60,11 @@ jobs:
             builder: cross
             smoke: false
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-latest
             builder: cargo
             smoke: false
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-latest
             builder: cargo
             smoke: true
           - target: x86_64-pc-windows-msvc

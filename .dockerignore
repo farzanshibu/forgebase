@@ -4,8 +4,8 @@
 **/target
 **/node_modules
 dashboard/dist
-forgebase-data
-**/forgebase-data
+# Root data dir only: **/forgebase-data would also drop crates/forgebase-data.
+/forgebase-data
 .env
 .env.*
 *.db

@@ -86,7 +86,8 @@ jobs:
         with:
           command: check
           manifest-path: sdk/rust/Cargo.toml
-          arguments: --config ${{ github.workspace }}/deny.toml --all-features
+          # The action runs in a container at the workspace root: use a relative path.
+          arguments: --config deny.toml --all-features
 
   deny:
     name: cargo deny (advisories, licences, sources)
