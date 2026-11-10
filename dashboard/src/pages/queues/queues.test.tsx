@@ -330,6 +330,6 @@ describe("Queues studio navigation", () => {
     setup();
     renderStudio("/queues/nope");
     expect(await screen.findByText("No such page in Queues.")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /Queues Studio/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "Queues" }).length).toBeGreaterThan(0);
   });
 });

@@ -12,6 +12,7 @@
  * "sign in". A feature switched off (feature_disabled) shows where to switch it back on.
  */
 import { Alert } from "panelui-web/alert";
+import { useState } from "react";
 import { Link, useInRouterContext } from "react-router-dom";
 import { explain, fieldErrors } from "../errors";
 import { ApiError } from "../api";
@@ -34,63 +35,73 @@ export function ErrorPanel({ error, fields = "list", onRetry, className }: Error
   if (!error) return null;
   if (error instanceof ApiError && error.code === "feature_disabled") return <FeatureDisabled message={error.message} />;
   const e = explain(error);
+  const fromServer = error instanceof ApiError;
   const byField = fields === "list" ? Object.entries(fieldErrors(error)) : [];
   const tone = e.kind === "session" || e.kind === "forbidden" ? "warning" : "destructive";
+  // The server's own words, when the title is our plain version of them.
+  const serverSaid = fromServer && e.message && e.message !== e.title ? e.message : undefined;
   return (
     <Alert tone={tone} variant="plain" className={className}>
       <Alert.Icon />
       <Alert.Title>{e.title}</Alert.Title>
-      <Alert.Description>
-        <p>
-          <span className="font-medium text-foreground">What to do: </span>
-          {e.next}
-        </p>
-        {byField.length > 0 && (
-          <ul aria-label="Fields to fix" className="mt-1 list-disc space-y-0.5 pl-5">
-            {byField.map(([name, msg]) => (
-              <li key={name}>
-                <span className="font-medium text-foreground">{name}</span>: {msg}
-              </li>
-            ))}
-          </ul>
-        )}
-        {(e.requestId || onRetry) && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+      {fromServer ? (
+        <Alert.Description>
+          <p>
+            <span className="font-medium text-foreground">What to do: </span>
+            {e.next}
+          </p>
+          {byField.length > 0 && (
+            <ul aria-label="Fields to fix" className="mt-1 list-disc space-y-0.5 pl-5">
+              {byField.map(([name, msg]) => (
+                <li key={name}>
+                  <span className="font-medium text-foreground">{name}</span>: {msg}
+                </li>
+              ))}
+            </ul>
+          )}
+          {serverSaid && <p className="mt-1 text-xs">Server message: {serverSaid}</p>}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
             {onRetry && (
               <Button type="button" onClick={onRetry}>
                 Try again
               </Button>
             )}
+            {e.code && <span className="font-mono">Code {e.code}</span>}
             {e.requestId && (
               <>
-                <span className="font-mono text-xs">Request id {e.requestId}</span>
+                <span className="font-mono">Request id {e.requestId}</span>
                 <CopyButton text={e.requestId} label="Copy request id" />
               </>
             )}
           </div>
-        )}
-        <details className="mt-2 text-xs">
-          <summary className="cursor-pointer select-none font-medium text-foreground">Details</summary>
-          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-            {e.status !== undefined && (
-              <>
-                <dt>Status</dt>
-                <dd className="font-mono">{e.status}</dd>
-              </>
-            )}
-            {e.code && (
-              <>
-                <dt>Code</dt>
-                <dd className="font-mono">{e.code}</dd>
-              </>
-            )}
-            <dt>Message</dt>
-            <dd className="break-words">{e.message}</dd>
-          </dl>
-          <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-muted/60 p-2 font-mono text-foreground/80">{stringify(e.raw)}</pre>
-        </details>
-      </Alert.Description>
+          <RawDetails status={e.status} raw={e.raw} />
+        </Alert.Description>
+      ) : (
+        onRetry && (
+          <Alert.Description>
+            <Button type="button" onClick={onRetry} className="mt-1">
+              Try again
+            </Button>
+          </Alert.Description>
+        )
+      )}
     </Alert>
+  );
+}
+
+/** "Details": the status and the raw response, rendered only once opened so it never repeats the message on screen. */
+function RawDetails({ status, raw }: { status?: number; raw: unknown }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="mt-2 text-xs" onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
+      <summary className="cursor-pointer select-none font-medium text-foreground">Details</summary>
+      {open && (
+        <div className="mt-1 space-y-1">
+          {status !== undefined && <p>HTTP status {status}</p>}
+          <pre className="max-h-60 overflow-auto rounded-md bg-muted/60 p-2 font-mono text-foreground/80">{stringify(raw)}</pre>
+        </div>
+      )}
+    </details>
   );
 }
 

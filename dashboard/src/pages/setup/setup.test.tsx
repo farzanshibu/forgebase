@@ -286,9 +286,9 @@ describe("disabled features in the shell", () => {
     setup();
     renderStudio("/");
     const nav = await screen.findByRole("navigation", { name: "Studios" });
-    await waitFor(() => expect(within(nav).queryByText("Billing Studio")).not.toBeInTheDocument());
-    expect(within(nav).getByText("Object Storage Studio")).toBeInTheDocument();
-    expect(within(nav).getByText("System Studio")).toBeInTheDocument();
+    await waitFor(() => expect(within(nav).queryByText("Billing")).not.toBeInTheDocument());
+    expect(within(nav).getByText("Storage")).toBeInTheDocument();
+    expect(within(nav).getByText("System")).toBeInTheDocument();
     expect(within(nav).queryByText("Business")).not.toBeInTheDocument();
   });
 
@@ -296,7 +296,7 @@ describe("disabled features in the shell", () => {
     const mock = signedIn(new MockApi().install());
     renderStudio("/");
     const nav = await screen.findByRole("navigation", { name: "Studios" });
-    expect(within(nav).getByText("Billing Studio")).toBeInTheDocument();
+    expect(within(nav).getByText("Billing")).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
 
@@ -327,7 +327,7 @@ describe("disabled features in the shell", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Save and finish" }));
     await screen.findByRole("region", { name: "Done" });
     const nav = screen.getByRole("navigation", { name: "Studios" });
-    await waitFor(() => expect(within(nav).queryByText("Object Storage Studio")).not.toBeInTheDocument());
+    await waitFor(() => expect(within(nav).queryByText("Storage")).not.toBeInTheDocument());
   });
 });
 

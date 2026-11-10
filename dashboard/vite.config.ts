@@ -34,5 +34,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // e2e/ is Playwright (its own package and runner); vitest must not collect journey.spec.ts.
+    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
   },
 });

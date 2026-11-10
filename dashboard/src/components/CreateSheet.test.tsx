@@ -82,7 +82,7 @@ describe("CreateSheet", () => {
     await userEvent.click(screen.getByRole("button", { name: "New bucket" }));
     await userEvent.type(await screen.findByLabelText("Name"), "avatars");
     await userEvent.click(screen.getByRole("button", { name: "Create bucket" }));
-    expect(await screen.findByText("Is already used")).toBeInTheDocument();
+    expect(await screen.findByText("is already used")).toBeInTheDocument();
     expect(screen.getByLabelText("Name")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByRole("alert")).toHaveTextContent("Some fields need fixing");
     expect(screen.queryByRole("list", { name: "Fields to fix" })).not.toBeInTheDocument();

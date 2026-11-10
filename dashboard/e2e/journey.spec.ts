@@ -226,11 +226,13 @@ test.describe.serial("first journey", () => {
   });
 
   // A-06: Cmd/Ctrl+K opens a command palette that jumps to any studio, resource or action.
-  test.fixme("command palette jumps to the new collection", async () => {
+  test("command palette jumps to the new collection", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
     await page.getByRole("combobox", { name: /search/i }).fill(n.collection);
+    // Resources load when the palette opens; Enter picks the highlighted match once it is listed.
+    await expect(page.getByRole("option", { name: new RegExp(n.collection) })).toBeVisible();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(n.collection));
   });

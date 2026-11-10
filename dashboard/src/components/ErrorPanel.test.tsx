@@ -13,8 +13,8 @@ const api = (status: number, code: string, message: string, details?: unknown) =
 describe("errors.ts", () => {
   it("maps a known code to plain words and falls back to the server message", () => {
     expect(explain(api(400, "invalid_name", 'invalid name ""'))).toMatchObject({ title: "That name is not allowed", next: expect.stringMatching(/letters, digits and underscores/) });
-    expect(explain(api(400, "weird_thing", "the widget is sideways")).title).toBe("The widget is sideways");
-    expect(explain(new Error("boom")).title).toBe("Boom");
+    expect(explain(api(400, "weird_thing", "the widget is sideways")).title).toBe("the widget is sideways");
+    expect(explain(new Error("boom")).title).toBe("boom");
   });
 
   it("words 401 and 403 differently, and 403 names the permission without saying sign in", () => {
@@ -29,7 +29,7 @@ describe("errors.ts", () => {
 
   it("reads per-field errors for FormField", () => {
     const e = api(400, "validation_failed", "validation failed", { fields: { title: { code: "required", message: "" }, price: { code: "min", message: "must be at least 0" } } });
-    expect(fieldErrors(e)).toEqual({ title: "This field is required", price: "Must be at least 0" });
+    expect(fieldErrors(e)).toEqual({ title: "This field is required", price: "must be at least 0" });
     expect(fieldErrors(new Error("x"))).toEqual({});
   });
 });
@@ -41,10 +41,11 @@ describe("ErrorPanel", () => {
     expect(alert).toHaveTextContent("That name is not allowed");
     expect(alert).toHaveTextContent(/What to do:/);
     expect(alert).toHaveTextContent("Request id req-42");
-    const raw = screen.getByText(/"request_id": "req-42"/);
-    expect(raw).not.toBeVisible();
+    expect(alert).toHaveTextContent("Code invalid_name");
+    expect(alert).toHaveTextContent('Server message: invalid name "": use letters');
+    expect(screen.queryByText(/"request_id": "req-42"/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByText("Details"));
-    expect(raw).toBeVisible();
+    expect(await screen.findByText(/"request_id": "req-42"/)).toBeVisible();
   });
 
   it("copies the request id", async () => {
@@ -70,11 +71,16 @@ describe("ErrorPanel", () => {
     const e = api(400, "validation_failed", "validation failed", { fields: { title: { code: "required", message: "is required" } } });
     const retry = vi.fn();
     const { rerender } = render(<ErrorPanel error={e} onRetry={retry} />);
-    expect(screen.getByRole("list", { name: "Fields to fix" })).toHaveTextContent("title: Is required");
+    expect(screen.getByRole("list", { name: "Fields to fix" })).toHaveTextContent("title: is required");
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(retry).toHaveBeenCalled();
     rerender(<ErrorPanel error={e} fields="hide" />);
     expect(screen.queryByRole("list", { name: "Fields to fix" })).not.toBeInTheDocument();
+  });
+
+  it("shows a local error as its message alone", () => {
+    render(<ErrorPanel error={new Error("A vector is a list of finite numbers")} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(/^A vector is a list of finite numbers$/);
   });
 
   it("renders nothing without an error, and ErrorView is the same component", () => {

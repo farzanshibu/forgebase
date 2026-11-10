@@ -79,8 +79,6 @@ function nextFor(status: number | undefined): string {
   return "Try again.";
 }
 
-const sentence = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-
 /** The permission a 403 names, from "missing permission collections:read" and similar messages. */
 export function missingPermission(error: unknown): string | undefined {
   if (!(error instanceof ApiError)) return undefined;
@@ -105,17 +103,18 @@ export function explain(error: unknown): ExplainedError {
     const words = WORDS[error.code];
     const kind: ErrorKind = error.isNetwork ? "network" : error.code === "feature_disabled" ? "disabled" : error.status === 404 ? "missing" : error.status >= 500 ? "server" : error.status >= 400 ? "invalid" : "other";
     if (words) return { ...base, kind, ...words };
-    return { ...base, kind, title: sentence(error.message) || `Request failed (${error.status})`, next: nextFor(error.status) };
+    // An unknown code: the server's message is the best title we have (kept word for word, so it can be searched).
+    return { ...base, kind, title: error.message || `Request failed (${error.status})`, next: nextFor(error.status) };
   }
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Something went wrong";
-  return { kind: "other", title: sentence(message), next: "Try again.", message, raw: error instanceof Error ? { name: error.name, message: error.message } : error };
+  return { kind: "other", title: message, next: "Try again.", message, raw: error instanceof Error ? { name: error.name, message: error.message } : error };
 }
 
 /** Field name → plain message, from a 400 `validation_failed` (`error.details.fields`). Empty for other errors. */
 export function fieldErrors(error: unknown): Record<string, string> {
   if (!(error instanceof ApiError)) return {};
   const out: Record<string, string> = {};
-  for (const [name, f] of Object.entries(error.fields)) out[name] = sentence(f.message) || FIELD_CODE_WORDS[f.code] || "This value is not valid";
+  for (const [name, f] of Object.entries(error.fields)) out[name] = f.message || FIELD_CODE_WORDS[f.code] || "This value is not valid";
   return out;
 }
 
