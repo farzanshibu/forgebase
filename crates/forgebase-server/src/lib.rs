@@ -4,8 +4,12 @@
 //!
 //! 1. create the data-directory layout,
 //! 2. take the data-directory lock (one server per data directory),
-//! 3. open the primary database (WAL, pragmas) and apply pending system
-//!    migrations, snapshotting first if the database already existed,
+//! 3. decide the backend ([`database::resolve`]: the backend marker, else
+//!    what is on disk, else `[database] backend`), start the bundled
+//!    PostgreSQL engine when the backend is `postgres` in `managed` mode
+//!    (`forgebase-pgengine`, ADR-0028 §4.3), open the primary database and
+//!    apply pending system migrations, snapshotting first if the database
+//!    already existed (SQLite),
 //! 4. record the instance id on first start,
 //! 5. bind the listener and serve the API (with the jobs API of
 //!    `forgebase-jobs` mounted under `/api/v1/jobs` and the vector API of
@@ -34,9 +38,10 @@
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
 //! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
 //! jobs get the same time to finish, the rest are released back to the queue),
-//! writes changed vector indexes to disk, checkpoints the WAL into the main database file, closes the pools and
-//! releases the lock.
+//! writes changed vector indexes to disk, checkpoints the WAL into the main database file, closes the pools,
+//! stops the bundled PostgreSQL engine (fast shutdown) and releases the lock.
 
+pub mod database;
 mod function_services;
 mod job_results;
 mod lock;
@@ -51,7 +56,7 @@ use forgebase_core::{Config, ConfigOrigin, ConfigSources, DataLayout, ErrorCode,
 use forgebase_credits::CreditService;
 use forgebase_customize::{CustomizeConfig, CustomizeService};
 use forgebase_data::Authorizer;
-use forgebase_db::{Database, DbError, DbOptions, InstanceInfo, MigrateReport};
+use forgebase_db::{Database, DbError, InstanceInfo, MigrateReport};
 use forgebase_entitlements::{EntitlementService, SystemClock};
 use forgebase_functions::{FunctionService, FunctionsConfig};
 use forgebase_kv::{KvConfig, KvError, KvService};
@@ -62,6 +67,7 @@ use tokio::task::JoinHandle;
 
 pub use forgebase_jobs::{JobRegistry, JobService, PoolConfig};
 pub use job_results::{RESULTS_BUCKET, StorageResults};
+pub use database::BackendMarker;
 pub use lock::{DataDirLock, LockOwner};
 
 /// A started server.
@@ -90,6 +96,10 @@ pub struct RunningServer {
     lock: Option<DataDirLock>,
     /// First-run setup token (FB-90), while no administrator exists.
     setup_token: Option<String>,
+    /// The backend this data directory holds (FB-148).
+    backend: BackendMarker,
+    /// The bundled PostgreSQL engine, when this server runs it.
+    engine: Option<Arc<forgebase_pgengine::EngineHandle>>,
 }
 
 /// Starts a server for `config` with no in-process job handlers (jobs are
@@ -135,6 +145,11 @@ async fn start_full(
     registry: JobRegistry,
     pool: PoolConfig,
 ) -> Result<RunningServer, ServerError> {
+    // A configuration built in code states its backend on purpose; from the
+    // loader, only a layer other than the defaults does (FB-148).
+    let explicit = origin
+        .as_ref()
+        .is_none_or(|(_, sources)| database::backend_is_explicit(sources));
     let (origin, sources) = origin.unwrap_or_else(|| (ConfigOrigin::embedded(config), ConfigSources::default()));
     let system_config = Arc::new(forgebase_api::features::SystemConfig::new(
         config.clone(),
@@ -148,7 +163,91 @@ async fn start_full(
     })?;
     let lock = DataDirLock::acquire(&layout)?;
 
-    let db = Database::open(DbOptions::from_config(&config.database, layout.database_path())).await?;
+    let primary = database::open_owned(config, explicit, &layout, database::Create::Yes).await?;
+    let backend = primary.marker();
+    let (db, engine) = primary.into_parts();
+    let started = start_on(
+        config,
+        system_config,
+        &layout,
+        &lock,
+        (db.clone(), backend, engine.clone()),
+        registry,
+        pool,
+    )
+    .await;
+    match started {
+        Ok(mut server) => {
+            server.lock = Some(lock);
+            Ok(server)
+        }
+        Err(e) => {
+            db.close().await;
+            if let Some(engine) = &engine
+                && let Err(stop) = engine.stop().await
+            {
+                tracing::warn!(error = %stop, "stopping PostgreSQL failed");
+            }
+            drop(lock);
+            Err(e)
+        }
+    }
+}
+
+/// What [`start_on`] reports about the database to the API.
+fn database_runtime(
+    config: &Config,
+    layout: &DataLayout,
+    backend: BackendMarker,
+    engine: Option<&Arc<forgebase_pgengine::EngineHandle>>,
+    db: &Database,
+) -> forgebase_api::DatabaseRuntime {
+    let pg = &config.database.postgres;
+    let location = match backend {
+        BackendMarker::Sqlite => None,
+        BackendMarker::PostgresManaged => Some(database::engine_layout(layout).pgdata().display().to_string()),
+        BackendMarker::PostgresExternal => Some(db.location()),
+    };
+    let report = engine.cloned().map(|engine| {
+        let f: Arc<dyn Fn() -> forgebase_api::EngineReport + Send + Sync> = Arc::new(move || {
+            let h = engine.health();
+            forgebase_api::EngineReport {
+                state: h.state.as_str(),
+                version: engine.version().text.clone(),
+                pid: h.pid,
+                restarts: h.restarts,
+                last_error: h.last_error,
+                socket_dir: engine.socket_dir().map(|d| d.display().to_string()),
+                tcp: engine.tcp_addr().map(|a| a.to_string()),
+                warnings: engine.warnings().to_vec(),
+            }
+        });
+        f
+    });
+    forgebase_api::DatabaseRuntime {
+        mode: backend.mode().map(forgebase_core::config::PostgresMode::as_str),
+        location,
+        extensions: if backend == BackendMarker::Sqlite {
+            Vec::new()
+        } else {
+            pg.extensions.list().iter().map(|(f, e, m)| (*f, *e, m.as_str())).collect()
+        },
+        engine: report,
+    }
+}
+
+/// The startup sequence after the database is open (steps 3 to 7). The
+/// caller closes the database and stops the engine when this fails.
+#[allow(clippy::too_many_lines)]
+async fn start_on(
+    config: &Config,
+    system_config: Arc<forgebase_api::features::SystemConfig>,
+    layout: &DataLayout,
+    lock: &DataDirLock,
+    (db, backend, engine): (Database, BackendMarker, Option<Arc<forgebase_pgengine::EngineHandle>>),
+    registry: JobRegistry,
+    pool: PoolConfig,
+) -> Result<RunningServer, ServerError> {
     let migrations = match db.migrate(Some(&layout.backups_dir())).await {
         Ok(report) => report,
         Err(e) => {
@@ -158,7 +257,7 @@ async fn start_full(
     };
     let instance = db.ensure_instance().await?;
 
-    let (auth, policy) = match open_auth(&db, &layout, config).await {
+    let (auth, policy) = match open_auth(&db, layout, config).await {
         Ok(a) => a,
         Err(e) => {
             db.close().await;
@@ -304,7 +403,8 @@ async fn start_full(
     let (fn_auth, fn_policy) = (auth.clone(), policy.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
-        .with_policy(policy);
+        .with_policy(policy)
+        .with_database_runtime(database_runtime(config, layout, backend, engine.as_ref(), &db));
     let state = if config.realtime.enabled {
         state.with_realtime(realtime.clone())
     } else {
@@ -327,7 +427,7 @@ async fn start_full(
     // Object storage (FB-30): local directory or S3-compatible driver, unless
     // `[storage] enabled = false`.
     let storage = if config.storage.enabled {
-        match open_storage(&db, &layout, config, state.data().clone(), &entitlements).await {
+        match open_storage(&db, layout, config, state.data().clone(), &entitlements).await {
             Ok(s) => Some(s),
             Err(e) => {
                 db.close().await;
@@ -520,6 +620,7 @@ async fn start_full(
     tracing::info!(
         %addr,
         data_dir = %layout.root().display(),
+        backend = backend.as_str(),
         instance_id = %instance.instance_id,
         applied_migrations = migrations.applied.len(),
         disabled = ?forgebase_core::features::disabled(config).iter().map(|f| f.id).collect::<Vec<_>>(),
@@ -546,8 +647,10 @@ async fn start_full(
         customize,
         queue,
         shutdown_timeout: Duration::from_secs(config.server.shutdown_timeout_secs),
-        lock: Some(lock),
+        lock: None,
         setup_token,
+        backend,
+        engine,
     })
 }
 
@@ -858,6 +961,16 @@ impl RunningServer {
         &self.migrations
     }
 
+    /// The backend of this data directory (FB-148).
+    pub fn backend(&self) -> BackendMarker {
+        self.backend
+    }
+
+    /// The bundled PostgreSQL engine, when this server runs it.
+    pub fn engine(&self) -> Option<&forgebase_pgengine::EngineHandle> {
+        self.engine.as_deref()
+    }
+
     /// Serves until SIGINT/SIGTERM (or until the server fails), then shuts
     /// down gracefully.
     pub async fn run_until_signal(mut self) -> Result<(), ServerError> {
@@ -942,6 +1055,11 @@ impl RunningServer {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
         }
         self.db.close().await;
+        if let Some(engine) = self.engine.take()
+            && let Err(e) = engine.stop().await
+        {
+            tracing::warn!(error = %e, "stopping PostgreSQL failed");
+        }
         self.lock.take();
     }
 }
@@ -1044,6 +1162,50 @@ pub enum ServerError {
     /// The customization service failed to open.
     #[error("customize: {0}")]
     Customize(String),
+    /// The bundled PostgreSQL engine failed (FB-148).
+    #[error(transparent)]
+    Engine(#[from] forgebase_pgengine::EngineError),
+    /// The configured backend contradicts what the data directory holds
+    /// (ADR-0028 §6.3).
+    #[error("{}", mismatch_message(configured, *found, data_dir))]
+    BackendMismatch {
+        /// The marker the configuration asks for (`postgres-managed`).
+        configured: &'static str,
+        /// What the data directory holds.
+        found: BackendMarker,
+        /// The data directory.
+        data_dir: PathBuf,
+    },
+    /// The backend cannot be used as configured (no engine in this build, an
+    /// external server without a URL, an unknown marker).
+    #[error("{0}")]
+    Backend(String),
+    /// The data directory holds no database (`forgebase init` creates it).
+    #[error("no database in {} (run `forgebase init`)", .0.display())]
+    NotInitialized(PathBuf),
+}
+
+fn mismatch_message(configured: &str, found: BackendMarker, data_dir: &std::path::Path) -> String {
+    let want = BackendMarker::parse(configured).unwrap_or(BackendMarker::Sqlite);
+    let dir = data_dir.display();
+    if want.backend() == found.backend() {
+        let mode = want.mode().map_or("", forgebase_core::config::PostgresMode::as_str);
+        format!(
+            "database.postgres.mode is {mode}, but the data directory {dir} holds {}; \
+             moving it needs forgebase db convert, or set [database.postgres] mode = \"{}\"",
+            found.describe(),
+            found.mode().map_or("", forgebase_core::config::PostgresMode::as_str)
+        )
+    } else {
+        format!(
+            "database.backend is {}, but the data directory {dir} holds {}; run forgebase db convert --to {}, \
+             or set [database] backend = \"{}\"",
+            want.backend(),
+            found.describe(),
+            want.backend(),
+            found.backend()
+        )
+    }
 }
 
 impl ErrorCode for ServerError {
@@ -1068,6 +1230,10 @@ impl ErrorCode for ServerError {
             ServerError::Credits(_) => "credits_unavailable",
             ServerError::Billing(_) => "billing_unavailable",
             ServerError::Customize(_) => "customize_unavailable",
+            ServerError::Engine(_) => "database_engine_failed",
+            ServerError::BackendMismatch { .. } => "backend_mismatch",
+            ServerError::Backend(_) => "backend_unavailable",
+            ServerError::NotInitialized(_) => "not_initialized",
         }
     }
 
@@ -1089,6 +1255,9 @@ impl ErrorCode for ServerError {
             | ServerError::Customize(_)
             | ServerError::Billing(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
+            ServerError::Engine(_) | ServerError::Backend(_) => ErrorKind::Unavailable,
+            ServerError::BackendMismatch { .. } => ErrorKind::Conflict,
+            ServerError::NotInitialized(_) => ErrorKind::NotFound,
         }
     }
 }

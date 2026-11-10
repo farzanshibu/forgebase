@@ -28,23 +28,19 @@ pub async fn health() -> Response {
 
 /// `GET /health/ready`: readiness. `200` when the database answers and is
 /// fully migrated and the storage directory is writable; `503` naming the
-/// failing check otherwise.
+/// failing check otherwise. On the bundled PostgreSQL a restarting or failed
+/// engine fails the `database` check (ADR-0028 §4.3).
 pub async fn ready(State(state): State<AppState>) -> Response {
     let mut checks = Map::new();
     let mut errors = Map::new();
 
-    let database = match state.db().ping().await {
-        Ok(()) => match state.db().migration_status().await {
-            Ok(s) if s.is_up_to_date() => Ok(()),
-            Ok(s) => Err(format!(
-                "schema at version {} of {}, {} problem(s)",
-                s.current_version,
-                s.latest_version,
-                s.problems.len()
-            )),
-            Err(e) => Err(e.to_string()),
-        },
-        Err(e) => Err(e.to_string()),
+    let engine = state.database_runtime().engine.as_ref().map(|e| e());
+    let database = match &engine {
+        Some(e) if e.state != "ready" => Err(match &e.last_error {
+            Some(err) => format!("the bundled PostgreSQL is {}: {err}", e.state),
+            None => format!("the bundled PostgreSQL is {}", e.state),
+        }),
+        _ => check_database(&state).await,
     };
     record(&mut checks, &mut errors, "database", database);
     record(&mut checks, &mut errors, "storage", probe_storage(&state).await);
@@ -53,6 +49,15 @@ pub async fn ready(State(state): State<AppState>) -> Response {
     let mut body = Map::new();
     body.insert("status".into(), Value::from(if ok { "ready" } else { "not_ready" }));
     body.insert("checks".into(), Value::Object(checks));
+    let rt = state.database_runtime();
+    body.insert(
+        "database".into(),
+        json!({
+            "backend": state.db().kind().as_str(),
+            "mode": rt.mode,
+            "engine": engine.as_ref().map(|e| e.state),
+        }),
+    );
     if !ok {
         let summary = Value::Object(errors.clone());
         tracing::warn!(errors = %summary, "readiness check failed");
@@ -64,6 +69,23 @@ pub async fn ready(State(state): State<AppState>) -> Response {
         StatusCode::SERVICE_UNAVAILABLE
     };
     no_store((status, Json(Value::Object(body))).into_response())
+}
+
+/// The database answers and is fully migrated.
+async fn check_database(state: &AppState) -> Result<(), String> {
+    match state.db().ping().await {
+        Ok(()) => match state.db().migration_status().await {
+            Ok(s) if s.is_up_to_date() => Ok(()),
+            Ok(s) => Err(format!(
+                "schema at version {} of {}, {} problem(s)",
+                s.current_version,
+                s.latest_version,
+                s.problems.len()
+            )),
+            Err(e) => Err(e.to_string()),
+        },
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn record(checks: &mut Map<String, Value>, errors: &mut Map<String, Value>, name: &str, result: Result<(), String>) {
@@ -93,10 +115,79 @@ async fn probe_storage(state: &AppState) -> Result<(), String> {
 /// The database part of the system info.
 #[derive(Debug, Serialize)]
 struct DatabaseSummary {
+    /// `sqlite` or `postgres`.
+    backend: &'static str,
+    /// `managed` or `external` on PostgreSQL, else `null`.
+    mode: Option<&'static str>,
+    /// The SQLite file, the bundled cluster's directory, or the external
+    /// server's URL without password.
     path: String,
     size_bytes: u64,
     journal_mode: String,
     schema_version: i64,
+    /// SQLite library or PostgreSQL server version.
+    server_version: String,
+    /// Server connections to this database (PostgreSQL only).
+    connections: Option<u32>,
+    /// The bundled engine, when this server runs it.
+    engine: Option<crate::EngineReport>,
+    /// Per accelerated feature: the engine it runs on and its extension
+    /// (ADR-0029 §1.1); empty on SQLite.
+    features: Map<String, Value>,
+}
+
+/// `database.features` of the system info: for each accelerated feature its
+/// configured mode, the PostgreSQL extension and whether the server has it.
+/// Every feature runs on its portable engine until its accelerator package
+/// (FB-161 to FB-166) switches it over, so `engine` is `portable` here.
+async fn feature_engines(state: &AppState) -> Map<String, Value> {
+    let mut out = Map::new();
+    let rt = state.database_runtime();
+    if state.db().kind() != forgebase_db::BackendKind::Postgres {
+        return out;
+    }
+    let names: Vec<&str> = rt.extensions.iter().map(|(_, ext, _)| *ext).collect();
+    let mut found: std::collections::BTreeMap<String, (Option<String>, Option<String>)> = Default::default();
+    let list = names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ");
+    if !names.is_empty() {
+        let stmt = forgebase_db::Statement::raw(format!(
+            "SELECT a.name::text, a.default_version::text, e.extversion::text \
+             FROM pg_available_extensions a LEFT JOIN pg_extension e ON e.extname = a.name \
+             WHERE a.name IN ({list})"
+        ));
+        match forgebase_db::Backend::fetch_all(state.db(), &stmt).await {
+            Ok(rows) => {
+                for row in rows.rows {
+                    let text = |i: usize| row.get(i).and_then(|v| v.as_str()).map(str::to_owned);
+                    if let Some(name) = text(0) {
+                        found.insert(name, (text(1), text(2)));
+                    }
+                }
+            }
+            Err(e) => tracing::debug!(error = %e, "cannot list PostgreSQL extensions"),
+        }
+    }
+    for (feature, ext, mode) in &rt.extensions {
+        let (available, installed) = found.get(*ext).cloned().unwrap_or((None, None));
+        let state = match (*mode, &available, &installed) {
+            ("off", _, _) => "off",
+            (_, _, Some(_)) => "installed",
+            (_, Some(_), None) => "available",
+            _ => "unavailable",
+        };
+        out.insert(
+            (*feature).to_owned(),
+            json!({
+                "engine": "portable",
+                "mode": mode,
+                "extension": ext,
+                "available": available,
+                "installed": installed,
+                "state": state,
+            }),
+        );
+    }
+    out
 }
 
 /// `GET /api/system/info`.
@@ -114,6 +205,12 @@ pub struct SystemInfo {
 /// `GET /api/system/info`: read-only instance information.
 pub async fn system_info(State(state): State<AppState>) -> Result<Response, ApiError> {
     let db = state.db().info().await?;
+    let rt = state.database_runtime();
+    let path = match &rt.location {
+        Some(l) => l.clone(),
+        None if db.path.as_os_str().is_empty() => state.db().location(),
+        None => db.path.display().to_string(),
+    };
     let info = SystemInfo {
         name: forgebase_core::build::NAME,
         version: forgebase_core::build::VERSION,
@@ -122,10 +219,16 @@ pub async fn system_info(State(state): State<AppState>) -> Result<Response, ApiE
         started_at: state.started_at().to_owned(),
         uptime_secs: state.uptime_secs(),
         database: DatabaseSummary {
-            path: db.path.display().to_string(),
+            backend: db.backend.as_str(),
+            mode: rt.mode,
+            path,
             size_bytes: db.size_bytes,
             journal_mode: db.journal_mode,
             schema_version: db.schema_version,
+            server_version: db.server_version,
+            connections: db.connections,
+            engine: rt.engine.as_ref().map(|e| e()),
+            features: feature_engines(&state).await,
         },
     };
     Ok(no_store(Json(info).into_response()))

@@ -32,6 +32,8 @@ pub enum SettingType {
     List,
     /// An `http://` or `https://` URL, or empty.
     Url,
+    /// A table of text values (`[database.postgres.settings]`).
+    Map,
 }
 
 impl SettingType {
@@ -45,6 +47,7 @@ impl SettingType {
             SettingType::Duration => "duration",
             SettingType::List => "list",
             SettingType::Url => "url",
+            SettingType::Map => "map",
         }
     }
 }
@@ -190,7 +193,116 @@ impl FeatureDef {
     }
 }
 
-use SettingType::{Bool, Enum, Int, String as Text, Url};
+use SettingType::{Bool, Enum, Int, Map, String as Text, Url};
+
+/// `[database]` backend choice and `[database.postgres]` (ADR-0028 §6.1,
+/// ADR-0029 §4.1). The SQLite keys stay under the server module.
+const DATABASE: &[SettingDef] = &[
+    SettingDef::new(
+        "database.backend",
+        "Database engine",
+        Enum,
+        "Which database holds your data: postgres (PostgreSQL, the default of the standard release) or sqlite (SQLite, one file, the default of the lite release). It is set when the project is created; moving existing data to the other engine needs forgebase db convert, so it cannot be changed here.",
+    )
+    .options(&["postgres", "sqlite"])
+    .env("FORGEBASE_DATABASE_BACKEND")
+    .read_only(),
+    SettingDef::new(
+        "database.postgres.mode",
+        "PostgreSQL server",
+        Enum,
+        "PostgreSQL only: managed runs the PostgreSQL server bundled with ForgeBase inside the data directory, external uses a server you run, named by FORGEBASE_DATABASE_URL. Keep managed unless you already operate PostgreSQL.",
+    )
+    .options(&["managed", "external"])
+    .env("FORGEBASE_DATABASE_POSTGRES_MODE")
+    .read_only(),
+    SettingDef::secret(
+        "database.postgres.url",
+        "External server address",
+        Some("FORGEBASE_DATABASE_URL"),
+        "External PostgreSQL only: the address of your server with its user and password, such as postgres://forgebase:secret@db.example.com/forgebase. It is a secret, so set it with the environment variable FORGEBASE_DATABASE_URL (or in the .env file next to forgebase.toml), not here.",
+    ),
+    SettingDef::new(
+        "database.postgres.pool_size",
+        "Read connections (PostgreSQL)",
+        Int,
+        "PostgreSQL only: number of connections that serve reads in parallel, from 1 to 64; writes always use one connection. 16 suits most servers.",
+    )
+    .env("FORGEBASE_DATABASE_POSTGRES_POOL_SIZE"),
+    SettingDef::new(
+        "database.postgres.listen",
+        "Direct TCP logins",
+        Text,
+        "Bundled PostgreSQL only: empty (the default) accepts logins through a Unix socket in the data directory only. A loopback address with a port, such as 127.0.0.1:5433, also lets programs on this machine log in over TCP. Other hosts need TLS (Transport Layer Security), which this version does not set up, so it is set where the server starts, not here.",
+    )
+    .env("FORGEBASE_DATABASE_POSTGRES_LISTEN")
+    .example("127.0.0.1:5433")
+    .read_only(),
+    SettingDef::new(
+        "database.postgres.engine_dir",
+        "Engine folder",
+        Text,
+        "Bundled PostgreSQL only: a folder with an installed PostgreSQL 17 or 18 to run instead of the one inside ForgeBase, such as /opt/forgebase/engine shared by several projects. Empty (the default) uses the bundled engine. ForgeBase runs the programs in this folder, so it is set where the server starts, not here.",
+    )
+    .env("FORGEBASE_DATABASE_POSTGRES_ENGINE_DIR")
+    .example("/opt/forgebase/engine")
+    .read_only(),
+    SettingDef::new(
+        "database.postgres.native_rls",
+        "Native row-level security",
+        Enum,
+        "PostgreSQL only: whether PostgreSQL itself enforces your access rules (row-level security). logins applies them to direct database logins, enforce also to the server's own connections, off never. Keep logins.",
+    )
+    .options(&["off", "logins", "enforce"])
+    .env("FORGEBASE_DATABASE_POSTGRES_NATIVE_RLS"),
+    SettingDef::new(
+        "database.postgres.settings",
+        "Engine settings",
+        Map,
+        "Bundled PostgreSQL only: extra postgresql.conf parameters, such as shared_buffers = \"256MB\" or work_mem = \"16MB\". Settings ForgeBase manages itself (where the server listens, preloaded libraries, replication and anything that runs a program) are refused. Edit them in the [database.postgres.settings] table of forgebase.toml.",
+    )
+    .read_only(),
+    SettingDef::new(
+        "database.postgres.extensions.vector",
+        "Vector search on pgvector",
+        Enum,
+        "PostgreSQL only: auto (the default) stores vectors with the pgvector extension when the server has it, on refuses to start without it, off always uses the built-in vector engine.",
+    )
+    .options(&["auto", "on", "off"])
+    .env("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_VECTOR"),
+    SettingDef::new(
+        "database.postgres.extensions.graph",
+        "Graph queries on Apache AGE",
+        Enum,
+        "PostgreSQL only: auto (the default) answers openCypher graph queries with the Apache AGE extension when the server has it, on refuses to start without it, off always uses the built-in graph engine.",
+    )
+    .options(&["auto", "on", "off"])
+    .env("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_GRAPH"),
+    SettingDef::new(
+        "database.postgres.extensions.queue",
+        "Queue deliveries on pgmq",
+        Enum,
+        "PostgreSQL only: auto (the default) delivers queue messages with the pgmq extension when the server has it, on refuses to start without it, off always uses the built-in delivery tables.",
+    )
+    .options(&["auto", "on", "off"])
+    .env("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_QUEUE"),
+    SettingDef::new(
+        "database.postgres.extensions.cron",
+        "Schedules on pg_cron",
+        Enum,
+        "PostgreSQL only: auto (the default) fires schedules with the pg_cron extension when the server has it, on refuses to start without it, off always uses the built-in scheduler.",
+    )
+    .options(&["auto", "on", "off"])
+    .env("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_CRON"),
+    SettingDef::new(
+        "database.postgres.extensions.trigram",
+        "Fuzzy search on pg_trgm",
+        Enum,
+        "PostgreSQL only: auto (the default) builds trigram indexes for fuzzy text search with the pg_trgm extension when the server has it, on refuses to start without it, off leaves fuzzy search out.",
+    )
+    .options(&["auto", "on", "off"])
+    .env("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_TRIGRAM"),
+];
 
 const SERVER: &[SettingDef] = &[
     SettingDef::new(
@@ -613,13 +725,13 @@ pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         id: "database",
         name: "Database",
-        summary: "Collections (tables), records, schemas, indexes and SQL queries on the built-in SQLite database.",
+        summary: "Collections (tables), records, schemas, indexes and SQL queries, on PostgreSQL (bundled or your own server) or SQLite.",
         can_disable: false,
         enable_key: None,
         studio_path: Some("/database"),
-        docs: "docs/adr/0003-data-core.md#adr-0003-phase-2-data-core",
+        docs: "docs/deployment.md#35-database-postgresql-or-sqlite",
         routes: &[],
-        settings: &[],
+        settings: DATABASE,
     },
     FeatureDef {
         id: "auth",
@@ -1196,6 +1308,15 @@ fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
             Some(s) if is_duration(s) => Ok(toml_edit::Value::from(s)),
             _ => Err("must be a duration such as 30s, 500ms, 5m or 1h".to_owned()),
         },
+        SettingType::Map => {
+            let wrong = || "must be a table of text values, such as {\"shared_buffers\": \"256MB\"}".to_owned();
+            let items = value.as_object().ok_or_else(wrong)?;
+            let mut table = toml_edit::InlineTable::new();
+            for (k, v) in items {
+                table.insert(k, v.as_str().ok_or_else(wrong)?.into());
+            }
+            Ok(toml_edit::Value::InlineTable(table))
+        }
         SettingType::List => {
             let wrong = || "must be a list of text values, such as [\"a\", \"b\"]".to_owned();
             let items = value.as_array().ok_or_else(wrong)?;
@@ -1219,21 +1340,29 @@ fn is_duration(s: &str) -> bool {
 pub fn set_keys(text: &str, changes: &[(&str, toml_edit::Value)]) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
     for (key, value) in changes {
-        let (section, name) = match key.split_once('.') {
+        let (section, name) = match key.rsplit_once('.') {
             Some((s, n)) => (Some(s), n),
             None => (None, *key),
         };
-        let table: &mut dyn toml_edit::TableLike = match section {
-            None => doc.as_table_mut(),
-            Some(s) => {
-                if !doc.contains_key(s) {
-                    doc.insert(s, toml_edit::Item::Table(toml_edit::Table::new()));
-                }
-                doc.get_mut(s)
-                    .and_then(toml_edit::Item::as_table_like_mut)
-                    .ok_or_else(|| format!("[{s}] is not a table in the config file"))?
+        let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+        // Nested sections (`database.postgres.extensions`) are walked one
+        // level at a time; a missing one is appended as a `[a.b]` table.
+        let mut path = String::new();
+        for part in section.into_iter().flat_map(|s| s.split('.')) {
+            if !path.is_empty() {
+                path.push('.');
             }
-        };
+            path.push_str(part);
+            if !table.contains_key(part) {
+                let mut t = toml_edit::Table::new();
+                t.set_implicit(true);
+                table.insert(part, toml_edit::Item::Table(t));
+            }
+            table = table
+                .get_mut(part)
+                .and_then(toml_edit::Item::as_table_like_mut)
+                .ok_or_else(|| format!("[{path}] is not a table in the config file"))?;
+        }
         match table.get_mut(name) {
             Some(item) => match item.as_value_mut() {
                 Some(old) => {
@@ -1293,14 +1422,27 @@ mod tests {
     const EXAMPLE: &str = include_str!("../../../forgebase.example.toml");
 
     fn keys_of(text: &str) -> Vec<String> {
-        let doc: toml_edit::DocumentMut = text.parse().unwrap();
-        let mut out = Vec::new();
-        for (k, item) in doc.iter() {
-            match item.as_table_like() {
-                Some(t) => out.extend(t.iter().map(|(n, _)| format!("{k}.{n}"))),
-                None => out.push(k.to_owned()),
+        fn walk(prefix: &str, t: &dyn toml_edit::TableLike, out: &mut Vec<String>) {
+            for (k, item) in t.iter() {
+                let key = if prefix.is_empty() {
+                    k.to_owned()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                // A setting whose value is a table (`database.postgres.settings`).
+                if setting(&key).is_some_and(|s| s.ty == SettingType::Map) {
+                    out.push(key);
+                    continue;
+                }
+                match item.as_table_like() {
+                    Some(t) => walk(&key, t, out),
+                    None => out.push(key),
+                }
             }
         }
+        let doc: toml_edit::DocumentMut = text.parse().unwrap();
+        let mut out = Vec::new();
+        walk("", doc.as_table(), &mut out);
         out
     }
 
@@ -1598,6 +1740,10 @@ mod tests {
             "Redis",
             "OpenID",
             "Connect",
+            "PostgreSQL",
+            "SQLite",
+            "Apache",
+            "AGE",
         ];
         const JARGON: &[(&str, &str)] = &[
             ("OIDC", "OpenID Connect"),

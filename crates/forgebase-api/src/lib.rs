@@ -83,6 +83,56 @@ struct StateInner {
     policy: Option<PolicyService>,
     realtime: Option<forgebase_realtime::RealtimeService>,
     collectors: Vec<MetricsCollector>,
+    database: DatabaseRuntime,
+}
+
+/// What `/api/system/info` and `/health/ready` report about the database
+/// beyond the [`Database`] handle (FB-148): the PostgreSQL mode, the
+/// extension switches and, when this process runs the bundled engine, its
+/// state.
+#[derive(Clone, Default)]
+pub struct DatabaseRuntime {
+    /// `managed` or `external` on PostgreSQL; `None` on SQLite.
+    pub mode: Option<&'static str>,
+    /// Where the data lives, for display: the SQLite file, the bundled
+    /// cluster's directory, or the external server's URL without password.
+    pub location: Option<String>,
+    /// `(feature, PostgreSQL extension, mode)` from `[database.postgres.extensions]`.
+    pub extensions: Vec<(&'static str, &'static str, &'static str)>,
+    /// The bundled engine's state, when this process runs it.
+    pub engine: Option<Arc<dyn Fn() -> EngineReport + Send + Sync>>,
+}
+
+impl std::fmt::Debug for DatabaseRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseRuntime")
+            .field("mode", &self.mode)
+            .field("location", &self.location)
+            .field("extensions", &self.extensions)
+            .field("engine", &self.engine.as_ref().map(|e| e()))
+            .finish()
+    }
+}
+
+/// The bundled PostgreSQL engine as the server sees it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EngineReport {
+    /// `ready`, `restarting`, `failed` or `stopped`.
+    pub state: &'static str,
+    /// PostgreSQL version (`18.6`).
+    pub version: String,
+    /// Postmaster pid while running.
+    pub pid: Option<u32>,
+    /// Restarts after crashes since the server started.
+    pub restarts: u32,
+    /// The last failure, if any.
+    pub last_error: Option<String>,
+    /// Unix socket directory (`None` on Windows).
+    pub socket_dir: Option<String>,
+    /// TCP address, when direct TCP logins are on.
+    pub tcp: Option<String>,
+    /// Start-up warnings (a missing optional module).
+    pub warnings: Vec<String>,
 }
 
 /// An async hook that refreshes gauges just before `/metrics` renders.
@@ -138,6 +188,7 @@ impl AppState {
                 policy: None,
                 realtime: None,
                 collectors: Vec::new(),
+                database: DatabaseRuntime::default(),
             }),
         })
     }
@@ -177,6 +228,7 @@ impl AppState {
                 policy: None,
                 realtime: None,
                 collectors: Vec::new(),
+                database: DatabaseRuntime::default(),
             }),
         }
     }
@@ -233,6 +285,18 @@ impl AppState {
     /// Registered metrics collectors.
     pub(crate) fn collectors(&self) -> &[MetricsCollector] {
         &self.inner.collectors
+    }
+
+    /// Same state with what the server knows about its database engine
+    /// (FB-148): shown by `/api/system/info`, checked by `/health/ready`.
+    pub fn with_database_runtime(mut self, runtime: DatabaseRuntime) -> Self {
+        Arc::make_mut(&mut self.inner).database = runtime;
+        self
+    }
+
+    /// What the server knows about its database engine.
+    pub fn database_runtime(&self) -> &DatabaseRuntime {
+        &self.inner.database
     }
 
     /// The realtime service, when configured.
