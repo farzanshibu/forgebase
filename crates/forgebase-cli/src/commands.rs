@@ -134,10 +134,13 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
     if let Some(token) = server.setup_token() {
         // FB-90: standard output only, never the log.
         println!();
-        println!(
-            "First run: create the administrator at {}",
-            setup_link(&format!("http://{addr}"), token)
-        );
+        // The configured public URL when set (FB-91 server.public_url), otherwise the bound address.
+        let base = config
+            .server
+            .public_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{addr}"));
+        println!("First run: create the administrator at {}", setup_link(&base, token));
     }
     server.run_until_signal().await?;
     Ok(ExitCode::SUCCESS)
