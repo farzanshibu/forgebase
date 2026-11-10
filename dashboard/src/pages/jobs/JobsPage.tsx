@@ -11,7 +11,7 @@ export default function JobsPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
-      <nav aria-label="Jobs sections" className="mt-4 flex gap-1 border-b border-border">
+      <nav aria-label="Jobs sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
         <NavLink to="/jobs" end className={tab}>Queues and jobs</NavLink>
         <NavLink to="/jobs/workflows" className={tab}>Workflows</NavLink>
         <NavLink to="/jobs/schedules" className={tab}>Schedules</NavLink>

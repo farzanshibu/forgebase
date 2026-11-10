@@ -17,7 +17,7 @@ export default function DatabasePage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Database Studio</h1>
-      <nav aria-label="Database sections" className="mt-4 flex gap-1 border-b border-border">
+      <nav aria-label="Database sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
         {TABS.map((t) => (
           <NavLink
             key={t.label}

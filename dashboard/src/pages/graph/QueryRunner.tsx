@@ -44,7 +44,7 @@ export default function QueryRunner() {
   return (
     <div className="space-y-4">
       <Panel title="Query runner">
-        <div role="tablist" aria-label="Query type" className="mb-3 flex gap-2">
+        <div role="tablist" aria-label="Query type" className="mb-3 flex flex-wrap gap-2">
           {(["traverse", "path"] as const).map((k) => (
             <button key={k} type="button" role="tab" aria-selected={kind === k} onClick={() => pick(k)} className={`rounded-md border px-3 py-1 text-sm ${kind === k ? "border-primary text-warning" : "border-border text-muted-foreground"}`}>
               {k === "traverse" ? "Traversal" : "Shortest path"}

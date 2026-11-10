@@ -27,7 +27,7 @@ export default function BucketView() {
       {b.loading && !b.error && <Loading what="Loading bucket" />}
       {b.data && (
         <>
-          <nav aria-label="Bucket sections" className="flex gap-1 border-b border-border">
+          <nav aria-label="Bucket sections" className="flex flex-wrap gap-1 border-b border-border">
             <NavLink to={base} end className={tab}>Objects</NavLink>
             <NavLink to={`${base}/settings`} className={tab}>Policy</NavLink>
             <NavLink to={`${base}/access`} className={tab}>Access (ACL)</NavLink>

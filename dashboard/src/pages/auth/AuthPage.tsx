@@ -19,7 +19,7 @@ export default function AuthPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Authentication Studio</h1>
-      <nav aria-label="Authentication sections" className="mt-4 flex gap-1 border-b border-border">
+      <nav aria-label="Authentication sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
         {TABS.map((t) => (
           <NavLink
             key={t.label}
