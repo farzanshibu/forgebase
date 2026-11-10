@@ -47,6 +47,9 @@ pub(crate) fn kv_error(e: &KvError, cmd: &[Vec<u8>]) -> String {
             "ERR internal storage error".into()
         }
         KvError::TooManyChannels => "ERR too many pub/sub channels".into(),
+        KvError::TenantRequired(_) => {
+            "NOPERM tenant_required: this key has no tenant; bind it to one, or SELECT a shared.<name> namespace".into()
+        }
         other => format!("ERR {other}"),
     }
 }

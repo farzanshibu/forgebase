@@ -254,11 +254,11 @@ impl Store {
             return Err(KvError::WrongArity(name.to_ascii_lowercase()));
         }
         if sp.grows {
-            self.make_room()?;
+            self.make_room(&scope.tenant)?;
         }
         let reply = self.dispatch(&name, scope, a, now)?;
         if sp.class != Class::Read {
-            self.evict_to_limit();
+            self.evict_to_limit(Some(&scope.tenant));
         }
         Ok(reply)
     }

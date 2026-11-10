@@ -19,8 +19,8 @@
 use std::fmt;
 use std::sync::Arc;
 
-use forgebase_data::{AccessContext, Action, Authorizer, Decision, Principal};
-use forgebase_kv::{Class, KvError, KvResult, Reply, Subscription, spec};
+use forgebase_data::{AccessContext, Authorizer, Decision, Principal, ResourceKind, ResourceRef};
+use forgebase_kv::{KvError, KvResult, KvService, Reply, Subscription, spec};
 use redis::aio::ConnectionManager;
 
 use crate::backend::{BoxFuture, KvBackend};
@@ -50,25 +50,28 @@ impl ExternalRedis {
         Ok(Self { conn, authorizer })
     }
 
-    fn authorize(&self, ctx: &AccessContext, action: Action) -> KvResult<()> {
-        match self.authorizer.authorize(ctx, action, None) {
-            Decision::Allow => Ok(()),
-            _ => Err(if ctx.principal == Principal::Anonymous {
-                KvError::Unauthenticated
-            } else {
-                KvError::Forbidden
-            }),
+    /// The same namespace check as the built-in engine (FB-138): every
+    /// (action, operation) the command needs, on the namespace resource.
+    fn authorize(&self, ctx: &AccessContext, ns: &str, cmd: &[Vec<u8>]) -> KvResult<()> {
+        let mut needs = Vec::new();
+        KvService::command_needs(cmd, None, &mut needs)?;
+        for (action, op) in needs {
+            let res = ResourceRef::new(ResourceKind::KvNamespace, ns, op);
+            if self.authorizer.authorize_resource(ctx, action, &res) != Decision::Allow {
+                return Err(if ctx.principal == Principal::Anonymous {
+                    KvError::Unauthenticated
+                } else {
+                    KvError::Forbidden
+                });
+            }
         }
+        Ok(())
     }
 }
 
 /// The key prefix of a caller: `fb:<len>:<tenant>:<len>:<ns>:`.
 pub fn key_prefix(ctx: &AccessContext, ns: &str) -> KvResult<Vec<u8>> {
-    forgebase_kv::validate_namespace(ns)?;
-    let tenant = ctx
-        .tenant
-        .as_ref()
-        .map_or_else(|| "default".to_owned(), |t| format!("t:{t}"));
+    let tenant = KvService::scope_tenant(ctx, ns)?;
     Ok(format!("fb:{}:{tenant}:{}:{ns}:", tenant.len(), ns.len()).into_bytes())
 }
 
@@ -326,16 +329,8 @@ impl KvBackend for ExternalRedis {
                 .map(|n| String::from_utf8_lossy(n).to_ascii_uppercase())
                 .ok_or_else(|| KvError::Syntax("empty command".into()))?;
             // Authorise before revealing whether the command exists.
-            let sp = spec(&name);
-            self.authorize(
-                ctx,
-                match sp.map(|s| s.class) {
-                    Some(Class::Write) => Action::KvWrite,
-                    Some(Class::Admin) => Action::KvAdmin,
-                    _ => Action::KvRead,
-                },
-            )?;
-            let sp = sp.ok_or_else(|| KvError::UnknownCommand(name.to_ascii_lowercase()))?;
+            self.authorize(ctx, ns, cmd)?;
+            let sp = spec(&name).ok_or_else(|| KvError::UnknownCommand(name.to_ascii_lowercase()))?;
             if cmd.len() - 1 < sp.min_args || cmd.len() - 1 > sp.max_args {
                 return Err(KvError::WrongArity(name.to_ascii_lowercase()));
             }
