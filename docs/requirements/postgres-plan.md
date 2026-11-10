@@ -72,6 +72,14 @@ The human asked for PostgreSQL in the v0.3 release.
   from PostgreSQL 18 to 19), FB-156 point-in-time recovery, and FB-157
   concurrent writers (it runs alone, last, and changes the writer model).
 
+**Human decisions (2026-11-11):**
+1. The default download embeds the engine, and a `-lite` download ships
+   without it.
+2. Bundle PostgreSQL 18 now, and move to 19 after 19.1 (FB-154, in v0.4).
+3. Direct psql and driver logins ship in v0.3 with `native_rls=logins`,
+   through the Unix socket and `forgebase db psql` only. TCP stays off until an
+   operator turns it on.
+
 **Disk.** The build machine has about 35 GB free.
 - Rust temps build with `CARGO_PROFILE_DEV_DEBUG=0` and
   `CARGO_PROFILE_TEST_DEBUG=0`, and delete their `target/` at done.
