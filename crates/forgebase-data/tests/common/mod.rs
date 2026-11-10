@@ -16,7 +16,7 @@ pub fn admin() -> AccessContext {
 
 pub async fn open_db(dir: &Path) -> Database {
     let opts = DbOptions {
-        path: dir.join("forgebase.db"),
+        target: forgebase_data::db::DbTarget::sqlite(dir.join("forgebase.db")),
         synchronous: Synchronous::Full,
         busy_timeout: Duration::from_millis(5000),
         read_pool_size: 8,

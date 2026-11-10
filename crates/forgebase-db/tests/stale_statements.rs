@@ -11,7 +11,7 @@ use forgebase_db::{Backend, Database, DbOptions, Statement, TxMode};
 async fn cached_star_select_sees_columns_added_by_another_connection() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(DbOptions {
-        path: tmp.path().join("t.db"),
+        target: forgebase_db::DbTarget::sqlite(tmp.path().join("t.db")),
         synchronous: Synchronous::Full,
         busy_timeout: Duration::from_millis(5000),
         // One reader = connection A is the only one that can serve the reads.
@@ -56,7 +56,7 @@ async fn cached_star_select_sees_columns_added_by_another_connection() {
 async fn readers_see_an_index_created_in_a_normal_transaction() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::open(DbOptions {
-        path: tmp.path().join("t.db"),
+        target: forgebase_db::DbTarget::sqlite(tmp.path().join("t.db")),
         synchronous: Synchronous::Full,
         busy_timeout: Duration::from_millis(5000),
         read_pool_size: 1,

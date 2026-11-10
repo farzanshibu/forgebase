@@ -1,68 +1,18 @@
 //! [`Backend`] implementation for the embedded SQLite database.
 
-use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{SqliteArguments, SqliteRow};
 use sqlx::{AssertSqlSafe, Column, Row, Sqlite, TypeInfo, ValueRef};
 
+use crate::DbError;
 use crate::backend::{Backend, BoxFuture, ExecResult, PlanStep, Rows, SlowQuery, Statement, TxMode, Value, WriteTx};
 use crate::dialect::{Dialect, SqliteDialect};
-use crate::{Database, DbError};
-
-/// Default slow-query threshold.
-pub const DEFAULT_SLOW_QUERY_THRESHOLD: Duration = Duration::from_millis(200);
-/// Entries kept in the slow-query ring buffer.
-pub const SLOW_QUERY_LOG_CAPACITY: usize = 256;
-
-/// Statement latency histogram; the name matches `forgebase_observability::names`.
-const QUERY_DURATION_METRIC: &str = "forgebase_db_query_duration_seconds";
+use crate::sqlite::SqliteDatabase;
 
 static SQLITE: SqliteDialect = SqliteDialect;
-
-/// Bounded in-memory slow-query log shared by all connections of a database.
-#[derive(Debug)]
-pub(crate) struct SlowLog {
-    threshold_us: AtomicU64,
-    entries: Mutex<VecDeque<SlowQuery>>,
-}
-
-impl Default for SlowLog {
-    fn default() -> Self {
-        Self {
-            threshold_us: AtomicU64::new(DEFAULT_SLOW_QUERY_THRESHOLD.as_micros() as u64),
-            entries: Mutex::new(VecDeque::with_capacity(SLOW_QUERY_LOG_CAPACITY)),
-        }
-    }
-}
-
-impl SlowLog {
-    /// Observes the statement latency (histogram `forgebase_db_query_duration_seconds`, label
-    /// `mode`), then logs it when it passed the slow threshold.
-    fn record(&self, stmt: &Statement, elapsed: Duration, rows: u64, write: bool) {
-        metrics::histogram!(QUERY_DURATION_METRIC, "mode" => if write { "write" } else { "read" })
-            .record(elapsed.as_secs_f64());
-        if elapsed.as_micros() as u64 >= self.threshold_us.load(Ordering::Relaxed) {
-            let entry = SlowQuery {
-                sql: stmt.sql.clone(),
-                param_count: stmt.params.len(),
-                duration_ms: elapsed.as_secs_f64() * 1000.0,
-                at: forgebase_core::now_rfc3339(),
-                rows,
-                label: stmt.label.clone(),
-            };
-            tracing::warn!(duration_ms = entry.duration_ms, sql = %entry.sql, "slow query");
-            let mut log = self.entries.lock().unwrap_or_else(|p| p.into_inner());
-            if log.len() == SLOW_QUERY_LOG_CAPACITY {
-                log.pop_front();
-            }
-            log.push_back(entry);
-        }
-    }
-}
 
 /// Per-connection record of the schema generation last seen, so a reader that
 /// is behind a schema change drops its cached statements and reloads the schema.
@@ -160,7 +110,7 @@ fn program_writes(rows: &Rows) -> bool {
     })
 }
 
-impl Backend for Database {
+impl Backend for SqliteDatabase {
     fn dialect(&self) -> &dyn Dialect {
         &SQLITE
     }
@@ -248,28 +198,19 @@ impl Backend for Database {
     }
 
     fn slow_queries(&self) -> Vec<SlowQuery> {
-        let log = self.inner.slow.entries.lock().unwrap_or_else(|p| p.into_inner());
-        log.iter().cloned().collect()
+        self.inner.slow.entries()
     }
 
     fn clear_slow_queries(&self) {
-        self.inner
-            .slow
-            .entries
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        self.inner.slow.clear();
     }
 
     fn slow_query_threshold(&self) -> Duration {
-        Duration::from_micros(self.inner.slow.threshold_us.load(Ordering::Relaxed))
+        self.inner.slow.threshold()
     }
 
     fn set_slow_query_threshold(&self, threshold: Duration) {
-        self.inner
-            .slow
-            .threshold_us
-            .store(threshold.as_micros() as u64, Ordering::Relaxed);
+        self.inner.slow.set_threshold(threshold);
     }
 }
 
@@ -278,7 +219,7 @@ struct SqliteTx {
     /// `None` once committed or rolled back.
     conn: Option<PoolConnection<Sqlite>>,
     mode: TxMode,
-    db: Database,
+    db: SqliteDatabase,
     /// A statement changed the schema (DDL in a `Normal` transaction, such as
     /// `CREATE INDEX`): readers must reload it after the commit (FB-85).
     ddl: bool,
@@ -287,7 +228,7 @@ struct SqliteTx {
 /// Whether `sql` changes the schema or the planner's statistics, so pooled
 /// readers must reload their in-memory schema once it commits. Leading
 /// whitespace and SQL comments are skipped; the first keyword decides.
-fn changes_schema(sql: &str) -> bool {
+pub(crate) fn changes_schema(sql: &str) -> bool {
     let mut rest = sql;
     loop {
         rest = rest.trim_start();
