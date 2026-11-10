@@ -185,8 +185,10 @@ pub async fn postgres_test_db() -> Option<TestDb> {
         .await
         .unwrap_or_else(|e| panic!("connect to the PostgreSQL test engine: {e}"));
     let create = match &server.template {
+        // FILE_COPY: the migrated template has ~450 relations; copying files
+        // is several times faster than WAL-logging every block (PG 15+).
         Some(t) => format!(
-            "CREATE DATABASE {} TEMPLATE {}",
+            "CREATE DATABASE {} TEMPLATE {} STRATEGY FILE_COPY",
             PgDialect.quote_ident(&name),
             PgDialect.quote_ident(t)
         ),

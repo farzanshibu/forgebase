@@ -215,10 +215,10 @@ impl<'a> PgMigrator<'a> {
         })
     }
 
-    /// Applies every pending migration, each in its own transaction, then
-    /// makes sure of the session user's `search_path` ([`ensure_search_path`]).
+    /// Applies every pending migration, each in its own transaction.
     /// Returns the versions recorded by this call (empty when up to date; the
-    /// baseline records one row per version it stands for).
+    /// baseline records one row per version it stands for). Does not touch
+    /// the session user's `search_path` ([`migrate`] does).
     pub async fn run(&self, conn: &mut PgConnection) -> Result<Vec<AppliedMigration>, MigrationError> {
         let owner = owner_role(conn).await?;
         {
@@ -252,14 +252,16 @@ impl<'a> PgMigrator<'a> {
             }
             done.extend(apply_step(conn, m, &rows, owner.as_deref()).await?);
         }
-        ensure_search_path(conn).await?;
         Ok(done)
     }
 }
 
-/// Applies pending system migrations ([`PgMigrator::system`]).
+/// Applies pending system migrations ([`PgMigrator::system`]), then
+/// [`ensure_search_path`].
 pub async fn migrate(conn: &mut PgConnection) -> Result<Vec<AppliedMigration>, MigrationError> {
-    PgMigrator::system().run(conn).await
+    let done = PgMigrator::system().run(conn).await?;
+    ensure_search_path(conn).await?;
+    Ok(done)
 }
 
 /// Migration state of the system schema ([`PgMigrator::system`]).
@@ -413,19 +415,37 @@ async fn apply_step(
     Ok(done)
 }
 
+/// The `search_path` the role and database settings give new sessions of
+/// the session user (role in database, then role, then database), if any.
+const CATALOG_SEARCH_PATH: &str = "SELECT substr(c, 13)
+FROM pg_db_role_setting s CROSS JOIN unnest(s.setconfig) AS c,
+     (SELECT r.oid AS role, d.oid AS db FROM pg_roles r, pg_database d
+      WHERE r.rolname = session_user AND d.datname = current_database()) me
+WHERE c LIKE 'search\\_path=%'
+  AND ((s.setrole = me.role AND s.setdatabase IN (me.db, 0)) OR (s.setrole = 0 AND s.setdatabase = me.db))
+ORDER BY CASE WHEN s.setrole <> 0 AND s.setdatabase <> 0 THEN 1 WHEN s.setrole <> 0 THEN 2 ELSE 3 END
+LIMIT 1";
+
 /// Makes sure new sessions of the session user find the system tables: when
-/// its default `search_path` lacks [`SCHEMA`], sets
-/// `ALTER ROLE <session_user> IN DATABASE <current_database> SET search_path
-/// = forgebase, public` (a role may change its own defaults). Then sets the
-/// same `search_path` on this session. Returns whether the default changed.
+/// neither this session's default `search_path` nor the role and database
+/// settings name [`SCHEMA`], sets `ALTER ROLE <session_user> IN DATABASE
+/// <current_database> SET search_path = forgebase, public` (a role may change
+/// its own defaults; other databases are untouched). Then sets the same
+/// `search_path` on this session. Returns whether the default changed.
 ///
-/// Connections opened before the change keep their old `search_path`; the
-/// server opens its read pool after migrating.
+/// Connections opened before the change keep their old `search_path`.
 pub async fn ensure_search_path(conn: &mut PgConnection) -> Result<bool, MigrationError> {
-    let default: String = sqlx::query_scalar("SELECT reset_val FROM pg_settings WHERE name = 'search_path'")
+    let session_default: String = sqlx::query_scalar("SELECT reset_val FROM pg_settings WHERE name = 'search_path'")
         .fetch_one(&mut *conn)
         .await?;
-    let changed = !search_path_has_schema(&default, SCHEMA);
+    let changed = if search_path_has_schema(&session_default, SCHEMA) {
+        false
+    } else {
+        let configured: Option<String> = sqlx::query_scalar(CATALOG_SEARCH_PATH)
+            .fetch_optional(&mut *conn)
+            .await?;
+        !configured.is_some_and(|p| search_path_has_schema(&p, SCHEMA))
+    };
     if changed {
         sqlx::raw_sql(AssertSqlSafe(format!(
             "DO $fb$ BEGIN EXECUTE format('ALTER ROLE %I IN DATABASE %I SET search_path = {SEARCH_PATH}', \
@@ -579,13 +599,17 @@ mod tests {
             assert!(!sql.contains(word), "the baseline must not contain {word}");
         }
         // The full-text wrapper FB-131's PgDialect relies on.
-        assert!(sql.contains("FUNCTION _forgebase_unaccent(text)"));
-        assert!(sql.contains("IMMUTABLE"));
+        assert!(sql.contains("FUNCTION forgebase._forgebase_unaccent(text) RETURNS text"));
+        assert!(sql.contains("LANGUAGE sql IMMUTABLE"));
         // Every foreign key can be deferred by TxMode::SchemaChange.
-        let refs = sql.matches(" REFERENCES ").count();
-        let deferrable = sql.matches("DEFERRABLE INITIALLY IMMEDIATE").count();
-        assert!(refs > 0);
-        assert_eq!(refs, deferrable, "every REFERENCES must be DEFERRABLE INITIALLY IMMEDIATE");
+        let refs: Vec<&str> = sql.lines().filter(|l| l.contains(" REFERENCES ")).collect();
+        assert!(refs.len() > 50);
+        for line in refs {
+            assert!(
+                line.contains("DEFERRABLE INITIALLY IMMEDIATE"),
+                "every REFERENCES must be DEFERRABLE INITIALLY IMMEDIATE: {line}"
+            );
+        }
     }
 
     #[test]

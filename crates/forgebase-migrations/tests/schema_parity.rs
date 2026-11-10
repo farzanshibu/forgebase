@@ -221,7 +221,9 @@ fn is_json_only_check(body: &str) -> bool {
 fn sqlite_type(table_sql: &str, def: &str, name: &str, declared: &str, rowid_alias: bool) -> String {
     let declared = declared.to_uppercase();
     let def_n = norm_expr(def);
-    if rowid_alias {
+    // ADR-0028 §7.4: INTEGER PRIMARY KEY AUTOINCREMENT -> identity. A plain
+    // INTEGER PRIMARY KEY (the bookkeeping version) is given explicitly.
+    if rowid_alias && def_n.contains("autoincrement") {
         return "bigint identity".into();
     }
     match declared.as_str() {
@@ -341,7 +343,7 @@ async fn sqlite_schema(conn: &mut SqliteConnection) -> Schema {
             t.columns.push(Column {
                 ty: sqlite_type(sql, &def, &col, &declared, rowid_alias),
                 not_null: not_null == 1 || pk.contains(&col),
-                default: if rowid_alias { None } else { default.as_deref().map(norm_default) },
+                default: default.as_deref().map(norm_default),
                 name: col,
             });
         }
@@ -617,8 +619,9 @@ async fn pg_schema(conn: &mut PgConnection) -> Schema {
                 .map(|c| format!("\"{}\"::text", c.name))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let order = (1..=cols.len())
-                .map(|i| format!("{i} COLLATE \"C\""))
+            let order = cols
+                .iter()
+                .map(|c| format!("\"{}\"::text COLLATE \"C\"", c.name))
                 .collect::<Vec<_>>()
                 .join(", ");
             let rows = sqlx::query(AssertSqlSafe(format!(
@@ -1023,6 +1026,8 @@ async fn postgres_external_owner_role_migrates_and_gets_the_search_path() {
         .unwrap();
     assert!(!default.contains("forgebase"), "{default}");
     postgres::migrate(&mut conn).await.unwrap();
+    // This session predates the setting; the catalog has it now.
+    assert!(!postgres::ensure_search_path(&mut conn).await.unwrap(), "set once");
     let owner: String = sqlx::query_scalar("SELECT tableowner::text FROM pg_tables WHERE tablename = '_forgebase_jobs'")
         .fetch_one(&mut conn)
         .await
@@ -1035,12 +1040,12 @@ async fn postgres_external_owner_role_migrates_and_gets_the_search_path() {
     assert_eq!(path, "forgebase, public");
     assert!(!postgres::ensure_search_path(&mut fresh).await.unwrap(), "already set");
     let _ = fresh.close().await;
-    sqlx::raw_sql(AssertSqlSafe(format!(
-        "DROP DATABASE \"{name}\" WITH (FORCE); DROP ROLE \"{role}\""
-    )))
-    .execute(&mut admin)
-    .await
-    .unwrap();
+    for sql in [
+        format!("DROP DATABASE \"{name}\" WITH (FORCE)"),
+        format!("DROP ROLE \"{role}\""),
+    ] {
+        sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut admin).await.unwrap();
+    }
 }
 
 /// RAISE(ABORT, msg) triggers keep their message (SQLSTATE P0001), the
