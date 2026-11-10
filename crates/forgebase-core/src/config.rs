@@ -81,6 +81,10 @@ idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
 [billing]
 enabled = false             # FORGEBASE_BILLING_ENABLED
 
+# Realtime (WebSocket) limits.
+[realtime]
+max_connections_per_principal = 32  # FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL
+
 [auth]
 # Client address from the last X-Forwarded-For entry. Only behind a reverse
 # proxy you run (it must append the real address); off, the socket address.
@@ -245,8 +249,21 @@ pub struct Config {
     pub queue: QueueConfig,
     /// Billing settings.
     pub billing: BillingConfig,
+    /// Realtime (WebSocket) settings.
+    pub realtime: RealtimeSettings,
     /// Authentication deployment settings.
     pub auth: AuthSettings,
+}
+
+/// Default most realtime connections one principal may hold (FIX-9).
+pub const DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL: u32 = 32;
+
+/// Settings of the realtime service (FIX-9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RealtimeSettings {
+    /// Most simultaneous realtime connections one principal (user or key) may
+    /// hold; further ones get `429 too_many_connections`.
+    pub max_connections_per_principal: u32,
 }
 
 /// Durable topics and queues settings (FB-63, ADR-0022), from `[queue]`.
@@ -426,6 +443,9 @@ impl Config {
                 dead_letter_retention_days: 14,
             },
             billing: BillingConfig { enabled: false },
+            realtime: RealtimeSettings {
+                max_connections_per_principal: DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL,
+            },
             auth: AuthSettings::default(),
         }
     }
@@ -480,6 +500,12 @@ impl Config {
         }
         if self.resp.idle_timeout_secs > 86_400 {
             return Err(invalid("resp.idle_timeout_secs", "must be at most 86400".into()));
+        }
+        if !(1..=1_000_000).contains(&self.realtime.max_connections_per_principal) {
+            return Err(invalid(
+                "realtime.max_connections_per_principal",
+                "must be between 1 and 1000000".into(),
+            ));
         }
         let q = &self.queue;
         if !(64..=10 * 1024 * 1024).contains(&q.max_message_bytes) {
@@ -635,6 +661,9 @@ impl Config {
         if let Some(v) = o.resp_idle_timeout_secs {
             self.resp.idle_timeout_secs = v;
         }
+        if let Some(v) = o.realtime_max_connections_per_principal {
+            self.realtime.max_connections_per_principal = v;
+        }
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
@@ -690,6 +719,8 @@ pub struct ConfigOverrides {
     pub queue: Option<QueueOverrides>,
     /// Mount billing.
     pub billing_enabled: Option<bool>,
+    /// Most realtime connections per principal.
+    pub realtime_max_connections_per_principal: Option<u32>,
 }
 
 impl ConfigOverrides {
@@ -731,6 +762,9 @@ impl ConfigOverrides {
                 "RESP_MAX_CONNECTIONS" => o.resp_max_connections = Some(parse_num(&value).map_err(bad)?),
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
+                "REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL" => {
+                    o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
+                }
                 "BILLING_ENABLED" => o.billing_enabled = Some(parse_bool(&value).map_err(bad)?),
                 _ => return Err(bad("unknown ForgeBase environment variable".into())),
             }
@@ -824,7 +858,15 @@ struct FileConfig {
     #[serde(default)]
     billing: FileBilling,
     #[serde(default)]
+    realtime: FileRealtime,
+    #[serde(default)]
     auth: FileAuth,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileRealtime {
+    max_connections_per_principal: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -902,6 +944,7 @@ impl From<FileConfig> for ConfigOverrides {
             storage: f.storage,
             queue: f.queue,
             billing_enabled: f.billing.enabled,
+            realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
         }
     }
 }
@@ -1132,6 +1175,26 @@ mod tests {
         assert_eq!(c.server.port, 3333);
         assert_eq!(c.log.level, "warn");
         assert_eq!(c.data_dir, tmp.path().join("cli-data"));
+    }
+
+    #[test]
+    fn realtime_per_principal_cap_defaults_to_32_and_is_configurable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = ConfigLoader::new(tmp.path()).load().unwrap().config;
+        assert_eq!(d.realtime.max_connections_per_principal, 32);
+        std::fs::write(
+            tmp.path().join("forgebase.toml"),
+            "[realtime]\nmax_connections_per_principal = 100\n",
+        )
+        .unwrap();
+        let c = ConfigLoader::new(tmp.path()).load().unwrap().config;
+        assert_eq!(c.realtime.max_connections_per_principal, 100);
+        let e = env(&[("FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL", "7")]);
+        let c = ConfigLoader::new(tmp.path()).env(e).load().unwrap().config;
+        assert_eq!(c.realtime.max_connections_per_principal, 7);
+        let mut bad = c;
+        bad.realtime.max_connections_per_principal = 0;
+        assert!(bad.validate().is_err());
     }
 
     #[test]

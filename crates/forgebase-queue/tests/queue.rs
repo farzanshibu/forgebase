@@ -944,3 +944,21 @@ async fn deleting_a_topic_with_subscriptions_needs_force() {
     );
     assert!(h.svc.topics(&admin()).await.unwrap().is_empty());
 }
+
+/// FIX-9 guard: the claim query must read ready rows in `seq` order from the
+/// index. A `TEMP B-TREE` step means it sorts the whole backlog on every pull.
+#[tokio::test]
+async fn pull_claim_query_does_not_sort_the_backlog() {
+    let h = harness().await;
+    for ordering in [false, true] {
+        let plan = h.svc.explain_claim_plan(ordering).await.unwrap();
+        assert!(
+            plan.iter().all(|l| !l.contains("TEMP B-TREE")),
+            "claim query sorts the backlog (ordering={ordering}): {plan:?}"
+        );
+        assert!(
+            plan.iter().any(|l| l.contains("_forgebase_queue_deliveries_order")),
+            "claim query does not use the seq-ordered index: {plan:?}"
+        );
+    }
+}

@@ -104,6 +104,12 @@ reconcile_grace_secs = 3600
 # s3_prefix = ""
 # s3_part_size = 8388608
 
+[realtime]
+# Most simultaneous realtime (WebSocket) connections one principal (user or
+# API key) may hold. The next one is refused with 429 too_many_connections.
+# Range 1 to 1000000. Env: FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL
+max_connections_per_principal = 32
+
 [queue]
 # Durable topics and queues (ADR-0022): /api/v1/queues and its background task.
 enabled = true

@@ -64,7 +64,11 @@ pub struct H {
 pub async fn open_db(dir: &Path) -> Database {
     let layout = DataLayout::new(dir.join("data"));
     layout.ensure().unwrap();
-    let cfg = forgebase_core::Config::defaults(dir);
+    let mut cfg = forgebase_core::Config::defaults(dir);
+    // These tests restart in process (no power loss), so skip the per-commit
+    // fsync: under a full parallel suite it made writer waits exceed the 30 s
+    // pool timeout (`Busy`) on slow disks.
+    cfg.database.synchronous = forgebase_core::config::Synchronous::Normal;
     let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
         .await
         .unwrap();

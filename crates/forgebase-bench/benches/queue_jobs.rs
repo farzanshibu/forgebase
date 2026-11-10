@@ -51,6 +51,15 @@ fn bench(c: &mut Criterion) {
         .unwrap()
     });
 
+    // A standing backlog, so the pull bench measures a busy subscription even
+    // when run alone (FIX-9: pull cost must not grow with the backlog).
+    rt.block_on(async {
+        for _ in 0..100 {
+            let batch = (0..100).map(|i| NewMessage::new(json!({"n": i}))).collect();
+            q.publish(&sys, "bench", batch).await.unwrap();
+        }
+    });
+
     let mut g = c.benchmark_group("queue_jobs");
     g.sample_size(30);
     g.throughput(Throughput::Elements(1));
@@ -75,23 +84,34 @@ fn bench(c: &mut Criterion) {
         });
     });
     g.throughput(Throughput::Elements(10));
+    // Each iteration first publishes 10 messages (not timed), so the standing
+    // backlog stays the same size and every timed pull has 10 to claim.
     g.bench_function("queue_pull_ack_10", |b| {
-        b.to_async(&rt).iter(|| {
+        b.to_async(&rt).iter_custom(|iters| {
             let (q, sys) = (q.clone(), sys.clone());
             async move {
-                let got = q
-                    .pull(
-                        &sys,
-                        "bench-sub",
-                        PullRequest {
-                            max_messages: Some(10),
-                            ..PullRequest::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-                let ids: Vec<String> = got.iter().map(|m| m.ack_id.clone()).collect();
-                q.ack(&sys, "bench-sub", &ids).await.unwrap();
+                let mut total = std::time::Duration::ZERO;
+                for _ in 0..iters {
+                    let batch = (0..10).map(|i| NewMessage::new(json!({"n": i}))).collect();
+                    q.publish(&sys, "bench", batch).await.unwrap();
+                    let start = std::time::Instant::now();
+                    let got = q
+                        .pull(
+                            &sys,
+                            "bench-sub",
+                            PullRequest {
+                                max_messages: Some(10),
+                                ..PullRequest::default()
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(got.len(), 10, "pull bench needs a standing backlog");
+                    let ids: Vec<String> = got.iter().map(|m| m.ack_id.clone()).collect();
+                    q.ack(&sys, "bench-sub", &ids).await.unwrap();
+                    total += start.elapsed();
+                }
+                total
             }
         });
     });
