@@ -2,7 +2,7 @@
 
 - Status: proposed
 - Date: 2026-11-11
-- Work package: FB-95 (design); build packages FB-96 onward in
+- Work package: FB-95 (design); build packages FB-130 onward in
   [`docs/requirements/postgres-plan.md`](../requirements/postgres-plan.md).
 - Scope: where the PostgreSQL and pgvector binaries come from and how they
   ship, how ForgeBase runs and upgrades the database server, backups,
@@ -159,7 +159,7 @@ build-provenance attestations:
 - **Contents**: the programs and extensions of §1, `share/` (timezone data,
   extension SQL), and `share/licenses/` (§2.4). Everything else is dropped.
 - **Expected size** (from summing the theseus 18.6 manifest without LLVM,
-  ICU and Python; FB-96 replaces these with measured numbers): about
+  ICU and Python; FB-130 replaces these with measured numbers): about
   14 MB of programs (`postgres` 11.4 MB), 6 MB of modules, 2 MB of `share/`,
   5 MB of OpenSSL: **30–35 MB unpacked, an estimated 10–14 MB compressed with
   zstd** per target.
@@ -173,7 +173,7 @@ host musl loader, no pgvector, and a third party in the supply chain of
 every ForgeBase release. They stay useful for development: the engine
 crate accepts any PostgreSQL 18 directory with pgvector through
 `FORGEBASE_PG_ENGINE_DIR` (a theseus archive plus a locally built pgvector,
-Homebrew, or apt), so Rust work does not wait for FB-96.
+Homebrew, or apt), so Rust work does not wait for FB-130.
 
 ### 2.3 Making Linux binaries run everywhere
 
@@ -194,7 +194,7 @@ The problem is that an ELF executable names its loader by absolute path
 - If the absolute loader path is longer than 254 bytes (a very deep data
   directory), ForgeBase extracts the engine under `$HOME/.cache/forgebase/`
   instead and says so.
-- **Fallback** if the FB-96 spike shows this does not work on every target
+- **Fallback** if the FB-130 spike shows this does not work on every target
   host: build against glibc 2.28 (manylinux_2_28 image; RHEL 8+, Debian 10+,
   Ubuntu 20.04+) with `$ORIGIN` RUNPATH, and document that Alpine hosts use
   the ForgeBase Docker image or external mode.
@@ -222,7 +222,7 @@ All are compatible with ForgeBase's MIT OR Apache-2.0. No GPL component is
 shipped (readline, ICU's licence and LLVM are avoided by configuration).
 The archive carries `share/licenses/<component>.txt`; the release archive
 and `forgebase licenses` include them. `cargo deny` does not see C
-components, so FB-96 adds `engine.lock` to the release checklist and a CI
+components, so FB-130 adds `engine.lock` to the release checklist and a CI
 check that every component listed in it has a licence file.
 
 ## 3. Shipping them
@@ -257,7 +257,7 @@ answers.
 
 ### 3.2 Size impact
 
-Estimates until FB-96 measures them:
+Estimates until FB-130 measures them:
 
 | Target | Added to the release binary (compressed engine) | Unpacked per project (first PostgreSQL start) |
 |---|---|---|
@@ -368,7 +368,7 @@ initdb -D postgres/data -U forgebase_super --pwfile=<0600 temp file>
 
 ### 4.4 Resource cost
 
-Measured numbers come from FB-96; expected orders of magnitude: idle RSS of
+Measured numbers come from FB-130; expected orders of magnitude: idle RSS of
 the postmaster and its background workers 30–60 MB plus `shared_buffers`;
 `initdb` 1–3 s once; engine start 0.3–1 s per server start. Docker's
 default 64 MB `/dev/shm` is enough for these defaults; the compose example
@@ -557,7 +557,7 @@ processes.
   read-then-write inside one transaction (counters, claims, uniqueness
   checks, ledger balances). Under PostgreSQL's concurrent writers these need
   `SELECT … FOR UPDATE`, `SKIP LOCKED`, or serialisable retries, one by one.
-  That is FB-123, after the suite is green on PostgreSQL.
+  That is FB-157, after the suite is green on PostgreSQL.
 - **Drop without commit**: the connection is returned with `ROLLBACK`; if
   that fails, it is closed (same guarantee as ADR-0003 §2).
 - **Placeholders**: before preparing, a small lexer (aware of `'…'`,
@@ -604,7 +604,7 @@ processes.
 
 `Dialect` already covers quoting, placeholders, NULL-safe equality, JSON
 extraction and iteration, `LIKE` escaping, literals, column types and the
-plan prefix. FB-97 adds the following methods, with SQLite implementations
+plan prefix. FB-131 adds the following methods, with SQLite implementations
 that return exactly what the code emits today, so the port packages can
 switch call sites one at a time:
 
@@ -717,7 +717,7 @@ What ADR-0003 §2 listed as SQLite-specific moves behind `Dialect`/`Backend`:
   only): `test_backend().await -> TestDb` reads `FORGEBASE_TEST_BACKEND`
   (`sqlite`, default, or `postgres`). For PostgreSQL it starts **one** engine
   per test binary (from `FORGEBASE_TEST_PG_ENGINE`: an extracted engine
-  directory; CI uses the FB-96 artifact), migrates a template database once,
+  directory; CI uses the FB-130 artifact), migrates a template database once,
   and gives each test `CREATE DATABASE t_<uuid> TEMPLATE fb_template`
   (milliseconds), dropped at the end.
 - Every `tests/common` helper switches to `test_backend()`. Tests that check
@@ -739,14 +739,14 @@ What ADR-0003 §2 listed as SQLite-specific moves behind `Dialect`/`Backend`:
 | Capability | SQLite backend | PostgreSQL backend |
 |---|---|---|
 | ForgeBase APIs, rules, Studio, SDKs | yes | yes, identical |
-| Concurrent writers | no (one writer) | one writer at first (decision 6); concurrent after FB-123 |
+| Concurrent writers | no (one writer) | one writer at first (decision 6); concurrent after FB-157 |
 | Native row-level security | no | yes: ForgeBase rules compiled to policies, plus policies you write (rls-coverage §3) |
 | Direct `psql` / driver / BI-tool access | no (the file is locked by the server) | yes: `forgebase db psql`, and named database logins with RLS applied (opt-in) |
 | PL/pgSQL functions, triggers, views in the SQL editor | SQLite triggers only | yes |
 | Extensions | none | pgvector and the contrib list in §1 (allow list) |
 | `LISTEN` / `NOTIFY` | no | yes for direct logins; ForgeBase uses it for multi-process cache invalidation later |
 | Full-text search | FTS5 (bm25) | `tsvector` + GIN (`ts_rank`); different ranking |
-| Point-in-time recovery | snapshots only | snapshots, then WAL archiving (FB-122) |
+| Point-in-time recovery | snapshots only | snapshots, then WAL archiving (FB-156) |
 | One portable file | yes | no: a directory with a server process |
 | Extra disk / memory | none | engine 50–100 MB unpacked per project (§3.2); 30–60 MB RAM idle plus `shared_buffers` |
 | Single-binary download | ~as today | larger by the compressed engine (§3.2) |
@@ -755,7 +755,7 @@ What ADR-0003 §2 listed as SQLite-specific moves behind `Dialect`/`Backend`:
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Linux engine portability (musl vs glibc hosts) | engine fails to start on some distros | §2.3 relocation design, proven by the FB-96 spike on Debian, Ubuntu, Fedora, Alpine and distroless before anything else depends on it |
+| Linux engine portability (musl vs glibc hosts) | engine fails to start on some distros | §2.3 relocation design, proven by the FB-130 spike on Debian, Ubuntu, Fedora, Alpine and distroless before anything else depends on it |
 | Semantic drift between backends (NULL order, case, types, JSON) | same API call, different answer | dialect methods with tests on both backends (§7.4); the whole suite on both (§7.7) |
 | Two hand-written schemas drift | wrong constraint on one backend | schema-parity test (§7.6); paired-migration check |
 | Type strictness breaks SQL that SQLite accepted | 400s on PostgreSQL | describe-driven binding (§7.3); suite on both backends |
