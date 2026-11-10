@@ -336,9 +336,8 @@ pub fn extract(source: &dyn ArchiveSource, engines_dir: &Path, cache_dir: Option
         Err(first) => {
             // A directory without a matching SHA file is not a finished
             // extraction (an older build renamed before syncing it): replace it.
-            let retried = dest.exists()
-                && fsutil::remove_tree(&dest).is_ok()
-                && std::fs::rename(&partial, &dest).is_ok();
+            let retried =
+                dest.exists() && fsutil::remove_tree(&dest).is_ok() && std::fs::rename(&partial, &dest).is_ok();
             if !retried {
                 let _ = fsutil::remove_tree(&partial);
                 return Err(EngineError::io("rename into place", &dest, first));
@@ -368,11 +367,7 @@ fn sha_recorded(dir: &Path, sha: &str) -> bool {
 /// The durability barrier before the rename: every file of the manifest,
 /// the manifest itself and the SHA file.
 fn sync_extracted(manifest: &Manifest, partial: &Path) -> Result<()> {
-    let keys: Vec<String> = manifest
-        .files
-        .iter()
-        .map(|f| rel_key(&f.path))
-        .collect::<Result<_>>()?;
+    let keys: Vec<String> = manifest.files.iter().map(|f| rel_key(&f.path)).collect::<Result<_>>()?;
     let mut files: Vec<&str> = keys.iter().map(String::as_str).collect();
     files.push(MANIFEST_NAME);
     files.push(SHA_FILE);

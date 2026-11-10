@@ -294,6 +294,14 @@ impl PrimaryDatabase {
     }
 }
 
+impl std::ops::Deref for PrimaryDatabase {
+    type Target = Database;
+
+    fn deref(&self) -> &Database {
+        &self.db
+    }
+}
+
 /// How [`open_owned`] treats a data directory without a database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Create {
@@ -759,7 +767,13 @@ mod tests {
 
     #[test]
     fn socket_urls_are_encoded() {
-        let url = socket_url("forgebase_reader", "p@ss/w:rd", "forgebase", Path::new("/tmp/a b"), 5432);
+        let url = socket_url(
+            "forgebase_reader",
+            "p@ss/w:rd",
+            "forgebase",
+            Path::new("/tmp/a b"),
+            5432,
+        );
         assert_eq!(
             url,
             "postgres://forgebase_reader:p%40ss%2Fw%3Ard@localhost/forgebase?host=/tmp/a%20b&port=5432"

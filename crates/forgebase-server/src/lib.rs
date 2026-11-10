@@ -65,9 +65,9 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use database::BackendMarker;
 pub use forgebase_jobs::{JobRegistry, JobService, PoolConfig};
 pub use job_results::{RESULTS_BUCKET, StorageResults};
-pub use database::BackendMarker;
 pub use lock::{DataDirLock, LockOwner};
 
 /// A started server.
@@ -230,7 +230,11 @@ fn database_runtime(
         extensions: if backend == BackendMarker::Sqlite {
             Vec::new()
         } else {
-            pg.extensions.list().iter().map(|(f, e, m)| (*f, *e, m.as_str())).collect()
+            pg.extensions
+                .list()
+                .iter()
+                .map(|(f, e, m)| (*f, *e, m.as_str()))
+                .collect()
         },
         engine: report,
     }
@@ -959,6 +963,11 @@ impl RunningServer {
     /// Migrations applied during startup.
     pub fn startup_migrations(&self) -> &MigrateReport {
         &self.migrations
+    }
+
+    /// The primary database.
+    pub fn db(&self) -> &Database {
+        &self.db
     }
 
     /// The backend of this data directory (FB-148).

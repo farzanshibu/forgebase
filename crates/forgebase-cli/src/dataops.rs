@@ -16,7 +16,8 @@ use forgebase_backup::transfer::{self, ExportOptions, Format, ImportOptions, OnC
 use forgebase_backup::{BackupOptions, Retention, SnapshotStore, backup};
 use forgebase_core::{Config, DataLayout};
 use forgebase_data::{DataService, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
+use forgebase_server::database::{self, Access, Create, PrimaryDatabase};
 use forgebase_server::{DataDirLock, ServerError};
 use serde_json::json;
 
@@ -37,14 +38,18 @@ fn lock(layout: &DataLayout, what: &str) -> anyhow::Result<DataDirLock> {
     })
 }
 
-async fn open_read_only(config: &Config, layout: &DataLayout) -> anyhow::Result<Database> {
-    let opts = DbOptions::from_config(&config.database, layout.database_path()).read_only();
-    Database::open(opts).await.with_context(|| {
-        format!(
-            "cannot open {} (run `forgebase init` first)",
-            layout.database_path().display()
-        )
-    })
+/// The database for a read-only command, on any backend (FB-148): the
+/// running server's engine, or the bundled engine started for the command.
+/// `close()` stops an engine it started.
+async fn open_read_only(config: &Config, layout: &DataLayout) -> anyhow::Result<PrimaryDatabase> {
+    database::open_attached(config, false, layout, Access::Read)
+        .await
+        .with_context(|| {
+            format!(
+                "cannot open the database in {} (run `forgebase init` first)",
+                layout.root().display()
+            )
+        })
 }
 
 async fn data_service(db: &Database) -> anyhow::Result<DataService> {
@@ -680,12 +685,15 @@ pub async fn run_import(g: &GlobalArgs, cmd: ImportCommand) -> anyhow::Result<Ex
     }
 }
 
-async fn open_read_write(config: &Config, layout: &DataLayout) -> anyhow::Result<Database> {
-    let opts = DbOptions::from_config(&config.database, layout.database_path()).create_if_missing(false);
-    Database::open(opts).await.with_context(|| {
-        format!(
-            "cannot open {} (run `forgebase init` first)",
-            layout.database_path().display()
-        )
-    })
+/// The database for a writing command; the caller holds the lock (FB-148:
+/// the bundled engine is started here and stopped by `close()`).
+async fn open_read_write(config: &Config, layout: &DataLayout) -> anyhow::Result<PrimaryDatabase> {
+    database::open_owned(config, false, layout, Create::No)
+        .await
+        .with_context(|| {
+            format!(
+                "cannot open the database in {} (run `forgebase init` first)",
+                layout.root().display()
+            )
+        })
 }
