@@ -748,7 +748,7 @@ fn commands_map_to_resource_operations() {
     use crate::service::KvService;
     use forgebase_data::{Action, ResourceOp};
     let c = |line: &str| -> Vec<Vec<u8>> { line.split_whitespace().map(|s| s.as_bytes().to_vec()).collect() };
-    let needs = |line: &str, exists: Option<&dyn Fn(&[u8]) -> bool>| {
+    let needs = |line: &str, exists: Option<crate::service::KeyExists<'_>>| {
         let mut out = Vec::new();
         KvService::command_needs(&c(line), exists, &mut out).unwrap();
         out

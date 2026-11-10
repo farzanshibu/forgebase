@@ -40,7 +40,7 @@ pub use glob::matches as glob_matches;
 pub use pubsub::{Message, Subscription};
 pub use reply::Reply;
 pub use service::{
-    ChannelInfo, Clock, FUNCTION_PREFIX, KvService, KvStats, NamespaceInfo, SHARED_PREFIX, system_clock,
+    ChannelInfo, Clock, FUNCTION_PREFIX, KeyExists, KvService, KvStats, NamespaceInfo, SHARED_PREFIX, system_clock,
     validate_namespace,
 };
 

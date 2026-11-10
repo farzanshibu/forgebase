@@ -120,6 +120,9 @@ pub const SHARED_PREFIX: &str = "shared.";
 /// reach it.
 pub const FUNCTION_PREFIX: &str = "fn.";
 
+/// Tells [`KvService::command_needs`] whether a key already exists.
+pub type KeyExists<'a> = &'a dyn Fn(&[u8]) -> bool;
+
 /// Namespace names: 1 to 64 characters, start with a letter or digit, then
 /// letters, digits, `_`, `.`, `-` or `:`. Names starting with `_` are
 /// reserved for the API's own routes. `shared.` must be followed by a name.
@@ -276,7 +279,7 @@ impl KvService {
     /// access learns nothing about the command set.
     pub fn command_needs(
         cmd: &[Vec<u8>],
-        exists: Option<&dyn Fn(&[u8]) -> bool>,
+        exists: Option<KeyExists<'_>>,
         out: &mut Vec<(Action, ResourceOp)>,
     ) -> KvResult<()> {
         let name = cmd
