@@ -7,7 +7,8 @@ import { Steps } from "panelui-web/steps";
 import { Switch } from "panelui-web/switch";
 import { ApiError, patchConfig, type ServerFeature, type FeatureSetting, type FeaturesResponse, type SettingValue } from "../../api";
 import { Button, ErrorView } from "../../components/ui";
-import SettingField, { isUnchanged, readOnlyReason, SourceBadge } from "./SettingField";
+import SettingField, { SourceBadge } from "./SettingField";
+import { isUnchanged, readOnlyReason } from "./settingUtil";
 
 const enabledKey = (f: ServerFeature) => `${f.id}.enabled`;
 
