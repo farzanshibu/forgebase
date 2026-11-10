@@ -372,8 +372,10 @@ impl Database {
     /// SQLite: when the database already has applied migrations and
     /// `backups_dir` is given, a consistent snapshot (`VACUUM INTO`) is
     /// written there first: that snapshot is the rollback path for
-    /// forward-only migrations. PostgreSQL: [`DbError::Unsupported`] until
-    /// the PostgreSQL migration runner (FB-133) is wired in.
+    /// forward-only migrations. PostgreSQL: the baseline and its twins
+    /// (`forgebase_migrations::postgres`), then the session user's default
+    /// `search_path` is made `forgebase, public` if it is not; no snapshot
+    /// is taken yet (`backup` is `None`).
     pub async fn migrate(&self, backups_dir: Option<&Path>) -> Result<MigrateReport, DbError> {
         match &*self.inner {
             Inner::Sqlite(db) => db.migrate(backups_dir).await,
