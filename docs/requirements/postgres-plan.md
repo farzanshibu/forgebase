@@ -494,3 +494,357 @@ FB-147–FB-150, FB-155, FB-156 (7).
    API-only first? Recommended: ship with `native_rls = "logins"`, TCP off by
    default (socket and `db psql` only), so direct access is there but never
    network-exposed unless an operator opts in.
+
+## Addendum (FB-158): extensions, replicas and sharding (FB-160 to FB-179)
+
+Design: [ADR-0029](../adr/0029-postgres-extensions-replicas-sharding.md),
+written by FB-158 on 2026-11-11 for human decisions 4–6. The rules for every
+package above apply unchanged (both backends, migration pairs, own-crate
+dependency versions, `--offline`, failing-before tests for every security
+fix, at most 4 Rust temps at once). All twenty packages are in the v0.3 cut
+unless the human picks option A of ADR-0029 §9 question 3 (FB-174 and the
+move tests of FB-178 then go to v0.3.1).
+
+### Waves at a glance, with the new packages
+
+| Wave | Starts when | Existing | New |
+|---|---|---|---|
+| 1 | now | FB-130 … FB-137 | FB-160 (when FB-130 merges; no Rust) |
+| 1b | FB-134 merged | FB-138 … FB-142 | — |
+| 2 | FB-131 and FB-133 merged | FB-143 … FB-148 | FB-170 |
+| 2b (new) | the wave-2 package of the same crate merged | — | FB-161 first; then FB-162, FB-164, FB-165, FB-166, FB-167 |
+| 3 | wave 2 merged, as before (FB-168 and FB-169 also wait for the wave-2b packages they depend on) | FB-149 … FB-152 | FB-168, FB-169 |
+| 4 | wave 3 merged | FB-153, FB-155 (FB-154, FB-156, FB-157 stay v0.4) | FB-163, FB-171, FB-172, FB-173, FB-175, FB-177 |
+| 5 (new) | FB-171, FB-172, FB-173 merged | — | FB-174, FB-176, FB-179 |
+| 6 (new) | FB-174 merged | — | FB-178 |
+
+New critical path: FB-131 → FB-143/FB-144 → FB-152 → FB-173 → FB-174 →
+FB-178, two waves longer than before. Extensions and replicas are off that
+path: they are ready after wave 3 (FB-163 after wave 4).
+
+**Rust temps per batch (at most 4):**
+- Wave 2: FB-143, FB-144, FB-146, FB-170; then FB-145, FB-147, FB-148.
+- Wave 2b: FB-161, FB-167, FB-162, FB-166; then FB-164, FB-165.
+- Wave 3: FB-152, FB-149, FB-150, FB-151; then FB-168, FB-169.
+- Wave 4: FB-171, FB-173, FB-153, FB-172; then FB-163, FB-175, FB-177.
+- Wave 5: FB-174, FB-179 (FB-176 is dashboard-only and does not count).
+- Wave 6: FB-178.
+
+### Scope changes to existing packages
+
+| Package | Change |
+|---|---|
+| FB-130 | Also builds **pg_cron 1.6.8** (PGXS; Windows `Makefile.win`) and **pgmq 1.13.1** (SQL files) on all five targets, ships **pg_trgm** from contrib; pins them in `engine.lock`; licences; smoke test adds `CREATE EXTENSION` for each, a pg_cron job that fires, `pgmq.send`/`read`, and a standby started from `pg_basebackup` (ADR-0029 §1.3). AGE is FB-160. |
+| FB-132 | Writes the ADR-0029 §1.3 settings: `shared_preload_libraries` with `pg_cron`, `cron.*`, `max_worker_processes = 16`, `wal_level = logical`, `max_wal_senders`, `max_replication_slots`, `max_prepared_transactions = 16`; adds them to the user deny list; `Engine::prepare` accepts a node layout (`postgres/nodes/<name>`) so FB-168 and FB-174 can run more than one cluster. |
+| FB-139 | Vector collection rules and graph label rules expose their compiled predicate so FB-162 can use it in pgvector SQL and FB-163 can tell whether any label rule applies to a caller. |
+| FB-140, FB-141, FB-142 | The `tenant` columns they add (buckets, topics, jobs) are the placement key of ADR-0029 §3.2; rows without a tenant stay on control. FB-142's reserved job kinds include `database.*`, `vector.convert`, `queue.convert`, `graph.materialise`. |
+| FB-146 | The "no second writer" test allows exactly two others: pg_cron calling `forgebase.fire_schedule()` and logical-replication apply workers during a move (ADR-0029 §1.7, §3.8). |
+| FB-147 | The vector port (bytea + USearch) becomes the **portable** path on PostgreSQL; the graph port is the **canonical** graph store on both backends. |
+| FB-148 | Adds `[database.postgres.extensions]` (`vector`, `graph`, `queue`, `cron`, `trigram`: `auto`/`on`/`off`) to the config and the FB-91 registry. |
+| FB-149 | CI engine artifacts include the extensions; adds a nightly PostgreSQL job with every accelerator `off`. |
+| FB-151 | `--to sqlite` refuses clusters with replicas or more than one set; a derived AGE graph is dropped, not refused. `--to postgres` creates a single set. |
+| FB-152 | Policy generation takes the node to write to, so FB-173 can apply it on every shard. |
+| FB-153 | The extension allow list excludes the extensions ForgeBase manages itself (vector, age, pgmq, pg_cron, pg_trgm); the `pg_hba.conf` generator includes FB-168's replication entries. |
+| FB-155 | The Database Studio shows the engine of each feature (`pgvector 0.8.7` or "portable") and links to the topology screen. It does not build the topology screen (FB-176). |
+| FB-157 (v0.4) | Concurrent writers apply per set; the multi-process routing fence (ADR-0029 decision 19) is part of it. |
+
+### Wave 1
+
+#### FB-160 — Apache AGE in the engine build (High)
+
+- **Scope**: ADR-0029 §1.2–§1.3 for AGE PG18/1.8.0: source from the ASF dist
+  pinned in `engine.lock`; PGXS build with bison, flex and Perl in the Alpine
+  and macOS build images; `age.so` in `lib/` and `lib/plugins/`; licence and
+  `NOTICE`; Windows archives marked `features.graph_cypher = false`; smoke
+  test (`CREATE EXTENSION age`, `create_graph`, `MATCH`, and `MATCH` on a hot
+  standby); measured size.
+- **Decides**: whether AGE builds and passes on musl. If not, that target
+  ships without AGE as Windows does, recorded in the ADR addendum.
+- **Owns**: `deploy/postgres-engine/age/**`, `THIRD_PARTY_LICENSES/postgres/age/**`,
+  the AGE lines of `engine.lock` and one job step in
+  `.github/workflows/postgres-engine.yml` (rebased on FB-130).
+- **Depends on**: FB-130 merged. No Rust.
+
+### Wave 2
+
+#### FB-170 — Sharding core: topology tables, placement registry, router (High)
+
+- **Scope**: ADR-0029 §3.1–§3.5 and §4.2. Migration pair for
+  `_forgebase_db_sets`, `_forgebase_db_nodes`, `_forgebase_tenant_placements`,
+  `_forgebase_db_moves`, `_forgebase_xact_journal`, `_forgebase_join_tokens`;
+  `placement::TABLES` (class, tenant key, move strategy) with the
+  completeness test against the PostgreSQL schema; `DbRouter`
+  (`control()`, `for_tenant()`, `sets()`) and `SetHandle: Backend` (primary
+  only here; FB-167 adds replica reads); sequence ranges for set *k*;
+  placement cache with epochs; `topology.json`; single-set behaviour
+  identical to today (tests on both backends).
+- **Owns**: `crates/forgebase-db/src/{placement.rs,router.rs,topology.rs}`
+  (new), the migration pair.
+- **Depends on**: FB-131, FB-133.
+
+### Wave 2b (new)
+
+#### FB-161 — Extension layer (High)
+
+- **Scope**: ADR-0029 §1.1: detection through `pg_available_extensions`,
+  modes from FB-148's keys, engine setup after migrations (`CREATE
+  EXTENSION` as `forgebase_super` or the external role, schemas, grants),
+  extension DDL versioned as `ext.<feature>.schema` in `_forgebase_meta`,
+  per-role `session_preload_libraries` for AGE, `Database::info()` and
+  `/api/system/info` feature engines; tests with each feature `auto`, `on`
+  (refuses without the extension) and `off`.
+- **Owns**: `crates/forgebase-db/src/pg/extensions.rs` (new),
+  `crates/forgebase-pgengine/src/extensions.rs` (new). Shared edit: the
+  `features` field in `crates/forgebase-api/src/routes.rs` (`system_info`).
+- **Depends on**: FB-131, FB-132, FB-148.
+
+#### FB-162 — Vector on pgvector (High)
+
+- **Scope**: ADR-0029 §1.4: `vec vector` column, partial HNSW index per
+  (collection, field) with the metric and element-type mapping and the
+  2 000 / 4 000 dimension limits, strategies on iterative scans, concurrent
+  rebuild with progress, recall in SQL, hybrid keyword side on `tsvector`,
+  `vector.convert` job both ways; every existing vector test green on
+  SQLite, PostgreSQL accelerated and PostgreSQL portable.
+- **Owns**: `crates/forgebase-vector/**`.
+- **Depends on**: FB-147, FB-139, FB-161.
+
+#### FB-164 — Queue deliveries on pgmq (High)
+
+- **Scope**: ADR-0029 §1.6: one pgmq queue per subscription, materialisation
+  with `pgmq.send_batch`, the claim statement with lease tokens and ordering
+  keys, ack/nack/modify-deadline/dead-letter on queue entries, layout check
+  with fallback, `queue.convert`; delivery guarantees of ADR-0022 tested on
+  both paths; the `queue_pull_ack_10` bench on both.
+- **Owns**: `crates/forgebase-queue/**`.
+- **Depends on**: FB-146, FB-141, FB-161.
+
+#### FB-165 — Schedules on pg_cron (Normal)
+
+- **Scope**: ADR-0029 §1.7: expression mapping with the differential test
+  (next 1 000 due times), `forgebase.fire_schedule()` (migration pair; the
+  SQLite file holds only a comment), sync of `cron.job` on schedule
+  create/update/delete and at start, start-up catch-up (collapse missed
+  firings into one), `NOTIFY forgebase_jobs` and a `PgListener` wake-up; Rust
+  tick for the rest.
+- **Owns**: `crates/forgebase-jobs/src/pgcron.rs` (new) and the jobs crate's
+  scheduler call sites, the migration pair.
+- **Depends on**: FB-146, FB-142, FB-161.
+
+#### FB-166 — Trigram indexes, fuzzy search, full-text query (Normal)
+
+- **Scope**: ADR-0029 §1.8: `plainto_tsquery` for `search`; index kind
+  `trigram` (GIN `gin_trgm_ops`; SQLite `400 index_kind_unsupported`); list
+  parameters `fuzzy`, `fuzzy_fields`, `fuzzy_threshold` (SQLite `400
+  fuzzy_unsupported`); masked fields refused as for `search`; OpenAPI; plan
+  test that `~` uses the trigram index.
+- **Owns**: `crates/forgebase-data/src/{indexes.rs,list.rs}`,
+  `crates/forgebase-query/src/**` except `native.rs`.
+- **Depends on**: FB-143, FB-144, FB-161.
+
+#### FB-167 — Replica routing and read-your-writes (High)
+
+- **Scope**: ADR-0029 §2.1, §2.4–§2.7: node pools per set, health monitor,
+  lag limits with hysteresis, external replica checks
+  (`system_identifier`, recovery), `Backend::fetch_routed` default method and
+  `ReadIntent`, commit-LSN capture after `COMMIT`, `X-ForgeBase-Commit` /
+  `X-ForgeBase-Read-After` / `X-ForgeBase-Consistency` middleware, per-principal
+  LSN map, LSN wait with fallback, retry on the primary after a recovery
+  conflict, `WAIT FOR LSN` when the engine is ≥ 19; SDK token tracking and
+  the `consistency` option (JavaScript and Rust).
+- **Owns**: `crates/forgebase-db/src/routing/**` (new), the default method in
+  `crates/forgebase-db/src/backend.rs`, `crates/forgebase-api/src/consistency.rs`
+  (new; one-line mount in `crates/forgebase-api/src/lib.rs` as a shared edit),
+  `sdk/js/**`, `sdk/rust/**` (token and option only).
+- **Depends on**: FB-131, FB-148, FB-170.
+
+### Wave 3
+
+#### FB-168 — Managed replicas and `forgebase node` (High)
+
+- **Scope**: ADR-0029 §2.2, §2.3, §2.8: `forgebase_replicator` role, slots with
+  the WAL limits, local standby provisioning with `pg_basebackup -R` and
+  supervision, `forgebase node join` (engine-only agent, join tokens, exact
+  engine-version check, outbound command long-poll, heartbeats),
+  replication `pg_hba` entries exposed for FB-153's generator, promote (fence,
+  `pg_promote`, re-point pools, re-follow other replicas), rebuild and rejoin
+  with `pg_rewind`; tests that promote a local replica under write load with
+  no lost commit when the old primary stopped cleanly.
+- **Owns**: `crates/forgebase-pgengine/src/{standby.rs,replication.rs}` (new),
+  `crates/forgebase-cli/src/node.rs` (new). Shared edit: one `Command` variant
+  in `crates/forgebase-cli/src/main.rs`.
+- **Depends on**: FB-132, FB-148, FB-167, FB-170.
+
+#### FB-169 — Replica reads in services (Normal)
+
+- **Scope**: ADR-0029 §2.5: pass a `ReadIntent` at the listed call sites
+  (record list/view/search/aggregate/expand/versions; vector reads; graph
+  reads; storage metadata reads; queue browser and metrics; job reads;
+  dashboard statistics; SQL editor "Read from replica"); realtime commit-LSN
+  sampling per dispatched page; a test per call site that it reads a lagging
+  replica only when allowed, and a test that every primary-only path in the
+  table never does.
+- **Owns**: the read call sites in `crates/forgebase-data/src/{list.rs,records.rs,sql.rs}`,
+  `crates/forgebase-vector/src/service.rs`, `crates/forgebase-graph/src/service.rs`,
+  `crates/forgebase-storage/src/service.rs`, `crates/forgebase-queue/src/ops.rs`,
+  `crates/forgebase-jobs/src/service.rs`, `crates/forgebase-realtime/src/lib.rs`.
+- **Depends on**: FB-167, FB-162, FB-164, FB-165, FB-166.
+
+### Wave 4
+
+#### FB-163 — Graph openCypher on Apache AGE (High)
+
+- **Scope**: ADR-0029 §1.5: derived per-tenant graph (names, catch-all labels,
+  map table as engine-setup DDL), `graph.materialise` job, same-transaction
+  sync of every canonical write, `POST /graph/cypher` and `/graph/cypher/drop`,
+  tokenizer, read-only execution as `forgebase_rls` with claims,
+  `engine:graph_cypher`, `403 cypher_rules_unsupported` when a label rule
+  applies, stale marking after a move; replica `MATCH` test, then Cypher reads
+  on replicas; per-tenant set resolution for the graph crate.
+- **Owns**: `crates/forgebase-graph/**`.
+- **Depends on**: FB-147, FB-139, FB-152, FB-160, FB-161, FB-169.
+
+#### FB-171 — Shard routing: data core, realtime, functions, server (High)
+
+- **Scope**: ADR-0029 §3.5–§3.6: `DataService` resolves the set per call;
+  `tenant_required_sharded`; cross-placement relations (existence check,
+  two-step `expand`, `ON DELETE` fan-out job, `relation_crosses_shards` for
+  rules and filters, the pre-check before the first extra shard); realtime
+  dispatcher and pruner per set, `tenant_moved` reset, replay only for
+  single-set subscriptions; functions after-hook cursor per set; server
+  builds a `DbRouter` and starts per-set loops; SQL editor node selector.
+- **Owns**: `crates/forgebase-data/src/**` except `collections.rs` and the
+  files FB-153 owns, `crates/forgebase-realtime/**`,
+  `crates/forgebase-functions/src/{lib.rs,hooks.rs}`,
+  `crates/forgebase-server/src/lib.rs`. The `sql.rs` node selector after
+  FB-153 merges.
+- **Depends on**: FB-170, FB-169, wave 3.
+
+#### FB-172 — Shard routing: jobs, queues, KV, vector, storage (High)
+
+- **Scope**: ADR-0029 §3.5: per-tenant set resolution; one claim loop per set
+  and round-robin HTTP claims, job lookup by id across sets; schedules per
+  set; queue maintenance per set, record-source relay cursors per set on
+  control; KV flush grouped by set and load from every set; vector and
+  storage per tenant; exclusion lists for moving tenants in claim and
+  maintenance SQL.
+- **Owns**: `crates/forgebase-{jobs,queue,kv,vector,storage}/**`. Shared edit:
+  constructor arguments in `crates/forgebase-server/src/lib.rs`, rebased on
+  FB-171.
+- **Depends on**: FB-170, FB-162, FB-164, FB-165, FB-169.
+
+#### FB-173 — Schema fan-out, migrations and native RLS across shards (High)
+
+- **Scope**: ADR-0029 §3.7, §3.10: two-phase commit coordinator, journal and
+  recovery; collection DDL and policy regeneration on every shard; per-set
+  index builds; migration runner over every node (control first, at most 4 at
+  a time, `shard_migrating`); catalog replay for a new shard;
+  `control_replicated` publication and subscriptions; direct-login roles per
+  shard; `doctor` check for in-doubt transactions.
+- **Owns**: `crates/forgebase-db/src/twophase.rs` (new),
+  `crates/forgebase-migrations/src/multi.rs` (new),
+  `crates/forgebase-policy/src/native/fanout.rs` (new), the schema path in
+  `crates/forgebase-data/src/collections.rs`.
+- **Depends on**: FB-170, FB-152, FB-144.
+
+#### FB-175 — Topology configuration and admin API (High)
+
+- **Scope**: ADR-0029 §4: `[database.replicas]`, `[database.sharding]`,
+  `[[database.nodes]]` in the config and the FB-91 registry (plain help
+  text); `/api/system/database/*` with admin, MFA step-up and audit; node URL
+  sealing; operations as reserved jobs with progress and cancel; the error
+  codes; OpenAPI. The move and rebalance routes answer `501` until FB-174
+  wires them.
+- **Owns**: `crates/forgebase-api/src/system_database.rs` (new),
+  `crates/forgebase-core/src/topology_config.rs` (new). Shared edits: one
+  field in `crates/forgebase-core/src/config.rs` (rebased on FB-177) and the
+  route mount in `crates/forgebase-api/src/lib.rs`.
+- **Depends on**: FB-167, FB-168, FB-170, FB-142.
+
+#### FB-177 — PostgreSQL as the default backend (Normal)
+
+- **Scope**: ADR-0029 §6: `backend` default `postgres` with
+  `bundled-postgres`, `sqlite` in `-lite` builds and in `--version`; `init`
+  default, prompt order and root message; `serve` marker rules; `doctor`,
+  `status` and System studio notice for SQLite projects; Docker default;
+  README, `docs/database.md`, `docs/deployment.md`, `forgebase.example.toml`,
+  release notes "Upgrading to 0.3"; black-box tests of the new default.
+- **Owns**: the default in `crates/forgebase-core/src/config.rs`,
+  `crates/forgebase-cli/src/{init.rs,commands.rs}` (default and notice only),
+  `Dockerfile`, `README.md`, `docs/database.md`, `docs/deployment.md`,
+  `forgebase.example.toml`.
+- **Depends on**: FB-148, FB-149, FB-151, FB-90.
+
+### Wave 5 (new)
+
+#### FB-174 — Tenant moves, shard add/drain/remove, rebalance (High)
+
+- **Scope**: ADR-0029 §3.8–§3.9: the move job (replica identity, row-filtered
+  publication, staging tables, subscription, catch-up, barrier, freeze with
+  timeout, renumbering and remapping, sequence `setval`, verification, flip,
+  unfreeze, cleanup after the retention, undo, abort); shard add (local,
+  remote, external), drain, remove, retired data; rebalance planner; wiring of
+  FB-175's move and rebalance routes; tests that move a tenant under load
+  with no lost or duplicated row, event or delivery.
+- **Owns**: `crates/forgebase-db/src/moves/**` (new),
+  `crates/forgebase-pgengine/src/shard.rs` (new). Shared edit: the move routes
+  in `crates/forgebase-api/src/system_database.rs`.
+- **Depends on**: FB-171, FB-172, FB-173, FB-168, FB-175.
+
+#### FB-176 — Dashboard: Database topology screen (Normal)
+
+- **Scope**: ADR-0029 §5: System studio tab, sets and nodes, tenants table
+  and move dialog, rebalance plan, operations with live progress, all
+  confirmations, empty and SQLite states, help tips, use-from-code panel;
+  unit tests, axe check, a journey step.
+- **Owns**: `dashboard/src/pages/system/topology/**` (new), its API client
+  file. Shared edit: the tab entry in `dashboard/src/pages/system/SystemStudio.tsx`.
+- **Depends on**: FB-175, FB-102. Move and rebalance dialogs are tested
+  against mocks until FB-174 merges. Dashboard-only (does not count against
+  the Rust limit).
+
+#### FB-179 — Backups and restore with replicas and shards (Normal)
+
+- **Scope**: ADR-0029 §2.9: `[backup] source`, `pg_basebackup` from a
+  replica, one backup per set under one directory with a combined manifest
+  and the placement epoch, restore of every set, replicas marked
+  `needs_rebuild` after restore and rebuilt (managed), schema reconcile after
+  a restore.
+- **Owns**: `crates/forgebase-backup/src/topology.rs` (new) and its call
+  sites in `crates/forgebase-backup/src/`.
+- **Depends on**: FB-150, FB-168, FB-173.
+
+### Wave 6 (new)
+
+#### FB-178 — Topology tests in CI (Normal)
+
+- **Scope**: a `topology` CI job (Linux, nightly and on changes to the
+  routing, pgengine or moves code): one primary with two local replicas and
+  three shards; the black-box suite against it; chaos tests (kill a replica,
+  promote, move a tenant under load, cancel a move, restart during a move,
+  two-phase recovery after a crash); lag and read-your-writes tests; measured
+  WAL overhead of `wal_level = logical` and move freeze times, recorded in
+  ADR-0029's addendum.
+- **Owns**: `.github/workflows/topology.yml` (new), `tests/topology/**` (new).
+- **Depends on**: FB-174, FB-168, FB-149.
+
+### Tiers
+
+High: FB-160, FB-161, FB-162, FB-163, FB-164, FB-167, FB-168, FB-170,
+FB-171, FB-172, FB-173, FB-174, FB-175 (13). Normal: FB-165, FB-166, FB-169,
+FB-176, FB-177, FB-178, FB-179 (7).
+
+### Open questions for the human (FB-158)
+
+ADR-0029 §9 has the details.
+
+1. **openCypher with graph rules**: read-only openCypher that refuses callers
+   with label rules in v0.3 (recommended), or carry unreleased AGE fixes to
+   enforce label rules inside Cypher now.
+2. **Relations from tenant data to global collections when sharded**: keep
+   them with existence checks and two-step `expand`, and refuse rules and
+   filters that follow them (recommended), or replicate global collections
+   to every shard (v0.4).
+3. **Sharding release gate**: v0.3.0 with sharding placement and routing,
+   online moves and rebalance (FB-174, FB-178's move tests) in v0.3.1 after a
+   soak (recommended), or hold v0.3.0 for all of FB-160 to FB-179.
