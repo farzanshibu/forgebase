@@ -4126,9 +4126,49 @@ export interface paths {
         put?: never;
         /**
          * Invokes an HTTP function (any method). See the module documentation for
-         *     the input and output contract.
+         *     the input and output contract. An administrator may add `?version=<n>`
+         *     to test a specific version (the parameter is not passed on); for other
+         *     callers it is an ordinary query parameter.
          */
         post: operations["invoke"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/functions/{name}/invoke/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invokes an HTTP function with a sub-path: a JavaScript function's
+         *     `req.url` has the path `/<path>` and the query.
+         */
+        post: operations["invoke_path"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/functions/{name}/kv-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Key-value namespace rules (which application namespaces a JavaScript function may reach). */
+        get: operations["kv_rules"];
+        /** Replaces the key-value namespace rules (administrators only; deny by default). */
+        put: operations["put_kv_rules"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4213,6 +4253,40 @@ export interface paths {
         };
         /** A function's versions, newest first. */
         get: operations["functions_versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/functions/{name}/versions/{version}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The source of a JavaScript or TypeScript version. */
+        get: operations["version_source"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/functions/types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The `forgebase` module declarations (`.d.ts`) for editors: the function API. */
+        get: operations["types"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5841,6 +5915,74 @@ export interface paths {
          * @description Remove all rules (locked).
          */
         delete: operations["delete_policy"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/resources/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Engine resource rules of a kind (`kv_namespace`, `vector_collection`, `graph_label`, `graph_edge_type`, `bucket`, `queue_topic`, `queue_subscription`): the item fields rules may read, the operations, and every resource with rules (super-admins).
+         * @description Engine resource rules of a kind (`kv_namespace`, `vector_collection`, `graph_label`, `graph_edge_type`, `bucket`, `queue_topic`, `queue_subscription`): the item fields rules may read, the operations, and every resource with rules (super-admins).
+         */
+        get: operations["list_resource_rules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/resources/{kind}/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Rules of one engine resource `{kind, name, rules}`; name `*` holds the rules of every resource of the kind without rules of its own (super-admins).
+         * @description Rules of one engine resource `{kind, name, rules}`; name `*` holds the rules of every resource of the kind without rules of its own (super-admins).
+         */
+        get: operations["get_resource_rules"];
+        /**
+         * Replace the rules of one engine resource: `{rules: {list|view|create|update|delete|read|write: rule}}`; `null` locks, `""` opens to everyone. A rule grants callers without the `engine:<action>` or `engine:<action>:<name>` permission, never admin actions; rules are checked against the kind's item fields (super-admins).
+         * @description Replace the rules of one engine resource: `{rules: {list|view|create|update|delete|read|write: rule}}`; `null` locks, `""` opens to everyone. A rule grants callers without the `engine:<action>` or `engine:<action>:<name>` permission, never admin actions; rules are checked against the kind's item fields (super-admins).
+         */
+        put: operations["put_resource_rules"];
+        post?: never;
+        /**
+         * Remove every rule of one engine resource (super-admins).
+         * @description Remove every rule of one engine resource (super-admins).
+         */
+        delete: operations["delete_resource_rules"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/resources/{kind}/{name}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry-run the engine decision for the caller (or `principal`, super-admins): `{action, op}` (for example `{"action": "kv_read", "op": "view"}`) answers `{decision: allow|filter|deny, step, reason}`.
+         * @description Dry-run the engine decision for the caller (or `principal`, super-admins): `{action, op}` (for example `{"action": "kv_read", "op": "view"}`) answers `{decision: allow|filter|deny, step, reason}`.
+         */
+        post: operations["authz_check_resource"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -8691,6 +8833,21 @@ export interface components {
             /** @description Queue (default: the step's queue). */
             queue?: string | null;
         };
+        /** @description One compile error with its position in the source (1-based line and column, in characters). */
+        CompileDiagnostic: {
+            /**
+             * Format: int32
+             * @description Column (1-based, in characters).
+             */
+            column: number;
+            /**
+             * Format: int32
+             * @description Line (1-based).
+             */
+            line: number;
+            /** @description What is wrong. */
+            message: string;
+        };
         /** @description Body of a completion. */
         CompleteBody: {
             /** @description The lease from the claim. */
@@ -9311,7 +9468,8 @@ export interface components {
         /**
          * @description Body of `POST /api/v1/functions`: deploys a new version (creating the
          *     function on its first deploy) and, unless `activate` is `false`, makes it
-         *     the active version.
+         *     the active version. Send either `wasm` or `source` (JavaScript or
+         *     TypeScript, with `language`).
          */
         DeployRequest: {
             access?: components["schemas"]["InvokeAccess"] | null;
@@ -9329,12 +9487,18 @@ export interface components {
             fetch_hosts?: string[];
             /** @description Record hooks. */
             hooks?: components["schemas"]["HookSpec"][];
+            language?: components["schemas"]["Language"] | null;
             /** @description Limits (defaults for missing fields). */
             limits?: components["schemas"]["LimitsInput"];
             /** @description Function name. */
             name: string;
+            /**
+             * @description JavaScript or TypeScript source of a single-file ES module that calls
+             *     `serve()` from `"forgebase"` (at most 1 MiB).
+             */
+            source?: string | null;
             /** @description The WebAssembly module (binary format), base64. */
-            wasm: string;
+            wasm?: string | null;
         };
         /**
          * @description Which way edges are followed.
@@ -9809,6 +9973,11 @@ export interface components {
             /** @description By name. */
             items: components["schemas"]["FunctionInfo"][];
         };
+        /**
+         * @description How a version runs.
+         * @enum {string}
+         */
+        FunctionRuntime: "wasm" | "js";
         /** @description Body of a gauge change: `delta` (may be negative) or the new `value`. */
         GaugeRequest: {
             /**
@@ -11819,6 +11988,27 @@ export interface components {
             /** @description The value: string; `{field: value}`; `[items]`; `[{member, score}]`; `[{id, fields}]`. */
             value: Record<string, never>;
         };
+        /**
+         * @description What a key-value namespace rule allows.
+         * @enum {string}
+         */
+        KvAccess: "read" | "write";
+        /**
+         * @description Lets a JavaScript function reach an application key-value namespace
+         *     (beyond its private `fn.<name>`). Deny by default; administrators manage
+         *     the rules; the caller's own key-value permissions still apply.
+         */
+        KvRule: {
+            /** @description What is allowed. */
+            access: components["schemas"]["KvAccess"];
+            /** @description Namespace name, or a prefix ending in `*` (`app.*`, `*` for every namespace). */
+            namespace: string;
+        };
+        /** @description Key-value namespace rules of a function. */
+        KvRuleList: {
+            /** @description Rules (deny by default). */
+            items: components["schemas"]["KvRule"][];
+        };
         /** @description Engine-wide statistics. */
         KvStats: {
             /** @description Live pub/sub channels. */
@@ -11856,6 +12046,11 @@ export interface components {
             /** @description Estimated memory in use, bytes. */
             used_memory_bytes: number;
         };
+        /**
+         * @description Language a version was written in.
+         * @enum {string}
+         */
+        Language: "wasm" | "javascript" | "typescript";
         /** @description A concurrency lease. */
         Lease: {
             /** @description Active until (renew to extend). */
@@ -15974,10 +16169,17 @@ export interface components {
             fetch_hosts?: string[];
             /** @description Record hooks. */
             hooks?: components["schemas"]["HookSpec"][];
+            /** @description The language it was written in. */
+            language?: components["schemas"]["Language"];
             /** @description Limits. */
             limits: components["schemas"]["Limits"];
+            /** @description How the version runs (`wasm` for versions deployed before FB-93). */
+            runtime?: components["schemas"]["FunctionRuntime"];
         };
-        /** @description One version of a function. */
+        /**
+         * @description One version of a function. `runtime` and `language` are part of the
+         *     flattened configuration.
+         */
         VersionInfo: components["schemas"]["VersionConfig"] & {
             /** @description Whether this is the active version. */
             active: boolean;
@@ -15985,11 +16187,11 @@ export interface components {
             created_at: string;
             /** @description Who deployed it. */
             created_by: string;
-            /** @description SHA-256 of the module, hex. */
+            /** @description SHA-256 of the module (WebAssembly) or of the source (JavaScript, TypeScript), hex. */
             sha256: string;
             /**
              * Format: int64
-             * @description Module size in bytes.
+             * @description Size of the module or of the source in bytes.
              */
             size: number;
             /**
@@ -16002,6 +16204,13 @@ export interface components {
         VersionList: {
             /** @description Newest first. */
             items: components["schemas"]["VersionInfo"][];
+        };
+        /** @description The source of a JavaScript or TypeScript version. */
+        VersionSource: {
+            /** @description `javascript` or `typescript`. */
+            language: components["schemas"]["Language"];
+            /** @description The source as deployed. */
+            source: string;
         };
         /**
          * @description Who may read a bucket without an explicit grant.
@@ -32381,7 +32590,7 @@ export interface operations {
                     "application/json": components["schemas"]["Deployed"];
                 };
             };
-            /** @description Invalid module (`invalid_module`), capability not granted for an import (`capability_not_granted`), invalid limits */
+            /** @description Invalid module (`invalid_module`), JavaScript/TypeScript that does not compile (`function_compile_failed`, `details` = {line, column, message, errors}), capability not granted for an import or a used service (`capability_not_granted`), invalid limits */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -32397,14 +32606,12 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Not allowed */
+            /** @description service_role requested by a caller who is not an administrator (`service_role_requires_admin`) */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
+                content?: never;
             };
         };
     };
@@ -32526,7 +32733,10 @@ export interface operations {
     };
     invoke: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Administrators: run this version instead of the active one */
+                version?: number;
+            };
             header?: never;
             path: {
                 /** @description Function name */
@@ -32602,6 +32812,207 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    invoke_path: {
+        parameters: {
+            query?: {
+                /** @description Administrators: run this version instead of the active one */
+                version?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Function name */
+                name: string;
+                /** @description Sub-path passed to the function */
+                path: string;
+            };
+            cookie?: never;
+        };
+        /** @description Any body (at most 1 MiB); passed to the function */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Whatever the function returns */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description The function failed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The function exceeded its time limit (`function_timeout`) */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    kv_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Function name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KvRuleList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_kv_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Function name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KvRuleList"];
+            };
+        };
+        responses: {
+            /** @description The rules now in force */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KvRuleList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not an administrator (`kv_rules_require_admin`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };
@@ -32959,6 +33370,112 @@ export interface operations {
             };
             /** @description No such collection, record or index (or not visible to the caller) */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    version_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Function name */
+                name: string;
+                /** @description Version */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Language and source as deployed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionSource"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such version, or a WebAssembly version (`function_source_not_found`) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    types: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description TypeScript declarations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/typescript": string;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -39781,6 +40298,286 @@ export interface operations {
         };
     };
     delete_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    list_resource_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_resource_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_resource_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    delete_resource_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    authz_check_resource: {
         parameters: {
             query?: never;
             header?: never;

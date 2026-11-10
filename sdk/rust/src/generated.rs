@@ -1202,6 +1202,17 @@ pub struct Compensation {
     pub queue: Option<String>,
 }
 
+/// One compile error with its position in the source (1-based line and column, in characters).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CompileDiagnostic {
+    /// Column (1-based, in characters).
+    pub column: i64,
+    /// Line (1-based).
+    pub line: i64,
+    /// What is wrong.
+    pub message: String,
+}
+
 /// Body of a completion.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CompleteBody {
@@ -1815,7 +1826,8 @@ pub enum DeliveryStatus {
 
 /// Body of `POST /api/v1/functions`: deploys a new version (creating the
 /// function on its first deploy) and, unless `activate` is `false`, makes it
-/// the active version.
+/// the active version. Send either `wasm` or `source` (JavaScript or
+/// TypeScript, with `language`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DeployRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1838,13 +1850,20 @@ pub struct DeployRequest {
     /// Record hooks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Vec<HookSpec>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<Language>,
     /// Limits (defaults for missing fields).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<LimitsInput>,
     /// Function name.
     pub name: String,
+    /// JavaScript or TypeScript source of a single-file ES module that calls
+    /// `serve()` from `"forgebase"` (at most 1 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// The WebAssembly module (binary format), base64.
-    pub wasm: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm: Option<String>,
 }
 
 /// A deploy result.
@@ -2422,6 +2441,18 @@ pub struct FunctionList {
     /// By name.
     #[serde(default)]
     pub items: Vec<FunctionInfo>,
+}
+
+/// How a version runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FunctionRuntime {
+    #[serde(rename = "wasm")]
+    Wasm,
+    #[serde(rename = "js")]
+    Js,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Body of a gauge change: `delta` (may be negative) or the new `value`.
@@ -4607,6 +4638,37 @@ pub struct KeyValue {
     pub value: serde_json::Value,
 }
 
+/// What a key-value namespace rule allows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KvAccess {
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "write")]
+    Write,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Lets a JavaScript function reach an application key-value namespace
+/// (beyond its private `fn.<name>`). Deny by default; administrators manage
+/// the rules; the caller's own key-value permissions still apply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KvRule {
+    /// What is allowed.
+    pub access: KvAccess,
+    /// Namespace name, or a prefix ending in `*` (`app.*`, `*` for every namespace).
+    pub namespace: String,
+}
+
+/// Key-value namespace rules of a function.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct KvRuleList {
+    /// Rules (deny by default).
+    #[serde(default)]
+    pub items: Vec<KvRule>,
+}
+
 /// Engine-wide statistics.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct KvStats {
@@ -4632,6 +4694,20 @@ pub struct KvStats {
     pub unsaved_keys: i64,
     /// Estimated memory in use, bytes.
     pub used_memory_bytes: i64,
+}
+
+/// Language a version was written in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Language {
+    #[serde(rename = "wasm")]
+    Wasm,
+    #[serde(rename = "javascript")]
+    Javascript,
+    #[serde(rename = "typescript")]
+    Typescript,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
 }
 
 /// A concurrency lease.
@@ -8856,11 +8932,18 @@ pub struct VersionConfig {
     /// Record hooks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Vec<HookSpec>>,
+    /// The language it was written in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<Language>,
     /// Limits.
     pub limits: Limits,
+    /// How the version runs (`wasm` for versions deployed before FB-93).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<FunctionRuntime>,
 }
 
-/// One version of a function.
+/// One version of a function. `runtime` and `language` are part of the
+/// flattened configuration.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct VersionInfo {
     /// Granted capabilities (see \[`CAPABILITIES`\]).
@@ -8876,17 +8959,23 @@ pub struct VersionInfo {
     /// Record hooks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Vec<HookSpec>>,
+    /// The language it was written in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<Language>,
     /// Limits.
     pub limits: Limits,
+    /// How the version runs (`wasm` for versions deployed before FB-93).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<FunctionRuntime>,
     /// Whether this is the active version.
     pub active: bool,
     /// When it was deployed (RFC 3339).
     pub created_at: String,
     /// Who deployed it.
     pub created_by: String,
-    /// SHA-256 of the module, hex.
+    /// SHA-256 of the module (WebAssembly) or of the source (JavaScript, TypeScript), hex.
     pub sha256: String,
-    /// Module size in bytes.
+    /// Size of the module or of the source in bytes.
     pub size: i64,
     /// Version number (1, 2, ...).
     pub version: i64,
@@ -8898,6 +8987,15 @@ pub struct VersionList {
     /// Newest first.
     #[serde(default)]
     pub items: Vec<VersionInfo>,
+}
+
+/// The source of a JavaScript or TypeScript version.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VersionSource {
+    /// `javascript` or `typescript`.
+    pub language: Language,
+    /// The source as deployed.
+    pub source: String,
 }
 
 /// Who may read a bucket without an explicit grant.
