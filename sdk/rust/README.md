@@ -235,9 +235,9 @@ git diff --exit-code src/generated.rs     # drift check
 
 ## Known gaps
 
-* **Message queues and topics** (FB-63: publish, pull, ack) are not on the server yet, so the SDK has
-  no such API. Job progress, checkpoints, attempts, results, job queues and workflows (FB-64) are covered
-  by `jobs()`: `report_progress`, `checkpoint`, `watch`, `queues`, `create_workflow`, ...
+* Message queues and topics (FB-63) are covered by `queues()` (see Queues above). Job progress,
+  checkpoints, attempts, results, job queues and workflows (FB-64) are covered by `jobs()`:
+  `report_progress`, `checkpoint`, `watch`, `queues`, `create_workflow`, ...
 * Collection definitions are passed as JSON: the OpenAPI request schema is the full `CollectionSchema`
   (with server-assigned `id`, `version`, ...). `storage().delete_object` returns the generated `DeleteResult`.
 * No cookie sessions (a browser feature) and no OAuth redirect helper beyond `oauth_start` / `oauth_complete`.
