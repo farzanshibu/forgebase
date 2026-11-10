@@ -37,7 +37,7 @@ outright; no two packages edit the same file. Paths are under `dashboard/`.
 
 ---
 
-## (a) App shell and shared patterns (goes first)
+## FB-98 (a) App shell and shared patterns (goes first)
 
 **Owns:**
 - **Changed files:** `src/App.tsx`, `src/components/Layout.tsx`, `src/components/ui.tsx`,
@@ -118,7 +118,7 @@ outright; no two packages edit the same file. Paths are under `dashboard/`.
 
 ---
 
-## (b) Overview and onboarding
+## FB-99 (b) Overview and onboarding
 
 **Owns:** `src/pages/OverviewPage.tsx`, `src/pages/OverviewPage.test.tsx`,
 `src/pages/LoginPage.tsx`, new `src/pages/overview/GettingStarted.tsx`,
@@ -165,7 +165,7 @@ outright; no two packages edit the same file. Paths are under `dashboard/`.
 
 ---
 
-## (c) Data studios
+## FB-100 (c) Data studios
 
 **Owns:**
 - `src/pages/database/*`, `src/pages/storage/*`, `src/pages/redis/*`, `src/pages/vector/*`,
@@ -218,7 +218,7 @@ Use from code. No bare "No X yet." line is left in these folders.
 
 ---
 
-## (d) Runtime studios
+## FB-101 (d) Runtime studios
 
 **Owns:** `src/pages/functions/*`, `src/pages/jobs/*`, `src/pages/queues/*`,
 `src/api/functions.ts`, `src/api/jobs.ts`, `src/api/queues.ts`, `src/test/fnMock.ts`,
@@ -259,7 +259,7 @@ of a forced error from the message and the request id alone.
 
 ---
 
-## (e) Users, access, billing and system
+## FB-102 (e) Users, access, billing and system
 
 **Owns:**
 - `src/pages/auth/*`, `src/pages/access/*`, `src/pages/identity/*`, `src/pages/billing/*`,
@@ -326,6 +326,25 @@ of a forced error from the message and the request id alone.
 Files nobody owns stay untouched by these packages: `api/client.ts`, `api/index.ts`, the other
 `api/*.ts`, `auth/**`, `theme/**` and `main.tsx`. If one must change, the (a) owner makes the
 change.
+
+## Decisions (god, 2026-11-11, v0.3)
+
+- The packages are numbered FB-98 to FB-102 and ship in v0.3 (human).
+- Q1: the studio is called **"Key-value"**, with the summary "Redis compatible".
+- Q2: Docs links go to the GitHub docs at the running version's tag
+  (`https://github.com/farzanshibu/forgebase/blob/v<version>/docs/...`), and
+  to `main` for a dev build.
+- Q3: raw `.wasm` upload stays as a secondary "Upload .wasm" action
+  (edge-functions contract section 4).
+- Order:
+  1. FB-98 starts at once.
+  2. FB-99, FB-100 and FB-102 start when FB-98 merges.
+  3. FB-101 starts when FB-98 and FB-94 (the code editor) have both merged.
+- Coordination with PostgreSQL:
+  - FB-100 leaves a backend-info slot in the Database studio for FB-155
+    (Database Studio for PostgreSQL).
+  - The database topology screen (replicas and shards, ADR-0029) is designed
+    by FB-158 and built in its own package.
 
 ## Questions for the human
 
