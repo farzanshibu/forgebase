@@ -5,6 +5,7 @@ import { useLoad } from "../../hooks";
 import { Button, ErrorView, PlanView, Panel } from "../../components/ui";
 import { display } from "./values";
 import { Table } from "panelui-web/table";
+import { Textarea } from "panelui-web/textarea";
 
 const HISTORY_KEY = "forgebase.sql.history";
 const MAX_HISTORY = 30;
@@ -52,10 +53,10 @@ export default function SqlEditor() {
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_16rem]">
       <div className="min-w-0 space-y-3">
-        <textarea
+        <Textarea size="sm" autoResize={false}
           aria-label="SQL"
           spellCheck={false}
-          className="h-40 w-full rounded-md border border-border bg-card p-3 font-mono text-sm"
+          className="h-40 font-mono"
           value={sql}
           onChange={(e) => setSql(e.target.value)}
           onKeyDown={(e) => {

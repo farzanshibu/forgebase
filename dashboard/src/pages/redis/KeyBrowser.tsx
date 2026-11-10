@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { KV_TYPES, kvFlush, kvScan, kvSetString } from "../../api";
 import type { KvType } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import KeyViewer from "./KeyViewer";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const PAGE = 50;
 
@@ -60,9 +61,7 @@ export default function KeyBrowser({ ns }: { ns: string }) {
           <form className="mb-3 flex flex-wrap items-end gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); setApplied({ pattern: pattern.trim(), type }); }}>
             <label>Pattern<Input size="sm" className="ml-2 w-32" placeholder="user:*" value={pattern} onChange={(e) => setPattern(e.target.value)} /></label>
             <label>Type
-              <select className={`${inputCls} ml-2`} value={type} onChange={(e) => setType(e.target.value as KvType | "")}>
-                <option value="">any</option>{KV_TYPES.map((t) => <option key={t}>{t}</option>)}
-              </select>
+              <PanelSelect aria-label="Type" className="ml-2" value={type} onChange={(v) => setType(v as KvType | "")} options={[{ value: "", label: "any" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]} />
             </label>
             <Button type="submit">Apply filter</Button>
           </form>

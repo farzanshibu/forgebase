@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installFunctions } from "../../test/fnMock";
+import { pick } from "../../test/panelSelect";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -113,9 +114,9 @@ describe("Functions Studio logs", () => {
     expect(within(list).getByText("boom")).toBeInTheDocument();
     expect(within(list).getByText("[info] hi there")).toBeInTheDocument();
 
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "trap");
+    await pick(userEvent, screen.getByLabelText("Status"), "trap");
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
-    await userEvent.selectOptions(screen.getByLabelText("Status"), "");
+    await pick(userEvent, screen.getByLabelText("Status"), "all");
 
     await userEvent.click(screen.getByRole("button", { name: "Load older" }));
     await waitFor(() => expect(within(screen.getByRole("list", { name: "Executions" })).getAllByRole("listitem")).toHaveLength(60));

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { shortestPath, traverse } from "../../api";
 import type { PathQuery, PathResult, TraverseQuery, TraverseResult } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { Table } from "panelui-web/table";
+import { Textarea } from "panelui-web/textarea";
 
 type Kind = "traverse" | "path";
 const EXAMPLES: Record<Kind, string> = {
@@ -52,7 +53,7 @@ export default function QueryRunner() {
           ))}
         </div>
         <label className="block text-sm">Query (JSON)
-          <textarea aria-label="Query JSON" className={`${inputCls} mt-1 h-44 w-full font-mono`} value={text} onChange={(e) => setText(e.target.value)} />
+          <Textarea size="sm" autoResize={false} aria-label="Query JSON" className="mt-1 h-44 w-full font-mono" value={text} onChange={(e) => setText(e.target.value)} />
         </label>
         <div className="mt-3"><Button tone="primary" onClick={() => void run()}>Run query</Button></div>
       </Panel>

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installGraph } from "../../test/vgMock";
+import { pick } from "../../test/panelSelect";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -154,7 +155,7 @@ describe("Graph explorer", () => {
     expect(screen.getByTestId("edge-e2")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Node carol" }));
-    await userEvent.selectOptions(screen.getByLabelText("Direction"), "out");
+    await pick(userEvent, screen.getByLabelText("Direction"), "out");
     await userEvent.clear(screen.getByLabelText("Depth"));
     await userEvent.type(screen.getByLabelText("Depth"), "1");
     await userEvent.click(screen.getByRole("button", { name: "Traverse" }));
@@ -163,7 +164,7 @@ describe("Graph explorer", () => {
     expect(mock.bodies["post /api/v1/graph/traverse"]?.[0]).toMatchObject({ start: "carol", direction: "out", max_depth: 1 });
 
     await userEvent.click(screen.getByRole("button", { name: "Node alice" }));
-    await userEvent.selectOptions(screen.getByLabelText("Direction"), "both");
+    await pick(userEvent, screen.getByLabelText("Direction"), "both");
     await userEvent.type(screen.getByLabelText("Path target id"), "acme");
     await userEvent.click(screen.getByRole("button", { name: "Find path" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Path of length 3: alice → bob → carol → acme"));

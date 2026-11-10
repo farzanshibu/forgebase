@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { exportRecords, importRecords } from "../../api";
 import type { CollectionDef, ExportFormat, ImportResult } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { Input } from "panelui-web/input";
+import { PanelSelect } from "../panel/PanelSelect";
 
 const FORMATS: ExportFormat[] = ["json", "ndjson", "csv"];
 
@@ -55,9 +56,7 @@ export default function ImportExport({ collection }: { collection: CollectionDef
       <Panel title="Export">
         <div className="flex flex-wrap items-end gap-3 text-sm">
           <label className="flex flex-col gap-1">Format
-            <select className={inputCls} value={format} onChange={(e) => setFormat(e.target.value as ExportFormat)}>
-              {FORMATS.map((f) => <option key={f}>{f}</option>)}
-            </select>
+            <PanelSelect aria-label="Format" value={format} onChange={(v) => setFormat(v as ExportFormat)} options={FORMATS.map((f) => ({ value: f, label: f }))} />
           </label>
           <label className="flex flex-col gap-1">Filter (optional)
             <Input size="sm" className="w-64 font-mono" value={filter} onChange={(e) => setFilter(e.target.value)} />
@@ -68,7 +67,7 @@ export default function ImportExport({ collection }: { collection: CollectionDef
       <Panel title="Import">
         <p className="mb-2 text-sm text-muted-foreground">JSON array, NDJSON or CSV. Stored in batches of 200; the import stops at the first failing record and earlier batches stay committed.</p>
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          <input aria-label="Import file" type="file" accept=".json,.ndjson,.csv" onChange={(e) => setFile(e.target.files?.[0])} />
+          <Input size="sm" aria-label="Import file" type="file" accept=".json,.ndjson,.csv" onChange={(e) => setFile(e.target.files?.[0])} />
           <Button tone="primary" disabled={busy || !file} onClick={() => void doImport()}>Import</Button>
         </div>
         {result && <p role="status" className="mt-3 text-sm text-success">Imported {result.imported} records ({result.format}).</p>}

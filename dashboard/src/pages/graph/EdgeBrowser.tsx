@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { createEdge, deleteEdge, listEdges, updateEdge } from "../../api";
 import type { GraphEdge } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { parseJsonObject } from "../vector/util";
 import { usePaged } from "./usePaged";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { Textarea } from "panelui-web/textarea";
 
 const PAGE = 50;
 interface Filters { type: string; source: string; target: string }
@@ -97,7 +98,7 @@ function EdgeForm({ edge, onDone }: { edge?: GraphEdge; onDone: () => void }) {
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={directed} onChange={(e) => setDirected(e.target.checked)} />Directed</label>
           </div>
         )}
-        <label className="block text-sm">Properties (JSON)<textarea className={`${inputCls} mt-1 h-28 w-full font-mono`} value={props} onChange={(e) => setProps(e.target.value)} /></label>
+        <label className="block text-sm">Properties (JSON)<Textarea size="sm" autoResize={false} className="mt-1 h-28 w-full font-mono" value={props} onChange={(e) => setProps(e.target.value)} /></label>
         <div className="flex gap-2"><Button tone="primary" type="submit">Save edge</Button><Button onClick={onDone}>Cancel</Button></div>
       </form>
       <div className="mt-3"><ErrorView error={error} /></div>

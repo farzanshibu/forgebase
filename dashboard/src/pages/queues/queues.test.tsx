@@ -5,6 +5,7 @@ import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installQueues, message, received } from "../../test/queueMock";
 import { duration, parseAttrs, parseJson } from "./util";
+import { pick } from "../../test/panelSelect";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -199,7 +200,7 @@ describe("Queues subscriptions", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("3 message(s) were put back");
     expect(st.seeks[0]).toEqual({ sub: "order-workers", to: { time: new Date("2026-11-09T09:00").toISOString() } });
 
-    await userEvent.selectOptions(await screen.findByLabelText("Snapshot"), "before-fix");
+    await pick(userEvent, await screen.findByLabelText("Snapshot"), /^before-fix/);
     await userEvent.click(screen.getByRole("button", { name: "Restore snapshot" }));
     await waitFor(() => expect(st.seeks).toHaveLength(2));
     expect(st.seeks[1]).toEqual({ sub: "order-workers", to: { snapshot: "before-fix" } });
@@ -208,7 +209,9 @@ describe("Queues subscriptions", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save snapshot" }));
     expect(await screen.findByText("Snapshot nightly saved.")).toBeInTheDocument();
     expect(st.snapshots.map((s) => s.name)).toEqual(["before-fix", "nightly"]);
+    await userEvent.click(screen.getByLabelText("Snapshot"));
     expect(await screen.findByRole("option", { name: /nightly/ })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
 
     await userEvent.type(screen.getByLabelText("New snapshot"), "nightly");
     await userEvent.click(screen.getByRole("button", { name: "Save snapshot" }));
@@ -245,8 +248,7 @@ describe("Pub/Sub inspector", () => {
   }
   async function pickSub() {
     const sel = await screen.findByLabelText("Subscription");
-    await waitFor(() => expect(within(sel).getByRole("option", { name: /order-workers/ })).toBeInTheDocument());
-    await userEvent.selectOptions(sel, "order-workers");
+    await pick(userEvent, sel, /^order-workers/);
   }
   const frame = (n: number) => `event: message\nid: msg_orders_${n}\ndata: ${JSON.stringify(received(message("orders", n)))}\n\n`;
 
@@ -301,8 +303,7 @@ describe("Pub/Sub inspector", () => {
     const { mock } = setup();
     renderStudio("/queues/inspector");
     const topicSelect = await screen.findByLabelText("Topic");
-    await waitFor(() => expect(within(topicSelect).getByRole("option", { name: "orders" })).toBeInTheDocument());
-    await userEvent.selectOptions(topicSelect, "orders");
+    await pick(userEvent, topicSelect, "orders");
     await userEvent.click(screen.getByRole("button", { name: "Publish" }));
     expect(await screen.findByText("Published to orders as sequence 4.")).toBeInTheDocument();
     expect(mock.bodies["post /api/v1/queues/topics/{topic}/publish"]).toEqual([{ messages: [{ data: { hello: "world" } }] }]);
@@ -317,8 +318,10 @@ describe("Pub/Sub inspector", () => {
     setup();
     renderStudio("/queues/inspector");
     const select = await screen.findByLabelText("Topic");
-    await waitFor(() => expect(within(select).getByRole("option", { name: "orders" })).toBeInTheDocument());
-    expect(within(select).queryByRole("option", { name: "audit" })).not.toBeInTheDocument();
+    await userEvent.click(select);
+    const list = await screen.findByRole("listbox");
+    await waitFor(() => expect(within(list).getByRole("option", { name: "orders" })).toBeInTheDocument());
+    expect(within(list).queryByRole("option", { name: "audit" })).not.toBeInTheDocument();
   });
 });
 

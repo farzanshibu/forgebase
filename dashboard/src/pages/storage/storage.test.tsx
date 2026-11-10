@@ -5,6 +5,7 @@ import { MockApi, envelope } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installStorage } from "../../test/storageMock";
 import { uploadObject } from "../../api";
+import { pick } from "../../test/panelSelect";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -48,7 +49,7 @@ describe("Storage buckets", () => {
 
     await userEvent.clear(screen.getByLabelText("Name"));
     await userEvent.type(screen.getByLabelText("Name"), "reports");
-    await userEvent.selectOptions(screen.getByLabelText("Visibility"), "public");
+    await pick(userEvent, screen.getByLabelText("Visibility"), "public");
     await userEvent.click(screen.getByLabelText("Versioning"));
     await userEvent.type(screen.getByLabelText("Max object size"), "10 MiB");
     await userEvent.click(screen.getByRole("button", { name: "Create bucket" }));
@@ -139,7 +140,7 @@ describe("Storage object browser", () => {
     await waitFor(() => expect(within(screen.getByRole("list", { name: "Versions" })).getAllByRole("listitem")).toHaveLength(3));
     expect(st.versions["media/photos/a.png"]![0]!.size).toBe(1024);
 
-    await userEvent.selectOptions(within(details).getByLabelText("Expires in"), "7 days");
+    await pick(userEvent, within(details).getByLabelText("Expires in"), "7 days");
     await userEvent.click(within(details).getByRole("button", { name: "Generate URL" }));
     expect(((await within(details).findByLabelText("Signed URL")) as HTMLTextAreaElement).value).toContain("expires=604800");
     expect(st.signed[0]).toMatchObject({ key: "photos/a.png", method: "GET", expires_in: 604800 });
@@ -255,7 +256,7 @@ describe("Storage policy, ACL and signed URLs", () => {
   it("edits the bucket policy", async () => {
     const { st } = setup();
     renderStudio("/storage/b/docs/settings");
-    await userEvent.selectOptions(await screen.findByLabelText("Visibility"), "public");
+    await pick(userEvent, await screen.findByLabelText("Visibility"), "public");
     await userEvent.click(screen.getByLabelText(/Keep versions/));
     await userEvent.type(screen.getByLabelText("Max object size"), "10 MiB");
     await userEvent.type(screen.getByLabelText(/Allowed content types/), "image/png{enter}text/plain");
@@ -287,7 +288,7 @@ describe("Storage policy, ACL and signed URLs", () => {
     expect(within(t).getByText("role:editor")).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Prefix"), "docs/");
     await userEvent.type(screen.getByLabelText("Grantee"), "user:bo");
-    await userEvent.selectOptions(screen.getByLabelText("Permission"), "admin");
+    await pick(userEvent, screen.getByLabelText("Permission"), "admin");
     await userEvent.click(screen.getByRole("button", { name: "Add entry" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "ACL entries" })).getAllByRole("row")).toHaveLength(3));
     expect(st.acls.media!.entries[1]).toEqual({ prefix: "docs/", grantee: "user:bo", permission: "admin" });
@@ -307,8 +308,8 @@ describe("Storage policy, ACL and signed URLs", () => {
     const { st } = setup();
     renderStudio("/storage/b/media/share");
     await userEvent.type(await screen.findByLabelText("Key"), "in/new.txt");
-    await userEvent.selectOptions(screen.getByLabelText("Method"), "PUT");
-    await userEvent.selectOptions(screen.getByLabelText("Expires in"), "5 minutes");
+    await pick(userEvent, screen.getByLabelText("Method"), "PUT");
+    await pick(userEvent, screen.getByLabelText("Expires in"), "5 minutes");
     await userEvent.click(screen.getByRole("button", { name: "Generate URL" }));
     expect(((await screen.findByLabelText("Signed URL")) as HTMLTextAreaElement).value).toContain("/signed/media/in/new.txt?expires=300");
     expect(st.signed[0]).toEqual({ key: "in/new.txt", method: "PUT", expires_in: 300 });

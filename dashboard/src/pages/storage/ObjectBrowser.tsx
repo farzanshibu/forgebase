@@ -110,7 +110,7 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
 
         <Panel title="Upload">
           <div className="flex flex-wrap items-center gap-3 text-sm">
-            <input ref={fileInput} type="file" multiple aria-label="Choose files" onChange={(e) => { void upload(e.target.files); e.target.value = ""; }} />
+            <Input size="sm" ref={fileInput} type="file" multiple aria-label="Choose files" onChange={(e) => { void upload(e.target.files); e.target.value = ""; }} />
             <span className="text-muted-foreground">into {prefix || "the bucket root"}; files over 8 MiB upload in resumable chunks.</span>
           </div>
           <form className="mt-3 flex items-center gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); const f = folder.trim().replace(/^\/+|\/+$/g, ""); if (f) { nav({ prefix: `${prefix}${f}/` }); setFolder(""); } }}>

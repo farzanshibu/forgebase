@@ -4,12 +4,14 @@ import {
   kvStreamAdd, kvStreamDelete, kvZAdd, kvZRemove,
 } from "../../api";
 import type { Bin, KvKey, StreamEntry, ZMember } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import { TTL_UNITS, formatTtl, omit, parseFields } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { Textarea } from "panelui-web/textarea";
+import { PanelSelect } from "../panel/PanelSelect";
 
 type Act = (f: () => Promise<unknown>) => Promise<void>;
 interface EditorProps { ns: string; data: KvKey; act: Act }
@@ -62,7 +64,7 @@ function Ttl({ ns, data, act }: EditorProps) {
   return (
     <div className="flex flex-wrap items-end gap-2 text-sm">
       <label>Expire in<Input size="sm" aria-label="TTL amount" type="number" min="1" className="ml-2 w-24" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
-      <select aria-label="TTL unit" className={inputCls} value={unit} onChange={(e) => setUnit(Number(e.target.value))}>{TTL_UNITS.map((u) => <option key={u.ms} value={u.ms}>{u.label}</option>)}</select>
+      <PanelSelect aria-label="TTL unit" value={unit} onChange={setUnit} options={TTL_UNITS.map((u) => ({ value: u.ms, label: u.label }))} />
       <Button disabled={!(ms > 0)} onClick={() => void act(() => kvSetTtl(ns, data.key, ms))}>Set TTL</Button>
       <Button disabled={data.ttl_ms === null || data.ttl_ms === undefined} onClick={() => void act(() => kvClearTtl(ns, data.key))}>Remove TTL</Button>
     </div>
@@ -74,7 +76,7 @@ function StringEditor({ ns, data, act }: EditorProps) {
   const [text, setText] = useState(initial);
   return (
     <div className="space-y-2">
-      <textarea aria-label="String value" className={`${inputCls} block h-40 w-full font-mono text-xs`} value={text} onChange={(e) => setText(e.target.value)} />
+      <Textarea size="sm" autoResize={false} aria-label="String value" className="block h-40 w-full font-mono text-xs" value={text} onChange={(e) => setText(e.target.value)} />
       <p className="text-xs text-muted-foreground">Binary values show as <span className="font-mono">base64:…</span>; keep the prefix to store bytes. Saving keeps the TTL.</p>
       <Button tone="primary" disabled={text === initial} onClick={() => void act(() => kvSetString(ns, data.key, binFrom(text), { keepttl: true }))}>Save value</Button>
     </div>
@@ -246,7 +248,7 @@ function StreamEditor({ ns, data, act }: EditorProps) {
         </ul>
       )}
       <div className="space-y-2 text-sm">
-        <textarea aria-label="New entry fields" className={`${inputCls} block h-20 w-full font-mono text-xs`} placeholder={"name=value\nother=value"} value={text} onChange={(e) => setText(e.target.value)} />
+        <Textarea size="sm" autoResize={false} aria-label="New entry fields" className="block h-20 w-full font-mono text-xs" placeholder={"name=value\nother=value"} value={text} onChange={(e) => setText(e.target.value)} />
         {error && <p role="alert" className="text-destructive">{error}</p>}
         <Button disabled={!text.trim()} onClick={add}>Add entry</Button>
       </div>
