@@ -173,6 +173,7 @@ stops startup with an error.
 | `FORGEBASE_HOST`, `FORGEBASE_PORT` | HTTP bind address and port. |
 | `FORGEBASE_REQUEST_TIMEOUT_SECS` | Per-request timeout. |
 | `FORGEBASE_SHUTDOWN_TIMEOUT_SECS` | Grace period for in-flight requests on shutdown. |
+| `FORGEBASE_PUBLIC_URL` | Address people and apps reach the server at, without a path; links the server hands out use it (§7). |
 | `FORGEBASE_OPS_ACCESS` | Who may read `/metrics` and `/api/system/*`: `loopback`, `admin` or `public` (§7). |
 | `FORGEBASE_AUTH_TRUST_FORWARDED_FOR` | Take the client address from `X-Forwarded-For` (behind your own proxy only). |
 | `FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND` | Let OAuth/OIDC, SMS and Turnstile requests reach private addresses. |
@@ -337,6 +338,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `server.port` | `8090` | `0` picks a free port. |
 | `server.request_timeout_secs` | `30` | `1`–`3600` |
 | `server.shutdown_timeout_secs` | `30` | `1`–`3600` |
+| `server.public_url` | unset | Absolute `http://` or `https://` URL with no path, such as `https://forgebase.example.com`; one trailing `/` is dropped. Links the server hands out (the setup link) start with it; unset means the bound address. |
 | `server.ops_access` | `"loopback"` | `loopback` (administrators, plus direct same-host callers without forwarding headers), `admin`, `public`. Applies to `/metrics` and `/api/system/*`; `/health` and `/health/ready` stay open. |
 | `database.synchronous` | `"full"` | `full`, `normal` |
 | `database.busy_timeout_ms` | `5000` | up to `600000` |

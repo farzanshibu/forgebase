@@ -35,6 +35,12 @@ request_timeout_secs = 30
 # Env: FORGEBASE_SHUTDOWN_TIMEOUT_SECS
 shutdown_timeout_secs = 30
 
+# Address people and apps reach this server at, such as
+# https://forgebase.example.com: http:// or https://, no path. Links the server
+# hands out (such as the setup link) start with it. Unset: the bound address.
+# Env: FORGEBASE_PUBLIC_URL
+# public_url = "https://forgebase.example.com"
+
 [database]
 # "full": fsync the WAL on every commit, so committed data survives power loss.
 # "normal": faster, but a power cut can lose the most recent commits.

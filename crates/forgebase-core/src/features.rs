@@ -78,6 +78,8 @@ pub struct SettingDef {
     pub editable: bool,
     /// Whether a change needs a restart. Every setting does today.
     pub restart_required: bool,
+    /// Example value for messages when the default is empty.
+    pub example: Option<&'static str>,
 }
 
 impl SettingDef {
@@ -94,6 +96,7 @@ impl SettingDef {
             secret: false,
             editable: true,
             restart_required: true,
+            example: None,
         }
     }
 
@@ -117,6 +120,11 @@ impl SettingDef {
         self
     }
 
+    const fn example(mut self, example: &'static str) -> Self {
+        self.example = Some(example);
+        self
+    }
+
     const fn read_only(mut self) -> Self {
         self.editable = false;
         self
@@ -135,6 +143,7 @@ impl SettingDef {
             secret: true,
             editable: false,
             restart_required: true,
+            example: None,
         }
     }
 }
@@ -209,6 +218,14 @@ const SERVER: &[SettingDef] = &[
     )
     .env("FORGEBASE_PORT")
     .flag("--port"),
+    SettingDef::new(
+        "server.public_url",
+        "Public URL",
+        Url,
+        "Address people and apps use to reach this server, with no path, such as https://forgebase.example.com. Links the server hands out, such as the setup link, start with it. Leave it empty to use the listen address and port.",
+    )
+    .env("FORGEBASE_PUBLIC_URL")
+    .example("https://forgebase.example.com"),
     SettingDef::new(
         "server.request_timeout_secs",
         "Request timeout",
@@ -339,7 +356,8 @@ const STORAGE: &[SettingDef] = &[
         "S3 endpoint",
         Url,
         "S3 driver only: address of the S3 service, such as https://s3.eu-central-1.amazonaws.com, or the address of an S3-compatible service.",
-    ),
+    )
+    .example("https://s3.eu-central-1.amazonaws.com"),
     SettingDef::new(
         "storage.s3_region",
         "S3 region",
@@ -1082,8 +1100,12 @@ fn overridden_reason(def: &SettingDef, what: &str, name: Option<&str>) -> String
     )
 }
 
-/// The default of `def` as an example value ("30", "info"), if it has one.
+/// The default of `def` as an example value ("30", "info"), else its
+/// example, if it has one.
 fn example(def: &SettingDef) -> Option<String> {
+    if let Some(e) = def.example {
+        return Some(e.to_owned());
+    }
     let v = default_values().remove(def.key)?;
     match v {
         Json::String(s) if !s.is_empty() => Some(s),
@@ -1165,7 +1187,10 @@ fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
             Some(s) if s.is_empty() || s.starts_with("https://") || s.starts_with("http://") => {
                 Ok(toml_edit::Value::from(s))
             }
-            _ => Err("must be an address that starts with https:// or http://, such as https://s3.eu-central-1.amazonaws.com".to_owned()),
+            _ => Err(format!(
+                "must be an address that starts with https:// or http://{}",
+                such_as(def)
+            )),
         },
         SettingType::Duration => match value.as_str() {
             Some(s) if is_duration(s) => Ok(toml_edit::Value::from(s)),
@@ -1462,7 +1487,10 @@ mod tests {
             .flat_map(|f| f.settings.iter())
             .filter(|s| s.editable && !s.secret)
         {
-            let v = setting_value(&Config::defaults(tmp.path()), s.key).unwrap();
+            let v = match setting_value(&Config::defaults(tmp.path()), s.key).unwrap() {
+                Json::Null => Json::from(s.example.expect("an unset default has an example")),
+                v => v,
+            };
             let text = set_keys("", &[(s.key, to_toml(s, &v).unwrap())]).unwrap();
             std::fs::write(tmp.path().join("forgebase.toml"), &text).unwrap();
             let loaded = load(tmp.path(), &[], ConfigOverrides::default());
@@ -1565,6 +1593,7 @@ mod tests {
             "IP",
             "S3",
             "TCP",
+            "URL",
             "X-Forwarded-For",
             "Redis",
             "OpenID",

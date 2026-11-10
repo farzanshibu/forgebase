@@ -49,6 +49,9 @@ host = "127.0.0.1"          # FORGEBASE_HOST
 port = 8090                 # FORGEBASE_PORT
 request_timeout_secs = 30   # FORGEBASE_REQUEST_TIMEOUT_SECS
 shutdown_timeout_secs = 30  # FORGEBASE_SHUTDOWN_TIMEOUT_SECS
+# Address people and apps reach this server at, with no path; links the
+# server hands out (such as the setup link) use it. Unset: the bound address.
+# public_url = "https://forgebase.example.com"  # FORGEBASE_PUBLIC_URL
 # Who may read /metrics and /api/system/*: "loopback" (administrators, plus
 # unauthenticated callers on this host that are not behind a proxy),
 # "admin" (administrators only) or "public".
@@ -404,6 +407,10 @@ pub struct ServerConfig {
     pub shutdown_timeout_secs: u64,
     /// Who may read `/metrics` and `/api/system/*`.
     pub ops_access: OpsAccess,
+    /// Public origin of the server (`https://forgebase.example.com`): an
+    /// absolute http(s) URL without a path or trailing slash. `None` (the
+    /// default, or an empty value) means links use the bound address.
+    pub public_url: Option<String>,
 }
 
 /// Primary database settings.
@@ -437,6 +444,7 @@ impl Config {
                 request_timeout_secs: 30,
                 shutdown_timeout_secs: 30,
                 ops_access: OpsAccess::Loopback,
+                public_url: None,
             },
             database: DatabaseConfig {
                 synchronous: Synchronous::Full,
@@ -519,6 +527,12 @@ impl Config {
                     "must be a host name or IP address without spaces, such as {}",
                     d.server.host
                 ),
+            );
+        }
+        if self.server.public_url.as_deref().is_some_and(|u| !is_origin_url(u)) {
+            invalid(
+                "server.public_url",
+                "must be an address that starts with https:// or http://, with no path, such as https://forgebase.example.com".into(),
             );
         }
         if !(1..=3600).contains(&self.server.request_timeout_secs) {
@@ -690,6 +704,12 @@ impl Config {
         if let Some(v) = o.ops_access {
             self.server.ops_access = v;
         }
+        if let Some(v) = &o.public_url {
+            // One trailing slash is dropped so links can append a path.
+            let v = v.trim();
+            let v = v.strip_suffix('/').unwrap_or(v);
+            self.server.public_url = (!v.is_empty()).then(|| v.to_owned());
+        }
         if let Some(v) = o.auth_trust_forwarded_for {
             self.auth.trust_forwarded_for = v;
         }
@@ -837,6 +857,8 @@ pub struct ConfigOverrides {
     pub shutdown_timeout_secs: Option<u64>,
     /// Who may read `/metrics` and `/api/system/*`.
     pub ops_access: Option<OpsAccess>,
+    /// `[server] public_url`; an empty value unsets it.
+    pub public_url: Option<String>,
     /// `[auth] trust_forwarded_for`.
     pub auth_trust_forwarded_for: Option<bool>,
     /// `[auth] allow_private_outbound`.
@@ -913,6 +935,7 @@ impl ConfigOverrides {
                 "REQUEST_TIMEOUT_SECS" => o.request_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "SHUTDOWN_TIMEOUT_SECS" => o.shutdown_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "OPS_ACCESS" => o.ops_access = Some(value.parse().map_err(bad)?),
+                "PUBLIC_URL" => o.public_url = Some(value),
                 "AUTH_TRUST_FORWARDED_FOR" => o.auth_trust_forwarded_for = Some(parse_bool(&value).map_err(bad)?),
                 "AUTH_ALLOW_PRIVATE_OUTBOUND" => {
                     o.auth_allow_private_outbound = Some(parse_bool(&value).map_err(bad)?);
@@ -975,6 +998,7 @@ impl ConfigOverrides {
         put(self.request_timeout_secs.is_some(), "server.request_timeout_secs");
         put(self.shutdown_timeout_secs.is_some(), "server.shutdown_timeout_secs");
         put(self.ops_access.is_some(), "server.ops_access");
+        put(self.public_url.is_some(), "server.public_url");
         put(self.auth_trust_forwarded_for.is_some(), "auth.trust_forwarded_for");
         put(
             self.auth_allow_private_outbound.is_some(),
@@ -1371,6 +1395,7 @@ struct FileServer {
     request_timeout_secs: Option<u64>,
     shutdown_timeout_secs: Option<u64>,
     ops_access: Option<OpsAccess>,
+    public_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1398,6 +1423,7 @@ impl From<FileConfig> for ConfigOverrides {
             request_timeout_secs: f.server.request_timeout_secs,
             shutdown_timeout_secs: f.server.shutdown_timeout_secs,
             ops_access: f.server.ops_access,
+            public_url: f.server.public_url,
             auth_trust_forwarded_for: f.auth.trust_forwarded_for,
             auth_allow_private_outbound: f.auth.allow_private_outbound,
             synchronous: f.database.synchronous,
@@ -1539,6 +1565,44 @@ pub fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// An absolute `http(s)://host[:port]` URL with no path, query, fragment or
+/// user info (`[server] public_url`).
+pub fn is_origin_url(u: &str) -> bool {
+    let Some(authority) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) else {
+        return false;
+    };
+    if authority.is_empty()
+        || authority.contains(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '@' | '\\'))
+    {
+        return false;
+    }
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let Some((h, after)) = v6.split_once(']') else {
+            return false;
+        };
+        match after {
+            "" => (h, None),
+            p => match p.strip_prefix(':') {
+                Some(p) => (h, Some(p)),
+                None => return false,
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, _)) if h.contains(':') => return false,
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return false;
+    }
+    match port {
+        Some(p) => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok(),
+        None => true,
+    }
 }
 
 /// "must be a whole number from 1 to 3600 seconds, such as 30".
@@ -1816,6 +1880,62 @@ mod tests {
         std::fs::write(tmp.path().join("forgebase.toml"), CONFIG_TEMPLATE).unwrap();
         let c = ConfigLoader::new(tmp.path()).load().unwrap().config;
         assert_eq!(c, Config::defaults(tmp.path()));
+    }
+
+    #[test]
+    fn public_url_is_optional_validated_and_set_by_env() {
+        let d = Config::defaults(Path::new("/srv"));
+        assert_eq!(d.server.public_url, None, "unset by default");
+        for ok in [
+            "https://forgebase.example.com",
+            "http://127.0.0.1:8090",
+            "https://[::1]:8443",
+            "https://a.example",
+        ] {
+            assert!(is_origin_url(ok), "{ok}");
+        }
+        for bad in [
+            "forgebase.example.com",
+            "ftp://x.example",
+            "https://",
+            "https://x.example/app",
+            "https://x.example?a=1",
+            "https://x.example#top",
+            "https://user@x.example",
+            "https://x.example:",
+            "https://x.example:99999",
+            "https://a:b:c",
+            "https://[::1",
+            "https://x .example",
+        ] {
+            assert!(!is_origin_url(bad), "{bad}");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("forgebase.toml");
+        let load = |text: &str, env: ConfigOverrides| {
+            std::fs::write(&file, text).unwrap();
+            ConfigLoader::new(tmp.path()).env(env).load().map(|l| l.config)
+        };
+        // A trailing slash is dropped; an empty value means unset.
+        let c = load(
+            "[server]\npublic_url = \"https://fb.example.com/\"\n",
+            ConfigOverrides::default(),
+        )
+        .unwrap();
+        assert_eq!(c.server.public_url.as_deref(), Some("https://fb.example.com"));
+        let c = load("[server]\npublic_url = \"\"\n", ConfigOverrides::default()).unwrap();
+        assert_eq!(c.server.public_url, None);
+        let err = load(
+            "[server]\npublic_url = \"https://fb.example.com/app\"\n",
+            ConfigOverrides::default(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("server.public_url"), "{err}");
+        // The environment wins over the file.
+        let o = env(&[("FORGEBASE_PUBLIC_URL", "https://env.example.com")]);
+        assert_eq!(o.keys(), vec!["server.public_url"]);
+        let c = load("[server]\npublic_url = \"https://fb.example.com\"\n", o).unwrap();
+        assert_eq!(c.server.public_url.as_deref(), Some("https://env.example.com"));
     }
 
     #[test]
