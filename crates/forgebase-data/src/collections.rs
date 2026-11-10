@@ -646,9 +646,9 @@ impl DataService {
                     .map_err(|e| conversion_error(e, &new.name))?;
             }
             if let Some(fk) = foreign_key_sql(d, new_f, relation_table(new_f, new, new_cat)?.as_deref()) {
-                log.run(format!("ALTER TABLE {t} ADD FOREIGN KEY ({col}) {fk}"))
-                    .await
-                    .map_err(|e| conversion_error(e, &new.name))?;
+                // A value with no target fails here as `foreign_key_violation`,
+                // the code SQLite's commit-time check gives.
+                log.run(format!("ALTER TABLE {t} ADD FOREIGN KEY ({col}) {fk}")).await?;
             }
         }
 

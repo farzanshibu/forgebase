@@ -1058,3 +1058,73 @@ async fn index_manager_reports_kinds_statistics_and_plans() {
     assert!(svc.get_index(&ctx, "idx_events_other").await.is_err());
     db.close().await;
 }
+
+#[tokio::test]
+async fn relation_changes_add_change_and_drop_foreign_keys() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    let authors = svc
+        .create_collection(&ctx, Collection::base("authors").with_field(Field::new("name", text())))
+        .await
+        .unwrap();
+    let a = svc.create_record(&ctx, "authors", json!({"name": "ann"})).await.unwrap();
+    let b = svc.create_record(&ctx, "authors", json!({"name": "bob"})).await.unwrap();
+    let posts = svc
+        .create_collection(&ctx, Collection::base("posts").with_field(Field::new("author", text())))
+        .await
+        .unwrap();
+    for author in [&a, &b] {
+        svc.create_record(&ctx, "posts", json!({"author": author["id"]}))
+            .await
+            .unwrap();
+    }
+    let relation = |cascade_delete| FieldKind::Relation {
+        collection_id: authors.id.clone(),
+        max_select: 1,
+        cascade_delete,
+    };
+    let count = |svc: forgebase_data::DataService| async move {
+        svc.count_records(&admin(), "posts", None, HashMap::new()).await.unwrap()
+    };
+
+    // Text -> relation with cascade: the key is added over existing rows.
+    let mut def = posts.clone();
+    def.fields[0].kind = relation(true);
+    let v2 = svc.update_collection(&ctx, "posts", def).await.unwrap();
+    svc.delete_record(&ctx, "authors", a["id"].as_str().unwrap(), None).await.unwrap();
+    assert_eq!(count(svc.clone()).await, 1, "cascade");
+    let n = svc
+        .count_records(&ctx, "posts", Some("author.name = 'bob'"), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+
+    // Cascade -> set null: the key's action changes.
+    let mut def = v2.clone();
+    def.fields[0].kind = relation(false);
+    let v3 = svc.update_collection(&ctx, "posts", def).await.unwrap();
+    svc.delete_record(&ctx, "authors", b["id"].as_str().unwrap(), None).await.unwrap();
+    assert_eq!(count(svc.clone()).await, 1, "set null keeps the post");
+    let orphans = svc
+        .count_records(&ctx, "posts", Some("author = null"), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(orphans, 1);
+
+    // Relation -> text: the key is gone, any value fits.
+    let mut def = v3.clone();
+    def.fields[0].kind = text();
+    let v4 = svc.update_collection(&ctx, "posts", def).await.unwrap();
+    svc.create_record(&ctx, "posts", json!({"author": "nobody"})).await.unwrap();
+
+    // Text -> relation over a value with no target: refused, nothing changes.
+    let mut def = v4.clone();
+    def.fields[0].kind = relation(false);
+    let err = svc.update_collection(&ctx, "posts", def).await.unwrap_err();
+    assert_eq!(err.code(), "foreign_key_violation", "{err:?}");
+    assert_eq!(svc.get_collection(&ctx, "posts").await.unwrap().version, 4);
+    assert_eq!(count(svc.clone()).await, 2);
+    assert_eq!(db.foreign_key_violations().await.unwrap(), 0);
+    db.close().await;
+}
