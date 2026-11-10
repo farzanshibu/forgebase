@@ -1455,3 +1455,148 @@ logs a warning and returns `backup: None` (FB-150, with FB-132's engine
 handle). Text columns use the database's default collation; the bundled
 engine's `builtin` C.UTF-8 sorts as SQLite does, an external server with a
 libc locale may not (FB-148 may refuse or warn).
+
+## Addendum: FB-144, collections, schema changes, indexes and full text on PostgreSQL (2026-11-11)
+
+Built as §7.4–§7.5 describe, in `crates/forgebase-data/src/{ddl.rs,
+collections.rs,indexes.rs,catalog.rs}` and `crates/forgebase-schema`. What
+the next packages need to know, and where the code differs from the text
+above.
+
+**DDL.** Collection tables use the §7.4 type mapping through
+`Dialect::column_type`: `id`, `created`, `updated`, `_tenant` are `text`,
+`_version` `bigint`, `_data` and JSON fields `jsonb` (no `CHECK`, `jsonb` is
+always valid; SQLite keeps `TEXT CHECK (json_valid(…))`), booleans
+`smallint CHECK (x IN (0, 1))`; no `STRICT`. Single relations are `REFERENCES
+public."target"(id) ON DELETE … DEFERRABLE INITIALLY IMMEDIATE`. Every
+statement that creates, drops or alters a collection object names schema
+`public` (`ddl::rel`), because schema `forgebase` comes first on the search
+path (FB-133): `CREATE TABLE public."posts"`, `DROP INDEX IF EXISTS
+public."idx"` (an unqualified `DROP INDEX` would hit a system index of the
+same name first). Reads keep unqualified names; they resolve to `public`
+because collection names never start with `_forgebase`.
+
+**Catalog introspection** (`catalog::pg`) reads `pg_catalog` for objects in
+schema `public` through `to_regclass('public."name"')`, never through the
+search path: columns (`PRAGMA table_info` shape), dependent views (a
+recursive walk of `pg_depend`/`pg_rewrite`, optionally from given columns),
+single-column `CHECK`/foreign-key constraints, index names and one index's
+row. `object_exists` (name taken?) checks both schemas on the search path,
+so a collection or index can never shadow a system object or be shadowed.
+
+**Schema changes** are `ALTER TABLE` statements in the existing
+`SchemaChange` transaction; the SQLite rebuild (`_forgebase_tmp_…`, row copy,
+`legacy_alter_table`) is untouched. Renames are `RENAME TO` / `RENAME
+COLUMN`; added fields `ADD COLUMN`; dropped fields `DROP COLUMN`; a field
+whose column signature changes (storage class, check, foreign key) gets, in
+order: its single-column `CHECK` and foreign-key constraints dropped (found in
+`pg_constraint`), `ALTER COLUMN … TYPE … USING <conversion>` when the storage
+class changes, the new `CHECK`, and the new foreign key (checked against the
+existing rows at once; a missing target is `foreign_key_violation`, the code
+SQLite's commit-time check gives). Conversions keep SQLite's `STRICT` copy
+semantics: a value that does not fit fails the statement
+(`incompatible_data`) rather than being rounded: text and reals become
+integers through `numeric` and only when integral (`'2.5'` is refused,
+`3.0` becomes 3); integral reals become text as `3.0`; text becomes `jsonb`
+by a cast that rejects invalid JSON; numbers become JSON with `to_jsonb`.
+*Differs:* JSON turned into text is PostgreSQL's `jsonb` text
+(`{"x": [1, 2]}`, with spaces) where SQLite keeps the stored compact text;
+the documents are equal. Managed indexes (automatic and manual) that use a
+changed field are dropped before and created again from their definitions
+after (an expression may not fit the new type); other indexes, and raw-SQL
+indexes and triggers, stay as they are (no rebuild drops them).
+
+**Views** are `CREATE VIEW public."v" WITH (security_invoker = true) AS …`.
+PostgreSQL binds views to columns, so where SQLite lets a change break a view
+and the verification step catches it, PostgreSQL needs explicit handling:
+a type change on a column views read drops those views (and the views
+reading them, transitively), changes the column and creates them again from
+`pg_get_viewdef` with their `reloptions` (so `security_invoker` stays);
+a view that no longer compiles is `schema_conflict`. Dropping a column, a
+table or a view that a view reads is `schema_conflict` up front (found in
+`pg_depend`), the same code SQLite's verification gives. Changing a view
+collection's query does the same drop-and-restore for views reading it.
+*Note for FB-152:* recreated views lose grants, policies and `INSTEAD OF`
+triggers attached to them; the regeneration hook must run after the column
+changes, inside the same transaction (`update_collection`, after
+`alter_table`, before `verify_collections`). View fields are inferred from
+`pg_attribute` types: integer types → integer number, `double
+precision`/`numeric`/`real` → number, `text`/`varchar`/`citext` → text,
+`boolean` → bool, `uuid`/date and time types/network types → text, anything
+else → JSON.
+
+**Verification** runs as before, after every change, inside the transaction:
+columns from the catalog (`pg_attribute` on PostgreSQL), compared ignoring
+case, plus `SELECT * … LIMIT 0` for views.
+
+**Identifier length.** Derived names go through `Dialect::fit_ident` (63
+bytes on PostgreSQL, a 10-hex FNV-1a suffix when longer; no change on
+SQLite): automatic index names `auto_<collection id>_<field id>_u|r` and
+`auto_<collection id>_tenant` (ids may be 64 characters), and full-text
+index objects `_forgebase_fts_<index>` (index names may use all 63 bytes).
+The fitted name is the one stored in `_forgebase_indexes`, so lookups by
+name match the engine. Index names are now refused when longer than 63
+bytes or starting with `pg_` (both backends).
+
+**Full text.** *Differs from §7.4:* not a generated `tsvector` column but a
+GIN expression index, `CREATE INDEX "_forgebase_fts_<index>" ON public."t"
+USING gin ((to_tsvector('simple', _forgebase_unaccent(coalesce((k1)::text,
+'') || ' ' || …))))`, matched with the same expression `@@
+websearch_to_tsquery('simple', _forgebase_unaccent($n))`
+(`indexes::fulltext_match`, which list queries call). Why: a generated
+column is a real table column, so `SELECT t.*` would put it into every record
+(`row_to_record` keeps unknown columns), every change snapshot and every
+record version; adding it rewrites the table under an exclusive lock; and
+PostgreSQL refuses to change the type of a column a generated column uses.
+The expression index has none of these, needs no triggers or sync, follows
+column renames and is dropped with its table. `FB-131`'s
+`Dialect::fulltext_*` PostgreSQL methods (generated column) are not used by
+the data core. Ranking (`fulltext_rank`, lower is better) is not used by
+list queries today; FB-166 adds it with `ts_rank` over the same expression.
+
+**Index manager.** B-tree, unique (per tenant on tenant-scoped
+collections), partial, expression and JSON-path indexes map directly; every
+key is parenthesised on PostgreSQL (a parenthesised column is still a column
+key). `list_indexes` reads `pg_index` for tables in `public` (excluding
+`_forgebase_…` objects) plus the managed rows; `get_index` reports table,
+unique, partial, columns (`<expr>` for expression keys), the
+`pg_get_indexdef` DDL, origin `engine` for primary-key and unique-constraint
+indexes, and statistics: `rows_estimate` and `stat` from `pg_class.reltuples`
+(absent until `ANALYZE` or `CREATE INDEX` has counted), `size_bytes` from
+`pg_relation_size`, and a new `IndexStats::scans` from
+`pg_stat_user_indexes.idx_scan` (PostgreSQL only; not serialised when absent,
+so SQLite output is unchanged). `rebuild_index` is `REINDEX INDEX
+public."i"` (not `CONCURRENTLY`, which cannot run in a transaction; it blocks
+writes to the table while it runs) then `ANALYZE` of the table; `analyze` is
+`ANALYZE public."t"` or `ANALYZE`. Plans: `explain_list` and
+`recommend_indexes` read `EXPLAIN (FORMAT JSON)` themselves
+(`QueryPlan::from_pg_json`), because a full scan on PostgreSQL is a `Seq
+Scan` *or* an `Index Scan` without an `Index Cond` (the planner walks the
+primary key in `ORDER BY id` order and filters every row), which the
+`forgebase-db` step text cannot tell from a lookup. Recommendation probes
+bind `'0'` instead of NULL on PostgreSQL: the planner folds `x = NULL` to a
+constant and the plan would show no scan.
+
+**Name rules** (`forgebase-schema`): `validate_postgres_collection_name`
+(`pg_` is reserved: `pg_catalog` is searched before every schema, so a
+collection named like a catalog relation would be shadowed),
+`validate_postgres_field_name` (`tableoid`, `xmin`, `cmin`, `xmax`, `cmax`,
+`ctid`: PostgreSQL's system columns; `oid` was already reserved),
+`POSTGRES_MAX_IDENT`, and `Collection::validate_postgres_names(previous)`,
+which checks only names that are new relative to `previous`. The data core
+checks every name on PostgreSQL and new names on SQLite, so a SQLite project
+cannot pick a name that would block `forgebase db convert` (FB-151 should
+run `validate_postgres_names(None)` on every collection before converting),
+while names it already has keep working.
+
+**Tests.** `crates/forgebase-data/tests/schema_changes.rs` calls
+`forgebase_db::testing::test_backend()` directly (FB-143 switches the shared
+`tests/common` helper) and runs on both backends: the three original tests
+(with backend-specific assertions where the mechanism differs: column type
+`bigint` vs `INTEGER`, `ALTER COLUMN … TYPE` vs the `_forgebase_tmp_`
+rebuild in the history, `effective_pragmas` SQLite only) and six new ones
+(type conversions, views over changed columns and `security_invoker`,
+fitted names and accent-insensitive full text, name rules, the index manager
+with statistics, plans and recommendations, relation changes). One minimal
+edit outside the owned files: `list.rs` calls `indexes::fulltext_match`
+instead of building the FTS5 `MATCH` itself.
