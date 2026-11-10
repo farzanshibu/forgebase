@@ -485,7 +485,10 @@ fn deploy_hello(fb: &Fb) {
 #[test]
 fn scenario_01_create_a_project() {
     let mut fb = Fb::start();
-    assert!(fb.data_dir().join("forgebase.db").is_file(), "init created the database");
+    assert!(
+        fb.data_dir().join("forgebase.db").is_file(),
+        "init created the database"
+    );
     let (alice, _) = fb.user("alice@example.com");
     let org = fb
         .call(
@@ -521,7 +524,12 @@ fn scenario_01_create_a_project() {
     );
     assert_eq!(r.status, 409, "{}", r.text());
     // Anonymous callers cannot create organizations.
-    let r = fb.call("POST", "/api/v1/orgs", None, Some(json!({"slug": "anon", "name": "Anon"})));
+    let r = fb.call(
+        "POST",
+        "/api/v1/orgs",
+        None,
+        Some(json!({"slug": "anon", "name": "Anon"})),
+    );
     assert_eq!(r.status, 401, "{}", r.text());
 
     fb.restart();
@@ -551,7 +559,9 @@ fn scenario_02_create_a_sql_table() {
     fb.admin(
         "POST",
         "/api/v1/sql",
-        Some(json!({"sql": "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"})),
+        Some(
+            json!({"sql": "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"}),
+        ),
     )
     .expect(200);
     let ins = fb
@@ -692,7 +702,12 @@ fn scenario_04_insert_and_query_records() {
         let page = fb.admin("GET", &path, None).expect(200);
         seen.extend(ids(&page));
         match page["next_cursor"].as_str() {
-            Some(c) => path = format!("/api/v1/collections/books/records?per_page=25&sort=title&cursor={}", enc(c)),
+            Some(c) => {
+                path = format!(
+                    "/api/v1/collections/books/records?per_page=25&sort=title&cursor={}",
+                    enc(c)
+                )
+            }
             None => break,
         }
     }
@@ -783,7 +798,11 @@ fn scenario_06_validate_index_usage_with_query_plans() {
     items_collection(&fb);
     let plan_query = json!({"filter": "category = 'c3' && price > 100", "sort": "-price"});
     let before = fb
-        .admin("POST", "/api/v1/collections/items/records/explain", Some(plan_query.clone()))
+        .admin(
+            "POST",
+            "/api/v1/collections/items/records/explain",
+            Some(plan_query.clone()),
+        )
         .expect(200);
     assert!(before["indexes_used"].as_array().unwrap().is_empty(), "{before}");
     assert!(!before["full_scans"].as_array().unwrap().is_empty(), "{before}");
@@ -797,7 +816,11 @@ fn scenario_06_validate_index_usage_with_query_plans() {
     let r = fb.admin("POST", "/api/v1/indexes/analyze", Some(json!({"collection": "items"})));
     assert_eq!(r.status, 204, "{}", r.text());
     let after = fb
-        .admin("POST", "/api/v1/collections/items/records/explain", Some(plan_query.clone()))
+        .admin(
+            "POST",
+            "/api/v1/collections/items/records/explain",
+            Some(plan_query.clone()),
+        )
         .expect(200);
     assert_eq!(after["indexes_used"], json!(["idx_items_cat_price"]), "{after}");
     assert!(after["full_scans"].as_array().unwrap().is_empty(), "{after}");
@@ -853,13 +876,23 @@ fn scenario_07_authenticate_a_user() {
     fb.restart();
     assert_eq!(fb.call("GET", "/api/auth/me", Some(&access), None).status, 200);
     let rotated = fb
-        .call("POST", "/api/auth/refresh", None, Some(json!({"refresh_token": refresh})))
+        .call(
+            "POST",
+            "/api/auth/refresh",
+            None,
+            Some(json!({"refresh_token": refresh})),
+        )
         .expect(200);
     let access2 = rotated["access_token"].as_str().unwrap().to_owned();
     assert_ne!(rotated["refresh_token"].as_str().unwrap(), refresh.as_str());
     assert_eq!(fb.call("GET", "/api/auth/me", Some(&access2), None).status, 200);
     // Reusing the rotated refresh token is theft: the whole session ends.
-    let r = fb.call("POST", "/api/auth/refresh", None, Some(json!({"refresh_token": refresh})));
+    let r = fb.call(
+        "POST",
+        "/api/auth/refresh",
+        None,
+        Some(json!({"refresh_token": refresh})),
+    );
     assert_eq!(r.status, 401, "{}", r.text());
     assert_eq!(fb.call("GET", "/api/auth/me", Some(&access2), None).status, 401);
 
@@ -948,8 +981,10 @@ fn scenario_09_verify_tenant_isolation() {
     fb.admin(
         "PUT",
         "/api/v1/policies/tasks",
-        Some(json!({"list_rule": any_user, "view_rule": any_user, "create_rule": any_user,
-            "update_rule": any_user, "delete_rule": any_user})),
+        Some(
+            json!({"list_rule": any_user, "view_rule": any_user, "create_rule": any_user,
+            "update_rule": any_user, "delete_rule": any_user}),
+        ),
     )
     .expect(200);
     let tenant_of = |token: &str, slug: &str| -> String {
@@ -1002,11 +1037,23 @@ fn scenario_09_verify_tenant_isolation() {
     .expect(201);
 
     // Bob cannot act in alice's tenant: the tenancy step refuses.
-    let r = as_tenant(&bob, &ta, "GET", &format!("/api/v1/collections/tasks/records/{rid}"), None);
+    let r = as_tenant(
+        &bob,
+        &ta,
+        "GET",
+        &format!("/api/v1/collections/tasks/records/{rid}"),
+        None,
+    );
     assert_eq!(r.status, 403, "{}", r.text());
     assert_eq!(r.json()["error"]["details"]["step"], "tenant", "{}", r.text());
     // From his own tenant the id does not exist; the list holds only his record.
-    let r = as_tenant(&bob, &tb, "GET", &format!("/api/v1/collections/tasks/records/{rid}"), None);
+    let r = as_tenant(
+        &bob,
+        &tb,
+        "GET",
+        &format!("/api/v1/collections/tasks/records/{rid}"),
+        None,
+    );
     assert_eq!(r.status, 404, "{}", r.text());
     let list = as_tenant(&bob, &tb, "GET", "/api/v1/collections/tasks/records", None).expect(200);
     let titles: Vec<&str> = list["items"]
@@ -1025,9 +1072,22 @@ fn scenario_09_verify_tenant_isolation() {
         Some(json!({"title": "pwned"})),
     );
     assert_eq!(r.status, 404, "{}", r.text());
-    let r = as_tenant(&bob, &tb, "DELETE", &format!("/api/v1/collections/tasks/records/{rid}"), None);
+    let r = as_tenant(
+        &bob,
+        &tb,
+        "DELETE",
+        &format!("/api/v1/collections/tasks/records/{rid}"),
+        None,
+    );
     assert_eq!(r.status, 404, "{}", r.text());
-    let mine = as_tenant(&alice, &ta, "GET", &format!("/api/v1/collections/tasks/records/{rid}"), None).expect(200);
+    let mine = as_tenant(
+        &alice,
+        &ta,
+        "GET",
+        &format!("/api/v1/collections/tasks/records/{rid}"),
+        None,
+    )
+    .expect(200);
     assert_eq!(mine["title"], "alice's");
     let list = as_tenant(&alice, &ta, "GET", "/api/v1/collections/tasks/records", None).expect(200);
     assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
@@ -1078,7 +1138,13 @@ fn scenario_10_upload_and_retrieve_an_object() {
 
     fb.restart();
     let admin = fb.admin.clone();
-    let got = fb.send("GET", "/api/v1/storage/buckets/photos/objects/2026/cat.bin", Some(&admin), &[], b"");
+    let got = fb.send(
+        "GET",
+        "/api/v1/storage/buckets/photos/objects/2026/cat.bin",
+        Some(&admin),
+        &[],
+        b"",
+    );
     assert_eq!(got.status, 200, "{}", got.text());
     assert_eq!(got.body.len(), data.len());
     assert!(got.body == data, "the bytes came back unchanged");
@@ -1098,12 +1164,24 @@ fn scenario_10_upload_and_retrieve_an_object() {
         .expect(200);
     assert_eq!(list["objects"][0]["key"], "2026/cat.bin", "{list}");
     // Anonymous callers get nothing.
-    let r = fb.send("GET", "/api/v1/storage/buckets/photos/objects/2026/cat.bin", None, &[], b"");
+    let r = fb.send(
+        "GET",
+        "/api/v1/storage/buckets/photos/objects/2026/cat.bin",
+        None,
+        &[],
+        b"",
+    );
     assert_eq!(r.status, 401);
     // Delete, then it is gone.
     fb.admin("DELETE", "/api/v1/storage/buckets/photos/objects/2026/cat.bin", None)
         .expect(200);
-    let r = fb.send("GET", "/api/v1/storage/buckets/photos/objects/2026/cat.bin", Some(&admin), &[], b"");
+    let r = fb.send(
+        "GET",
+        "/api/v1/storage/buckets/photos/objects/2026/cat.bin",
+        Some(&admin),
+        &[],
+        b"",
+    );
     assert_eq!(r.status, 404);
 }
 
@@ -1141,7 +1219,13 @@ fn scenario_11_generate_a_signed_download_url() {
         Some("attachment; filename=\"q3.txt\"")
     );
     // The plain object path needs credentials.
-    let r = fb.send("GET", "/api/v1/storage/buckets/docs/objects/reports/q3%202026.txt", None, &[], b"");
+    let r = fb.send(
+        "GET",
+        "/api/v1/storage/buckets/docs/objects/reports/q3%202026.txt",
+        None,
+        &[],
+        b"",
+    );
     assert_eq!(r.status, 401);
     // Tampering with the signature or the expiry breaks it.
     let tampered = if url.ends_with('0') {
@@ -1159,7 +1243,10 @@ fn scenario_11_generate_a_signed_download_url() {
         })
         .collect::<Vec<_>>()
         .join("&");
-    assert_eq!(fb.send("GET", &format!("{path}?{longer}"), None, &[], b"").status / 100, 4);
+    assert_eq!(
+        fb.send("GET", &format!("{path}?{longer}"), None, &[], b"").status / 100,
+        4
+    );
     // A URL that expires in one second stops working.
     let short = fb
         .admin(
@@ -1188,7 +1275,11 @@ fn vector_kb(fb: &Fb, n: u32) {
         .map(|i| json!({"id": format!("p{i}"), "vectors": {"emb": [f64::from(i), 0.0, 0.0]}, "metadata": {"even": i % 2 == 0}}))
         .collect();
     let r = fb
-        .admin("POST", "/api/v1/vector/collections/kb/upsert", Some(json!({"items": items})))
+        .admin(
+            "POST",
+            "/api/v1/vector/collections/kb/upsert",
+            Some(json!({"items": items})),
+        )
         .expect(200);
     assert_eq!(r["created"], n, "{r}");
 }
@@ -1214,7 +1305,9 @@ fn top_ids(fb: &Fb, v: [f64; 3], k: u32) -> Vec<String> {
 fn scenario_12_store_and_retrieve_a_vector() {
     let mut fb = Fb::start();
     vector_kb(&fb, 50);
-    let item = fb.admin("GET", "/api/v1/vector/collections/kb/items/p7", None).expect(200);
+    let item = fb
+        .admin("GET", "/api/v1/vector/collections/kb/items/p7", None)
+        .expect(200);
     assert_eq!(item["vectors"]["emb"], json!([7.0, 0.0, 0.0]), "{item}");
     assert_eq!(item["metadata"]["even"], false);
     let r = fb.admin(
@@ -1224,7 +1317,9 @@ fn scenario_12_store_and_retrieve_a_vector() {
     );
     assert_eq!((r.status, r.code().as_str()), (400, "vector_dimension_mismatch"));
     fb.restart();
-    let item = fb.admin("GET", "/api/v1/vector/collections/kb/items/p7", None).expect(200);
+    let item = fb
+        .admin("GET", "/api/v1/vector/collections/kb/items/p7", None)
+        .expect(200);
     assert_eq!(item["vectors"]["emb"], json!([7.0, 0.0, 0.0]));
     let stats = fb.admin("GET", "/api/v1/vector/collections/kb/stats", None).expect(200);
     assert_eq!(stats["items"], 50, "{stats}");
@@ -1261,7 +1356,13 @@ fn scenario_13_execute_vector_similarity_search() {
 }
 
 fn graph_seed(fb: &Fb) {
-    for (id, label) in [("a", "User"), ("b", "User"), ("c", "User"), ("d", "User"), ("x", "Product")] {
+    for (id, label) in [
+        ("a", "User"),
+        ("b", "User"),
+        ("c", "User"),
+        ("d", "User"),
+        ("x", "Product"),
+    ] {
         fb.admin(
             "POST",
             "/api/v1/graph/nodes",
@@ -1299,11 +1400,18 @@ fn scenario_14_create_graph_nodes_and_edges() {
     assert_eq!(r.status, 409, "{}", r.text());
     fb.restart();
     let n = fb.admin("GET", "/api/v1/graph/nodes/a", None).expect(200);
-    assert_eq!((n["label"].as_str(), n["properties"]["name"].as_str()), (Some("User"), Some("a")));
+    assert_eq!(
+        (n["label"].as_str(), n["properties"]["name"].as_str()),
+        (Some("User"), Some("a"))
+    );
     let e = fb.admin("GET", "/api/v1/graph/edges/f1", None).expect(200);
     assert_eq!((e["source"].as_str(), e["target"].as_str()), (Some("a"), Some("b")));
     let stats = fb.admin("GET", "/api/v1/graph/stats", None).expect(200);
-    assert_eq!((stats["nodes"].as_i64(), stats["edges"].as_i64()), (Some(5), Some(4)), "{stats}");
+    assert_eq!(
+        (stats["nodes"].as_i64(), stats["edges"].as_i64()),
+        (Some(5), Some(4)),
+        "{stats}"
+    );
     // Deleting a node removes its edges.
     fb.admin("DELETE", "/api/v1/graph/nodes/b", None).expect(200);
     assert_eq!(fb.admin("GET", "/api/v1/graph/edges/f1", None).status, 404);
@@ -1326,7 +1434,12 @@ fn scenario_15_execute_graph_traversal() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|n| (n["node"]["id"].as_str().unwrap().to_owned(), n["depth"].as_i64().unwrap()))
+        .map(|n| {
+            (
+                n["node"]["id"].as_str().unwrap().to_owned(),
+                n["depth"].as_i64().unwrap(),
+            )
+        })
         .collect();
     got.sort();
     assert_eq!(got, [("b".to_owned(), 1), ("c".to_owned(), 2)], "{r}");
@@ -1342,7 +1455,11 @@ fn scenario_15_execute_graph_traversal() {
     n.sort_unstable();
     assert_eq!(n, ["b", "x"], "{r}");
     let r = fb
-        .admin("POST", "/api/v1/graph/shortest-path", Some(json!({"from": "a", "to": "d"})))
+        .admin(
+            "POST",
+            "/api/v1/graph/shortest-path",
+            Some(json!({"from": "a", "to": "d"})),
+        )
         .expect(200);
     let path: Vec<&str> = r["nodes"]
         .as_array()
@@ -1412,7 +1529,11 @@ async fn scenario_16_subscribe_to_realtime_events() {
     let (user, _) = fb.user("eve@example.com");
     let mut evil = ws_connect(&fb.addr, &user).await;
     assert_eq!(ws_next(&mut evil).await["type"], "welcome");
-    ws_send(&mut evil, json!({"type": "subscribe", "id": "s", "collection": "notes"})).await;
+    ws_send(
+        &mut evil,
+        json!({"type": "subscribe", "id": "s", "collection": "notes"}),
+    )
+    .await;
     let refused = ws_next(&mut evil).await;
     assert_ne!(refused["type"], "subscribed", "{refused}");
 
@@ -1474,7 +1595,9 @@ async fn scenario_17_verify_event_delivery_after_a_committed_change() {
     });
     let sse_next = |kind: &str| -> Json {
         loop {
-            let v = rx.recv_timeout(Duration::from_secs(15)).expect("no SSE event within 15 s");
+            let v = rx
+                .recv_timeout(Duration::from_secs(15))
+                .expect("no SSE event within 15 s");
             if v["type"] == kind {
                 return v;
             }
@@ -1491,7 +1614,11 @@ async fn scenario_17_verify_event_delivery_after_a_committed_change() {
     );
     assert_eq!(r.status, 400, "{}", r.text());
     let rec = fb
-        .admin("POST", "/api/v1/collections/notes/records", Some(json!({"text": "hello"})))
+        .admin(
+            "POST",
+            "/api/v1/collections/notes/records",
+            Some(json!({"text": "hello"})),
+        )
         .expect(201);
     let id = rec["id"].as_str().unwrap().to_owned();
     let e = ws_next(&mut ws).await;
@@ -1509,7 +1636,10 @@ async fn scenario_17_verify_event_delivery_after_a_committed_change() {
     )
     .expect(200);
     let e = ws_next(&mut ws).await;
-    assert_eq!((e["type"].as_str(), e["data"]["text"].as_str()), (Some("record.updated"), Some("edited")));
+    assert_eq!(
+        (e["type"].as_str(), e["data"]["text"].as_str()),
+        (Some("record.updated"), Some("edited"))
+    );
     fb.admin("DELETE", &format!("/api/v1/collections/notes/records/{id}"), None);
     let e = ws_next(&mut ws).await;
     assert_eq!(e["type"], "record.deleted", "{e}");
@@ -1535,7 +1665,11 @@ async fn scenario_17_verify_event_delivery_after_a_committed_change() {
     ];
     assert_eq!(kinds, ["record.created", "record.updated", "record.deleted"]);
     let ok = ws_next(&mut ws).await;
-    assert_eq!((ok["type"].as_str(), ok["replayed"].as_u64()), (Some("subscribed"), Some(3)), "{ok}");
+    assert_eq!(
+        (ok["type"].as_str(), ok["replayed"].as_u64()),
+        (Some("subscribed"), Some(3)),
+        "{ok}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1552,7 +1686,11 @@ fn scenario_18_execute_a_sandboxed_server_function() {
     let (user, _) = fb.user("dev@example.com");
     let hello = json!({"name": "hello", "wasm": module_answering(r#"{"status":200,"body":{"hello":"world"}}"#),
         "access": "public", "capabilities": ["log"]});
-    assert_eq!(fb.call("POST", "/api/v1/functions", Some(&user), Some(hello.clone())).status, 403);
+    assert_eq!(
+        fb.call("POST", "/api/v1/functions", Some(&user), Some(hello.clone()))
+            .status,
+        403
+    );
     fb.admin("POST", "/api/v1/functions", Some(hello)).expect(201);
     let r = fb.call("POST", "/api/v1/functions/hello/invoke", None, Some(json!({})));
     assert_eq!(r.expect(200), json!({"hello": "world"}));
@@ -1579,7 +1717,10 @@ fn scenario_18_execute_a_sandboxed_server_function() {
         "{}",
         r.text()
     );
-    assert!(started.elapsed() < Duration::from_secs(15), "fuel, not the clock, stopped it");
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "fuel, not the clock, stopped it"
+    );
 
     // A module that wants WASI file access is not accepted.
     let wasi = wasm_b64(
@@ -1626,8 +1767,10 @@ fn scenario_19_schedule_and_execute_a_background_job() {
         .admin(
             "POST",
             "/api/v1/jobs",
-            Some(json!({"kind": "function.invoke", "payload": {"function": "hello", "input": {"n": 1}},
-                "delay_ms": 1500, "idempotency_key": "welcome-1"})),
+            Some(
+                json!({"kind": "function.invoke", "payload": {"function": "hello", "input": {"n": 1}},
+                "delay_ms": 1500, "idempotency_key": "welcome-1"}),
+            ),
         )
         .expect(201);
     assert_eq!(job["status"], "queued", "{job}");
@@ -1705,10 +1848,15 @@ fn scenario_20_process_a_billing_webhook_idempotently() {
     const KEY: &str = "sk_test_51fb85scenario20";
     const WHSEC: &str = "whsec_fb85_scenario_20";
     let mut fb = Fb::start_with(&[("FORGEBASE_BILLING_ENABLED", "true")]);
-    fb.admin("PUT", "/api/v1/plans/pro", Some(json!({"name": "Pro", "active": true, "features": []})))
-        .expect(200);
+    fb.admin(
+        "PUT",
+        "/api/v1/plans/pro",
+        Some(json!({"name": "Pro", "active": true, "features": []})),
+    )
+    .expect(200);
     // The customer pays out of band (manual provider): no outbound call is made.
-    fb.admin("PUT", "/api/v1/billing/providers/manual", Some(json!({}))).expect(200);
+    fb.admin("PUT", "/api/v1/billing/providers/manual", Some(json!({})))
+        .expect(200);
     fb.admin(
         "PUT",
         "/api/v1/billing/providers/stripe",
@@ -1724,8 +1872,10 @@ fn scenario_20_process_a_billing_webhook_idempotently() {
     fb.admin(
         "PUT",
         "/api/v1/billing/prices/pro-m",
-        Some(json!({"product": "pro", "type": "recurring", "interval": "month", "currency": "USD",
-            "unit_amount": 2900, "active": true})),
+        Some(
+            json!({"product": "pro", "type": "recurring", "interval": "month", "currency": "USD",
+            "unit_amount": 2900, "active": true}),
+        ),
     )
     .expect(200);
     let (ann, ann_id) = fb.user("ann@example.com");
@@ -1773,7 +1923,12 @@ fn scenario_20_process_a_billing_webhook_idempotently() {
         )
     };
     let r = deliver(&fb, signed("whsec_not_the_secret"));
-    assert_eq!((r.status, r.code().as_str()), (400, "invalid_signature"), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (400, "invalid_signature"),
+        "{}",
+        r.text()
+    );
     let r = deliver(&fb, signed(WHSEC));
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(r.text().contains("\"processed\""), "{}", r.text());
@@ -1782,18 +1937,29 @@ fn scenario_20_process_a_billing_webhook_idempotently() {
     assert!(r.text().contains("\"duplicate\""), "{}", r.text());
 
     let check = |fb: &Fb| {
-        let i = fb.admin("GET", &format!("/api/v1/billing/invoices/{inv}"), None).expect(200);
-        assert_eq!((i["status"].as_str(), i["amount_paid"].as_i64()), (Some("paid"), Some(2900)), "{i}");
+        let i = fb
+            .admin("GET", &format!("/api/v1/billing/invoices/{inv}"), None)
+            .expect(200);
+        assert_eq!(
+            (i["status"].as_str(), i["amount_paid"].as_i64()),
+            (Some("paid"), Some(2900)),
+            "{i}"
+        );
         let p = fb
             .admin(
                 "GET",
-                &format!("/api/v1/billing/payments?subject={}", enc(&format!("user:users/{ann_id}"))),
+                &format!(
+                    "/api/v1/billing/payments?subject={}",
+                    enc(&format!("user:users/{ann_id}"))
+                ),
                 None,
             )
             .expect(200);
         let n = p["items"].as_array().or_else(|| p.as_array()).map(Vec::len);
         assert_eq!(n, Some(1), "one payment: {p}");
-        let s = fb.admin("GET", &format!("/api/v1/billing/subscriptions/{sub}"), None).expect(200);
+        let s = fb
+            .admin("GET", &format!("/api/v1/billing/subscriptions/{sub}"), None)
+            .expect(200);
         assert_eq!(s["status"], "active", "{s}");
     };
     check(&fb);
@@ -1805,7 +1971,10 @@ fn scenario_20_process_a_billing_webhook_idempotently() {
     let ev = fb.admin("GET", "/api/v1/billing/webhook-events", None).expect(200);
     let items = ev["items"].as_array().or_else(|| ev.as_array()).unwrap().clone();
     assert_eq!(items.len(), 1, "{ev}");
-    assert_eq!((items[0]["attempts"].as_i64(), items[0]["status"].as_str()), (Some(3), Some("processed")));
+    assert_eq!(
+        (items[0]["attempts"].as_i64(), items[0]["status"].as_str()),
+        (Some(3), Some("processed"))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1819,10 +1988,15 @@ fn scenario_21_restart_the_server_and_verify_persistence() {
     let mut fb = Fb::start();
     fb.collection(json!({"name": "notes", "fields": [{"name": "text", "type": "text"}]}));
     let rec = fb
-        .admin("POST", "/api/v1/collections/notes/records", Some(json!({"text": "keep me"})))
+        .admin(
+            "POST",
+            "/api/v1/collections/notes/records",
+            Some(json!({"text": "keep me"})),
+        )
         .expect(201);
     let (user, _) = fb.user("kept@example.com");
-    fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"}))).expect(201);
+    fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"})))
+        .expect(201);
     let admin = fb.admin.clone();
     fb.send(
         "PUT",
@@ -1834,17 +2008,35 @@ fn scenario_21_restart_the_server_and_verify_persistence() {
     .expect(201);
     vector_kb(&fb, 20);
     graph_seed(&fb);
-    let r = fb.admin("PUT", "/api/v1/kv/app/strings/greeting", Some(json!({"value": "hello"})));
+    let r = fb.admin(
+        "PUT",
+        "/api/v1/kv/app/strings/greeting",
+        Some(json!({"value": "hello"})),
+    );
     assert!(r.status / 100 == 2, "{} {}", r.status, r.text());
     deploy_hello(&fb);
 
     fb.restart();
     let r = fb
-        .admin("GET", &format!("/api/v1/collections/notes/records/{}", rec["id"].as_str().unwrap()), None)
+        .admin(
+            "GET",
+            &format!("/api/v1/collections/notes/records/{}", rec["id"].as_str().unwrap()),
+            None,
+        )
         .expect(200);
     assert_eq!(r["text"], "keep me");
-    assert_eq!(fb.call("GET", "/api/auth/me", Some(&user), None).status, 200, "the session persisted");
-    let o = fb.send("GET", "/api/v1/storage/buckets/b/objects/k.txt", Some(&fb.admin.clone()), &[], b"");
+    assert_eq!(
+        fb.call("GET", "/api/auth/me", Some(&user), None).status,
+        200,
+        "the session persisted"
+    );
+    let o = fb.send(
+        "GET",
+        "/api/v1/storage/buckets/b/objects/k.txt",
+        Some(&fb.admin.clone()),
+        &[],
+        b"",
+    );
     assert_eq!((o.status, o.text().as_str()), (200, "object bytes"));
     assert_eq!(top_ids(&fb, [3.1, 0.0, 0.0], 1), ["p3"]);
     assert_eq!(fb.admin("GET", "/api/v1/graph/edges/f3", None).status, 200);
@@ -1863,7 +2055,8 @@ fn scenario_22_back_up_and_restore_the_database() {
     let rows: Vec<Json> = (0..25).map(|i| json!({"text": format!("note {i}")})).collect();
     fb.admin("POST", "/api/v1/collections/notes/records", Some(json!(rows)))
         .expect(201);
-    fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"}))).expect(201);
+    fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"})))
+        .expect(201);
     let admin = fb.admin.clone();
     fb.send(
         "PUT",
@@ -1878,8 +2071,12 @@ fn scenario_22_back_up_and_restore_the_database() {
     assert!(out.contains("backup written"), "{out}");
     assert!(fb.cli_ok(&["backup", "verify", "latest"]).contains("backup is valid"));
     // Written after the backup: gone after the restore.
-    fb.admin("POST", "/api/v1/collections/notes/records", Some(json!({"text": "after"})))
-        .expect(201);
+    fb.admin(
+        "POST",
+        "/api/v1/collections/notes/records",
+        Some(json!({"text": "after"})),
+    )
+    .expect(201);
     let r = fb.cli(&["restore", "latest", "--force"], None);
     assert!(!r.status.success(), "a restore under a running server is refused");
     fb.stop();
@@ -1894,7 +2091,11 @@ fn scenario_22_back_up_and_restore_the_database() {
     let out = fb.cli_ok(&["restore", "latest", "--force"]);
     assert!(!out.is_empty());
     let doctor = fb.cli(&["doctor", "--json"], None);
-    assert!(doctor.status.success(), "doctor after restore: {}", text(&doctor.stdout));
+    assert!(
+        doctor.status.success(),
+        "doctor after restore: {}",
+        text(&doctor.stdout)
+    );
 
     fb.serve();
     fb.admin = fb.admin_login();
@@ -1902,7 +2103,13 @@ fn scenario_22_back_up_and_restore_the_database() {
         .admin("GET", "/api/v1/collections/notes/records?per_page=100", None)
         .expect(200);
     assert_eq!(list["total_items"], 25, "the post-backup write is not there: {list}");
-    let o = fb.send("GET", "/api/v1/storage/buckets/b/objects/k.txt", Some(&fb.admin.clone()), &[], b"");
+    let o = fb.send(
+        "GET",
+        "/api/v1/storage/buckets/b/objects/k.txt",
+        Some(&fb.admin.clone()),
+        &[],
+        b"",
+    );
     assert_eq!((o.status, o.text().as_str()), (200, "object bytes"));
     let vec_ready = wait_for("the vector index", Duration::from_secs(30), || {
         let s = fb.admin("GET", "/api/v1/vector/collections/kb/stats", None).json();
@@ -1931,7 +2138,11 @@ fn scenario_23_rebuild_derived_indexes() {
 
     // Online rebuild.
     let r = fb
-        .admin("POST", "/api/v1/vector/collections/kb/rebuild", Some(json!({"field": "emb"})))
+        .admin(
+            "POST",
+            "/api/v1/vector/collections/kb/rebuild",
+            Some(json!({"field": "emb"})),
+        )
         .expect(202);
     assert_eq!(r["indexes"][0]["field"], "emb", "{r}");
     wait_for("the manual rebuild", Duration::from_secs(60), || {
@@ -2020,7 +2231,13 @@ fn scenario_24_concurrent_read_and_write_workloads() {
                 let mut reads = 0u32;
                 let mut last = 0i64;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let r = call(&addr, &token, "GET", "/api/v1/collections/events/records?per_page=1", None);
+                    let r = call(
+                        &addr,
+                        &token,
+                        "GET",
+                        "/api/v1/collections/events/records?per_page=1",
+                        None,
+                    );
                     assert_eq!(r.status, 200, "{}", r.text());
                     let n = r.json()["total_items"].as_i64().unwrap();
                     assert!(n >= last, "a reader saw the count go back: {last} -> {n}");
@@ -2046,7 +2263,10 @@ fn scenario_24_concurrent_read_and_write_workloads() {
         let r = fb
             .admin(
                 "GET",
-                &format!("/api/v1/collections/events/records?per_page=1&filter={}", enc(&format!("writer = {w}"))),
+                &format!(
+                    "/api/v1/collections/events/records?per_page=1&filter={}",
+                    enc(&format!("writer = {w}"))
+                ),
                 None,
             )
             .expect(200);
@@ -2110,7 +2330,11 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
         "owner = 'x') UNION SELECT * FROM _forgebase_admins --",
         "owner ~ '%' && value = (SELECT value FROM secrets)",
     ] {
-        let r = fb.admin("GET", &format!("/api/v1/collections/secrets/records?filter={}", enc(f)), None);
+        let r = fb.admin(
+            "GET",
+            &format!("/api/v1/collections/secrets/records?filter={}", enc(f)),
+            None,
+        );
         assert!(
             r.status == 400 || (r.status == 200 && r.json()["items"].as_array().is_some_and(Vec::is_empty)),
             "filter {f:?}: {} {}",
@@ -2120,16 +2344,31 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
     }
     let r = fb.admin(
         "GET",
-        &format!("/api/v1/collections/secrets/records?sort={}", enc("owner; DROP TABLE secrets")),
+        &format!(
+            "/api/v1/collections/secrets/records?sort={}",
+            enc("owner; DROP TABLE secrets")
+        ),
         None,
     );
     assert_eq!(r.status, 400, "{}", r.text());
     // The SQL editor runs one statement and keeps system tables read-only.
-    let r = fb.admin("POST", "/api/v1/sql", Some(json!({"sql": "SELECT 1; DROP TABLE secrets"})));
+    let r = fb.admin(
+        "POST",
+        "/api/v1/sql",
+        Some(json!({"sql": "SELECT 1; DROP TABLE secrets"})),
+    );
     assert_eq!((r.status, r.code().as_str()), (400, "multiple_statements"));
-    let r = fb.admin("POST", "/api/v1/sql", Some(json!({"sql": "DELETE FROM _forgebase_collections"})));
+    let r = fb.admin(
+        "POST",
+        "/api/v1/sql",
+        Some(json!({"sql": "DELETE FROM _forgebase_collections"})),
+    );
     assert_eq!(r.status, 403, "{}", r.text());
-    let r = fb.admin("POST", "/api/v1/sql", Some(json!({"sql": "ATTACH DATABASE '/tmp/x.db' AS x"})));
+    let r = fb.admin(
+        "POST",
+        "/api/v1/sql",
+        Some(json!({"sql": "ATTACH DATABASE '/tmp/x.db' AS x"})),
+    );
     assert_eq!(r.status, 400, "{}", r.text());
 
     // Users get nothing from a collection without rules (fail closed).
@@ -2143,7 +2382,11 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
         Some(&user),
         Some(json!({"roles": ["admin"], "verified": true})),
     );
-    assert!(r.status >= 400, "privilege escalation through a profile update: {}", r.text());
+    assert!(
+        r.status >= 400,
+        "privilege escalation through a profile update: {}",
+        r.text()
+    );
     let me = fb.call("GET", "/api/auth/me", Some(&user), None).expect(200);
     assert_ne!(me["subject"]["type"], "admin");
     assert_eq!(fb.call("GET", "/api/auth/audit", Some(&user), None).status, 403);
@@ -2152,7 +2395,8 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
     // database (docs/security.md), so a `..` key is either refused or stored
     // as a plain name, and no file appears outside the content-addressed
     // blob store. The database file is untouched.
-    fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"}))).expect(201);
+    fb.admin("POST", "/api/v1/storage/buckets", Some(json!({"name": "b"})))
+        .expect(201);
     let admin = fb.admin.clone();
     let db_len = common::file_len(&fb.data_dir().join("forgebase.db"));
     for (key, name) in [
@@ -2172,7 +2416,13 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
             400 | 404 => {}
             201 => {
                 assert_eq!(r.json()["key"], name, "stored under its literal name: {}", r.text());
-                let back = fb.send("GET", &format!("/api/v1/storage/buckets/b/objects/{key}"), Some(&admin), &[], b"");
+                let back = fb.send(
+                    "GET",
+                    &format!("/api/v1/storage/buckets/b/objects/{key}"),
+                    Some(&admin),
+                    &[],
+                    b"",
+                );
                 assert_eq!((back.status, back.body.as_slice()), (200, &b"x"[..]));
             }
             s => panic!("key {key}: {s} {}", r.text()),
@@ -2182,7 +2432,11 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
         assert!(!dir.join("escape.txt").exists(), "{}", dir.display());
     }
     assert!(common::file_len(&fb.data_dir().join("forgebase.db")) >= db_len);
-    let ok = fb.admin("POST", "/api/v1/sql", Some(json!({"sql": "SELECT count(*) FROM _forgebase_collections"})));
+    let ok = fb.admin(
+        "POST",
+        "/api/v1/sql",
+        Some(json!({"sql": "SELECT count(*) FROM _forgebase_collections"})),
+    );
     assert_eq!(ok.status, 200, "the database still opens: {}", ok.text());
     // Declared image types must carry image bytes.
     let r = fb.send(
@@ -2219,7 +2473,12 @@ fn scenario_25_malicious_inputs_and_permission_bypass_attempts() {
         &[("Content-Type", "application/json".to_owned())],
         big.as_bytes(),
     );
-    assert!(r.status == 413 || r.status == 0, "a 40 MiB JSON body: {} {}", r.status, r.text());
+    assert!(
+        r.status == 413 || r.status == 0,
+        "a 40 MiB JSON body: {} {}",
+        r.status,
+        r.text()
+    );
     // Request ids from the client are sanitised.
     let r = fb.send(
         "GET",

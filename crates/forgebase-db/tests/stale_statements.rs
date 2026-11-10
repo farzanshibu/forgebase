@@ -72,7 +72,10 @@ async fn readers_see_an_index_created_in_a_normal_transaction() {
     tx.commit().await.unwrap();
 
     // The only reader loads the schema (no index yet).
-    let query = Statement::new("SELECT * FROM items WHERE category = ?1 AND price > ?2", vec!["c3".into(), 1i64.into()]);
+    let query = Statement::new(
+        "SELECT * FROM items WHERE category = ?1 AND price > ?2",
+        vec!["c3".into(), 1i64.into()],
+    );
     let plan = db.explain(&query).await.unwrap();
     assert!(plan.iter().any(|s| s.detail.starts_with("SCAN")), "{plan:?}");
 
@@ -97,11 +100,18 @@ async fn readers_see_an_index_created_in_a_normal_transaction() {
 
     // Plain writes do not force a refresh, and DROP INDEX does.
     let mut tx = db.begin(TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw("INSERT INTO items VALUES ('c3', 2)")).await.unwrap();
+    tx.execute(&Statement::raw("INSERT INTO items VALUES ('c3', 2)"))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     let mut tx = db.begin(TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw("drop index idx_items_cat_price")).await.unwrap();
+    tx.execute(&Statement::raw("drop index idx_items_cat_price"))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     let plan = db.explain(&query).await.unwrap();
-    assert!(!plan.iter().any(|s| s.detail.contains("idx_items_cat_price")), "{plan:?}");
+    assert!(
+        !plan.iter().any(|s| s.detail.contains("idx_items_cat_price")),
+        "{plan:?}"
+    );
 }
