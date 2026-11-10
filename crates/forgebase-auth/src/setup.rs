@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::header::{CACHE_CONTROL, SET_COOKIE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -34,7 +35,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::crypto;
-use crate::http::{Body, Client, HttpError, Res, ok};
+use crate::http::{Client, HttpError, Res, ok};
 use crate::service::{ADMIN_PASSWORD_MIN, ClientInfo, LoginOptions, LoginOutcome, normalize_email};
 use crate::store::{first, read};
 use crate::{AuthError, AuthMethod, AuthService, Subject};
@@ -201,9 +202,13 @@ impl AuthService {
 /// `POST /api/setup/admin` body.
 #[derive(Deserialize)]
 struct SetupReq {
+    // Missing fields fall through to the token and credential checks, so
+    // they answer with the contract's codes.
     #[serde(default)]
     token: String,
+    #[serde(default)]
     email: String,
+    #[serde(default)]
     password: String,
     /// Cookie session by default: setup is a browser flow. `false` returns
     /// bearer tokens in the body instead.
@@ -234,8 +239,13 @@ async fn status(State(a): State<AuthService>, Client(_, rid): Client) -> Res {
 async fn create_first_admin(
     State(a): State<AuthService>,
     Client(ci, rid): Client,
-    Body(b): Body<SetupReq>,
+    body: Result<axum::Json<SetupReq>, JsonRejection>,
 ) -> Response {
+    // A body that is not the request object: `400 validation_failed`.
+    let b = match body {
+        Ok(axum::Json(b)) => b,
+        Err(e) => return setup_error(SetupError::Auth(AuthError::InvalidInput(e.body_text())), &rid),
+    };
     let opts = LoginOptions {
         cookie: b.cookie,
         device_name: b.device_name.or_else(|| Some("Admin dashboard".into())),

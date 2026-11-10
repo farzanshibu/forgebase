@@ -85,9 +85,14 @@ impl Serve {
             lines,
             stdout: Vec::new(),
         };
-        let line = s.line_containing("listening on http://", startup_timeout()).expect("no listening line");
+        let line = s
+            .line_containing("listening on http://", startup_timeout())
+            .expect("no listening line");
         s.addr = line[line.find("http://").unwrap() + 7..].trim().to_owned();
-        assert!(wait_healthy(&s.addr, startup_timeout()), "server did not become healthy");
+        assert!(
+            wait_healthy(&s.addr, startup_timeout()),
+            "server did not become healthy"
+        );
         s
     }
 
@@ -198,12 +203,19 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
     assert!(out.status.success(), "{}", text(&out.stderr));
     let init = text(&out.stdout);
     assert!(init.contains("admin:     not created (--no-admin)"), "{init}");
-    assert!(init.contains("the first `forgebase serve` prints a one-time setup link"), "{init}");
+    assert!(
+        init.contains("the first `forgebase serve` prints a one-time setup link"),
+        "{init}"
+    );
     let project = root.join("app");
 
     // `forgebase status`: setup pending.
     let out = run(&project, &["status"]);
-    assert!(text(&out.stdout).contains("  setup:     pending (no administrator)"), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stdout).contains("  setup:     pending (no administrator)"),
+        "{}",
+        text(&out.stdout)
+    );
     let out = run(&project, &["status", "--json"]);
     let j: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(j["setup_required"], true, "{j}");
@@ -214,7 +226,12 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
     let token = server.setup_token(startup_timeout()).expect("no setup link on stdout");
     // >= 128 bits, URL-safe.
     assert!(token.len() >= 22, "{token}");
-    assert!(token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{token}");
+    assert!(
+        token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "{token}"
+    );
 
     // Status: setup required, no authentication needed.
     let (s, _, j) = call(&addr, "GET", "/api/setup/status", &[], None);
@@ -224,9 +241,24 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
     let (s, _, _) = call(&addr, "GET", &format!("/admin/setup?token={token}"), &[], None);
     assert_ne!(s, 0);
 
+    // Not a request object: 400 validation_failed (not counted as an attempt).
+    let (s, _, j) = setup(&addr, json!("not an object"));
+    assert_eq!(
+        (s, j["error"]["code"].as_str()),
+        (400, Some("validation_failed")),
+        "{j}"
+    );
+
     // Token required.
-    let (s, h, j) = setup(&addr, json!({"email": "root@example.com", "password": "root password 1"}));
-    assert_eq!((s, j["error"]["code"].as_str()), (403, Some("invalid_setup_token")), "{j}");
+    let (s, h, j) = setup(
+        &addr,
+        json!({"email": "root@example.com", "password": "root password 1"}),
+    );
+    assert_eq!(
+        (s, j["error"]["code"].as_str()),
+        (403, Some("invalid_setup_token")),
+        "{j}"
+    );
     assert!(j["error"]["request_id"].as_str().is_some_and(|r| !r.is_empty()), "{j}");
     assert!(h.to_lowercase().contains("cache-control: no-store"), "{h}");
     // Wrong token, including one that shares all but the last character
@@ -240,19 +272,31 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
             &addr,
             json!({"token": wrong, "email": "root@example.com", "password": "root password 1"}),
         );
-        assert_eq!((s, j["error"]["code"].as_str()), (403, Some("invalid_setup_token")), "{j}");
+        assert_eq!(
+            (s, j["error"]["code"].as_str()),
+            (403, Some("invalid_setup_token")),
+            "{j}"
+        );
     }
     // Right token, weak password: 400, and the token stays valid.
     let (s, _, j) = setup(
         &addr,
         json!({"token": token, "email": "root@example.com", "password": "short"}),
     );
-    assert_eq!((s, j["error"]["code"].as_str()), (400, Some("validation_failed")), "{j}");
+    assert_eq!(
+        (s, j["error"]["code"].as_str()),
+        (400, Some("validation_failed")),
+        "{j}"
+    );
     let (s, _, j) = setup(
         &addr,
         json!({"token": token, "email": "not-an-email", "password": "root password 1"}),
     );
-    assert_eq!((s, j["error"]["code"].as_str()), (400, Some("validation_failed")), "{j}");
+    assert_eq!(
+        (s, j["error"]["code"].as_str()),
+        (400, Some("validation_failed")),
+        "{j}"
+    );
 
     // Right token, twice at once: exactly one administrator is created (201,
     // signed in with a session cookie like the admin login); the other 409.
@@ -261,7 +305,10 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
         .map(|email| {
             let (addr, token) = (addr.clone(), token.clone());
             std::thread::spawn(move || {
-                setup(&addr, json!({"token": token, "email": email, "password": "root password 1"}))
+                setup(
+                    &addr,
+                    json!({"token": token, "email": email, "password": "root password 1"}),
+                )
             })
         })
         .collect();
@@ -312,7 +359,11 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
     assert!(doc["paths"]["/api/setup/admin"]["post"]["responses"]["409"].is_object());
 
     let out = run(&project, &["status"]);
-    assert!(text(&out.stdout).contains("  setup:     complete"), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stdout).contains("  setup:     complete"),
+        "{}",
+        text(&out.stdout)
+    );
     server.stop();
 
     // The token went to standard output only, never to the log.
@@ -323,7 +374,11 @@ fn serve_prints_a_setup_link_and_the_api_creates_the_first_admin_once() {
     // With an administrator, serve prints no setup link.
     let mut again = Serve::start(&project, &root.join("serve2.log"));
     assert!(again.line_containing("  data dir:", startup_timeout()).is_some());
-    assert!(again.setup_token(Duration::from_secs(2)).is_none(), "{:?}", again.stdout);
+    assert!(
+        again.setup_token(Duration::from_secs(2)).is_none(),
+        "{:?}",
+        again.stdout
+    );
     again.stop();
 }
 
@@ -334,7 +389,11 @@ fn a_restart_issues_a_new_token_and_attempts_are_rate_limited() {
     // No terminal: init cannot prompt and says so.
     let out = run(&root, &["init", "app"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert!(text(&out.stdout).contains("admin:     not created (no terminal to prompt on)"), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stdout).contains("admin:     not created (no terminal to prompt on)"),
+        "{}",
+        text(&out.stdout)
+    );
     let project = root.join("app");
 
     let mut first = Serve::start(&project, &root.join("a.log"));
@@ -348,7 +407,11 @@ fn a_restart_issues_a_new_token_and_attempts_are_rate_limited() {
     // The old token is dead; every attempt counts against the address.
     let body = |t: &str| json!({"token": t, "email": "root@example.com", "password": "root password 1"});
     let (s, _, j) = setup(&addr, body(&old));
-    assert_eq!((s, j["error"]["code"].as_str()), (403, Some("invalid_setup_token")), "{j}");
+    assert_eq!(
+        (s, j["error"]["code"].as_str()),
+        (403, Some("invalid_setup_token")),
+        "{j}"
+    );
     for _ in 1..10 {
         let (s, _, _) = setup(&addr, body("guess"));
         assert_eq!(s, 403);
@@ -373,20 +436,39 @@ fn init_creates_the_admin_non_interactively() {
     assert!(!out.status.success(), "--admin-email needs --admin-password-stdin");
     let out = run(
         &root,
-        &["init", "app", "--admin-email", "root@example.com", "--admin-password-stdin", "--no-admin"],
+        &[
+            "init",
+            "app",
+            "--admin-email",
+            "root@example.com",
+            "--admin-password-stdin",
+            "--no-admin",
+        ],
     );
     assert!(!out.status.success(), "--no-admin conflicts with --admin-email");
     // A weak password is refused before the project is created.
     let out = run_stdin(
         &root,
-        &["init", "app", "--admin-email", "root@example.com", "--admin-password-stdin"],
+        &[
+            "init",
+            "app",
+            "--admin-email",
+            "root@example.com",
+            "--admin-password-stdin",
+        ],
         "short\n",
     );
     assert!(!out.status.success());
     assert!(text(&out.stderr).contains("at least 10"), "{}", text(&out.stderr));
     assert!(!root.join("app").exists(), "nothing written on a refused password");
 
-    let args = ["init", "app", "--admin-email", "Root@Example.com", "--admin-password-stdin"];
+    let args = [
+        "init",
+        "app",
+        "--admin-email",
+        "Root@Example.com",
+        "--admin-password-stdin",
+    ];
     let out = run_stdin(&root, &args, "root password 1\n");
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(
@@ -400,12 +482,20 @@ fn init_creates_the_admin_non_interactively() {
     assert_eq!(j["admins"][0]["email"], "root@example.com", "{j}");
     assert_eq!(j["admins"].as_array().unwrap().len(), 1);
     let out = run(&project, &["status"]);
-    assert!(text(&out.stdout).contains("  setup:     complete"), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stdout).contains("  setup:     complete"),
+        "{}",
+        text(&out.stdout)
+    );
 
     // Re-running init keeps the administrator and creates no second one.
     let out = run_stdin(&root, &args, "root password 1\n");
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert!(text(&out.stdout).contains("  admin:     already set up (kept)"), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stdout).contains("  admin:     already set up (kept)"),
+        "{}",
+        text(&out.stdout)
+    );
     let out = run(&project, &["admin", "list", "--json"]);
     let j: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(j["admins"].as_array().unwrap().len(), 1);
@@ -413,7 +503,11 @@ fn init_creates_the_admin_non_interactively() {
     // The administrator signs in on the first serve, which prints no setup link.
     let mut server = Serve::start(&project, &root.join("serve.log"));
     assert!(server.line_containing("  data dir:", startup_timeout()).is_some());
-    assert!(server.setup_token(Duration::from_secs(2)).is_none(), "{:?}", server.stdout);
+    assert!(
+        server.setup_token(Duration::from_secs(2)).is_none(),
+        "{:?}",
+        server.stdout
+    );
     let (s, _, j) = call(
         &server.addr,
         "POST",
