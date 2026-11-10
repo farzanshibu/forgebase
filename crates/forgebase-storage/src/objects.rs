@@ -285,8 +285,10 @@ impl StorageService {
         let declared = declared.map(str::trim).filter(|t| !t.is_empty());
         match declared {
             Some(t) if t != "application/octet-stream" => t.to_owned(),
+            // An extension guess the bytes contradict (`x.png` holding text)
+            // is not used (FB-80), so it cannot pass an `image/*` allow-list.
             _ => sniff(head)
-                .or_else(|| from_extension(key))
+                .or_else(|| from_extension(key).filter(|t| crate::util::declared_matches_bytes(t, head)))
                 .unwrap_or("application/octet-stream")
                 .to_owned(),
         }
@@ -329,6 +331,13 @@ impl StorageService {
             return Err(StorageError::invalid(
                 "content_type_not_allowed",
                 format!("bucket {} does not accept {content_type}", bucket.name),
+            ));
+        }
+        if !crate::util::declared_matches_bytes(&content_type, &staged.head) {
+            let _ = self.inner.driver.delete(&staged.key).await;
+            return Err(StorageError::invalid(
+                "content_type_mismatch",
+                format!("the content does not match its declared type {content_type}"),
             ));
         }
         let meta = CommitMeta {

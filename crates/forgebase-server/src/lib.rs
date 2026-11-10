@@ -175,6 +175,7 @@ pub async fn start_with_jobs(
     kv.start_background();
     let opts = RouterOptions {
         request_timeout: Duration::from_secs(config.server.request_timeout_secs),
+        ops_access: config.server.ops_access,
         ..RouterOptions::default()
     };
     // One data service, built by the auth service with the Argon2id hasher
@@ -337,8 +338,8 @@ pub async fn start_with_jobs(
         }
     };
     let addr = listener.local_addr().map_err(ServerError::Serve)?;
-    if !addr.ip().is_loopback() {
-        tracing::warn!(%addr, "listening on a non-loopback address; /api/system/* and /metrics are not behind admin authentication yet (FB-23)");
+    if !addr.ip().is_loopback() && config.server.ops_access == forgebase_core::OpsAccess::Public {
+        tracing::warn!(%addr, "listening on a non-loopback address with ops_access = \"public\": anyone who reaches it can read /metrics and /api/system/*");
     }
     let resp = if config.resp.enabled {
         let r = &config.resp;
@@ -591,6 +592,9 @@ async fn open_auth(
 ) -> Result<(forgebase_auth::AuthService, forgebase_policy::PolicyService), ServerError> {
     let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
     cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
+    // FB-80: `[auth]` deployment settings.
+    cfg.trust_forwarded_for = config.auth.trust_forwarded_for;
+    cfg.allow_private_outbound = config.auth.allow_private_outbound;
     let public_url = cfg.public_url.clone();
     let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
     let policy = forgebase_policy::PolicyService::open(backend.clone())

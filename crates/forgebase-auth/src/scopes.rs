@@ -14,11 +14,12 @@
 //! | Request path | Area | Resource |
 //! |---|---|---|
 //! | `/api/auth/...` | `auth` | — |
-//! | `/api/system/...` | `system` | — |
+//! | `/api/system/...`, `/metrics` | `system` | — |
 //! | `/api/v1/<seg>/<name>/...` | `<seg>` (e.g. `collections`, `sql`) | `<name>` |
 //!
 //! `GET`/`HEAD`/`OPTIONS` need `read`, every other method `write`. Paths
-//! outside `/api/` (health, metrics, dashboard assets) need no scope.
+//! outside `/api/` (health, dashboard assets) need no scope, except
+//! `/metrics`, which is operational data like `/api/system/*` (FB-80).
 
 use std::fmt;
 
@@ -71,6 +72,13 @@ pub fn required_scope(method: &Method, path: &str) -> Option<RequiredScope> {
     } else {
         Access::Write
     };
+    if path == "/metrics" {
+        return Some(RequiredScope {
+            area: "system".to_owned(),
+            access,
+            resource: None,
+        });
+    }
     let rest = path.strip_prefix("/api/")?;
     let mut segs = rest.split('/').filter(|s| !s.is_empty());
     let first = segs.next()?;
@@ -217,6 +225,13 @@ mod tests {
         assert_eq!(req(Method::DELETE, "/api/auth/sessions/x").to_string(), "auth:write");
         assert_eq!(req(Method::GET, "/api/system/info").to_string(), "system:read");
         assert!(required_scope(&Method::GET, "/health").is_none());
+        assert_eq!(
+            required_scope(&Method::GET, "/metrics")
+                .map(|r| r.to_string())
+                .as_deref(),
+            Some("system:read"),
+            "metrics need the system scope (FB-80)"
+        );
         assert!(required_scope(&Method::GET, "/admin/").is_none());
     }
 

@@ -173,6 +173,9 @@ stops startup with an error.
 | `FORGEBASE_HOST`, `FORGEBASE_PORT` | HTTP bind address and port. |
 | `FORGEBASE_REQUEST_TIMEOUT_SECS` | Per-request timeout. |
 | `FORGEBASE_SHUTDOWN_TIMEOUT_SECS` | Grace period for in-flight requests on shutdown. |
+| `FORGEBASE_OPS_ACCESS` | Who may read `/metrics` and `/api/system/*`: `loopback`, `admin` or `public` (§7). |
+| `FORGEBASE_AUTH_TRUST_FORWARDED_FOR` | Take the client address from `X-Forwarded-For` (behind your own proxy only). |
+| `FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND` | Let OAuth/OIDC, SMS and Turnstile requests reach private addresses. |
 | `FORGEBASE_DB_SYNCHRONOUS` | `full` or `normal`. |
 | `FORGEBASE_DB_BUSY_TIMEOUT_MS` | Lock wait for other processes. |
 | `FORGEBASE_DB_READ_POOL_SIZE` | Read connections. |
@@ -236,18 +239,31 @@ Keep `server.host` at `127.0.0.1`. Then only the proxy on the same host can
 reach it. If the proxy is on another host, set `FORGEBASE_HOST` to that
 interface and restrict it with a firewall.
 
-The client IP ForgeBase uses for rate limits is the socket address. It does not
-read `X-Forwarded-For` until an `[auth]` section can set `trust_forwarded_for`
-(see [security.md §6](security.md#6-open-items)). Behind a proxy, all clients
-currently share the proxy's rate-limit bucket.
+The client IP ForgeBase uses for rate limits is the socket address. Behind a
+proxy that is the proxy's address, so all clients share one rate-limit bucket.
+Set `[auth] trust_forwarded_for = true` when, and only when, every request
+reaches ForgeBase through a proxy you run that **appends** the real client
+address to `X-Forwarded-For` (nginx `proxy_add_x_forwarded_for`, Caddy and
+Traefik by default). ForgeBase then uses the **last** entry, the one your proxy
+wrote; entries a client sent itself are ignored.
+
+`/metrics` and `/api/system/*` follow `server.ops_access` (default
+`loopback`): an administrator's credentials work from anywhere; without
+credentials only a client on the same host that connects directly (no
+`Forwarded`, `X-Forwarded-For` or `X-Real-IP` header) is admitted, such as a
+Prometheus scraping `127.0.0.1:8090`. A proxy that does not add any forwarding
+header would make every remote client look local: configure it to send
+`X-Forwarded-For`, or set `ops_access = "admin"`. A scraper elsewhere uses an
+admin service-account API key with the `system:read` scope as a bearer token.
 
 ### 5.1 Metrics (`/metrics`)
 
 `GET /metrics` serves Prometheus text format 0.0.4 (`Cache-Control: no-store`).
-The route is always on and needs no token: it is **not** behind authentication
-or the admin check (open item in [security.md §6](security.md#6-open-items)).
-Treat it as an internal endpoint: keep `server.host` on loopback, or block
-`/metrics` at the reverse proxy and scrape it on the private interface. Every
+Access follows `server.ops_access` (§5, [security.md §5](security.md#5-admin-and-operational-access)):
+by default administrators from anywhere, and a scraper on the same host that
+connects directly to `127.0.0.1` without a forwarding header. A scraper
+elsewhere sends an admin service-account API key with the `system:read`
+scope as `Authorization: Bearer …` (Prometheus `authorization.credentials`). Every
 label comes from a fixed list (method, route template, status, state); there
 is no per-user or per-record label.
 
@@ -325,6 +341,7 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `server.port` | `8090` | `0` picks a free port. |
 | `server.request_timeout_secs` | `30` | `1`–`3600` |
 | `server.shutdown_timeout_secs` | `30` | `1`–`3600` |
+| `server.ops_access` | `"loopback"` | `loopback` (administrators, plus direct same-host callers without forwarding headers), `admin`, `public`. Applies to `/metrics` and `/api/system/*`; `/health` and `/health/ready` stay open. |
 | `database.synchronous` | `"full"` | `full`, `normal` |
 | `database.busy_timeout_ms` | `5000` | up to `600000` |
 | `database.read_pool_size` | `8` | `1`–`64` |
@@ -342,6 +359,8 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `storage.reconcile_grace_secs` | `3600` | |
 | `storage.s3_endpoint`, `s3_region`, `s3_bucket`, `s3_prefix`, `s3_part_size` | unset / `""` / `8388608` | S3 only. Credentials come from the environment (§3.3). |
 | `billing.enabled` | `false` | Mounts `/api/v1/billing/*` and the provider webhooks. |
+| `auth.trust_forwarded_for` | `false` | Client address from the last `X-Forwarded-For` entry. Only behind your own proxy (§5). |
+| `auth.allow_private_outbound` | `false` | The auth service's outbound HTTPS (OAuth/OIDC providers, SMS gateways, Turnstile) refuses loopback, private, link-local and metadata addresses unless this is `true` (an identity provider on your own network). LDAP and S3 endpoints are not affected. |
 
 Example `[billing]` section, which the example file does not yet include:
 

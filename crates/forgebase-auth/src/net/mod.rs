@@ -1,6 +1,8 @@
 //! Outbound networking shared by social login, Turnstile, SMS gateways and
 //! LDAP (FB-25, ADR-0015 §2).
 //!
+//! * [`guard`]: the address ranges no outbound request may reach unless the
+//!   operator allows it (loopback, private, link-local, metadata, ...).
 //! * [`http1`]: a small HTTP/1.1 client exchange over any byte stream, with a
 //!   header and body size cap and proper message framing (`Content-Length`,
 //!   chunked, or read to close), so a server that ignores `Connection: close`
@@ -10,10 +12,12 @@
 //!   [`HttpsClient`], the default [`HttpClient`](crate::social::HttpClient)
 //!   of the auth service.
 
+pub mod guard;
 pub mod http1;
 #[cfg(feature = "https")]
 pub mod tls;
 
+pub use guard::blocked_reason;
 #[cfg(feature = "https")]
 pub use tls::{HttpsClient, TlsSettings};
 

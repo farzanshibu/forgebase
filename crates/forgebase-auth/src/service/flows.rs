@@ -5,13 +5,17 @@
 //! failure is `invalid_credentials`. Unknown accounts still pay for an
 //! Argon2id verification so timing does not reveal them either.
 
+use std::time::Duration;
+
 use forgebase_data::db::Value;
 use forgebase_data::schema::{Collection, CollectionType};
 use forgebase_data::{AccessContext, DataError, UpdateOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json, json};
 
-use super::{AuthService, ClientInfo, SessionTokens, audit_in, is_unique_violation, subject_cols};
+use super::{
+    ADMIN_DEVICE_FAILURES, AuthService, ClientInfo, SessionTokens, audit_in, is_unique_violation, subject_cols,
+};
 use crate::crypto;
 use crate::mailer::{Mail, MailKind};
 use crate::password::check_password_policy;
@@ -281,6 +285,8 @@ impl AuthService {
             .await?;
             return Err(AuthError::InvalidCredentials);
         };
+        // The password was right: give the attempt back (failures only).
+        self.refund_attempt(ci);
         let subject = Subject::User {
             collection: coll.name.clone(),
             id: user.id.clone(),
@@ -369,10 +375,60 @@ impl AuthService {
         password: &str,
         opts: &LoginOptions,
     ) -> Result<LoginOutcome, AuthError> {
-        self.limit_attempt(ci)?;
+        self.login_admin_from(ci, email, password, opts, None)
+            .await
+            .map(|(out, _)| out)
+    }
+
+    /// Administrator sign-in with an optional known-device token (FB-80).
+    ///
+    /// * Admin sign-ins have their **own** per-IP budget (`admin_attempt`),
+    ///   so end-user traffic from a shared address (NAT, proxy) cannot use
+    ///   it up, and a successful sign-in gives its attempt back: the budget
+    ///   counts failures.
+    /// * A valid known-device token for this email (set as an `HttpOnly`
+    ///   cookie by an earlier successful sign-in from the same browser)
+    ///   skips the per-IP budget and the account lockout, so an attacker
+    ///   flooding from the administrator's address, or failing on purpose
+    ///   with the administrator's email, cannot lock them out. Such a token
+    ///   has its own budget of [`ADMIN_DEVICE_FAILURES`] failures per
+    ///   lockout window, and its failures still count towards the lockout.
+    ///
+    /// Returns the outcome and a fresh known-device token once the password
+    /// was right.
+    pub async fn login_admin_from(
+        &self,
+        ci: &ClientInfo,
+        email: &str,
+        password: &str,
+        opts: &LoginOptions,
+        device: Option<&str>,
+    ) -> Result<(LoginOutcome, String), AuthError> {
         let email_n = email.trim().to_lowercase();
+        let ip = ci.ip.as_deref().unwrap_or("unknown").to_owned();
+        let window = self.config().lockout_window;
+        let device = device.filter(|d| self.admin_device_valid(&email_n, d));
+        match device {
+            Some(d) => {
+                if let Some(retry_after) = self
+                    .inner
+                    .limiter
+                    .exceeded("admin_device", d, ADMIN_DEVICE_FAILURES, window)
+                {
+                    return Err(AuthError::RateLimited { retry_after });
+                }
+            }
+            None => self.limit_key(
+                "admin_attempt",
+                &ip,
+                self.config().ip_attempts_per_minute,
+                Duration::from_secs(60),
+            )?,
+        }
         let lock_key = format!("pw:admin:{email_n}");
-        if let Err(e) = self.lockout_check(&lock_key).await {
+        if device.is_none()
+            && let Err(e) = self.lockout_check(&lock_key).await
+        {
             self.audit("login.admin", false, ci, "anonymous", None, json!({"reason": "locked"}))
                 .await?;
             return Err(e);
@@ -389,6 +445,9 @@ impl AuthService {
             .verify_async(password, row.as_ref().map(|(_, h)| h.clone()))
             .await;
         let Some((id, stored)) = row.filter(|_| ok) else {
+            if let Some(d) = device {
+                let _ = self.inner.limiter.hit("admin_device", d, ADMIN_DEVICE_FAILURES, window);
+            }
             let locked = self.lockout_fail(&lock_key).await?;
             self.audit(
                 "login.admin",
@@ -401,6 +460,9 @@ impl AuthService {
             .await?;
             return Err(AuthError::InvalidCredentials);
         };
+        if device.is_none() {
+            self.inner.limiter.refund("admin_attempt", &ip);
+        }
         self.lockout_clear(&lock_key).await?;
         if self.hasher().needs_rehash(&stored) {
             let new_hash = self.hasher().hash_async(password).await?;
@@ -412,8 +474,10 @@ impl AuthService {
             .await?;
             tx.commit().await?;
         }
-        self.complete_first_factor(&Subject::Admin { id }, AuthMethod::Password, ci, opts)
-            .await
+        let out = self
+            .complete_first_factor(&Subject::Admin { id }, AuthMethod::Password, ci, opts)
+            .await?;
+        Ok((out, self.admin_device_token(&email_n)))
     }
 
     /// Changes the caller's password (needs the current one). Every other

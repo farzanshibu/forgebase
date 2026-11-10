@@ -66,6 +66,17 @@ impl RateLimiter {
         (elapsed < window && w.count >= limit).then(|| window.saturating_sub(elapsed).as_secs().max(1))
     }
 
+    /// Gives back one event counted by [`hit`](Self::hit) in the current
+    /// window (a sign-in that succeeded): budgets then count failures only,
+    /// while concurrent requests are still bounded because every request is
+    /// counted before its password is checked (FB-80).
+    pub fn refund(&self, bucket: &str, key: &str) {
+        let mut map = self.windows.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(w) = map.get_mut(&(bucket.to_owned(), key.to_owned())) {
+            w.count = w.count.saturating_sub(1);
+        }
+    }
+
     /// Forgets `(bucket, key)` (e.g. after a successful login).
     pub fn reset(&self, bucket: &str, key: &str) {
         self.windows
@@ -78,6 +89,21 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refunds_give_back_one_event() {
+        let l = RateLimiter::new();
+        let w = Duration::from_secs(60);
+        assert!(l.hit("b", "ip", 2, w).is_ok());
+        l.refund("b", "ip");
+        assert!(l.hit("b", "ip", 2, w).is_ok());
+        assert!(l.hit("b", "ip", 2, w).is_ok());
+        assert!(
+            l.hit("b", "ip", 2, w).is_err(),
+            "two un-refunded events fill the budget"
+        );
+        l.refund("other", "ip"); // unknown keys are ignored
+    }
 
     #[test]
     fn limits_per_key_and_window() {

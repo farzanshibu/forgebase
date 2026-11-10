@@ -46,6 +46,9 @@ pub async fn harness(tweak: impl FnOnce(&mut AuthConfig)) -> H {
     cfg.trust_forwarded_for = true;
     cfg.cookie_secure = false;
     cfg.ip_attempts_per_minute = 100_000;
+    // Mock providers, gateways and Turnstile listen on loopback; the SSRF
+    // guard (FB-80) is tested with this turned off in https_client.rs.
+    cfg.allow_private_outbound = true;
     tweak(&mut cfg);
     let auth = AuthService::open_with_data(Arc::new(db.clone()), Arc::new(DefaultAuthorizer), dir.path(), cfg, None)
         .await

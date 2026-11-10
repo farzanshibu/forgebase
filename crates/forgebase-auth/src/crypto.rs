@@ -142,6 +142,15 @@ impl Keyring {
         ct_eq(self.token_hash(purpose, token).as_bytes(), stored.as_bytes())
     }
 
+    /// MAC of an admin known-device token (FB-80): binds the admin's email
+    /// and the issue time.
+    pub fn admin_device_mac(&self, email: &str, issued: i64) -> String {
+        b64url(&hmac256(
+            &self.pepper,
+            &[b"admin-device", &issued.to_be_bytes(), email.as_bytes()],
+        ))
+    }
+
     /// The CSRF token bound to a session id.
     pub fn csrf_token(&self, session_id: &str) -> String {
         b64url(&hmac256(&self.pepper, &[b"csrf", session_id.as_bytes()]))

@@ -231,9 +231,11 @@ impl DataService {
     }
 
     /// The field guard for compiling a caller's filter, sort or aggregate on
-    /// `root` (`None` for privileged callers).
+    /// `root` (`None` for privileged callers). A privileged caller with a
+    /// scoped API key gets one too, so a relation path cannot read a
+    /// collection outside its scopes (FB-80).
     pub(crate) fn field_guard(&self, ctx: &AccessContext, root: &Collection) -> Option<Arc<dyn FieldGuard>> {
-        if ctx.is_privileged() {
+        if ctx.is_privileged() && ctx.scopes.is_none() {
             return None;
         }
         Some(Arc::new(DataGuard {
