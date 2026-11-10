@@ -85,6 +85,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "functions_js",
         include_str!("../../../migrations/postgres/0027_functions_js.sql"),
     ),
+    Migration::new(
+        28,
+        "key_tenant",
+        include_str!("../../../migrations/postgres/0028_key_tenant.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to
