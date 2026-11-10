@@ -262,7 +262,7 @@ pub async fn init_admin(
         }
         let creds = match preset {
             Some(c) => Some(c),
-            None if !std::io::stdin().is_terminal() => {
+            None if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) => {
                 return Ok(InitAdmin::Skipped("no terminal to prompt on".into()));
             }
             None => {

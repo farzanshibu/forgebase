@@ -63,7 +63,9 @@ forgebase serve                 # http://127.0.0.1:8090
 migrations at startup. Stop it with Ctrl-C or SIGTERM. SIGTERM drains requests
 for `shutdown_timeout_secs` and then checkpoints the WAL.
 
-Create the first administrator before you use the dashboard:
+The dashboard needs an administrator account. [§2.4](#24-first-run) lists
+the ways to create the first one. To add more, or to recover one, use the
+command line:
 
 ```sh
 forgebase admin create --email you@example.com --password-stdin < password.txt
@@ -120,6 +122,73 @@ a system-call filter, and `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`.
 `StateDirectory=` creates `/var/lib/forgebase` with mode `0700`.
 
 Read logs with `journalctl -u forgebase`.
+
+### 2.4 First run
+
+A server with no administrator account is in **setup mode**. There are three
+ways to create the first administrator.
+
+**1. During `forgebase init` (on a terminal).** After it creates the project,
+`init` asks `Create the administrator account now? [Y/n]`, then for the email
+and the password twice. The password is not shown as you type it (on Linux and
+macOS; on Windows use option 2 or 3).
+
+**2. During `forgebase init` (scripts, containers, CI).** Pass the email as a
+flag and the password on standard input:
+
+```sh
+forgebase init ./my-project --admin-email you@example.com --admin-password-stdin < password.txt
+```
+
+`init` checks the email and password before it writes anything. If an
+administrator already exists, `init` keeps it and does not create another one,
+so you can run the same command again safely. Without a terminal and without
+these flags, `init` does not create an administrator. Use `--no-admin` to skip
+the question on purpose.
+
+**3. From the browser, with the setup link.** When no administrator exists,
+`forgebase serve` prints a one-time link to standard output:
+
+```text
+First run: create the administrator at http://127.0.0.1:8090/admin/setup?token=<token>
+```
+
+Open the link and fill in the form. The administrator is created and signed
+in. The link uses the address the server is bound to. Behind a reverse proxy,
+replace the host and port with your public address and keep the path and the
+`token` part.
+
+The token:
+
+- is 256 random bits, kept only in the server's memory, and compared in
+  constant time;
+- works once: it stops working as soon as any administrator exists, including
+  one created with `forgebase admin create`;
+- is replaced by a new one each time the server restarts in setup mode;
+- is printed to standard output only, never to the log (the log goes to
+  standard error).
+
+Note: systemd (`journalctl`) and Docker (`docker logs`) record standard output
+as well as standard error. On those hosts the link also lands in the journal or
+the container log until you use it. If other people can read that log, create
+the administrator with option 2 or with `forgebase admin create` before the
+first `serve`.
+
+The setup endpoints need no sign-in:
+
+| Method and path | Request | Response |
+|---|---|---|
+| `GET /api/setup/status` | | `200 {"setup_required": true}` while no administrator exists |
+| `POST /api/setup/admin` | `{"token", "email", "password"}`; optional `"cookie": false` for bearer tokens | `201`, the same body and session cookie as `POST /api/auth/admins/login` |
+
+`POST /api/setup/admin` returns these errors: `403 invalid_setup_token`,
+`409 setup_complete` once any administrator exists, and
+`400 validation_failed`. Passwords need at least 10 characters, the same rule
+as `forgebase admin create`. Each client address gets 10 attempts per minute;
+after that the endpoint returns `429` with `Retry-After`.
+
+`forgebase status` shows the state: `setup: pending (no administrator)` or
+`setup: complete`. With `--json`, the field is `setup_required`.
 
 ## 3. Configuration
 
