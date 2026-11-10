@@ -1,6 +1,11 @@
 @import "tailwindcss";
-/* PanelUI web components ship compiled class names: let Tailwind see them. */
-@source "../node_modules/panelui-web/dist";
+/*
+ * PanelUI web components ship compiled class names: let Tailwind see the ones in use
+ * (and what they build on: nav-rail draws its drawer with sheet). Scanning all of
+ * panelui-web/dist adds ~275 kB of CSS for components the dashboard does not use.
+ * Add a component here when you import a new one.
+ */
+@source "../node_modules/panelui-web/dist/components/{alert,badge,button,card,input,menu,nav-rail,sheet,spinner,stat,table,toast}";
 
 /* Dark mode follows the `dark` class on <html> (set before first paint by index.html). */
 @custom-variant dark (&:where(.dark, .dark *));

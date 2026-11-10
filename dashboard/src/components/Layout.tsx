@@ -109,7 +109,7 @@ export default function Layout() {
           </NavRail.Content>
           <NavRail.Footer>
             <NavRail.Separator className="mb-1" />
-            <NavRail.Item icon={icon(Logout01Icon)} label="Sign out" onClick={() => void signOut()}>
+            <NavRail.Item icon={icon(Logout01Icon)} label="Sign out" className="text-start" onClick={() => void signOut()}>
               Sign out
             </NavRail.Item>
           </NavRail.Footer>

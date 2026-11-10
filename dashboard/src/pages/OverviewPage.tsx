@@ -73,7 +73,7 @@ function Stat({ label, value, sub, absent }: { label: string; value: string | un
   return (
     <PanelStat.Content>
       <PanelStat.Label className="text-xs">{label}</PanelStat.Label>
-      {value === undefined ? <Missing p={absent} /> : <PanelStat.Value size="sm" className="font-mono tracking-tight">{value}</PanelStat.Value>}
+      {value === undefined ? <Missing p={absent} /> : <PanelStat.Value size="sm" className="tabular-nums tracking-tight">{value}</PanelStat.Value>}
       {value !== undefined && sub && <p className="text-xs text-muted-foreground">{sub}</p>}
     </PanelStat.Content>
   );
