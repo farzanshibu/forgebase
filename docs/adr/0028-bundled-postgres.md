@@ -817,3 +817,126 @@ Checked 2026-11-11.
 - Unix socket path limits — <https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/libpq/pqcomm.c>,
   <https://man7.org/linux/man-pages/man7/unix.7.html>
 - `builtin` locale provider (PostgreSQL 17) — <https://www.postgresql.org/docs/release/17.0/>
+
+## Addendum: FB-131, the PostgreSQL backend in `forgebase-db` (2026-11-11)
+
+Built as §7.2–§7.4 and §7.7 describe. What callers and the next packages
+need to know, and where the code differs from the text above.
+
+**API.** `DbOptions.path` became `DbOptions.target: DbTarget`
+(`DbTarget::Sqlite { path }` / `DbTarget::Postgres { url: SecretString,
+managed }`); `DbOptions::from_config(cfg, path)` keeps its signature and
+`from_config_target(cfg, target)` and `with_target` are new. The one struct
+literal outside the crate (`crates/forgebase-data/tests/common/mod.rs`) was
+changed. `Database` is an `Arc` facade over SQLite and PostgreSQL;
+`kind()`, `location()` (URL without password), `last_commit_lsn()` and
+`current_wal_lsn()` are new. `DbError::Unavailable` (SQLSTATE 08, 53, 57P0x,
+I/O; 503) and `DbError::Unsupported` (400) are new; `DatabaseInfo` gained
+`backend`, `server_version` and `connections`. `effective_pragmas` and
+`snapshot_to` are `Unsupported` on PostgreSQL; `migrate` and
+`migration_status` are `Unsupported` until FB-133 wires
+`PgDatabase::migrate`; `schema_version` reads `_forgebase_migrations` when
+the table exists.
+
+**Reads** run as `BEGIN READ ONLY; <statement>; ROLLBACK` on the read pool
+(connections also have `default_transaction_read_only = on`), always on the
+extended protocol, so one read is one statement and any session change it
+makes (`SET`, `set_config`) is rolled back with it. That is three round
+trips per read on a Unix socket; FB-157 or a later tuning pass can trim it.
+
+**Statements.** `?N`/`?` → `$N` by `translate_placeholders` (aware of
+`'…'`, `E'…'`, `"…"`, `$tag$…$tag$`, `--` and nested `/* */`; `$N` already
+in the text is kept). Unused parameter numbers are declared `text`; missing
+parameters bind NULL, as on SQLite. Parameters PostgreSQL cannot infer
+(`SELECT ?1`, `jsonb_build_array(?1)`; SQLSTATE 42P18) are learned on the
+first prepare of an SQL text, under a savepoint so the transaction survives,
+and then declared from the bound value's kind (`int8`, `float8`, `text`,
+`bytea`); the SQL gets a `/* forgebase types: … */` comment so each kind
+combination is its own cached statement. Parameter-less, uncached
+statements on the writer (DDL scripts) use the simple protocol, which
+accepts several statements as SQLite does.
+
+**Binding** follows §7.3 with lossless conversions only: integral text into
+`int*`, 0/1 and `t`/`f` into `bool`, numbers into `text` (SQLite's text form,
+`3.0`), numbers or decimal text into `numeric`, RFC 3339 text into
+`timestamptz`, a JSON array in `Text` into a one-dimensional array parameter.
+Domains bind as their base type, enums and `citext` as text.
+
+**Decoding** follows §7.3. `timestamptz` comes back at millisecond precision
+(`YYYY-MM-DDTHH:MM:SS.mmmZ`, as `forgebase_schema` writes it); `jsonb` as
+compact JSON with the server's key order; arrays as JSON arrays. *Differs:*
+a type outside that set is returned as `Text` when its binary form is UTF-8
+(enums, `citext`, domains over text) and as `Blob` otherwise, not through
+its output function (that needs text-format results, which sqlx only gives
+for the simple protocol). Empty results name their columns on PostgreSQL;
+SQLite returns no column names for zero rows.
+
+**Transactions.** One writer connection; `Normal` is `READ COMMITTED`,
+`SchemaChange` adds `SET CONSTRAINTS ALL DEFERRED` (foreign-key violations
+fail the `COMMIT` with `Constraint { ForeignKey }`). A dropped transaction is
+rolled back on a spawned task before the writer returns to the pool (closed
+if that fails). *Differs from SQLite:* a failed statement aborts a
+PostgreSQL transaction; the backend then refuses `commit`
+(`Statement("the transaction was rolled back …")`) rather than letting the
+server silently turn it into a rollback. Code that ignores a statement error
+and carries on in the same transaction (one test does:
+`forgebase-customize/tests/customize.rs:720`) must change in its port
+package. `ExecResult::last_insert_id` is 0 on PostgreSQL: use
+`Dialect::returning_id`.
+
+**Errors.** Unique, not-null and check messages are rendered in SQLite's
+form (`UNIQUE constraint failed: posts.slug, posts.lang`), because
+`forgebase_data::error::unique_fields` parses it; `P0001` keeps the trigger's
+message.
+
+**Schema changes.** A committed DDL statement (or `SchemaChange`
+transaction) bumps a generation number. The writer clears its statement
+cache right after a DDL statement; each reader keeps the generation it last
+saw in the session setting `forgebase.schema_gen` (read in the same round
+trip as `BEGIN`) and clears its cache when behind. A `0A000` "cached plan
+must not change result type" on a read is retried once after clearing.
+
+**Dialect.** Every §7.4 method exists on both dialects (SQLite returns
+today's SQL; tests pin it). Choices the table above left open:
+`json_extract` on PostgreSQL is `(expr->'a'->>'b')` (text, matching
+JSON-path expression indexes; numeric comparisons need a cast in FB-143);
+`in_json_list` compares as text; `now_epoch` is
+`floor(extract(epoch from now()))::bigint` (a plain `::bigint` rounds, which
+can be half a second in the future); `upsert(table, cols, key, source)`,
+`insert_ignore(table, cols, source)`, `returning_id(col)`, `fit_ident(name)`
+(63-byte limit, 10-hex FNV-1a suffix); the introspection methods return
+`Statement`s with SQLite's column names (`cid, name, type, notnull,
+dflt_value, pk`; `seq, name, unique, origin, partial`; `stat`).
+`unaccent()` is only `STABLE`, so a generated `tsvector` column cannot call
+it: the full-text methods use `_forgebase_unaccent(text)`, an `IMMUTABLE`
+wrapper the PostgreSQL baseline must create (`PG_FULLTEXT_SETUP`, FB-133).
+`fulltext_rank` is lower-is-better on both engines (`-ts_rank`).
+
+**Sessions** set `DateStyle=ISO`, `TimeZone=UTC`, `IntervalStyle=postgres`,
+`extra_float_digits=3` and `application_name=forgebase`. The backend does
+not set `search_path`: the roles carry it (§7.6, FB-132/FB-133), so DDL that
+must land in `public` should name the schema. Servers older than
+PostgreSQL 16 are refused at open. A missing database is `NotFound`, or is
+created (through the `postgres` database) with `create_if_missing`.
+
+**Tests** (`forgebase_db::testing`, feature `testing`): `test_backend()`,
+`test_backend_of(kind)`, `postgres_test_db()` (`None` = skip) and `TestDb`
+(derefs to `Database`; `data_dir()`, `options()`). The engine comes from
+`FORGEBASE_TEST_PG_ENGINE` or `FORGEBASE_PG_ENGINE_DIR`, runs on a Unix
+socket under `FORGEBASE_TEST_PG_TMP` (default the system temp dir) with port
+number 18200 and no TCP listener, and a watchdog shell stops it and deletes
+its directory when the test binary exits; `FORGEBASE_TEST_PG_URL` uses an
+existing server instead. Port packages add `forgebase-db = { workspace =
+true, features = ["testing"] }` to their dev-dependencies.
+
+**Seams for ADR-0029 (replicas, tenant shards), not built here.** The read
+pool is `pg::ReadPools { primary, replicas, router: Arc<dyn ReadRouter> }`;
+`ReadRouter::route(&ReadRequest { statement, replicas }) -> ReadTarget`
+(`Primary` / `Replica(n)`, an unknown replica falls back to the primary),
+default `PrimaryOnly`. Each commit runs `COMMIT; SELECT
+pg_current_wal_insert_lsn()` in one round trip and records the position
+(the insert position, not `pg_current_wal_lsn()`: with `synchronous_commit
+= off` the write position can still be before the commit record) (`Database::last_commit_lsn() ->
+Option<Lsn>`, monotonic); `Database::current_wal_lsn()` asks the primary.
+`Database` is per target and cheap to clone, and the crate holds no global
+connection state, so a shard map can hold one `Database` per shard.
