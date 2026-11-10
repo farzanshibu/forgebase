@@ -780,7 +780,7 @@ serve(async (req, ctx) => {
     );
     // Rules are for administrators only.
     grant(&h, "user:users/dev", "engine:manage_functions").await;
-    let rules = json!({"items": [{"namespace": "app", "access": "write"}]});
+    let rules = json!({"items": [{"namespace": "shared.app", "access": "write"}]});
     let r = call(
         &app,
         Method::PUT,
@@ -809,7 +809,7 @@ serve(async (req, ctx) => {
     let r = call(&app, Method::GET, "/api/v1/functions/counter/invoke", "user:u1", None).await;
     assert_eq!(r.json()["app"], "1", "{}", r.text());
     // A read rule allows reads only.
-    let ro = json!({"items": [{"namespace": "app*", "access": "read"}]});
+    let ro = json!({"items": [{"namespace": "shared.app*", "access": "read"}]});
     call(
         &app,
         Method::PUT,
