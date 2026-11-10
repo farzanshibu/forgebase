@@ -79,17 +79,23 @@ serve(async (req: Request, ctx) => {
 
 ## 3. Deploy API and CLI (FB-93)
 
-- `PUT /api/v1/functions/{name}` (existing) also accepts
-  `{"source": "<code>", "language": "typescript" | "javascript", "capabilities": [...], "env": {...}, "fetch_hosts": [...], "limits": {...}}`
-  instead of `wasm`. The response and the versions list carry `language` and
+- `POST /api/v1/functions` (existing deploy, name in the body) also accepts
+  `{"name", "source": "<code>", "language": "typescript" | "javascript", "capabilities": [...], "env": {...}, "fetch_hosts": [...], "limits": {...}}`
+  instead of `wasm`. Compile errors: `400 function_compile_failed` with
+  `details: {"line","column","message"}` (first error, 1-based) and
+  `details.errors: [{line,column,message}]`. A non-administrator requesting
+  `service_role` gets `403`. The response and the versions list carry `language` and
   `runtime` (`"js"` or `"wasm"`).
 - `GET /api/v1/functions/{name}/versions/{version}/source` returns
   `{"language","source"}` for JS/TS versions (`404` for WebAssembly).
 - `GET /api/v1/functions/types` returns the `forgebase` module `.d.ts` (the
   function API above) for the editor. The same file is committed at
   `sdk/functions/forgebase.d.ts`.
-- `POST /api/v1/functions/{name}/invoke` (existing) is unchanged; add
-  `?version=<n>` for a test run against a specific version (administrator only).
+- `/api/v1/functions/{name}/invoke` (existing, any method) is unchanged; add
+  `/invoke/{*path}` (the sub-path and query reach `req.url`) and
+  `?version=<n>` for a test run against a specific version (administrator
+  only). The response carries `x-request-id`, matching the execution's entry in
+  `GET …/logs`.
 - CLI: `forgebase functions new <name> [--js]` writes `functions/<name>/index.ts`
   plus `forgebase.d.ts` from a template. `forgebase functions deploy <name> <file>`
   accepts `.ts`, `.js` or `.wasm`.
@@ -107,7 +113,7 @@ In the Functions studio, on PanelUI:
   so the first page load stays as it is. TypeScript IntelliSense uses the
   `forgebase` types from `GET /api/v1/functions/types`. The theme follows
   light/dark mode. `Ctrl/Cmd+S` saves a draft in the browser; **Deploy** sends
-  `PUT /api/v1/functions/{name}` and shows compile errors inline on their line.
+  `POST /api/v1/functions` and shows compile errors inline on their line.
 - **Test panel.** Method, path, query, headers and JSON body →
   `POST …/invoke?version=` → status, headers, body and the execution's logs.
 - **Versions.** Lists runtime and language. A JS/TS version opens read-only in
