@@ -23,6 +23,14 @@
 //! 7. when `[resp] enabled = true`, bind the Redis protocol listener
 //!    (`forgebase-resp`, ADR-0013) in front of the built-in KV engine.
 //!
+//! Switchable modules (FB-91, ADR-0026): a module with `[<module>] enabled =
+//! false` (storage, functions, queue, realtime, vector, graph, identity,
+//! access, resp, billing) is not opened, its routes answer `404
+//! feature_disabled`, its job handlers are not registered, its system
+//! schedules are paused and its background tasks do not start. Realtime is
+//! the exception that keeps its record-change outbox (functions and queues
+//! read it) and drops only the client routes and the dispatcher.
+//!
 //! [`RunningServer::shutdown`] stops accepting connections, waits up to
 //! `shutdown_timeout_secs` for in-flight requests, stops the job pool (running
 //! jobs get the same time to finish, the rest are released back to the queue),
@@ -38,7 +46,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_api::{AppState, RouterOptions};
-use forgebase_core::{Config, DataLayout, ErrorCode, ErrorKind};
+use forgebase_core::{Config, ConfigOrigin, ConfigSources, DataLayout, ErrorCode, ErrorKind, LoadedConfig};
 use forgebase_credits::CreditService;
 use forgebase_customize::{CustomizeConfig, CustomizeService};
 use forgebase_data::Authorizer;
@@ -68,11 +76,11 @@ pub struct RunningServer {
     jobs: JobService,
     job_pool: Option<forgebase_jobs::PoolHandle>,
     kv: KvService,
-    vector: VectorService,
+    vector: Option<VectorService>,
     resp: Option<forgebase_resp::RespHandle>,
     realtime: forgebase_realtime::RealtimeService,
     entitlements: EntitlementService,
-    functions: FunctionService,
+    functions: Option<FunctionService>,
     credits: CreditService,
     billing: Option<forgebase_billing::BillingService>,
     customize: CustomizeService,
@@ -92,6 +100,19 @@ pub async fn start(config: &Config) -> Result<RunningServer, ServerError> {
     start_with_jobs(config, JobRegistry::new(), pool).await
 }
 
+/// Like [`start`] for a configuration from the loader: the feature registry
+/// (`GET /api/system/features`) reports where each setting came from, and
+/// `PATCH /api/system/config` writes the loaded file. `forgebase serve` uses it.
+pub async fn start_loaded(loaded: &LoadedConfig) -> Result<RunningServer, ServerError> {
+    let config = &loaded.config;
+    let pool = PoolConfig {
+        shutdown_grace: Duration::from_secs(config.server.shutdown_timeout_secs),
+        ..PoolConfig::default()
+    };
+    let origin = (loaded.origin.clone(), loaded.sources.clone());
+    start_full(config, Some(origin), JobRegistry::new(), pool).await
+}
+
 /// Like [`start`], with in-process handlers for job kinds. The worker pool
 /// claims only the kinds registered in `registry`.
 pub async fn start_with_jobs(
@@ -99,6 +120,20 @@ pub async fn start_with_jobs(
     registry: JobRegistry,
     pool: PoolConfig,
 ) -> Result<RunningServer, ServerError> {
+    start_full(config, None, registry, pool).await
+}
+
+/// The startup sequence. Without `origin`, `config` counts as built in code:
+/// every setting reports `default` and `PATCH` writes `forgebase.toml` next
+/// to the data directory.
+async fn start_full(
+    config: &Config,
+    origin: Option<(ConfigOrigin, ConfigSources)>,
+    registry: JobRegistry,
+    pool: PoolConfig,
+) -> Result<RunningServer, ServerError> {
+    let (origin, sources) = origin.unwrap_or_else(|| (ConfigOrigin::embedded(config), ConfigSources::default()));
+    let system_config = Arc::new(forgebase_api::features::SystemConfig::new(config.clone(), origin, sources));
     let layout = DataLayout::new(&config.data_dir);
     layout.ensure().map_err(|source| ServerError::Io {
         path: layout.root().to_path_buf(),
@@ -176,6 +211,7 @@ pub async fn start_with_jobs(
     let opts = RouterOptions {
         request_timeout: Duration::from_secs(config.server.request_timeout_secs),
         ops_access: config.server.ops_access,
+        system_config: Some(system_config),
         ..RouterOptions::default()
     };
     // One data service, built by the auth service with the Argon2id hasher
@@ -188,6 +224,8 @@ pub async fn start_with_jobs(
         forgebase_realtime::RealtimeConfig {
             max_connections_per_principal: usize::try_from(config.realtime.max_connections_per_principal)
                 .unwrap_or(usize::MAX),
+            // FB-91: off, the outbox is still written and pruned, nothing is delivered.
+            dispatch: config.realtime.enabled,
             ..forgebase_realtime::RealtimeConfig::default()
         },
         None,
@@ -200,13 +238,19 @@ pub async fn start_with_jobs(
             return Err(e.into());
         }
     };
-    let functions = match open_functions(&auth, &kv).await {
-        Ok(f) => f,
-        Err(e) => {
-            realtime.shutdown();
-            db.close().await;
-            return Err(e);
+    // Server functions (FB-60), unless `[functions] enabled = false`: then
+    // no data hooks, no after-hook dispatcher, no function jobs.
+    let functions = if config.functions.enabled {
+        match open_functions(&auth, &kv).await {
+            Ok(f) => Some(f),
+            Err(e) => {
+                realtime.shutdown();
+                db.close().await;
+                return Err(e);
+            }
         }
+    } else {
+        None
     };
     // Billing (FB-70): on by default, `[billing] enabled = false` turns it off.
     let billing = if config.billing.enabled {
@@ -223,11 +267,13 @@ pub async fn start_with_jobs(
     };
     // Durable topics and queues (FB-63), unless `[queue] enabled = false`.
     let queue = if config.queue.enabled {
-        match open_queue(&auth, config, &entitlements, &functions).await {
+        match open_queue(&auth, config, &entitlements, functions.as_ref()).await {
             Ok(q) => Some(q),
             Err(e) => {
                 realtime.shutdown();
-                functions.shutdown();
+                if let Some(f) = &functions {
+                    f.shutdown();
+                }
                 db.close().await;
                 return Err(e);
             }
@@ -238,35 +284,57 @@ pub async fn start_with_jobs(
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
-        .with_policy(policy)
-        .with_realtime(realtime.clone());
+        .with_policy(policy);
+    let state = if config.realtime.enabled {
+        state.with_realtime(realtime.clone())
+    } else {
+        state
+    };
     let jobs = JobService::new(state.data().clone());
     // FB-64: live progress and state on the realtime channels `jobs:<id>`.
-    jobs.attach_realtime(realtime.clone());
+    if config.realtime.enabled {
+        jobs.attach_realtime(realtime.clone());
+    }
     entitlements.attach_jobs(jobs.clone());
     if let Err(e) = entitlements.ensure_schedule().await {
         tracing::warn!(error = %e, "entitlement maintenance schedule not created");
     }
     let registry = forgebase_entitlements::register_jobs(registry, entitlements.clone());
-    let registry = forgebase_functions::register_jobs(registry, functions.clone());
-    // Object storage (FB-30): local directory or S3-compatible driver.
-    let storage = match open_storage(&db, &layout, config, state.data().clone(), &entitlements).await {
-        Ok(s) => s,
-        Err(e) => {
-            db.close().await;
-            return Err(e);
-        }
+    let registry = match &functions {
+        Some(f) => forgebase_functions::register_jobs(registry, f.clone()),
+        None => registry,
     };
-    storage.attach_jobs(jobs.clone());
-    // FB-64: results too large for the job row go to object storage.
-    match StorageResults::open(storage.clone()).await {
-        Ok(store) => jobs.attach_result_store(Arc::new(store)),
-        Err(e) => tracing::warn!(error = %e, "job results bucket not available; large results are rejected"),
-    }
-    if let Err(e) = storage.ensure_schedule().await {
-        tracing::warn!(error = %e, "storage reconcile schedule not created");
-    }
-    let registry = forgebase_storage::register_jobs(registry, storage.clone());
+    // Object storage (FB-30): local directory or S3-compatible driver, unless
+    // `[storage] enabled = false`.
+    let storage = if config.storage.enabled {
+        match open_storage(&db, &layout, config, state.data().clone(), &entitlements).await {
+            Ok(s) => Some(s),
+            Err(e) => {
+                db.close().await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
+    let registry = match &storage {
+        Some(storage) => {
+            storage.attach_jobs(jobs.clone());
+            // FB-64: results too large for the job row go to object storage.
+            match StorageResults::open(storage.clone()).await {
+                Ok(store) => jobs.attach_result_store(Arc::new(store)),
+                Err(e) => tracing::warn!(error = %e, "job results bucket not available; large results are rejected"),
+            }
+            if let Err(e) = storage.ensure_schedule().await {
+                tracing::warn!(error = %e, "storage reconcile schedule not created");
+            }
+            forgebase_storage::register_jobs(registry, storage.clone())
+        }
+        None => registry,
+    };
+    // FB-91: a disabled module's system schedule is paused (nothing would
+    // claim its jobs), and resumed when the module is on again.
+    set_schedule_enabled(&jobs, forgebase_storage::RECONCILE_SCHEDULE, storage.is_some()).await;
     credits.attach_jobs(jobs.clone());
     if let Err(e) = credits.ensure_schedule().await {
         tracing::warn!(error = %e, "credit maintenance schedule not created");
@@ -282,25 +350,37 @@ pub async fn start_with_jobs(
         }
         None => registry,
     };
+    set_schedule_enabled(&jobs, forgebase_billing::MAINTENANCE_SCHEDULE, billing.is_some()).await;
     customize.attach_jobs(jobs.clone());
     let registry = forgebase_customize::register_jobs(registry, customize.clone());
-    let vector = match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
-        Ok(v) => v,
-        Err(e) => {
-            db.close().await;
-            return Err(e.into());
+    // Vector search (FB-50), unless `[vector] enabled = false`.
+    let vector = if config.vector.enabled {
+        match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                db.close().await;
+                return Err(e.into());
+            }
         }
+    } else {
+        None
     };
     let mut extensions = vec![
         forgebase_jobs::extension(jobs.clone()),
-        forgebase_vector::extension(vector.clone()),
         forgebase_entitlements::extension(entitlements.clone()),
-        forgebase_functions::extension(functions.clone()),
-        forgebase_storage::extension(storage.clone()),
         forgebase_credits::extension(credits.clone()),
         forgebase_customize::extension(customize.clone()),
         forgebase_backup::extension(forgebase_backup::BackupService::new(db.clone(), layout.clone())),
     ];
+    if let Some(v) = &vector {
+        extensions.push(forgebase_vector::extension(v.clone()));
+    }
+    if let Some(f) = &functions {
+        extensions.push(forgebase_functions::extension(f.clone()));
+    }
+    if let Some(s) = &storage {
+        extensions.push(forgebase_storage::extension(s.clone()));
+    }
     if let Some(b) = &billing {
         extensions.push(forgebase_billing::extension(b.clone()));
     }
@@ -394,8 +474,12 @@ pub async fn start_with_jobs(
     });
 
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
-    vector.start_background();
-    functions.start_background();
+    if let Some(v) = &vector {
+        v.start_background();
+    }
+    if let Some(f) = &functions {
+        f.start_background();
+    }
     if let Some(q) = &queue {
         q.start_background();
     }
@@ -405,6 +489,7 @@ pub async fn start_with_jobs(
         data_dir = %layout.root().display(),
         instance_id = %instance.instance_id,
         applied_migrations = migrations.applied.len(),
+        disabled = ?forgebase_core::features::disabled(config).iter().map(|f| f.id).collect::<Vec<_>>(),
         "forgebase started"
     );
     Ok(RunningServer {
@@ -444,9 +529,9 @@ pub async fn start_with_jobs(
 /// per-queue label. A subsystem whose read fails keeps its last values.
 fn subsystem_gauges(
     jobs: JobService,
-    storage: forgebase_storage::StorageService,
+    storage: Option<forgebase_storage::StorageService>,
     kv: KvService,
-    vector: VectorService,
+    vector: Option<VectorService>,
     queue: Option<forgebase_queue::QueueService>,
 ) -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync + 'static {
     use forgebase_data::AccessContext;
@@ -464,20 +549,25 @@ fn subsystem_gauges(
                 }
                 Err(e) => tracing::debug!(error = %e, "job gauges not refreshed"),
             }
-            match storage.stats(&sys).await {
-                Ok(s) => {
-                    metrics::gauge!(names::STORAGE_BYTES, "kind" => "logical").set(s.logical_bytes as f64);
-                    metrics::gauge!(names::STORAGE_BYTES, "kind" => "stored").set(s.stored_bytes as f64);
-                    metrics::gauge!(names::STORAGE_OBJECTS, "kind" => "current").set(s.objects as f64);
-                    metrics::gauge!(names::STORAGE_OBJECTS, "kind" => "versions").set(s.versions as f64);
+            if let Some(storage) = storage {
+                match storage.stats(&sys).await {
+                    Ok(s) => {
+                        metrics::gauge!(names::STORAGE_BYTES, "kind" => "logical").set(s.logical_bytes as f64);
+                        metrics::gauge!(names::STORAGE_BYTES, "kind" => "stored").set(s.stored_bytes as f64);
+                        metrics::gauge!(names::STORAGE_OBJECTS, "kind" => "current").set(s.objects as f64);
+                        metrics::gauge!(names::STORAGE_OBJECTS, "kind" => "versions").set(s.versions as f64);
+                    }
+                    Err(e) => tracing::debug!(error = %e, "storage gauges not refreshed"),
                 }
-                Err(e) => tracing::debug!(error = %e, "storage gauges not refreshed"),
             }
-            let v = vector.totals();
-            metrics::gauge!(names::VECTOR_INDEXES, "state" => "ready").set(v.indexes.saturating_sub(v.building) as f64);
-            metrics::gauge!(names::VECTOR_INDEXES, "state" => "building").set(v.building as f64);
-            metrics::gauge!(names::VECTOR_INDEXED_VECTORS).set(v.indexed_vectors as f64);
-            metrics::gauge!(names::VECTOR_INDEX_MEMORY_BYTES).set(v.memory_bytes as f64);
+            if let Some(vector) = vector {
+                let v = vector.totals();
+                metrics::gauge!(names::VECTOR_INDEXES, "state" => "ready")
+                    .set(v.indexes.saturating_sub(v.building) as f64);
+                metrics::gauge!(names::VECTOR_INDEXES, "state" => "building").set(v.building as f64);
+                metrics::gauge!(names::VECTOR_INDEXED_VECTORS).set(v.indexed_vectors as f64);
+                metrics::gauge!(names::VECTOR_INDEX_MEMORY_BYTES).set(v.memory_bytes as f64);
+            }
             match kv.stats(&sys) {
                 Ok(s) => {
                     metrics::gauge!(names::KV_KEYS).set(s.keys as f64);
@@ -500,11 +590,34 @@ fn subsystem_gauges(
     }
 }
 
+/// Pauses or resumes the system schedule `name` (FB-91): a disabled module's
+/// schedule would enqueue jobs nobody claims. A missing schedule is fine.
+async fn set_schedule_enabled(jobs: &JobService, name: &str, enabled: bool) {
+    let sys = forgebase_data::AccessContext::system();
+    let list = match jobs.schedules(&sys).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(error = %e, schedule = name, "schedules not readable");
+            return;
+        }
+    };
+    for s in list.iter().filter(|s| s.name == name && s.enabled != enabled) {
+        let patch = forgebase_jobs::SchedulePatch {
+            enabled: Some(enabled),
+            ..forgebase_jobs::SchedulePatch::default()
+        };
+        match jobs.update_schedule(&sys, &s.id, patch).await {
+            Ok(_) => tracing::info!(schedule = name, enabled, "module schedule updated"),
+            Err(e) => tracing::warn!(error = %e, schedule = name, "module schedule not updated"),
+        }
+    }
+}
+
 async fn open_queue(
     auth: &forgebase_auth::AuthService,
     config: &Config,
     entitlements: &EntitlementService,
-    functions: &FunctionService,
+    functions: Option<&FunctionService>,
 ) -> Result<forgebase_queue::QueueService, ServerError> {
     let qc = &config.queue;
     let path = auth.config().master_key_path.clone();
@@ -538,7 +651,10 @@ async fn open_queue(
     .map_err(|e| ServerError::Queue(e.to_string()))?;
     let queue = forgebase_queue::QueueService::new(auth.data().clone(), keyring, settings);
     queue.attach_entitlements(entitlements.clone());
-    queue.attach_functions(functions.clone());
+    // Without functions, push subscriptions to a function fail delivery.
+    if let Some(f) = functions {
+        queue.attach_functions(f.clone());
+    }
     queue.set_fetcher(fetcher);
     Ok(queue)
 }
@@ -656,9 +772,9 @@ impl RunningServer {
         &self.entitlements
     }
 
-    /// The server-functions engine (FB-60).
-    pub fn functions(&self) -> &FunctionService {
-        &self.functions
+    /// The server-functions engine (FB-60), unless `[functions] enabled = false`.
+    pub fn functions(&self) -> Option<&FunctionService> {
+        self.functions.as_ref()
     }
 
     /// The credit ledger of this instance.
@@ -681,9 +797,9 @@ impl RunningServer {
         self.queue.as_ref()
     }
 
-    /// The vector engine of this instance.
-    pub fn vector(&self) -> &VectorService {
-        &self.vector
+    /// The vector engine of this instance, unless `[vector] enabled = false`.
+    pub fn vector(&self) -> Option<&VectorService> {
+        self.vector.as_ref()
     }
 
     /// This instance's identity.
@@ -758,7 +874,9 @@ impl RunningServer {
             q.close_streams();
             q.shutdown(self.shutdown_timeout).await;
         }
-        self.functions.shutdown();
+        if let Some(f) = &self.functions {
+            f.shutdown();
+        }
         self.upkeep.abort();
         if let Some(resp) = self.resp.take() {
             resp.shutdown().await;
@@ -766,8 +884,10 @@ impl RunningServer {
         if let Some(pool) = self.job_pool.take() {
             pool.shutdown().await;
         }
-        let saved = self.vector.shutdown().await;
-        tracing::debug!(files = saved, "vector indexes saved");
+        if let Some(v) = &self.vector {
+            let saved = v.shutdown().await;
+            tracing::debug!(files = saved, "vector indexes saved");
+        }
         match self.kv.shutdown().await {
             Ok(n) => tracing::debug!(rows = n, "kv snapshot written"),
             Err(e) => tracing::warn!(error = %e, "final kv snapshot failed; recent kv writes are lost"),

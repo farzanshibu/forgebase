@@ -686,7 +686,7 @@ async fn outbound_clients_never_reach_internal_addresses() {
         ("f-meta", "http://169.254.169.254/latest/meta-data/".to_owned()),
     ] {
         env.server
-            .functions()
+            .functions().unwrap()
             .deploy(
                 &forgebase_data::AccessContext::admin("root"),
                 forgebase_functions::DeployRequest {
@@ -706,7 +706,7 @@ async fn outbound_clients_never_reach_internal_addresses() {
             .unwrap();
         let out: Json = env
             .server
-            .functions()
+            .functions().unwrap()
             .invoke(name, forgebase_functions::Trigger::Direct, &json!({}), None)
             .await
             .unwrap()
@@ -1353,7 +1353,7 @@ async fn secrets_never_reach_logs_or_api_output() {
     let fsecret = "function-secret-value-93ad";
     secrets.push(fsecret.to_owned());
     env.server
-        .functions()
+        .functions().unwrap()
         .deploy(
             &forgebase_data::AccessContext::admin("root"),
             forgebase_functions::DeployRequest {

@@ -41,7 +41,7 @@ fn search(v: [f64; 3]) -> SearchRequest {
 
 async fn top(server: &RunningServer, v: [f64; 3]) -> Vec<String> {
     let r = server
-        .vector()
+        .vector().unwrap()
         .search(&AccessContext::system(), "kb", search(v))
         .await
         .unwrap();
@@ -59,7 +59,7 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
     assert_eq!(status, 401, "anonymous is denied: {body}");
     assert!(body.contains("unauthenticated"));
     server
-        .vector()
+        .vector().unwrap()
         .create_collection(
             &sys,
             NewCollection {
@@ -87,7 +87,7 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
             text: None,
         })
         .collect();
-    server.vector().upsert(&sys, "kb", items).await.unwrap();
+    server.vector().unwrap().upsert(&sys, "kb", items).await.unwrap();
     assert_eq!(top(&server, [41.2, 0.0, 0.0]).await, ["p41", "p42"]);
     server.shutdown().await.unwrap();
 
@@ -104,12 +104,12 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
     let server = start(&cfg).await.unwrap();
     assert!(
         server
-            .vector()
+            .vector().unwrap()
             .wait_ready(&sys, "kb", Duration::from_secs(30))
             .await
             .unwrap()
     );
-    let stats = server.vector().stats(&sys, "kb").await.unwrap();
+    let stats = server.vector().unwrap().stats(&sys, "kb").await.unwrap();
     assert!(stats.indexes[0].last_rebuild.is_none());
     assert_eq!(stats.indexes[0].indexed_vectors, 200);
     assert_eq!(top(&server, [41.2, 0.0, 0.0]).await, ["p41", "p42"]);
@@ -120,15 +120,15 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
     let server = start(&cfg).await.unwrap();
     assert!(
         server
-            .vector()
+            .vector().unwrap()
             .wait_ready(&sys, "kb", Duration::from_secs(30))
             .await
             .unwrap()
     );
-    let stats = server.vector().stats(&sys, "kb").await.unwrap();
+    let stats = server.vector().unwrap().stats(&sys, "kb").await.unwrap();
     assert_eq!(stats.indexes[0].last_rebuild.as_ref().unwrap().reason, "missing");
     assert_eq!(top(&server, [41.2, 0.0, 0.0]).await, ["p41", "p42"]);
-    let item = server.vector().get_item(&sys, "kb", "p7").await.unwrap();
+    let item = server.vector().unwrap().get_item(&sys, "kb", "p7").await.unwrap();
     assert_eq!(item.vectors["emb"], vec![7.0, 0.0, 0.0]);
     server.shutdown().await.unwrap();
 }

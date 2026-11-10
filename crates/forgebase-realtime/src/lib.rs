@@ -89,6 +89,11 @@ pub struct RealtimeConfig {
     pub publish_per_second: u32,
     /// Largest presence `meta` object (serialized JSON bytes).
     pub max_presence_meta_bytes: usize,
+    /// Run the dispatcher (and the cross-instance receiver) that delivers
+    /// events to connections. Off when realtime is disabled (FB-91): the
+    /// record-change outbox is still written and pruned, because server
+    /// functions and queues read it, but nothing is delivered.
+    pub dispatch: bool,
 }
 
 impl Default for RealtimeConfig {
@@ -111,6 +116,7 @@ impl Default for RealtimeConfig {
             prune_interval: Duration::from_secs(60),
             publish_per_second: 50,
             max_presence_meta_bytes: 1024,
+            dispatch: true,
         }
     }
 }
@@ -243,11 +249,13 @@ impl RealtimeService {
             }),
         };
         let weak = Arc::downgrade(&svc.inner);
-        let mut tasks = vec![tokio::spawn(dispatcher(weak.clone(), notify))];
-        tasks.push(tokio::spawn(pruner(weak.clone())));
-        if let Some(f) = &svc.inner.fanout {
-            let rx = f.subscribe().await?;
-            tasks.push(tokio::spawn(fanout_receiver(weak, rx)));
+        let mut tasks = vec![tokio::spawn(pruner(weak.clone()))];
+        if svc.inner.cfg.dispatch {
+            tasks.push(tokio::spawn(dispatcher(weak.clone(), notify)));
+            if let Some(f) = &svc.inner.fanout {
+                let rx = f.subscribe().await?;
+                tasks.push(tokio::spawn(fanout_receiver(weak, rx)));
+            }
         }
         *svc.inner.tasks.lock().unwrap_or_else(|p| p.into_inner()) = tasks;
         Ok(svc)

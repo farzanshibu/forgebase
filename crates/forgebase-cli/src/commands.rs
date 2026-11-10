@@ -110,13 +110,14 @@ fn running_hint(e: ServerError) -> anyhow::Error {
 /// `forgebase serve`.
 pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
     let loaded = g.load()?;
-    let config = loaded.config;
+    let config = &loaded.config;
     forgebase_observability::init_logging(&config.log.level, config.log.format)?;
     match &loaded.file {
         Some(f) => tracing::info!(config = %f.display(), "configuration loaded"),
         None => tracing::info!("no config file; using defaults, environment and flags"),
     }
-    let server = forgebase_server::start(&config).await?;
+    // FB-91: with the loader's layers, so the feature registry knows each setting's source.
+    let server = forgebase_server::start_loaded(&loaded).await?;
     let addr = server.local_addr();
     println!("ForgeBase {} listening on http://{addr}", build::VERSION);
     println!("  admin:     http://{addr}/admin/");

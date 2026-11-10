@@ -54,6 +54,36 @@ fn doc_metrics() {}
 #[allow(dead_code)]
 fn doc_system_info() {}
 
+/// The feature registry: every module, whether it is on, and its typed
+/// settings with value, default and source (administrators only; FB-91).
+#[utoipa::path(
+    get, path = "/api/system/features", tag = "system",
+    responses(
+        (status = 200, description = "Modules and settings; secrets have `value: null`", body = crate::features::SystemFeatures),
+        (status = 401, description = "No credentials", body = ErrorEnvelope),
+        (status = 403, description = "Not an administrator", body = ErrorEnvelope),
+    )
+)]
+#[allow(dead_code)]
+fn doc_system_features() {}
+
+/// Write settings to the config file: every key is validated first, then all
+/// are written in one atomic, comment-preserving replace (administrators
+/// only; FB-91). Changes apply after a restart.
+#[utoipa::path(
+    patch, path = "/api/system/config", tag = "system",
+    request_body = crate::features::SystemConfigPatch,
+    responses(
+        (status = 200, description = "Written; `restart_required` says whether a restart is needed", body = crate::features::SystemConfigPatched),
+        (status = 400, description = "`validation_failed`, `details: {\"<key>\": \"reason\"}`", body = ErrorEnvelope),
+        (status = 401, description = "No credentials", body = ErrorEnvelope),
+        (status = 403, description = "Not an administrator", body = ErrorEnvelope),
+        (status = 409, description = "`setting_overridden`: set by an environment variable or flag (`details` per key)", body = ErrorEnvelope),
+    )
+)]
+#[allow(dead_code)]
+fn doc_system_config() {}
+
 /// This document.
 #[utoipa::path(
     get, path = "/api/openapi.json", tag = "system",
@@ -75,7 +105,7 @@ fn doc_openapi() {}
         license(name = "MIT OR Apache-2.0"),
     ),
     paths(
-        doc_health, doc_ready, doc_metrics, doc_system_info, doc_openapi,
+        doc_health, doc_ready, doc_metrics, doc_system_info, doc_system_features, doc_system_config, doc_openapi,
         collections::list, collections::create, collections::get, collections::update, collections::delete,
         collections::schema, collections::history,
         records::list, records::query, records::count, records::aggregate, records::explain, records::create,
@@ -100,6 +130,8 @@ fn doc_openapi() {}
     ),
     components(schemas(
         ErrorEnvelope, ErrorDetail,
+        crate::features::SystemFeatures, crate::features::SystemFeature, crate::features::SystemSetting,
+        crate::features::SystemConfigPatch, crate::features::SystemConfigPatched,
         schemas::FieldSchema, schemas::CollectionSchema, schemas::CollectionList, schemas::CollectionSchemaResponse,
         schemas::SchemaChangeSchema, schemas::SchemaHistory, schemas::ListResponse, schemas::ItemsResponse,
         schemas::CountResponse, schemas::ListQueryBody, schemas::AggregateSpecBody, schemas::AggregateBody,
