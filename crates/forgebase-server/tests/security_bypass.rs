@@ -503,6 +503,13 @@ async fn administrative_endpoints_refuse_anonymous_and_ordinary_users() {
         ("POST", "/api/v1/storage/maintenance/reconcile", Some(json!({}))),
         ("POST", "/api/v1/queues/topics", Some(json!({"name": "t"}))),
         ("GET", "/api/v1/jobs", None),
+        // FB-83 backups.
+        ("GET", "/api/v1/system/backups", None),
+        ("POST", "/api/v1/system/backups", Some(json!({}))),
+        ("POST", "/api/v1/system/backups/prune", Some(json!({}))),
+        ("GET", "/api/v1/system/backups/x", None),
+        ("DELETE", "/api/v1/system/backups/x", None),
+        ("POST", "/api/v1/system/backups/x/verify", Some(json!({}))),
         // FIX-4 (identity, billing, storage and KV admin endpoints).
         ("GET", "/api/auth/realms", None),
         ("POST", "/api/auth/realms", Some(json!({"id": "evil", "name": "evil"}))),

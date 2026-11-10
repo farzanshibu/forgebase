@@ -185,8 +185,9 @@ their own, so §4.2 and §4.3 apply. Proof: `forgebase-vector/tests/service.rs`,
 
 | Threat | Control | Proof |
 |---|---|---|
-| Ordinary users or anonymous callers using admin APIs, including the FIX-4 identity, billing, storage and KV admin endpoints | `require_admin` / privileged context or policy permission on every admin route | `security_bypass::administrative_endpoints_refuse_anonymous_and_ordinary_users` (48 routes, billing on) |
+| Ordinary users or anonymous callers using admin APIs, including the FIX-4 identity, billing, storage and KV admin endpoints | `require_admin` / privileged context or policy permission on every admin route | `security_bypass::administrative_endpoints_refuse_anonymous_and_ordinary_users` (54 routes, billing on) |
 | Path traversal in `/admin/{*path}` | Assets are embedded in the binary (no filesystem lookup) | `security_bypass::storage_keys_…` |
+| Backups (FB-83, `/api/v1/system/backups`): reading or deleting snapshots, restoring a crafted archive that writes outside the data directory | Administrators only; restore verifies the manifest first and refuses any path that is absolute or has an empty, `.`, `..` or `\` segment | `security_bypass::administrative_endpoints_…`; `forgebase-backup` tests |
 | XSS in the console | React escapes output; admin sessions use an `HttpOnly` cookie plus CSRF token | dashboard tests |
 
 ### 4.13 `/metrics` and `/api/system/*`
@@ -229,7 +230,7 @@ CARGO_INCREMENTAL=0 cargo test -p forgebase-server --test security_bypass
 | `realm_org_and_tenant_boundaries_hold_over_http` | Foreign realm header, foreign org header and membership edit, a known record id in another tenant (read, update, delete, list), smuggling `_tenant`, anonymous reads |
 | `a_deny_beats_every_allow` | `reports:*` allow plus `reports:export` deny, in any role order, plus the org `admin` role |
 | `scoped_keys_and_pats_cannot_escalate` | A `collections:read:notes` admin key on other collections, through `?expand=` and a relation filter, writes, auth, KV, storage, realtime; a scoped PAT minting `*`, `collections:read`, `auth:*`, `collections:*`; malformed scopes |
-| `administrative_endpoints_refuse_anonymous_and_ordinary_users` | 48 admin routes (auth, policy, functions, storage, queues, jobs, and FIX-4's realm keys, consents, OAuth providers, SMS, billing admin, bucket usage and metadata, KV lists, streams and channels) as anonymous and as a user, with billing on; forged JWTs and keys |
+| `administrative_endpoints_refuse_anonymous_and_ordinary_users` | 54 admin routes (auth, policy, functions, storage, queues, jobs, FB-83 backups, and FIX-4's realm keys, consents, OAuth providers, SMS, billing admin, bucket usage and metadata, KV lists, streams and channels) as anonymous and as a user, with billing on; forged JWTs and keys |
 | `outbound_clients_never_reach_internal_addresses` | Queue push to loopback, metadata, IPv4-mapped, private, unique-local, `file:`/`gopher:`, credentials in URLs, and a name resolving to loopback; functions `fetch` to loopback and metadata; OAuth providers set through the admin API with a loopback issuer, and with a loopback token URL hit by the callback; an OIDC provider from the provider file. A canary listener proves nothing connected. |
 | `storage_keys_cannot_escape_and_uploads_are_validated` | Five traversal key forms, bad bucket names, `/admin` traversal, HTML and PDF under `image/png`, HTML into an `image/*` bucket, oversize, inert download headers |
 | `brute_force_is_locked_out_and_rate_limited_without_trusting_client_headers` | 30 wrong passwords with a fresh `X-Forwarded-For` each; then the right password; an unknown account |

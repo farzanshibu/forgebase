@@ -259,10 +259,11 @@ admin service-account API key with the `system:read` scope as a bearer token.
 ### 5.1 Metrics (`/metrics`)
 
 `GET /metrics` serves Prometheus text format 0.0.4 (`Cache-Control: no-store`).
-The route is always on and needs no token: it is **not** behind authentication
-or the admin check (open item in [security.md §6](security.md#6-open-items)).
-Treat it as an internal endpoint: keep `server.host` on loopback, or block
-`/metrics` at the reverse proxy and scrape it on the private interface. Every
+Access follows `server.ops_access` (§5, [security.md §5](security.md#5-admin-and-operational-access)):
+by default administrators from anywhere, and a scraper on the same host that
+connects directly to `127.0.0.1` without a forwarding header. A scraper
+elsewhere sends an admin service-account API key with the `system:read`
+scope as `Authorization: Bearer …` (Prometheus `authorization.credentials`). Every
 label comes from a fixed list (method, route template, status, state); there
 is no per-user or per-record label.
 
