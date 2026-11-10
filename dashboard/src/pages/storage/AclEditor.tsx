@@ -5,7 +5,7 @@ import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 /** Prefix ACL: each entry grants a grantee (a principal such as `user:alice`, `role:editor` or `*`) a permission on keys under a prefix. */
 export default function AclEditor({ bucket }: { bucket: Bucket }) {
@@ -47,7 +47,7 @@ export default function AclEditor({ bucket }: { bucket: Bucket }) {
           <label>Prefix<Input size="sm" className="ml-2 w-40" placeholder="whole bucket" value={prefix} onChange={(e) => setPrefix(e.target.value)} /></label>
           <label>Grantee<Input size="sm" className="ml-2 w-44" placeholder="user:alice" value={grantee} onChange={(e) => setGrantee(e.target.value)} required /></label>
           <label>Permission
-            <PanelSelect aria-label="Permission" className="ml-2" value={permission} onChange={(v) => setPermission(v as Permission)} options={PERMISSIONS.map((p) => ({ value: p, label: p }))} />
+            <Sel aria-label="Permission" className="ml-2" value={permission} onChange={(v) => setPermission(v as Permission)} options={PERMISSIONS.map((p) => ({ value: p, label: p }))} />
           </label>
           <Button type="submit" tone="primary" disabled={!grantee.trim()}>Add entry</Button>
         </form>

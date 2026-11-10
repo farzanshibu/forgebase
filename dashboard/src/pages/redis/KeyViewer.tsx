@@ -11,7 +11,7 @@ import { TTL_UNITS, formatTtl, omit, parseFields } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 type Act = (f: () => Promise<unknown>) => Promise<void>;
 interface EditorProps { ns: string; data: KvKey; act: Act }
@@ -64,7 +64,7 @@ function Ttl({ ns, data, act }: EditorProps) {
   return (
     <div className="flex flex-wrap items-end gap-2 text-sm">
       <label>Expire in<Input size="sm" aria-label="TTL amount" type="number" min="1" className="ml-2 w-24" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
-      <PanelSelect aria-label="TTL unit" value={unit} onChange={setUnit} options={TTL_UNITS.map((u) => ({ value: u.ms, label: u.label }))} />
+      <Sel aria-label="TTL unit" value={unit} onChange={setUnit} options={TTL_UNITS.map((u) => ({ value: u.ms, label: u.label }))} />
       <Button disabled={!(ms > 0)} onClick={() => void act(() => kvSetTtl(ns, data.key, ms))}>Set TTL</Button>
       <Button disabled={data.ttl_ms === null || data.ttl_ms === undefined} onClick={() => void act(() => kvClearTtl(ns, data.key))}>Remove TTL</Button>
     </div>

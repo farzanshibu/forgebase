@@ -5,7 +5,7 @@ import { Button, ErrorView, Panel } from "../../components/ui";
 import { csv, formatEnv, formatHooks, parseEnv, parseHooks, readFileBytes } from "./util";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 interface Props {
   /** Fixed function name (deploying a new version); otherwise the name is typed. */
@@ -84,7 +84,7 @@ export default function DeployForm({ fixedName, info, config, onDone }: Props) {
         </label>
         <label className="text-sm md:col-span-2">Description<Input size="sm" className="mt-1 w-full" value={description} onChange={(e) => setDescription(e.target.value)} /></label>
         <label className="text-sm">HTTP access
-          <PanelSelect aria-label="HTTP access" className="mt-1" value={access} onChange={(v) => setAccess(v as InvokeAccess)} options={[{ value: "permission", label: "permission" }, { value: "authenticated", label: "authenticated" }, { value: "public", label: "public" }]} />
+          <Sel aria-label="HTTP access" className="mt-1" value={access} onChange={(v) => setAccess(v as InvokeAccess)} options={[{ value: "permission", label: "permission" }, { value: "authenticated", label: "authenticated" }, { value: "public", label: "public" }]} />
         </label>
         <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={activate} onChange={(e) => setActivate(e.target.checked)} />Activate this version</label>
         <fieldset className="md:col-span-4">

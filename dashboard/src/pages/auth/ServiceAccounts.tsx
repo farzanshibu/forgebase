@@ -3,7 +3,8 @@ import {
   createServiceAccount, createServiceAccountKey, deleteServiceAccount, listServiceAccounts, revokeKey, serviceAccountKeys,
   type ServiceAccountView,
 } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { Badge, SecretModal, THEAD, Th, fmtTime, splitList, useAction } from "./common";
 import { Table } from "panelui-web/table";
@@ -32,10 +33,7 @@ export default function ServiceAccounts() {
         >
           <Input size="sm" aria-label="Service account name" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
           <Input size="sm" aria-label="Description" className="w-64" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-          <select aria-label="Role" className={inputCls} value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="service">service</option>
-            <option value="admin">admin</option>
-          </select>
+          <Sel aria-label="Role" value={role} onChange={setRole} options={["service", "admin"]} />
           <Button type="submit" tone="primary" disabled={act.busy || !name.trim()}>
             Create
           </Button>

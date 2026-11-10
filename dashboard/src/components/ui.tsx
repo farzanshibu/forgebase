@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { useState } from "react";
 import { Alert } from "panelui-web/alert";
+import { AlertDialog } from "panelui-web/alert-dialog";
 import { Button as PanelButton } from "panelui-web/button";
 import { Card } from "panelui-web/card";
 import { Spinner } from "panelui-web/spinner";
@@ -14,32 +14,22 @@ export function Button({ tone = "default", className = "", ...p }: ButtonHTMLAtt
   return <PanelButton size="sm" variant={tone === "primary" ? "default" : "outline"} {...p} className={`${danger} ${className}`.trim()} />;
 }
 
-/** Two-step destructive button: the first click arms it, the second runs `onConfirm`. */
+/** Destructive button: opens a PanelUI alert dialog, and `onConfirm` runs only from its action. */
 export function ConfirmButton({ label, onConfirm, disabled }: { label: string; onConfirm: () => void; disabled?: boolean }) {
-  const [armed, setArmed] = useState(false);
-  return armed ? (
-    <Button
-      tone="danger"
-      className="bg-destructive/10"
-      onClick={() => {
-        setArmed(false);
-        onConfirm();
-      }}
-      onBlur={() => setArmed(false)}
-      autoFocus
-    >
-      Confirm {label.toLowerCase()}
-    </Button>
-  ) : (
-    <Button tone="danger" disabled={disabled} onClick={() => setArmed(true)}>
-      {label}
-    </Button>
+  return (
+    <AlertDialog>
+      <AlertDialog.Trigger render={<Button tone="danger" disabled={disabled} />}>{label}</AlertDialog.Trigger>
+      <AlertDialog.Content tone="destructive" size="sm">
+        <AlertDialog.Title>{label}?</AlertDialog.Title>
+        <AlertDialog.Description>This cannot be undone.</AlertDialog.Description>
+        <AlertDialog.Footer>
+          <AlertDialog.Cancel />
+          <AlertDialog.Action onClick={() => onConfirm()}>Confirm {label.toLowerCase()}</AlertDialog.Action>
+        </AlertDialog.Footer>
+      </AlertDialog.Content>
+    </AlertDialog>
   );
 }
-
-/** Classes for native `<select>` and `<textarea>` controls, matching PanelUI Input. */
-export const inputCls =
-  "rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm text-foreground shadow-xs outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive dark:bg-input/30";
 
 /** Sign-in-required state for 401/403, otherwise the PLAN section 5 envelope with per-field errors. */
 export function ErrorView({ error }: { error: unknown }) {

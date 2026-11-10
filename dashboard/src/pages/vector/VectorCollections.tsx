@@ -7,7 +7,7 @@ import { useLoad } from "../../hooks";
 import { bytes } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 export default function VectorCollections() {
   const list = useLoad(listVectorCollections, "vector-collections");
@@ -117,10 +117,10 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         <label className="text-sm">Field name<Input size="sm" className="mt-1 w-full" value={field} onChange={(e) => setField(e.target.value)} /></label>
         <label className="text-sm">Dimension<Input size="sm" type="number" min={1} max={4096} className="mt-1 w-full" value={dimension} onChange={(e) => setDimension(e.target.value)} /></label>
         <label className="text-sm">Metric
-          <PanelSelect aria-label="Metric" className="mt-1" value={metric} onChange={(v) => setMetric(v as Metric)} options={[{ value: "cosine", label: "cosine" }, { value: "l2", label: "l2" }, { value: "dot", label: "dot" }]} />
+          <Sel aria-label="Metric" className="mt-1" value={metric} onChange={(v) => setMetric(v as Metric)} options={[{ value: "cosine", label: "cosine" }, { value: "l2", label: "l2" }, { value: "dot", label: "dot" }]} />
         </label>
         <label className="text-sm">Quantization
-          <PanelSelect aria-label="Quantization" className="mt-1" value={quantization} onChange={(v) => setQuantization(v as Quantization)} options={[{ value: "f32", label: "f32" }, { value: "f16", label: "f16" }, { value: "i8", label: "i8" }]} />
+          <Sel aria-label="Quantization" className="mt-1" value={quantization} onChange={(v) => setQuantization(v as Quantization)} options={[{ value: "f32", label: "f32" }, { value: "f16", label: "f16" }, { value: "i8", label: "i8" }]} />
         </label>
         <div className="flex items-end"><Button tone="primary" type="submit" disabled={busy}>Create collection</Button></div>
       </form>

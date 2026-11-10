@@ -6,7 +6,7 @@ import { useLoad } from "../../hooks";
 import { parseJsonObject, parseVector } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const BROWSE_LIMIT = 1000;
 
@@ -110,7 +110,7 @@ function UpsertForm({ collection, onDone }: { collection: VectorCollection; onDo
       <form aria-label="Upsert record" onSubmit={(e) => void submit(e)} className="grid gap-3 md:grid-cols-2">
         <label className="text-sm">Id (blank = generated)<Input size="sm" className="mt-1 w-full" value={id} onChange={(e) => setId(e.target.value)} /></label>
         <label className="text-sm">Field
-          <PanelSelect aria-label="Field" className="mt-1" value={field} onChange={setField} options={collection.fields.map((f) => ({ value: f.name, label: `${f.name} (${f.dimension})` }))} />
+          <Sel aria-label="Field" className="mt-1" value={field} onChange={setField} options={collection.fields.map((f) => ({ value: f.name, label: `${f.name} (${f.dimension})` }))} />
         </label>
         <label className="text-sm md:col-span-2">Vector<Input size="sm" className="mt-1 w-full font-mono" value={vector} onChange={(e) => setVector(e.target.value)} placeholder="0.1, 0.2, 0.3" /></label>
         <label className="text-sm">Metadata (JSON object)<Input size="sm" className="mt-1 w-full font-mono" value={metadata} onChange={(e) => setMetadata(e.target.value)} placeholder='{"tag":"a"}' /></label>

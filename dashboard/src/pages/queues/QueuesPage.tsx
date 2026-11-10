@@ -1,5 +1,5 @@
 import { Route, Routes } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import Inspector from "./Inspector";
 import SubscriptionDetail from "./SubscriptionDetail";
 import SubscriptionList from "./SubscriptionList";

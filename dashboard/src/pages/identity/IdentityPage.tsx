@@ -1,7 +1,8 @@
-import { NavLink, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import { useState } from "react";
 import { listRealmIdentities } from "../../api";
-import { ErrorView, Loading, inputCls } from "../../components/ui";
+import { ErrorView, Loading } from "../../components/ui";
+import { RouteTabs, Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { Field } from "../access/shared";
 import AgreementsPage from "./AgreementsPage";
@@ -36,19 +37,10 @@ export default function IdentityPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Identity and Tenant Studio</h1>
         <Field label="Realm">
-          <select aria-label="Realm" className={inputCls} value={realm} onChange={(e) => setRealm(e.target.value)}>
-            {(names.length ? names : [realm]).map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
+          <Sel aria-label="Realm" value={realm} onChange={setRealm} options={names.length ? names : [realm]} />
         </Field>
       </div>
-      <nav aria-label="Identity sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
-        {TABS.map((t) => (
-          <NavLink key={t.label} to={t.to} end={t.end}
-            className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-            {t.label}
-          </NavLink>
-        ))}
-      </nav>
+      <RouteTabs label="Identity sections" tabs={TABS} className="mt-4" />
       <div className="mt-6">
         <ErrorView error={realms.error} />
         {realms.loading && !realms.error && <Loading what="Loading realms" />}

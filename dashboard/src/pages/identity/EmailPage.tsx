@@ -1,6 +1,8 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { DELIVERY_STATUSES, listDeliveries, listTemplates, previewEmail, putTemplate, resetTemplate, retryDelivery, sendTestEmail, type DeliveryStatus, type EmailTemplate, type Preview } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, Field, TextField } from "../access/shared";
 import { useRun } from "../access/util";
@@ -52,8 +54,8 @@ function TemplateEditor({ tpl, realm, onSaved }: { tpl: EmailTemplate; realm: st
     <Panel title={`Edit template ${tpl.key}`}>
       <form aria-label="Edit template" className="space-y-3" onSubmit={(e) => { e.preventDefault(); void save.run(() => putTemplate(tpl.key, draft(), realm)); }}>
         <TextField label="Subject" value={subject} onChange={setSubject} />
-        <Field label="Text body"><textarea aria-label="Text body" rows={6} className={`${inputCls} font-mono`} value={text} onChange={(e) => setText(e.target.value)} /></Field>
-        <Field label="HTML body (optional)"><textarea aria-label="HTML body" rows={6} className={`${inputCls} font-mono`} value={html} onChange={(e) => setHtml(e.target.value)} /></Field>
+        <Field label="Text body"><Textarea aria-label="Text body" minRows={6} className="font-mono" value={text} onChange={(e) => setText(e.target.value)} /></Field>
+        <Field label="HTML body (optional)"><Textarea aria-label="HTML body" minRows={6} className="font-mono" value={html} onChange={(e) => setHtml(e.target.value)} /></Field>
         <div aria-label="Template variables" className="text-xs text-muted-foreground">
           Variables you can use: {tpl.variables.length === 0 ? "none" : tpl.variables.map((v) => <code key={v} className="mr-2 rounded bg-muted px-1">{`{{${v}}}`}</code>)}
         </div>
@@ -64,7 +66,7 @@ function TemplateEditor({ tpl, realm, onSaved }: { tpl: EmailTemplate; realm: st
         <ActionError error={save.error} />
       </form>
       <div className="mt-5 space-y-3 border-t border-border pt-4">
-        <Field label="Sample values for the variables (name=value per line)"><textarea aria-label="Sample values" rows={4} className={`${inputCls} font-mono`} value={vars} onChange={(e) => setVars(e.target.value)} /></Field>
+        <Field label="Sample values for the variables (name=value per line)"><Textarea aria-label="Sample values" minRows={4} className="font-mono" value={vars} onChange={(e) => setVars(e.target.value)} /></Field>
         <div className="flex flex-wrap items-end gap-3">
           <Button aria-label="Preview" disabled={pv.busy} onClick={() => void pv.run(async () => setPreview(await previewEmail({ draft: draft(), variables: variables() }, realm)))}>Preview</Button>
           <TextField label="Send test to" value={to} onChange={setTo} placeholder="you@example.com" />
@@ -92,9 +94,7 @@ function DeliveryLog({ realm }: { realm: string }) {
   const { run, error } = useRun(l.reload);
   return (
     <Panel title="Delivery log" actions={
-      <select aria-label="Delivery status" className={inputCls} value={status} onChange={(e) => setStatus(e.target.value as DeliveryStatus | "")}>
-        <option value="">all statuses</option>{DELIVERY_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-      </select>}>
+      <Sel aria-label="Delivery status" value={status} onChange={(v) => setStatus(v as DeliveryStatus | "")} options={[{ value: "", label: "all statuses" }, ...DELIVERY_STATUSES.map((s) => ({ value: s, label: s }))]} />}>
       <ErrorView error={l.error} />
       {l.loading && !l.error && <Loading what="Loading deliveries" />}
       {l.data?.length === 0 && <Empty>No deliveries.</Empty>}

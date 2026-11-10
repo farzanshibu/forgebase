@@ -5,7 +5,7 @@
  * panelui-web/dist adds ~275 kB of CSS for components the dashboard does not use.
  * Add a component here when you import a new one.
  */
-@source "../node_modules/panelui-web/dist/components/{alert,badge,button,card,input,menu,nav-rail,sheet,spinner,stat,table,toast}";
+@source "../node_modules/panelui-web/dist/components/{alert,alert-dialog,badge,button,card,dialog,input,menu,nav-rail,select,sheet,spinner,stat,table,tabs,textarea,toast}";
 
 /* Dark mode follows the `dark` class on <html> (set before first paint by index.html). */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -155,6 +155,3 @@
 @layer base {
   input[type="checkbox"], input[type="radio"], input[type="range"], progress { accent-color: var(--primary); }
 }
-
-/* Components the studio pages use beyond the list at the top (select popup, tabs, textarea). */
-@source "../node_modules/panelui-web/dist/components/{select,tabs,textarea}";

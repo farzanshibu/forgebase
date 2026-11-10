@@ -6,7 +6,7 @@ import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import { Table } from "panelui-web/table";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const STATUSES: WorkflowStatus[] = ["running", "succeeded", "failed", "compensating", "compensated", "cancelled"];
 
@@ -16,7 +16,7 @@ export default function WorkflowList() {
   return (
     <Panel title="Workflows" actions={<Button onClick={wf.reload}>Refresh</Button>}>
       <label className="mb-3 block text-sm">Status
-        <PanelSelect aria-label="Status" className="ml-2" value={status} onChange={(v) => setStatus(v as WorkflowStatus | "")} options={[{ value: "", label: "all" }, ...STATUSES.map((s) => ({ value: s, label: s }))]} />
+        <Sel aria-label="Status" className="ml-2" value={status} onChange={(v) => setStatus(v as WorkflowStatus | "")} options={[{ value: "", label: "all" }, ...STATUSES.map((s) => ({ value: s, label: s }))]} />
       </label>
       <ErrorView error={wf.error} />
       {wf.loading && !wf.error && <Loading what="Loading workflows" />}

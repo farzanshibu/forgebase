@@ -1,5 +1,5 @@
 import { Link, Route, Routes, useParams } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import { bucketUsage, getBucket } from "../../api";
 import { ErrorView, Loading } from "../../components/ui";
 import { formatBytes } from "../../format";

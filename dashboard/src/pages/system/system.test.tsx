@@ -31,7 +31,7 @@ describe("System Studio backups", () => {
   it("is a tab next to the health page", async () => {
     setup();
     renderStudio("/system");
-    await userEvent.click(await screen.findByRole("link", { name: "Backups" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "Backups" }));
     expect(await screen.findByRole("table", { name: "Snapshots" })).toBeInTheDocument();
   });
 
@@ -121,7 +121,7 @@ describe("System Studio backups", () => {
     const row = within(table).getAllByRole("row")[1]!;
     await userEvent.click(within(row).getByRole("button", { name: "Delete" }));
     expect(st.items).toHaveLength(2);
-    await userEvent.click(within(row).getByRole("button", { name: "Confirm delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Deleted snapshot 2026-11-09T10-00-00Z");
     expect(st.items.map((s) => s.id)).toEqual(["2026-11-08T10-00-00Z"]);
     expect(mock.problems).toEqual([]);

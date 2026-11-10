@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { pick } from "../../test/pick";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installIdentity } from "../../test/idMock";
@@ -26,8 +27,8 @@ describe("Identity Studio shell", () => {
     await userEvent.click(await screen.findByRole("link", { name: /Identity & Tenant Studio/ }));
     expect(await screen.findByRole("heading", { name: "Identity and Tenant Studio" })).toBeInTheDocument();
     expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
-    await userEvent.selectOptions(screen.getByLabelText("Realm"), "acme");
-    await userEvent.click(screen.getByRole("link", { name: "Client apps" }));
+    await pick(screen.getByLabelText("Realm"), "acme");
+    await userEvent.click(screen.getByRole("tab", { name: "Client apps" }));
     expect(await screen.findByText("No client apps yet.")).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
@@ -51,7 +52,7 @@ describe("Realms and tenant settings", () => {
     const form = screen.getByRole("form", { name: "Tenant settings" });
     await userEvent.click(within(form).getByLabelText(/^Allow sign-up/));
     await userEvent.click(within(form).getByLabelText("Passkey"));
-    await userEvent.selectOptions(within(form).getByLabelText("Require verified email"), "true");
+    await pick(within(form).getByLabelText("Require verified email"), "true");
     await userEvent.click(within(form).getByRole("button", { name: "Save settings" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Saved");
     const sent = body(mock, "put /api/auth/realms/{realm}").config;
@@ -83,7 +84,7 @@ describe("Client apps", () => {
     expect(screen.queryByTestId("secret-once")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("fbs_first_secret");
 
-    await userEvent.selectOptions(screen.getByLabelText("Grace for Web app"), "86400");
+    await pick(screen.getByLabelText("Grace for Web app"), "86400");
     await userEvent.click(screen.getByRole("button", { name: "Rotate secret Web app" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm rotate secret web app" }));
     expect(await screen.findByTestId("secret-once")).toHaveTextContent("fbs_rotated_secret");
@@ -102,7 +103,7 @@ describe("Client apps", () => {
     await screen.findByText("app_web");
     const form = screen.getByRole("form", { name: "Create client app" });
     await userEvent.type(within(form).getByLabelText("Name"), "SPA");
-    await userEvent.selectOptions(within(form).getByLabelText("Type"), "public");
+    await pick(within(form).getByLabelText("Type"), "public");
     await userEvent.click(within(form).getByRole("button", { name: "Create client app" }));
     expect(await screen.findByText("none (PKCE)")).toBeInTheDocument();
     expect(screen.queryByTestId("secret-once")).not.toBeInTheDocument();
@@ -256,7 +257,7 @@ describe("Social providers CRUD and SMS gateway", () => {
     renderStudio("/identity/providers");
     const form = await screen.findByRole("form", { name: "SMS gateway" });
     expect(form).toHaveTextContent("instance gateway is used");
-    await userEvent.selectOptions(within(form).getByLabelText("Gateway type"), "webhook");
+    await pick(within(form).getByLabelText("Gateway type"), "webhook");
     await userEvent.type(within(form).getByLabelText("Webhook URL"), "https://sms.example.com/send");
     await userEvent.type(within(form).getByLabelText("Bearer token"), "hook-token");
     await userEvent.click(within(form).getByRole("button", { name: "Save SMS gateway" }));
@@ -378,10 +379,10 @@ describe("Email templates", () => {
     expect(await screen.findByText("a@example.com")).toBeInTheDocument();
     expect(screen.getByText("smtp 550 mailbox full")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry b@example.com" })).not.toBeInTheDocument();
-    await userEvent.selectOptions(screen.getByLabelText("Delivery status"), "sent");
+    await pick(screen.getByLabelText("Delivery status"), "sent");
     await waitFor(() => expect(screen.queryByText("a@example.com")).not.toBeInTheDocument());
     expect(mock.calls.filter((c) => c === "get /api/v1/customize/email/deliveries").length).toBeGreaterThan(1);
-    await userEvent.selectOptions(screen.getByLabelText("Delivery status"), "");
+    await pick(screen.getByLabelText("Delivery status"), "");
     await userEvent.click(await screen.findByRole("button", { name: "Retry a@example.com" }));
     await waitFor(() => expect(st.deliveries[0]!.status).toBe("queued"));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Retry a@example.com" })).not.toBeInTheDocument());
@@ -414,7 +415,7 @@ describe("Legal agreements", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "View terms v1" }));
     expect(screen.getByLabelText("Agreement text")).toHaveTextContent("Be kind.");
-    await userEvent.selectOptions(screen.getByLabelText("Acceptance kind"), "terms");
+    await pick(screen.getByLabelText("Acceptance kind"), "terms");
     expect(await screen.findByText("terms v1")).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });

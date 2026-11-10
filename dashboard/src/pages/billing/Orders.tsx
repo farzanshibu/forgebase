@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { createOrder, getInvoice, listAllOrders, listPrices } from "../../api";
 import type { Order, OrderStatus } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
@@ -37,7 +38,7 @@ export default function Orders() {
       <p className="text-sm text-muted-foreground">One-time purchases: credit top-ups, usage packs and services. All orders, newest first; filter by subject or status.</p>
       <form className="flex items-end gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); setOffset(0); setShown(subject); }}>
         <label>Order subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="org:acme or a user key" /></label>
-        <label>Status<select className={`${inputCls} ml-2`} value={status} onChange={(e) => { setOffset(0); setStatus(e.target.value as OrderStatus | ""); }}><option value="">any</option>{STATUSES.map((x) => <option key={x}>{x}</option>)}</select></label>
+        <label>Status<Sel value={status} onChange={(v) => { setOffset(0); setStatus(v as OrderStatus | ""); }} options={[{ value: "", label: "any" }, ...STATUSES]} className="ml-2" /></label>
         <Button type="submit">Show orders</Button>
       </form>
       <BillingError error={orders.error} />
@@ -66,7 +67,7 @@ export default function Orders() {
       <Panel title="New one-time order">
         <form onSubmit={submit} aria-label="New order" className="space-y-3">
           <div className={FORM_GRID}>
-            <Field label="One-time price"><select className={inputCls} value={price} onChange={(e) => setPrice(e.target.value)} required><option value="">choose…</option>{(prices.data ?? []).filter((p) => p.type !== "recurring").map((p) => <option key={p.key} value={p.key}>{p.key}</option>)}</select></Field>
+            <Field label="One-time price"><Sel value={price} onChange={setPrice} options={[{ value: "", label: "choose…" }, ...(prices.data ?? []).filter((p) => p.type !== "recurring").map((p) => ({ value: p.key, label: p.key }))]} required /></Field>
             <Field label="Quantity"><Input size="sm" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} /></Field>
             <Field label="Coupon"><Input size="sm" value={coupon} onChange={(e) => setCoupon(e.target.value)} /></Field>
           </div>

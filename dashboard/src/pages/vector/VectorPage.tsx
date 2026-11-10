@@ -1,5 +1,5 @@
 import { Route, Routes } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import VectorCollectionView from "./VectorCollectionView";
 import VectorCollections from "./VectorCollections";
 

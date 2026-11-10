@@ -7,7 +7,7 @@ import { Button, ConfirmButton, ErrorView, Loading } from "../../components/ui";
 import { display, parseCell } from "./values";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const PER_PAGE = 25;
 
@@ -104,7 +104,7 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2 text-sm" aria-label="Bulk actions">
           <span>{selected.size} selected</span>
-          <PanelSelect aria-label="Bulk field" value={bulkField} onChange={setBulkField} options={[{ value: "", label: "Set field…" }, ...fields.filter((f) => !f.system).map((f) => ({ value: f.name, label: f.name }))]} />
+          <Sel aria-label="Bulk field" value={bulkField} onChange={setBulkField} options={[{ value: "", label: "Set field…" }, ...fields.filter((f) => !f.system).map((f) => ({ value: f.name, label: f.name }))]} />
           <Input size="sm" aria-label="Bulk value" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} placeholder="value" />
           <Button disabled={!bulkField} onClick={() => void bulkApply()}>Apply to selected</Button>
           <ConfirmButton

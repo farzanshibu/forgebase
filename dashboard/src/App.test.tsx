@@ -26,7 +26,7 @@ describe("App shell", () => {
     signedIn(new MockApi().install());
     render(<MemoryRouter initialEntries={["/system"]}><App /></MemoryRouter>);
     // The lazy route renders once its chunk has loaded.
-    expect(await screen.findByRole("navigation", { name: "System sections" })).toBeInTheDocument();
+    expect(await screen.findByRole("tablist", { name: "System sections" })).toBeInTheDocument();
   });
 
   it("builds every studio: none is left as a placeholder", () => {

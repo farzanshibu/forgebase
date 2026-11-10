@@ -4,7 +4,8 @@ import {
   invite, listInvitations, listMembers, listOverrides, listProjects, listRoles, listRoleSets, listTeams, putMember, removeMember,
   removeTeamMember, setMemberStatus, type Effect, type Team,
 } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, EffectBadge, MultiPick, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
@@ -130,10 +131,7 @@ export function TeamsTab({ org }: { org: string }) {
           <TextField label="Team key" value={key} onChange={setKey} />
           <TextField label="Team name" value={name} onChange={setName} />
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">Parent team
-            <select className={inputCls} value={parent} onChange={(e) => setParent(e.target.value)}>
-              <option value="">(top level)</option>
-              {all.map((t) => <option key={t.id} value={t.id}>{t.key}</option>)}
-            </select>
+            <Sel value={parent} onChange={setParent} options={[{ value: "", label: "(top level)" }, ...all.map((t) => ({ value: t.id, label: t.key }))]} />
           </label>
           <Button tone="primary" disabled={!key} onClick={() => void run(() => createTeam(org, { key, name: name || key, parent_id: parent || null }))}>Create team</Button>
         </div>
@@ -239,7 +237,7 @@ export function OverridesTab({ org }: { org: string }) {
           <TextField label="Override principal" value={principal} onChange={setPrincipal} placeholder="user:users/abc" />
           <TextField label="Override permission" value={permission} onChange={setPermission} placeholder="projects:delete" />
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">Effect
-            <select className={inputCls} value={effect} onChange={(e) => setEffect(e.target.value as Effect)}><option value="allow">allow</option><option value="deny">deny</option></select>
+            <Sel value={effect} onChange={(v) => setEffect(v as Effect)} options={["allow", "deny"]} />
           </label>
           <Button tone="primary" disabled={!principal || !permission} onClick={() => void run(() => addOverride({ org_id: org, principal, permission, effect }))}>Add override</Button>
         </div>

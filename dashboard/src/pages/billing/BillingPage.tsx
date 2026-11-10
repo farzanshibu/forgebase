@@ -1,6 +1,7 @@
-import { NavLink, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import { getBillingSettings, isBillingDisabled } from "../../api";
 import { Loading } from "../../components/ui";
+import { RouteTabs } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import Catalog from "./Catalog";
 import Coupons from "./Coupons";
@@ -16,8 +17,6 @@ import { Disabled } from "./shared";
 import Stores from "./Stores";
 import Subscriptions from "./Subscriptions";
 import Usage from "./Usage";
-
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 const TABS: { to: string; label: string; end?: boolean }[] = [
   { to: "/billing", label: "Revenue", end: true },
@@ -46,9 +45,7 @@ export default function BillingPage() {
       {!probe.loading && disabled && <div className="mt-6"><Disabled /></div>}
       {!probe.loading && !disabled && (
         <>
-          <nav aria-label="Billing sections" className="mt-4 flex flex-wrap gap-1 border-b border-border">
-            {TABS.map((t) => <NavLink key={t.to} to={t.to} end={t.end} className={tab}>{t.label}</NavLink>)}
-          </nav>
+          <RouteTabs label="Billing sections" tabs={TABS} className="mt-4" />
           <div className="mt-6">
             <Routes>
               <Route index element={<Revenue />} />

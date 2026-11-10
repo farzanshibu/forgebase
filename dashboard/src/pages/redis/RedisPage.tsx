@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Route, Routes, useSearchParams } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import { kvNamespaces } from "../../api";
 import { useLoad } from "../../hooks";
 import Console from "./Console";

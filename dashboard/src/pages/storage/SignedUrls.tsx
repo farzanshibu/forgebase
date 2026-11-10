@@ -7,7 +7,7 @@ import { EXPIRY_PRESETS } from "./util";
 import { Input } from "panelui-web/input";
 import { toaster } from "../../toaster";
 import { Textarea } from "panelui-web/textarea";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 /** Signed URL generator for any key (also reachable from an object's panel with `initialKey`). */
 export default function SignedUrls({ bucket, initialKey = "", initialVersion = "" }: { bucket: Bucket; initialKey?: string; initialVersion?: string }) {
@@ -30,10 +30,10 @@ export default function SignedUrls({ bucket, initialKey = "", initialVersion = "
       <form onSubmit={(e) => void make(e)} className="flex flex-wrap items-end gap-3 text-sm">
         <label>Key<Input size="sm" className="ml-2 w-56" value={key} onChange={(e) => setKey(e.target.value)} required /></label>
         <label>Method
-          <PanelSelect aria-label="Method" className="ml-2" value={method} onChange={(v) => setMethod(v as "GET" | "PUT")} options={[{ value: "GET", label: "GET" }, { value: "PUT", label: "PUT" }]} />
+          <Sel aria-label="Method" className="ml-2" value={method} onChange={(v) => setMethod(v as "GET" | "PUT")} options={[{ value: "GET", label: "GET" }, { value: "PUT", label: "PUT" }]} />
         </label>
         <label>Expires in
-          <PanelSelect aria-label="Expires in" className="ml-2" value={expiry} onChange={setExpiry} options={EXPIRY_PRESETS.map((p) => ({ value: p.seconds, label: p.label }))} />
+          <Sel aria-label="Expires in" className="ml-2" value={expiry} onChange={setExpiry} options={EXPIRY_PRESETS.map((p) => ({ value: p.seconds, label: p.label }))} />
         </label>
         {method === "GET" && <label>Download as<Input size="sm" className="ml-2 w-36" placeholder="file name" value={downloadAs} onChange={(e) => setDownloadAs(e.target.value)} /></label>}
         {method === "GET" && <label>Version<Input size="sm" className="ml-2 w-32" placeholder="current" value={version} onChange={(e) => setVersion(e.target.value)} /></label>}

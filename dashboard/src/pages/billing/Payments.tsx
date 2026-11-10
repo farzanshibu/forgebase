@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { listPayments, listRefunds } from "../../api";
 import type { PaymentStatus } from "../../api";
-import { Loading, Panel, inputCls } from "../../components/ui";
+import { Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { Badge, BillingError, Empty, Money, Th, SubjectLink } from "./shared";
 import { ROW, TABLE, THEAD, when_ } from "./util";
@@ -19,7 +20,7 @@ export default function Payments() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 text-sm">
-        <label>Status<select className={`${inputCls} ml-2`} value={status} onChange={(e) => setStatus(e.target.value as PaymentStatus | "")}><option value="">all</option>{["pending", "succeeded", "failed", "canceled"].map((s) => <option key={s}>{s}</option>)}</select></label>
+        <label>Status<Sel value={status} onChange={setStatus} options={[{ value: "", label: "all" }, ...(["pending", "succeeded", "failed", "canceled"] as const satisfies readonly PaymentStatus[])]} className="ml-2" /></label>
         <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
         {payments.data && <span aria-label="Failed payments" className={failed ? "text-destructive" : "text-muted-foreground"}>{failed} failed</span>}
       </div>

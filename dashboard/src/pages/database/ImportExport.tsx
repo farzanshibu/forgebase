@@ -3,7 +3,7 @@ import { exportRecords, importRecords } from "../../api";
 import type { CollectionDef, ExportFormat, ImportResult } from "../../api";
 import { Button, ErrorView, Panel } from "../../components/ui";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const FORMATS: ExportFormat[] = ["json", "ndjson", "csv"];
 
@@ -56,7 +56,7 @@ export default function ImportExport({ collection }: { collection: CollectionDef
       <Panel title="Export">
         <div className="flex flex-wrap items-end gap-3 text-sm">
           <label className="flex flex-col gap-1">Format
-            <PanelSelect aria-label="Format" value={format} onChange={(v) => setFormat(v as ExportFormat)} options={FORMATS.map((f) => ({ value: f, label: f }))} />
+            <Sel aria-label="Format" value={format} onChange={(v) => setFormat(v as ExportFormat)} options={FORMATS.map((f) => ({ value: f, label: f }))} />
           </label>
           <label className="flex flex-col gap-1">Filter (optional)
             <Input size="sm" className="w-64 font-mono" value={filter} onChange={(e) => setFilter(e.target.value)} />

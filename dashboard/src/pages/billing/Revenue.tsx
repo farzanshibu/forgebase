@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { billingStats } from "../../api";
-import { Button, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
 import { BillingError, Empty, Money, Th } from "./shared";
@@ -15,10 +16,7 @@ export default function Revenue() {
     <div className="space-y-4">
       <div className="flex items-end gap-3 text-sm">
         <label>Interval
-          <select className={`${inputCls} ml-2`} value={interval} onChange={(e) => setInterval_(e.target.value as "day" | "month")}>
-            <option value="day">day (last 30 days)</option>
-            <option value="month">month</option>
-          </select>
+          <Sel value={interval} onChange={(v) => setInterval_(v as "day" | "month")} options={[{ value: "day", label: "day (last 30 days)" }, "month"]} className="ml-2" />
         </label>
         <Button onClick={stats.reload}>Refresh</Button>
       </div>

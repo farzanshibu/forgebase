@@ -5,7 +5,7 @@ import type { Direction, GraphEdge, GraphNode, Neighbor, Page } from "../../api"
 import { Button, ErrorView, Panel } from "../../components/ui";
 import { layout, type Pos } from "./layout";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const W = 800;
 const H = 480;
@@ -115,7 +115,7 @@ export default function GraphExplorer() {
           <label className="text-sm">Start node id<Input size="sm" aria-label="Start node id" className="mt-1 block" value={start} onChange={(e) => setStart(e.target.value)} /></label>
           <Button tone="primary" onClick={() => void loadStart(start.trim())} disabled={!start.trim()}>Load node</Button>
           <label className="text-sm">Direction
-            <PanelSelect aria-label="Direction" className="mt-1" value={direction} onChange={(v) => setDirection(v as Direction)} options={[{ value: "both", label: "both" }, { value: "out", label: "out" }, { value: "in", label: "in" }]} />
+            <Sel aria-label="Direction" className="mt-1" value={direction} onChange={(v) => setDirection(v as Direction)} options={[{ value: "both", label: "both" }, { value: "out", label: "out" }, { value: "in", label: "in" }]} />
           </label>
           <Button onClick={() => void expand()}>Expand neighbours</Button>
           <label className="text-sm">Depth<Input size="sm" aria-label="Depth" type="number" min={1} max={10} className="mt-1 block w-20" value={depth} onChange={(e) => setDepth(e.target.value)} /></label>

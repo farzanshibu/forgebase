@@ -1,5 +1,5 @@
 import { Route, Routes } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import JobDetail from "./JobDetail";
 import JobList from "./JobList";
 import Schedules from "./Schedules";

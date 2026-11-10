@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderStudio, seeded } from "../../test/helpers";
-import { pick } from "../../test/panelSelect";
+import { pick } from "../../test/pick";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -80,7 +80,7 @@ describe("collection browser and grid", () => {
     const row = screen.getByText("Pen").closest("tr")!;
     await userEvent.click(within(row).getByRole("button", { name: "Delete" }));
     expect(mock.records.products).toHaveLength(2);
-    await userEvent.click(within(row).getByRole("button", { name: /Confirm delete/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Confirm delete/ }));
     await waitFor(() => expect(screen.queryByText("Pen")).not.toBeInTheDocument());
 
     await userEvent.click(screen.getByLabelText("Select all"));
@@ -95,7 +95,7 @@ describe("collection browser and grid", () => {
     renderStudio("/database/c/products");
     await screen.findByText("Pen");
     await userEvent.click(screen.getByLabelText("Select all"));
-    await pick(userEvent, screen.getByLabelText("Bulk field"), "price");
+    await pick(screen.getByLabelText("Bulk field"), "price");
     await userEvent.type(screen.getByLabelText("Bulk value"), "7");
     await userEvent.click(screen.getByRole("button", { name: "Apply to selected" }));
     await waitFor(() => expect(mock.records.products!.map((r) => r.price)).toEqual([7, 7]));
@@ -157,7 +157,7 @@ describe("schema designer", () => {
     await userEvent.type(await screen.findByLabelText("Name"), "orders");
     await userEvent.click(screen.getByRole("button", { name: "Add field" }));
     await userEvent.type(screen.getByLabelText("Field 1 name"), "total");
-    await pick(userEvent, screen.getByLabelText("Field 1 type"), "number");
+    await pick(screen.getByLabelText("Field 1 type"), "number");
     await userEvent.click(screen.getByLabelText("Field 1 required"));
     await userEvent.click(screen.getByRole("button", { name: "Create collection" }));
     await waitFor(() => expect(mock.collections.map((c) => c.name)).toContain("orders"));

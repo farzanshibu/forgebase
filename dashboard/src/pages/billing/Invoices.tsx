@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link, Route, Routes, useParams } from "react-router-dom";
 import { INVOICE_STATUSES, creditInvoice, getInvoice, listCreditNotes, listInvoices, markInvoicePaid, payInvoice, voidInvoice } from "../../api";
 import type { Invoice, InvoiceStatus } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatBp, minorToInput, parseMinor } from "./money";
 import { Badge, BillingError, Empty, Field, Money, Th, SubjectLink } from "./shared";
@@ -120,7 +121,7 @@ function InvoiceList() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 text-sm">
-        <label>Status<select className={`${inputCls} ml-2`} value={status} onChange={(e) => setStatus(e.target.value as InvoiceStatus | "")}><option value="">all</option>{INVOICE_STATUSES.map((s) => <option key={s}>{s}</option>)}</select></label>
+        <label>Status<Sel value={status} onChange={(v) => setStatus(v as InvoiceStatus | "")} options={[{ value: "", label: "all" }, ...INVOICE_STATUSES]} className="ml-2" /></label>
         <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
       </div>
       <BillingError error={invoices.error} />
