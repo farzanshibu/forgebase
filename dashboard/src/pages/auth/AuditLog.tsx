@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { authAudit, authzAudit, type AuditEntry } from "../../api";
-import { Button, ErrorView, Loading, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Badge, THEAD, Th, fmtTime, useAction } from "./common";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 export default function AuditLog() {
   const [kind, setKind] = useState<"auth" | "authz">("auth");
@@ -15,7 +17,7 @@ export default function AuditLog() {
             role="tab"
             aria-selected={kind === k}
             onClick={() => setKind(k)}
-            className={`rounded-md border px-3 py-1.5 text-sm ${kind === k ? "border-amber-500 text-white" : "border-zinc-700 text-zinc-400"}`}
+            className={`rounded-md border px-3 py-1.5 text-sm ${kind === k ? "border-primary text-foreground" : "border-border text-muted-foreground"}`}
           >
             {k === "auth" ? "Authentication" : "Authorization"}
           </button>
@@ -27,7 +29,7 @@ export default function AuditLog() {
 }
 
 function Imp({ v }: { v?: string | null }) {
-  return v ? <Badge tone="warn">{v}</Badge> : <span className="text-zinc-600">—</span>;
+  return v ? <Badge tone="warn">{v}</Badge> : <span className="text-muted-foreground">—</span>;
 }
 
 function AuthEvents() {
@@ -57,33 +59,33 @@ function AuthEvents() {
           setApplied({ event: event.trim(), subject: subject.trim() });
         }}
       >
-        <input aria-label="Event prefix" className={inputCls} placeholder="Event prefix (login, mfa.)" value={event} onChange={(e) => setEvent(e.target.value)} />
-        <input aria-label="Subject id" className={inputCls} placeholder="Subject id" value={subject} onChange={(e) => setSubject(e.target.value)} />
+        <Input size="sm" aria-label="Event prefix" placeholder="Event prefix (login, mfa.)" value={event} onChange={(e) => setEvent(e.target.value)} />
+        <Input size="sm" aria-label="Subject id" placeholder="Subject id" value={subject} onChange={(e) => setSubject(e.target.value)} />
         <Button type="submit">Filter</Button>
       </form>
       <ErrorView error={first.error} />
       {act.errorView}
       {first.loading && !first.error && <Loading what="Loading audit log" />}
-      {first.data && rows.length === 0 && <p className="text-sm text-zinc-400">No audit events match.</p>}
+      {first.data && rows.length === 0 && <p className="text-sm text-muted-foreground">No audit events match.</p>}
       {rows.length > 0 && (
-        <table className="w-full text-sm">
-          <thead className={THEAD}>
-            <tr><Th>When</Th><Th>Event</Th><Th>Outcome</Th><Th>Actor</Th><Th>Subject</Th><Th>IP</Th><Th>Impersonator</Th></tr>
-          </thead>
-          <tbody>
+        <Table className="w-full text-sm">
+          <Table.Header className={THEAD}>
+            <Table.Row><Th>When</Th><Th>Event</Th><Th>Outcome</Th><Th>Actor</Th><Th>Subject</Th><Th>IP</Th><Th>Impersonator</Th></Table.Row>
+          </Table.Header>
+          <Table.Body>
             {rows.map((r) => (
-              <tr key={r.id} className={`border-t border-zinc-800 ${r.impersonator ? "bg-amber-500/5" : ""}`}>
-                <td className="py-1.5 pr-3 whitespace-nowrap">{fmtTime(r.at)}</td>
-                <td className="pr-3">{r.event}</td>
-                <td className="pr-3">{r.outcome === "failure" ? <Badge tone="bad">failure</Badge> : <Badge tone="ok">success</Badge>}</td>
-                <td className="pr-3 font-mono text-xs">{r.actor}</td>
-                <td className="pr-3 font-mono text-xs">{r.subject_id ?? "—"}</td>
-                <td className="pr-3 font-mono text-xs">{r.ip ?? "—"}</td>
-                <td className="pr-3"><Imp v={r.impersonator} /></td>
-              </tr>
+              <Table.Row key={r.id} className={`border-t border-border ${r.impersonator ? "bg-warning/5" : ""}`}>
+                <Table.Cell className="py-1.5 pr-3 whitespace-nowrap">{fmtTime(r.at)}</Table.Cell>
+                <Table.Cell className="pr-3">{r.event}</Table.Cell>
+                <Table.Cell className="pr-3">{r.outcome === "failure" ? <Badge tone="bad">failure</Badge> : <Badge tone="ok">success</Badge>}</Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{r.actor}</Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{r.subject_id ?? "—"}</Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{r.ip ?? "—"}</Table.Cell>
+                <Table.Cell className="pr-3"><Imp v={r.impersonator} /></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       {rows.length > 0 && !more?.done && (
         <div className="mt-3">
@@ -102,26 +104,26 @@ function AuthzEvents() {
     <div>
       <ErrorView error={error} />
       {loading && !error && <Loading what="Loading authorization denials" />}
-      {data?.length === 0 && <p className="text-sm text-zinc-400">No denials recorded.</p>}
+      {data?.length === 0 && <p className="text-sm text-muted-foreground">No denials recorded.</p>}
       {!!data?.length && (
-        <table className="w-full text-sm">
-          <thead className={THEAD}>
-            <tr><Th>When</Th><Th>Step</Th><Th>Permission</Th><Th>Principal</Th><Th>Resource</Th><Th>Reason</Th><Th>Impersonator</Th></tr>
-          </thead>
-          <tbody>
+        <Table className="w-full text-sm">
+          <Table.Header className={THEAD}>
+            <Table.Row><Th>When</Th><Th>Step</Th><Th>Permission</Th><Th>Principal</Th><Th>Resource</Th><Th>Reason</Th><Th>Impersonator</Th></Table.Row>
+          </Table.Header>
+          <Table.Body>
             {data.map((r, i) => (
-              <tr key={`${r.at}-${i}`} className={`border-t border-zinc-800 ${r.impersonator ? "bg-amber-500/5" : ""}`}>
-                <td className="py-1.5 pr-3 whitespace-nowrap">{fmtTime(r.at)}</td>
-                <td className="pr-3"><Badge tone="bad">{r.step}</Badge></td>
-                <td className="pr-3 font-mono text-xs">{r.permission}</td>
-                <td className="pr-3 font-mono text-xs">{r.principal}</td>
-                <td className="pr-3 font-mono text-xs">{r.resource ?? "—"}</td>
-                <td className="pr-3 text-zinc-400">{r.reason}</td>
-                <td className="pr-3"><Imp v={r.impersonator} /></td>
-              </tr>
+              <Table.Row key={`${r.at}-${i}`} className={`border-t border-border ${r.impersonator ? "bg-warning/5" : ""}`}>
+                <Table.Cell className="py-1.5 pr-3 whitespace-nowrap">{fmtTime(r.at)}</Table.Cell>
+                <Table.Cell className="pr-3"><Badge tone="bad">{r.step}</Badge></Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{r.permission}</Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{r.principal}</Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{r.resource ?? "—"}</Table.Cell>
+                <Table.Cell className="pr-3 text-muted-foreground">{r.reason}</Table.Cell>
+                <Table.Cell className="pr-3"><Imp v={r.impersonator} /></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
     </div>
   );

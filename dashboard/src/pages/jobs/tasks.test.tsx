@@ -86,7 +86,8 @@ describe("Job detail for long tasks", () => {
     expect(await screen.findByRole("progressbar", { name: "Task progress" })).toHaveAttribute("aria-valuenow", "25");
     expect(screen.getByText("frame 100/400")).toBeInTheDocument();
     expect(screen.getByText(/Timeout 3600 s/)).toBeInTheDocument();
-    expect(await screen.findByLabelText("Checkpoint")).toHaveTextContent('"frame": 100');
+    // The checkpoint panel renders "loading" first: wait for the content, not just the element.
+    await waitFor(() => expect(screen.getByLabelText("Checkpoint")).toHaveTextContent('"frame": 100'));
     const attempts = await screen.findByRole("table", { name: "Attempts" });
     expect(within(attempts).getByText("worker vanished")).toBeInTheDocument();
     expect(within(attempts).getByText("from checkpoint")).toBeInTheDocument();

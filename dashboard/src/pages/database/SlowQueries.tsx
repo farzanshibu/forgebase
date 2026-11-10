@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { clearSlowQueries, setSlowThreshold, slowQueries } from "../../api";
 import { useLoad } from "../../hooks";
-import { Button, ConfirmButton, ErrorView, Loading, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading } from "../../components/ui";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 export default function SlowQueries() {
   const { data, error, loading, reload } = useLoad(slowQueries, "slow");
@@ -26,28 +28,28 @@ export default function SlowQueries() {
       {data && (
         <>
           <div className="flex flex-wrap items-end gap-3 text-sm">
-            <span className="text-zinc-400">Statements slower than <strong className="text-zinc-100">{data.threshold_ms} ms</strong> are logged.</span>
-            <input aria-label="Threshold ms" className={`${inputCls} w-24`} inputMode="numeric" value={threshold} onChange={(e) => setThreshold(e.target.value)} placeholder="ms" />
+            <span className="text-muted-foreground">Statements slower than <strong className="text-foreground">{data.threshold_ms} ms</strong> are logged.</span>
+            <Input size="sm" aria-label="Threshold ms" className="w-24" inputMode="numeric" value={threshold} onChange={(e) => setThreshold(e.target.value)} placeholder="ms" />
             <Button disabled={!/^\d+$/.test(threshold)} onClick={() => void act(() => setSlowThreshold(Number(threshold)))}>Set threshold</Button>
             <Button onClick={reload}>Refresh</Button>
             <ConfirmButton label="Clear log" disabled={data.items.length === 0} onConfirm={() => void act(clearSlowQueries)} />
           </div>
           {data.items.length === 0 ? (
-            <p className="text-sm text-zinc-400">No slow queries recorded.</p>
+            <p className="text-sm text-muted-foreground">No slow queries recorded.</p>
           ) : (
-            <table className="w-full text-left text-sm">
-              <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-1">SQL</th><th>Duration</th><th>Rows</th><th>When</th></tr></thead>
-              <tbody>
+            <Table className="w-full text-left text-sm">
+              <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">SQL</Table.Head><Table.Head>Duration</Table.Head><Table.Head>Rows</Table.Head><Table.Head>When</Table.Head></Table.Row></Table.Header>
+              <Table.Body>
                 {data.items.map((q, i) => (
-                  <tr key={i} className="border-t border-zinc-800 align-top">
-                    <td className="max-w-xl py-1 font-mono text-xs break-all">{q.sql}{q.label && <span className="ml-2 text-zinc-500">[{q.label.collection}]</span>}</td>
-                    <td>{q.duration_ms.toFixed(1)} ms</td>
-                    <td>{q.rows}</td>
-                    <td className="text-xs text-zinc-400">{q.at}</td>
-                  </tr>
+                  <Table.Row key={i} className="border-t border-border align-top">
+                    <Table.Cell className="max-w-xl py-1 font-mono text-xs break-all">{q.sql}{q.label && <span className="ml-2 text-muted-foreground">[{q.label.collection}]</span>}</Table.Cell>
+                    <Table.Cell>{q.duration_ms.toFixed(1)} ms</Table.Cell>
+                    <Table.Cell>{q.rows}</Table.Cell>
+                    <Table.Cell className="text-xs text-muted-foreground">{q.at}</Table.Cell>
+                  </Table.Row>
                 ))}
-              </tbody>
-            </table>
+              </Table.Body>
+            </Table>
           )}
         </>
       )}

@@ -3,6 +3,7 @@ import { FUNCTION_CAPABILITIES, deployFunction, wasmToBase64 } from "../../api";
 import type { Deployed, FunctionInfo, InvokeAccess, VersionConfig } from "../../api";
 import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
 import { csv, formatEnv, formatHooks, parseEnv, parseHooks, readFileBytes } from "./util";
+import { Input } from "panelui-web/input";
 
 interface Props {
   /** Fixed function name (deploying a new version); otherwise the name is typed. */
@@ -67,19 +68,19 @@ export default function DeployForm({ fixedName, info, config, onDone }: Props) {
   }
 
   const num = (label: string, v: string, set: (s: string) => void) => (
-    <label className="text-sm">{label}<input inputMode="numeric" className={`${inputCls} mt-1 w-full`} value={v} onChange={(e) => set(e.target.value)} placeholder="default" /></label>
+    <label className="text-sm">{label}<Input size="sm" inputMode="numeric" className="mt-1 w-full" value={v} onChange={(e) => set(e.target.value)} placeholder="default" /></label>
   );
 
   return (
     <Panel title={title}>
       <form aria-label={title} onSubmit={(e) => void submit(e)} className="grid gap-3 md:grid-cols-4">
         <label className="text-sm md:col-span-2">Name
-          <input className={`${inputCls} mt-1 w-full`} value={name} onChange={(e) => setName(e.target.value)} readOnly={!!fixedName} required pattern="[a-z][a-z0-9_-]{0,47}" title="Lower-case letters, digits, _ or -, starting with a letter" />
+          <Input size="sm" className="mt-1 w-full" value={name} onChange={(e) => setName(e.target.value)} readOnly={!!fixedName} required pattern="[a-z][a-z0-9_-]{0,47}" title="Lower-case letters, digits, _ or -, starting with a letter" />
         </label>
         <label className="text-sm md:col-span-2">WebAssembly module
           <input type="file" accept=".wasm,application/wasm" className={`${inputCls} mt-1 w-full`} onChange={(e) => setFile(e.target.files?.[0])} />
         </label>
-        <label className="text-sm md:col-span-2">Description<input className={`${inputCls} mt-1 w-full`} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+        <label className="text-sm md:col-span-2">Description<Input size="sm" className="mt-1 w-full" value={description} onChange={(e) => setDescription(e.target.value)} /></label>
         <label className="text-sm">HTTP access
           <select className={`${inputCls} mt-1 w-full`} value={access} onChange={(e) => setAccess(e.target.value as InvokeAccess)}>
             <option value="permission">permission</option><option value="authenticated">authenticated</option><option value="public">public</option>
@@ -97,7 +98,7 @@ export default function DeployForm({ fixedName, info, config, onDone }: Props) {
           </div>
         </fieldset>
         <label className="text-sm md:col-span-4">Fetch hosts (comma separated; empty allows any public host)
-          <input className={`${inputCls} mt-1 w-full`} value={hosts} onChange={(e) => setHosts(e.target.value)} placeholder="api.example.com, *.example.org" />
+          <Input size="sm" className="mt-1 w-full" value={hosts} onChange={(e) => setHosts(e.target.value)} placeholder="api.example.com, *.example.org" />
         </label>
         {num("Fuel", fuel, setFuel)}
         {num("Memory bytes", memory, setMemory)}

@@ -14,7 +14,7 @@ export function RuleInput({ label, value, onChange, noneLabel }: { label: string
   const [mode, setMode] = useState<Mode>(modeOf(value));
   return (
     <div className="flex flex-wrap items-start gap-2">
-      <span className="w-28 pt-1.5 text-sm text-zinc-300">{label}</span>
+      <span className="w-28 pt-1.5 text-sm text-foreground/80">{label}</span>
       <select
         aria-label={`${label} mode`}
         className={inputCls}
@@ -50,7 +50,7 @@ export default function PoliciesPage() {
       {cols.loading && !cols.error && <Loading what="Loading collections" />}
       {cols.data?.length === 0 && <Empty>No collections yet.</Empty>}
       {cols.data && cols.data.length > 0 && (
-        <label className="flex max-w-xs flex-col gap-1 text-xs text-zinc-400">Collection
+        <label className="flex max-w-xs flex-col gap-1 text-xs text-muted-foreground">Collection
           <select className={inputCls} value={name} onChange={(e) => { setName(e.target.value); setSaved(false); }}>
             <option value="">Choose a collection…</option>
             {cols.data.filter((c) => !c.system).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
@@ -77,7 +77,7 @@ function PolicyEditor({ policy, def, saved, onSaved, onChanged }: { policy: Poli
   return (
     <div className="space-y-4">
       <Panel title={`Rules of ${def.name}`}>
-        <p className="mb-3 text-xs text-zinc-500">Locked = privileged callers only. Everyone = no restriction. An expression is evaluated per request.</p>
+        <p className="mb-3 text-xs text-muted-foreground">Locked = privileged callers only. Everyone = no restriction. An expression is evaluated per request.</p>
         <div className="space-y-3">
           {RULES.map(([k, label]) => <RuleInput key={k} label={label} noneLabel="Locked" value={p[k]} onChange={(v) => setP({ ...p, [k]: v })} />)}
         </div>
@@ -86,7 +86,7 @@ function PolicyEditor({ policy, def, saved, onSaved, onChanged }: { policy: Poli
         <Panel title="Field rules">
           <div className="space-y-3">
             {fields.map((f) => (
-              <div key={f.name} className="rounded border border-zinc-800 p-2">
+              <div key={f.name} className="rounded border border-border p-2">
                 <p className="mb-1 font-mono text-sm">{f.name}</p>
                 <RuleInput label={`${f.name} read`} noneLabel="No rule" value={p.fields[f.name]?.read} onChange={(v) => setField(f.name, "read", v)} />
                 <RuleInput label={`${f.name} write`} noneLabel="No rule" value={p.fields[f.name]?.write} onChange={(v) => setField(f.name, "write", v)} />
@@ -98,7 +98,7 @@ function PolicyEditor({ policy, def, saved, onSaved, onChanged }: { policy: Poli
       <div className="flex gap-2">
         <Button tone="primary" onClick={save}>Save rules</Button>
         <ConfirmButton label="Lock all rules" onConfirm={() => void run(async () => { await deletePolicy(def.name); onChanged(); })} />
-        {saved && !error && <span role="status" className="self-center text-sm text-emerald-300">Saved</span>}
+        {saved && !error && <span role="status" className="self-center text-sm text-success">Saved</span>}
       </div>
       <ActionError error={error} />
     </div>

@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Button, ErrorView, inputCls } from "../../components/ui";
+import { Table } from "panelui-web/table";
+import { toaster } from "../../toaster";
 
 export const fmtTime = (v: string | number | null | undefined): string => {
   if (v === null || v === undefined || v === "") return "—";
@@ -10,17 +12,17 @@ export const fmtTime = (v: string | number | null | undefined): string => {
 
 export function Badge({ tone = "default", children }: { tone?: "default" | "ok" | "warn" | "bad"; children: ReactNode }) {
   const c =
-    tone === "ok" ? "border-emerald-700 text-emerald-300"
-    : tone === "warn" ? "border-amber-600 text-amber-300"
-    : tone === "bad" ? "border-red-700 text-red-300"
-    : "border-zinc-600 text-zinc-300";
+    tone === "ok" ? "border-success/40 text-success"
+    : tone === "warn" ? "border-warning/40 text-warning"
+    : tone === "bad" ? "border-destructive/40 text-destructive"
+    : "border-foreground/25 text-foreground/80";
   return <span className={`inline-block rounded border px-1.5 py-0.5 text-xs ${c}`}>{children}</span>;
 }
 
 export function Modal({ title, onClose, children }: { title: string; onClose?: () => void; children: ReactNode }) {
   return (
     <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-lg border border-zinc-700 bg-zinc-900 p-5">
+      <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-medium">{title}</h2>
           {onClose && (
@@ -40,10 +42,10 @@ export function SecretModal({ secret, label, onClose }: { secret: string; label:
   const [copied, setCopied] = useState(false);
   return (
     <Modal title={`${label} created`}>
-      <p role="note" className="mb-2 rounded border border-amber-700/60 bg-amber-500/10 p-2 text-sm text-amber-200">
+      <p role="note" className="mb-2 rounded border border-warning/40 bg-warning/10 p-2 text-sm text-warning">
         Copy this secret now. It is shown once and cannot be retrieved later.
       </p>
-      <code aria-label="Secret" className="block break-all rounded bg-zinc-950 p-2 font-mono text-xs">
+      <code aria-label="Secret" className="block break-all rounded bg-background p-2 font-mono text-xs">
         {secret}
       </code>
       <div className="mt-3 flex justify-end gap-2">
@@ -51,6 +53,7 @@ export function SecretModal({ secret, label, onClose }: { secret: string; label:
           onClick={() => {
             void navigator.clipboard?.writeText(secret);
             setCopied(true);
+            toaster.add({ title: "Secret copied", description: "It is on your clipboard. Store it somewhere safe.", type: "success" });
           }}
         >
           {copied ? "Copied" : "Copy"}
@@ -86,7 +89,7 @@ export function useAction() {
 export const splitList = (s: string) => s.split(/[\s,]+/).filter(Boolean);
 
 export function Th({ children }: { children: ReactNode }) {
-  return <th className="py-2 pr-3">{children}</th>;
+  return <Table.Head className="py-2 pr-3">{children}</Table.Head>;
 }
-export const THEAD = "text-left text-xs uppercase tracking-wide text-zinc-500";
+export const THEAD = "text-left text-xs uppercase tracking-wide text-muted-foreground";
 export { inputCls };

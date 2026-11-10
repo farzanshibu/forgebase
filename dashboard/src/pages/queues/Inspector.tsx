@@ -4,6 +4,7 @@ import type { ReceivedMessage } from "../../api";
 import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { parseJson } from "./util";
+import { Input } from "panelui-web/input";
 
 interface Line extends ReceivedMessage { n: number; state: "held" | "acked" | "nacked" }
 
@@ -57,26 +58,26 @@ export default function Inspector() {
               {(subs.data ?? []).filter((s) => !s.push).map((s) => <option key={s.name} value={s.name}>{s.name} ({s.topic})</option>)}
             </select>
           </label>
-          <label>Most in flight<input className={`${inputCls} ml-2 w-16`} inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label>
+          <label>Most in flight<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label>
           {live ? <Button onClick={stop}>Stop listening</Button> : <Button type="submit" tone="primary" disabled={!sub}>Listen</Button>}
-          {live && <span role="status" className="text-emerald-300">Listening on {live}</span>}
+          {live && <span role="status" className="text-success">Listening on {live}</span>}
         </form>
-        <p className="mt-2 text-xs text-zinc-500">Deliveries are leased to this page until you ack or nack them; unacknowledged ones return after the ack deadline.</p>
+        <p className="mt-2 text-xs text-muted-foreground">Deliveries are leased to this page until you ack or nack them; unacknowledged ones return after the ack deadline.</p>
         <div className="mt-3"><ErrorView error={error ?? subs.error} /></div>
       </Panel>
       <Publish topics={(topics.data ?? []).filter((t) => !t.source).map((t) => t.name)} />
       <Panel title="Deliveries" actions={<div className="flex gap-2"><Button disabled={held.length === 0} onClick={() => void settle(held, "ack")}>Ack all</Button><Button onClick={() => setLines([])} disabled={lines.length === 0}>Clear</Button></div>}>
-        {lines.length === 0 ? <p className="text-sm text-zinc-400">No deliveries yet.</p> : (
+        {lines.length === 0 ? <p className="text-sm text-muted-foreground">No deliveries yet.</p> : (
           <ul aria-label="Deliveries" className="space-y-2 text-sm">
             {lines.map((l) => (
-              <li key={l.n} className="rounded border border-zinc-800 p-2">
+              <li key={l.n} className="rounded border border-border p-2">
                 <div className="flex flex-wrap items-center gap-x-3">
-                  <span className="text-zinc-500">seq {l.message.seq}</span><span className="font-mono text-xs">{l.message.id}</span>
+                  <span className="text-muted-foreground">seq {l.message.seq}</span><span className="font-mono text-xs">{l.message.id}</span>
                   <span>attempt {l.delivery_attempt}</span>
-                  <span className={l.state === "held" ? "text-amber-300" : "text-zinc-400"}>{l.state}</span>
+                  <span className={l.state === "held" ? "text-warning" : "text-muted-foreground"}>{l.state}</span>
                   {l.state === "held" && <>
-                    <button type="button" className="text-emerald-300 hover:underline" aria-label={`Ack ${l.message.id}`} onClick={() => void settle([l.ack_id], "ack")}>Ack</button>
-                    <button type="button" className="text-red-300 hover:underline" aria-label={`Nack ${l.message.id}`} onClick={() => void settle([l.ack_id], "nack")}>Nack</button>
+                    <button type="button" className="text-success hover:underline" aria-label={`Ack ${l.message.id}`} onClick={() => void settle([l.ack_id], "ack")}>Ack</button>
+                    <button type="button" className="text-destructive hover:underline" aria-label={`Nack ${l.message.id}`} onClick={() => void settle([l.ack_id], "nack")}>Nack</button>
                   </>}
                 </div>
                 <pre className="mt-1 overflow-x-auto font-mono text-xs">{JSON.stringify(l.message.data)}</pre>
@@ -116,9 +117,9 @@ function Publish({ topics }: { topics: string[] }) {
             {topics.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </label>
-        <label>Data (JSON)<input className={`${inputCls} ml-2 w-72 font-mono text-xs`} value={data} onChange={(e) => setData(e.target.value)} /></label>
+        <label>Data (JSON)<Input size="sm" className="ml-2 w-72 font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
         <Button type="submit" disabled={!topic}>Publish</Button>
-        {last && <span role="status" className="text-emerald-300">{last}</span>}
+        {last && <span role="status" className="text-success">{last}</span>}
       </form>
       <div className="mt-3"><ErrorView error={error} /></div>
     </Panel>

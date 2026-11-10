@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ApiError, kvExec } from "../../api";
-import { Button, Panel, inputCls } from "../../components/ui";
+import { Button, Panel } from "../../components/ui";
 import { formatReply, tokenize } from "./util";
+import { Input } from "panelui-web/input";
 
 interface Entry { id: number; line: string; out: string; ok: boolean }
 
@@ -35,17 +36,17 @@ export default function Console({ ns }: { ns: string }) {
   };
   return (
     <Panel title={`Command console (namespace ${ns})`} actions={<Button onClick={() => setLog([])} disabled={log.length === 0}>Clear</Button>}>
-      <div aria-label="Console output" role="log" className="mb-3 max-h-96 overflow-auto rounded bg-zinc-950 p-3 font-mono text-xs">
-        {log.length === 0 && <p className="text-zinc-500">Type a command, for example SET greeting hello or KEYS *. Quote arguments with spaces.</p>}
+      <div aria-label="Console output" role="log" className="mb-3 max-h-96 overflow-auto rounded bg-background p-3 font-mono text-xs">
+        {log.length === 0 && <p className="text-muted-foreground">Type a command, for example SET greeting hello or KEYS *. Quote arguments with spaces.</p>}
         {log.map((e) => (
           <div key={e.id} className="mb-2">
-            <p className="text-amber-300">&gt; {e.line}</p>
-            <pre className={`whitespace-pre-wrap ${e.ok ? "text-zinc-200" : "text-red-300"}`}>{e.out}</pre>
+            <p className="text-warning">&gt; {e.line}</p>
+            <pre className={`whitespace-pre-wrap ${e.ok ? "text-foreground" : "text-destructive"}`}>{e.out}</pre>
           </div>
         ))}
       </div>
       <form onSubmit={(e) => void run(e)} className="flex gap-2">
-        <input aria-label="Command" className={`${inputCls} flex-1 font-mono`} placeholder="GET key" value={line} onChange={(e) => setLine(e.target.value)} onKeyDown={key} autoComplete="off" spellCheck={false} />
+        <Input size="sm" aria-label="Command" className="flex-1 font-mono" placeholder="GET key" value={line} onChange={(e) => setLine(e.target.value)} onKeyDown={key} autoComplete="off" spellCheck={false} />
         <Button type="submit" tone="primary" disabled={busy || !line.trim()}>Run</Button>
       </form>
     </Panel>

@@ -4,6 +4,8 @@ import { listCollections, searchUsers } from "../../api";
 import { ErrorView, Loading, inputCls, Button } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { THEAD, Th } from "./common";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 export default function Users() {
   const cols = useLoad(listCollections, "collections");
@@ -28,7 +30,7 @@ export default function Users() {
           setSearch(input.trim());
         }}
       >
-        <label className="text-sm text-zinc-400">
+        <label className="text-sm text-muted-foreground">
           Collection{" "}
           <select
             aria-label="Auth collection"
@@ -44,40 +46,40 @@ export default function Users() {
             ))}
           </select>
         </label>
-        <input aria-label="Search users" className={`${inputCls} w-64`} placeholder="Search email or name" value={input} onChange={(e) => setInput(e.target.value)} />
+        <Input size="sm" aria-label="Search users" className="w-64" placeholder="Search email or name" value={input} onChange={(e) => setInput(e.target.value)} />
         <Button type="submit">Search</Button>
       </form>
       <ErrorView error={cols.error ?? list.error} />
       {(cols.loading || list.loading) && !cols.error && !list.error && <Loading what="Loading users" />}
-      {!cols.loading && !cols.error && authCols.length === 0 && <p className="text-sm text-zinc-400">No auth collections exist yet.</p>}
-      {d && d.items.length === 0 && <p className="text-sm text-zinc-400">No users match.</p>}
+      {!cols.loading && !cols.error && authCols.length === 0 && <p className="text-sm text-muted-foreground">No auth collections exist yet.</p>}
+      {d && d.items.length === 0 && <p className="text-sm text-muted-foreground">No users match.</p>}
       {d && d.items.length > 0 && collection && (
         <>
-          <table className="w-full text-sm">
-            <thead className={THEAD}>
-              <tr>
+          <Table className="w-full text-sm">
+            <Table.Header className={THEAD}>
+              <Table.Row>
                 <Th>Email</Th>
                 <Th>Id</Th>
                 <Th>Verified</Th>
                 <Th>Created</Th>
-              </tr>
-            </thead>
-            <tbody>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
               {d.items.map((u) => (
-                <tr key={String(u.id)} className="border-t border-zinc-800">
-                  <td className="py-2 pr-3">
-                    <Link className="text-amber-300 hover:underline" to={`/auth/users/${encodeURIComponent(collection)}/${encodeURIComponent(String(u.id))}`}>
+                <Table.Row key={String(u.id)} className="border-t border-border">
+                  <Table.Cell className="py-2 pr-3">
+                    <Link className="text-primary hover:underline" to={`/auth/users/${encodeURIComponent(collection)}/${encodeURIComponent(String(u.id))}`}>
                       {String(u.email ?? u.id)}
                     </Link>
-                  </td>
-                  <td className="pr-3 font-mono text-xs text-zinc-400">{String(u.id)}</td>
-                  <td className="pr-3">{u.verified ? "yes" : "no"}</td>
-                  <td className="pr-3 text-zinc-400">{String(u.created ?? "")}</td>
-                </tr>
+                  </Table.Cell>
+                  <Table.Cell className="pr-3 font-mono text-xs text-muted-foreground">{String(u.id)}</Table.Cell>
+                  <Table.Cell className="pr-3">{u.verified ? "yes" : "no"}</Table.Cell>
+                  <Table.Cell className="pr-3 text-muted-foreground">{String(u.created ?? "")}</Table.Cell>
+                </Table.Row>
               ))}
-            </tbody>
-          </table>
-          <div className="mt-3 flex items-center gap-2 text-sm text-zinc-400">
+            </Table.Body>
+          </Table>
+          <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
             <Button disabled={page <= 1} onClick={() => setPage(page - 1)}>
               Previous
             </Button>

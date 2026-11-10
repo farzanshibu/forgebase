@@ -4,10 +4,12 @@ import { getNode, neighbors, shortestPath, traverse } from "../../api";
 import type { Direction, GraphEdge, GraphNode, Neighbor, Page } from "../../api";
 import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
 import { layout, type Pos } from "./layout";
+import { Input } from "panelui-web/input";
 
 const W = 800;
 const H = 480;
-const PALETTE = ["#fbbf24", "#34d399", "#60a5fa", "#f472b6", "#a78bfa", "#fb923c", "#2dd4bf"];
+// Theme tokens, so nodes follow light/dark and the accent (chart-1 is the accent).
+const PALETTE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)", "var(--info)", "var(--success)"];
 const colour = (label: string) => PALETTE[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length]!;
 
 interface View { nodes: Map<string, GraphNode>; edges: Map<string, GraphEdge>; pos: Map<string, Pos> }
@@ -109,7 +111,7 @@ export default function GraphExplorer() {
     <div className="space-y-4">
       <Panel title="Explorer controls">
         <div className="flex flex-wrap items-end gap-2">
-          <label className="text-sm">Start node id<input aria-label="Start node id" className={`${inputCls} mt-1 block`} value={start} onChange={(e) => setStart(e.target.value)} /></label>
+          <label className="text-sm">Start node id<Input size="sm" aria-label="Start node id" className="mt-1 block" value={start} onChange={(e) => setStart(e.target.value)} /></label>
           <Button tone="primary" onClick={() => void loadStart(start.trim())} disabled={!start.trim()}>Load node</Button>
           <label className="text-sm">Direction
             <select aria-label="Direction" className={`${inputCls} mt-1 block`} value={direction} onChange={(e) => setDirection(e.target.value as Direction)}>
@@ -117,20 +119,20 @@ export default function GraphExplorer() {
             </select>
           </label>
           <Button onClick={() => void expand()}>Expand neighbours</Button>
-          <label className="text-sm">Depth<input aria-label="Depth" type="number" min={1} max={10} className={`${inputCls} mt-1 block w-20`} value={depth} onChange={(e) => setDepth(e.target.value)} /></label>
+          <label className="text-sm">Depth<Input size="sm" aria-label="Depth" type="number" min={1} max={10} className="mt-1 block w-20" value={depth} onChange={(e) => setDepth(e.target.value)} /></label>
           <Button onClick={() => void runTraverse()}>Traverse</Button>
-          <label className="text-sm">Path to<input aria-label="Path target id" className={`${inputCls} mt-1 block`} value={pathTo} onChange={(e) => setPathTo(e.target.value)} /></label>
+          <label className="text-sm">Path to<Input size="sm" aria-label="Path target id" className="mt-1 block" value={pathTo} onChange={(e) => setPathTo(e.target.value)} /></label>
           <Button onClick={() => void findPath()}>Find path</Button>
           <Button onClick={() => { setView(EMPTY); setSelected(undefined); setPath(undefined); setStatus(undefined); }}>Clear</Button>
         </div>
-        <p className="mt-2 text-xs text-zinc-500">Select a node in the canvas, then expand, traverse from it or find the shortest path to another node id.</p>
+        <p className="mt-2 text-xs text-muted-foreground">Select a node in the canvas, then expand, traverse from it or find the shortest path to another node id.</p>
       </Panel>
       <ErrorView error={error} />
-      {status && <p role="status" className="text-sm text-emerald-300">{status}</p>}
+      {status && <p role="status" className="text-sm text-success">{status}</p>}
       <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
-        <svg role="img" aria-label="Graph canvas" viewBox={`0 0 ${W} ${H}`} className="w-full rounded-lg border border-zinc-800 bg-zinc-950">
+        <svg role="img" aria-label="Graph canvas" viewBox={`0 0 ${W} ${H}`} className="w-full rounded-lg border border-border bg-background">
           <defs>
-            <marker id="arrow" viewBox="0 0 10 10" refX="24" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#71717a" /></marker>
+            <marker id="arrow" viewBox="0 0 10 10" refX="24" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style={{ fill: "var(--muted-foreground)" }} /></marker>
           </defs>
           {[...view.edges.values()].map((e) => {
             const a = view.pos.get(e.source), b = view.pos.get(e.target);
@@ -138,8 +140,8 @@ export default function GraphExplorer() {
             const on = path?.edges.has(e.id);
             return (
               <g key={e.id} data-testid={`edge-${e.id}`} data-on-path={on ? "true" : undefined}>
-                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={on ? "#fbbf24" : "#52525b"} strokeWidth={on ? 3 : 1.5} markerEnd={e.directed ? "url(#arrow)" : undefined} />
-                <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 4} fontSize="9" fill="#a1a1aa" textAnchor="middle">{e.type}</text>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} style={{ stroke: on ? "var(--primary)" : "var(--muted-foreground)" }} strokeOpacity={on ? 1 : 0.55} strokeWidth={on ? 3 : 1.5} markerEnd={e.directed ? "url(#arrow)" : undefined} />
+                <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 4} fontSize="9" style={{ fill: "var(--muted-foreground)" }} textAnchor="middle">{e.type}</text>
               </g>
             );
           })}
@@ -150,8 +152,8 @@ export default function GraphExplorer() {
             return (
               <g key={n.id} role="button" tabIndex={0} aria-label={`Node ${n.id}`} aria-pressed={selected === n.id} data-on-path={on ? "true" : undefined}
                 onClick={() => setSelected(n.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setSelected(n.id); }} className="cursor-pointer">
-                <circle cx={p.x} cy={p.y} r={14} fill={colour(n.label)} stroke={selected === n.id ? "#fff" : on ? "#fbbf24" : "#18181b"} strokeWidth={selected === n.id || on ? 3 : 1.5} />
-                <text x={p.x} y={p.y + 28} fontSize="10" fill="#e4e4e7" textAnchor="middle">{n.id}</text>
+                <circle cx={p.x} cy={p.y} r={14} style={{ fill: colour(n.label), stroke: selected === n.id ? "var(--foreground)" : on ? "var(--primary)" : "var(--background)" }} strokeWidth={selected === n.id || on ? 3 : 1.5} />
+                <text x={p.x} y={p.y + 28} fontSize="10" style={{ fill: "var(--foreground)" }} textAnchor="middle">{n.id}</text>
               </g>
             );
           })}
@@ -159,13 +161,13 @@ export default function GraphExplorer() {
         <Panel title={sel ? `Node ${sel.id}` : "Details"}>
           {sel ? (
             <div className="text-sm">
-              <p className="text-zinc-400">Label: {sel.label || "none"}</p>
-              <pre aria-label="Node properties" className="mt-2 max-h-72 overflow-auto text-xs text-zinc-300">{JSON.stringify(sel.properties, null, 2)}</pre>
+              <p className="text-muted-foreground">Label: {sel.label || "none"}</p>
+              <pre aria-label="Node properties" className="mt-2 max-h-72 overflow-auto text-xs text-foreground/80">{JSON.stringify(sel.properties, null, 2)}</pre>
             </div>
           ) : (
-            <p className="text-sm text-zinc-400">{view.nodes.size === 0 ? "Load a node to begin." : "Select a node."}</p>
+            <p className="text-sm text-muted-foreground">{view.nodes.size === 0 ? "Load a node to begin." : "Select a node."}</p>
           )}
-          <p className="mt-3 text-xs text-zinc-500">{view.nodes.size} nodes · {view.edges.size} edges on screen</p>
+          <p className="mt-3 text-xs text-muted-foreground">{view.nodes.size} nodes · {view.edges.size} edges on screen</p>
         </Panel>
       </div>
     </div>

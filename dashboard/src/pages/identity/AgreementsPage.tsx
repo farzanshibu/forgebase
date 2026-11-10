@@ -6,6 +6,7 @@ import { ActionError, Empty, Field, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { fmtTime, useRealm } from "./util";
+import { Table } from "panelui-web/table";
 
 /** Legal agreements: every published version, publish a new version, and who accepted what. */
 export default function AgreementsPage() {
@@ -28,22 +29,22 @@ export default function AgreementsPage() {
         {l.loading && !l.error && <Loading what="Loading agreements" />}
         {l.data?.length === 0 && <Empty>No agreements published yet.</Empty>}
         {l.data && l.data.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Kind</th><th>Version</th><th>Title</th><th>Published</th><th /></tr></thead>
-            <tbody>
+          <Table className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Kind</Table.Head><Table.Head>Version</Table.Head><Table.Head>Title</Table.Head><Table.Head>Published</Table.Head><Table.Head /></Table.Row></Table.Header>
+            <Table.Body>
               {l.data.map((a) => (
-                <tr key={a.id} className="border-t border-zinc-800">
-                  <td className="py-1.5 font-mono">{a.kind}</td>
-                  <td>v{a.version}{a.version === latest(a.kind) && <span className="ml-2 rounded bg-emerald-500/15 px-1.5 text-xs text-emerald-300">current</span>}</td>
-                  <td>{a.title}</td>
-                  <td className="text-xs text-zinc-400">{fmtTime(a.published_at)} by {a.published_by}</td>
-                  <td className="text-right"><Button aria-label={`View ${a.kind} v${a.version}`} onClick={() => setOpen(a)}>View</Button></td>
-                </tr>
+                <Table.Row key={a.id} className="border-t border-border">
+                  <Table.Cell className="py-1.5 font-mono">{a.kind}</Table.Cell>
+                  <Table.Cell>v{a.version}{a.version === latest(a.kind) && <span className="ml-2 rounded bg-success/15 px-1.5 text-xs text-success">current</span>}</Table.Cell>
+                  <Table.Cell>{a.title}</Table.Cell>
+                  <Table.Cell className="text-xs text-muted-foreground">{fmtTime(a.published_at)} by {a.published_by}</Table.Cell>
+                  <Table.Cell className="text-right"><Button aria-label={`View ${a.kind} v${a.version}`} onClick={() => setOpen(a)}>View</Button></Table.Cell>
+                </Table.Row>
               ))}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table>
         )}
-        {open && <article aria-label="Agreement text" className="mt-3 rounded-md border border-zinc-800 p-3 text-sm"><h3 className="font-medium">{open.title} (v{open.version})</h3>{open.url && <p className="text-xs text-zinc-500">{open.url}</p>}<pre className="mt-2 whitespace-pre-wrap font-sans">{open.body}</pre></article>}
+        {open && <article aria-label="Agreement text" className="mt-3 rounded-md border border-border p-3 text-sm"><h3 className="font-medium">{open.title} (v{open.version})</h3>{open.url && <p className="text-xs text-muted-foreground">{open.url}</p>}<pre className="mt-2 whitespace-pre-wrap font-sans">{open.body}</pre></article>}
       </Panel>
       <Panel title="Publish a new version">
         <form aria-label="Publish agreement" className="space-y-3" onSubmit={(e) => { e.preventDefault(); void run(async () => { await publishAgreement({ kind, title, body, ...(url ? { url } : {}) }, realm); setBody(""); setTitle(""); }); }}>
@@ -65,10 +66,10 @@ export default function AgreementsPage() {
         <ErrorView error={acc.error} />
         {acc.data?.length === 0 && <Empty>No acceptances recorded.</Empty>}
         {acc.data && acc.data.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Principal</th><th>Agreement</th><th>Accepted</th><th>IP</th></tr></thead>
-            <tbody>{acc.data.map((a) => <tr key={a.id} className="border-t border-zinc-800"><td className="py-1.5 font-mono text-xs">{a.principal}</td><td>{a.kind} v{a.version}</td><td className="text-xs text-zinc-400">{fmtTime(a.accepted_at)}</td><td className="font-mono text-xs">{a.ip ?? "-"}</td></tr>)}</tbody>
-          </table>
+          <Table className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Agreement</Table.Head><Table.Head>Accepted</Table.Head><Table.Head>IP</Table.Head></Table.Row></Table.Header>
+            <Table.Body>{acc.data.map((a) => <Table.Row key={a.id} className="border-t border-border"><Table.Cell className="py-1.5 font-mono text-xs">{a.principal}</Table.Cell><Table.Cell>{a.kind} v{a.version}</Table.Cell><Table.Cell className="text-xs text-muted-foreground">{fmtTime(a.accepted_at)}</Table.Cell><Table.Cell className="font-mono text-xs">{a.ip ?? "-"}</Table.Cell></Table.Row>)}</Table.Body>
+          </Table>
         )}
       </Panel>
     </div>

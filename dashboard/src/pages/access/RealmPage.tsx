@@ -6,6 +6,7 @@ import RolesPanel from "./RolesPanel";
 import RoleSetsPanel from "./RoleSetsPanel";
 import { ActionError, Empty, MultiPick, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
+import { Table } from "panelui-web/table";
 
 /** Realm level: realms, realm roles, role sets, bindings and global suspensions. */
 export default function RealmPage() {
@@ -30,7 +31,7 @@ function Realms() {
       <ErrorView error={l.error} />
       {l.loading && !l.error && <Loading what="Loading realms" />}
       {l.data?.length === 0 && <Empty>No realms.</Empty>}
-      {l.data && <ul className="text-sm">{l.data.map((r) => <li key={r.id} className="border-t border-zinc-800 py-1.5"><span className="font-mono">{r.id}</span> — {r.name}</li>)}</ul>}
+      {l.data && <ul className="text-sm">{l.data.map((r) => <li key={r.id} className="border-t border-border py-1.5"><span className="font-mono">{r.id}</span> — {r.name}</li>)}</ul>}
       <div className="flex flex-wrap items-end gap-3">
         <TextField label="Realm id" value={id} onChange={setId} />
         <TextField label="Realm name" value={name} onChange={setName} />
@@ -55,13 +56,13 @@ function Bindings() {
       {l.loading && !l.error && <Loading what="Loading bindings" />}
       {l.data?.length === 0 && <Empty>No realm bindings.</Empty>}
       {l.data && l.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Principal</th><th>Roles</th><th>Role sets</th><th /></tr></thead>
-          <tbody>{l.data.map((b) => (
-            <tr key={b.principal} className="border-t border-zinc-800"><td className="py-2 font-mono">{b.principal}</td><td>{b.roles.join(", ")}</td><td>{b.role_sets.join(", ")}</td>
-              <td className="text-right"><Button onClick={() => { setPrincipal(b.principal); setR(b.roles); setRs(b.role_sets); }}>Edit {b.principal}</Button></td></tr>
-          ))}</tbody>
-        </table>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Roles</Table.Head><Table.Head>Role sets</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>{l.data.map((b) => (
+            <Table.Row key={b.principal} className="border-t border-border"><Table.Cell className="py-2 font-mono">{b.principal}</Table.Cell><Table.Cell>{b.roles.join(", ")}</Table.Cell><Table.Cell>{b.role_sets.join(", ")}</Table.Cell>
+              <Table.Cell className="text-right"><Button onClick={() => { setPrincipal(b.principal); setR(b.roles); setRs(b.role_sets); }}>Edit {b.principal}</Button></Table.Cell></Table.Row>
+          ))}</Table.Body>
+        </Table>
       )}
       <Panel title="Bind realm roles">
         <TextField label="Binding principal" value={principal} onChange={setPrincipal} placeholder="user:users/abc" />
@@ -87,13 +88,13 @@ function Suspensions() {
       {l.loading && !l.error && <Loading what="Loading suspensions" />}
       {l.data?.length === 0 && <Empty>No suspended accounts.</Empty>}
       {l.data && l.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Principal</th><th>Reason</th><th>Until</th><th /></tr></thead>
-          <tbody>{l.data.map((s) => (
-            <tr key={s.principal} className={rowCls(true)}><td className="py-2 font-mono">{s.principal}</td><td>{s.reason}</td><td>{s.until ? String(s.until) : "until lifted"}</td>
-              <td className="text-right"><ConfirmButton label="Lift" onConfirm={() => void run(() => liftSuspension(s.principal))} /></td></tr>
-          ))}</tbody>
-        </table>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Reason</Table.Head><Table.Head>Until</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>{l.data.map((s) => (
+            <Table.Row key={s.principal} className={rowCls(true)}><Table.Cell className="py-2 font-mono">{s.principal}</Table.Cell><Table.Cell>{s.reason}</Table.Cell><Table.Cell>{s.until ? String(s.until) : "until lifted"}</Table.Cell>
+              <Table.Cell className="text-right"><ConfirmButton label="Lift" onConfirm={() => void run(() => liftSuspension(s.principal))} /></Table.Cell></Table.Row>
+          ))}</Table.Body>
+        </Table>
       )}
       <div className="flex flex-wrap items-end gap-3">
         <TextField label="Suspend principal" value={principal} onChange={setPrincipal} placeholder="user:users/abc" />

@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { createCollection, deleteCollection, updateCollection, FIELD_TYPES } from "../../api";
 import type { CollectionDef, FieldDef } from "../../api";
 import { Button, ConfirmButton, ErrorView, inputCls } from "../../components/ui";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 const CORE_KEYS = ["id", "name", "type", "required", "unique", "hidden", "system", "default"];
 
@@ -78,7 +80,7 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
       <h2 className="text-lg font-medium">{existing ? "Schema" : "New collection"}</h2>
       <div className="flex flex-wrap items-end gap-3 text-sm">
         <label className="flex flex-col gap-1">Name
-          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} />
+          <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="flex flex-col gap-1">Type
           <select className={inputCls} value={kind} onChange={(e) => setKind(e.target.value)}>
@@ -95,38 +97,38 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
         </label>
       </div>
 
-      <table className="w-full text-left text-sm">
-        <thead className="text-xs uppercase tracking-wide text-zinc-500">
-          <tr><th className="py-1">Field</th><th>Type</th><th>Required</th><th>Unique</th><th>Options (JSON)</th><th /></tr>
-        </thead>
-        <tbody>
+      <Table className="w-full text-left text-sm">
+        <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+          <Table.Row><Table.Head className="py-1">Field</Table.Head><Table.Head>Type</Table.Head><Table.Head>Required</Table.Head><Table.Head>Unique</Table.Head><Table.Head>Options (JSON)</Table.Head><Table.Head /></Table.Row>
+        </Table.Header>
+        <Table.Body>
           {rows.map((r, i) => {
             const locked = !!r.base.system;
             return (
-              <tr key={r.base.id ?? `new-${i}`} className="border-t border-zinc-800">
-                <td className="py-1 pr-2">
-                  <input aria-label={`Field ${i + 1} name`} disabled={locked} className={`${inputCls} w-full`} value={r.name} onChange={(e) => patch(i, { name: e.target.value })} />
-                </td>
-                <td className="pr-2">
+              <Table.Row key={r.base.id ?? `new-${i}`} className="border-t border-border">
+                <Table.Cell className="py-1 pr-2">
+                  <Input size="sm" aria-label={`Field ${i + 1} name`} disabled={locked} className="w-full" value={r.name} onChange={(e) => patch(i, { name: e.target.value })} />
+                </Table.Cell>
+                <Table.Cell className="pr-2">
                   <select aria-label={`Field ${i + 1} type`} disabled={locked} className={inputCls} value={r.type} onChange={(e) => patch(i, { type: e.target.value })}>
                     {[...new Set([...FIELD_TYPES, r.type])].map((t) => <option key={t}>{t}</option>)}
                   </select>
-                </td>
-                <td><input type="checkbox" aria-label={`Field ${i + 1} required`} disabled={locked} checked={r.required} onChange={(e) => patch(i, { required: e.target.checked })} /></td>
-                <td><input type="checkbox" aria-label={`Field ${i + 1} unique`} disabled={locked} checked={r.unique} onChange={(e) => patch(i, { unique: e.target.checked })} /></td>
-                <td className="pr-2">
-                  <input aria-label={`Field ${i + 1} options`} disabled={locked} className={`${inputCls} w-full font-mono text-xs`} placeholder='{"max_length":80}' value={r.options} onChange={(e) => patch(i, { options: e.target.value })} />
-                </td>
-                <td>{locked ? <span className="text-xs text-zinc-500">system</span> : <Button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>Remove</Button>}</td>
-              </tr>
+                </Table.Cell>
+                <Table.Cell><input type="checkbox" aria-label={`Field ${i + 1} required`} disabled={locked} checked={r.required} onChange={(e) => patch(i, { required: e.target.checked })} /></Table.Cell>
+                <Table.Cell><input type="checkbox" aria-label={`Field ${i + 1} unique`} disabled={locked} checked={r.unique} onChange={(e) => patch(i, { unique: e.target.checked })} /></Table.Cell>
+                <Table.Cell className="pr-2">
+                  <Input size="sm" aria-label={`Field ${i + 1} options`} disabled={locked} className="w-full font-mono text-xs" placeholder='{"max_length":80}' value={r.options} onChange={(e) => patch(i, { options: e.target.value })} />
+                </Table.Cell>
+                <Table.Cell>{locked ? <span className="text-xs text-muted-foreground">system</span> : <Button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>Remove</Button>}</Table.Cell>
+              </Table.Row>
             );
           })}
-        </tbody>
-      </table>
+        </Table.Body>
+      </Table>
       <Button onClick={() => setRows((rs) => [...rs, toRow({ name: "", type: "text" })])}>Add field</Button>
 
       <ErrorView error={problem} />
-      {saved && <p role="status" className="text-sm text-emerald-300">Schema saved.</p>}
+      {saved && <p role="status" className="text-sm text-success">Schema saved.</p>}
       <div className="flex gap-2">
         <Button tone="primary" onClick={() => void save()}>{existing ? "Save schema" : "Create collection"}</Button>
         {existing && !existing.system && (

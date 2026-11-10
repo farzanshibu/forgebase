@@ -7,6 +7,7 @@ import { when } from "../functions/util";
 import ProgressBar from "./ProgressBar";
 import StatusBadge from "./StatusBadge";
 import WorkflowGraph from "./WorkflowGraph";
+import { Table } from "panelui-web/table";
 
 export default function WorkflowDetail() {
   const { id = "" } = useParams();
@@ -30,33 +31,33 @@ export default function WorkflowDetail() {
 
   return (
     <div className="space-y-4">
-      <Link to="/jobs/workflows" className="text-sm text-amber-300 hover:underline">← All workflows</Link>
+      <Link to="/jobs/workflows" className="text-sm text-primary hover:underline">← All workflows</Link>
       <ErrorView error={error ?? wf.error} />
       {wf.loading && !wf.error && <Loading what="Loading workflow" />}
       {w && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg">{w.name} <span role="status" aria-label="Workflow status" className="ml-2 rounded bg-zinc-800 px-2 py-0.5 text-xs">{w.status}</span></h2>
+            <h2 className="text-lg">{w.name} <span role="status" aria-label="Workflow status" className="ml-2 rounded bg-muted px-2 py-0.5 text-xs">{w.status}</span></h2>
             {(w.status === "running" || w.status === "compensating") && <Button tone="danger" onClick={() => void cancel()}>Cancel workflow</Button>}
           </div>
-          <p className="text-sm text-zinc-400">On failure: {w.on_failure}. Created {when(w.created_at)}{w.finished_at ? `, finished ${when(w.finished_at)}` : ""}.</p>
-          {w.error && <p className="text-sm text-red-300">Error: {w.error}{w.failed_job_id ? <> (job <Link className="underline" to={`/jobs/j/${encodeURIComponent(w.failed_job_id)}`}>{w.failed_job_id}</Link>)</> : null}</p>}
+          <p className="text-sm text-muted-foreground">On failure: {w.on_failure}. Created {when(w.created_at)}{w.finished_at ? `, finished ${when(w.finished_at)}` : ""}.</p>
+          {w.error && <p className="text-sm text-destructive">Error: {w.error}{w.failed_job_id ? <> (job <Link className="underline" to={`/jobs/j/${encodeURIComponent(w.failed_job_id)}`}>{w.failed_job_id}</Link>)</> : null}</p>}
           <Panel title="Graph"><WorkflowGraph steps={w.steps} /></Panel>
           <Panel title="Steps">
-            <table aria-label="Workflow steps" className="w-full text-left text-sm">
-              <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-1">Step</th><th>Job</th><th>Status</th><th>Progress</th><th>Attempts</th></tr></thead>
-              <tbody>
+            <Table aria-label="Workflow steps" className="w-full text-left text-sm">
+              <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Step</Table.Head><Table.Head>Job</Table.Head><Table.Head>Status</Table.Head><Table.Head>Progress</Table.Head><Table.Head>Attempts</Table.Head></Table.Row></Table.Header>
+              <Table.Body>
                 {w.steps.map((s) => (
-                  <tr key={s.job.id} className="border-t border-zinc-800 align-top">
-                    <td className="py-1.5">{s.name ?? s.job.kind}{s.role === "compensation" && <span className="ml-1 text-xs text-amber-300">compensation</span>}</td>
-                    <td><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/jobs/j/${encodeURIComponent(s.job.id)}`}>{s.job.id}</Link></td>
-                    <td><StatusBadge status={s.job.status} />{(s.job.waiting_for ?? 0) > 0 && <span className="ml-1 text-xs text-zinc-400">waiting for {s.job.waiting_for}</span>}</td>
-                    <td className="w-64"><ProgressBar progress={s.job.progress} label={`Progress of ${s.name ?? s.job.id}`} /></td>
-                    <td>{s.job.attempts}/{s.job.max_attempts}</td>
-                  </tr>
+                  <Table.Row key={s.job.id} className="border-t border-border align-top">
+                    <Table.Cell className="py-1.5">{s.name ?? s.job.kind}{s.role === "compensation" && <span className="ml-1 text-xs text-warning">compensation</span>}</Table.Cell>
+                    <Table.Cell><Link className="font-mono text-xs text-primary hover:underline" to={`/jobs/j/${encodeURIComponent(s.job.id)}`}>{s.job.id}</Link></Table.Cell>
+                    <Table.Cell><StatusBadge status={s.job.status} />{(s.job.waiting_for ?? 0) > 0 && <span className="ml-1 text-xs text-muted-foreground">waiting for {s.job.waiting_for}</span>}</Table.Cell>
+                    <Table.Cell className="w-64"><ProgressBar progress={s.job.progress} label={`Progress of ${s.name ?? s.job.id}`} /></Table.Cell>
+                    <Table.Cell>{s.job.attempts}/{s.job.max_attempts}</Table.Cell>
+                  </Table.Row>
                 ))}
-              </tbody>
-            </table>
+              </Table.Body>
+            </Table>
           </Panel>
         </>
       )}

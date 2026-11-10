@@ -29,7 +29,7 @@ export default function RuleTester() {
   return (
     <div className="space-y-4">
       <Panel title="Test a permission or rule">
-        <p className="mb-3 text-xs text-zinc-500">Runs the pipeline (authentication, tenant, permission, entitlement, resource, quota) without doing anything. Leave principal empty to test yourself.</p>
+        <p className="mb-3 text-xs text-muted-foreground">Runs the pipeline (authentication, tenant, permission, entitlement, resource, quota) without doing anything. Leave principal empty to test yourself.</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <TextField label="Permission" value={permission} onChange={setPermission} placeholder={first ? `data:${first}:list` : "projects:read"} />
           <TextField label="Principal" value={principal} onChange={setPrincipal} placeholder="user:users/abc" />
@@ -44,7 +44,7 @@ export default function RuleTester() {
       <ActionError error={error} />
       {result && (
         <div role="status" aria-label="Check result" data-allowed={result.allowed}
-          className={`rounded-lg border p-4 text-sm ${result.allowed ? "border-emerald-700/60 bg-emerald-500/10 text-emerald-200" : "border-red-800/60 bg-red-500/10 text-red-200"}`}>
+          className={`rounded-lg border p-4 text-sm ${result.allowed ? "border-success/40 bg-success/10 text-success" : "border-destructive/40 bg-destructive/10 text-destructive"}`}>
           <p className="font-medium">{result.allowed ? "Allowed" : "Denied"}</p>
           {!result.allowed && <p className="mt-1">Failed step: <span className="font-mono">{result.step}</span> — {result.reason}</p>}
         </div>

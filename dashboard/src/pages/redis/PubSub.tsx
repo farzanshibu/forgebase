@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { binText, kvChannels, kvPublish, kvSubscribe } from "../../api";
 import type { PubSubMessage } from "../../api";
-import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
+import { Input } from "panelui-web/input";
 
 interface Line { id: number; at: string; channel: string; text: string }
 
@@ -44,21 +45,21 @@ export default function PubSub({ ns }: { ns: string }) {
     <div className="space-y-4">
       <Panel title={`Channel (namespace ${ns})`}>
         <form onSubmit={start} className="flex flex-wrap items-end gap-3 text-sm">
-          <label>Channel<input className={`${inputCls} ml-2 w-48`} value={channel} onChange={(e) => setChannel(e.target.value)} /></label>
+          <label>Channel<Input size="sm" className="ml-2 w-48" value={channel} onChange={(e) => setChannel(e.target.value)} /></label>
           {listening ? <Button onClick={stop}>Stop listening</Button> : <Button type="submit" tone="primary" disabled={!channel.trim()}>Listen</Button>}
-          {listening && <span role="status" className="text-emerald-300">Listening on {listening}</span>}
+          {listening && <span role="status" className="text-success">Listening on {listening}</span>}
         </form>
         <div className="mt-3"><ErrorView error={error} /></div>
       </Panel>
       <Panel title="Active channels" actions={<Button onClick={channels.reload}>Refresh</Button>}>
         <ErrorView error={channels.error} />
-        {channels.data && channels.data.length === 0 && <p className="text-sm text-zinc-400">No channel has a subscriber right now.</p>}
+        {channels.data && channels.data.length === 0 && <p className="text-sm text-muted-foreground">No channel has a subscriber right now.</p>}
         {channels.data && channels.data.length > 0 && (
           <ul aria-label="Active channels" className="space-y-1 text-sm">
             {channels.data.map((c) => (
               <li key={c.name} className="flex items-center gap-3">
-                <button type="button" className="font-mono text-amber-300 hover:underline" onClick={() => setChannel(c.name)}>{c.name}</button>
-                <span className="text-xs text-zinc-400">{c.subscribers} subscriber{c.subscribers === 1 ? "" : "s"}</span>
+                <button type="button" className="font-mono text-primary hover:underline" onClick={() => setChannel(c.name)}>{c.name}</button>
+                <span className="text-xs text-muted-foreground">{c.subscribers} subscriber{c.subscribers === 1 ? "" : "s"}</span>
               </li>
             ))}
           </ul>
@@ -66,16 +67,16 @@ export default function PubSub({ ns }: { ns: string }) {
       </Panel>
       <Panel title="Publish">
         <form onSubmit={(e) => void publish(e)} className="flex flex-wrap items-end gap-3 text-sm">
-          <label>Message<input className={`${inputCls} ml-2 w-72`} value={message} onChange={(e) => setMessage(e.target.value)} /></label>
+          <label>Message<Input size="sm" className="ml-2 w-72" value={message} onChange={(e) => setMessage(e.target.value)} /></label>
           <Button type="submit" disabled={!channel.trim() || !message}>Publish</Button>
-          {receivers !== undefined && <span role="status" className="text-zinc-400">Delivered to {receivers} subscriber{receivers === 1 ? "" : "s"}.</span>}
+          {receivers !== undefined && <span role="status" className="text-muted-foreground">Delivered to {receivers} subscriber{receivers === 1 ? "" : "s"}.</span>}
         </form>
       </Panel>
       <Panel title="Messages" actions={<Button onClick={() => setLines([])} disabled={lines.length === 0}>Clear</Button>}>
-        {lagged > 0 && <p className="mb-2 text-sm text-amber-300">{lagged} message(s) were dropped because the listener fell behind.</p>}
-        {lines.length === 0 ? <p className="text-sm text-zinc-400">No messages yet.</p> : (
+        {lagged > 0 && <p className="mb-2 text-sm text-warning">{lagged} message(s) were dropped because the listener fell behind.</p>}
+        {lines.length === 0 ? <p className="text-sm text-muted-foreground">No messages yet.</p> : (
           <ul aria-label="Received messages" className="space-y-1 font-mono text-xs">
-            {lines.map((l) => <li key={l.id}><span className="text-zinc-500">{l.at}</span> <span className="text-amber-300">{l.channel}</span> {l.text}</li>)}
+            {lines.map((l) => <li key={l.id}><span className="text-muted-foreground">{l.at}</span> <span className="text-warning">{l.channel}</span> {l.text}</li>)}
           </ul>
         )}
       </Panel>

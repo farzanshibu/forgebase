@@ -6,6 +6,8 @@ import {
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Badge, SecretModal, THEAD, Th, fmtTime, splitList, useAction } from "./common";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 export default function ServiceAccounts() {
   const list = useLoad(listServiceAccounts, "sas");
@@ -28,8 +30,8 @@ export default function ServiceAccounts() {
             }
           }}
         >
-          <input aria-label="Service account name" className={inputCls} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input aria-label="Description" className={`${inputCls} w-64`} placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
+          <Input size="sm" aria-label="Service account name" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input size="sm" aria-label="Description" className="w-64" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
           <select aria-label="Role" className={inputCls} value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="service">service</option>
             <option value="admin">admin</option>
@@ -42,22 +44,22 @@ export default function ServiceAccounts() {
       </Panel>
       <ErrorView error={list.error} />
       {list.loading && !list.error && <Loading what="Loading service accounts" />}
-      {list.data?.length === 0 && <p className="text-sm text-zinc-400">No service accounts yet.</p>}
+      {list.data?.length === 0 && <p className="text-sm text-muted-foreground">No service accounts yet.</p>}
       {!!list.data?.length && (
-        <table className="w-full text-sm">
-          <thead className={THEAD}>
-            <tr><Th>Name</Th><Th>Role</Th><Th>Created</Th><Th>Status</Th><Th> </Th></tr>
-          </thead>
-          <tbody>
+        <Table className="w-full text-sm">
+          <Table.Header className={THEAD}>
+            <Table.Row><Th>Name</Th><Th>Role</Th><Th>Created</Th><Th>Status</Th><Th> </Th></Table.Row>
+          </Table.Header>
+          <Table.Body>
             {list.data.map((s) => (
-              <tr key={s.id} className="border-t border-zinc-800">
-                <td className="py-2 pr-3">
-                  {s.name} <span className="text-xs text-zinc-500">{s.description}</span>
-                </td>
-                <td className="pr-3">{s.role === "admin" ? <Badge tone="warn">admin</Badge> : s.role}</td>
-                <td className="pr-3">{fmtTime(s.created_at)}</td>
-                <td className="pr-3">{s.disabled ? <Badge tone="bad">disabled</Badge> : <Badge tone="ok">active</Badge>}</td>
-                <td className="space-x-2 whitespace-nowrap">
+              <Table.Row key={s.id} className="border-t border-border">
+                <Table.Cell className="py-2 pr-3">
+                  {s.name} <span className="text-xs text-muted-foreground">{s.description}</span>
+                </Table.Cell>
+                <Table.Cell className="pr-3">{s.role === "admin" ? <Badge tone="warn">admin</Badge> : s.role}</Table.Cell>
+                <Table.Cell className="pr-3">{fmtTime(s.created_at)}</Table.Cell>
+                <Table.Cell className="pr-3">{s.disabled ? <Badge tone="bad">disabled</Badge> : <Badge tone="ok">active</Badge>}</Table.Cell>
+                <Table.Cell className="space-x-2 whitespace-nowrap">
                   <Button aria-label={`Keys of ${s.name}`} onClick={() => setOpen(open === s.id ? undefined : s.id)}>
                     Keys
                   </Button>
@@ -67,11 +69,11 @@ export default function ServiceAccounts() {
                       if (await act.run(() => deleteServiceAccount(s.id))) list.reload();
                     }}
                   />
-                </td>
-              </tr>
+                </Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       {open && list.data?.find((s) => s.id === open) && <Keys sa={list.data.find((s) => s.id === open)!} />}
     </div>
@@ -107,9 +109,9 @@ function Keys({ sa }: { sa: ServiceAccountView }) {
           }
         }}
       >
-        <input aria-label="Key name" className={inputCls} placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input aria-label="Scopes" className={`${inputCls} w-64`} placeholder="collections:read collections:write:posts" value={scopes} onChange={(e) => setScopes(e.target.value)} />
-        <input aria-label="Expires in days" className={`${inputCls} w-28`} type="number" min={1} placeholder="Days" value={days} onChange={(e) => setDays(e.target.value)} />
+        <Input size="sm" aria-label="Key name" placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input size="sm" aria-label="Scopes" className="w-64" placeholder="collections:read collections:write:posts" value={scopes} onChange={(e) => setScopes(e.target.value)} />
+        <Input size="sm" aria-label="Expires in days" className="w-28" type="number" min={1} placeholder="Days" value={days} onChange={(e) => setDays(e.target.value)} />
         <Button type="submit" tone="primary" disabled={act.busy || !name.trim() || splitList(scopes).length === 0}>
           Create key
         </Button>
@@ -117,7 +119,7 @@ function Keys({ sa }: { sa: ServiceAccountView }) {
       {act.errorView}
       <ErrorView error={keys.error} />
       {keys.loading && !keys.error && <Loading what="Loading keys" />}
-      {keys.data?.length === 0 && <p className="text-sm text-zinc-400">No keys.</p>}
+      {keys.data?.length === 0 && <p className="text-sm text-muted-foreground">No keys.</p>}
       {!!keys.data?.length && <KeyTable rows={keys.data} onRevoked={keys.reload} />}
       {secret && <SecretModal label="API key" secret={secret} onClose={() => setSecret(undefined)} />}
     </Panel>
@@ -129,22 +131,22 @@ export function KeyTable({ rows, onRevoked, showOwner }: { rows: import("../../a
   return (
     <>
       {act.errorView}
-      <table className="w-full text-sm">
-        <thead className={THEAD}>
-          <tr><Th>Name</Th>{showOwner && <Th>Kind</Th>}{showOwner && <Th>Owner</Th>}<Th>Scopes</Th><Th>Expires</Th><Th>Last used</Th><Th> </Th></tr>
-        </thead>
-        <tbody>
+      <Table className="w-full text-sm">
+        <Table.Header className={THEAD}>
+          <Table.Row><Th>Name</Th>{showOwner && <Th>Kind</Th>}{showOwner && <Th>Owner</Th>}<Th>Scopes</Th><Th>Expires</Th><Th>Last used</Th><Th> </Th></Table.Row>
+        </Table.Header>
+        <Table.Body>
           {rows.map((k) => (
-            <tr key={k.id} className="border-t border-zinc-800">
-              <td className="py-2 pr-3">
-                {k.name} <span className="font-mono text-xs text-zinc-500">{k.id}</span>
-              </td>
-              {showOwner && <td className="pr-3">{k.kind}</td>}
-              {showOwner && <td className="pr-3 font-mono text-xs">{k.owner_type}:{k.owner_id}</td>}
-              <td className="pr-3 text-xs">{k.scopes.join(", ")}</td>
-              <td className="pr-3">{fmtTime(k.expires_at)}</td>
-              <td className="pr-3">{fmtTime(k.last_used_at)}</td>
-              <td>
+            <Table.Row key={k.id} className="border-t border-border">
+              <Table.Cell className="py-2 pr-3">
+                {k.name} <span className="font-mono text-xs text-muted-foreground">{k.id}</span>
+              </Table.Cell>
+              {showOwner && <Table.Cell className="pr-3">{k.kind}</Table.Cell>}
+              {showOwner && <Table.Cell className="pr-3 font-mono text-xs">{k.owner_type}:{k.owner_id}</Table.Cell>}
+              <Table.Cell className="pr-3 text-xs">{k.scopes.join(", ")}</Table.Cell>
+              <Table.Cell className="pr-3">{fmtTime(k.expires_at)}</Table.Cell>
+              <Table.Cell className="pr-3">{fmtTime(k.last_used_at)}</Table.Cell>
+              <Table.Cell>
                 {k.revoked ? (
                   <Badge tone="bad">revoked</Badge>
                 ) : (
@@ -155,11 +157,11 @@ export function KeyTable({ rows, onRevoked, showOwner }: { rows: import("../../a
                     }}
                   />
                 )}
-              </td>
-            </tr>
+              </Table.Cell>
+            </Table.Row>
           ))}
-        </tbody>
-      </table>
+        </Table.Body>
+      </Table>
     </>
   );
 }

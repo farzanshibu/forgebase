@@ -6,6 +6,8 @@ import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import StatusBadge from "./StatusBadge";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 const PAGE = 25;
 
@@ -44,39 +46,39 @@ export default function JobList() {
     <div className="space-y-4">
       <Panel title="Queues" actions={<Button onClick={refresh}>Refresh</Button>}>
         {stats.data && (
-          <p aria-label="Job totals" className="mb-3 text-sm text-zinc-400">
+          <p aria-label="Job totals" className="mb-3 text-sm text-muted-foreground">
             {JOB_STATUSES.map((s) => `${stats.data!.totals[s] ?? 0} ${s}`).join(" · ")}
           </p>
         )}
         <ErrorView error={stats.error ?? queueError} />
-        {stats.data && stats.data.queues.length === 0 && <p className="text-sm text-zinc-400">No queues yet: they appear when the first job is enqueued.</p>}
+        {stats.data && stats.data.queues.length === 0 && <p className="text-sm text-muted-foreground">No queues yet: they appear when the first job is enqueued.</p>}
         {stats.data && stats.data.queues.length > 0 && (
-          <table aria-label="Queues" className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500">
-              <tr><th className="py-1">Queue</th>{JOB_STATUSES.map((s) => <th key={s}>{s}</th>)}<th>Limits</th><th /></tr>
-            </thead>
-            <tbody>
+          <Table aria-label="Queues" className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+              <Table.Row><Table.Head className="py-1">Queue</Table.Head>{JOB_STATUSES.map((s) => <Table.Head key={s}>{s}</Table.Head>)}<Table.Head>Limits</Table.Head><Table.Head /></Table.Row>
+            </Table.Header>
+            <Table.Body>
               {stats.data.queues.map((q) => (
-                <tr key={q.queue} className="border-t border-zinc-800">
-                  <td className="py-1.5">
-                    <button type="button" className="text-amber-300 hover:underline" aria-label={`Show jobs of ${q.queue}`} onClick={filter(() => setQueue(q.queue))}>{q.queue}</button>
-                  </td>
-                  {JOB_STATUSES.map((s) => <td key={s}>{q[s]}</td>)}
+                <Table.Row key={q.queue} className="border-t border-border">
+                  <Table.Cell className="py-1.5">
+                    <button type="button" className="text-primary hover:underline" aria-label={`Show jobs of ${q.queue}`} onClick={filter(() => setQueue(q.queue))}>{q.queue}</button>
+                  </Table.Cell>
+                  {JOB_STATUSES.map((s) => <Table.Cell key={s}>{q[s]}</Table.Cell>)}
                   {(() => {
                     const cfg = settings.data?.find((x) => x.name === q.queue);
-                    if (!cfg) return <><td /><td /></>;
+                    if (!cfg) return <><Table.Cell /><Table.Cell /></>;
                     const limits = [cfg.concurrency ? `${cfg.concurrency} at once` : "", cfg.rate_limit ? `${cfg.rate_limit}/${cfg.rate_period}` : ""].filter(Boolean).join(", ");
                     return (
                       <>
-                        <td className="text-zinc-400">{limits || "no limits"}{cfg.paused ? <span className="ml-1 text-amber-300">paused</span> : null}</td>
-                        <td><button type="button" className="text-amber-300 hover:underline" aria-label={`${cfg.paused ? "Resume" : "Pause"} queue ${q.queue}`} onClick={() => void toggle(q.queue, cfg.paused)}>{cfg.paused ? "Resume" : "Pause"}</button></td>
+                        <Table.Cell className="text-muted-foreground">{limits || "no limits"}{cfg.paused ? <span className="ml-1 text-warning">paused</span> : null}</Table.Cell>
+                        <Table.Cell><button type="button" className="text-primary hover:underline" aria-label={`${cfg.paused ? "Resume" : "Pause"} queue ${q.queue}`} onClick={() => void toggle(q.queue, cfg.paused)}>{cfg.paused ? "Resume" : "Pause"}</button></Table.Cell>
                       </>
                     );
                   })()}
-                </tr>
+                </Table.Row>
               ))}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table>
         )}
       </Panel>
 
@@ -87,33 +89,33 @@ export default function JobList() {
             {JOB_STATUSES.map((s) => <option key={s} value={s}>{s === "dead" ? "dead (dead-letter)" : s}</option>)}
           </select>
         </label>
-        <label>Queue<input className={`${inputCls} ml-2 w-36`} value={queue} onChange={(e) => filter(() => setQueue(e.target.value))()} /></label>
-        <label>Kind<input className={`${inputCls} ml-2 w-36`} value={kind} onChange={(e) => filter(() => setKind(e.target.value))()} /></label>
+        <label>Queue<Input size="sm" className="ml-2 w-36" value={queue} onChange={(e) => filter(() => setQueue(e.target.value))()} /></label>
+        <label>Kind<Input size="sm" className="ml-2 w-36" value={kind} onChange={(e) => filter(() => setKind(e.target.value))()} /></label>
       </div>
 
       <ErrorView error={jobs.error} />
       {jobs.loading && !jobs.error && <Loading what="Loading jobs" />}
-      {jobs.data && jobs.data.items.length === 0 && <p className="text-sm text-zinc-400">No jobs match.</p>}
+      {jobs.data && jobs.data.items.length === 0 && <p className="text-sm text-muted-foreground">No jobs match.</p>}
       {jobs.data && jobs.data.items.length > 0 && (
-        <table aria-label="Jobs" className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500">
-            <tr><th className="py-2">Job</th><th>Queue</th><th>Kind</th><th>Status</th><th>Attempts</th><th>Created</th></tr>
-          </thead>
-          <tbody>
+        <Table aria-label="Jobs" className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+            <Table.Row><Table.Head className="py-2">Job</Table.Head><Table.Head>Queue</Table.Head><Table.Head>Kind</Table.Head><Table.Head>Status</Table.Head><Table.Head>Attempts</Table.Head><Table.Head>Created</Table.Head></Table.Row>
+          </Table.Header>
+          <Table.Body>
             {jobs.data.items.map((j) => (
-              <tr key={j.id} className="border-t border-zinc-800">
-                <td className="py-2"><Link className="font-mono text-xs text-amber-300 hover:underline" to={`/jobs/j/${encodeURIComponent(j.id)}`}>{j.id}</Link></td>
-                <td>{j.queue}</td><td>{j.kind}</td>
-                <td><StatusBadge status={j.status} />{j.cancel_requested && <span className="ml-1 text-xs text-amber-300">cancelling</span>}</td>
-                <td>{j.attempts}/{j.max_attempts}</td>
-                <td className="text-zinc-400">{when(j.created_at)}</td>
-              </tr>
+              <Table.Row key={j.id} className="border-t border-border">
+                <Table.Cell className="py-2"><Link className="font-mono text-xs text-primary hover:underline" to={`/jobs/j/${encodeURIComponent(j.id)}`}>{j.id}</Link></Table.Cell>
+                <Table.Cell>{j.queue}</Table.Cell><Table.Cell>{j.kind}</Table.Cell>
+                <Table.Cell><StatusBadge status={j.status} />{j.cancel_requested && <span className="ml-1 text-xs text-warning">cancelling</span>}</Table.Cell>
+                <Table.Cell>{j.attempts}/{j.max_attempts}</Table.Cell>
+                <Table.Cell className="text-muted-foreground">{when(j.created_at)}</Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       {jobs.data && total > 0 && (
-        <div className="flex items-center gap-3 text-sm text-zinc-400">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
           <Button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</Button>
           <span>{offset + 1}–{Math.min(offset + PAGE, total)} of {total}</span>
           <Button disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>Next</Button>

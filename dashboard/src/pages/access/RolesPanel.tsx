@@ -5,6 +5,7 @@ import { useLoad } from "../../hooks";
 import PermissionMatrix from "./PermissionMatrix";
 import { ActionError, Empty, TextField } from "./shared";
 import { useRun } from "./util";
+import { Table } from "panelui-web/table";
 
 /** Roles of an org (`org` set) or of the realm. Seeded roles are read-only unless the caller is a super-admin. */
 export default function RolesPanel({ org }: { org?: string }) {
@@ -25,29 +26,29 @@ export default function RolesPanel({ org }: { org?: string }) {
       {roles.loading && !roles.error && <Loading what="Loading roles" />}
       {roles.data && roles.data.length === 0 && <Empty>No roles.</Empty>}
       {roles.data && roles.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500">
-            <tr><th className="py-2">Key</th><th>Name</th><th>Scope</th><th>Allow</th><th>Deny</th><th /></tr>
-          </thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+            <Table.Row><Table.Head className="py-2">Key</Table.Head><Table.Head>Name</Table.Head><Table.Head>Scope</Table.Head><Table.Head>Allow</Table.Head><Table.Head>Deny</Table.Head><Table.Head /></Table.Row>
+          </Table.Header>
+          <Table.Body>
             {roles.data.map((r) => {
               const locked = (r.system && !superAdmin) || !r.assignable;
               return (
-                <tr key={r.id} className="border-t border-zinc-800">
-                  <td className="py-2 font-mono">{r.key}</td>
-                  <td>{r.name}{r.system && <span className="ml-2 text-xs text-zinc-500">seeded</span>}{!r.assignable && <span className="ml-2 text-xs text-zinc-500">not assignable</span>}</td>
-                  <td>{r.org_id ? "org" : "realm"}</td>
-                  <td>{r.allow.length}</td>
-                  <td className={r.deny.length ? "text-red-300" : ""}>{r.deny.length}</td>
-                  <td className="space-x-2 text-right">
+                <Table.Row key={r.id} className="border-t border-border">
+                  <Table.Cell className="py-2 font-mono">{r.key}</Table.Cell>
+                  <Table.Cell>{r.name}{r.system && <span className="ml-2 text-xs text-muted-foreground">seeded</span>}{!r.assignable && <span className="ml-2 text-xs text-muted-foreground">not assignable</span>}</Table.Cell>
+                  <Table.Cell>{r.org_id ? "org" : "realm"}</Table.Cell>
+                  <Table.Cell>{r.allow.length}</Table.Cell>
+                  <Table.Cell className={r.deny.length ? "text-destructive" : ""}>{r.deny.length}</Table.Cell>
+                  <Table.Cell className="space-x-2 text-right">
                     <Button onClick={() => setEditing(r.key)}>{locked ? "View" : "Edit"}</Button>
                     {!r.system && (org ? r.org_id === org : !r.org_id) && <ConfirmButton label="Delete" onConfirm={() => void run(() => deleteRole(org, r.key))} />}
-                  </td>
-                </tr>
+                  </Table.Cell>
+                </Table.Row>
               );
             })}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       <Button tone="primary" onClick={() => setEditing("new")}>New role</Button>
       <ActionError error={error} />

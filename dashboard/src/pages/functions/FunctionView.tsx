@@ -6,7 +6,7 @@ import LogsTab from "./LogsTab";
 import SecretsTab from "./SecretsTab";
 import VersionsTab from "./VersionsTab";
 
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-amber-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-100"}`;
+const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 export default function FunctionView() {
   const { name = "" } = useParams();
@@ -17,7 +17,7 @@ export default function FunctionView() {
       <div>
         <h2 className="font-mono text-lg">{name}</h2>
         {info.data && (
-          <p aria-label="Function summary" className="text-sm text-zinc-400">
+          <p aria-label="Function summary" className="text-sm text-muted-foreground">
             active v{info.data.active_version} of {info.data.latest_version} · HTTP access {info.data.access} · principal <span className="font-mono">{info.data.principal}</span>
           </p>
         )}
@@ -26,7 +26,7 @@ export default function FunctionView() {
       {info.loading && !info.error && <Loading what="Loading function" />}
       {info.data && (
         <>
-          <nav aria-label="Function tabs" className="flex gap-1 border-b border-zinc-800">
+          <nav aria-label="Function tabs" className="flex gap-1 border-b border-border">
             <NavLink to={base} end className={tab}>Versions</NavLink>
             <NavLink to={`${base}/logs`} className={tab}>Logs</NavLink>
             <NavLink to={`${base}/secrets`} className={tab}>Secrets</NavLink>

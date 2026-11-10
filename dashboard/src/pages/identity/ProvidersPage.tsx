@@ -9,6 +9,7 @@ import { ActionError, Empty, Field, MultiPick } from "../access/shared";
 import { useRun } from "../access/util";
 import { Check, Note } from "./shared";
 import { csv, useRealm } from "./util";
+import { Input } from "panelui-web/input";
 
 /** Social/OAuth providers (CRUD), LDAP, SMS (phone) with its gateway, and Turnstile of the selected realm. Secrets are write-only. */
 export default function ProvidersPage({ realms, reload }: { realms: RealmIdentity[]; reload: () => void }) {
@@ -38,8 +39,8 @@ function Social({ realm, enabled }: { realm: string; enabled: boolean }) {
       {l.data && l.data.length > 0 && (
         <ul className="text-sm">
           {l.data.map((p) => (
-            <li key={p.id} className="flex items-center justify-between border-t border-zinc-800 py-1.5">
-              <span><span className="font-mono">{p.id}</span> · {p.display_name ?? p.id} <span className="text-xs text-zinc-500">{p.kind} · {p.source === "file" ? "from file (read-only)" : "managed here"}</span></span>
+            <li key={p.id} className="flex items-center justify-between border-t border-border py-1.5">
+              <span><span className="font-mono">{p.id}</span> · {p.display_name ?? p.id} <span className="text-xs text-muted-foreground">{p.kind} · {p.source === "file" ? "from file (read-only)" : "managed here"}</span></span>
               {!p.read_only && (
                 <span className="space-x-2">
                   <Button aria-label={`Edit provider ${p.id}`} onClick={() => setEditing(p)}>Edit</Button>
@@ -75,14 +76,14 @@ function ProviderForm({ realm, existing, onDone }: { realm: string; existing?: S
       }));
     }}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Provider id"><input aria-label="Provider id" className={`${inputCls} font-mono`} value={id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder="google" /></Field>
+        <Field label="Provider id"><Input size="sm" aria-label="Provider id" className="font-mono" value={id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder="google" /></Field>
         <Field label="Kind">
           <select aria-label="Provider kind" className={inputCls} value={kind} onChange={(e) => setKind(e.target.value as ProviderKind)}>{PROVIDER_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
         </Field>
-        <Field label="Client id"><input aria-label="Client id" className={`${inputCls} font-mono`} value={clientId} onChange={(e) => setClientId(e.target.value)} /></Field>
+        <Field label="Client id"><Input size="sm" aria-label="Client id" className="font-mono" value={clientId} onChange={(e) => setClientId(e.target.value)} /></Field>
         <SecretInput label="Client secret" stored={existing?.client_secret ?? null} onChange={setSecret} />
-        <Field label="Display name"><input aria-label="Display name" className={inputCls} value={display} onChange={(e) => setDisplay(e.target.value)} /></Field>
-        {kind === "oidc" && <Field label="Issuer URL"><input aria-label="Issuer URL" className={`${inputCls} font-mono`} value={issuer} onChange={(e) => setIssuer(e.target.value)} /></Field>}
+        <Field label="Display name"><Input size="sm" aria-label="Display name" value={display} onChange={(e) => setDisplay(e.target.value)} /></Field>
+        {kind === "oidc" && <Field label="Issuer URL"><Input size="sm" aria-label="Issuer URL" className="font-mono" value={issuer} onChange={(e) => setIssuer(e.target.value)} /></Field>}
       </div>
       <div className="flex items-center gap-3">
         <Button type="submit" tone="primary" disabled={busy || !id || !clientId}>Save provider</Button>
@@ -113,11 +114,11 @@ function GatewayForm({ realm, current, onSaved }: { realm: string; current: SmsC
   const { run, error, busy } = useRun(() => { setSaved(true); onSaved(); });
   const up = (p: Partial<SmsConfig>) => setCfg({ ...cfg, ...p });
   const txt = (label: string, key: "account_sid" | "from" | "messaging_service_sid" | "base_url" | "url") => (
-    <Field label={label}><input aria-label={label} className={`${inputCls} font-mono`} value={cfg[key] ?? ""} onChange={(e) => up({ [key]: e.target.value } as Partial<SmsConfig>)} /></Field>
+    <Field label={label}><Input size="sm" aria-label={label} className="font-mono" value={cfg[key] ?? ""} onChange={(e) => up({ [key]: e.target.value } as Partial<SmsConfig>)} /></Field>
   );
   return (
     <form aria-label="SMS gateway" className="space-y-3" onSubmit={(e) => { e.preventDefault(); setSaved(false); void run(() => putSmsGateway(realm, cfg)); }}>
-      <p className="text-xs text-zinc-500">{current ? "This realm sends codes through its own gateway." : "No gateway set for this realm: the instance gateway is used."}</p>
+      <p className="text-xs text-muted-foreground">{current ? "This realm sends codes through its own gateway." : "No gateway set for this realm: the instance gateway is used."}</p>
       <Field label="Gateway type">
         <select aria-label="Gateway type" className={inputCls} value={cfg.provider} onChange={(e) => setCfg({ provider: e.target.value as SmsProviderType })}>
           <option value="dev">dev (writes codes to disk)</option><option value="twilio">Twilio</option><option value="webhook">HTTPS webhook</option>
@@ -137,7 +138,7 @@ function GatewayForm({ realm, current, onSaved }: { realm: string; current: SmsC
       )}
       <div className="flex items-center gap-3">
         <Button type="submit" tone="primary" disabled={busy}>Save SMS gateway</Button>
-        {saved && <span role="status" className="text-sm text-emerald-300">Saved</span>}
+        {saved && <span role="status" className="text-sm text-success">Saved</span>}
       </div>
       <ActionError error={error} />
     </form>
@@ -154,7 +155,7 @@ function Section({ title, ident, reload, render }: { title: string; ident: Realm
         {render(cfg, setCfg)}
         <div className="flex items-center gap-3">
           <Button type="submit" tone="primary" disabled={busy}>Save {title}</Button>
-          {saved && <span role="status" className="text-sm text-emerald-300">Saved</span>}
+          {saved && <span role="status" className="text-sm text-success">Saved</span>}
         </div>
         <ActionError error={error} />
       </form>
@@ -169,7 +170,7 @@ function SecretInput({ label, stored, onChange }: { label: string; stored: strin
   return (
     <Field label={label}>
       <div className="flex items-center gap-2">
-        <input aria-label={label} type="password" autoComplete="off" className={inputCls} value={v} placeholder={isSet ? "set (leave empty to keep)" : "not set"}
+        <Input size="sm" aria-label={label} type="password" autoComplete="off" value={v} placeholder={isSet ? "set (leave empty to keep)" : "not set"}
           onChange={(e) => { setV(e.target.value); onChange(e.target.value === "" ? (isSet ? SECRET_MASK : null) : e.target.value); }} />
         {isSet && <Button aria-label={`Clear ${label}`} onClick={() => { setV(""); onChange(""); }}>Clear</Button>}
       </div>
@@ -181,7 +182,7 @@ function LdapForm({ cfg, set }: { cfg: RealmConfig; set: (c: RealmConfig) => voi
   const l: LdapSettings = cfg.ldap ?? DEFAULT_LDAP;
   const up = (p: Partial<LdapSettings>) => set({ ...cfg, ldap: { ...l, ...p } });
   const txt = (label: string, key: keyof LdapSettings, mono = false) => (
-    <Field label={label}><input aria-label={label} className={`${inputCls} ${mono ? "font-mono" : ""}`} value={(l[key] as string | null) ?? ""} onChange={(e) => up({ [key]: e.target.value } as Partial<LdapSettings>)} /></Field>
+    <Field label={label}><Input size="sm" aria-label={label} className={`${mono ? "font-mono" : ""}`} value={(l[key] as string | null) ?? ""} onChange={(e) => up({ [key]: e.target.value } as Partial<LdapSettings>)} /></Field>
   );
   return (
     <>
@@ -223,9 +224,9 @@ function TurnstileForm({ cfg, set }: { cfg: RealmConfig; set: (c: RealmConfig) =
     <>
       <Check label="Turnstile enabled" checked={t.enabled} onChange={(v) => up({ enabled: v })} />
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Site key"><input aria-label="Site key" className={`${inputCls} font-mono`} value={t.site_key} onChange={(e) => up({ site_key: e.target.value })} /></Field>
+        <Field label="Site key"><Input size="sm" aria-label="Site key" className="font-mono" value={t.site_key} onChange={(e) => up({ site_key: e.target.value })} /></Field>
         <SecretInput label="Turnstile secret" stored={t.secret} onChange={(v) => up({ secret: v })} />
-        <Field label="Allowed hostnames (comma separated)"><input aria-label="Allowed hostnames" className={inputCls} value={t.hostnames.join(", ")} onChange={(e) => up({ hostnames: csv(e.target.value) })} /></Field>
+        <Field label="Allowed hostnames (comma separated)"><Input size="sm" aria-label="Allowed hostnames" value={t.hostnames.join(", ")} onChange={(e) => up({ hostnames: csv(e.target.value) })} /></Field>
       </div>
       <MultiPick label="Protected actions" options={[...TURNSTILE_ACTIONS]} value={t.actions} onChange={(v) => up({ actions: v as TurnstileSettings["actions"] })} />
     </>

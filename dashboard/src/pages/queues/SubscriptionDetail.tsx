@@ -5,6 +5,7 @@ import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../.
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import { duration, pretty } from "./util";
+import { Input } from "panelui-web/input";
 
 export default function SubscriptionDetail() {
   const { sub = "" } = useParams();
@@ -49,7 +50,7 @@ export default function SubscriptionDetail() {
   const mine = (snaps.data ?? []).filter((x) => x.subscription === sub || x.topic === s?.topic);
   return (
     <div className="space-y-4">
-      <Link to="/queues/subscriptions" className="text-sm text-amber-300 hover:underline">← All subscriptions</Link>
+      <Link to="/queues/subscriptions" className="text-sm text-primary hover:underline">← All subscriptions</Link>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="font-mono text-lg">{sub}</h2>
         <div className="flex gap-2">
@@ -58,7 +59,7 @@ export default function SubscriptionDetail() {
         </div>
       </div>
       <ErrorView error={error ?? info.error} />
-      {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
       {info.loading && !info.error && <Loading what="Loading subscription" />}
       {s && (
         <Panel title="Settings">
@@ -67,7 +68,7 @@ export default function SubscriptionDetail() {
               ["Topic", s.topic], ["Delivery", s.push ? `push to ${s.push.kind} ${s.push.endpoint}` : "pull"], ["Ack deadline", duration(s.ack_deadline_ms)],
               ["Max attempts", s.max_delivery_attempts ?? "unlimited"], ["Backoff", `${duration(s.backoff_base_ms)} up to ${duration(s.backoff_max_ms)}`],
               ["Dead-letter topic", s.dead_letter_topic ?? "none"], ["Ordering", s.ordering ? "per ordering key" : "off"], ["Filter", s.filter ? JSON.stringify(s.filter) : "none"],
-            ] as [string, string | number][]).map(([k, v]) => <div key={k} className="flex gap-2"><dt className="w-36 shrink-0 text-zinc-500">{k}</dt><dd>{v}</dd></div>)}
+            ] as [string, string | number][]).map(([k, v]) => <div key={k} className="flex gap-2"><dt className="w-36 shrink-0 text-muted-foreground">{k}</dt><dd>{v}</dd></div>)}
           </dl>
         </Panel>
       )}
@@ -78,27 +79,27 @@ export default function SubscriptionDetail() {
               ["Backlog", `${m.backlog_messages} message(s)`], ["Ready", m.ready], ["Delayed (backoff)", m.delayed], ["In flight", m.in_flight],
               ["Oldest unacked", m.oldest_unacked_age_ms == null ? "none" : duration(m.oldest_unacked_age_ms)], ["Ack rate", `${m.ack_rate_per_sec.toFixed(2)}/s`],
               ["Delivered", m.delivered_total], ["Acked", m.acked_total], ["Nacked", m.nacked_total], ["Expired", m.expired_total], ["Dead-lettered", m.dead_lettered_total], ["Dead letters kept", m.dead_letters],
-            ] as [string, string | number][]).map(([k, v]) => <div key={k} className="flex gap-2"><dt className="w-36 shrink-0 text-zinc-500">{k}</dt><dd>{v}</dd></div>)}
+            ] as [string, string | number][]).map(([k, v]) => <div key={k} className="flex gap-2"><dt className="w-36 shrink-0 text-muted-foreground">{k}</dt><dd>{v}</dd></div>)}
           </dl>
         </Panel>
       )}
       <Panel title="Dead letters">
         <ErrorView error={dead.error} />
-        {dead.data && dead.data.length === 0 && <p className="text-sm text-zinc-400">No dead letters.</p>}
+        {dead.data && dead.data.length === 0 && <p className="text-sm text-muted-foreground">No dead letters.</p>}
         {dead.data && dead.data.length > 0 && (
           <ul aria-label="Dead letters" className="space-y-2 text-sm">
             {dead.data.map((d) => (
-              <li key={d.id} className="rounded border border-zinc-800 p-2">
+              <li key={d.id} className="rounded border border-border p-2">
                 <div className="flex flex-wrap items-center gap-x-3">
-                  <span className="font-mono text-xs">{d.message_id}</span><span className="text-zinc-400">{when(d.at)}</span>
-                  <span>{d.attempts} attempt(s)</span><span className="text-red-300">{d.reason}</span>
-                  {d.dead_letter_topic && <span className="text-zinc-400">forwarded to {d.dead_letter_topic}</span>}
-                  <button type="button" className="text-amber-300 hover:underline" aria-label={`${open === d.id ? "Hide" : "Show"} dead letter ${d.id}`} onClick={() => setOpen(open === d.id ? undefined : d.id)}>{open === d.id ? "Hide" : "Show"}</button>
+                  <span className="font-mono text-xs">{d.message_id}</span><span className="text-muted-foreground">{when(d.at)}</span>
+                  <span>{d.attempts} attempt(s)</span><span className="text-destructive">{d.reason}</span>
+                  {d.dead_letter_topic && <span className="text-muted-foreground">forwarded to {d.dead_letter_topic}</span>}
+                  <button type="button" className="text-primary hover:underline" aria-label={`${open === d.id ? "Hide" : "Show"} dead letter ${d.id}`} onClick={() => setOpen(open === d.id ? undefined : d.id)}>{open === d.id ? "Hide" : "Show"}</button>
                 </div>
                 {open === d.id && (
                   <div className="mt-2 space-y-2">
-                    <pre aria-label={`Dead letter ${d.id} data`} className="overflow-x-auto rounded bg-zinc-950 p-2 font-mono text-xs">{pretty(d.data)}</pre>
-                    <ol aria-label={`Dead letter ${d.id} history`} className="space-y-0.5 text-xs text-zinc-400">
+                    <pre aria-label={`Dead letter ${d.id} data`} className="overflow-x-auto rounded bg-background p-2 font-mono text-xs">{pretty(d.data)}</pre>
+                    <ol aria-label={`Dead letter ${d.id} history`} className="space-y-0.5 text-xs text-muted-foreground">
                       {d.history.map((h) => <li key={h.attempt}>attempt {h.attempt} at {when(h.at)}: {h.outcome ?? "?"}{h.error ? ` (${h.error})` : ""}{h.consumer ? ` by ${h.consumer}` : ""}</li>)}
                     </ol>
                   </div>
@@ -109,9 +110,9 @@ export default function SubscriptionDetail() {
         )}
       </Panel>
       <Panel title="Replay">
-        <p className="mb-3 text-sm text-zinc-400">Seeking puts messages back so they are delivered again, as far back as the topic's retention reaches.</p>
+        <p className="mb-3 text-sm text-muted-foreground">Seeking puts messages back so they are delivered again, as far back as the topic's retention reaches.</p>
         <form onSubmit={(e) => { e.preventDefault(); void replay({ time: new Date(time).toISOString() }); }} className="flex flex-wrap items-end gap-3 text-sm">
-          <label>Replay from<input type="datetime-local" className={`${inputCls} ml-2`} value={time} onChange={(e) => setTime(e.target.value)} /></label>
+          <label>Replay from<Input size="sm" type="datetime-local" className="ml-2" value={time} onChange={(e) => setTime(e.target.value)} /></label>
           <Button type="submit" disabled={!time || Number.isNaN(new Date(time).getTime())}>Replay from this time</Button>
         </form>
         <form onSubmit={(e) => { e.preventDefault(); void replay({ snapshot: snapPick }); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
@@ -125,7 +126,7 @@ export default function SubscriptionDetail() {
           {snapPick && <ConfirmButton label="Delete snapshot" onConfirm={() => void run(async () => { await deleteQueueSnapshot(snapPick); setSnapPick(""); }, "Snapshot deleted.")} />}
         </form>
         <form onSubmit={(e) => { e.preventDefault(); void run(() => createQueueSnapshot(snapName.trim(), sub), `Snapshot ${snapName.trim()} saved.`).then(() => setSnapName("")); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
-          <label>New snapshot<input className={`${inputCls} ml-2 w-40`} value={snapName} onChange={(e) => setSnapName(e.target.value)} /></label>
+          <label>New snapshot<Input size="sm" className="ml-2 w-40" value={snapName} onChange={(e) => setSnapName(e.target.value)} /></label>
           <Button type="submit" disabled={!snapName.trim()}>Save snapshot</Button>
         </form>
       </Panel>

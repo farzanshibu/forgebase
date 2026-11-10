@@ -56,18 +56,18 @@ function Editor({ collection, id, initial, version }: { collection: CollectionDe
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-sm">
-        <span className="text-zinc-400">{isNew ? "New record" : `Record ${id}${version ? ` · version ${version}` : ""}`}</span>
-        <Link className="text-amber-300 hover:underline" to={base}>Back to data</Link>
+        <span className="text-muted-foreground">{isNew ? "New record" : `Record ${id}${version ? ` · version ${version}` : ""}`}</span>
+        <Link className="text-primary hover:underline" to={base}>Back to data</Link>
       </div>
       <textarea
         aria-label="Record JSON"
         spellCheck={false}
-        className="h-96 w-full rounded-md border border-zinc-700 bg-zinc-900 p-3 font-mono text-xs"
+        className="h-96 w-full rounded-md border border-border bg-card p-3 font-mono text-xs"
         value={text}
         onChange={(e) => setText(e.target.value)}
       />
       <ErrorView error={problem} />
-      {saved && <p role="status" className="text-sm text-emerald-300">Saved.</p>}
+      {saved && <p role="status" className="text-sm text-success">Saved.</p>}
       <Button tone="primary" onClick={() => void save()}>{isNew ? "Create record" : "Save record"}</Button>
     </div>
   );

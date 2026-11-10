@@ -5,6 +5,7 @@ import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import { parseBytes, parseTypes } from "./util";
+import { Input } from "panelui-web/input";
 
 export default function BucketSettings({ bucket, onSaved }: { bucket: Bucket; onSaved: () => void }) {
   const [visibility, setVisibility] = useState<Visibility>(bucket.visibility);
@@ -26,7 +27,7 @@ export default function BucketSettings({ bucket, onSaved }: { bucket: Bucket; on
   return (
     <Panel title="Bucket policy">
       {usage.data && (
-        <p aria-label="Bucket space" className="mb-3 text-sm text-zinc-400">
+        <p aria-label="Bucket space" className="mb-3 text-sm text-muted-foreground">
           Uses {formatBytes(usage.data.logical_bytes)} in {usage.data.objects} objects; {formatBytes(usage.data.version_bytes)} across {usage.data.versions} versions.
         </p>
       )}
@@ -36,15 +37,15 @@ export default function BucketSettings({ bucket, onSaved }: { bucket: Bucket; on
             {VISIBILITIES.map((v) => <option key={v}>{v}</option>)}
           </select>
         </label>
-        <p className="text-xs text-zinc-500">private: only the owner and ACL grantees; authenticated: any signed-in caller can read; public: anyone can read.</p>
+        <p className="text-xs text-muted-foreground">private: only the owner and ACL grantees; authenticated: any signed-in caller can read; public: anyone can read.</p>
         <label className="flex items-center gap-2"><input type="checkbox" checked={versioning} onChange={(e) => setVersioning(e.target.checked)} />Keep versions of overwritten and deleted objects</label>
-        <label className="block">Max object size<input className={`${inputCls} ml-2 w-32`} placeholder="no limit" value={max} onChange={(e) => setMax(e.target.value)} /></label>
+        <label className="block">Max object size<Input size="sm" className="ml-2 w-32" placeholder="no limit" value={max} onChange={(e) => setMax(e.target.value)} /></label>
         <label className="block">Allowed content types (one per line, blank = any)
           <textarea className={`${inputCls} mt-1 block h-24 w-full font-mono text-xs`} value={types} onChange={(e) => setTypes(e.target.value)} />
         </label>
         <div className="flex items-center gap-3">
           <Button type="submit" tone="primary">Save policy</Button>
-          {saved && <span role="status" className="text-emerald-300">Saved.</span>}
+          {saved && <span role="status" className="text-success">Saved.</span>}
         </div>
         <ErrorView error={error} />
       </form>

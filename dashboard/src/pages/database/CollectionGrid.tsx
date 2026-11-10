@@ -5,6 +5,8 @@ import type { CollectionDef, FieldDef, RecordObject } from "../../api";
 import { useLoad } from "../../hooks";
 import { Button, ConfirmButton, ErrorView, Loading, inputCls } from "../../components/ui";
 import { display, parseCell } from "./values";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 const PER_PAGE = 25;
 
@@ -83,15 +85,15 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
           setFilter(filterText);
         }}
       >
-        <input
+        <Input size="sm"
           aria-label="Filter"
-          className={`${inputCls} w-72 font-mono`}
+          className="w-72 font-mono"
           placeholder='filter, e.g. price > 10 && name ~ "pen"'
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
         />
         <Button type="submit">Apply filter</Button>
-        <Link to={`/database/c/${encodeURIComponent(name)}/r/new`} className="ml-auto rounded-md border border-amber-500 bg-amber-500 px-3 py-1.5 text-sm text-zinc-950 hover:bg-amber-400">
+        <Link to={`/database/c/${encodeURIComponent(name)}/r/new`} className="ml-auto rounded-md border border-primary bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90">
           Add record
         </Link>
       </form>
@@ -99,7 +101,7 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
       <ErrorView error={error} />
       <ErrorView error={actionError} />
       {selected.size > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-800 p-2 text-sm" aria-label="Bulk actions">
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2 text-sm" aria-label="Bulk actions">
           <span>{selected.size} selected</span>
           <select aria-label="Bulk field" className={inputCls} value={bulkField} onChange={(e) => setBulkField(e.target.value)}>
             <option value="">Set field…</option>
@@ -107,7 +109,7 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
               <option key={f.name}>{f.name}</option>
             ))}
           </select>
-          <input aria-label="Bulk value" className={inputCls} value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} placeholder="value" />
+          <Input size="sm" aria-label="Bulk value" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} placeholder="value" />
           <Button disabled={!bulkField} onClick={() => void bulkApply()}>Apply to selected</Button>
           <ConfirmButton
             label="Delete selected"
@@ -123,41 +125,41 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
 
       {loading && !data && !error && <Loading what="Loading records" />}
       {data && (
-        <div className="overflow-x-auto rounded-lg border border-zinc-800">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-zinc-900 text-xs uppercase tracking-wide text-zinc-400">
-              <tr>
-                <th className="w-8 p-2">
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <Table className="w-full text-left text-sm">
+            <Table.Header className="bg-card text-xs uppercase tracking-wide text-muted-foreground">
+              <Table.Row>
+                <Table.Head className="w-8 p-2">
                   <input
                     type="checkbox"
                     aria-label="Select all"
                     checked={allSelected}
                     onChange={() => setSelected(allSelected ? new Set() : new Set(items.map((r) => String(r.id))))}
                   />
-                </th>
-                <th className="p-2">
+                </Table.Head>
+                <Table.Head className="p-2">
                   <button type="button" onClick={() => toggleSort("id")}>id{sortMark("id")}</button>
-                </th>
+                </Table.Head>
                 {fields.map((f) => (
-                  <th key={f.name} className="p-2">
+                  <Table.Head key={f.name} className="p-2">
                     <button type="button" onClick={() => toggleSort(f.name)}>{f.name}{sortMark(f.name)}</button>
-                    <span className="ml-1 normal-case text-zinc-600">{f.type}</span>
-                  </th>
+                    <span className="ml-1 normal-case text-muted-foreground">{f.type}</span>
+                  </Table.Head>
                 ))}
-                <th className="p-2" />
-              </tr>
-            </thead>
-            <tbody>
+                <Table.Head className="p-2" />
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
               {items.length === 0 && (
-                <tr>
-                  <td colSpan={fields.length + 3} className="p-4 text-zinc-400">No records{filter ? " match this filter" : ""}.</td>
-                </tr>
+                <Table.Row>
+                  <Table.Cell colSpan={fields.length + 3} className="p-4 text-muted-foreground">No records{filter ? " match this filter" : ""}.</Table.Cell>
+                </Table.Row>
               )}
               {items.map((rec) => {
                 const id = String(rec.id);
                 return (
-                  <tr key={id} className="border-t border-zinc-800">
-                    <td className="p-2">
+                  <Table.Row key={id} className="border-t border-border">
+                    <Table.Cell className="p-2">
                       <input
                         type="checkbox"
                         aria-label={`Select ${id}`}
@@ -171,25 +173,25 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
                           })
                         }
                       />
-                    </td>
-                    <td className="p-2 font-mono text-xs text-zinc-400">{id}</td>
+                    </Table.Cell>
+                    <Table.Cell className="p-2 font-mono text-xs text-muted-foreground">{id}</Table.Cell>
                     {fields.map((f) => (
                       <Cell key={f.name} field={f} rec={rec} edit={edit?.id === id && edit.field === f.name ? edit : null} setEdit={setEdit} onSave={() => void saveCell(rec)} />
                     ))}
-                    <td className="space-x-2 whitespace-nowrap p-2 text-right">
-                      <Link className="text-amber-300 hover:underline" to={`/database/c/${encodeURIComponent(name)}/r/${encodeURIComponent(id)}`}>JSON</Link>
+                    <Table.Cell className="space-x-2 whitespace-nowrap p-2 text-right">
+                      <Link className="text-primary hover:underline" to={`/database/c/${encodeURIComponent(name)}/r/${encodeURIComponent(id)}`}>JSON</Link>
                       <ConfirmButton label="Delete" onConfirm={() => void run(() => deleteRecord(name, id))} />
-                    </td>
-                  </tr>
+                    </Table.Cell>
+                  </Table.Row>
                 );
               })}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table>
         </div>
       )}
 
       {data && (
-        <div className="flex items-center gap-3 text-sm text-zinc-400">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
           <Button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</Button>
           <span>
             Page {page}
@@ -199,7 +201,7 @@ export default function CollectionGrid({ collection }: { collection: CollectionD
           <Button disabled={totalPages ? page >= totalPages : items.length < PER_PAGE} onClick={() => setPage((p) => p + 1)}>Next</Button>
         </div>
       )}
-      <p className="text-xs text-zinc-500">Double-click a cell to edit; Enter saves, Escape cancels.</p>
+      <p className="text-xs text-muted-foreground">Double-click a cell to edit; Enter saves, Escape cancels.</p>
     </div>
   );
 }
@@ -214,11 +216,11 @@ function Cell({ field, rec, edit, setEdit, onSave }: {
   const value = rec[field.name];
   if (edit) {
     return (
-      <td className="p-1">
-        <input
+      <Table.Cell className="p-1">
+        <Input size="sm"
           autoFocus
           aria-label={`Edit ${field.name}`}
-          className={`${inputCls} w-full`}
+          className="w-full"
           value={edit.text}
           onChange={(e) => setEdit({ ...edit, text: e.target.value })}
           onKeyDown={(e) => {
@@ -226,16 +228,16 @@ function Cell({ field, rec, edit, setEdit, onSave }: {
             if (e.key === "Escape") setEdit(null);
           }}
         />
-      </td>
+      </Table.Cell>
     );
   }
   return (
-    <td
+    <Table.Cell
       className="max-w-xs truncate p-2 font-mono text-xs"
       title={display(value)}
       onDoubleClick={() => !field.system && setEdit({ id: String(rec.id), field: field.name, text: display(value) })}
     >
       {display(value)}
-    </td>
+    </Table.Cell>
   );
 }

@@ -145,3 +145,8 @@
   body { @apply bg-background font-sans text-foreground antialiased; }
   ::selection { background: color-mix(in oklab, var(--primary) 30%, transparent); }
 }
+
+/* Native checkboxes, radios and ranges take the accent colour. */
+@layer base {
+  input[type="checkbox"], input[type="radio"], input[type="range"], progress { accent-color: var(--primary); }
+}

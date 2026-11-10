@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { brandingAssetUrl, deleteBrandingAsset, getBranding, MAX_ASSET_BYTES, putBranding, putBrandingAsset, type AssetKind, type Branding } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { ActionError, Field } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { useRealm } from "./util";
+import { Input } from "panelui-web/input";
 
 type Draft = Record<"display_name" | "primary_color" | "background_color" | "text_color" | "accent_color" | "signin_title" | "signin_subtitle" | "signin_footer" | "support_email", string>;
 const KEYS = ["display_name", "primary_color", "background_color", "text_color", "accent_color", "signin_title", "signin_subtitle", "signin_footer", "support_email"] as const;
@@ -52,21 +53,21 @@ function BrandingEditor({ realm, b, reload }: { realm: string; b: Branding; relo
             {KEYS.map((k) => (
               <Field key={k} label={LABELS[k]}>
                 <div className="flex items-center gap-2">
-                  <input aria-label={LABELS[k]} className={`${inputCls} flex-1`} value={d[k]} placeholder={COLORS.has(k) ? "#rrggbb" : ""} onChange={(e) => setD({ ...d, [k]: e.target.value })} />
-                  {COLORS.has(k) && HEX.test(d[k]) && <span aria-hidden className="h-6 w-6 rounded border border-zinc-600" style={{ background: d[k] }} />}
+                  <Input size="sm" aria-label={LABELS[k]} className="flex-1" value={d[k]} placeholder={COLORS.has(k) ? "#rrggbb" : ""} onChange={(e) => setD({ ...d, [k]: e.target.value })} />
+                  {COLORS.has(k) && HEX.test(d[k]) && <span aria-hidden className="h-6 w-6 rounded border border-foreground/25" style={{ background: d[k] }} />}
                 </div>
               </Field>
             ))}
-            {bad.length > 0 && <p role="alert" className="text-xs text-red-300">Colours must be hex like #1a2b3c ({bad.map((k) => LABELS[k]).join(", ")}).</p>}
+            {bad.length > 0 && <p role="alert" className="text-xs text-destructive">Colours must be hex like #1a2b3c ({bad.map((k) => LABELS[k]).join(", ")}).</p>}
             <div className="flex items-center gap-3">
               <Button type="submit" tone="primary" disabled={save.busy || bad.length > 0}>Save branding</Button>
-              {saved && <span role="status" className="text-sm text-emerald-300">Saved</span>}
+              {saved && <span role="status" className="text-sm text-success">Saved</span>}
             </div>
             <ActionError error={save.error} />
           </form>
         )}
         {(
-          <div className="mt-5 space-y-3 border-t border-zinc-800 pt-4">
+          <div className="mt-5 space-y-3 border-t border-border pt-4">
             {(["logo", "favicon"] as const).map((kind) => (
               <div key={kind} className="flex flex-wrap items-center gap-3">
                 <Field label={kind === "logo" ? "Logo" : "Favicon"}>
@@ -81,7 +82,7 @@ function BrandingEditor({ realm, b, reload }: { realm: string; b: Branding; relo
               </div>
             ))}
             <Note>PNG, JPEG, SVG, ICO or WebP, at most 256 KiB each.</Note>
-            {fileError && <p role="alert" className="text-sm text-red-300">{fileError}</p>}
+            {fileError && <p role="alert" className="text-sm text-destructive">{fileError}</p>}
             <ActionError error={asset.error} />
           </div>
         )}

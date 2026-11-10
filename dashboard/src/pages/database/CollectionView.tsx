@@ -24,14 +24,14 @@ export default function CollectionView() {
       <h2 className="text-lg font-medium">{name}</h2>
       <nav aria-label="Collection sections" className="mt-2 mb-4 flex gap-4 text-sm">
         {TABS.map((t) => (
-          <NavLink key={t.label} to={`/database/c/${encodeURIComponent(name)}${t.to}`} end={t.end} className={({ isActive }) => (isActive ? "text-amber-300" : "text-zinc-400 hover:text-zinc-100")}>
+          <NavLink key={t.label} to={`/database/c/${encodeURIComponent(name)}${t.to}`} end={t.end} className={({ isActive }) => (isActive ? "text-warning" : "text-muted-foreground hover:text-foreground")}>
             {t.label}
           </NavLink>
         ))}
       </nav>
       <ErrorView error={error} />
       {loading && !error && <Loading what="Loading collection" />}
-      {data && !coll && <p role="alert" className="text-red-300">No collection named {name}.</p>}
+      {data && !coll && <p role="alert" className="text-destructive">No collection named {name}.</p>}
       {coll && (
         <Routes>
           <Route index element={<CollectionGrid collection={coll} />} />
