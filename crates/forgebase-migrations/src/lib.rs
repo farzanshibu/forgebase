@@ -150,6 +150,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "queue_ready_order",
         include_str!("../../../migrations/system/0025_queue_ready_order.sql"),
     ),
+    Migration::new(
+        26,
+        "functions_js",
+        include_str!("../../../migrations/system/0026_functions_js.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

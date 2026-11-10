@@ -83,7 +83,9 @@ async fn functions_run_on_the_live_server_from_http_and_jobs_and_survive_a_resta
             &admin,
             DeployRequest {
                 name: "hello".into(),
-                wasm: hello(),
+                wasm: Some(hello()),
+                source: None,
+                language: None,
                 description: Some("greets".into()),
                 access: Some(InvokeAccess::Public),
                 capabilities: vec!["log".into()],

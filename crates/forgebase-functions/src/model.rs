@@ -10,8 +10,58 @@ use crate::error::{FunctionError, Result};
 
 /// Capabilities a function version may be granted. A module may import only
 /// the host functions of granted capabilities (checked at deploy), and every
-/// host call checks its capability again at run time.
-pub const CAPABILITIES: &[&str] = &["db.read", "db.write", "kv", "log", "env", "secrets", "fetch"];
+/// host call checks its capability again at run time. The service
+/// capabilities (`vector.*`, `storage.*`, `queues.publish`, `jobs.enqueue`,
+/// `realtime.publish`) and `service_role` exist for JavaScript and TypeScript
+/// functions (ADR-0027); `service_role` can be granted only by an
+/// administrator.
+pub const CAPABILITIES: &[&str] = &[
+    "db.read",
+    "db.write",
+    "kv",
+    "log",
+    "env",
+    "secrets",
+    "fetch",
+    "vector.read",
+    "vector.write",
+    "storage.read",
+    "storage.write",
+    "queues.publish",
+    "jobs.enqueue",
+    "realtime.publish",
+    "service_role",
+];
+
+/// The capability that lets a JavaScript function use `ctx.admin.*` (rules bypassed).
+pub const SERVICE_ROLE: &str = "service_role";
+
+/// Language a version was written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    /// A WebAssembly module.
+    #[default]
+    Wasm,
+    /// JavaScript (ES2023 module).
+    Javascript,
+    /// TypeScript, type-stripped to JavaScript at deploy.
+    Typescript,
+}
+
+/// How a version runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionRuntime {
+    /// The module itself runs in the sandbox.
+    #[default]
+    Wasm,
+    /// The embedded JavaScript engine runs the version's JavaScript in the sandbox.
+    Js,
+}
+
+/// Names that collide with routes under `/api/v1/functions/`.
+pub const RESERVED_NAMES: &[&str] = &["types"];
 
 /// Longest function name.
 pub const MAX_NAME_LEN: usize = 48;
@@ -25,6 +75,12 @@ pub fn validate_name(name: &str) -> Result<()> {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    if ok && RESERVED_NAMES.contains(&name) {
+        return Err(FunctionError::invalid(
+            "invalid_function_name",
+            format!("{name:?} is reserved (GET /api/v1/functions/{name} is another route)"),
+        ));
+    }
     if ok {
         Ok(())
     } else {
@@ -234,6 +290,12 @@ pub struct VersionConfig {
     /// Record hooks.
     #[serde(default)]
     pub hooks: Vec<HookSpec>,
+    /// How the version runs (`wasm` for versions deployed before FB-93).
+    #[serde(default)]
+    pub runtime: FunctionRuntime,
+    /// The language it was written in.
+    #[serde(default)]
+    pub language: Language,
 }
 
 impl VersionConfig {
@@ -245,14 +307,23 @@ impl VersionConfig {
 
 /// Body of `POST /api/v1/functions`: deploys a new version (creating the
 /// function on its first deploy) and, unless `activate` is `false`, makes it
-/// the active version.
+/// the active version. Send either `wasm` or `source` (JavaScript or
+/// TypeScript, with `language`).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeployRequest {
     /// Function name.
     pub name: String,
     /// The WebAssembly module (binary format), base64.
-    pub wasm: String,
+    #[serde(default)]
+    pub wasm: Option<String>,
+    /// JavaScript or TypeScript source of a single-file ES module that calls
+    /// `serve()` from `"forgebase"` (at most 1 MiB).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Language of `source` (default `typescript`).
+    #[serde(default)]
+    pub language: Option<Language>,
     /// Description (kept from the previous deploy when omitted).
     #[serde(default)]
     pub description: Option<String>,
@@ -283,14 +354,35 @@ fn yes() -> bool {
     true
 }
 
-/// One version of a function.
+impl Default for DeployRequest {
+    /// An empty request (no code) that activates the new version.
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            wasm: None,
+            source: None,
+            language: None,
+            description: None,
+            access: None,
+            capabilities: Vec::new(),
+            fetch_hosts: Vec::new(),
+            limits: LimitsInput::default(),
+            env: BTreeMap::new(),
+            hooks: Vec::new(),
+            activate: true,
+        }
+    }
+}
+
+/// One version of a function. `runtime` and `language` are part of the
+/// flattened configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct VersionInfo {
     /// Version number (1, 2, ...).
     pub version: i64,
-    /// SHA-256 of the module, hex.
+    /// SHA-256 of the module (WebAssembly) or of the source (JavaScript, TypeScript), hex.
     pub sha256: String,
-    /// Module size in bytes.
+    /// Size of the module or of the source in bytes.
     pub size: i64,
     /// Configuration.
     #[serde(flatten)]
@@ -396,6 +488,8 @@ pub enum Trigger {
     Job,
     /// A direct call through the service (tests, tools).
     Direct,
+    /// An administrator's test run of a specific version (`invoke?version=`).
+    Test,
 }
 
 impl Trigger {
@@ -406,6 +500,7 @@ impl Trigger {
             Trigger::Hook => "hook",
             Trigger::Job => "job",
             Trigger::Direct => "test",
+            Trigger::Test => "test",
         }
     }
 }
@@ -434,4 +529,35 @@ impl Outcome {
                 .map_err(|_| crate::error::ExecError::BadOutput("the output is not JSON".into()).into()),
         }
     }
+}
+
+/// What a key-value namespace rule allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KvAccess {
+    /// Read commands only (`GET`, `HGETALL`, `SCAN`, ...).
+    Read,
+    /// Reads and writes.
+    Write,
+}
+
+/// Lets a JavaScript function reach an application key-value namespace
+/// (beyond its private `fn.<name>`). Deny by default; administrators manage
+/// the rules; the caller's own key-value permissions still apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KvRule {
+    /// Namespace name, or a prefix ending in `*` (`app.*`, `*` for every namespace).
+    pub namespace: String,
+    /// What is allowed.
+    pub access: KvAccess,
+}
+
+/// The source of a JavaScript or TypeScript version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct VersionSource {
+    /// `javascript` or `typescript`.
+    pub language: Language,
+    /// The source as deployed.
+    pub source: String,
 }

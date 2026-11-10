@@ -38,6 +38,15 @@ pub(crate) struct HostEnv {
     pub(crate) config: Arc<VersionConfig>,
     /// Decrypted secrets (empty without the `secrets` capability).
     pub(crate) secrets: HashMap<String, String>,
+    /// Who JavaScript `ctx` services run as: the caller (HTTP), the writer
+    /// (before-hooks), else the function's identity (after-hooks, jobs).
+    pub(crate) caller: AccessContext,
+    /// The function's privileged principal for `ctx.admin.*` (`service_role`).
+    pub(crate) admin: AccessContext,
+    /// Engines behind `ctx`.
+    pub(crate) services: Arc<crate::services::Services>,
+    /// Application key-value namespaces the function may reach.
+    pub(crate) kv_rules: Arc<Vec<crate::model::KvRule>>,
 }
 
 /// A capability operation.

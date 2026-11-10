@@ -1,5 +1,6 @@
-//! `forgebase functions deploy|logs`: manage WebAssembly functions of a running
-//! server over its REST API (`/api/v1/functions`).
+//! `forgebase functions new|deploy|logs`: scaffold JavaScript/TypeScript
+//! functions and manage functions (TypeScript, JavaScript or WebAssembly) of
+//! a running server over its REST API (`/api/v1/functions`).
 //!
 //! The server is `--server URL` (env `FB_URL`), or the configured bind address
 //! (`--host`/`--port`/config) when omitted. Credentials are an API key or
@@ -71,17 +72,34 @@ pub struct FunctionsCli {
 
 #[derive(Debug, Subcommand)]
 pub enum FunctionsCommand {
-    /// Upload a WebAssembly module as a new version of a function (creates it on the first deploy).
+    /// Write `functions/<name>/index.ts` (or `index.js` with --js) and `forgebase.d.ts` from a template.
+    New(NewArgs),
+    /// Deploy a `.ts`, `.js` or `.wasm` file as a new version of a function (creates it on the first deploy).
     Deploy(DeployArgs),
     /// Print a function's recent executions and their log lines.
     Logs(LogsArgs),
 }
 
 #[derive(Debug, Args)]
+pub struct NewArgs {
+    /// Function name: a lower-case letter, then lower-case letters, digits, `_` or `-` (at most 48).
+    pub name: String,
+    /// JavaScript instead of TypeScript.
+    #[arg(long)]
+    pub js: bool,
+    /// Directory that holds the functions.
+    #[arg(long, default_value = "functions", value_name = "DIR")]
+    pub dir: PathBuf,
+    /// Overwrite existing files.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct DeployArgs {
     /// Function name: a lower-case letter, then lower-case letters, digits, `_` or `-` (at most 48).
     pub name: String,
-    /// The compiled `.wasm` module (binary format).
+    /// The function: TypeScript (`.ts`, `.mts`), JavaScript (`.js`, `.mjs`) or a WebAssembly module (`.wasm`).
     pub path: PathBuf,
     /// Description (kept from the previous deploy when omitted).
     #[arg(long)]
@@ -89,7 +107,8 @@ pub struct DeployArgs {
     /// Who may invoke over HTTP (kept from the previous deploy when omitted; `permission` on create).
     #[arg(long, value_enum)]
     pub access: Option<Access>,
-    /// Grant a capability: db.read, db.write, kv, log, env, secrets, fetch. Repeatable.
+    /// Grant a capability: db.read, db.write, kv, log, env, secrets, fetch, vector.read, vector.write,
+    /// storage.read, storage.write, queues.publish, jobs.enqueue, realtime.publish, service_role (administrators). Repeatable.
     #[arg(long = "capability", value_name = "NAME")]
     pub capabilities: Vec<String>,
     /// With `fetch`: a host the function may call (`api.example.com`, `*.example.com`). Repeatable.
@@ -230,8 +249,13 @@ fn addr_of(url: &str) -> anyhow::Result<String> {
 
 /// Runs a `functions` subcommand.
 pub async fn run(g: &GlobalArgs, server: ServerArgs, cmd: FunctionsCommand) -> anyhow::Result<ExitCode> {
+    if let FunctionsCommand::New(a) = &cmd {
+        scaffold(a, &mut std::io::stdout())?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let client = Client::new(g, &server)?;
     match cmd {
+        FunctionsCommand::New(_) => {}
         FunctionsCommand::Deploy(a) => deploy(&client, a, &mut std::io::stdout()).await?,
         FunctionsCommand::Logs(a) => {
             let stop = async {
@@ -250,6 +274,105 @@ pub(crate) fn enc(name: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// The function API declarations (the same file the server serves at `/api/v1/functions/types`).
+const FORGEBASE_DTS: &str = include_str!("../../../sdk/functions/forgebase.d.ts");
+
+/// Largest source the server accepts.
+const MAX_SOURCE: u64 = 1 << 20;
+
+fn template(ts: bool) -> String {
+    let (req, ret) = if ts { (": Request", ": Promise<Response>") } else { ("", "") };
+    format!(
+        r#"/// <reference path="./forgebase.d.ts" />
+import {{ serve }} from "forgebase";
+
+// An HTTP function: GET /api/v1/functions/<name>/invoke?name=you
+// Deploy with: forgebase functions deploy <name> {file} --access public --capability log
+serve(async (req{req}, ctx){ret} => {{
+  const url = new URL(req.url);
+  const name = url.searchParams.get("name") ?? "world";
+  console.log("greeting", name);
+  return Response.json({{ message: `Hello, ${{name}}!`, caller: ctx.auth?.id ?? null }});
+}});
+"#,
+        file = if ts { "index.ts" } else { "index.js" }
+    )
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 48
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        && name != "types"
+}
+
+/// `forgebase functions new`.
+fn scaffold(a: &NewArgs, out: &mut impl Write) -> anyhow::Result<()> {
+    if !valid_name(&a.name) {
+        bail!(
+            "{:?} is not a function name: a lower-case letter, then lower-case letters, digits, _ or - (at most 48)",
+            a.name
+        );
+    }
+    let dir = a.dir.join(&a.name);
+    let entry = dir.join(if a.js { "index.js" } else { "index.ts" });
+    let types = dir.join("forgebase.d.ts");
+    if !a.force {
+        for p in [&entry, &types] {
+            if p.exists() {
+                bail!("{} exists (pass --force to overwrite)", p.display());
+            }
+        }
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    std::fs::write(&entry, template(!a.js).replace("<name>", &a.name))
+        .with_context(|| format!("cannot write {}", entry.display()))?;
+    std::fs::write(&types, FORGEBASE_DTS).with_context(|| format!("cannot write {}", types.display()))?;
+    writeln!(out, "wrote {} and {}", entry.display(), types.display())?;
+    writeln!(
+        out,
+        "deploy: forgebase functions deploy {} {} --access public --capability log",
+        a.name,
+        entry.display()
+    )?;
+    Ok(())
+}
+
+/// What a deploy uploads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Code {
+    /// A WebAssembly module.
+    Wasm(Vec<u8>),
+    /// JavaScript or TypeScript source (`language` as the server names it).
+    Source { language: &'static str, text: String },
+}
+
+/// Reads the function file: `.ts`/`.mts` TypeScript, `.js`/`.mjs` JavaScript, otherwise a WebAssembly module.
+fn code_of(path: &Path) -> anyhow::Result<Code> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let language = match ext.as_str() {
+        "ts" | "mts" => "typescript",
+        "js" | "mjs" => "javascript",
+        _ => return module_bytes(path).map(Code::Wasm),
+    };
+    let meta = std::fs::metadata(path).with_context(|| format!("cannot read {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("{} is not a file", path.display());
+    }
+    if meta.len() > MAX_SOURCE {
+        bail!("{} is {} bytes; sources are limited to {MAX_SOURCE}", path.display(), meta.len());
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {} as UTF-8", path.display()))?;
+    Ok(Code::Source { language, text })
 }
 
 fn module_bytes(path: &Path) -> anyhow::Result<Vec<u8>> {
@@ -304,7 +427,7 @@ fn parse_hooks(items: &[String]) -> anyhow::Result<Vec<Value>> {
 }
 
 /// The `POST /api/v1/functions` body for the arguments.
-fn deploy_body(a: &DeployArgs, wasm: &[u8]) -> anyhow::Result<Value> {
+fn deploy_body(a: &DeployArgs, code: &Code) -> anyhow::Result<Value> {
     let mut limits = serde_json::Map::new();
     if let Some(v) = a.fuel {
         limits.insert("fuel".into(), v.into());
@@ -320,7 +443,6 @@ fn deploy_body(a: &DeployArgs, wasm: &[u8]) -> anyhow::Result<Value> {
     }
     let mut body = json!({
         "name": a.name,
-        "wasm": base64::engine::general_purpose::STANDARD.encode(wasm),
         "capabilities": a.capabilities,
         "fetch_hosts": a.fetch_hosts,
         "limits": limits,
@@ -328,6 +450,13 @@ fn deploy_body(a: &DeployArgs, wasm: &[u8]) -> anyhow::Result<Value> {
         "hooks": parse_hooks(&a.hooks)?,
         "activate": !a.no_activate,
     });
+    match code {
+        Code::Wasm(wasm) => body["wasm"] = json!(base64::engine::general_purpose::STANDARD.encode(wasm)),
+        Code::Source { language, text } => {
+            body["source"] = json!(text);
+            body["language"] = json!(language);
+        }
+    }
     if let Some(d) = &a.description {
         body["description"] = json!(d);
     }
@@ -338,8 +467,8 @@ fn deploy_body(a: &DeployArgs, wasm: &[u8]) -> anyhow::Result<Value> {
 }
 
 async fn deploy(client: &Client, a: DeployArgs, out: &mut impl Write) -> anyhow::Result<()> {
-    let wasm = module_bytes(&a.path)?;
-    let body = deploy_body(&a, &wasm)?;
+    let code = code_of(&a.path)?;
+    let body = deploy_body(&a, &code)?;
     let done = client.call("POST", "/api/v1/functions", Some(&body)).await?;
     if a.json {
         writeln!(out, "{done}")?;
@@ -349,9 +478,10 @@ async fn deploy(client: &Client, a: DeployArgs, out: &mut impl Write) -> anyhow:
     let active = done["function"]["active_version"].as_i64().unwrap_or(0);
     writeln!(
         out,
-        "deployed {} v{} ({} bytes), {}",
+        "deployed {} v{} ({}, {} bytes), {}",
         done["function"]["name"].as_str().unwrap_or(&a.name),
         v["version"],
+        v["language"].as_str().unwrap_or("wasm"),
         v["size"],
         if v["active"].as_bool() == Some(true) {
             "active".to_owned()
@@ -511,7 +641,7 @@ mod tests {
         a.fuel = Some(5);
         a.timeout_ms = Some(900);
         a.no_activate = true;
-        let b = deploy_body(&a, b"\0asm\x01\0\0\0").unwrap();
+        let b = deploy_body(&a, &Code::Wasm(b"\0asm\x01\0\0\0".to_vec())).unwrap();
         assert_eq!(b["wasm"], "AGFzbQEAAAA=");
         assert_eq!(b["name"], "hello");
         assert_eq!(b["description"], "d");
@@ -526,9 +656,66 @@ mod tests {
         assert_eq!(b["limits"], json!({"fuel": 5, "timeout_ms": 900}));
         assert_eq!(b["activate"], false);
         // Omitted optional fields are not sent, so the server keeps the previous values.
-        let plain = deploy_body(&deploy_args("hello", dir.path()), b"x").unwrap();
+        let plain = deploy_body(&deploy_args("hello", dir.path()), &Code::Wasm(b"x".to_vec())).unwrap();
         assert!(plain.get("description").is_none() && plain.get("access").is_none());
         assert_eq!(plain["activate"], true);
+    }
+
+    #[test]
+    fn typescript_and_javascript_files_deploy_as_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let ts = dir.path().join("index.ts");
+        std::fs::write(&ts, "serve(() => new Response(\"hi\"));").unwrap();
+        let code = code_of(&ts).unwrap();
+        assert_eq!(
+            code,
+            Code::Source {
+                language: "typescript",
+                text: "serve(() => new Response(\"hi\"));".into()
+            }
+        );
+        let b = deploy_body(&deploy_args("hello", &ts), &code).unwrap();
+        assert_eq!(b["language"], "typescript");
+        assert!(b.get("wasm").is_none());
+        let js = dir.path().join("index.mjs");
+        std::fs::write(&js, "x").unwrap();
+        assert!(matches!(code_of(&js).unwrap(), Code::Source { language: "javascript", .. }));
+        assert!(matches!(code_of(&wasm_file(dir.path())).unwrap(), Code::Wasm(_)));
+    }
+
+    #[test]
+    fn new_writes_a_template_and_the_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        let a = NewArgs {
+            name: "hello".into(),
+            js: false,
+            dir: dir.path().join("functions"),
+            force: false,
+        };
+        scaffold(&a, &mut out).unwrap();
+        let index = std::fs::read_to_string(dir.path().join("functions/hello/index.ts")).unwrap();
+        assert!(index.contains("import { serve } from \"forgebase\""));
+        assert!(index.contains("req: Request"));
+        let dts = std::fs::read_to_string(dir.path().join("functions/hello/forgebase.d.ts")).unwrap();
+        assert!(dts.contains("declare module \"forgebase\""));
+        assert!(scaffold(&a, &mut out).unwrap_err().to_string().contains("--force"));
+        let js = NewArgs {
+            name: "plain".into(),
+            js: true,
+            dir: dir.path().join("functions"),
+            force: false,
+        };
+        scaffold(&js, &mut out).unwrap();
+        let index = std::fs::read_to_string(dir.path().join("functions/plain/index.js")).unwrap();
+        assert!(!index.contains(": Request"));
+        let bad = NewArgs {
+            name: "Bad".into(),
+            js: true,
+            dir: dir.path().into(),
+            force: false,
+        };
+        assert!(scaffold(&bad, &mut out).is_err());
     }
 
     #[test]

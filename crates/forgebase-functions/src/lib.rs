@@ -18,14 +18,18 @@
 //!   (`function.invoke`, [`jobs`]).
 //! * **Execution logs** and metrics for every run.
 
+pub mod compile;
 pub mod error;
 pub mod fetch;
 pub mod hooks;
 pub mod host;
 pub mod http;
+pub mod js;
+mod jsops;
 pub mod jobs;
 pub mod model;
 pub mod runtime;
+pub mod services;
 mod store;
 
 use std::collections::{BTreeMap, HashMap};
@@ -48,12 +52,18 @@ pub use fetch::{FetchConfig, Fetcher};
 pub use http::{extension, openapi, router};
 pub use jobs::{INVOKE_JOB, register_jobs};
 pub use model::{
-    CAPABILITIES, DeployRequest, Deployed, ExecutionLog, FunctionInfo, HookEvent, HookSpec, InvokeAccess, Limits,
-    LimitsInput, LogLine, Outcome, SecretInfo, Trigger, VersionConfig, VersionInfo,
+    CAPABILITIES, DeployRequest, Deployed, ExecutionLog, FunctionInfo, FunctionRuntime, HookEvent, HookSpec,
+    InvokeAccess, KvAccess, KvRule, Language, Limits, LimitsInput, LogLine, Outcome, SERVICE_ROLE, SecretInfo, Trigger,
+    VersionConfig, VersionInfo, VersionSource,
 };
+pub use services::{QueueMessage, QueuePublisher, ServiceError, Services};
 
 use crate::host::HostEnv;
 use crate::runtime::Runtime;
+
+/// The `forgebase` module declarations (`sdk/functions/forgebase.d.ts`),
+/// served at `GET /api/v1/functions/types`.
+pub const FORGEBASE_DTS: &str = include_str!("../../../sdk/functions/forgebase.d.ts");
 
 /// Nested executions allowed (a function whose database write runs a
 /// before-hook function, ...).
@@ -171,6 +181,35 @@ pub fn identity(function: &str) -> AccessContext {
     AccessContext::service(format!("function.{function}"), false)
 }
 
+/// The privileged principal of `ctx.admin.*` (versions granted `service_role`),
+/// in the caller's realm, organization and tenant.
+pub fn admin_identity(function: &str, caller: &AccessContext) -> AccessContext {
+    let mut ctx = AccessContext::service(format!("function.{function}"), true).with_realm(caller.realm_id.clone());
+    if let Some(o) = &caller.org_id {
+        ctx = ctx.with_org(o.clone());
+    }
+    if let Some(t) = &caller.tenant {
+        ctx = ctx.with_tenant(t.clone());
+    }
+    if let Some(r) = &caller.request_id {
+        ctx = ctx.with_request_id(r.clone());
+    }
+    ctx
+}
+
+/// A version to run: the active one or a specific one (`invoke?version=`).
+#[derive(Debug, Clone)]
+pub(crate) struct Target {
+    pub(crate) version: i64,
+    pub(crate) config: Arc<VersionConfig>,
+}
+
+/// Code of a deploy.
+enum Code {
+    Wasm(Vec<u8>),
+    Js { language: Language, source: String },
+}
+
 /// The server-functions engine. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct FunctionService {
@@ -183,9 +222,15 @@ pub(crate) struct Inner {
     kv: Option<KvService>,
     keyring: Keyring,
     runtime: Runtime,
+    js: js::JsRuntime,
     cfg: FunctionsConfig,
     registry: RwLock<Arc<Registry>>,
     modules: Mutex<HashMap<(String, i64), wasmtime::Module>>,
+    /// JavaScript of `(function id, version)`.
+    scripts: Mutex<HashMap<(String, i64), Arc<Vec<u8>>>>,
+    /// Key-value namespace rules by function id.
+    kv_rules: RwLock<HashMap<String, Arc<Vec<KvRule>>>>,
+    services: RwLock<Arc<Services>>,
     global: Arc<Semaphore>,
     write_lock: tokio::sync::Mutex<()>,
     log_counter: AtomicU64,
@@ -202,6 +247,12 @@ impl Drop for Inner {
 
 fn now() -> String {
     forgebase_core::now_rfc3339()
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 fn new_id() -> String {
@@ -260,8 +311,10 @@ impl FunctionService {
         cfg: FunctionsConfig,
     ) -> Result<Self> {
         let runtime = Runtime::new()?;
+        let js = js::JsRuntime::new()?;
         let rows = store::load_all(data.backend().as_ref()).await?;
         let registry = Registry::build(rows, &Registry::default());
+        let kv_rules = store::kv_rules(data.backend().as_ref()).await?;
         let svc = Self {
             inner: Arc::new(Inner {
                 global: Arc::new(Semaphore::new(cfg.max_concurrent.max(1))),
@@ -269,9 +322,13 @@ impl FunctionService {
                 kv,
                 keyring,
                 runtime,
+                js,
                 cfg,
                 registry: RwLock::new(Arc::new(registry)),
                 modules: Mutex::new(HashMap::new()),
+                scripts: Mutex::new(HashMap::new()),
+                kv_rules: RwLock::new(kv_rules),
+                services: RwLock::new(Arc::new(Services::default())),
                 write_lock: tokio::sync::Mutex::new(()),
                 log_counter: AtomicU64::new(0),
                 tasks: Mutex::new(Vec::new()),
@@ -325,6 +382,16 @@ impl FunctionService {
         &self.inner.data
     }
 
+    /// Attaches the engines JavaScript functions reach through `ctx`
+    /// (replacing earlier ones).
+    pub fn attach_services(&self, services: Services) {
+        *self.inner.services.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(services);
+    }
+
+    pub(crate) fn services(&self) -> Arc<Services> {
+        self.inner.services.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
     pub(crate) fn backend(&self) -> Arc<dyn Backend> {
         self.inner.data.backend().clone()
     }
@@ -358,15 +425,57 @@ impl FunctionService {
     pub async fn deploy(&self, ctx: &AccessContext, req: DeployRequest) -> Result<Deployed> {
         self.authorize(ctx, Action::ManageFunctions)?;
         model::validate_name(&req.name)?;
-        let wasm = base64::engine::general_purpose::STANDARD
-            .decode(req.wasm.trim())
-            .map_err(|_| FunctionError::invalid("invalid_wasm_encoding", "wasm must be standard base64"))?;
-        if wasm.len() > self.inner.cfg.max_module_bytes {
-            return Err(FunctionError::invalid(
-                "module_too_large",
-                format!("modules are limited to {} bytes", self.inner.cfg.max_module_bytes),
-            ));
-        }
+        let code = match (&req.wasm, &req.source) {
+            (Some(_), Some(_)) => {
+                return Err(FunctionError::invalid(
+                    "invalid_deploy",
+                    "send either wasm or source, not both",
+                ));
+            }
+            (None, None) => {
+                return Err(FunctionError::invalid(
+                    "invalid_deploy",
+                    "send wasm (a WebAssembly module, base64) or source (JavaScript or TypeScript)",
+                ));
+            }
+            (Some(w), None) => {
+                if req.language.is_some_and(|l| l != Language::Wasm) {
+                    return Err(FunctionError::invalid(
+                        "invalid_language",
+                        "language javascript or typescript goes with source, not wasm",
+                    ));
+                }
+                let wasm = base64::engine::general_purpose::STANDARD
+                    .decode(w.trim())
+                    .map_err(|_| FunctionError::invalid("invalid_wasm_encoding", "wasm must be standard base64"))?;
+                if wasm.len() > self.inner.cfg.max_module_bytes {
+                    return Err(FunctionError::invalid(
+                        "module_too_large",
+                        format!("modules are limited to {} bytes", self.inner.cfg.max_module_bytes),
+                    ));
+                }
+                Code::Wasm(wasm)
+            }
+            (None, Some(src)) => {
+                let language = req.language.unwrap_or(Language::Typescript);
+                if language == Language::Wasm {
+                    return Err(FunctionError::invalid(
+                        "invalid_language",
+                        "source must be javascript or typescript (send WebAssembly as wasm)",
+                    ));
+                }
+                if src.len() > compile::MAX_SOURCE_BYTES {
+                    return Err(FunctionError::invalid(
+                        "source_too_large",
+                        format!("sources are limited to {} bytes", compile::MAX_SOURCE_BYTES),
+                    ));
+                }
+                Code::Js {
+                    language,
+                    source: src.clone(),
+                }
+            }
+        };
         let mut caps = req.capabilities.clone();
         caps.sort();
         caps.dedup();
@@ -375,6 +484,20 @@ impl FunctionService {
                 "invalid_capability",
                 format!("unknown capability {bad:?} (one of {})", CAPABILITIES.join(", ")),
             ));
+        }
+        if caps.iter().any(|c| c == SERVICE_ROLE) {
+            if matches!(code, Code::Wasm(_)) {
+                return Err(FunctionError::invalid(
+                    "invalid_capability",
+                    "service_role applies to JavaScript and TypeScript functions (ctx.admin)",
+                ));
+            }
+            if !ctx.is_privileged() {
+                return Err(FunctionError::Forbidden {
+                    code: "service_role_requires_admin",
+                    message: "only an administrator can grant the service_role capability".into(),
+                });
+            }
         }
         if !req.fetch_hosts.is_empty() && !caps.iter().any(|c| c == "fetch") {
             return Err(FunctionError::invalid(
@@ -416,15 +539,55 @@ impl FunctionService {
         }
         let limits = req.limits.resolve(self.inner.cfg.default_limits);
         limits.validate()?;
+        let (runtime, language) = match &code {
+            Code::Wasm(_) => (FunctionRuntime::Wasm, Language::Wasm),
+            Code::Js { language, .. } => (FunctionRuntime::Js, *language),
+        };
         let config = VersionConfig {
             capabilities: caps,
             fetch_hosts: req.fetch_hosts.clone(),
             limits,
             env: req.env.clone(),
             hooks,
+            runtime,
+            language,
         };
-        let module = self.inner.runtime.compile(wasm.clone(), &config).await?;
-        let sha = hex(&Sha256::digest(&wasm));
+        let grants_service_role = config.has(SERVICE_ROLE);
+        // (module, stored wasm, source, javascript)
+        let (module, wasm, source, script) = match code {
+            Code::Wasm(wasm) => (
+                Some(self.inner.runtime.compile(wasm.clone(), &config).await?),
+                wasm,
+                None,
+                None,
+            ),
+            Code::Js { language, source } => {
+                if config.limits.memory_bytes < js::MIN_JS_MEMORY {
+                    return Err(FunctionError::invalid(
+                        "memory_limit_too_small",
+                        format!(
+                            "JavaScript functions need limits.memory_bytes of at least {}",
+                            js::MIN_JS_MEMORY
+                        ),
+                    ));
+                }
+                let src = source.clone();
+                let compiled = tokio::task::spawn_blocking(move || compile::compile(&src, language))
+                    .await
+                    .map_err(|e| FunctionError::Internal(format!("compile task: {e}")))?
+                    .map_err(FunctionError::Compile)?;
+                let unmet = compile::unmet(&compiled, |c| config.has(c));
+                if !unmet.is_empty() {
+                    return Err(FunctionError::Unmet(unmet));
+                }
+                // Fail the deploy, not the first call, if the engine cannot load.
+                self.inner.js.module().await?;
+                (None, Vec::new(), Some(source), Some(compiled.js))
+            }
+        };
+        let digest_of = source.as_ref().map_or(wasm.as_slice(), |s| s.as_bytes());
+        let sha = hex(&Sha256::digest(digest_of));
+        let size = i64::try_from(digest_of.len()).unwrap_or(i64::MAX);
         let config_json =
             serde_json::to_string(&config).map_err(|e| FunctionError::Internal(format!("config encode: {e}")))?;
 
@@ -474,8 +637,9 @@ impl FunctionService {
                 }
             };
             tx.execute(&Statement::new(
-                "INSERT INTO _forgebase_function_versions (function_id, version, wasm, sha256, config, created_at, created_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO _forgebase_function_versions
+                     (function_id, version, wasm, sha256, config, created_at, created_by, source, js)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 vec![
                     id.clone().into(),
                     version.into(),
@@ -484,9 +648,33 @@ impl FunctionService {
                     config_json.clone().into(),
                     at.clone().into(),
                     actor.clone().into(),
+                    source.clone().into(),
+                    script.clone().into(),
                 ],
             ))
             .await?;
+            if grants_service_role {
+                // Every deploy that grants service_role is in the audit log.
+                let detail = serde_json::json!({
+                    "function": req.name,
+                    "version": version,
+                    "sha256": sha,
+                    "capabilities": config.capabilities,
+                });
+                tx.execute(&Statement::new(
+                    "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, request_id, detail, impersonator, realm)
+                     VALUES (?1, 'functions.service_role_granted', 'success', ?2, ?3, ?4, ?5, ?6)",
+                    vec![
+                        unix_now().into(),
+                        actor.clone().into(),
+                        ctx.request_id.clone().into(),
+                        detail.to_string().into(),
+                        ctx.impersonator.clone().into(),
+                        ctx.realm_id.clone().into(),
+                    ],
+                ))
+                .await?;
+            }
             Ok::<_, FunctionError>((id, version))
         }
         .await;
@@ -500,20 +688,32 @@ impl FunctionService {
                 return Err(e);
             }
         };
-        self.inner
-            .modules
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((id.clone(), version), module);
+        if let Some(module) = module {
+            self.inner
+                .modules
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert((id.clone(), version), module);
+        }
+        if let Some(js) = script {
+            self.inner
+                .scripts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert((id.clone(), version), Arc::new(js.into_bytes()));
+        }
         self.reload().await?;
         let entry = self.entry(&req.name)?;
-        tracing::info!(function = %req.name, version, sha256 = %sha, actor = %actor, "function deployed");
+        tracing::info!(function = %req.name, version, sha256 = %sha, actor = %actor, runtime = ?runtime, "function deployed");
+        if grants_service_role {
+            tracing::warn!(function = %req.name, version, actor = %actor, "service_role granted to a function version");
+        }
         metrics::counter!("forgebase_function_deploys_total").increment(1);
         Ok(Deployed {
             version: VersionInfo {
                 version,
                 sha256: sha,
-                size: i64::try_from(wasm.len()).unwrap_or(i64::MAX),
+                size,
                 config,
                 active: entry.row.active_version == version,
                 created_at: at,
@@ -588,6 +788,7 @@ impl FunctionService {
             [
                 "_forgebase_function_logs",
                 "_forgebase_function_secrets",
+                "_forgebase_function_kv_rules",
                 "_forgebase_function_versions",
             ]
             .iter()
@@ -609,6 +810,16 @@ impl FunctionService {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|(fid, _), _| *fid != id);
+        self.inner
+            .scripts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(fid, _), _| *fid != id);
+        self.inner
+            .kv_rules
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
         self.reload().await
     }
 
@@ -687,15 +898,15 @@ impl FunctionService {
         }
     }
 
-    async fn module(&self, e: &Entry) -> Result<wasmtime::Module> {
-        let key = (e.row.id.clone(), e.row.active_version);
+    async fn module(&self, e: &Entry, t: &Target) -> Result<wasmtime::Module> {
+        let key = (e.row.id.clone(), t.version);
         if let Some(m) = self.inner.modules.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
             return Ok(m.clone());
         }
-        let wasm = store::wasm(self.backend().as_ref(), &e.row.id, e.row.active_version)
+        let wasm = store::wasm(self.backend().as_ref(), &e.row.id, t.version)
             .await?
             .ok_or_else(|| FunctionError::Internal(format!("module of {} is missing", e.row.name)))?;
-        let module = self.inner.runtime.compile(wasm, &e.config).await?;
+        let module = self.inner.runtime.compile(wasm, &t.config).await?;
         let mut cache = self.inner.modules.lock().unwrap_or_else(|p| p.into_inner());
         if cache.len() >= 256 {
             cache.clear();
@@ -704,9 +915,153 @@ impl FunctionService {
         Ok(module)
     }
 
-    async fn open_secrets(&self, e: &Entry) -> Result<HashMap<String, String>> {
+    /// The JavaScript of a JS/TS version.
+    async fn script(&self, e: &Entry, t: &Target) -> Result<Arc<Vec<u8>>> {
+        let key = (e.row.id.clone(), t.version);
+        if let Some(m) = self.inner.scripts.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+            return Ok(m.clone());
+        }
+        let js = store::script(self.backend().as_ref(), &e.row.id, t.version)
+            .await?
+            .ok_or_else(|| FunctionError::Internal(format!("JavaScript of {} is missing", e.row.name)))?;
+        let js = Arc::new(js.into_bytes());
+        let mut cache = self.inner.scripts.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, js.clone());
+        Ok(js)
+    }
+
+    /// The active version of `e`.
+    pub(crate) fn active(e: &Entry) -> Target {
+        Target {
+            version: e.row.active_version,
+            config: e.config.clone(),
+        }
+    }
+
+    /// Version `version` of `e` (its stored configuration).
+    pub(crate) async fn target(&self, e: &Entry, version: i64) -> Result<Target> {
+        if version == e.row.active_version {
+            return Ok(Self::active(e));
+        }
+        let config = store::version_config(self.backend().as_ref(), &e.row.id, version)
+            .await?
+            .ok_or_else(|| FunctionError::VersionNotFound {
+                name: e.row.name.clone(),
+                version,
+            })?;
+        Ok(Target {
+            version,
+            config: Arc::new(config),
+        })
+    }
+
+    /// The source of a JavaScript or TypeScript version (`404` for WebAssembly).
+    pub async fn version_source(&self, ctx: &AccessContext, name: &str, version: i64) -> Result<VersionSource> {
+        self.authorize(ctx, Action::ReadFunctions)?;
+        let e = self.entry(name)?;
+        let t = self.target(&e, version).await?;
+        let source = match t.config.runtime {
+            FunctionRuntime::Js => store::source(self.backend().as_ref(), &e.row.id, version).await?,
+            FunctionRuntime::Wasm => None,
+        };
+        match source {
+            Some(source) => Ok(VersionSource {
+                language: t.config.language,
+                source,
+            }),
+            None => Err(FunctionError::NoSource {
+                name: name.to_owned(),
+                version,
+            }),
+        }
+    }
+
+    /// The key-value namespace rules of a function.
+    pub fn kv_rules(&self, ctx: &AccessContext, name: &str) -> Result<Vec<KvRule>> {
+        self.authorize(ctx, Action::ReadFunctions)?;
+        let e = self.entry(name)?;
+        Ok(self.rules_of(&e.row.id).as_ref().clone())
+    }
+
+    fn rules_of(&self, function_id: &str) -> Arc<Vec<KvRule>> {
+        self.inner
+            .kv_rules
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(function_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Replaces the key-value namespace rules of a function (administrators only).
+    pub async fn set_kv_rules(&self, ctx: &AccessContext, name: &str, rules: Vec<KvRule>) -> Result<Vec<KvRule>> {
+        self.authorize(ctx, Action::ManageFunctions)?;
+        if !ctx.is_privileged() {
+            return Err(FunctionError::Forbidden {
+                code: "kv_rules_require_admin",
+                message: "only an administrator can change a function's key-value namespace rules".into(),
+            });
+        }
+        if rules.len() > 64 {
+            return Err(FunctionError::invalid("invalid_kv_rule", "at most 64 namespace rules"));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for r in &rules {
+            let bare = r.namespace.strip_suffix('*').unwrap_or(&r.namespace);
+            let ok = r.namespace.len() <= 64
+                && (r.namespace.ends_with('*') || !bare.is_empty())
+                && bare.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-:".contains(&b));
+            if !ok {
+                return Err(FunctionError::invalid(
+                    "invalid_kv_rule",
+                    format!("{:?} is not a namespace or a prefix ending in *", r.namespace),
+                ));
+            }
+            if !seen.insert(r.namespace.clone()) {
+                return Err(FunctionError::invalid(
+                    "invalid_kv_rule",
+                    format!("namespace {:?} is listed twice", r.namespace),
+                ));
+            }
+        }
+        let _lock = self.inner.write_lock.lock().await;
+        let e = self.entry(name)?;
+        let at = now();
+        let actor = ctx.actor();
+        let mut stmts = vec![Statement::new(
+            "DELETE FROM _forgebase_function_kv_rules WHERE function_id = ?1",
+            vec![e.row.id.clone().into()],
+        )];
+        for r in &rules {
+            stmts.push(Statement::new(
+                "INSERT INTO _forgebase_function_kv_rules (function_id, namespace, access, created_at, created_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                vec![
+                    e.row.id.clone().into(),
+                    r.namespace.clone().into(),
+                    match r.access {
+                        KvAccess::Read => "read",
+                        KvAccess::Write => "write",
+                    }
+                    .into(),
+                    at.clone().into(),
+                    actor.clone().into(),
+                ],
+            ));
+        }
+        store::write(self.backend().as_ref(), stmts).await?;
+        let all = store::kv_rules(self.backend().as_ref()).await?;
+        *self.inner.kv_rules.write().unwrap_or_else(|p| p.into_inner()) = all;
+        tracing::info!(function = %name, rules = rules.len(), actor = %actor, "function key-value rules set");
+        Ok(self.rules_of(&e.row.id).as_ref().clone())
+    }
+
+    async fn open_secrets(&self, e: &Entry, config: &VersionConfig) -> Result<HashMap<String, String>> {
         let mut out = HashMap::new();
-        if !e.config.has("secrets") {
+        if !config.has("secrets") {
             return Ok(out);
         }
         for (name, sealed) in store::sealed_secrets(self.backend().as_ref(), &e.row.id).await? {
@@ -733,8 +1088,16 @@ impl FunctionService {
         request_id: Option<String>,
     ) -> Result<Outcome> {
         let e = self.entry(name)?;
-        self.execute(&e, trigger, input.to_string().into_bytes(), request_id, |_| None)
-            .await
+        self.execute(
+            &e,
+            None,
+            trigger,
+            input.to_string().into_bytes(),
+            request_id,
+            None,
+            |_| None,
+        )
+        .await
     }
 
     /// Checks that `ctx` may invoke `name` over HTTP and returns the entry.
@@ -763,14 +1126,20 @@ impl FunctionService {
 
     /// Runs one execution and records it. `judge` may turn a successful run
     /// into a recorded rejection (`Some((status, message))`).
+    /// `target` defaults to the active version; `caller` (whom JavaScript
+    /// `ctx` services run as) defaults to the function's own identity.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &self,
         e: &Entry,
+        target: Option<Target>,
         trigger: Trigger,
         input: Vec<u8>,
         request_id: Option<String>,
+        caller: Option<AccessContext>,
         judge: impl FnOnce(Option<&[u8]>) -> Option<(&'static str, String)>,
     ) -> Result<Outcome> {
+        let target = target.unwrap_or_else(|| Self::active(e));
         let depth = current_depth();
         if depth >= MAX_DEPTH {
             return Err(FunctionError::invalid(
@@ -788,11 +1157,25 @@ impl FunctionService {
                 e.row.name, e.config.limits.max_concurrency
             ))
         })?;
-        let module = self.module(e).await?;
-        let secrets = self.open_secrets(e).await?;
+        let config = target.config.clone();
+        let secrets = self.open_secrets(e, &config).await?;
         let mut ident = identity(&e.row.name);
         if let Some(r) = &request_id {
             ident = ident.with_request_id(r.clone());
+        }
+        let caller = caller.unwrap_or_else(|| ident.clone());
+        let services = self.services();
+        let mut input = input;
+        if config.runtime == FunctionRuntime::Js {
+            // ctx.auth, ctx.function: the caller's identity and the version.
+            if let Ok(Json::Object(mut o)) = serde_json::from_slice::<Json>(&input) {
+                o.insert("auth".into(), jsops::auth_info(services.permissions(&caller), &caller));
+                o.insert(
+                    "function".into(),
+                    serde_json::json!({"name": e.row.name, "version": target.version}),
+                );
+                input = Json::Object(o).to_string().into_bytes();
+            }
         }
         let env = Arc::new(HostEnv {
             data: self.inner.data.clone(),
@@ -800,14 +1183,32 @@ impl FunctionService {
             fetcher: self.inner.cfg.fetcher.clone(),
             identity: ident,
             function: e.row.name.clone(),
-            config: e.config.clone(),
+            config: config.clone(),
             secrets,
+            admin: admin_identity(&e.row.name, &caller),
+            caller,
+            services,
+            kv_rules: self.rules_of(&e.row.id),
         });
         let started_at = now();
         let start = Instant::now();
-        let run = DEPTH
-            .scope(depth + 1, self.inner.runtime.run(&module, &e.config.limits, env, input))
-            .await;
+        let run = match config.runtime {
+            FunctionRuntime::Wasm => {
+                let module = self.module(e, &target).await?;
+                DEPTH
+                    .scope(depth + 1, self.inner.runtime.run(&module, &config.limits, env, input))
+                    .await
+            }
+            FunctionRuntime::Js => {
+                let js = self.script(e, &target).await?;
+                DEPTH
+                    .scope(
+                        depth + 1,
+                        self.inner.js.run(&config.limits, env, js.as_ref().clone(), input),
+                    )
+                    .await
+            }
+        };
         let elapsed = start.elapsed();
         let (status, error) = match &run.result {
             Ok(out) => match judge(out.as_deref()) {
@@ -821,7 +1222,7 @@ impl FunctionService {
         let log = store::NewLog {
             function_id: &e.row.id,
             function: &e.row.name,
-            version: e.row.active_version,
+            version: target.version,
             trigger: trigger.as_str(),
             status,
             duration_ms: i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX),
@@ -841,7 +1242,7 @@ impl FunctionService {
         let output = run.result?;
         Ok(Outcome {
             output,
-            version: e.row.active_version,
+            version: target.version,
             fuel_used: run.fuel_used,
             logs: run.logs,
         })

@@ -678,9 +678,11 @@ fn wasm(text: &str) -> String {
 fn deploy(name: &str, body: &str) -> DeployRequest {
     DeployRequest {
         name: name.into(),
-        wasm: wasm(&format!(
+        wasm: Some(wasm(&format!(
             "(module (memory (export \"memory\") 1) (func (export \"handle\") (result i32) {body}))"
-        )),
+        ))),
+        source: None,
+        language: None,
         description: None,
         access: None,
         capabilities: Vec::new(),

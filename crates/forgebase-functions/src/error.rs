@@ -100,6 +100,42 @@ pub enum FunctionError {
     /// A bug or unexpected failure.
     #[error("internal functions error: {0}")]
     Internal(String),
+    /// JavaScript or TypeScript that does not compile (`400 function_compile_failed`).
+    #[error("{}", compile_message(.0))]
+    Compile(Vec<crate::compile::CompileDiagnostic>),
+    /// The code uses services whose capabilities are not granted (`400 capability_not_granted`).
+    #[error("{}", compile_message(.0))]
+    Unmet(Vec<crate::compile::CompileDiagnostic>),
+    /// A WebAssembly version has no source (`404`).
+    #[error("version {version} of function {name:?} is WebAssembly and has no source")]
+    NoSource {
+        /// Function.
+        name: String,
+        /// Version.
+        version: i64,
+    },
+    /// The caller may not do this (`403`).
+    #[error("{message}")]
+    Forbidden {
+        /// Error code.
+        code: &'static str,
+        /// Message.
+        message: String,
+    },
+}
+
+fn compile_message(errors: &[crate::compile::CompileDiagnostic]) -> String {
+    match errors.first() {
+        Some(e) => {
+            let more = if errors.len() > 1 {
+                format!(" (and {} more)", errors.len() - 1)
+            } else {
+                String::new()
+            };
+            format!("line {}, column {}: {}{more}", e.line, e.column, e.message)
+        }
+        None => "the source does not compile".into(),
+    }
 }
 
 impl FunctionError {
@@ -142,6 +178,10 @@ impl ErrorCode for FunctionError {
             FunctionError::Busy(_) => "function_busy",
             FunctionError::Execution(e) => e.code(),
             FunctionError::Internal(_) => "internal_error",
+            FunctionError::Compile(_) => "function_compile_failed",
+            FunctionError::Unmet(_) => "capability_not_granted",
+            FunctionError::NoSource { .. } => "function_source_not_found",
+            FunctionError::Forbidden { code, .. } => code,
         }
     }
 
@@ -149,7 +189,11 @@ impl ErrorCode for FunctionError {
         match self {
             FunctionError::Data(e) => e.kind(),
             FunctionError::Db(e) => e.kind(),
-            FunctionError::Invalid { .. } => ErrorKind::InvalidInput,
+            FunctionError::Invalid { .. } | FunctionError::Compile(_) | FunctionError::Unmet(_) => {
+                ErrorKind::InvalidInput
+            }
+            FunctionError::NoSource { .. } => ErrorKind::NotFound,
+            FunctionError::Forbidden { .. } => ErrorKind::Forbidden,
             FunctionError::NotFound(_) | FunctionError::VersionNotFound { .. } | FunctionError::SecretNotFound(_) => {
                 ErrorKind::NotFound
             }
