@@ -1455,3 +1455,134 @@ logs a warning and returns `backup: None` (FB-150, with FB-132's engine
 handle). Text columns use the database's default collation; the bundled
 engine's `builtin` C.UTF-8 sorts as SQLite does, an external server with a
 libc locale may not (FB-148 may refuse or warn).
+
+## Addendum: FB-130, the engine build pipeline and the relocation spike (2026-11-11)
+
+Built as §2.2–§2.4 and ADR-0029 §1.3 describe, to the archive format of the
+FB-132 addendum. Files: `.github/workflows/postgres-engine.yml`,
+`deploy/postgres-engine/` (shared by CI and local runs; its `README.md`
+explains each script), `engine.lock`, `THIRD_PARTY_LICENSES/postgres/`.
+
+**Pinned** (all in `engine.lock` with upstream URL and SHA-256; each
+download is checked before it is unpacked): PostgreSQL 18.6 (ftp.postgresql.org;
+the SHA-256 matches the upstream `.sha256`), pgvector 0.8.7, pg_cron 1.6.8,
+pgmq 1.13.1 (GitHub tag tarballs), OpenSSL 3.5.9 (LTS), zlib 1.4, lz4
+1.11.1, zstd 1.5.7, libedit 20260512-3.1; from the Alpine 3.20 build image:
+musl 1.2.5 (the shipped loader) and ncurses 6.4 (static, through libedit).
+
+**Measured, aarch64-apple-darwin** (built and tested on this machine; the
+estimates of §2.2 and §3.2 are replaced by these):
+
+| | Estimate | Measured |
+|---|---|---|
+| Archive (`tar` + zstd level 19) | 10–14 MB | **7,661,698 bytes (7.3 MiB)** |
+| Unpacked | 30–35 MB | **30,097,121 bytes (28.7 MiB) in 938 files** (32 MiB on disk with 4 KiB blocks) |
+| Programs (`bin/`, 14) | 14 MB | 15.4 MiB (`postgres` 9.0 MiB) |
+| Libraries and modules (`lib/`, 46) | 6 MB + 5 MB OpenSSL | 10.8 MiB (libcrypto 4.5, libssl 0.9, libpq 0.3, pgvector 0.18, pg_cron 0.09) |
+| `share/` | 2 MB | 2.4 MiB (extension SQL and control files 0.7, time zones 0.3 in 598 files, licences) |
+| Idle RSS after start, all extensions created | — | **about 73 MiB (74,416 and 74,720 KiB in two runs, 41,888 KiB in a third; the postmaster alone 25 MiB)** (sum over postmaster and its 9 children, which counts shared memory once per process; `shared_buffers = 128MB`) |
+
+The other targets are pending CI; the workflow writes the same three
+numbers into each job summary. Size per target is expected to be close to
+these (Linux adds the 0.7 MB musl loader, zlib and libedit are linked in
+statically; Windows adds the zlib, lz4 and zstd DLLs).
+
+**Verified locally (aarch64-apple-darwin).**
+- `build-unix.sh` builds from the pinned sources end to end in about 5
+  minutes on 8 jobs, and a second clean build in a different work
+  directory gives the same archive bytes: **SHA-256 `c5a23a423b28d934a41688d0b3947260fa50d32cea2af087c132c7d39ced5396` both times, now pinned in `engine.lock`**.
+- `engine.py extract` (the checks of `forgebase_pgengine::archive::extract`)
+  extracts it elsewhere, and `smoke.sh` passes: every program runs;
+  `initdb`; start with `shared_preload_libraries = 'pg_stat_statements,pg_cron'`
+  and the ADR-0029 §1.3 settings; `CREATE EXTENSION` for vector, pg_trgm,
+  pgmq, pg_cron and the 12 contrib modules; an HNSW query that uses the
+  index; pg_trgm, pgcrypto and unaccent; `pgmq.send`/`read`; a pg_cron job
+  that fired after 3 s; `ssl_library = OpenSSL`; `pg_dump`/`pg_restore`;
+  `pg_basebackup`, `pg_verifybackup` and a hot standby that replays and
+  answers a vector query; stop with no FATAL or PANIC lines.
+- The FB-132 crate accepts it: with `FORGEBASE_PG_ENGINE_ARCHIVE` and
+  `--features bundled-postgres`, `build.rs` accepts it against the
+  committed `engine.lock` (and refuses a different file), and `embedded_engine_is_extracted_and_runs` passes (extracted by the
+  Rust extractor, started with pg_cron preloaded, bootstrap and roles); with
+  `FORGEBASE_PG_ENGINE_DIR` pointing at the extracted engine, 6 of the other
+  7 integration tests pass. The seventh,
+  `engine_from_an_archive_is_extracted_once_and_old_minors_are_removed`,
+  packs only `bin/postgres` and `bin/initdb` from the engine directory, which
+  works for Homebrew (absolute library paths) but not for a relocatable
+  engine whose `libssl` sits in `lib/`; the test should pack `bin lib share`.
+- macOS relocation works: the binaries name `@loader_path/../lib/…`, depend
+  only on `/usr/lib` (libSystem, libz, libedit) otherwise, and are ad-hoc
+  signed again after `install_name_tool` (`codesign --verify` passes); the
+  compiled prefix `/forgebase-postgres` does not exist on the host, so the
+  run proves PostgreSQL resolves `share/` and `lib/` relative to itself.
+
+**Only CI can verify** (the workflow does each; nothing here is proven yet):
+- **Linux musl-loader relocation**, on the runner (Ubuntu 24.04) and in
+  `distros.sh`: Debian 12, Ubuntu 22.04 (glibc 2.35), UBI 9 (glibc 2.34),
+  Alpine 3.20 and `distroless/static-debian12` (no C library at all), as an
+  unprivileged user, for x86_64 and aarch64. No Linux engine was built or run
+  on this machine (no Linux host or Docker daemon).
+- The in-place `PT_INTERP` rewrite on real binaries (`engine.py extract`
+  mirrors `interp.rs`; both were tested only on synthetic ELF headers), the
+  relink pass that gives the shipped executables the 255-byte placeholder,
+  and `RUNPATH=$ORIGIN/../lib` (the build fails when any of these is wrong).
+- x86_64-apple-darwin (native `macos-15-intel` runner; this machine has no
+  Rosetta 2) and Windows (meson + MSVC, `Makefile.win`): `build-windows.ps1`
+  and `smoke-windows.ps1` were written without a Windows machine (and
+  without PowerShell, so not even parsed here) and are the likeliest to
+  need a fix on the first run (dependency discovery for
+  OpenSSL, zlib, lz4 and zstd in meson; pg_cron's `Makefile.win` links
+  `libintl.lib`, which the script overrides).
+
+**Relocation decision, as far as the evidence goes.** Keep §2.3: musl
+loader shipped in `lib/`, placeholder interpreter, `$ORIGIN` RUNPATH. It is
+**unproven on Linux** until the first workflow run; the decision becomes
+final when every row of the distro matrix passes on both architectures. If
+any glibc row fails, switch to the documented fallback (glibc 2.28,
+manylinux_2_28 image) for that architecture and record which row failed.
+macOS relocation is proven for arm64.
+
+**Differs from the text above.**
+- *OpenSSL is shared* (`lib/libssl`, `lib/libcrypto`), not static: static
+  linking would put three copies of OpenSSL into one server process
+  (`postgres`, `libpq` loaded by `libpqwalreceiver`, `pgcrypto`), whose
+  global state can split when symbols interpose. zlib, lz4, zstd and (Linux)
+  libedit are static. macOS uses the OS zlib and libedit (stable system
+  libraries); Windows ships DLLs next to the executables.
+- *RPATH*: Linux keeps PostgreSQL's rpath switch on with
+  `rpathdir=$ORIGIN/../lib`, which works from `bin/` and from `lib/`,
+  instead of `--disable-rpath` plus hand-written flags.
+- *Placeholder interpreter*: the build links everything with musl's normal
+  loader (it runs `zic` and `pg_config`), then relinks the shipped
+  executables with `-Wl,--dynamic-linker=/forgebase-pg-loader-xxx…` (255
+  bytes).
+- *Programs*: also `pg_waldump` (run by `pg_verifybackup`), `pg_resetwal`
+  and `pg_dumpall` (run by `pg_upgrade`, FB-154). pg_cron is shipped
+  (ADR-0029 supersedes §1's "not shipped").
+- *Build path*: the build runs through `/tmp/forgebase-engine-<target>`, a
+  link to the real work directory, because `postgres` embeds pg_config's
+  configure arguments and flags; without it the archive bytes depend on the
+  work directory.
+- *Windows* `psql` has no line editing (no libedit for MSVC).
+- *Extraction time*: the FB-132 extractor calls `sync_all` on each of the
+  938 files; on this machine's external SSD (macOS `F_FULLFSYNC`) the
+  first extraction took about 4 minutes. One `fsync` of the directory tree
+  after writing, or `fsync` without `F_FULLFSYNC`, would cut that (FB-132
+  follow-up; 598 of the files are time-zone data).
+
+**For the release workflow (FB-149).** Download the engine release named by
+`engine.lock` `engine.release` (`gh release download engine-pg18.6-r1 -p
+'forgebase-pg18.6-r1-<target>.tar.zst'`), set
+`FORGEBASE_PG_ENGINE_ARCHIVE` to it and build with the `bundled-postgres`
+feature (the `cross` builds need the variable and the file passed into the
+container), plus a `-lite` build without it. Before that, replace the
+`[archives.*]` tables of `engine.lock` with the release's
+`engine.lock.archives` asset: CI-built archives differ in bytes from this
+machine's (other toolchain), so the local aarch64-apple-darwin hash only
+serves local builds until then.
+
+**For FB-160 (Apache AGE).** `contents.extensions` in `engine.lock` drives
+the build; `deploy/postgres-engine/extensions/README.md` describes the hook
+(patches, extra make arguments, `post-install.sh` for `lib/plugins/`, or a
+`build.sh` that replaces the PGXS build) and what else AGE needs (source pin,
+licence and `NOTICE`, `graph_cypher` flag, smoke checks).

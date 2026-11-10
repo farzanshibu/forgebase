@@ -20,7 +20,7 @@ describe("App shell", () => {
   it("opens on the live overview, not a placeholder", async () => {
     signedIn(new MockApi().install());
     render(<MemoryRouter initialEntries={["/"]}><App /></MemoryRouter>);
-    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Overview", level: 1 })).toBeInTheDocument();
     expect(screen.queryByText(/Arrives in phase/)).not.toBeInTheDocument();
   });
 

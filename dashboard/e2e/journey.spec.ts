@@ -103,7 +103,7 @@ test.describe.serial("first journey", () => {
   });
 
   // A-02: Overview has a Getting started checklist and a Connect your app panel.
-  test.fixme("Overview shows Getting started and Connect your app", async () => {
+  test("Overview shows Getting started and Connect your app", async () => {
     await page.goto("/admin/");
     await expect(page.getByRole("region", { name: "Getting started" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Connect your app" })).toBeVisible();
