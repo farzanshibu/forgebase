@@ -982,6 +982,7 @@ mirror on PostgreSQL.
 public`. FB-132 sets it on the bundled engine's roles; for everything else
 `ensure_search_path` (run at the end of every `migrate`) checks the session
 user's default (`pg_settings.reset_val`) and, when it lacks `forgebase`,
+and the role and database settings in `pg_db_role_setting` lack it too,
 runs `ALTER ROLE <session_user> IN DATABASE <db> SET search_path =
 forgebase, public` (an ordinary role may change its own defaults; scoped to
 the one database so an operator's other databases are untouched), sets it on
@@ -991,8 +992,11 @@ database (the external-server case): it migrates, owns the tables, and its
 new sessions find the system tables unqualified. *Test engine:* copies of a
 template database do not inherit per-database settings, so
 `forgebase_db::testing` sets the search_path on its role
-(`ALTER ROLE CURRENT_USER SET …`, the stand-in for FB-132's roles) and now
-fails a test when migration fails instead of leaving the database empty.
+(`ALTER ROLE CURRENT_USER SET …`, the stand-in for FB-132's roles), now
+fails a test when migration fails instead of leaving the database empty, and
+copies the template with `STRATEGY FILE_COPY` (the migrated template has
+about 450 relations: 0.7 s per test database instead of 3 s on the build
+machine).
 
 **Objects.** `CREATE EXTENSION IF NOT EXISTS citext` and `unaccent` `WITH
 SCHEMA forgebase` (both are trusted extensions: a database owner may create

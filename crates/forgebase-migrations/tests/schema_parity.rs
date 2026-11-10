@@ -9,6 +9,8 @@
 //! PostgreSQL tests skip without an engine (`FORGEBASE_PG_ENGINE_DIR`,
 //! `FORGEBASE_TEST_PG_ENGINE` or `FORGEBASE_TEST_PG_URL`).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -383,7 +385,9 @@ async fn sqlite_schema(conn: &mut SqliteConnection) -> Schema {
             .fetch_all(&mut *conn)
             .await
             .unwrap();
-        let mut grouped: BTreeMap<i64, (String, Vec<String>, Vec<Option<String>>, String, String)> = BTreeMap::new();
+        // id -> (target table, columns, target columns, on update, on delete)
+        type Grouped = BTreeMap<i64, (String, Vec<String>, Vec<Option<String>>, String, String)>;
+        let mut grouped = Grouped::new();
         for r in &fks {
             let e = grouped
                 .entry(r.get(0))
