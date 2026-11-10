@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Button, ErrorView, inputCls } from "../../components/ui";
+import { Button, ErrorView } from "../../components/ui";
+import { Dialog } from "panelui-web/dialog";
 import { Table } from "panelui-web/table";
 import { toaster } from "../../toaster";
 
@@ -19,21 +20,16 @@ export function Badge({ tone = "default", children }: { tone?: "default" | "ok" 
   return <span className={`inline-block rounded border px-1.5 py-0.5 text-xs ${c}`}>{children}</span>;
 }
 
-export function Modal({ title, onClose, children }: { title: string; onClose?: () => void; children: ReactNode }) {
+/** PanelUI dialog, open while mounted. Without `onClose` it can only be dismissed by what the children offer (a secret shown once). */
+export function Modal({ title, onClose, footer, children }: { title: string; onClose?: () => void; footer?: ReactNode; children: ReactNode }) {
   return (
-    <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-lg border border-border bg-card p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="font-medium">{title}</h2>
-          {onClose && (
-            <Button aria-label="Close dialog" onClick={onClose}>
-              ×
-            </Button>
-          )}
-        </div>
-        {children}
-      </div>
-    </div>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose?.(); }} dismissible={false}>
+      <Dialog.Content size="md" showClose={Boolean(onClose)}>
+        <Dialog.Header title={title} />
+        <Dialog.Body>{children}</Dialog.Body>
+        {footer && <Dialog.Footer>{footer}</Dialog.Footer>}
+      </Dialog.Content>
+    </Dialog>
   );
 }
 
@@ -41,27 +37,31 @@ export function Modal({ title, onClose, children }: { title: string; onClose?: (
 export function SecretModal({ secret, label, onClose }: { secret: string; label: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   return (
-    <Modal title={`${label} created`}>
+    <Modal
+      title={`${label} created`}
+      footer={
+        <>
+          <Button
+            onClick={() => {
+              void navigator.clipboard?.writeText(secret);
+              setCopied(true);
+              toaster.add({ title: "Secret copied", description: "It is on your clipboard. Store it somewhere safe.", type: "success" });
+            }}
+          >
+            {copied ? "Copied" : "Copy"}
+          </Button>
+          <Button tone="primary" onClick={onClose}>
+            Done
+          </Button>
+        </>
+      }
+    >
       <p role="note" className="mb-2 rounded border border-warning/40 bg-warning/10 p-2 text-sm text-warning">
         Copy this secret now. It is shown once and cannot be retrieved later.
       </p>
       <code aria-label="Secret" className="block break-all rounded bg-background p-2 font-mono text-xs">
         {secret}
       </code>
-      <div className="mt-3 flex justify-end gap-2">
-        <Button
-          onClick={() => {
-            void navigator.clipboard?.writeText(secret);
-            setCopied(true);
-            toaster.add({ title: "Secret copied", description: "It is on your clipboard. Store it somewhere safe.", type: "success" });
-          }}
-        >
-          {copied ? "Copied" : "Copy"}
-        </Button>
-        <Button tone="primary" onClick={onClose}>
-          Done
-        </Button>
-      </div>
     </Modal>
   );
 }
@@ -92,4 +92,3 @@ export function Th({ children }: { children: ReactNode }) {
   return <Table.Head className="py-2 pr-3">{children}</Table.Head>;
 }
 export const THEAD = "text-left text-xs uppercase tracking-wide text-muted-foreground";
-export { inputCls };

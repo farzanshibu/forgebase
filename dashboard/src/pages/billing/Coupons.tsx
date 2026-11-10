@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { archiveCoupon, listCoupons, putCoupon } from "../../api";
 import type { CouponDuration, CouponKind } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { csv } from "../functions/util";
 import { formatBp, formatMoney, parseMinor } from "./money";
@@ -68,10 +69,10 @@ export default function Coupons() {
         <form onSubmit={submit} aria-label="New coupon" className="space-y-3">
           <div className={FORM_GRID}>
             <Field label="Coupon code"><Input size="sm" value={code} onChange={(e) => setCode(e.target.value)} required /></Field>
-            <Field label="Coupon kind"><select className={inputCls} value={kind} onChange={(e) => setKind(e.target.value as CouponKind)}><option>percent</option><option>amount</option></select></Field>
+            <Field label="Coupon kind"><Sel value={kind} onChange={(v) => setKind(v as CouponKind)} options={["percent", "amount"]} /></Field>
             <Field label={kind === "percent" ? "Percent off" : "Amount off"}><Input size="sm" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} required /></Field>
             {kind === "amount" && <Field label="Coupon currency"><Input size="sm" maxLength={3} value={currency} onChange={(e) => setCurrency(e.target.value)} /></Field>}
-            <Field label="Duration"><select className={inputCls} value={duration} onChange={(e) => setDuration(e.target.value as CouponDuration)}><option>once</option><option>repeating</option><option>forever</option></select></Field>
+            <Field label="Duration"><Sel value={duration} onChange={(v) => setDuration(v as CouponDuration)} options={["once", "repeating", "forever"]} /></Field>
             {duration === "repeating" && <Field label="Cycles"><Input size="sm" inputMode="numeric" value={cycles} onChange={(e) => setCycles(e.target.value)} /></Field>}
             <Field label="Max redemptions"><Input size="sm" inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} /></Field>
             <Field label="Only for products (comma separated)"><Input size="sm" value={products} onChange={(e) => setProducts(e.target.value)} /></Field>

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { listCollections, searchUsers } from "../../api";
-import { ErrorView, Loading, inputCls, Button } from "../../components/ui";
+import { ErrorView, Loading, Button } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { THEAD, Th } from "./common";
 import { Table } from "panelui-web/table";
@@ -32,19 +33,15 @@ export default function Users() {
       >
         <label className="text-sm text-muted-foreground">
           Collection{" "}
-          <select
+          <Sel
             aria-label="Auth collection"
-            className={inputCls}
             value={collection ?? ""}
-            onChange={(e) => {
-              setPicked(e.target.value);
+            onChange={(v) => {
+              setPicked(v);
               setPage(1);
             }}
-          >
-            {authCols.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
+            options={authCols}
+          />
         </label>
         <Input size="sm" aria-label="Search users" className="w-64" placeholder="Search email or name" value={input} onChange={(e) => setInput(e.target.value)} />
         <Button type="submit">Search</Button>

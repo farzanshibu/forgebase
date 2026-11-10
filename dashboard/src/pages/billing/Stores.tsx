@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { deleteStoreProduct, listPrices, listStoreProducts, listStorePurchases, putStoreProduct, STORE_PROVIDERS } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { Badge, BillingError, Empty, Field, SubjectLink, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
@@ -28,7 +29,7 @@ function StoreProducts() {
     if (ok) { setProductId(""); setPrice(""); }
   };
   return (
-    <Panel title="Store products" actions={<label className="text-sm">Store<select aria-label="Filter store" className={`${inputCls} ml-2`} value={filter} onChange={(e) => setFilter(e.target.value)}><option value="">all</option>{STORE_PROVIDERS.map((p) => <option key={p}>{p}</option>)}</select></label>}>
+    <Panel title="Store products" actions={<label className="text-sm">Store<Sel aria-label="Filter store" value={filter} onChange={setFilter} options={[{ value: "", label: "all" }, ...STORE_PROVIDERS]} className="ml-2" /></label>}>
       <BillingError error={products.error} />
       {products.loading && !products.error && <Loading what="Loading store products" />}
       {products.data && rows.length === 0 && <Empty>No store products mapped. A store product id maps to one price: recurring for a store subscription, one-time otherwise.</Empty>}
@@ -51,13 +52,10 @@ function StoreProducts() {
       )}
       <form onSubmit={save} aria-label="Store product mapping" className="mt-4 space-y-3 border-t border-border pt-4">
         <div className={FORM_GRID}>
-          <Field label="Mapping store"><select className={inputCls} value={provider} onChange={(e) => setProvider(e.target.value)}>{STORE_PROVIDERS.map((p) => <option key={p}>{p}</option>)}</select></Field>
+          <Field label="Mapping store"><Sel value={provider} onChange={setProvider} options={STORE_PROVIDERS} /></Field>
           <Field label="Store product id"><Input size="sm" value={productId} onChange={(e) => setProductId(e.target.value)} required placeholder="com.example.pro.monthly" /></Field>
           <Field label="Sold as price">
-            <select className={inputCls} value={price} onChange={(e) => setPrice(e.target.value)} required>
-              <option value="">choose a price</option>
-              {(prices.data ?? []).filter((p) => p.active && p.type !== "metered").map((p) => <option key={p.key} value={p.key}>{p.key} ({p.type})</option>)}
-            </select>
+            <Sel value={price} onChange={setPrice} required options={[{ value: "", label: "choose a price" }, ...(prices.data ?? []).filter((p) => p.active && p.type !== "metered").map((p) => ({ value: p.key, label: `${p.key} (${p.type})` }))]} />
           </Field>
         </div>
         <ErrorView error={act.error} />
@@ -77,7 +75,7 @@ function StorePurchases() {
   return (
     <Panel title="Store purchases" actions={<Button onClick={purchases.reload}>Refresh</Button>}>
       <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">
-        <label>Status<select className={`${inputCls} ml-2`} value={status} onChange={(e) => setStatus(e.target.value)}><option value="">all</option>{["active", "trialing", "grace", "on_hold", "paused", "expired", "refunded", "revoked", "pending", "replaced"].map((s) => <option key={s}>{s}</option>)}</select></label>
+        <label>Status<Sel value={status} onChange={setStatus} options={[{ value: "", label: "all" }, ...["active", "trialing", "grace", "on_hold", "paused", "expired", "refunded", "revoked", "pending", "replaced"]]} className="ml-2" /></label>
         <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
       </div>
       <BillingError error={purchases.error} />

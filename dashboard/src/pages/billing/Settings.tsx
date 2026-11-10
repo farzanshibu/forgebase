@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { archiveTaxRate, deleteProvider, getBillingSettings, listProviders, listTaxRates, listWebhookEvents, putBillingSettings, putProvider, putTaxRate } from "../../api";
 import type { BillingSettings, FinalAction, ProviderAccount } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
 import StoreProviders from "./StoreProviders";
@@ -73,7 +74,7 @@ function SettingsForm({ initial, onSaved }: { initial: BillingSettings; onSaved:
       <div className={FORM_GRID}>
         <Field label="Default currency"><Input size="sm" maxLength={3} value={s.default_currency} onChange={(e) => setS({ ...s, default_currency: e.target.value.toUpperCase() })} /></Field>
         <Field label="Retry days (comma separated)"><Input size="sm" value={retry} onChange={(e) => setRetry(e.target.value)} /></Field>
-        <Field label="After the last retry"><select className={inputCls} value={s.final_action} onChange={(e) => setS({ ...s, final_action: e.target.value as FinalAction })}><option value="cancel">cancel</option><option value="leave_past_due">leave past due</option></select></Field>
+        <Field label="After the last retry"><Sel value={s.final_action} onChange={(v) => setS({ ...s, final_action: v as FinalAction })} options={["cancel", { value: "leave_past_due", label: "leave past due" }]} /></Field>
         <Field label="Invoice prefix"><Input size="sm" value={s.invoice_prefix} onChange={(e) => setS({ ...s, invoice_prefix: e.target.value })} /></Field>
         <Field label="Credit note prefix"><Input size="sm" value={s.credit_note_prefix} onChange={(e) => setS({ ...s, credit_note_prefix: e.target.value })} /></Field>
       </div>

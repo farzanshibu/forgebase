@@ -1,6 +1,8 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { deletePolicy, getPolicy, listCollections, putPolicy, type CollectionDef, type Policy } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty } from "./shared";
 import { useRun } from "./util";
@@ -15,22 +17,18 @@ export function RuleInput({ label, value, onChange, noneLabel }: { label: string
   return (
     <div className="flex flex-wrap items-start gap-2">
       <span className="w-28 pt-1.5 text-sm text-foreground/80">{label}</span>
-      <select
+      <Sel
         aria-label={`${label} mode`}
-        className={inputCls}
         value={mode}
-        onChange={(e) => {
-          const m = e.target.value as Mode;
+        onChange={(v) => {
+          const m = v as Mode;
           setMode(m);
           onChange(m === "none" ? null : m === "open" ? "" : (mode === "expr" ? value : null) ?? "@request.auth.id != \"\"");
         }}
-      >
-        <option value="none">{noneLabel}</option>
-        <option value="open">Everyone</option>
-        <option value="expr">Expression</option>
-      </select>
+        options={[{ value: "none", label: noneLabel }, { value: "open", label: "Everyone" }, { value: "expr", label: "Expression" }]}
+      />
       {mode === "expr" && (
-        <textarea aria-label={`${label} expression`} rows={2} className={`${inputCls} min-w-72 flex-1 font-mono`} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />
+        <Textarea aria-label={`${label} expression`} minRows={2} className="min-w-72 flex-1 font-mono" value={value ?? ""} onChange={(e) => onChange(e.target.value)} />
       )}
     </div>
   );
@@ -51,10 +49,7 @@ export default function PoliciesPage() {
       {cols.data?.length === 0 && <Empty>No collections yet.</Empty>}
       {cols.data && cols.data.length > 0 && (
         <label className="flex max-w-xs flex-col gap-1 text-xs text-muted-foreground">Collection
-          <select className={inputCls} value={name} onChange={(e) => { setName(e.target.value); setSaved(false); }}>
-            <option value="">Choose a collection…</option>
-            {cols.data.filter((c) => !c.system).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-          </select>
+          <Sel value={name} onChange={(v) => { setName(v); setSaved(false); }} options={[{ value: "", label: "Choose a collection…" }, ...cols.data.filter((c) => !c.system).map((c) => ({ value: c.name, label: c.name }))]} />
         </label>
       )}
       {name && <ErrorView error={policy.error} />}

@@ -3,7 +3,8 @@ import {
   DEFAULT_LDAP, DEFAULT_TURNSTILE, deleteSmsGateway, deleteSocialProvider, getSmsGateway, listSocialProviders, PROVIDER_KINDS, putRealmIdentity, putSmsGateway, putSocialProvider,
   SECRET_MASK, TURNSTILE_ACTIONS, type LdapSettings, type ProviderKind, type RealmConfig, type RealmIdentity, type SmsConfig, type SmsProviderType, type SocialProvider, type TurnstileSettings,
 } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, Field, MultiPick } from "../access/shared";
 import { useRun } from "../access/util";
@@ -78,7 +79,7 @@ function ProviderForm({ realm, existing, onDone }: { realm: string; existing?: S
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Provider id"><Input size="sm" aria-label="Provider id" className="font-mono" value={id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder="google" /></Field>
         <Field label="Kind">
-          <select aria-label="Provider kind" className={inputCls} value={kind} onChange={(e) => setKind(e.target.value as ProviderKind)}>{PROVIDER_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
+          <Sel aria-label="Provider kind" value={kind} onChange={(v) => setKind(v as ProviderKind)} options={PROVIDER_KINDS} />
         </Field>
         <Field label="Client id"><Input size="sm" aria-label="Client id" className="font-mono" value={clientId} onChange={(e) => setClientId(e.target.value)} /></Field>
         <SecretInput label="Client secret" stored={existing?.client_secret ?? null} onChange={setSecret} />
@@ -120,9 +121,7 @@ function GatewayForm({ realm, current, onSaved }: { realm: string; current: SmsC
     <form aria-label="SMS gateway" className="space-y-3" onSubmit={(e) => { e.preventDefault(); setSaved(false); void run(() => putSmsGateway(realm, cfg)); }}>
       <p className="text-xs text-muted-foreground">{current ? "This realm sends codes through its own gateway." : "No gateway set for this realm: the instance gateway is used."}</p>
       <Field label="Gateway type">
-        <select aria-label="Gateway type" className={inputCls} value={cfg.provider} onChange={(e) => setCfg({ provider: e.target.value as SmsProviderType })}>
-          <option value="dev">dev (writes codes to disk)</option><option value="twilio">Twilio</option><option value="webhook">HTTPS webhook</option>
-        </select>
+        <Sel aria-label="Gateway type" value={cfg.provider} onChange={(v) => setCfg({ provider: v as SmsProviderType })} options={[{ value: "dev", label: "dev (writes codes to disk)" }, { value: "twilio", label: "Twilio" }, { value: "webhook", label: "HTTPS webhook" }]} />
       </Field>
       {cfg.provider === "twilio" && (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -192,9 +191,7 @@ function LdapForm({ cfg, set }: { cfg: RealmConfig; set: (c: RealmConfig) => voi
         {txt("Email attribute", "email_attribute")}{txt("Name attribute", "name_attribute")}
         <SecretInput label="Bind password" stored={l.bind_password} onChange={(v) => up({ bind_password: v })} />
         <Field label="Search scope">
-          <select aria-label="Search scope" className={inputCls} value={l.scope} onChange={(e) => up({ scope: e.target.value as LdapSettings["scope"] })}>
-            <option value="base">base</option><option value="one">one level</option><option value="sub">subtree</option>
-          </select>
+          <Sel aria-label="Search scope" value={l.scope} onChange={(v) => up({ scope: v as LdapSettings["scope"] })} options={["base", { value: "one", label: "one level" }, { value: "sub", label: "subtree" }]} />
         </Field>
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1">

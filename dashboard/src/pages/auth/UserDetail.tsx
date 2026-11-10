@@ -1,10 +1,11 @@
+import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   getUserDetail, listSuspensions, revokeAllSessions, revokeSession, suspend, unsuspend, userLoginHistory, userSessions,
 } from "../../api";
 import { useSession } from "../../auth/session";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Badge, Modal, THEAD, Th, fmtTime, useAction } from "./common";
 import { Table } from "panelui-web/table";
@@ -191,7 +192,7 @@ function ImpersonateDialog({ principal, onClose }: { principal: string; onClose:
         </p>
         <label className="block">
           Reason (required)
-          <textarea aria-label="Reason" className={`${inputCls} mt-1 w-full`} value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Textarea aria-label="Reason" className="mt-1 w-full" value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
         <label className="block">
           Minutes (1–60)

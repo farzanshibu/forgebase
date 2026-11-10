@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { deleteAcl, listAcl, putAcl, type AclEntry, type Effect } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Sel } from "../../components/controls";
 import { ActionError, Empty, EffectBadge, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
 import { Table } from "panelui-web/table";
@@ -27,9 +28,7 @@ export default function AclPanel() {
       <Panel title="Resource">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">Resource type
-            <select className={inputCls} value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="project">project</option><option value="environment">environment</option><option value="collection">collection</option>
-            </select>
+            <Sel value={type} onChange={setType} options={["project", "environment", "collection"]} />
           </label>
           <TextField label="Resource id" value={id} onChange={setId} />
           <Button disabled={!id} onClick={() => void load(type, id)}>Load ACL</Button>
@@ -57,7 +56,7 @@ export default function AclPanel() {
             <TextField label="Grantee" value={grantee} onChange={setGrantee} placeholder="user:users/abc" />
             <TextField label="ACL permission" value={permission} onChange={setPermission} placeholder="projects:read" />
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">ACL effect
-              <select className={inputCls} value={effect} onChange={(e) => setEffect(e.target.value as Effect)}><option value="allow">allow</option><option value="deny">deny</option></select>
+              <Sel value={effect} onChange={(v) => setEffect(v as Effect)} options={["allow", "deny"]} />
             </label>
             <Button tone="primary" disabled={!grantee || !permission} onClick={() => void run(() => putAcl({ resource_type: loaded.type, resource_id: loaded.id, grantee, permission, effect }))}>Add ACL entry</Button>
           </div>
