@@ -12,7 +12,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use common::{free_port, wait_healthy};
+use common::{free_port, startup_timeout, wait_healthy};
 use serde_json::{Value, json};
 
 /// `(module (memory (export "memory") 1) (func (export "handle") (result i32) i32.const 0))`
@@ -65,7 +65,7 @@ impl Serve {
             addr: format!("127.0.0.1:{port}"),
         };
         assert!(
-            wait_healthy(&s.addr, Duration::from_secs(20)),
+            wait_healthy(&s.addr, startup_timeout()),
             "server did not become healthy"
         );
         s

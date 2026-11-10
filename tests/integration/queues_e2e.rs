@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
-use common::{free_port, wait_healthy};
+use common::{free_port, startup_timeout, wait_healthy};
 use serde_json::{Value, json};
 
 fn text(b: &[u8]) -> String {
@@ -52,7 +52,7 @@ impl Serve {
             addr: format!("127.0.0.1:{port}"),
         };
         assert!(
-            wait_healthy(&s.addr, Duration::from_secs(20)),
+            wait_healthy(&s.addr, startup_timeout()),
             "server did not become healthy"
         );
         s
