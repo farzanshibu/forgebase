@@ -62,17 +62,17 @@ export default function LoginPage() {
                 </Alert>
               )}
               {mfaRequired ? (
-                <FormField label="Authentication code" help="Enter the code from your authenticator app, or a recovery code." required>
+                <FormField label="Authentication code" help="Enter the code from your authenticator app, or a recovery code.">
                   {(p) => (
                     <Input {...p} className="w-full" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric" autoFocus required />
                   )}
                 </FormField>
               ) : (
                 <>
-                  <FormField label="Email" required>
+                  <FormField label="Email">
                     {(p) => <Input {...p} className="w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" autoFocus required />}
                   </FormField>
-                  <FormField label="Password" required>
+                  <FormField label="Password">
                     {(p) => <Input {...p} className="w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />}
                   </FormField>
                 </>

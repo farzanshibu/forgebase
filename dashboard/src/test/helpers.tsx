@@ -22,6 +22,8 @@ export function signedIn<T extends MockApi>(mock: T, active = true): T {
   mock.onFallback("GET", "/api/setup/status", () => ({ status: 200, body: { setup_required: false } }));
   const none = () => ({ status: 404, body: { error: { code: "not_found", message: "not found", request_id: "r" } } });
   for (const path of ["/metrics", "/api/system/info", "/api/system/features", "/api/v1/storage/stats", "/api/v1/entitlements", "/api/v1/vector/stats", "/api/v1/jobs/stats", "/api/v1/kv/_info"]) mock.onFallback("GET", path, none);
+  // Overview's Getting started and Recent activity (FB-99): an empty project unless a test installs test/overviewMock.ts.
+  for (const path of ["/api/auth/api-keys", "/api/v1/functions", "/api/auth/audit"]) mock.onFallback("GET", path, () => ({ status: 200, body: { items: [] } }));
   mock.on("POST", "/api/auth/logout", ({ headers }) => {
     if (headers.Authorization) return { status: 204 };
     mock.cookieSession = false;
