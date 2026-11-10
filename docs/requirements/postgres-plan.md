@@ -80,6 +80,18 @@ The human asked for PostgreSQL in the v0.3 release.
    through the Unix socket and `forgebase db psql` only. TCP stays off until an
    operator turns it on.
 
+4. **PostgreSQL is the default backend** for new projects. SQLite stays as an
+   option: a config switch and the `-lite` download.
+5. On PostgreSQL, features run on **PostgreSQL extensions**: vector on
+   pgvector, graph on Apache AGE (openCypher), queues on pgmq, scheduled jobs
+   on pg_cron, and full-text and fuzzy search on built-in full-text search
+   plus pg_trgm. All of them are bundled in the engine.
+6. **Read replicas and sharding ship in v0.3.** ForgeBase manages read
+   replicas: reads go to replicas and writes to the primary. Sharding is
+   **ForgeBase tenant sharding**: each tenant or project is placed on one of
+   several PostgreSQL servers, and ForgeBase routes requests to it. Citus is
+   not used (AGPL). Design: ADR-0029 (FB-158), with packages FB-160 onward.
+
 **Disk.** The build machine has about 35 GB free.
 - Rust temps build with `CARGO_PROFILE_DEV_DEBUG=0` and
   `CARGO_PROFILE_TEST_DEBUG=0`, and delete their `target/` at done.
