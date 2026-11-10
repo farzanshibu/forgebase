@@ -23,7 +23,7 @@ use serde_json::{Value as Json2, json};
 use crate::engine::{Check, home_realm};
 use crate::pipeline::{Denial, ResourceRef, Step};
 use crate::snapshot::Effect;
-use crate::store::{PolicyInput, RoleInput};
+use crate::store::{PolicyInput, ResourceRulesInput, RoleInput};
 use crate::{PolicyError, PolicyService};
 
 /// Realm header.
@@ -686,6 +686,42 @@ pub mod docs {
         delete_policy
     );
     doc!(
+        get,
+        "/api/v1/policies/resources/{kind}",
+        "authorization",
+        "Engine resource rules of a kind (`kv_namespace`, `vector_collection`, `graph_label`, `graph_edge_type`, `bucket`, `queue_topic`, `queue_subscription`): the item fields rules may read, the operations, and every resource with rules (super-admins).",
+        list_resource_rules
+    );
+    doc!(
+        get,
+        "/api/v1/policies/resources/{kind}/{name}",
+        "authorization",
+        "Rules of one engine resource `{kind, name, rules}`; name `*` holds the rules of every resource of the kind without rules of its own (super-admins).",
+        get_resource_rules
+    );
+    doc!(
+        put,
+        "/api/v1/policies/resources/{kind}/{name}",
+        "authorization",
+        "Replace the rules of one engine resource: `{rules: {list|view|create|update|delete|read|write: rule}}`; `null` locks, `\"\"` opens to everyone. A rule grants callers without the `engine:<action>` or `engine:<action>:<name>` permission, never admin actions; rules are checked against the kind's item fields (super-admins).",
+        put_resource_rules
+    );
+    doc!(
+        delete,
+        "/api/v1/policies/resources/{kind}/{name}",
+        "authorization",
+        "Remove every rule of one engine resource (super-admins).",
+        delete_resource_rules
+    );
+    doc!(
+        post,
+        "/api/v1/policies/resources/{kind}/{name}/check",
+        "authorization",
+        "Dry-run the engine decision for the caller (or `principal`, super-admins): `{action, op}` (for example `{\"action\": \"kv_read\", \"op\": \"view\"}`) answers `{decision: allow|filter|deny, step, reason}`.",
+        check_resource,
+        "authz_check_resource"
+    );
+    doc!(
         post,
         "/api/v1/orgs/{org}/invitations",
         "tenancy",
@@ -812,6 +848,14 @@ pub fn router(svc: PolicyService) -> Router {
             "/api/v1/policies/{collection}",
             get(get_policy).put(put_policy).delete(delete_policy),
         )
+        .route("/api/v1/policies/resources/{kind}", get(list_resource_rules))
+        .route(
+            "/api/v1/policies/resources/{kind}/{name}",
+            get(get_resource_rules)
+                .put(put_resource_rules)
+                .delete(delete_resource_rules),
+        )
+        .route("/api/v1/policies/resources/{kind}/{name}/check", post(check_resource))
         .route("/api/v1/orgs/{org}/invitations", get(list_invitations).post(invite))
         .route("/api/v1/invitations/accept", post(accept))
         .route("/api/v1/authz/me", get(me))
@@ -1102,6 +1146,75 @@ async fn delete_policy(State(s): S, Caller(c): Caller, Path(coll): Path<String>)
     s.delete_policy(&c, &coll).await.ctx(&c)?;
     done()
 }
+async fn list_resource_rules(State(s): S, Caller(c): Caller, Path(kind): Path<String>) -> ApiResult<Response> {
+    ok(s.list_resource_rules(&c, &kind).await.ctx(&c)?)
+}
+async fn get_resource_rules(
+    State(s): S,
+    Caller(c): Caller,
+    Path((kind, name)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    ok(s.get_resource_rules(&c, &kind, &name).await.ctx(&c)?)
+}
+async fn put_resource_rules(
+    State(s): S,
+    Caller(c): Caller,
+    Path((kind, name)): Path<(String, String)>,
+    Json(b): Json<ResourceRulesInput>,
+) -> ApiResult<Response> {
+    ok(s.put_resource_rules(&c, &kind, &name, &b).await.ctx(&c)?)
+}
+async fn delete_resource_rules(
+    State(s): S,
+    Caller(c): Caller,
+    Path((kind, name)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    s.delete_resource_rules(&c, &kind, &name).await.ctx(&c)?;
+    done()
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceCheckBody {
+    action: String,
+    op: String,
+    /// Ask for another principal (super-admins), as `/authz/check`.
+    #[serde(default)]
+    principal: Option<String>,
+}
+
+async fn check_resource(
+    State(s): S,
+    Caller(c): Caller,
+    Path((kind, name)): Path<(String, String)>,
+    Json(b): Json<ResourceCheckBody>,
+) -> ApiResult<Response> {
+    let parsed = || -> Result<_, PolicyError> {
+        let k = forgebase_data::ResourceKind::parse(&kind)
+            .ok_or_else(|| PolicyError::invalid("invalid_resource_kind", format!("unknown resource kind {kind:?}")))?;
+        let action = k
+            .actions()
+            .iter()
+            .copied()
+            .find(|a| crate::engine::action_name(*a) == b.action)
+            .ok_or_else(|| {
+                PolicyError::invalid("invalid_action", format!("{k} resources have no action {:?}", b.action))
+            })?;
+        let op = forgebase_data::ResourceOp::parse(&b.op)
+            .ok_or_else(|| PolicyError::invalid("invalid_action", "op is list, view, create, update or delete"))?;
+        Ok((action, forgebase_data::ResourceRef::new(k, name.clone(), op)))
+    };
+    let (action, r) = parsed().ctx(&c)?;
+    let subject = match &b.principal {
+        Some(p) => s.context_for(&c, p).ctx(&c)?,
+        None => c.clone(),
+    };
+    ok(match s.dry_run_resource(&subject, action, &r) {
+        Ok(forgebase_data::Decision::Filter(_)) => json!({"decision": "filter"}),
+        Ok(_) => json!({"decision": "allow"}),
+        Err(d) => json!({"decision": "deny", "step": d.step, "reason": d.reason}),
+    })
+}
+
 async fn invite(
     State(s): S,
     Caller(c): Caller,

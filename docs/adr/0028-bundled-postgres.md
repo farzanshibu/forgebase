@@ -940,3 +940,95 @@ pg_current_wal_insert_lsn()` in one round trip and records the position
 Option<Lsn>`, monotonic); `Database::current_wal_lsn()` asks the primary.
 `Database` is per target and cheap to clone, and the crate holds no global
 connection state, so a shard map can hold one `Database` per shard.
+
+## Addendum (FB-134, MDF-82): resource-scoped engine permissions and rules
+
+Written 2026-11-11 by FB-134. The framework the engine RLS fixes build on
+(`rls-coverage.md` G7, G9, G10, G14, G16; applied by FB-138 to FB-142). It
+lives in `forgebase-data::access` (types, trait) and `forgebase-policy`
+(evaluation, storage, HTTP); it is backend-neutral: rules compile through
+`forgebase-query` with the backend's `Dialect`, and the new table uses SQL
+valid on both engines.
+
+**Permission keys.** The fifteen engine actions in
+`forgebase_policy::perm::RESOURCE_ACTIONS` (`kv_*`, `vector_*`, `graph_*`,
+`storage_*`, `queue_*`) take a resource segment: `engine:<action>:<name>`.
+The name is everything after the second `:` (it may hold `:` and `.`), is
+compared case-sensitively, and in a pattern may use `*` anywhere
+(`engine:kv_read:cache.*`). `engine:<action>` keeps meaning "every resource":
+granting it grants every resource key of that action, denying it denies them
+all, and an explicit deny of a resource key beats a grant of the plain key.
+The plain key is not widened for other actions, so `engine:read_jobs` does
+**not** grant FB-142's `engine:read_jobs:all`. The escalation guard (roles,
+memberships, overrides, invitations) applies the same rule: a holder of
+`engine:kv_read:cache` cannot grant `engine:kv_read` or `engine:kv_read:*`.
+
+**Decision.** `Authorizer::authorize_resource(ctx, action, &ResourceRef) ->
+Decision`, a default method that falls back to `authorize(ctx, action, None)`,
+so authorizers written before FB-134 keep their answers. The policy engine
+runs the pipeline in order: authentication (anonymous callers continue, but
+only a rule can grant them anything); realm and tenant exactly as for
+`engine:<action>` today (signed-in callers must be active members of the
+tenant's organization, or own or share its personal project); permission
+(resource key or plain key; a `ResourceRef::owner` equal to the caller holds
+every permission on it, a deny still wins); the entitlement hook, asked with
+the plain key and the resource so FB-24's mapping is unchanged; then, only
+when no permission grants, the **resource rule**; then the quota hook.
+Privileged callers and the system are allowed, as everywhere. Admin actions
+(`kv_admin`, `vector_admin`, `storage_admin`, `queue_admin`) are granted by
+permissions only, never by a rule. Resource ACL entries
+(`_forgebase_resource_permissions`) are **not** consulted for engine
+resources: they are org-managed but engine names are shared across tenants,
+so an org's entry would reach other orgs' tenants.
+
+**Rules.** Table `_forgebase_resource_rules (kind, name, action, rule)`
+(migration 0026; NULL rule = locked, `""` = everyone). Kinds:
+`kv_namespace`, `vector_collection`, `graph_label`, `graph_edge_type`,
+`bucket`, `queue_topic`, `queue_subscription`. Actions are the collection-rule
+operations `list`, `view`, `create`, `update`, `delete`, plus `read` (list +
+view) and `write` (create + update + delete); the exact operation wins over
+its alias. Name `*` holds the rules of every resource of the kind that has no
+rules of its own (a resource's own rule set replaces the `*` set as a whole).
+A stored rule that no longer parses locks its action without falling back.
+The grammar is the collection-rule grammar (ADR-0008 §6): `@request.*`
+values are decided in Rust; a residual over item fields comes back as
+`Decision::Filter(Predicate)`. Rules are validated when saved against the
+kind's `ResourceSchema`: the schema the engine registered
+(`Authorizer::register_resource_schema`), else `ResourceKind::default_schema`
+(bucket: `key`, `created_by`, `size`, `content_type`, `folders`; vector: `id`,
+`metadata`; graph label: `id`, `label`, `properties`; edge type: `id`,
+`type`, `source`, `target`, `properties`; KV: `key`; queues: none). Only
+declared fields may be read, and a rule action must be one of the schema's
+operations. The engine compiles a filter with `ResourceSchema::compile(&mut
+SqlBuilder, alias, &predicate)`; the SQL names each field as a column of the
+alias, so the engine selects its items as a derived table exposing those
+names. Engines that cannot apply a predicate treat `Filter` as a denial.
+
+**HTTP** (super-admins, like collection rules; in OpenAPI):
+`GET /api/v1/policies/resources/{kind}` (fields, operations, actions, every
+resource with rules), `GET|PUT|DELETE /api/v1/policies/resources/{kind}/{name}`
+(`PUT {rules: {action: rule|null}}` replaces the set), and
+`POST /api/v1/policies/resources/{kind}/{name}/check` `{action, op,
+principal?}` → `{decision: allow|filter|deny, step, reason}` for any caller
+about themselves (super-admins may name a principal). `/api/v1/authz/check`
+understands resource keys too.
+
+**For the wave-1b packages.**
+- Ask `authorize_resource` with the operation that matches the call (a scan
+  or search is `List`, a get is `View`, ...). Keep calling the plain
+  `authorize` for calls that span every resource (list namespaces, stats):
+  only the plain key grants those.
+- Register your schema at start (`authorizer.register_resource_schema(..)`)
+  if the defaults above do not fit.
+- Permission keys carry the action, not the kind:
+  `engine:queue_read:<name>` covers a topic and a subscription of that name,
+  and `engine:graph_read:<name>` a label and an edge type (FB-139, FB-141).
+- Wrapping authorizers must forward `authorize_resource` and
+  `register_resource_schema`; FB-134 did this for
+  `forgebase_jobs::JobChannelAuthorizer`, which wraps the policy engine for
+  the server's shared data service.
+- PostgreSQL twin of migration 0026 (FB-133): the same table without
+  `STRICT`, `updated_at BIGINT`. The statements were checked on
+  PostgreSQL 18.3; the backend itself arrives with FB-131.
+- Native RLS (FB-152): engine tables stay API-only (rls-coverage §3.4), so
+  resource rules are not compiled into PostgreSQL policies.

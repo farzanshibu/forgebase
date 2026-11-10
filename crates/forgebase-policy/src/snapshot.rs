@@ -266,6 +266,9 @@ pub struct Snapshot {
     pub(crate) acl: HashMap<(String, String), Vec<AclEntry>>,
     pub(crate) suspended: HashMap<String, Option<i64>>,
     pub(crate) policies: HashMap<String, CollectionPolicy>,
+    /// Engine resource rules (FB-134): (kind, name) → rule action → rule
+    /// (`None`: locked).
+    pub(crate) resource_rules: HashMap<(String, String), HashMap<String, Option<RuleSpec>>>,
     /// Home realms of identities (FB-25), shared with the auth service.
     pub(crate) realm_dir: Option<forgebase_auth::realm::RealmDirectory>,
     cache: Mutex<HashMap<CacheKey, Arc<Effective>>>,
@@ -532,7 +535,32 @@ impl Snapshot {
             }
             snap.policies.insert(s(&r, 0), p);
         }
+        for r in rows(db, "SELECT kind, name, action, rule FROM _forgebase_resource_rules")
+            .await?
+            .rows
+        {
+            // A stored rule that no longer parses locks the action (and does
+            // not fall back to an alias or the `*` rules).
+            let spec = rule_spec(r[3].as_str()).unwrap_or(None);
+            snap.resource_rules
+                .entry((s(&r, 0), s(&r, 1)))
+                .or_default()
+                .insert(s(&r, 2), spec);
+        }
         Ok(snap)
+    }
+
+    /// The resource rule for `op` on a resource (FB-134): the rules of the
+    /// named resource if it has any, else those saved for the name `*`; in
+    /// that set the rule of the exact operation, else of its alias (`read` /
+    /// `write`). `None`: no rule (locked); `Some(None)` would be an explicit
+    /// lock and is flattened to `None` too.
+    pub fn resource_rule(&self, kind: &str, name: &str, op: forgebase_data::ResourceOp) -> Option<&RuleSpec> {
+        let set = self
+            .resource_rules
+            .get(&(kind.to_owned(), name.to_owned()))
+            .or_else(|| self.resource_rules.get(&(kind.to_owned(), "*".to_owned())))?;
+        set.get(op.as_str()).or_else(|| set.get(op.alias()))?.as_ref()
     }
 
     /// Whether the principal is suspended at `now` (Unix seconds).

@@ -23,10 +23,14 @@ pub mod rules;
 pub mod snapshot;
 pub mod store;
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use forgebase_core::{ErrorCode, ErrorKind};
-use forgebase_data::{AccessContext, Action, Authorizer, DataError, DataService, Decision, FieldAccess, Principal};
+use forgebase_data::{
+    AccessContext, Action, Authorizer, DataError, DataService, Decision, FieldAccess, Principal, ResourceKind,
+    ResourceRef as EngineResource, ResourceSchema,
+};
 use forgebase_db::{Backend, DbError};
 use forgebase_schema::Collection;
 
@@ -142,6 +146,8 @@ struct Inner {
     data: OnceLock<DataService>,
     mailer: OnceLock<(Arc<dyn forgebase_auth::Mailer>, String)>,
     realms: OnceLock<forgebase_auth::realm::RealmDirectory>,
+    /// Item fields of engine resources, as the engines registered them (FB-134).
+    schemas: RwLock<HashMap<ResourceKind, ResourceSchema>>,
 }
 
 impl PolicyService {
@@ -157,6 +163,7 @@ impl PolicyService {
                 data: OnceLock::new(),
                 mailer: OnceLock::new(),
                 realms: OnceLock::new(),
+                schemas: RwLock::new(HashMap::new()),
             }),
         })
     }
@@ -281,6 +288,58 @@ impl PolicyService {
     pub(crate) fn audit(&self) -> &AuditSink {
         &self.inner.audit
     }
+
+    /// Registers the item fields resource rules of `schema.kind` may read
+    /// (FB-134); replaces an earlier registration.
+    pub fn register_resource_schema(&self, schema: ResourceSchema) {
+        self.inner
+            .schemas
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(schema.kind, schema);
+    }
+
+    /// The registered schema of `kind`, else [`ResourceKind::default_schema`].
+    pub fn resource_schema(&self, kind: ResourceKind) -> ResourceSchema {
+        self.inner
+            .schemas
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&kind)
+            .cloned()
+            .unwrap_or_else(|| kind.default_schema())
+    }
+
+    /// The decision for an engine action on one named resource (FB-134; the
+    /// same as `Authorizer::authorize_resource` of [`PolicyService::authorizer`]).
+    /// Denials are audited.
+    pub fn authorize_resource(&self, ctx: &AccessContext, action: Action, resource: &EngineResource) -> Decision {
+        if ctx.principal == Principal::System {
+            return Decision::Allow;
+        }
+        match engine::decide_resource(&self.snapshot(), &self.hooks(), ctx, action, resource) {
+            Ok(d) => d,
+            Err((denial, key)) => {
+                self.audit()
+                    .record(pipeline::audit_record(ctx, &key, Some(resource.to_string()), &denial));
+                Decision::Deny
+            }
+        }
+    }
+
+    /// Runs [`PolicyService::authorize_resource`] without auditing: the
+    /// decision, or the denial with its step.
+    pub fn dry_run_resource(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        resource: &EngineResource,
+    ) -> Result<Decision, Denial> {
+        if ctx.principal == Principal::System {
+            return Ok(Decision::Allow);
+        }
+        engine::decide_resource(&self.snapshot(), &self.hooks(), ctx, action, resource).map_err(|(d, _)| d)
+    }
 }
 
 /// The data core's [`Authorizer`]: the pipeline over the current snapshot.
@@ -306,6 +365,14 @@ impl Authorizer for PolicyAuthorizer {
                 Decision::Deny
             }
         }
+    }
+
+    fn authorize_resource(&self, ctx: &AccessContext, action: Action, resource: &EngineResource) -> Decision {
+        self.svc.authorize_resource(ctx, action, resource)
+    }
+
+    fn register_resource_schema(&self, schema: ResourceSchema) {
+        self.svc.register_resource_schema(schema);
     }
 
     fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {

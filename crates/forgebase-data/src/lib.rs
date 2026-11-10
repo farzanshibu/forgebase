@@ -42,8 +42,8 @@ use forgebase_schema::Collection;
 
 pub use access::{
     AccessContext, Action, Authorizer, DEFAULT_REALM, Decision, DefaultAuthorizer, FieldAccess, Predicate, Principal,
-    READS_TENANT_DATA_OPTION, SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped,
-    reads_tenant_data,
+    READS_TENANT_DATA_OPTION, ResourceField, ResourceFieldType, ResourceKind, ResourceOp, ResourceRef, ResourceSchema,
+    SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped, reads_tenant_data,
 };
 pub use changes::{ChangeHook, ChangeOp, GuardRejection, PendingWrite, RecordChange, RowSnapshot, WriteGuard};
 pub use collections::SchemaChange;
