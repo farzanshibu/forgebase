@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use base64::Engine;
-use forgebase_db::{ConstraintKind, DbError, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{ColumnType, ConstraintKind, DbError, Dialect, Rows, Statement, TxMode, Value, WriteTx};
 use forgebase_query::{CompileOptions, Compiler, SqlBuilder};
 use forgebase_schema::values::is_blank;
 use forgebase_schema::{
@@ -75,6 +75,33 @@ pub(crate) fn json_to_sql(storage: Storage, v: &Json) -> Value {
         (Storage::Text, Json::String(s)) => Value::Text(s.clone()),
         (_, other) => Value::Text(other.to_string()),
     }
+}
+
+/// Column type of a storage class in `d` (`TEXT` / `jsonb`, ...).
+pub(crate) fn storage_sql_type(d: &dyn Dialect, s: Storage) -> &'static str {
+    d.column_type(match s {
+        Storage::Text => ColumnType::Text,
+        Storage::Integer => ColumnType::Integer,
+        Storage::Real => ColumnType::Real,
+        Storage::Bool => ColumnType::Boolean,
+        Storage::Json => ColumnType::Json,
+    })
+}
+
+/// Column type of a collection table's column, for the one-row derived
+/// tables that run access rules over a stored row (change snapshots, record
+/// versions). PostgreSQL types a bare parameter from its value (text,
+/// `bigint`), so each column is cast to its table type, as the rule expects
+/// (`jsonb` for JSON, `smallint` 0/1 for booleans). `None` for columns that
+/// are not fields (view columns).
+pub(crate) fn column_sql_type(d: &dyn Dialect, coll: &Collection, column: &str) -> Option<&'static str> {
+    match column {
+        "id" | "created" | "updated" | TENANT_COLUMN => return Some(d.column_type(ColumnType::Text)),
+        "_data" => return Some(d.column_type(ColumnType::Json)),
+        "_version" => return Some(d.column_type(ColumnType::Integer)),
+        _ => {}
+    }
+    coll.field(column).map(|f| storage_sql_type(d, f.kind.storage()))
 }
 
 /// JSON value of a SQL value.
@@ -733,12 +760,14 @@ impl DataService {
                         continue;
                     }
                     let (t, c) = (d.quote_ident(&other.name), d.quote_ident(&f.name));
+                    let (each, elem) = d.json_array_elements(&c, "e");
                     let refs = tx
                         .fetch_all(&Statement::new(
                             format!(
-                                "SELECT {}, {}, coalesce(json_array_length({c}), 0) FROM {t} WHERE EXISTS (SELECT 1 FROM json_each({c}) WHERE value = ?1)",
+                                "SELECT {}, {}, {} FROM {t} WHERE EXISTS (SELECT 1 FROM {each} WHERE {elem} = ?1)",
                                 d.quote_ident("id"),
-                                d.quote_ident("_version")
+                                d.quote_ident("_version"),
+                                d.json_array_length(&c),
                             ),
                             vec![id.into()],
                         ))
@@ -758,8 +787,10 @@ impl DataService {
                         } else {
                             tx.execute(&Statement::new(
                                 format!(
-                                    "UPDATE {t} SET {c} = (SELECT json_group_array(value) FROM json_each({c}) WHERE value IS NOT ?1),
+                                    "UPDATE {t} SET {c} = (SELECT {} FROM {each} WHERE {elem} {} ?1),
                                      {u} = ?2, {v} = {v} + 1 WHERE {i} = ?3",
+                                    d.json_array_agg(&elem),
+                                    d.null_safe_ne(),
                                     u = d.quote_ident("updated"),
                                     v = d.quote_ident("_version"),
                                     i = d.quote_ident("id")
@@ -944,14 +975,16 @@ impl DataService {
                     .map_or(Value::Null, Value::Integer),
                 _ => data.get(name).and_then(Json::as_str).map_or(Value::Null, Value::from),
             };
-            cols.push(format!("{} AS {}", b.bind(v), d.quote_ident(name)));
+            let ty = column_sql_type(d, coll, name).unwrap_or("TEXT");
+            cols.push(format!("CAST({} AS {ty}) AS {}", b.bind(v), d.quote_ident(name)));
         }
         for f in &coll.fields {
             let v = match (&f.kind, data.get(&f.name)) {
                 (FieldKind::Password { .. }, _) | (_, None) => Value::Null,
                 (k, Some(v)) => json_to_sql(k.storage(), v),
             };
-            cols.push(format!("{} AS {}", b.bind(v), d.quote_ident(&f.name)));
+            let ty = storage_sql_type(d, f.kind.storage());
+            cols.push(format!("CAST({} AS {ty}) AS {}", b.bind(v), d.quote_ident(&f.name)));
         }
         let cond = self.compile_predicate(ctx, &mut b, coll, p)?;
         let sql = format!("SELECT 1 FROM (SELECT {}) AS t WHERE {cond}", cols.join(", "));

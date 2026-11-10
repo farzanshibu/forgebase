@@ -23,11 +23,11 @@ use std::fmt;
 use base64::Engine;
 use forgebase_db::{Statement, Value, WriteTx};
 use forgebase_query::{CompileOptions, Compiler, Expr, SqlBuilder};
-use forgebase_schema::{Collection, FieldKind, Storage};
+use forgebase_schema::{Collection, FieldKind};
 use serde_json::{Value as Json, json};
 
-use crate::access::{TENANT_COLUMN, reads_tenant_data};
-use crate::records::{Record, row_to_record};
+use crate::access::reads_tenant_data;
+use crate::records::{Record, column_sql_type, row_to_record};
 use crate::{AccessContext, Action, DataError, DataService};
 
 /// Kind of record change.
@@ -197,19 +197,6 @@ pub trait WriteGuard: Send + Sync + fmt::Debug {
 
 /// Column type used to give a snapshot column the affinity of its table
 /// column, so predicates compare values exactly as they do on the table.
-fn column_type(coll: &Collection, column: &str) -> Option<&'static str> {
-    match column {
-        "id" | "created" | "updated" | "_data" | TENANT_COLUMN => return Some("TEXT"),
-        "_version" => return Some("INTEGER"),
-        _ => {}
-    }
-    coll.field(column).map(|f| match f.kind.storage() {
-        Storage::Text | Storage::Json => "TEXT",
-        Storage::Integer | Storage::Bool => "INTEGER",
-        Storage::Real => "REAL",
-    })
-}
-
 impl DataService {
     /// Installs the change hook (once per service; `false` if one is set).
     pub fn set_change_hook(&self, hook: std::sync::Arc<dyn ChangeHook>) -> bool {
@@ -380,7 +367,7 @@ impl DataService {
                 .zip(&row.values)
                 .map(|(c, v)| {
                     let p = b.bind(v.clone());
-                    match column_type(&coll, c) {
+                    match column_sql_type(d, &coll, c) {
                         Some(ty) => format!("CAST({p} AS {ty}) AS {}", d.quote_ident(c)),
                         None => format!("{p} AS {}", d.quote_ident(c)),
                     }

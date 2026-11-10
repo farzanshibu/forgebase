@@ -22,12 +22,20 @@
 //!   guard in front of an administrator's tool, not a boundary (a name built
 //!   at run time is not seen); on PostgreSQL the editor's role has no
 //!   `SELECT` on secret columns (FB-153).
+//! * PostgreSQL (ADR-0028 §7.5, FB-143): the tokenizer uses PostgreSQL's
+//!   quoting and deny list ([`forgebase_query::SqlFlavor`]); reads run on the
+//!   read pool in `READ ONLY` transactions (the reader role in managed mode);
+//!   writes and DDL run on the writer with `search_path = public, forgebase`
+//!   for the transaction, so tables the editor creates land in `public`,
+//!   never in ForgeBase's schema. `last_insert_id` is `None` there (use
+//!   `RETURNING`). Introspection is limited to ForgeBase's search path
+//!   (`public` and `forgebase`), never `pg_catalog` or `information_schema`.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
 
 use forgebase_db::{ColumnType, Rows, Statement, TxMode, Value, WriteTx};
-use forgebase_query::{StatementInfo, StatementKind, analyze_statement, split_statements};
+use forgebase_query::{SqlFlavor, StatementInfo, StatementKind, analyze_statement_for, split_statements_for};
 use forgebase_schema::FieldKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
@@ -73,7 +81,8 @@ pub struct SqlResult {
     pub rows: Vec<Vec<Json>>,
     /// Rows changed (writes).
     pub rows_affected: u64,
-    /// Rowid of the last insert (writes).
+    /// Rowid of the last insert (writes; SQLite only: use `RETURNING` on
+    /// PostgreSQL).
     pub last_insert_id: Option<i64>,
     /// More rows existed than were returned.
     pub truncated: bool,
@@ -284,14 +293,15 @@ impl DataService {
         s: &SqlStatement,
         guard_secrets: bool,
     ) -> Result<Checked, DataError> {
-        let parts = split_statements(&s.sql)?;
+        let flavor = SqlFlavor::of(self.inner.backend.dialect());
+        let parts = split_statements_for(&s.sql, flavor)?;
         let [sql] = parts.as_slice() else {
             return Err(DataError::invalid(
                 "multiple_statements",
                 "send exactly one statement per entry (use a batch for several)",
             ));
         };
-        let info = analyze_statement(sql)?;
+        let info = analyze_statement_for(sql, flavor)?;
         let params = bind_params(&s.params)?;
         let mut kind = info.kind;
         if kind == StatementKind::Read {
@@ -382,7 +392,7 @@ impl DataService {
         let c = self.check_sql(ctx, &statement, !opts.show_secrets).await?;
         if c.kind == StatementKind::Read {
             let started = Instant::now();
-            let sql = if matches!(c.info.keyword.as_str(), "SELECT" | "WITH" | "VALUES") {
+            let sql = if matches!(c.info.keyword.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE") {
                 format!("SELECT * FROM ({}) LIMIT {}", c.sql, MAX_SQL_ROWS + 1)
             } else {
                 c.sql.clone()
@@ -448,8 +458,14 @@ impl DataService {
             None
         };
         let d = self.inner.backend.dialect();
+        let pg = SqlFlavor::of(d) == SqlFlavor::Postgres;
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
+            if pg {
+                // Unqualified names the statements create land in `public`;
+                // ForgeBase's own tables still resolve (second on the path).
+                tx.execute(&Statement::raw(PG_EDITOR_SEARCH_PATH)).await?;
+            }
             let mut out = Vec::with_capacity(checked.len());
             let mut ddl = Vec::new();
             for c in &checked {
@@ -466,7 +482,7 @@ impl DataService {
                         columns: vec![],
                         rows: vec![],
                         rows_affected: done.rows_affected,
-                        last_insert_id: (c.info.keyword == "INSERT" || c.info.keyword == "REPLACE")
+                        last_insert_id: (!pg && (c.info.keyword == "INSERT" || c.info.keyword == "REPLACE"))
                             .then_some(done.last_insert_id),
                         truncated: false,
                         duration_ms: started.elapsed().as_secs_f64() * 1000.0,
@@ -512,18 +528,26 @@ impl DataService {
     /// Tables and views (schema introspection). System tables are omitted.
     pub async fn list_tables(&self, ctx: &AccessContext) -> Result<Vec<TableInfo>, DataError> {
         self.authorize(ctx, Action::ReadSchema, None)?;
-        let rows = self
-            .inner
-            .backend
-            .fetch_all(&Statement::new(
-                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+        let b = self.inner.backend.as_ref();
+        let rows = match SqlFlavor::of(b.dialect()) {
+            SqlFlavor::Sqlite => {
+                b.fetch_all(&Statement::new(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
                    AND name NOT LIKE '\\_forgebase\\_%' ESCAPE '\\' ORDER BY name",
-                vec![],
-            ))
-            .await?;
+                    vec![],
+                ))
+                .await?
+            }
+            // Tables and views on ForgeBase's search path (`forgebase`,
+            // `public`); its own tables are left out by name below.
+            SqlFlavor::Postgres => b.fetch_all(&b.dialect().introspect_tables()).await?,
+        };
+        let name_col = rows.column("name").unwrap_or(0);
         let mut out = Vec::new();
         for r in &rows.rows {
-            if let Some(n) = r[0].as_str() {
+            if let Some(n) = r.get(name_col).and_then(Value::as_str)
+                && !is_system_table(n)
+            {
                 out.push(self.table_info(n).await?);
             }
         }
@@ -545,22 +569,47 @@ impl DataService {
         Ok(info)
     }
 
+    /// The table or view `name` (any case; on PostgreSQL an exact match
+    /// wins, since quoted names are case-sensitive there): `(name, type, sql)`.
+    async fn find_table(&self, name: &str) -> Result<Option<(String, String, Option<String>)>, DataError> {
+        let b = self.inner.backend.as_ref();
+        let text = |r: &[Value], i: Option<usize>| i.and_then(|i| r.get(i)).and_then(Value::as_str).map(str::to_owned);
+        let rows = match SqlFlavor::of(b.dialect()) {
+            SqlFlavor::Sqlite => {
+                b.fetch_all(&Statement::new(
+                    "SELECT name, type, sql FROM sqlite_master WHERE type IN ('table', 'view') AND lower(name) = lower(?1)",
+                    vec![name.into()],
+                ))
+                .await?
+            }
+            SqlFlavor::Postgres => b.fetch_all(&b.dialect().introspect_tables()).await?,
+        };
+        let (n, t, q) = (rows.column("name"), rows.column("type"), rows.column("sql"));
+        let found = rows
+            .rows
+            .iter()
+            .find(|r| text(r, n).as_deref() == Some(name))
+            .or_else(|| {
+                rows.rows
+                    .iter()
+                    .find(|r| text(r, n).is_some_and(|x| x.eq_ignore_ascii_case(name)))
+            });
+        Ok(found.map(|r| {
+            (
+                text(r, n).unwrap_or_else(|| name.to_owned()),
+                text(r, t).unwrap_or_default(),
+                text(r, q),
+            )
+        }))
+    }
+
     async fn table_info(&self, name: &str) -> Result<TableInfo, DataError> {
         let b = self.inner.backend.as_ref();
         let d = b.dialect();
-        let master = b
-            .fetch_all(&Statement::new(
-                "SELECT name, type, sql FROM sqlite_master WHERE type IN ('table', 'view') AND lower(name) = lower(?1)",
-                vec![name.into()],
-            ))
-            .await?;
-        let Some(m) = master.rows.first() else {
+        let Some((real, kind, sql)) = self.find_table(name).await? else {
             return Err(DataError::CollectionNotFound(name.to_owned()));
         };
-        let real = m[0].as_str().unwrap_or(name).to_owned();
-        let cols = b
-            .fetch_all(&Statement::raw(format!("PRAGMA table_info({})", d.quote_ident(&real))))
-            .await?;
+        let cols = b.fetch_all(&d.introspect_columns(&real)).await?;
         let idx = |c: &str| cols.column(c);
         let columns = match (idx("name"), idx("type"), idx("notnull"), idx("dflt_value"), idx("pk")) {
             (Some(n), Some(t), Some(nn), Some(df), Some(pk)) => cols
@@ -576,26 +625,36 @@ impl DataService {
                 .collect(),
             _ => vec![],
         };
-        let indexes = b
-            .fetch_all(&Statement::new(
-                "SELECT name FROM sqlite_master WHERE type = 'index' AND lower(tbl_name) = lower(?1) ORDER BY name",
-                vec![real.clone().into()],
-            ))
-            .await?
+        let index_rows = match SqlFlavor::of(d) {
+            SqlFlavor::Sqlite => {
+                b.fetch_all(&Statement::new(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND lower(tbl_name) = lower(?1) ORDER BY name",
+                    vec![real.clone().into()],
+                ))
+                .await?
+            }
+            SqlFlavor::Postgres => b.fetch_all(&d.introspect_indexes(&real)).await?,
+        };
+        let name_col = index_rows.column("name").unwrap_or(0);
+        let mut indexes: Vec<String> = index_rows
             .rows
             .iter()
-            .filter_map(|r| r[0].as_str().map(str::to_owned))
+            .filter_map(|r| r.get(name_col).and_then(Value::as_str).map(str::to_owned))
             .collect();
+        indexes.sort();
         Ok(TableInfo {
             collection: self.catalog().get(&real).map(|c| c.name.clone()),
             name: real,
-            kind: m[1].as_str().unwrap_or_default().to_owned(),
+            kind,
             columns,
             indexes,
-            sql: m[2].as_str().map(str::to_owned),
+            sql,
         })
     }
 }
+
+/// Set at the start of every SQL editor write transaction on PostgreSQL.
+const PG_EDITOR_SEARCH_PATH: &str = "SET LOCAL search_path = public, forgebase";
 
 #[cfg(test)]
 mod tests {

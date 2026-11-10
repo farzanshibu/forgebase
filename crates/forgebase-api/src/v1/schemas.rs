@@ -250,12 +250,20 @@ pub struct SqlStatementBody {
     pub sql: String,
     #[schema(value_type = Option<Vec<Object>>)]
     pub params: Option<Vec<Json>>,
+    /// `POST /sql` only (a batch sets it on the batch body): return secret
+    /// columns (`password`, `token_key`, password fields) unmasked and allow
+    /// statements that name them. Each use is audited (`sql.show_secrets`
+    /// in `GET /api/auth/audit`). Default `false`.
+    pub show_secrets: Option<bool>,
 }
 
 #[derive(ToSchema)]
 pub struct SqlBatchBody {
     /// 1 to 1000 statements, run in one all-or-nothing transaction.
     pub statements: Vec<SqlStatementBody>,
+    /// Return secret columns unmasked for the whole batch and allow
+    /// statements that name them; audited once per batch. Default `false`.
+    pub show_secrets: Option<bool>,
 }
 
 #[derive(ToSchema)]
@@ -266,9 +274,13 @@ pub struct SqlResultSchema {
     #[schema(value_type = Vec<Vec<Object>>)]
     pub rows: Vec<Vec<Json>>,
     pub rows_affected: u64,
+    /// Rowid of the last insert (SQLite; `null` on PostgreSQL: use `RETURNING`).
     pub last_insert_id: Option<i64>,
     pub truncated: bool,
     pub duration_ms: f64,
+    /// `true` when secret values in `rows` read `"********"` (send
+    /// `show_secrets` to see them); absent otherwise.
+    pub secrets_masked: Option<bool>,
 }
 
 #[derive(ToSchema)]

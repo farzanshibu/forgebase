@@ -191,14 +191,15 @@ fn is_pg(d: &dyn Dialect) -> bool {
 }
 
 /// `path` inside the JSON value `base`. SQLite: `json_extract(base, '$.a.b')`.
-/// PostgreSQL: `nullif((base)->'a'->'b', 'null'::jsonb)`, a `jsonb` value
-/// (typed, so numbers compare and sort as numbers; JSON `null` and a missing
-/// key are both SQL NULL, as `json_extract` returns them).
+/// PostgreSQL: `nullif((base)::jsonb->'a'->'b', 'null'::jsonb)`, a `jsonb`
+/// value (typed, so numbers compare and sort as numbers; JSON `null` and a
+/// missing key are both SQL NULL, as `json_extract` returns them). The cast is
+/// a no-op on `jsonb` columns and accepts JSON held in `text` (`_data`).
 fn json_get(d: &dyn Dialect, base: &str, path: &[JsonPathSeg]) -> String {
     if !is_pg(d) {
         return d.json_extract(base, path);
     }
-    let mut out = format!("({base})");
+    let mut out = format!("({base})::jsonb");
     for seg in path {
         match seg {
             JsonPathSeg::Key(k) => {
@@ -1007,9 +1008,9 @@ mod tests {
         let (sql, params) = pg("p", "meta.a.b > 5 && meta.c = 'x' && meta.f = true");
         assert_eq!(
             sql,
-            "(nullif((t.\"meta\")->'a'->'b', 'null'::jsonb) > CAST($1 AS jsonb)) AND \
-             (nullif((t.\"meta\")->'c', 'null'::jsonb) = CAST($2 AS jsonb)) AND \
-             (nullif((t.\"meta\")->'f', 'null'::jsonb) = CAST($3 AS jsonb))"
+            "(nullif((t.\"meta\")::jsonb->'a'->'b', 'null'::jsonb) > CAST($1 AS jsonb)) AND \
+             (nullif((t.\"meta\")::jsonb->'c', 'null'::jsonb) = CAST($2 AS jsonb)) AND \
+             (nullif((t.\"meta\")::jsonb->'f', 'null'::jsonb) = CAST($3 AS jsonb))"
         );
         assert_eq!(
             params,
@@ -1018,8 +1019,8 @@ mod tests {
         let (sql, _) = pg("d", "metadata.specs.0.ram >= 16 && metadata.brand = null");
         assert_eq!(
             sql,
-            "(nullif((t.\"_data\")->'metadata'->'specs'->0->'ram', 'null'::jsonb) >= CAST($1 AS jsonb)) AND \
-             (nullif((t.\"_data\")->'metadata'->'brand', 'null'::jsonb) IS NULL)"
+            "(nullif((t.\"_data\")::jsonb->'metadata'->'specs'->0->'ram', 'null'::jsonb) >= CAST($1 AS jsonb)) AND \
+             (nullif((t.\"_data\")::jsonb->'metadata'->'brand', 'null'::jsonb) IS NULL)"
         );
     }
 
@@ -1029,7 +1030,7 @@ mod tests {
         assert_eq!(
             sql,
             "(t.\"title\" ILIKE $1 ESCAPE '\\') AND \
-             ((nullif((t.\"meta\")->'k', 'null'::jsonb) #>> '{}') ILIKE $2 ESCAPE '\\') AND \
+             ((nullif((t.\"meta\")::jsonb->'k', 'null'::jsonb) #>> '{}') ILIKE $2 ESCAPE '\\') AND \
              (NOT (coalesce(t.\"title\", '') ILIKE $3 ESCAPE '\\'))"
         );
         assert_eq!(params[0], Value::Text("%A\\%%".into()));
@@ -1048,7 +1049,7 @@ mod tests {
         );
         // Path to path: a JSON value against text compares as jsonb.
         let (sql, _) = pg("p", "meta.t = title && title:lower = 'x'");
-        assert!(sql.starts_with("(nullif((t.\"meta\")->'t', 'null'::jsonb) IS NOT DISTINCT FROM to_jsonb(t.\"title\"))"), "{sql}");
+        assert!(sql.starts_with("(nullif((t.\"meta\")::jsonb->'t', 'null'::jsonb) IS NOT DISTINCT FROM to_jsonb(t.\"title\"))"), "{sql}");
         assert!(sql.ends_with("(lower(t.\"title\") = $1)"), "{sql}");
     }
 
@@ -1062,7 +1063,7 @@ mod tests {
         assert!(params.is_empty());
         assert_eq!(
             sql,
-            "(t.\"title\" = 'it''s') AND (nullif((t.\"meta\")->'n', 'null'::jsonb) > '2.5'::jsonb)"
+            "(t.\"title\" = 'it''s') AND (nullif((t.\"meta\")::jsonb->'n', 'null'::jsonb) > '2.5'::jsonb)"
         );
     }
 
@@ -1076,7 +1077,7 @@ mod tests {
             (&SqliteDialect as &dyn Dialect, vec!["t.\"title\" DESC", "json_extract(t.\"meta\", '$.n') ASC"]),
             (
                 &PgDialect,
-                vec!["t.\"title\" DESC NULLS LAST", "nullif((t.\"meta\")->'n', 'null'::jsonb) ASC NULLS FIRST"],
+                vec!["t.\"title\" DESC NULLS LAST", "nullif((t.\"meta\")::jsonb->'n', 'null'::jsonb) ASC NULLS FIRST"],
             ),
         ] {
             let mut b = SqlBuilder::new(d);
