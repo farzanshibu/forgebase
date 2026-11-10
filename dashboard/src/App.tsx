@@ -18,18 +18,31 @@ import GraphPage from "./pages/graph/GraphPage";
 import VectorPage from "./pages/vector/VectorPage";
 import SystemStudio from "./pages/system/SystemStudio";
 import { STUDIOS } from "./studios";
+import { Spinner } from "panelui-web/spinner";
+import { Toast } from "panelui-web/toast";
+import ThemeProvider from "./theme/ThemeProvider";
+import { toaster } from "./toaster";
 
 export default function App() {
   return (
-    <SessionProvider>
-      <Gate />
-    </SessionProvider>
+    <ThemeProvider>
+      <Toast.Provider toastManager={toaster} position="bottom-right">
+        <SessionProvider>
+          <Gate />
+        </SessionProvider>
+      </Toast.Provider>
+    </ThemeProvider>
   );
 }
 
 function Gate() {
   const { status } = useSession();
-  if (status === "loading") return <p className="p-8 text-sm text-zinc-500">Loading…</p>;
+  if (status === "loading")
+    return (
+      <p className="flex min-h-svh items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Spinner aria-hidden="true" role="presentation" /> Loading…
+      </p>
+    );
   if (status === "anonymous") return <LoginPage />;
   return <Studios />;
 }
@@ -80,8 +93,8 @@ function Studios() {
 function NotFound() {
   return (
     <div className="p-8">
-      <h1 className="text-xl font-semibold">Page not found</h1>
-      <p className="mt-2 text-zinc-400">Pick a section from the sidebar.</p>
+      <h1 className="text-xl font-semibold tracking-tight">Page not found</h1>
+      <p className="mt-2 text-muted-foreground">Pick a section from the sidebar.</p>
     </div>
   );
 }
