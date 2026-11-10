@@ -314,7 +314,12 @@ pub(crate) fn auto_indexes(d: &dyn Dialect, coll: &Collection) -> Vec<IndexDefin
         let single_relation = matches!(f.kind, FieldKind::Relation { max_select: 1, .. });
         if f.unique || single_relation {
             out.push(IndexDefinition {
-                name: d.fit_ident(&format!("auto_{}_{}_{}", coll.id, f.id, if f.unique { "u" } else { "r" })),
+                name: d.fit_ident(&format!(
+                    "auto_{}_{}_{}",
+                    coll.id,
+                    f.id,
+                    if f.unique { "u" } else { "r" }
+                )),
                 collection: coll.name.clone(),
                 keys: vec![IndexKey::asc(f.name.clone())],
                 unique: f.unique,
@@ -932,7 +937,11 @@ impl DataService {
             name: name.to_owned(),
             table,
             collection,
-            origin: origin.unwrap_or(if flag("engine") { IndexOrigin::Engine } else { IndexOrigin::Sql }),
+            origin: origin.unwrap_or(if flag("engine") {
+                IndexOrigin::Engine
+            } else {
+                IndexOrigin::Sql
+            }),
             kind: IndexKind::Btree,
             unique: flag("uniq"),
             partial: flag("partial"),
@@ -1067,8 +1076,8 @@ impl DataService {
         explain.label = None; // never a slow query to recommend for
         let rows = b.fetch_all(&explain).await?;
         let text = rows.scalar().and_then(Value::as_str).unwrap_or("[]");
-        let json: Json = serde_json::from_str(text)
-            .map_err(|e| DataError::Internal(format!("unreadable query plan: {e}")))?;
+        let json: Json =
+            serde_json::from_str(text).map_err(|e| DataError::Internal(format!("unreadable query plan: {e}")))?;
         Ok(QueryPlan::from_pg_json(
             stmt.sql.clone(),
             json.get(0).and_then(|p| p.get("Plan")),
@@ -1260,9 +1269,16 @@ mod tests {
         });
         let p = QueryPlan::from_pg_json(String::new(), Some(&plan));
         assert_eq!(p.indexes_used, vec!["items_pkey", "idx_a", "idx_g"]);
-        assert_eq!(p.full_scans, vec!["t", "events"], "an index walk with only a filter reads everything");
+        assert_eq!(
+            p.full_scans,
+            vec!["t", "events"],
+            "an index walk with only a filter reads everything"
+        );
         assert_eq!(p.steps.len(), 7);
-        assert_eq!(p.steps[2].detail, "Index Scan using items_pkey on items t filter (other = '3'::bigint)");
+        assert_eq!(
+            p.steps[2].detail,
+            "Index Scan using items_pkey on items t filter (other = '3'::bigint)"
+        );
         assert_eq!(p.steps[3].detail, "Index Scan using idx_a on orders r1 ((a = t.id))");
         assert_eq!(p.steps[5].parent, p.steps[4].id);
         assert!(QueryPlan::from_pg_json(String::new(), None).steps.is_empty());

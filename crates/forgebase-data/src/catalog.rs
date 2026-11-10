@@ -236,9 +236,6 @@ pub(crate) mod pg {
 
     /// Bytes used by a relation in schema `public` (NULL if it is missing).
     pub(crate) fn relation_size(regclass: &str) -> Statement {
-        Statement::new(
-            "SELECT pg_total_relation_size(to_regclass(?1))",
-            vec![regclass.into()],
-        )
+        Statement::new("SELECT pg_total_relation_size(to_regclass(?1))", vec![regclass.into()])
     }
 }

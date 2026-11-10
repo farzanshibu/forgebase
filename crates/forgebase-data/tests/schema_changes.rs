@@ -790,7 +790,9 @@ async fn views_survive_column_changes_and_run_as_the_caller() {
     assert_eq!(err.code(), "schema_conflict", "{err:?}");
     assert_eq!(svc.get_collection(&ctx, "src").await.unwrap().version, 2);
     assert_eq!(
-        svc.count_records(&ctx, "src_view2", None, HashMap::new()).await.unwrap(),
+        svc.count_records(&ctx, "src_view2", None, HashMap::new())
+            .await
+            .unwrap(),
         1
     );
 
@@ -803,7 +805,9 @@ async fn views_survive_column_changes_and_run_as_the_caller() {
     let changed = svc.update_collection(&ctx, "src_view", changed).await.unwrap();
     assert!(changed.fields.iter().any(|f| f.name == "again"));
     assert_eq!(
-        svc.count_records(&ctx, "src_view2", None, HashMap::new()).await.unwrap(),
+        svc.count_records(&ctx, "src_view2", None, HashMap::new())
+            .await
+            .unwrap(),
         1
     );
     svc.delete_collection(&ctx, "src_view2").await.unwrap();
@@ -846,7 +850,9 @@ async fn long_derived_names_are_fitted_to_the_identifier_limit() {
         .await
         .unwrap();
     assert!(
-        svc.create_record(&ctx, "longnames", json!({"code": "a1"})).await.is_err(),
+        svc.create_record(&ctx, "longnames", json!({"code": "a1"}))
+            .await
+            .is_err(),
         "the auto unique index works under its fitted name"
     );
     let infos = svc.list_indexes(&ctx, Some("longnames")).await.unwrap();
@@ -894,7 +900,9 @@ async fn long_derived_names_are_fitted_to_the_identifier_limit() {
     let mut def = coll.clone();
     def.fields[0].unique = false;
     svc.update_collection(&ctx, "longnames", def).await.unwrap();
-    svc.create_record(&ctx, "longnames", json!({"code": "a1"})).await.unwrap();
+    svc.create_record(&ctx, "longnames", json!({"code": "a1"}))
+        .await
+        .unwrap();
     db.close().await;
 }
 
@@ -993,7 +1001,8 @@ async fn index_manager_reports_kinds_statistics_and_plans() {
     assert_eq!(brand.columns, vec!["<expr>"]);
     let all = svc.list_indexes(&ctx, Some("events")).await.unwrap();
     assert!(
-        all.iter().any(|i| i.origin == forgebase_data::indexes::IndexOrigin::Engine),
+        all.iter()
+            .any(|i| i.origin == forgebase_data::indexes::IndexOrigin::Engine),
         "the primary key index is listed: {all:?}"
     );
 
@@ -1068,8 +1077,14 @@ async fn relation_changes_add_change_and_drop_foreign_keys() {
         .create_collection(&ctx, Collection::base("authors").with_field(Field::new("name", text())))
         .await
         .unwrap();
-    let a = svc.create_record(&ctx, "authors", json!({"name": "ann"})).await.unwrap();
-    let b = svc.create_record(&ctx, "authors", json!({"name": "bob"})).await.unwrap();
+    let a = svc
+        .create_record(&ctx, "authors", json!({"name": "ann"}))
+        .await
+        .unwrap();
+    let b = svc
+        .create_record(&ctx, "authors", json!({"name": "bob"}))
+        .await
+        .unwrap();
     let posts = svc
         .create_collection(&ctx, Collection::base("posts").with_field(Field::new("author", text())))
         .await
@@ -1085,14 +1100,18 @@ async fn relation_changes_add_change_and_drop_foreign_keys() {
         cascade_delete,
     };
     let count = |svc: forgebase_data::DataService| async move {
-        svc.count_records(&admin(), "posts", None, HashMap::new()).await.unwrap()
+        svc.count_records(&admin(), "posts", None, HashMap::new())
+            .await
+            .unwrap()
     };
 
     // Text -> relation with cascade: the key is added over existing rows.
     let mut def = posts.clone();
     def.fields[0].kind = relation(true);
     let v2 = svc.update_collection(&ctx, "posts", def).await.unwrap();
-    svc.delete_record(&ctx, "authors", a["id"].as_str().unwrap(), None).await.unwrap();
+    svc.delete_record(&ctx, "authors", a["id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
     assert_eq!(count(svc.clone()).await, 1, "cascade");
     let n = svc
         .count_records(&ctx, "posts", Some("author.name = 'bob'"), HashMap::new())
@@ -1104,7 +1123,9 @@ async fn relation_changes_add_change_and_drop_foreign_keys() {
     let mut def = v2.clone();
     def.fields[0].kind = relation(false);
     let v3 = svc.update_collection(&ctx, "posts", def).await.unwrap();
-    svc.delete_record(&ctx, "authors", b["id"].as_str().unwrap(), None).await.unwrap();
+    svc.delete_record(&ctx, "authors", b["id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
     assert_eq!(count(svc.clone()).await, 1, "set null keeps the post");
     let orphans = svc
         .count_records(&ctx, "posts", Some("author = null"), HashMap::new())
@@ -1116,7 +1137,9 @@ async fn relation_changes_add_change_and_drop_foreign_keys() {
     let mut def = v3.clone();
     def.fields[0].kind = text();
     let v4 = svc.update_collection(&ctx, "posts", def).await.unwrap();
-    svc.create_record(&ctx, "posts", json!({"author": "nobody"})).await.unwrap();
+    svc.create_record(&ctx, "posts", json!({"author": "nobody"}))
+        .await
+        .unwrap();
 
     // Text -> relation over a value with no target: refused, nothing changes.
     let mut def = v4.clone();

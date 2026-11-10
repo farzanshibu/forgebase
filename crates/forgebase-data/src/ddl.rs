@@ -82,7 +82,11 @@ pub(crate) fn system_columns(d: &dyn Dialect) -> Vec<String> {
         ),
         format!("{} {text} NOT NULL", q("created")),
         format!("{} {text} NOT NULL", q("updated")),
-        format!("{} {} NOT NULL DEFAULT 1", q("_version"), d.column_type(ColumnType::Integer)),
+        format!(
+            "{} {} NOT NULL DEFAULT 1",
+            q("_version"),
+            d.column_type(ColumnType::Integer)
+        ),
         data,
     ]
 }
@@ -355,12 +359,9 @@ pub(crate) async fn verify_collections(
         if c.is_view() {
             // Views compile lazily on SQLite; make the engine resolve it now.
             // (PostgreSQL binds views when they are created; this is cheap.)
-            tx.fetch_all(&Statement::raw(format!(
-                "SELECT * FROM {} LIMIT 0",
-                rel(d, &c.name)
-            )))
-            .await
-            .map_err(|e| broken(e.to_string()))?;
+            tx.fetch_all(&Statement::raw(format!("SELECT * FROM {} LIMIT 0", rel(d, &c.name))))
+                .await
+                .map_err(|e| broken(e.to_string()))?;
         }
     }
     Ok(())

@@ -584,7 +584,8 @@ impl DataService {
         let regclass = pg_regclass(d, table);
 
         for f in dropped {
-            let readers = crate::catalog::pg::dependent_views(log.tx, &regclass, Some(&[f.name.clone()])).await?;
+            let readers =
+                crate::catalog::pg::dependent_views(log.tx, &regclass, Some(std::slice::from_ref(&f.name))).await?;
             if let Some(v) = readers.first() {
                 return Err(view_conflict(&v.name, &format!("it reads {table}.{}", f.name)));
             }
@@ -696,8 +697,7 @@ impl DataService {
             if is_pg(d) {
                 // PostgreSQL refuses to drop what a view reads; SQLite drops
                 // it and the verification below finds the broken view.
-                let readers =
-                    crate::catalog::pg::dependent_views(log.tx, &pg_regclass(d, &coll.name), None).await?;
+                let readers = crate::catalog::pg::dependent_views(log.tx, &pg_regclass(d, &coll.name), None).await?;
                 if let Some(v) = readers.first() {
                     return Err(view_conflict(&v.name, &format!("it reads {}", coll.name)));
                 }
@@ -815,9 +815,10 @@ async fn infer_view_fields(
         let kind = if pg && ty.starts_with("BOOL") {
             // PostgreSQL booleans decode as 0/1, like ForgeBase's bool fields.
             FieldKind::Bool
-        } else if pg && ["UUID", "DATE", "TIME", "INTERVAL", "INET", "CIDR", "MACADDR"]
-            .iter()
-            .any(|t| ty.contains(t))
+        } else if pg
+            && ["UUID", "DATE", "TIME", "INTERVAL", "INET", "CIDR", "MACADDR"]
+                .iter()
+                .any(|t| ty.contains(t))
         {
             // Read back as text (ADR-0028 §7.3, decoding).
             FieldKind::Text {
