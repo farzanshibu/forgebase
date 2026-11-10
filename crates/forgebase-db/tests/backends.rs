@@ -627,15 +627,19 @@ async fn postgres_database_operations() {
     );
     assert!(info.connections.is_some_and(|c| c >= 1));
     assert_eq!(info.journal_mode, "wal");
-    assert_eq!(db.schema_version().await.unwrap(), 0);
+    // Migrated to the newest system migration (FB-133).
+    let latest = forgebase_db::migrations::postgres::PgMigrator::system().latest_version();
+    assert_eq!(db.schema_version().await.unwrap(), latest);
     assert!(db.path().as_os_str().is_empty());
     assert!(!db.location().contains("password"));
     let stats = db.pool_stats();
     assert_eq!((stats.writer.max, stats.reader.max), (1, 4));
     assert!(db.integrity_check().await.unwrap().is_empty());
     db.checkpoint().await.unwrap();
+    let again = db.migrate(None).await.unwrap();
+    assert!(again.applied.is_empty() && again.backup.is_none());
+    assert!(db.migration_status().await.unwrap().is_up_to_date());
     // Not on PostgreSQL (callers branch on kind()).
-    assert_eq!(db.migrate(None).await.unwrap_err().code(), "database_unsupported");
     assert_eq!(
         db.snapshot_to(&db.data_dir().join("x")).await.unwrap_err().code(),
         "database_unsupported"

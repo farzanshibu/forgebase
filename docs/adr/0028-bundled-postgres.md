@@ -940,3 +940,127 @@ pg_current_wal_insert_lsn()` in one round trip and records the position
 Option<Lsn>`, monotonic); `Database::current_wal_lsn()` asks the primary.
 `Database` is per target and cheap to clone, and the crate holds no global
 connection state, so a shard map can hold one `Database` per shard.
+
+## Addendum: FB-133, the PostgreSQL system schema and migration runner (2026-11-11)
+
+Built as §7.6 describes. What the next packages need to know, and where the
+code differs from the text above.
+
+**Files.** `migrations/postgres/0025_baseline.sql` (the schema SQLite has
+after `0025`: 145 tables in schema `forgebase` plus the bookkeeping table,
+117 named indexes plus one GIN index, 80 foreign keys, 22 triggers, the 12
+seed rows); the runner
+`crates/forgebase-migrations/src/postgres.rs`; the parity test
+`crates/forgebase-migrations/tests/schema_parity.rs`. The baseline was drafted
+mechanically from a SQLite database migrated to the head (`PRAGMA` data plus
+each table's stored `CREATE TABLE` text, so every inline comment survives) and
+then reviewed by hand; it applies the §7.4 type mapping exactly.
+
+**Bookkeeping.** `forgebase._forgebase_migrations` has SQLite's columns. The
+baseline records one row per SQLite version it stands for (1–9 and 11–25;
+there is no 10), each with **the SQLite migration's name** and the baseline's
+checksum. §7.6 said "name and checksum of the PostgreSQL file"; recording the
+SQLite names keeps `forgebase migrate --status` identical on both backends,
+and the checksum still pins the PostgreSQL file. A database where the baseline
+is only partly recorded is refused.
+
+**Runner** (`forgebase_migrations::postgres`): `migrate(conn)`,
+`status(conn)`, `PgMigrator::{system, new(migrations, covers), status, run,
+latest_version}`, `ensure_search_path(conn)`, `pairing_problems()`,
+`POSTGRES_MIGRATIONS`, `BASELINE_VERSION`, `ROWID_TABLES`, `SCHEMA`,
+`SEARCH_PATH`, `OWNER_ROLE`. Each step is one transaction that takes
+`pg_advisory_xact_lock(0x66626d6967726174)`, then `SET LOCAL ROLE
+forgebase_owner` when that role exists and the session user is a member,
+then `SET LOCAL search_path = forgebase, public`, re-checks the bookkeeping,
+runs the file (simple protocol, several statements) and records it. DDL is
+transactional, so a failed migration leaves nothing; a deferred constraint
+that fails at `COMMIT` is reported as that migration's failure. Two runners
+racing apply each migration once (tested). There is no `user_version`
+mirror on PostgreSQL.
+
+**search_path.** §7.6 has the roles carry `search_path = forgebase,
+public`. FB-132 sets it on the bundled engine's roles; for everything else
+`ensure_search_path` (run at the end of every `migrate`) checks the session
+user's default (`pg_settings.reset_val`) and, when it lacks `forgebase`,
+runs `ALTER ROLE <session_user> IN DATABASE <db> SET search_path =
+forgebase, public` (an ordinary role may change its own defaults; scoped to
+the one database so an operator's other databases are untouched), sets it on
+the current session and closes the idle read-pool connections opened before
+the change. Tested with an ordinary, non-superuser role that owns its
+database (the external-server case): it migrates, owns the tables, and its
+new sessions find the system tables unqualified. *Test engine:* copies of a
+template database do not inherit per-database settings, so
+`forgebase_db::testing` sets the search_path on its role
+(`ALTER ROLE CURRENT_USER SET …`, the stand-in for FB-132's roles) and now
+fails a test when migration fails instead of leaving the database empty.
+
+**Objects.** `CREATE EXTENSION IF NOT EXISTS citext` and `unaccent` `WITH
+SCHEMA forgebase` (both are trusted extensions: a database owner may create
+them without being a superuser). `_forgebase_unaccent(text)` is created by
+a `DO` block that names the schema the `unaccent` extension actually lives
+in, so it also works where `unaccent` was already installed elsewhere and
+under any caller `search_path` (FB-131's `PG_FULLTEXT_SETUP` text resolves
+`unaccent` through the caller's `search_path`; it is not needed at runtime
+now). Function bodies name `forgebase.` for the same reason.
+- **Triggers**: the 16 `RAISE(ABORT, msg)` triggers call one function,
+  `forgebase._forgebase_abort()`, with the message as the trigger argument
+  (SQLSTATE `P0001`, message unchanged, so FB-131's error mapping keeps it).
+  The three invoice-line freeze triggers share
+  `_forgebase_billing_lines_frozen()`: PostgreSQL trigger `WHEN` clauses
+  cannot hold a subquery, so the function reads the invoice's status.
+- **Vector keyword index**: SQLite's contentless FTS5 table
+  `_forgebase_vector_fts` becomes a table `(rowid bigint PRIMARY KEY, content
+  text, fts tsvector GENERATED ALWAYS AS (to_tsvector('simple',
+  _forgebase_unaccent(content))) STORED)` with GIN index
+  `_forgebase_vector_fts_gin`, kept in sync by the same three triggers (one
+  function). FB-147 replaces `MATCH`/`bm25` in `forgebase-vector/src/store.rs`
+  with `fts @@ websearch_to_tsquery(…)` / the dialect's full-text methods; the
+  join `i.key = _forgebase_vector_fts.rowid` works as it is.
+- **rowid**: `_forgebase_jobs` (the only system table the code orders by
+  `rowid`) has `_rowid bigint GENERATED BY DEFAULT AS IDENTITY NOT NULL`
+  (`postgres::ROWID_TABLES`). FB-146 orders by `Dialect::row_order_col()`;
+  FB-151 copies SQLite's `rowid` into it and `setval`s it.
+- The 17 `INTEGER PRIMARY KEY AUTOINCREMENT` columns are `bigint GENERATED
+  BY DEFAULT AS IDENTITY`: explicit ids still insert, so FB-151 must
+  `setval` each identity after copying.
+- `DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))` is
+  `to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+  `phone GLOB '+[1-9]*'` is `phone ~ '^[+][1-9]'`; `LIKE '$argon2id$%'`
+  stays (case-sensitive on PostgreSQL; argon2 hashes are lowercase).
+- Seed rows take their times when the baseline runs, as SQLite's
+  `unixepoch()` does.
+
+**Pairing.** `every_sqlite_migration_has_a_postgres_twin` (a unit test in the
+crate, repeated in the parity test, needs no engine) fails with e.g.
+"SQLite migration migrations/system/0026_functions_js.sql has no PostgreSQL
+twin: add migrations/postgres/0026_functions_js.sql and register it in
+POSTGRES_MIGRATIONS". It also refuses a PostgreSQL migration without a SQLite
+twin, a name mismatch, and a PostgreSQL migration older than the baseline.
+
+**Schema parity** compares, per table: columns through the type mapping
+(booleans by their `IN (0, 1)` check, JSON by `json_valid`, NOCASE as
+`citext`, rowid aliases as identity), nullability (primary-key columns count
+as `NOT NULL`), defaults (casts, quotes, parentheses and case normalised; the
+two "now as text" defaults are equal), primary keys, unique constraints,
+foreign keys (columns, target, `ON UPDATE`/`ON DELETE`; every PostgreSQL FK
+must be `DEFERRABLE INITIALLY IMMEDIATE`), named indexes (uniqueness, columns
+or expressions, partial predicate), the **number** of check constraints
+(SQLite's checks have no names, and PostgreSQL rewrites `BETWEEN`/`IN`, so
+"by name" became "by count"; pure `json_valid` checks are excluded because
+`jsonb` enforces them), trigger names, row counts, and the rows of every
+table with at most 50 rows (seed data; time columns excluded, JSON compared
+as values) plus the recorded versions and names. Known differences are
+listed in the test: `_forgebase_vector_fts` (compared for existence), FTS5's
+shadow tables (SQLite only) and `_rowid`.
+
+**Shared edits outside Owns** (all in `forgebase-db`): `PgDatabase::migrate`
+and `migration_status` (the planned one), `testing.rs` (role `search_path`,
+strict migrate), `lib.rs` (doc of `Database::migrate`), and
+`tests/backends.rs` (the PostgreSQL test database is migrated now).
+
+**Not done here.** The pre-migration snapshot (`pg_basebackup`, managed mode)
+needs the engine's binaries, which `forgebase-db` does not have: `migrate`
+logs a warning and returns `backup: None` (FB-150, with FB-132's engine
+handle). Text columns use the database's default collation; the bundled
+engine's `builtin` C.UTF-8 sorts as SQLite does, an external server with a
+libc locale may not (FB-148 may refuse or warn).

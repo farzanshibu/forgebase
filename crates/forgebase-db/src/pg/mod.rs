@@ -30,7 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use forgebase_migrations::MigrationStatus;
+use forgebase_migrations::postgres::{self as pg_migrations, PgMigrator};
+use forgebase_migrations::{MigrationError, MigrationStatus};
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::types::Oid;
 use sqlx::postgres::{PgArguments, PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgTypeInfo};
@@ -277,18 +278,49 @@ impl PgDatabase {
         result
     }
 
-    /// Applies pending system migrations. Wired to
-    /// `forgebase_migrations::postgres::migrate` by FB-133.
-    pub(crate) async fn migrate(&self, _backups_dir: Option<&Path>) -> Result<MigrateReport, DbError> {
-        Err(DbError::Unsupported(
-            "system migrations on PostgreSQL are not available yet (the PostgreSQL migration runner, FB-133)".into(),
-        ))
+    /// Applies pending system migrations ([`forgebase_migrations::postgres`])
+    /// on the writer connection, then makes sure of the session user's
+    /// `search_path`.
+    ///
+    /// The pre-migration snapshot (ADR-0028 §7.6: `pg_basebackup`, managed
+    /// mode) needs the engine's tools, which this crate does not have: it is
+    /// skipped with a warning and `backup` is `None`.
+    pub(crate) async fn migrate(&self, backups_dir: Option<&Path>) -> Result<MigrateReport, DbError> {
+        let migrator = PgMigrator::system();
+        let mut conn = self.inner.writer.acquire().await.map_err(|e| self.classify(e))?;
+        let status = migrator.status(&mut conn).await?;
+        if let Some(problem) = status.problems.into_iter().next() {
+            return Err(MigrationError::from(problem).into());
+        }
+        let applied = if status.pending.is_empty() {
+            Vec::new()
+        } else {
+            if backups_dir.is_some() && status.current_version > 0 {
+                tracing::warn!(
+                    location = %self.inner.location,
+                    managed = self.inner.managed,
+                    "no pre-migration snapshot on PostgreSQL yet; take a backup before upgrading"
+                );
+            }
+            self.bump_schema_generation();
+            let applied = migrator.run(&mut conn).await;
+            self.bump_schema_generation();
+            applied?
+        };
+        if pg_migrations::ensure_search_path(&mut conn).await? {
+            // Idle readers opened before the change still have the old
+            // search_path: close them, new ones get the new default.
+            while let Some(reader) = self.inner.reader.primary.try_acquire() {
+                let _ = reader.close().await;
+            }
+        }
+        Ok(MigrateReport { applied, backup: None })
     }
 
+    /// Applied / pending migrations, read without changing anything.
     pub(crate) async fn migration_status(&self) -> Result<MigrationStatus, DbError> {
-        Err(DbError::Unsupported(
-            "migration status on PostgreSQL is not available yet (the PostgreSQL migration runner, FB-133)".into(),
-        ))
+        let mut conn = self.inner.reader.primary.acquire().await.map_err(|e| self.classify(e))?;
+        Ok(PgMigrator::system().status(&mut conn).await?)
     }
 
     pub(crate) async fn schema_version(&self) -> Result<i64, DbError> {
