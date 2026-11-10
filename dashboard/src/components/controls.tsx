@@ -1,19 +1,20 @@
+import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Select } from "panelui-web/select";
 import { Tabs } from "panelui-web/tabs";
 
 // Form and navigation controls used by the studios. Kept out of ui.tsx so the first-load chunk does not carry Select and Tabs.
 
-export type SelectOption = string | { value: string; label: string };
+export type SelectOption<T extends string | number = string> = T | { value: T; label: ReactNode };
 
 /**
- * PanelUI Select behind a string-in, string-out API. An empty `value` that no option carries shows the placeholder.
+ * PanelUI Select behind a value-in, value-out API (strings, or numbers when the options carry numbers). An empty `value` that no option carries shows the placeholder.
  * Give it an `aria-label` (or an `id` that a label points at) so the trigger has a name.
  */
-export function Sel({ value, onChange, options, placeholder, size = "sm", className, disabled, required, name, id, "aria-label": ariaLabel }: {
-  value: string;
-  onChange: (v: string) => void;
-  options: readonly SelectOption[];
+export function Sel<T extends string | number = string>({ value, onChange, options, placeholder, size = "sm", className, disabled, required, name, id, "aria-label": ariaLabel }: {
+  value: T;
+  onChange: (v: T) => void;
+  options: readonly SelectOption<T>[];
   placeholder?: string;
   size?: "sm" | "md" | "lg";
   className?: string;
@@ -23,16 +24,16 @@ export function Sel({ value, onChange, options, placeholder, size = "sm", classN
   id?: string;
   "aria-label"?: string;
 }) {
-  const items = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
+  const items = options.map((o) => (typeof o === "object" ? o : { value: o, label: String(o) }));
   const known = items.some((o) => o.value === value);
   return (
-    <Select items={items} value={known ? value : null} onValueChange={(v) => onChange(v ?? "")} disabled={disabled} required={required} name={name}>
+    <Select<T> items={items} value={known ? value : null} onValueChange={(v) => onChange((v ?? "") as T)} disabled={disabled} required={required} name={name}>
       <Select.Trigger id={id} size={size} aria-label={ariaLabel} className={className}>
         <Select.Value placeholder={placeholder ?? ""} />
       </Select.Trigger>
       <Select.Content>
         {items.map((o) => (
-          <Select.Item key={o.value} value={o.value} data-value={o.value}>
+          <Select.Item key={String(o.value)} value={o.value} data-value={String(o.value)}>
             {o.label}
           </Select.Item>
         ))}
@@ -41,7 +42,10 @@ export function Sel({ value, onChange, options, placeholder, size = "sm", classN
   );
 }
 
-export type RouteTab = { to: string; label: string; end?: boolean };
+/** `to` may carry a query string (kept in the link, ignored when matching the location). */
+export type RouteTab = { to: string; label: ReactNode; end?: boolean };
+
+const pathOf = (to: string) => to.split(/[?#]/)[0] ?? to;
 
 const decode = (s: string) => {
   try {
@@ -56,9 +60,9 @@ export function activeTab(tabs: readonly RouteTab[], pathname: string): string |
   const here = decode(pathname);
   let best: string | null = null;
   for (const t of tabs) {
-    const to = decode(t.to);
+    const to = decode(pathOf(t.to));
     const hit = t.end ? here === to : here === to || here.startsWith(`${to}/`);
-    if (hit && (best === null || to.length > decode(best).length)) best = t.to;
+    if (hit && (best === null || to.length > decode(pathOf(best)).length)) best = t.to;
   }
   return best;
 }

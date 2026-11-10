@@ -1,5 +1,5 @@
 import { Route, Routes, useParams } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import { listCollections } from "../../api";
 import { useLoad } from "../../hooks";
 import { ErrorView, Loading } from "../../components/ui";

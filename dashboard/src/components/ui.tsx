@@ -31,10 +31,6 @@ export function ConfirmButton({ label, onConfirm, disabled }: { label: string; o
   );
 }
 
-/** Classes for native `<select>` and `<textarea>` controls, matching PanelUI Input. */
-export const inputCls =
-  "rounded-lg border border-input bg-background px-2.5 py-1.5 text-sm text-foreground shadow-xs outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive dark:bg-input/30";
-
 /** Sign-in-required state for 401/403, otherwise the PLAN section 5 envelope with per-field errors. */
 export function ErrorView({ error }: { error: unknown }) {
   if (!error) return null;

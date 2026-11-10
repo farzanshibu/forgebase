@@ -7,7 +7,7 @@ import { useLoad } from "../../hooks";
 import { parseBytes, parseTypes } from "./util";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 export default function BucketSettings({ bucket, onSaved }: { bucket: Bucket; onSaved: () => void }) {
   const [visibility, setVisibility] = useState<Visibility>(bucket.visibility);
@@ -35,7 +35,7 @@ export default function BucketSettings({ bucket, onSaved }: { bucket: Bucket; on
       )}
       <form onSubmit={(e) => void save(e)} className="max-w-xl space-y-3 text-sm">
         <label className="block">Visibility
-          <PanelSelect aria-label="Visibility" className="ml-2" value={visibility} onChange={(v) => setVisibility(v as Visibility)} options={VISIBILITIES.map((v) => ({ value: v, label: v }))} />
+          <Sel aria-label="Visibility" className="ml-2" value={visibility} onChange={(v) => setVisibility(v as Visibility)} options={VISIBILITIES.map((v) => ({ value: v, label: v }))} />
         </label>
         <p className="text-xs text-muted-foreground">private: only the owner and ACL grantees; authenticated: any signed-in caller can read; public: anyone can read.</p>
         <label className="flex items-center gap-2"><input type="checkbox" checked={versioning} onChange={(e) => setVersioning(e.target.checked)} />Keep versions of overwritten and deleted objects</label>

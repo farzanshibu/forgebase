@@ -6,7 +6,7 @@ import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import { duration, pretty } from "./util";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 export default function SubscriptionDetail() {
   const { sub = "" } = useParams();
@@ -118,7 +118,7 @@ export default function SubscriptionDetail() {
         </form>
         <form onSubmit={(e) => { e.preventDefault(); void replay({ snapshot: snapPick }); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
           <label>Snapshot
-            <PanelSelect aria-label="Snapshot" className="ml-2" value={snapPick} onChange={setSnapPick} options={[{ value: "", label: "choose…" }, ...mine.map((x) => ({ value: x.name, label: `${x.name} (cursor ${x.cursor_seq}, ${x.unacked} unacked)` }))]} />
+            <Sel aria-label="Snapshot" className="ml-2" value={snapPick} onChange={setSnapPick} options={[{ value: "", label: "choose…" }, ...mine.map((x) => ({ value: x.name, label: `${x.name} (cursor ${x.cursor_seq}, ${x.unacked} unacked)` }))]} />
           </label>
           <Button type="submit" disabled={!snapPick}>Restore snapshot</Button>
           {snapPick && <ConfirmButton label="Delete snapshot" onConfirm={() => void run(async () => { await deleteQueueSnapshot(snapPick); setSnapPick(""); }, "Snapshot deleted.")} />}

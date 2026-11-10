@@ -5,7 +5,7 @@ import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installQueues, message, received } from "../../test/queueMock";
 import { duration, parseAttrs, parseJson } from "./util";
-import { pick } from "../../test/panelSelect";
+import { pick } from "../../test/pick";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -200,7 +200,7 @@ describe("Queues subscriptions", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("3 message(s) were put back");
     expect(st.seeks[0]).toEqual({ sub: "order-workers", to: { time: new Date("2026-11-09T09:00").toISOString() } });
 
-    await pick(userEvent, await screen.findByLabelText("Snapshot"), /^before-fix/);
+    await pick(await screen.findByLabelText("Snapshot"), /^before-fix/);
     await userEvent.click(screen.getByRole("button", { name: "Restore snapshot" }));
     await waitFor(() => expect(st.seeks).toHaveLength(2));
     expect(st.seeks[1]).toEqual({ sub: "order-workers", to: { snapshot: "before-fix" } });
@@ -248,7 +248,7 @@ describe("Pub/Sub inspector", () => {
   }
   async function pickSub() {
     const sel = await screen.findByLabelText("Subscription");
-    await pick(userEvent, sel, /^order-workers/);
+    await pick(sel, /^order-workers/);
   }
   const frame = (n: number) => `event: message\nid: msg_orders_${n}\ndata: ${JSON.stringify(received(message("orders", n)))}\n\n`;
 
@@ -303,7 +303,7 @@ describe("Pub/Sub inspector", () => {
     const { mock } = setup();
     renderStudio("/queues/inspector");
     const topicSelect = await screen.findByLabelText("Topic");
-    await pick(userEvent, topicSelect, "orders");
+    await pick(topicSelect, "orders");
     await userEvent.click(screen.getByRole("button", { name: "Publish" }));
     expect(await screen.findByText("Published to orders as sequence 4.")).toBeInTheDocument();
     expect(mock.bodies["post /api/v1/queues/topics/{topic}/publish"]).toEqual([{ messages: [{ data: { hello: "world" } }] }]);

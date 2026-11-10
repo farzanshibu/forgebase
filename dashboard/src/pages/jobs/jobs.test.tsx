@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installJobs } from "../../test/fnMock";
-import { pick } from "../../test/panelSelect";
+import { pick } from "../../test/pick";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -24,10 +24,10 @@ describe("Jobs queues and list", () => {
     const jobs = await screen.findByRole("table", { name: "Jobs" });
     expect(within(jobs).getAllByRole("row")).toHaveLength(5);
 
-    await pick(userEvent, screen.getByLabelText("Status"), "dead (dead-letter)");
+    await pick(screen.getByLabelText("Status"), "dead (dead-letter)");
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(2));
     expect(screen.getByRole("link", { name: "job_d" })).toBeInTheDocument();
-    await pick(userEvent, screen.getByLabelText("Status"), "all");
+    await pick(screen.getByLabelText("Status"), "all");
 
     await userEvent.click(screen.getByRole("button", { name: "Show jobs of mail" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(2));

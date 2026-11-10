@@ -155,6 +155,3 @@
 @layer base {
   input[type="checkbox"], input[type="radio"], input[type="range"], progress { accent-color: var(--primary); }
 }
-
-/* Components the studio pages use beyond the list at the top (select popup, tabs, textarea). */
-@source "../node_modules/panelui-web/dist/components/{select,tabs,textarea}";

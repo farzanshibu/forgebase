@@ -8,7 +8,7 @@ import { renderStudio, signedIn } from "../../test/helpers";
 import { installJobs } from "../../test/fnMock";
 import ProgressBar from "./ProgressBar";
 import { layout } from "./WorkflowGraph";
-import { pick } from "../../test/panelSelect";
+import { pick } from "../../test/pick";
 
 const NOW = "2026-11-09T10:00:00Z";
 
@@ -174,10 +174,10 @@ describe("Workflows", () => {
     renderStudio("/jobs/workflows");
     const table = await screen.findByRole("table", { name: "Workflows" });
     expect(within(table).getAllByRole("row")).toHaveLength(3);
-    await pick(userEvent, screen.getByLabelText("Status"), "failed");
+    await pick(screen.getByLabelText("Status"), "failed");
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Workflows" })).getAllByRole("row")).toHaveLength(2));
     expect(screen.getByRole("link", { name: "cleanup" })).toHaveAttribute("href", "/jobs/w/wf2");
-    await pick(userEvent, screen.getByLabelText("Status"), "cancelled");
+    await pick(screen.getByLabelText("Status"), "cancelled");
     expect(await screen.findByText("No workflows match.")).toBeInTheDocument();
   });
 

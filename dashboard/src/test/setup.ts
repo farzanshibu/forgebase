@@ -26,3 +26,8 @@ if (typeof globalThis.ResizeObserver !== "function") {
     disconnect() {}
   };
 }
+
+// jsdom has no Web Animations API; PanelUI's scroll areas (inside Tabs) call it from a timer.
+if (typeof Element !== "undefined" && typeof Element.prototype.getAnimations !== "function") {
+  Element.prototype.getAnimations = () => [];
+}

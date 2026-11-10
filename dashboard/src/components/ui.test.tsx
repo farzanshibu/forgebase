@@ -32,6 +32,13 @@ describe("activeTab", () => {
     expect(activeTab(TABS, "/x/two/deep/1")).toBe("/x/two/deep");
     expect(activeTab([{ to: "/o/a b/members", label: "m" }], "/o/a%20b/members")).toBe("/o/a b/members");
   });
+
+  it("ignores a query string on a tab's target when matching", () => {
+    const tabs = [{ to: "/x", label: "One", end: true }, { to: "/x/three?ns=a", label: "Three" }];
+    expect(activeTab(tabs, "/x/three")).toBe("/x/three?ns=a");
+    expect(activeTab(tabs, "/x/three/deeper")).toBe("/x/three?ns=a");
+    expect(activeTab(tabs, "/x/other")).toBeNull();
+  });
 });
 
 describe("RouteTabs", () => {
@@ -49,6 +56,36 @@ describe("RouteTabs", () => {
     expect(screen.getByRole("tab", { name: "One" })).toHaveAttribute("href", "/x");
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
     await waitFor(() => expect(screen.getByRole("tab", { name: "Two" })).toHaveAttribute("aria-selected", "true"));
+  });
+});
+
+describe("RouteTabs links", () => {
+  it("keeps the query string of the target in the link and navigates to it", async () => {
+    function Search() {
+      const l = useLocation();
+      return <output aria-label="Where">{l.pathname + l.search}</output>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/x"]}>
+        <RouteTabs label="Sections" tabs={[{ to: "/x", label: "One", end: true }, { to: "/x/three?ns=a", label: <b>Three</b> }]} />
+        <Search />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("tablist", { name: "Sections" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "One" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Three" })).toHaveAttribute("href", "/x/three?ns=a");
+    await userEvent.click(screen.getByRole("tab", { name: "Three" }));
+    expect(screen.getByLabelText("Where")).toHaveTextContent("/x/three?ns=a");
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Three" })).toHaveAttribute("aria-selected", "true"));
+  });
+
+  it("end tabs match only their exact path", () => {
+    render(
+      <MemoryRouter initialEntries={["/x/other"]}>
+        <RouteTabs label="Sections" tabs={TABS} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("tab", { name: "One" })).toHaveAttribute("aria-selected", "false");
   });
 });
 
@@ -85,5 +122,21 @@ describe("Sel", () => {
     await pick(trigger, "b");
     expect(onChange).toHaveBeenCalledWith("b");
     expect(screen.getByRole("combobox", { name: "Kind" })).toHaveTextContent("Bee");
+  });
+});
+
+describe("Sel with numbers", () => {
+  it("reports a numeric option as a number and shows its label", async () => {
+    const onChange = vi.fn();
+    function Harness() {
+      const [v, setV] = useState(60);
+      return <Sel aria-label="Expires in" value={v} onChange={(n) => { setV(n); onChange(n); }} options={[{ value: 60, label: "1 minute" }, { value: 300, label: "5 minutes" }]} />;
+    }
+    render(<Harness />);
+    const trigger = screen.getByRole("combobox", { name: "Expires in" });
+    expect(trigger).toHaveTextContent("1 minute");
+    await pick(trigger, "5 minutes");
+    expect(onChange).toHaveBeenCalledWith(300);
+    expect(screen.getByRole("combobox", { name: "Expires in" })).toHaveTextContent("5 minutes");
   });
 });

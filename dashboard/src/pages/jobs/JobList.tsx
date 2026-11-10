@@ -8,7 +8,7 @@ import { when } from "../functions/util";
 import StatusBadge from "./StatusBadge";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const PAGE = 25;
 
@@ -85,7 +85,7 @@ export default function JobList() {
 
       <div className="flex flex-wrap items-end gap-3 text-sm">
         <label>Status
-          <PanelSelect aria-label="Status" className="ml-2" value={status} onChange={(v) => filter(() => setStatus(v as JobStatus | ""))()} options={[{ value: "", label: "all" }, ...JOB_STATUSES.map((s) => ({ value: s, label: s === "dead" ? "dead (dead-letter)" : s }))]} />
+          <Sel aria-label="Status" className="ml-2" value={status} onChange={(v) => filter(() => setStatus(v as JobStatus | ""))()} options={[{ value: "", label: "all" }, ...JOB_STATUSES.map((s) => ({ value: s, label: s === "dead" ? "dead (dead-letter)" : s }))]} />
         </label>
         <label>Queue<Input size="sm" className="ml-2 w-36" value={queue} onChange={(e) => filter(() => setQueue(e.target.value))()} /></label>
         <label>Kind<Input size="sm" className="ml-2 w-36" value={kind} onChange={(e) => filter(() => setKind(e.target.value))()} /></label>

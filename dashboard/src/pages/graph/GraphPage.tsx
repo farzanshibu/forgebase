@@ -1,5 +1,5 @@
 import { Route, Routes } from "react-router-dom";
-import { RouteTabs } from "../panel/RouteTabs";
+import { RouteTabs } from "../../components/controls";
 import EdgeBrowser from "./EdgeBrowser";
 import GraphExplorer from "./GraphExplorer";
 import GraphOverview from "./GraphOverview";

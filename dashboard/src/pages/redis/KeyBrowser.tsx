@@ -5,7 +5,7 @@ import type { KvType } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import KeyViewer from "./KeyViewer";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const PAGE = 50;
 
@@ -61,7 +61,7 @@ export default function KeyBrowser({ ns }: { ns: string }) {
           <form className="mb-3 flex flex-wrap items-end gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); setApplied({ pattern: pattern.trim(), type }); }}>
             <label>Pattern<Input size="sm" className="ml-2 w-32" placeholder="user:*" value={pattern} onChange={(e) => setPattern(e.target.value)} /></label>
             <label>Type
-              <PanelSelect aria-label="Type" className="ml-2" value={type} onChange={(v) => setType(v as KvType | "")} options={[{ value: "", label: "any" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]} />
+              <Sel aria-label="Type" className="ml-2" value={type} onChange={(v) => setType(v as KvType | "")} options={[{ value: "", label: "any" }, ...KV_TYPES.map((t) => ({ value: t, label: t }))]} />
             </label>
             <Button type="submit">Apply filter</Button>
           </form>

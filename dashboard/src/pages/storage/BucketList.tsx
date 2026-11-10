@@ -9,7 +9,7 @@ import { when } from "../functions/util";
 import { parseBytes } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 export default function BucketList() {
   const buckets = useLoad(listBuckets, "buckets");
@@ -80,7 +80,7 @@ function NewBucket({ onCreated }: { onCreated: () => void }) {
       <form onSubmit={(e) => void submit(e)} className="flex flex-wrap items-end gap-3 text-sm">
         <label>Name<Input size="sm" className="ml-2 w-44" value={name} onChange={(e) => setName(e.target.value)} required /></label>
         <label>Visibility
-          <PanelSelect aria-label="Visibility" className="ml-2" value={visibility} onChange={(v) => setVisibility(v as Visibility)} options={VISIBILITIES.map((v) => ({ value: v, label: v }))} />
+          <Sel aria-label="Visibility" className="ml-2" value={visibility} onChange={(v) => setVisibility(v as Visibility)} options={VISIBILITIES.map((v) => ({ value: v, label: v }))} />
         </label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={versioning} onChange={(e) => setVersioning(e.target.checked)} />Versioning</label>
         <label>Max object size<Input size="sm" className="ml-2 w-28" placeholder="no limit" value={max} onChange={(e) => setMax(e.target.value)} /></label>

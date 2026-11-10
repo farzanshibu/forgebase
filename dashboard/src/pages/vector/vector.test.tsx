@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installVector } from "../../test/vgMock";
-import { pick } from "../../test/panelSelect";
+import { pick } from "../../test/pick";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -30,7 +30,7 @@ describe("Vector Studio collections", () => {
     await userEvent.type(within(form).getByLabelText("Name"), "notes");
     await userEvent.clear(within(form).getByLabelText("Dimension"));
     await userEvent.type(within(form).getByLabelText("Dimension"), "4");
-    await pick(userEvent, within(form).getByLabelText("Metric"), "cosine");
+    await pick(within(form).getByLabelText("Metric"), "cosine");
     await userEvent.click(within(form).getByRole("button", { name: "Create collection" }));
     expect(await screen.findByRole("link", { name: "notes" })).toBeInTheDocument();
     expect(mock.bodies["post /api/v1/vector/collections"]?.[0]).toMatchObject({ name: "notes", fields: [{ name: "embedding", dimension: 4, metric: "cosine", quantization: "f32" }] });

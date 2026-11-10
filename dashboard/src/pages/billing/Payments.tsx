@@ -20,7 +20,7 @@ export default function Payments() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3 text-sm">
-        <label>Status<Sel value={status} onChange={(v) => setStatus(v as PaymentStatus | "")} options={[{ value: "", label: "all" }, ...["pending", "succeeded", "failed", "canceled"]]} className="ml-2" /></label>
+        <label>Status<Sel value={status} onChange={setStatus} options={[{ value: "", label: "all" }, ...(["pending", "succeeded", "failed", "canceled"] as const satisfies readonly PaymentStatus[])]} className="ml-2" /></label>
         <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
         {payments.data && <span aria-label="Failed payments" className={failed ? "text-destructive" : "text-muted-foreground"}>{failed} failed</span>}
       </div>

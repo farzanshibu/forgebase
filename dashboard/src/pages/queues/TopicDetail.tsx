@@ -9,7 +9,7 @@ import { bytes, duration, parseAttrs, parseJson, pretty } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { PanelSelect } from "../panel/PanelSelect";
+import { Sel } from "../../components/controls";
 
 const PAGE = 25;
 
@@ -203,7 +203,7 @@ function Subscriptions({ topic, subs }: { topic: string; subs: LoadState<QueueSu
         <label>Ack deadline (s)<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>
         <label>Max attempts<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={attempts} onChange={(e) => setAttempts(e.target.value)} /></label>
         <label>Dead-letter topic<Input size="sm" className="ml-2 w-36" value={dlt} onChange={(e) => setDlt(e.target.value)} /></label>
-        <label>Start<PanelSelect aria-label="Start" className="ml-2" value={start} onChange={(v) => setStart(v as "latest" | "earliest")} options={[{ value: "latest", label: "latest" }, { value: "earliest", label: "earliest" }]} /></label>
+        <label>Start<Sel aria-label="Start" className="ml-2" value={start} onChange={(v) => setStart(v as "latest" | "earliest")} options={[{ value: "latest", label: "latest" }, { value: "earliest", label: "earliest" }]} /></label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={ordering} onChange={(e) => setOrdering(e.target.checked)} />Ordered</label>
         <Button type="submit" tone="primary" disabled={!name.trim()}>Create subscription</Button>
       </form>
