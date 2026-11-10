@@ -3,6 +3,8 @@ import { PERMISSIONS, getBucketAcl, putBucketAcl } from "../../api";
 import type { BucketAclEntry, Bucket, Permission } from "../../api";
 import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 /** Prefix ACL: each entry grants a grantee (a principal such as `user:alice`, `role:editor` or `*`) a permission on keys under a prefix. */
 export default function AclEditor({ bucket }: { bucket: Bucket }) {
@@ -22,27 +24,27 @@ export default function AclEditor({ bucket }: { bucket: Bucket }) {
       <Panel title="Access control list">
         <ErrorView error={acl.error} />
         {acl.loading && !acl.error && <Loading what="Loading ACL" />}
-        {acl.data && entries.length === 0 && <p className="text-sm text-zinc-400">No entries: only the owner and storage administrators have access.</p>}
+        {acl.data && entries.length === 0 && <p className="text-sm text-muted-foreground">No entries: only the owner and storage administrators have access.</p>}
         {entries.length > 0 && (
-          <table aria-label="ACL entries" className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-1">Prefix</th><th>Grantee</th><th>Permission</th><th /></tr></thead>
-            <tbody>
+          <Table aria-label="ACL entries" className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Prefix</Table.Head><Table.Head>Grantee</Table.Head><Table.Head>Permission</Table.Head><Table.Head /></Table.Row></Table.Header>
+            <Table.Body>
               {entries.map((e, i) => (
-                <tr key={`${e.prefix}|${e.grantee}|${i}`} className="border-t border-zinc-800">
-                  <td className="py-2 font-mono text-xs">{e.prefix || "(whole bucket)"}</td><td>{e.grantee}</td><td>{e.permission}</td>
-                  <td className="text-right"><Button tone="danger" aria-label={`Remove ${e.grantee} on ${e.prefix || "bucket"}`} onClick={() => void save(entries.filter((_, j) => j !== i))}>Remove</Button></td>
-                </tr>
+                <Table.Row key={`${e.prefix}|${e.grantee}|${i}`} className="border-t border-border">
+                  <Table.Cell className="py-2 font-mono text-xs">{e.prefix || "(whole bucket)"}</Table.Cell><Table.Cell>{e.grantee}</Table.Cell><Table.Cell>{e.permission}</Table.Cell>
+                  <Table.Cell className="text-right"><Button tone="danger" aria-label={`Remove ${e.grantee} on ${e.prefix || "bucket"}`} onClick={() => void save(entries.filter((_, j) => j !== i))}>Remove</Button></Table.Cell>
+                </Table.Row>
               ))}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table>
         )}
-        {saved && <p role="status" className="mt-2 text-sm text-emerald-300">ACL saved.</p>}
+        {saved && <p role="status" className="mt-2 text-sm text-success">ACL saved.</p>}
         <ErrorView error={error} />
       </Panel>
       <Panel title="Add entry">
         <form className="flex flex-wrap items-end gap-3 text-sm" onSubmit={(e) => { e.preventDefault(); void save([...entries, { prefix, grantee: grantee.trim(), permission }]).then(() => { setPrefix(""); setGrantee(""); }); }}>
-          <label>Prefix<input className={`${inputCls} ml-2 w-40`} placeholder="whole bucket" value={prefix} onChange={(e) => setPrefix(e.target.value)} /></label>
-          <label>Grantee<input className={`${inputCls} ml-2 w-44`} placeholder="user:alice" value={grantee} onChange={(e) => setGrantee(e.target.value)} required /></label>
+          <label>Prefix<Input size="sm" className="ml-2 w-40" placeholder="whole bucket" value={prefix} onChange={(e) => setPrefix(e.target.value)} /></label>
+          <label>Grantee<Input size="sm" className="ml-2 w-44" placeholder="user:alice" value={grantee} onChange={(e) => setGrantee(e.target.value)} required /></label>
           <label>Permission
             <select className={`${inputCls} ml-2`} value={permission} onChange={(e) => setPermission(e.target.value as Permission)}>{PERMISSIONS.map((p) => <option key={p}>{p}</option>)}</select>
           </label>

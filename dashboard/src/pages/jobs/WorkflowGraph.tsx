@@ -2,7 +2,9 @@ import { Link } from "react-router-dom";
 import type { JobStatus, WorkflowStep } from "../../api";
 
 const W = 168, H = 46, GX = 56, GY = 18, PAD = 12;
-const FILL: Record<JobStatus, string> = { queued: "#3f3f46", running: "#92400e", succeeded: "#065f46", dead: "#7f1d1d", cancelled: "#52525b" };
+/** Status colour token per node; the node is a tint of it on the card, edged in it. */
+const TONE: Record<JobStatus, string> = { queued: "var(--info)", running: "var(--warning)", succeeded: "var(--success)", dead: "var(--destructive)", cancelled: "var(--muted-foreground)" };
+const tinted = (s: JobStatus) => `color-mix(in oklab, ${TONE[s]} 16%, var(--card))`;
 
 export interface Placed { id: string; label: string; status: JobStatus; waiting: number; level: number; row: number; compensation: boolean; x: number; y: number }
 
@@ -40,21 +42,21 @@ export function layout(steps: WorkflowStep[]): { nodes: Placed[]; edges: { from:
 
 /** The steps of a workflow as a left-to-right graph; each node links to its job. */
 export default function WorkflowGraph({ steps }: { steps: WorkflowStep[] }) {
-  if (steps.length === 0) return <p className="text-sm text-zinc-400">This workflow has no steps.</p>;
+  if (steps.length === 0) return <p className="text-sm text-muted-foreground">This workflow has no steps.</p>;
   const g = layout(steps);
   return (
     <div className="overflow-x-auto">
-      <svg role="img" aria-label="Workflow graph" width={g.width} height={g.height} viewBox={`0 0 ${g.width} ${g.height}`} className="text-zinc-100">
+      <svg role="img" aria-label="Workflow graph" width={g.width} height={g.height} viewBox={`0 0 ${g.width} ${g.height}`} className="text-foreground">
         {g.edges.map((e) => {
           const x1 = e.from.x + W, y1 = e.from.y + H / 2, x2 = e.to.x, y2 = e.to.y + H / 2, mx = (x1 + x2) / 2;
-          return <path key={`${e.from.id}>${e.to.id}`} data-edge={`${e.from.id}>${e.to.id}`} d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`} fill="none" stroke="#71717a" strokeWidth={1.5} />;
+          return <path key={`${e.from.id}>${e.to.id}`} data-edge={`${e.from.id}>${e.to.id}`} d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`} fill="none" style={{ stroke: "var(--muted-foreground)" }} strokeOpacity={0.7} strokeWidth={1.5} />;
         })}
         {g.nodes.map((n) => (
           <Link key={n.id} to={`/jobs/j/${encodeURIComponent(n.id)}`} aria-label={`${n.label}: ${n.status}${n.waiting > 0 ? `, waiting for ${n.waiting}` : ""}`}>
             <g data-status={n.status}>
-              <rect x={n.x} y={n.y} width={W} height={H} rx={6} fill={FILL[n.status]} stroke={n.compensation ? "#fbbf24" : "#a1a1aa"} strokeDasharray={n.compensation ? "4 3" : undefined} />
+              <rect x={n.x} y={n.y} width={W} height={H} rx={6} style={{ fill: tinted(n.status), stroke: n.compensation ? "var(--warning)" : TONE[n.status] }} strokeDasharray={n.compensation ? "4 3" : undefined} />
               <text x={n.x + 10} y={n.y + 19} fontSize={13} fill="currentColor">{n.label.length > 22 ? `${n.label.slice(0, 21)}…` : n.label}</text>
-              <text x={n.x + 10} y={n.y + 36} fontSize={11} fill="#d4d4d8">{n.status}{n.waiting > 0 ? ` · waiting ${n.waiting}` : ""}{n.compensation ? " · compensation" : ""}</text>
+              <text x={n.x + 10} y={n.y + 36} fontSize={11} style={{ fill: "var(--muted-foreground)" }}>{n.status}{n.waiting > 0 ? ` · waiting ${n.waiting}` : ""}{n.compensation ? " · compensation" : ""}</text>
             </g>
           </Link>
         ))}

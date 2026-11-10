@@ -22,7 +22,7 @@ export default function DomainsPage() {
         {l.data?.length === 0 && <Empty>No custom domains yet.</Empty>}
         <ul className="space-y-3">
           {l.data?.map((d) => (
-            <li key={d.id} className="rounded-md border border-zinc-800 p-3 text-sm">
+            <li key={d.id} className="rounded-md border border-border p-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span><span className="font-mono">{d.host}</span> <StatusBadge d={d} /></span>
                 <span className="space-x-2">
@@ -36,15 +36,15 @@ export default function DomainsPage() {
               </div>
               {d.verification && d.status === "pending" && (
                 <dl aria-label={`TXT record for ${d.host}`} className="mt-2 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1 text-xs">
-                  <dt className="text-zinc-500">Type</dt><dd className="font-mono">{d.verification.record_type}</dd>
-                  <dt className="text-zinc-500">Name</dt><dd className="font-mono break-all">{d.verification.record_name}.{d.host}</dd>
-                  <dt className="text-zinc-500">Value</dt><dd className="font-mono break-all">{d.verification.record_value}</dd>
-                  <dt className="text-zinc-500">Expires</dt><dd>{fmtTime(d.verification.expires_at)}</dd>
+                  <dt className="text-muted-foreground">Type</dt><dd className="font-mono">{d.verification.record_type}</dd>
+                  <dt className="text-muted-foreground">Name</dt><dd className="font-mono break-all">{d.verification.record_name}.{d.host}</dd>
+                  <dt className="text-muted-foreground">Value</dt><dd className="font-mono break-all">{d.verification.record_value}</dd>
+                  <dt className="text-muted-foreground">Expires</dt><dd>{fmtTime(d.verification.expires_at)}</dd>
                 </dl>
               )}
-              {msg[d.id] && <p role="status" className="mt-2 text-xs text-amber-300">Not verified: {msg[d.id]}</p>}
-              {d.last_error && d.status === "pending" && <p className="mt-1 text-xs text-zinc-500">Last check {fmtTime(d.last_checked)}: {d.last_error}</p>}
-              {d.status === "verified" && <p className="mt-1 text-xs text-zinc-500">Verified {fmtTime(d.verified_at)}</p>}
+              {msg[d.id] && <p role="status" className="mt-2 text-xs text-warning">Not verified: {msg[d.id]}</p>}
+              {d.last_error && d.status === "pending" && <p className="mt-1 text-xs text-muted-foreground">Last check {fmtTime(d.last_checked)}: {d.last_error}</p>}
+              {d.status === "verified" && <p className="mt-1 text-xs text-muted-foreground">Verified {fmtTime(d.verified_at)}</p>}
             </li>
           ))}
         </ul>
@@ -62,5 +62,5 @@ export default function DomainsPage() {
 }
 
 function StatusBadge({ d }: { d: Domain }) {
-  return <span data-status={d.status} className={`ml-2 rounded px-1.5 py-0.5 text-xs ${d.status === "verified" ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}>{d.status}</span>;
+  return <span data-status={d.status} className={`ml-2 rounded px-1.5 py-0.5 text-xs ${d.status === "verified" ? "bg-success/15 text-success" : "bg-warning/15 text-warning"}`}>{d.status}</span>;
 }

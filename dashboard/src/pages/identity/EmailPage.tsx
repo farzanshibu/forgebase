@@ -6,6 +6,7 @@ import { ActionError, Empty, Field, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { fmtTime, useRealm, nest } from "./util";
+import { Table } from "panelui-web/table";
 
 /** Email templates (edit, variable help, preview, test send) and the delivery log with retry. */
 export default function EmailPage() {
@@ -21,8 +22,8 @@ export default function EmailPage() {
         {l.data?.length === 0 && <Empty>No templates.</Empty>}
         <ul className="text-sm">
           {l.data?.map((t) => (
-            <li key={t.key} className="flex items-center justify-between border-t border-zinc-800 py-1.5">
-              <span><span className="font-mono">{t.key}</span> <span className="text-zinc-400">{t.subject}</span> {t.customized && <span className="ml-1 rounded bg-amber-500/15 px-1.5 text-xs text-amber-300">customised</span>}</span>
+            <li key={t.key} className="flex items-center justify-between border-t border-border py-1.5">
+              <span><span className="font-mono">{t.key}</span> <span className="text-muted-foreground">{t.subject}</span> {t.customized && <span className="ml-1 rounded bg-warning/15 px-1.5 text-xs text-warning">customised</span>}</span>
               <Button aria-label={`Edit template ${t.key}`} onClick={() => setKey(t.key)}>Edit</Button>
             </li>
           ))}
@@ -53,8 +54,8 @@ function TemplateEditor({ tpl, realm, onSaved }: { tpl: EmailTemplate; realm: st
         <TextField label="Subject" value={subject} onChange={setSubject} />
         <Field label="Text body"><textarea aria-label="Text body" rows={6} className={`${inputCls} font-mono`} value={text} onChange={(e) => setText(e.target.value)} /></Field>
         <Field label="HTML body (optional)"><textarea aria-label="HTML body" rows={6} className={`${inputCls} font-mono`} value={html} onChange={(e) => setHtml(e.target.value)} /></Field>
-        <div aria-label="Template variables" className="text-xs text-zinc-400">
-          Variables you can use: {tpl.variables.length === 0 ? "none" : tpl.variables.map((v) => <code key={v} className="mr-2 rounded bg-zinc-800 px-1">{`{{${v}}}`}</code>)}
+        <div aria-label="Template variables" className="text-xs text-muted-foreground">
+          Variables you can use: {tpl.variables.length === 0 ? "none" : tpl.variables.map((v) => <code key={v} className="mr-2 rounded bg-muted px-1">{`{{${v}}}`}</code>)}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" tone="primary" disabled={save.busy}>Save template</Button>
@@ -62,7 +63,7 @@ function TemplateEditor({ tpl, realm, onSaved }: { tpl: EmailTemplate; realm: st
         </div>
         <ActionError error={save.error} />
       </form>
-      <div className="mt-5 space-y-3 border-t border-zinc-800 pt-4">
+      <div className="mt-5 space-y-3 border-t border-border pt-4">
         <Field label="Sample values for the variables (name=value per line)"><textarea aria-label="Sample values" rows={4} className={`${inputCls} font-mono`} value={vars} onChange={(e) => setVars(e.target.value)} /></Field>
         <div className="flex flex-wrap items-end gap-3">
           <Button aria-label="Preview" disabled={pv.busy} onClick={() => void pv.run(async () => setPreview(await previewEmail({ draft: draft(), variables: variables() }, realm)))}>Preview</Button>
@@ -70,14 +71,14 @@ function TemplateEditor({ tpl, realm, onSaved }: { tpl: EmailTemplate; realm: st
           <Button disabled={!to || send.busy} onClick={() => void send.run(async () => { setSent(""); await sendTestEmail({ template: tpl.key, to, variables: variables() }, realm); setSent(`Test email queued for ${to}`); })}>Send test</Button>
         </div>
         <Note>The test uses the saved template, so save your edits first.</Note>
-        {sent && <p role="status" className="text-sm text-emerald-300">{sent}</p>}
+        {sent && <p role="status" className="text-sm text-success">{sent}</p>}
         <ActionError error={pv.error ?? send.error} />
         {preview && (
-          <div aria-label="Email preview" className="rounded-md border border-zinc-800 p-3 text-sm">
-            <p><span className="text-zinc-500">Subject:</span> {preview.subject}</p>
+          <div aria-label="Email preview" className="rounded-md border border-border p-3 text-sm">
+            <p><span className="text-muted-foreground">Subject:</span> {preview.subject}</p>
             <pre className="mt-2 whitespace-pre-wrap font-sans">{preview.text}</pre>
             {preview.html && <iframe title="HTML preview" sandbox="" srcDoc={preview.html} className="mt-2 h-48 w-full rounded bg-white" />}
-            {preview.missing.length > 0 && <p role="alert" className="mt-2 text-xs text-amber-300">Missing variables: {preview.missing.join(", ")}</p>}
+            {preview.missing.length > 0 && <p role="alert" className="mt-2 text-xs text-warning">Missing variables: {preview.missing.join(", ")}</p>}
           </div>
         )}
       </div>
@@ -98,21 +99,21 @@ function DeliveryLog({ realm }: { realm: string }) {
       {l.loading && !l.error && <Loading what="Loading deliveries" />}
       {l.data?.length === 0 && <Empty>No deliveries.</Empty>}
       {l.data && l.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">To</th><th>Subject</th><th>Status</th><th>Tries</th><th>Created</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">To</Table.Head><Table.Head>Subject</Table.Head><Table.Head>Status</Table.Head><Table.Head>Tries</Table.Head><Table.Head>Created</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {l.data.map((d) => (
-              <tr key={d.id} className="border-t border-zinc-800 align-top">
-                <td className="py-1.5">{d.to}</td>
-                <td>{d.subject}{d.last_error && <span className="block text-xs text-red-300">{d.last_error}</span>}</td>
-                <td data-status={d.status}>{d.status}</td>
-                <td>{d.attempts}</td>
-                <td className="text-xs text-zinc-400">{fmtTime(d.created_at)}</td>
-                <td className="text-right">{(d.status === "failed" || d.status === "retrying") && <Button aria-label={`Retry ${d.to}`} onClick={() => void run(() => retryDelivery(d.id))}>Retry</Button>}</td>
-              </tr>
+              <Table.Row key={d.id} className="border-t border-border align-top">
+                <Table.Cell className="py-1.5">{d.to}</Table.Cell>
+                <Table.Cell>{d.subject}{d.last_error && <span className="block text-xs text-destructive">{d.last_error}</span>}</Table.Cell>
+                <Table.Cell data-status={d.status}>{d.status}</Table.Cell>
+                <Table.Cell>{d.attempts}</Table.Cell>
+                <Table.Cell className="text-xs text-muted-foreground">{fmtTime(d.created_at)}</Table.Cell>
+                <Table.Cell className="text-right">{(d.status === "failed" || d.status === "retrying") && <Button aria-label={`Retry ${d.to}`} onClick={() => void run(() => retryDelivery(d.id))}>Retry</Button>}</Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       <ActionError error={error} />
     </Panel>

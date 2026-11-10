@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { createQueueTopic, listQueueTopics } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import { bytes, duration } from "./util";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 export default function TopicList() {
   const topics = useLoad(listQueueTopics, "queue-topics");
@@ -29,8 +31,8 @@ export default function TopicList() {
     <div className="space-y-4">
       <Panel title="New topic">
         <form onSubmit={(e) => void create(e)} className="flex flex-wrap items-end gap-3 text-sm">
-          <label>Name<input className={`${inputCls} ml-2 w-48`} value={name} onChange={(e) => setName(e.target.value)} /></label>
-          <label>Retention (days, optional)<input className={`${inputCls} ml-2 w-20`} inputMode="decimal" value={days} onChange={(e) => setDays(e.target.value)} /></label>
+          <label>Name<Input size="sm" className="ml-2 w-48" value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label>Retention (days, optional)<Input size="sm" className="ml-2 w-20" inputMode="decimal" value={days} onChange={(e) => setDays(e.target.value)} /></label>
           <Button type="submit" tone="primary" disabled={!name.trim()}>Create topic</Button>
         </form>
         <div className="mt-3"><ErrorView error={error} /></div>
@@ -38,23 +40,23 @@ export default function TopicList() {
       <Panel title="Topics" actions={<Button onClick={topics.reload}>Refresh</Button>}>
         <ErrorView error={topics.error} />
         {topics.loading && !topics.error && <Loading what="Loading topics" />}
-        {topics.data && topics.data.length === 0 && <p className="text-sm text-zinc-400">No topics yet. Create one above, then add a subscription to receive its messages.</p>}
+        {topics.data && topics.data.length === 0 && <p className="text-sm text-muted-foreground">No topics yet. Create one above, then add a subscription to receive its messages.</p>}
         {topics.data && topics.data.length > 0 && (
-          <table aria-label="Topics" className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500">
-              <tr><th className="py-1">Topic</th><th>Published</th><th>Bytes</th><th>Retention</th><th>Source</th><th>Created</th></tr>
-            </thead>
-            <tbody>
+          <Table aria-label="Topics" className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+              <Table.Row><Table.Head className="py-1">Topic</Table.Head><Table.Head>Published</Table.Head><Table.Head>Bytes</Table.Head><Table.Head>Retention</Table.Head><Table.Head>Source</Table.Head><Table.Head>Created</Table.Head></Table.Row>
+            </Table.Header>
+            <Table.Body>
               {topics.data.map((t) => (
-                <tr key={t.name} className="border-t border-zinc-800">
-                  <td className="py-1.5"><Link className="text-amber-300 hover:underline" to={`/queues/t/${encodeURIComponent(t.name)}`}>{t.name}</Link></td>
-                  <td>{t.published_total}</td><td>{bytes(t.published_bytes)}</td><td>{duration(t.retention_ms)}</td>
-                  <td>{t.source ? `records of ${t.source.collection}` : "publish"}</td>
-                  <td className="text-zinc-400">{when(t.created_at)}</td>
-                </tr>
+                <Table.Row key={t.name} className="border-t border-border">
+                  <Table.Cell className="py-1.5"><Link className="text-primary hover:underline" to={`/queues/t/${encodeURIComponent(t.name)}`}>{t.name}</Link></Table.Cell>
+                  <Table.Cell>{t.published_total}</Table.Cell><Table.Cell>{bytes(t.published_bytes)}</Table.Cell><Table.Cell>{duration(t.retention_ms)}</Table.Cell>
+                  <Table.Cell>{t.source ? `records of ${t.source.collection}` : "publish"}</Table.Cell>
+                  <Table.Cell className="text-muted-foreground">{when(t.created_at)}</Table.Cell>
+                </Table.Row>
               ))}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table>
         )}
       </Panel>
     </div>

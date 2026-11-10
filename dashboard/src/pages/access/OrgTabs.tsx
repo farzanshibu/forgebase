@@ -8,6 +8,8 @@ import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../.
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, EffectBadge, MultiPick, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 // ---- Projects & environments -------------------------------------------------------
 
@@ -45,7 +47,7 @@ function ProjectRow({ id, onChanged }: { id: string; onChanged: () => void }) {
       actions={<ConfirmButton label="Delete project" onConfirm={() => void run(async () => { await deleteProject(id); onChanged(); })} />}
     >
       <ul aria-label={`Environments of ${p.data.slug}`} className="mb-3 flex flex-wrap gap-2 text-sm">
-        {(p.data.environments ?? []).map((e) => <li key={e.id} className="rounded bg-zinc-800 px-2 py-0.5">{e.name}</li>)}
+        {(p.data.environments ?? []).map((e) => <li key={e.id} className="rounded bg-muted px-2 py-0.5">{e.name}</li>)}
       </ul>
       <div className="flex items-end gap-2">
         <TextField label={`New environment in ${p.data.slug}`} value={env} onChange={setEnv} />
@@ -72,21 +74,21 @@ export function MembersTab({ org }: { org: string }) {
       {members.loading && !members.error && <Loading what="Loading members" />}
       {members.data?.length === 0 && <Empty>No members.</Empty>}
       {members.data && members.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Principal</th><th>Roles</th><th>Role sets</th><th>Status</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Roles</Table.Head><Table.Head>Role sets</Table.Head><Table.Head>Status</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {members.data.map((m) => (
-              <tr key={m.id} className={rowCls(m.status !== "active")}>
-                <td className="py-2 font-mono">{m.principal}</td><td>{m.roles.join(", ")}</td><td>{m.role_sets.join(", ")}</td><td>{m.status}</td>
-                <td className="space-x-2 text-right">
+              <Table.Row key={m.id} className={rowCls(m.status !== "active")}>
+                <Table.Cell className="py-2 font-mono">{m.principal}</Table.Cell><Table.Cell>{m.roles.join(", ")}</Table.Cell><Table.Cell>{m.role_sets.join(", ")}</Table.Cell><Table.Cell>{m.status}</Table.Cell>
+                <Table.Cell className="space-x-2 text-right">
                   <Button onClick={() => { setPrincipal(m.principal); setR(m.roles); setRs(m.role_sets); }}>Edit {m.principal}</Button>
                   <Button onClick={() => void run(() => setMemberStatus(org, m.principal, m.status !== "active"))}>{m.status === "active" ? "Suspend" : "Reactivate"} {m.principal}</Button>
                   <ConfirmButton label="Remove" onConfirm={() => void run(() => removeMember(org, m.principal))} />
-                </td>
-              </tr>
+                </Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       <Panel title="Add or change a member">
         <TextField label="Principal" value={principal} onChange={setPrincipal} placeholder="user:users/abc" />
@@ -114,7 +116,7 @@ export function TeamsTab({ org }: { org: string }) {
   const node = (t: Team) => (
     <li key={t.id} className="mt-2">
       <TeamCard team={t} onChange={teams.reload} />
-      {children(t.id).length > 0 && <ul className="ml-6 border-l border-zinc-800 pl-3">{children(t.id).map(node)}</ul>}
+      {children(t.id).length > 0 && <ul className="ml-6 border-l border-border pl-3">{children(t.id).map(node)}</ul>}
     </li>
   );
   return (
@@ -127,7 +129,7 @@ export function TeamsTab({ org }: { org: string }) {
         <div className="flex flex-wrap items-end gap-3">
           <TextField label="Team key" value={key} onChange={setKey} />
           <TextField label="Team name" value={name} onChange={setName} />
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">Parent team
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">Parent team
             <select className={inputCls} value={parent} onChange={(e) => setParent(e.target.value)}>
               <option value="">(top level)</option>
               {all.map((t) => <option key={t.id} value={t.id}>{t.key}</option>)}
@@ -145,23 +147,23 @@ function TeamCard({ team, onChange }: { team: Team; onChange: () => void }) {
   const [who, setWho] = useState("");
   const { run, error } = useRun(() => { onChange(); setWho(""); });
   return (
-    <div className="rounded-md border border-zinc-800 p-3 text-sm" data-team={team.key}>
+    <div className="rounded-md border border-border p-3 text-sm" data-team={team.key}>
       <div className="flex items-center justify-between">
-        <span><span className="font-medium">{team.name}</span> <span className="font-mono text-xs text-zinc-500">{team.key}</span>
-          {team.roles.length > 0 && <span className="ml-2 text-xs text-zinc-400">roles: {team.roles.join(", ")}</span>}
-          {team.deny.length > 0 && <span className="ml-2 rounded bg-red-500/20 px-1 text-xs text-red-300">deny: {team.deny.join(", ")}</span>}
+        <span><span className="font-medium">{team.name}</span> <span className="font-mono text-xs text-muted-foreground">{team.key}</span>
+          {team.roles.length > 0 && <span className="ml-2 text-xs text-muted-foreground">roles: {team.roles.join(", ")}</span>}
+          {team.deny.length > 0 && <span className="ml-2 rounded bg-destructive/15 px-1 text-xs text-destructive">deny: {team.deny.join(", ")}</span>}
         </span>
         <ConfirmButton label={`Delete ${team.key}`} onConfirm={() => void run(() => deleteTeam(team.id))} />
       </div>
       <ul className="mt-2 flex flex-wrap gap-2">
         {team.members.map((m) => (
-          <li key={m} className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5 font-mono text-xs">
-            {m}<button type="button" aria-label={`Remove ${m} from ${team.key}`} className="text-zinc-400 hover:text-red-300" onClick={() => void run(() => removeTeamMember(team.id, m))}>×</button>
+          <li key={m} className="flex items-center gap-1 rounded bg-muted px-2 py-0.5 font-mono text-xs">
+            {m}<button type="button" aria-label={`Remove ${m} from ${team.key}`} className="text-muted-foreground hover:text-destructive" onClick={() => void run(() => removeTeamMember(team.id, m))}>×</button>
           </li>
         ))}
       </ul>
       <div className="mt-2 flex items-center gap-2">
-        <input aria-label={`Add member to ${team.key}`} className={inputCls} placeholder="user:users/abc" value={who} onChange={(e) => setWho(e.target.value)} />
+        <Input size="sm" aria-label={`Add member to ${team.key}`} placeholder="user:users/abc" value={who} onChange={(e) => setWho(e.target.value)} />
         <Button disabled={!who} onClick={() => void run(() => addTeamMember(team.id, who))}>Add to {team.key}</Button>
       </div>
       <ActionError error={error} />
@@ -184,10 +186,10 @@ export function InvitationsTab({ org }: { org: string }) {
       {inv.loading && !inv.error && <Loading what="Loading invitations" />}
       {inv.data?.length === 0 && <Empty>No pending invitations.</Empty>}
       {inv.data && inv.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Email</th><th>Roles</th><th>Status</th><th>Expires</th></tr></thead>
-          <tbody>{inv.data.map((i) => <tr key={i.id} className="border-t border-zinc-800"><td className="py-2">{i.email}</td><td>{i.roles.join(", ")}</td><td>{i.status ?? "pending"}</td><td>{String(i.expires_at)}</td></tr>)}</tbody>
-        </table>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Email</Table.Head><Table.Head>Roles</Table.Head><Table.Head>Status</Table.Head><Table.Head>Expires</Table.Head></Table.Row></Table.Header>
+          <Table.Body>{inv.data.map((i) => <Table.Row key={i.id} className="border-t border-border"><Table.Cell className="py-2">{i.email}</Table.Cell><Table.Cell>{i.roles.join(", ")}</Table.Cell><Table.Cell>{i.status ?? "pending"}</Table.Cell><Table.Cell>{String(i.expires_at)}</Table.Cell></Table.Row>)}</Table.Body>
+        </Table>
       )}
       <Panel title="Invite">
         <TextField label="Email" value={email} onChange={setEmail} />
@@ -195,8 +197,8 @@ export function InvitationsTab({ org }: { org: string }) {
         <div className="mt-3"><Button tone="primary" disabled={!email} onClick={() => void run(async () => { const v = await invite(org, email, picked); setToken(v.token); })}>Send invitation</Button></div>
       </Panel>
       {token && (
-        <div role="status" aria-label="Invitation token" className="rounded-lg border border-amber-700/60 bg-amber-500/10 p-4 text-sm">
-          <p className="text-amber-300">One-time token — copy it now, it is not shown again.</p>
+        <div role="status" aria-label="Invitation token" className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm">
+          <p className="text-warning">One-time token — copy it now, it is not shown again.</p>
           <p className="mt-1 break-all font-mono">{token}</p>
           <Button className="mt-2" onClick={() => setToken(undefined)}>Dismiss</Button>
         </div>
@@ -220,23 +222,23 @@ export function OverridesTab({ org }: { org: string }) {
       {l.loading && !l.error && <Loading what="Loading overrides" />}
       {l.data?.length === 0 && <Empty>No user overrides.</Empty>}
       {l.data && l.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Principal</th><th>Permission</th><th>Effect</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Permission</Table.Head><Table.Head>Effect</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {l.data.map((o) => (
-              <tr key={o.id} data-effect={o.effect} className={rowCls(o.effect === "deny")}>
-                <td className="py-2 font-mono">{o.principal}</td><td className="font-mono">{o.permission}</td><td><EffectBadge effect={o.effect} /></td>
-                <td className="text-right"><ConfirmButton label="Delete" onConfirm={() => void run(() => deleteOverride(o.id))} /></td>
-              </tr>
+              <Table.Row key={o.id} data-effect={o.effect} className={rowCls(o.effect === "deny")}>
+                <Table.Cell className="py-2 font-mono">{o.principal}</Table.Cell><Table.Cell className="font-mono">{o.permission}</Table.Cell><Table.Cell><EffectBadge effect={o.effect} /></Table.Cell>
+                <Table.Cell className="text-right"><ConfirmButton label="Delete" onConfirm={() => void run(() => deleteOverride(o.id))} /></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       <Panel title="Add override">
         <div className="flex flex-wrap items-end gap-3">
           <TextField label="Override principal" value={principal} onChange={setPrincipal} placeholder="user:users/abc" />
           <TextField label="Override permission" value={permission} onChange={setPermission} placeholder="projects:delete" />
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">Effect
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">Effect
             <select className={inputCls} value={effect} onChange={(e) => setEffect(e.target.value as Effect)}><option value="allow">allow</option><option value="deny">deny</option></select>
           </label>
           <Button tone="primary" disabled={!principal || !permission} onClick={() => void run(() => addOverride({ org_id: org, principal, permission, effect }))}>Add override</Button>

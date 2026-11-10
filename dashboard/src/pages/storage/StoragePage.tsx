@@ -10,7 +10,7 @@ export default function StoragePage() {
         <Routes>
           <Route index element={<BucketList />} />
           <Route path="b/:bucket/*" element={<BucketView />} />
-          <Route path="*" element={<p className="text-zinc-400">No such page in Object Storage Studio.</p>} />
+          <Route path="*" element={<p className="text-muted-foreground">No such page in Object Storage Studio.</p>} />
         </Routes>
       </div>
     </div>

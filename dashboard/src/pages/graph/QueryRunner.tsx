@@ -2,6 +2,7 @@ import { useState } from "react";
 import { shortestPath, traverse } from "../../api";
 import type { PathQuery, PathResult, TraverseQuery, TraverseResult } from "../../api";
 import { Button, ErrorView, Panel, inputCls } from "../../components/ui";
+import { Table } from "panelui-web/table";
 
 type Kind = "traverse" | "path";
 const EXAMPLES: Record<Kind, string> = {
@@ -45,7 +46,7 @@ export default function QueryRunner() {
       <Panel title="Query runner">
         <div role="tablist" aria-label="Query type" className="mb-3 flex gap-2">
           {(["traverse", "path"] as const).map((k) => (
-            <button key={k} type="button" role="tab" aria-selected={kind === k} onClick={() => pick(k)} className={`rounded-md border px-3 py-1 text-sm ${kind === k ? "border-amber-500 text-amber-300" : "border-zinc-700 text-zinc-400"}`}>
+            <button key={k} type="button" role="tab" aria-selected={kind === k} onClick={() => pick(k)} className={`rounded-md border px-3 py-1 text-sm ${kind === k ? "border-primary text-warning" : "border-border text-muted-foreground"}`}>
               {k === "traverse" ? "Traversal" : "Shortest path"}
             </button>
           ))}
@@ -58,10 +59,10 @@ export default function QueryRunner() {
       <ErrorView error={error} />
       {result && "start" in result && (
         <Panel title={`${result.nodes.length} nodes, ${result.edges.length} edges${result.truncated ? " (truncated)" : ""}`}>
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-zinc-500"><tr><th className="py-1">Depth</th><th>Id</th><th>Label</th></tr></thead>
-            <tbody>{result.nodes.map((n) => <tr key={n.node.id} className="border-t border-zinc-800"><td className="py-1">{n.depth}</td><td className="font-mono">{n.node.id}</td><td>{n.node.label}</td></tr>)}</tbody>
-          </table>
+          <Table className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase text-muted-foreground"><Table.Row><Table.Head className="py-1">Depth</Table.Head><Table.Head>Id</Table.Head><Table.Head>Label</Table.Head></Table.Row></Table.Header>
+            <Table.Body>{result.nodes.map((n) => <Table.Row key={n.node.id} className="border-t border-border"><Table.Cell className="py-1">{n.depth}</Table.Cell><Table.Cell className="font-mono">{n.node.id}</Table.Cell><Table.Cell>{n.node.label}</Table.Cell></Table.Row>)}</Table.Body>
+          </Table>
         </Panel>
       )}
       {result && "found" in result && (

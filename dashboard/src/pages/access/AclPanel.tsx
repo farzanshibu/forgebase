@@ -3,6 +3,7 @@ import { deleteAcl, listAcl, putAcl, type AclEntry, type Effect } from "../../ap
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { ActionError, Empty, EffectBadge, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
+import { Table } from "panelui-web/table";
 
 /** Resource ACL of one project, environment or collection. */
 export default function AclPanel() {
@@ -25,7 +26,7 @@ export default function AclPanel() {
     <div className="space-y-4">
       <Panel title="Resource">
         <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">Resource type
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">Resource type
             <select className={inputCls} value={type} onChange={(e) => setType(e.target.value)}>
               <option value="project">project</option><option value="environment">environment</option><option value="collection">collection</option>
             </select>
@@ -38,24 +39,24 @@ export default function AclPanel() {
       {loaded && !rows && !loadError && <Loading what="Loading ACL" />}
       {rows && rows.length === 0 && <Empty>No ACL entries on {loaded?.type} {loaded?.id}.</Empty>}
       {rows && rows.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Grantee</th><th>Permission</th><th>Effect</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Grantee</Table.Head><Table.Head>Permission</Table.Head><Table.Head>Effect</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {rows.map((a) => (
-              <tr key={a.id} data-effect={a.effect} className={rowCls(a.effect === "deny")}>
-                <td className="py-2 font-mono">{a.grantee}</td><td className="font-mono">{a.permission}</td><td><EffectBadge effect={a.effect} /></td>
-                <td className="text-right"><ConfirmButton label="Remove" onConfirm={() => void run(() => deleteAcl(a.id))} /></td>
-              </tr>
+              <Table.Row key={a.id} data-effect={a.effect} className={rowCls(a.effect === "deny")}>
+                <Table.Cell className="py-2 font-mono">{a.grantee}</Table.Cell><Table.Cell className="font-mono">{a.permission}</Table.Cell><Table.Cell><EffectBadge effect={a.effect} /></Table.Cell>
+                <Table.Cell className="text-right"><ConfirmButton label="Remove" onConfirm={() => void run(() => deleteAcl(a.id))} /></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       {loaded && (
         <Panel title={`Add entry to ${loaded.type} ${loaded.id}`}>
           <div className="flex flex-wrap items-end gap-3">
             <TextField label="Grantee" value={grantee} onChange={setGrantee} placeholder="user:users/abc" />
             <TextField label="ACL permission" value={permission} onChange={setPermission} placeholder="projects:read" />
-            <label className="flex flex-col gap-1 text-xs text-zinc-400">ACL effect
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">ACL effect
               <select className={inputCls} value={effect} onChange={(e) => setEffect(e.target.value as Effect)}><option value="allow">allow</option><option value="deny">deny</option></select>
             </label>
             <Button tone="primary" disabled={!grantee || !permission} onClick={() => void run(() => putAcl({ resource_type: loaded.type, resource_id: loaded.id, grantee, permission, effect }))}>Add ACL entry</Button>

@@ -7,6 +7,8 @@ import { useSession } from "../../auth/session";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Badge, Modal, THEAD, Th, fmtTime, useAction } from "./common";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 export default function UserDetail() {
   const { collection = "", id = "" } = useParams();
@@ -27,7 +29,7 @@ export default function UserDetail() {
 
   return (
     <div className="space-y-4">
-      <Link to="/auth" className="text-sm text-amber-300 hover:underline">
+      <Link to="/auth" className="text-sm text-primary hover:underline">
         ← Users
       </Link>
       <ErrorView error={detail.error} />
@@ -44,15 +46,15 @@ export default function UserDetail() {
           {act.errorView}
           <Panel title="Account">
             <dl className="grid grid-cols-[10rem_1fr] gap-y-1 text-sm">
-              <dt className="text-zinc-500">MFA</dt>
+              <dt className="text-muted-foreground">MFA</dt>
               <dd>{detail.data.mfa_enabled ? <Badge tone="ok">enabled</Badge> : <Badge>not enabled</Badge>}</dd>
-              <dt className="text-zinc-500">Active sessions</dt>
+              <dt className="text-muted-foreground">Active sessions</dt>
               <dd>{detail.data.active_sessions}</dd>
-              <dt className="text-zinc-500">Last sign-in</dt>
+              <dt className="text-muted-foreground">Last sign-in</dt>
               <dd>{fmtTime(detail.data.last_login_at)}</dd>
               {Object.entries(detail.data.user).map(([k, v]) => (
                 <div key={k} className="contents">
-                  <dt className="text-zinc-500">{k}</dt>
+                  <dt className="text-muted-foreground">{k}</dt>
                   <dd className="break-all font-mono text-xs">{typeof v === "object" ? JSON.stringify(v) : String(v)}</dd>
                 </div>
               ))}
@@ -85,7 +87,7 @@ export default function UserDetail() {
                   }
                 }}
               >
-                <input aria-label="Suspension reason" className={`${inputCls} w-72`} placeholder="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+                <Input size="sm" aria-label="Suspension reason" className="w-72" placeholder="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
                 <Button type="submit" tone="danger" disabled={act.busy || !reason.trim()}>
                   Suspend
                 </Button>
@@ -106,24 +108,24 @@ export default function UserDetail() {
           >
             <ErrorView error={sessions.error} />
             {sessions.loading && !sessions.error && <Loading what="Loading sessions" />}
-            {sessions.data?.length === 0 && <p className="text-sm text-zinc-400">No active sessions.</p>}
+            {sessions.data?.length === 0 && <p className="text-sm text-muted-foreground">No active sessions.</p>}
             {!!sessions.data?.length && (
-              <table className="w-full text-sm">
-                <thead className={THEAD}>
-                  <tr><Th>Device</Th><Th>IP</Th><Th>Method</Th><Th>Last seen</Th><Th>Expires</Th><Th> </Th></tr>
-                </thead>
-                <tbody>
+              <Table className="w-full text-sm">
+                <Table.Header className={THEAD}>
+                  <Table.Row><Th>Device</Th><Th>IP</Th><Th>Method</Th><Th>Last seen</Th><Th>Expires</Th><Th> </Th></Table.Row>
+                </Table.Header>
+                <Table.Body>
                   {sessions.data.map((s) => (
-                    <tr key={s.id} className="border-t border-zinc-800">
-                      <td className="py-2 pr-3">
+                    <Table.Row key={s.id} className="border-t border-border">
+                      <Table.Cell className="py-2 pr-3">
                         {s.device_name ?? s.user_agent ?? "unknown"} {s.mfa && <Badge tone="ok">MFA</Badge>}{" "}
                         {s.impersonator && <Badge tone="warn">impersonated by {s.impersonator}</Badge>}
-                      </td>
-                      <td className="pr-3 font-mono text-xs">{s.ip ?? "—"}</td>
-                      <td className="pr-3">{s.auth_method}</td>
-                      <td className="pr-3">{fmtTime(s.last_seen_at)}</td>
-                      <td className="pr-3">{fmtTime(s.expires_at)}</td>
-                      <td>
+                      </Table.Cell>
+                      <Table.Cell className="pr-3 font-mono text-xs">{s.ip ?? "—"}</Table.Cell>
+                      <Table.Cell className="pr-3">{s.auth_method}</Table.Cell>
+                      <Table.Cell className="pr-3">{fmtTime(s.last_seen_at)}</Table.Cell>
+                      <Table.Cell className="pr-3">{fmtTime(s.expires_at)}</Table.Cell>
+                      <Table.Cell>
                         <Button
                           tone="danger"
                           aria-label={`Revoke session ${s.id}`}
@@ -133,34 +135,34 @@ export default function UserDetail() {
                         >
                           Revoke
                         </Button>
-                      </td>
-                    </tr>
+                      </Table.Cell>
+                    </Table.Row>
                   ))}
-                </tbody>
-              </table>
+                </Table.Body>
+              </Table>
             )}
           </Panel>
           <Panel title="Login history">
             <ErrorView error={history.error} />
             {history.loading && !history.error && <Loading what="Loading history" />}
-            {history.data?.length === 0 && <p className="text-sm text-zinc-400">No sign-in events.</p>}
+            {history.data?.length === 0 && <p className="text-sm text-muted-foreground">No sign-in events.</p>}
             {!!history.data?.length && (
-              <table className="w-full text-sm">
-                <thead className={THEAD}>
-                  <tr><Th>When</Th><Th>Event</Th><Th>Outcome</Th><Th>IP</Th><Th>Agent</Th></tr>
-                </thead>
-                <tbody>
+              <Table className="w-full text-sm">
+                <Table.Header className={THEAD}>
+                  <Table.Row><Th>When</Th><Th>Event</Th><Th>Outcome</Th><Th>IP</Th><Th>Agent</Th></Table.Row>
+                </Table.Header>
+                <Table.Body>
                   {history.data.map((h) => (
-                    <tr key={h.id} className="border-t border-zinc-800">
-                      <td className="py-1.5 pr-3">{fmtTime(h.at)}</td>
-                      <td className="pr-3">{h.event}</td>
-                      <td className="pr-3">{h.outcome === "failure" ? <Badge tone="bad">failure</Badge> : <Badge tone="ok">success</Badge>}</td>
-                      <td className="pr-3 font-mono text-xs">{h.ip ?? "—"}</td>
-                      <td className="pr-3 truncate text-xs text-zinc-400">{h.user_agent ?? ""}</td>
-                    </tr>
+                    <Table.Row key={h.id} className="border-t border-border">
+                      <Table.Cell className="py-1.5 pr-3">{fmtTime(h.at)}</Table.Cell>
+                      <Table.Cell className="pr-3">{h.event}</Table.Cell>
+                      <Table.Cell className="pr-3">{h.outcome === "failure" ? <Badge tone="bad">failure</Badge> : <Badge tone="ok">success</Badge>}</Table.Cell>
+                      <Table.Cell className="pr-3 font-mono text-xs">{h.ip ?? "—"}</Table.Cell>
+                      <Table.Cell className="pr-3 truncate text-xs text-muted-foreground">{h.user_agent ?? ""}</Table.Cell>
+                    </Table.Row>
                   ))}
-                </tbody>
-              </table>
+                </Table.Body>
+              </Table>
             )}
           </Panel>
         </>
@@ -184,7 +186,7 @@ function ImpersonateDialog({ principal, onClose }: { principal: string; onClose:
           if (await act.run(() => session.startImpersonation(principal, reason.trim(), minutes))) onClose();
         }}
       >
-        <p className="text-zinc-400">
+        <p className="text-muted-foreground">
           You will act as <span className="font-mono">{principal}</span>. Every action is audited with your admin id.
         </p>
         <label className="block">
@@ -193,7 +195,7 @@ function ImpersonateDialog({ principal, onClose }: { principal: string; onClose:
         </label>
         <label className="block">
           Minutes (1–60)
-          <input aria-label="Minutes" type="number" min={1} max={60} className={`${inputCls} mt-1 w-24`} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
+          <Input size="sm" aria-label="Minutes" type="number" min={1} max={60} className="mt-1 w-24" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
         </label>
         {act.errorView}
         <div className="flex justify-end gap-2">

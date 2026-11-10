@@ -8,6 +8,8 @@ import StoreProviders from "./StoreProviders";
 import { Badge, BillingError, Empty, Field, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 const PROVIDERS = ["stripe", "razorpay", "manual"] as const;
 
@@ -25,30 +27,30 @@ function ProviderCard({ name, account, onChanged }: { name: string; account?: Pr
     if (ok) { setApiKey(""); setWebhook(""); }
   };
   return (
-    <section aria-label={`${name} provider`} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+    <section aria-label={`${name} provider`} className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <h3 className="font-medium capitalize">{name}</h3>
         <Badge status={account ? (account.enabled ? "active" : "paused") : "canceled"} />
       </div>
-      {account && <p aria-label={`${name} test mode`} className="mt-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-300">{account.test_mode ? `Test mode (${account.environment})` : `Mode: ${account.environment}`}</p>}
-      {account && <p className="mt-1 text-sm text-zinc-400">{account.hint ? `Key ${account.hint}` : "Configured"}{account.key_id ? `, key id ${account.key_id}` : ""} · webhook <span className="font-mono text-xs">{account.webhook_path}</span></p>}
-      {!account && <p className="mt-1 text-sm text-zinc-500">Not configured.</p>}
+      {account && <p aria-label={`${name} test mode`} className="mt-1 rounded bg-warning/10 px-2 py-1 text-xs text-warning">{account.test_mode ? `Test mode (${account.environment})` : `Mode: ${account.environment}`}</p>}
+      {account && <p className="mt-1 text-sm text-muted-foreground">{account.hint ? `Key ${account.hint}` : "Configured"}{account.key_id ? `, key id ${account.key_id}` : ""} · webhook <span className="font-mono text-xs">{account.webhook_path}</span></p>}
+      {!account && <p className="mt-1 text-sm text-muted-foreground">Not configured.</p>}
       <form onSubmit={save} className="mt-3 space-y-3">
         {!manual && (
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label={`${name} secret key (write-only)`}><input className={inputCls} type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={account ? "leave blank to keep" : name === "stripe" ? "sk_test_..." : "rzp_test_..."} /></Field>
-            {name === "razorpay" && <Field label="razorpay key id"><input className={inputCls} value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder={account?.key_id ?? "rzp_test_..."} /></Field>}
-            <Field label={`${name} webhook secret (write-only)`}><input className={inputCls} type="password" autoComplete="off" value={webhook} onChange={(e) => setWebhook(e.target.value)} placeholder={account ? "leave blank to keep" : "whsec_..."} /></Field>
+            <Field label={`${name} secret key (write-only)`}><Input size="sm" type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={account ? "leave blank to keep" : name === "stripe" ? "sk_test_..." : "rzp_test_..."} /></Field>
+            {name === "razorpay" && <Field label="razorpay key id"><Input size="sm" value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder={account?.key_id ?? "rzp_test_..."} /></Field>}
+            <Field label={`${name} webhook secret (write-only)`}><Input size="sm" type="password" autoComplete="off" value={webhook} onChange={(e) => setWebhook(e.target.value)} placeholder={account ? "leave blank to keep" : "whsec_..."} /></Field>
           </div>
         )}
-        <label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />Enabled</label>
+        <label className="flex items-center gap-2 text-sm text-foreground/80"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />Enabled</label>
         <ErrorView error={act.error} />
-        {act.note && <p role="status" className="text-sm text-emerald-300">{act.note}</p>}
+        {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
         <div className="flex gap-2">
           <Button type="submit" tone="primary" disabled={act.busy}>Save {name}</Button>
           {account && <ConfirmButton label={`Remove ${name}`} disabled={act.busy} onConfirm={() => void act.run(() => deleteProvider(name), "Removed")} />}
         </div>
-        <p className="text-xs text-zinc-500">Test-mode keys only. Secrets are sealed on the server and never shown again; a field left blank keeps its stored value.</p>
+        <p className="text-xs text-muted-foreground">Test-mode keys only. Secrets are sealed on the server and never shown again; a field left blank keeps its stored value.</p>
       </form>
     </section>
   );
@@ -69,15 +71,15 @@ function SettingsForm({ initial, onSaved }: { initial: BillingSettings; onSaved:
   return (
     <form onSubmit={save} aria-label="Billing settings" className="space-y-3">
       <div className={FORM_GRID}>
-        <Field label="Default currency"><input className={inputCls} maxLength={3} value={s.default_currency} onChange={(e) => setS({ ...s, default_currency: e.target.value.toUpperCase() })} /></Field>
-        <Field label="Retry days (comma separated)"><input className={inputCls} value={retry} onChange={(e) => setRetry(e.target.value)} /></Field>
+        <Field label="Default currency"><Input size="sm" maxLength={3} value={s.default_currency} onChange={(e) => setS({ ...s, default_currency: e.target.value.toUpperCase() })} /></Field>
+        <Field label="Retry days (comma separated)"><Input size="sm" value={retry} onChange={(e) => setRetry(e.target.value)} /></Field>
         <Field label="After the last retry"><select className={inputCls} value={s.final_action} onChange={(e) => setS({ ...s, final_action: e.target.value as FinalAction })}><option value="cancel">cancel</option><option value="leave_past_due">leave past due</option></select></Field>
-        <Field label="Invoice prefix"><input className={inputCls} value={s.invoice_prefix} onChange={(e) => setS({ ...s, invoice_prefix: e.target.value })} /></Field>
-        <Field label="Credit note prefix"><input className={inputCls} value={s.credit_note_prefix} onChange={(e) => setS({ ...s, credit_note_prefix: e.target.value })} /></Field>
+        <Field label="Invoice prefix"><Input size="sm" value={s.invoice_prefix} onChange={(e) => setS({ ...s, invoice_prefix: e.target.value })} /></Field>
+        <Field label="Credit note prefix"><Input size="sm" value={s.credit_note_prefix} onChange={(e) => setS({ ...s, credit_note_prefix: e.target.value })} /></Field>
       </div>
-      {bad && <p role="alert" className="text-sm text-red-300">{bad}</p>}
+      {bad && <p role="alert" className="text-sm text-destructive">{bad}</p>}
       <ErrorView error={act.error} />
-      {act.note && <p role="status" className="text-sm text-emerald-300">{act.note}</p>}
+      {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
       <Button type="submit" tone="primary" disabled={act.busy}>Save settings</Button>
     </form>
   );
@@ -102,12 +104,12 @@ function TaxRates() {
       {rates.data && rates.data.length === 0 && <Empty>No tax rates.</Empty>}
       {rates.data && rates.data.length > 0 && <ul aria-label="Tax rates" className="mb-3 text-sm">{rates.data.map((r) => <li key={r.region}><span className="font-mono text-xs">{r.region}</span> {r.name} {formatBp(r.rate_bp)}{r.active ? <span className="ml-2"><ConfirmButton label={`Archive tax rate ${r.region}`} disabled={act.busy} onConfirm={() => void act.run(() => archiveTaxRate(r.region), "Tax rate archived")} /></span> : <span className="ml-2"><Badge status="canceled" /></span>}</li>)}</ul>}
       <form onSubmit={save} aria-label="New tax rate" className="flex flex-wrap items-end gap-2 text-sm">
-        <Field label="Tax region"><input className={`${inputCls} w-28`} value={region} onChange={(e) => setRegion(e.target.value)} required /></Field>
-        <Field label="Tax name"><input className={`${inputCls} w-40`} value={name} onChange={(e) => setName(e.target.value)} required /></Field>
-        <Field label="Rate percent"><input className={`${inputCls} w-24`} inputMode="decimal" value={pct} onChange={(e) => setPct(e.target.value)} required /></Field>
+        <Field label="Tax region"><Input size="sm" className="w-28" value={region} onChange={(e) => setRegion(e.target.value)} required /></Field>
+        <Field label="Tax name"><Input size="sm" className="w-40" value={name} onChange={(e) => setName(e.target.value)} required /></Field>
+        <Field label="Rate percent"><Input size="sm" className="w-24" inputMode="decimal" value={pct} onChange={(e) => setPct(e.target.value)} required /></Field>
         <Button type="submit" disabled={act.busy}>Save tax rate</Button>
       </form>
-      {bad && <p role="alert" className="mt-2 text-sm text-red-300">{bad}</p>}
+      {bad && <p role="alert" className="mt-2 text-sm text-destructive">{bad}</p>}
       <ErrorView error={act.error} />
     </Panel>
   );
@@ -136,10 +138,10 @@ export default function Settings() {
         <ErrorView error={events.error} />
         {events.data && events.data.length === 0 && <Empty>No webhook deliveries yet.</Empty>}
         {events.data && events.data.length > 0 && (
-          <table aria-label="Webhook events" className={TABLE}>
-            <thead className={THEAD}><tr><Th>Received</Th><Th>Provider</Th><Th>Event</Th><Th>Status</Th><Th>Result</Th><Th>Attempts</Th></tr></thead>
-            <tbody>{events.data.map((e) => <tr key={e.id} className={ROW}><td className="py-1.5 pr-3 text-zinc-400">{when_(e.received_at)}</td><td>{e.provider}</td><td><span className="font-mono text-xs">{e.event_type}</span></td><td><Badge status={e.status} /></td><td>{e.result ?? "-"}</td><td>{e.attempts}</td></tr>)}</tbody>
-          </table>
+          <Table aria-label="Webhook events" className={TABLE}>
+            <Table.Header className={THEAD}><Table.Row><Th>Received</Th><Th>Provider</Th><Th>Event</Th><Th>Status</Th><Th>Result</Th><Th>Attempts</Th></Table.Row></Table.Header>
+            <Table.Body>{events.data.map((e) => <Table.Row key={e.id} className={ROW}><Table.Cell className="py-1.5 pr-3 text-muted-foreground">{when_(e.received_at)}</Table.Cell><Table.Cell>{e.provider}</Table.Cell><Table.Cell><span className="font-mono text-xs">{e.event_type}</span></Table.Cell><Table.Cell><Badge status={e.status} /></Table.Cell><Table.Cell>{e.result ?? "-"}</Table.Cell><Table.Cell>{e.attempts}</Table.Cell></Table.Row>)}</Table.Body>
+          </Table>
         )}
       </Panel>
     </div>

@@ -32,24 +32,24 @@ export default function LogsTab({ name }: { name: string }) {
           </select>
         </label>
         <Button onClick={logs.refresh}>Refresh</Button>
-        <span className="text-zinc-500">{logs.data ? `${shown.length} of the newest ${limit} executions` : ""}{logs.updatedAt ? ` · updated ${logs.updatedAt.toLocaleTimeString()}` : ""}</span>
+        <span className="text-muted-foreground">{logs.data ? `${shown.length} of the newest ${limit} executions` : ""}{logs.updatedAt ? ` · updated ${logs.updatedAt.toLocaleTimeString()}` : ""}</span>
       </div>
       <ErrorView error={logs.error} />
       {logs.loading && !logs.error && <Loading what="Loading logs" />}
-      {logs.data && shown.length === 0 && <p className="text-sm text-zinc-400">No executions logged.</p>}
+      {logs.data && shown.length === 0 && <p className="text-sm text-muted-foreground">No executions logged.</p>}
       <ul aria-label="Executions" className="space-y-2">
         {shown.map((l) => (
-          <li key={l.id} className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 text-sm">
+          <li key={l.id} className="rounded-md border border-border bg-card p-3 text-sm">
             <p className="flex flex-wrap gap-x-3">
-              <span className={l.status === "ok" ? "text-emerald-300" : "text-red-300"}>{l.status}</span>
+              <span className={l.status === "ok" ? "text-success" : "text-destructive"}>{l.status}</span>
               <span>v{l.version}</span><span>{l.trigger}</span>
               <span>{l.duration_ms} ms</span><span>{l.fuel_used} fuel</span>
-              <span className="text-zinc-500">{when(l.created_at)}</span>
-              {l.request_id && <span className="font-mono text-xs text-zinc-500">{l.request_id}</span>}
+              <span className="text-muted-foreground">{when(l.created_at)}</span>
+              {l.request_id && <span className="font-mono text-xs text-muted-foreground">{l.request_id}</span>}
             </p>
-            {l.error && <p className="mt-1 text-red-300">{l.error}</p>}
+            {l.error && <p className="mt-1 text-destructive">{l.error}</p>}
             {l.logs.length > 0 && (
-              <pre className="mt-2 overflow-x-auto rounded bg-zinc-950 p-2 font-mono text-xs">{l.logs.map((x) => `[${x.level}] ${x.message}`).join("\n")}</pre>
+              <pre className="mt-2 overflow-x-auto rounded bg-background p-2 font-mono text-xs">{l.logs.map((x) => `[${x.level}] ${x.message}`).join("\n")}</pre>
             )}
           </li>
         ))}

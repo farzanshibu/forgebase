@@ -25,7 +25,7 @@ export default function VectorIndex({ collection }: { collection: VectorCollecti
       <ErrorView error={fail ?? error} />
       {!data && !error && <Loading what="Loading index status" />}
       {data && (
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-muted-foreground">
           {data.items} items ({data.items_with_text} with text) · change seq {data.change_seq}
         </p>
       )}
@@ -35,7 +35,7 @@ export default function VectorIndex({ collection }: { collection: VectorCollecti
           onRecall={() => void act(async () => { const r = await measureRecall(collection.name, { field: ix.field, samples: 20, k: 10 }); setRecall(`${ix.field}: recall ${fmt(r.recall)} over ${r.samples} samples (ANN ${fmt(r.ann_ms, 2)} ms, exact ${fmt(r.exact_ms, 2)} ms)`); })}
         />
       ))}
-      {recall && <p role="status" className="text-sm text-emerald-300">{recall}</p>}
+      {recall && <p role="status" className="text-sm text-success">{recall}</p>}
     </div>
   );
 }
@@ -47,7 +47,7 @@ function IndexCard({ ix, onRebuild, onRecall }: { ix: IndexStatus; onRebuild: ()
       actions={<div className="flex gap-2"><Button onClick={onRecall}>Measure recall</Button><Button tone="primary" onClick={onRebuild} disabled={ix.state === "building"}>Rebuild {ix.field}</Button></div>}
     >
       <p className="text-sm">
-        State <span data-testid={`state-${ix.field}`} className="font-medium text-amber-300">{ix.state}</span> · serving {ix.serving}
+        State <span data-testid={`state-${ix.field}`} className="font-medium text-warning">{ix.state}</span> · serving {ix.serving}
         {ix.reason ? ` · ${ix.reason}` : ""}
         {ix.progress ? ` · ${ix.progress.done}/${ix.progress.total}` : ""}
       </p>
@@ -68,5 +68,5 @@ function IndexCard({ ix, onRebuild, onRecall }: { ix: IndexStatus; onRebuild: ()
 }
 
 const Stat = ({ k, v }: { k: string; v: string }) => (
-  <div><dt className="text-xs text-zinc-500">{k}</dt><dd>{v}</dd></div>
+  <div><dt className="text-xs text-muted-foreground">{k}</dt><dd>{v}</dd></div>
 );

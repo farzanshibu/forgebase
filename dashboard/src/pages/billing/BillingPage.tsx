@@ -17,7 +17,7 @@ import Stores from "./Stores";
 import Subscriptions from "./Subscriptions";
 import Usage from "./Usage";
 
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm ${isActive ? "border-amber-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-100"}`;
+const tab = ({ isActive }: { isActive: boolean }) => `-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 const TABS: { to: string; label: string; end?: boolean }[] = [
   { to: "/billing", label: "Revenue", end: true },
@@ -46,7 +46,7 @@ export default function BillingPage() {
       {!probe.loading && disabled && <div className="mt-6"><Disabled /></div>}
       {!probe.loading && !disabled && (
         <>
-          <nav aria-label="Billing sections" className="mt-4 flex gap-1 overflow-x-auto border-b border-zinc-800">
+          <nav aria-label="Billing sections" className="mt-4 flex gap-1 overflow-x-auto border-b border-border">
             {TABS.map((t) => <NavLink key={t.to} to={t.to} end={t.end} className={tab}>{t.label}</NavLink>)}
           </nav>
           <div className="mt-6">
@@ -64,7 +64,7 @@ export default function BillingPage() {
               <Route path="dunning" element={<Dunning />} />
               <Route path="credits" element={<Credits />} />
               <Route path="settings" element={<Settings />} />
-              <Route path="*" element={<p className="text-zinc-400">No such page in Billing.</p>} />
+              <Route path="*" element={<p className="text-muted-foreground">No such page in Billing.</p>} />
             </Routes>
           </div>
         </>

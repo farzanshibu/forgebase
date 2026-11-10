@@ -4,6 +4,7 @@ import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { ActionError, Empty, MultiPick, TextField } from "./shared";
 import { useRun } from "./util";
+import { Table } from "panelui-web/table";
 
 /** Role sets (named bundles of roles) of an org or of the realm. */
 export default function RoleSetsPanel({ org }: { org?: string }) {
@@ -23,17 +24,17 @@ export default function RoleSetsPanel({ org }: { org?: string }) {
       {sets.loading && !sets.error && <Loading what="Loading role sets" />}
       {sets.data && sets.data.length === 0 && <Empty>No role sets yet.</Empty>}
       {sets.data && sets.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Key</th><th>Name</th><th>Roles</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Key</Table.Head><Table.Head>Name</Table.Head><Table.Head>Roles</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {sets.data.map((s) => (
-              <tr key={s.id} className="border-t border-zinc-800">
-                <td className="py-2 font-mono">{s.key}</td><td>{s.name}</td><td>{s.roles.join(", ")}</td>
-                <td className="text-right"><Button onClick={() => edit(s.key)}>Edit {s.key}</Button></td>
-              </tr>
+              <Table.Row key={s.id} className="border-t border-border">
+                <Table.Cell className="py-2 font-mono">{s.key}</Table.Cell><Table.Cell>{s.name}</Table.Cell><Table.Cell>{s.roles.join(", ")}</Table.Cell>
+                <Table.Cell className="text-right"><Button onClick={() => edit(s.key)}>Edit {s.key}</Button></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       <Panel title="Create or replace a role set">
         <div className="grid gap-3 sm:grid-cols-2">

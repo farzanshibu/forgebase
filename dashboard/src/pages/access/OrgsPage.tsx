@@ -9,6 +9,7 @@ import { InvitationsTab, MembersTab, OverridesTab, ProjectsTab, TeamsTab } from 
 import AclPanel from "./AclPanel";
 import { ActionError, Empty, TextField } from "./shared";
 import { useRun } from "./util";
+import { Table } from "panelui-web/table";
 
 export function OrgList() {
   const orgs = useLoad(listOrgs, "orgs");
@@ -21,17 +22,17 @@ export function OrgList() {
       {orgs.loading && !orgs.error && <Loading what="Loading organizations" />}
       {orgs.data?.length === 0 && <Empty>No organizations yet.</Empty>}
       {orgs.data && orgs.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Slug</th><th>Name</th><th>Realm</th></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Slug</Table.Head><Table.Head>Name</Table.Head><Table.Head>Realm</Table.Head></Table.Row></Table.Header>
+          <Table.Body>
             {orgs.data.map((o) => (
-              <tr key={o.id} className="border-t border-zinc-800">
-                <td className="py-2"><Link className="text-amber-300 hover:underline" to={`/access/orgs/${encodeURIComponent(o.id)}`}>{o.slug}</Link></td>
-                <td>{o.name}</td><td>{o.realm_id}</td>
-              </tr>
+              <Table.Row key={o.id} className="border-t border-border">
+                <Table.Cell className="py-2"><Link className="text-primary hover:underline" to={`/access/orgs/${encodeURIComponent(o.id)}`}>{o.slug}</Link></Table.Cell>
+                <Table.Cell>{o.name}</Table.Cell><Table.Cell>{o.realm_id}</Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       <Panel title="New organization">
         <div className="flex flex-wrap items-end gap-3">
@@ -58,13 +59,13 @@ export function OrgDetail() {
   const { run, error } = useRun(() => o.reload());
   return (
     <div className="space-y-4">
-      <Link to="/access" className="text-sm text-zinc-400 hover:text-zinc-100">← Organizations</Link>
+      <Link to="/access" className="text-sm text-muted-foreground hover:text-foreground">← Organizations</Link>
       <ErrorView error={o.error} />
       {o.loading && !o.error && <Loading what="Loading organization" />}
       {o.data && (
         <>
           <div className="flex flex-wrap items-end justify-between gap-3">
-            <h2 className="text-xl font-semibold">{o.data.name} <span className="font-mono text-sm text-zinc-500">{o.data.slug}</span></h2>
+            <h2 className="text-xl font-semibold">{o.data.name} <span className="font-mono text-sm text-muted-foreground">{o.data.slug}</span></h2>
             <div className="flex items-end gap-2">
               <TextField label="Rename to" value={name} onChange={setName} />
               <Button disabled={!name} onClick={() => void run(async () => { await renameOrg(org, name); setName(""); })}>Rename</Button>
@@ -72,10 +73,10 @@ export function OrgDetail() {
             </div>
           </div>
           <ActionError error={error} />
-          <nav aria-label="Organization sections" className="flex flex-wrap gap-1 border-b border-zinc-800">
+          <nav aria-label="Organization sections" className="flex flex-wrap gap-1 border-b border-border">
             {TABS.map(([p, label]) => (
               <NavLink key={p} to={`/access/orgs/${encodeURIComponent(org)}/${p}`}
-                className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-amber-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-100"}`}>
+                className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
                 {label}
               </NavLink>
             ))}

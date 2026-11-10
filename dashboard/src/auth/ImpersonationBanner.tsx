@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Alert } from "panelui-web/alert";
 import { Button } from "../components/ui";
 import { useSession } from "./session";
 
@@ -19,23 +20,24 @@ export default function ImpersonationBanner() {
   }, [impersonation]);
   if (!impersonation) return null;
   return (
-    <div role="alert" aria-label="Impersonation active" className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-red-700 bg-red-900 px-4 py-2 text-sm text-red-50">
-      <strong>Impersonating {impersonation.target}</strong>
-      <span>Reason: {impersonation.reason}</span>
-      <span>
-        Time left: <span className="font-mono">{left(impersonation.expiresAt, now)}</span>
-      </span>
-      <Button
-        tone="danger"
-        className="ml-auto bg-red-950"
-        disabled={busy}
-        onClick={() => {
-          setBusy(true);
-          void endImpersonation().finally(() => setBusy(false));
-        }}
-      >
-        End impersonation
-      </Button>
-    </div>
+    <Alert tone="destructive" variant="banner" aria-label="Impersonation active" className="bg-destructive/10">
+      <Alert.Icon />
+      <Alert.Title>Impersonating {impersonation.target}</Alert.Title>
+      <Alert.Description>
+        Reason: {impersonation.reason} · Time left: <span className="font-mono text-foreground">{left(impersonation.expiresAt, now)}</span>
+      </Alert.Description>
+      <Alert.Actions>
+        <Button
+          tone="danger"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void endImpersonation().finally(() => setBusy(false));
+          }}
+        >
+          End impersonation
+        </Button>
+      </Alert.Actions>
+    </Alert>
   );
 }

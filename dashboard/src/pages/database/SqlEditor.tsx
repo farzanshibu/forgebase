@@ -4,6 +4,7 @@ import type { QueryPlan, SqlResult } from "../../api";
 import { useLoad } from "../../hooks";
 import { Button, ErrorView, PlanView, Panel } from "../../components/ui";
 import { display } from "./values";
+import { Table } from "panelui-web/table";
 
 const HISTORY_KEY = "forgebase.sql.history";
 const MAX_HISTORY = 30;
@@ -54,7 +55,7 @@ export default function SqlEditor() {
         <textarea
           aria-label="SQL"
           spellCheck={false}
-          className="h-40 w-full rounded-md border border-zinc-700 bg-zinc-900 p-3 font-mono text-sm"
+          className="h-40 w-full rounded-md border border-border bg-card p-3 font-mono text-sm"
           value={sql}
           onChange={(e) => setSql(e.target.value)}
           onKeyDown={(e) => {
@@ -70,19 +71,19 @@ export default function SqlEditor() {
         {result && (
           <Panel title={`${result.kind} · ${result.rows.length} rows · ${result.duration_ms.toFixed(1)} ms`}>
             {result.rows_affected > 0 && <p className="mb-2 text-sm">{result.rows_affected} rows affected.</p>}
-            {result.truncated && <p className="mb-2 text-sm text-amber-300">Result truncated by the server row limit.</p>}
+            {result.truncated && <p className="mb-2 text-sm text-warning">Result truncated by the server row limit.</p>}
             {result.columns.length > 0 && (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs" aria-label="Result">
-                  <thead className="text-zinc-400"><tr>{result.columns.map((c) => <th key={c} className="p-1">{c}</th>)}</tr></thead>
-                  <tbody>
+                <Table className="w-full text-left text-xs" aria-label="Result">
+                  <Table.Header className="text-muted-foreground"><Table.Row>{result.columns.map((c) => <Table.Head key={c} className="p-1">{c}</Table.Head>)}</Table.Row></Table.Header>
+                  <Table.Body>
                     {result.rows.map((r, i) => (
-                      <tr key={i} className="border-t border-zinc-800 font-mono">
-                        {r.map((v, j) => <td key={j} className="max-w-xs truncate p-1">{display(v)}</td>)}
-                      </tr>
+                      <Table.Row key={i} className="border-t border-border font-mono">
+                        {r.map((v, j) => <Table.Cell key={j} className="max-w-xs truncate p-1">{display(v)}</Table.Cell>)}
+                      </Table.Row>
                     ))}
-                  </tbody>
-                </table>
+                  </Table.Body>
+                </Table>
               </div>
             )}
           </Panel>
@@ -93,15 +94,15 @@ export default function SqlEditor() {
           <ErrorView error={tables.error} />
           <ul className="space-y-1 font-mono text-xs">
             {tables.data?.map((t) => (
-              <li key={t.name}><button type="button" className="text-left hover:text-amber-300" onClick={() => setSql(`SELECT * FROM "${t.name}" LIMIT 50`)}>{t.name}</button></li>
+              <li key={t.name}><button type="button" className="text-left hover:text-primary" onClick={() => setSql(`SELECT * FROM "${t.name}" LIMIT 50`)}>{t.name}</button></li>
             ))}
           </ul>
         </Panel>
         <Panel title="History">
-          {history.length === 0 && <p className="text-zinc-500">Nothing run yet.</p>}
+          {history.length === 0 && <p className="text-muted-foreground">Nothing run yet.</p>}
           <ul className="space-y-1 font-mono text-xs">
             {history.map((h) => (
-              <li key={h} className="truncate"><button type="button" className="hover:text-amber-300" title={h} onClick={() => setSql(h)}>{h}</button></li>
+              <li key={h} className="truncate"><button type="button" className="hover:text-primary" title={h} onClick={() => setSql(h)}>{h}</button></li>
             ))}
           </ul>
         </Panel>

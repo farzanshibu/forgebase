@@ -17,9 +17,9 @@ export default function GraphPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Graph Studio</h1>
-      <nav aria-label="Graph sections" className="mt-4 flex gap-1 border-b border-zinc-800">
+      <nav aria-label="Graph sections" className="mt-4 flex gap-1 border-b border-border">
         {TABS.map((t) => (
-          <NavLink key={t.label} to={t.to} end={t.end} className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-amber-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-100"}`}>
+          <NavLink key={t.label} to={t.to} end={t.end} className={({ isActive }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
             {t.label}
           </NavLink>
         ))}
@@ -31,7 +31,7 @@ export default function GraphPage() {
           <Route path="edges" element={<EdgeBrowser />} />
           <Route path="explorer" element={<GraphExplorer />} />
           <Route path="query" element={<QueryRunner />} />
-          <Route path="*" element={<p className="text-zinc-400">No such page in Graph Studio.</p>} />
+          <Route path="*" element={<p className="text-muted-foreground">No such page in Graph Studio.</p>} />
         </Routes>
       </div>
     </div>

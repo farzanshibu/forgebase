@@ -1,10 +1,12 @@
 import type { ReactNode } from "react";
 import { ApiError } from "../../api";
-import { ErrorView, inputCls } from "../../components/ui";
+import { ErrorView } from "../../components/ui";
+import { Input } from "panelui-web/input";
+import { Badge } from "panelui-web/badge";
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="flex flex-col gap-1 text-xs text-zinc-400">
+    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
       {label}
       {children}
     </label>
@@ -14,7 +16,7 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 export function TextField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
   return (
     <Field label={label}>
-      <input className={inputCls} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+      <Input size="sm" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
     </Field>
   );
 }
@@ -22,12 +24,12 @@ export function TextField({ label, value, onChange, placeholder }: { label: stri
 /** Checkbox list choosing several keys out of `options`. */
 export function MultiPick({ label, options, value, onChange }: { label: string; options: string[]; value: string[]; onChange: (v: string[]) => void }) {
   return (
-    <fieldset className="text-xs text-zinc-400">
+    <fieldset className="text-xs text-muted-foreground">
       <legend className="mb-1">{label}</legend>
       <div className="flex flex-wrap gap-x-3 gap-y-1">
-        {options.length === 0 && <span className="text-zinc-600">none available</span>}
+        {options.length === 0 && <span className="text-muted-foreground">none available</span>}
         {options.map((o) => (
-          <label key={o} className="flex items-center gap-1 text-zinc-300">
+          <label key={o} className="flex items-center gap-1 text-foreground/80">
             <input
               type="checkbox"
               checked={value.includes(o)}
@@ -42,17 +44,14 @@ export function MultiPick({ label, options, value, onChange }: { label: string; 
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-zinc-500">{children}</p>;
+  return <p className="text-sm text-muted-foreground">{children}</p>;
 }
 
 export function EffectBadge({ effect }: { effect: "allow" | "deny" }) {
   return (
-    <span
-      data-effect={effect}
-      className={`rounded px-1.5 py-0.5 text-xs font-medium ${effect === "deny" ? "bg-red-500/20 text-red-300" : "bg-emerald-500/15 text-emerald-300"}`}
-    >
+    <Badge data-effect={effect} variant={effect === "deny" ? "destructive" : "success"} size="sm">
       {effect}
-    </span>
+    </Badge>
   );
 }
 
@@ -62,9 +61,9 @@ export function ActionError({ error }: { error: unknown }) {
   if (error instanceof ApiError && error.status === 403) {
     const step = (error.body as { error?: { details?: { step?: string } } } | undefined)?.error?.details?.step;
     return (
-      <div role="alert" className="rounded-lg border border-red-800/60 bg-red-500/10 p-4 text-sm text-red-300">
+      <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
         <span className="font-mono">{error.code}</span>: {error.message}
-        {step && <span className="ml-2 text-red-400/70">(denied at step {step})</span>}
+        {step && <span className="ml-2 text-destructive">(denied at step {step})</span>}
       </div>
     );
   }

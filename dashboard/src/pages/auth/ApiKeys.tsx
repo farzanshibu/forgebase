@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { createPat, listApiKeys } from "../../api";
-import { Button, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { SecretModal, splitList, useAction } from "./common";
 import { KeyTable } from "./ServiceAccounts";
+import { Input } from "panelui-web/input";
 
 export default function ApiKeys() {
   const list = useLoad(listApiKeys, "apikeys");
@@ -31,9 +32,9 @@ export default function ApiKeys() {
             }
           }}
         >
-          <input aria-label="Token name" className={inputCls} placeholder="Token name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input aria-label="Token scopes" className={`${inputCls} w-64`} placeholder="collections:read" value={scopes} onChange={(e) => setScopes(e.target.value)} />
-          <input aria-label="Token expires in days" className={`${inputCls} w-28`} type="number" min={1} placeholder="Days" value={days} onChange={(e) => setDays(e.target.value)} />
+          <Input size="sm" aria-label="Token name" placeholder="Token name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input size="sm" aria-label="Token scopes" className="w-64" placeholder="collections:read" value={scopes} onChange={(e) => setScopes(e.target.value)} />
+          <Input size="sm" aria-label="Token expires in days" className="w-28" type="number" min={1} placeholder="Days" value={days} onChange={(e) => setDays(e.target.value)} />
           <Button type="submit" tone="primary" disabled={act.busy || !name.trim() || splitList(scopes).length === 0}>
             Create token
           </Button>
@@ -42,7 +43,7 @@ export default function ApiKeys() {
       </Panel>
       <ErrorView error={list.error} />
       {list.loading && !list.error && <Loading what="Loading keys" />}
-      {list.data?.length === 0 && <p className="text-sm text-zinc-400">No API keys or tokens.</p>}
+      {list.data?.length === 0 && <p className="text-sm text-muted-foreground">No API keys or tokens.</p>}
       {!!list.data?.length && <KeyTable showOwner rows={list.data} onRevoked={list.reload} />}
       {secret && <SecretModal label="Token" secret={secret} onClose={() => setSecret(undefined)} />}
     </div>

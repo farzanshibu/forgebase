@@ -3,6 +3,7 @@ import type { KvNamespace } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { usePolling } from "../../hooks";
+import { Table } from "panelui-web/table";
 
 export default function StatsPanel({ namespaces }: { ns: string; namespaces: KvNamespace[] }) {
   const s = usePolling(kvInfo, 5000);
@@ -19,25 +20,25 @@ export default function StatsPanel({ namespaces }: { ns: string; namespaces: KvN
           <div className="space-y-3 text-sm">
             <p aria-label="Memory">{formatBytes(d.used_memory_bytes)} used{d.max_memory_bytes > 0 ? ` of ${formatBytes(d.max_memory_bytes)} (${pct}%)` : " (no memory limit)"} · eviction policy {d.eviction_policy}</p>
             {pct !== null && (
-              <div role="progressbar" aria-label="Memory budget" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} className="h-2 w-full overflow-hidden rounded bg-zinc-800">
-                <div className={`h-full ${pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${pct}%` }} />
+              <div role="progressbar" aria-label="Memory budget" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} className="h-2 w-full overflow-hidden rounded bg-muted">
+                <div className={`h-full ${pct >= 90 ? "bg-destructive" : pct >= 70 ? "bg-primary" : "bg-success"}`} style={{ width: `${pct}%` }} />
               </div>
             )}
             <dl aria-label="Cache statistics" className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-4">
               {([["Keys", d.keys], ["Hit rate", rate === null ? "n/a" : `${rate}%`], ["Hits", d.hits], ["Misses", d.misses], ["Expired keys", d.expired_keys], ["Evicted keys", d.evicted_keys], ["Pub/Sub channels", d.channels], ["Unsaved keys", d.unsaved_keys]] as [string, string | number][]).map(([k, v]) => (
-                <div key={k}><dt className="text-xs uppercase tracking-wide text-zinc-500">{k}</dt><dd>{v}</dd></div>
+                <div key={k}><dt className="text-xs uppercase tracking-wide text-muted-foreground">{k}</dt><dd>{v}</dd></div>
               ))}
             </dl>
-            <p className="text-zinc-400">Persistence: {d.persistent ? "changes are written to SQLite" : "memory only"}.</p>
+            <p className="text-muted-foreground">Persistence: {d.persistent ? "changes are written to SQLite" : "memory only"}.</p>
           </div>
         )}
       </Panel>
       <Panel title="Namespaces">
-        {namespaces.length === 0 ? <p className="text-sm text-zinc-400">No namespace holds keys.</p> : (
-          <table aria-label="Namespaces" className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-1">Namespace</th><th>Keys</th></tr></thead>
-            <tbody>{namespaces.map((n) => <tr key={n.name} className="border-t border-zinc-800"><td className="py-1.5">{n.name}</td><td>{n.keys}</td></tr>)}</tbody>
-          </table>
+        {namespaces.length === 0 ? <p className="text-sm text-muted-foreground">No namespace holds keys.</p> : (
+          <Table aria-label="Namespaces" className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Namespace</Table.Head><Table.Head>Keys</Table.Head></Table.Row></Table.Header>
+            <Table.Body>{namespaces.map((n) => <Table.Row key={n.name} className="border-t border-border"><Table.Cell className="py-1.5">{n.name}</Table.Cell><Table.Cell>{n.keys}</Table.Cell></Table.Row>)}</Table.Body>
+          </Table>
         )}
       </Panel>
     </div>

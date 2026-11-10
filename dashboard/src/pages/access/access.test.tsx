@@ -171,7 +171,7 @@ describe("roles and the permission matrix", () => {
     await editRow("support");
     const deny = await screen.findByRole("button", { name: "billing:manage: deny" });
     expect(deny).toHaveAttribute("data-state", "deny");
-    expect(deny.className).toMatch(/red/);
+    expect(deny.className).toMatch(/destructive/);
     expect(await screen.findByRole("button", { name: "data:posts:list: inherit" })).toBeInTheDocument();
     expect(within(screen.getByLabelText("Custom patterns")).getByText("allow data:posts:*")).toBeInTheDocument();
 
@@ -255,8 +255,8 @@ describe("user overrides", () => {
     const deny = (await screen.findByText("user:users/bob")).closest("tr")!;
     const allow = screen.getByText("user:users/carol").closest("tr")!;
     expect(deny).toHaveAttribute("data-effect", "deny");
-    expect(deny.className).toMatch(/red/);
-    expect(allow.className).not.toMatch(/red/);
+    expect(deny.className).toMatch(/destructive/);
+    expect(allow.className).not.toMatch(/destructive/);
 
     await userEvent.type(screen.getByLabelText("Override principal"), "user:users/zed");
     await userEvent.type(screen.getByLabelText("Override permission"), "teams:delete");
@@ -278,8 +278,8 @@ describe("resource ACL", () => {
     await userEvent.click(screen.getByRole("button", { name: "Load ACL" }));
     const deny = (await screen.findByText("user:users/dave")).closest("tr")!;
     expect(deny).toHaveAttribute("data-effect", "deny");
-    expect(deny.className).toMatch(/red/);
-    expect(screen.getByText("user:users/erin").closest("tr")!.className).not.toMatch(/red/);
+    expect(deny.className).toMatch(/destructive/);
+    expect(screen.getByText("user:users/erin").closest("tr")!.className).not.toMatch(/destructive/);
 
     await userEvent.type(screen.getByLabelText("Grantee"), "user:users/zed");
     await userEvent.type(screen.getByLabelText("ACL permission"), "projects:share");
@@ -315,7 +315,7 @@ describe("realm level", () => {
     await waitFor(() => expect(last("put /api/v1/realm-bindings")).toMatchObject({ principal: "user:users/root", roles: ["owner"] }));
 
     const row = (await screen.findByText("user:users/mallory")).closest("tr")!;
-    expect(row.className).toMatch(/red/);
+    expect(row.className).toMatch(/destructive/);
     await userEvent.click(within(row).getByRole("button", { name: "Lift" }));
     await userEvent.click(within(row).getByRole("button", { name: /confirm lift/i }));
     await waitFor(() => expect(st.suspensions).toHaveLength(0));

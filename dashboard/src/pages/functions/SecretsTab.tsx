@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { deleteFunctionSecret, listFunctionSecrets, putFunctionSecret } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { when } from "./util";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 /** Secret names only: the API never returns a value, and the form clears it as soon as it is stored. */
 export default function SecretsTab({ name }: { name: string }) {
@@ -42,31 +44,31 @@ export default function SecretsTab({ name }: { name: string }) {
     <div className="space-y-4">
       <Panel title="Set a secret">
         <form aria-label="Set secret" onSubmit={(e) => void save(e)} className="grid gap-3 md:grid-cols-3">
-          <label className="text-sm">Name<input className={`${inputCls} mt-1 w-full`} value={key} onChange={(e) => setKey(e.target.value)} required /></label>
+          <label className="text-sm">Name<Input size="sm" className="mt-1 w-full" value={key} onChange={(e) => setKey(e.target.value)} required /></label>
           <label className="text-sm">Value
-            <input type="password" autoComplete="off" className={`${inputCls} mt-1 w-full`} value={value} onChange={(e) => setValue(e.target.value)} required />
+            <Input size="sm" type="password" autoComplete="off" className="mt-1 w-full" value={value} onChange={(e) => setValue(e.target.value)} required />
           </label>
           <div className="flex items-end"><Button tone="primary" type="submit" disabled={busy}>Save secret</Button></div>
         </form>
-        <p className="mt-2 text-xs text-zinc-500">Values are sealed at rest and never shown again. Setting an existing name replaces it.</p>
+        <p className="mt-2 text-xs text-muted-foreground">Values are sealed at rest and never shown again. Setting an existing name replaces it.</p>
       </Panel>
       <ErrorView error={error ?? secrets.error} />
       {secrets.loading && !secrets.error && <Loading what="Loading secrets" />}
-      {secrets.data && secrets.data.length === 0 && <p className="text-sm text-zinc-400">No secrets.</p>}
+      {secrets.data && secrets.data.length === 0 && <p className="text-sm text-muted-foreground">No secrets.</p>}
       {secrets.data && secrets.data.length > 0 && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Name</th><th>Created</th><th>Updated</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Name</Table.Head><Table.Head>Created</Table.Head><Table.Head>Updated</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {secrets.data.map((s) => (
-              <tr key={s.name} className="border-t border-zinc-800">
-                <td className="py-2 font-mono">{s.name}</td>
-                <td className="text-zinc-400">{when(s.created_at)}</td>
-                <td className="text-zinc-400">{when(s.updated_at)}</td>
-                <td className="text-right"><ConfirmButton label={`Delete ${s.name}`} onConfirm={() => void remove(s.name)} /></td>
-              </tr>
+              <Table.Row key={s.name} className="border-t border-border">
+                <Table.Cell className="py-2 font-mono">{s.name}</Table.Cell>
+                <Table.Cell className="text-muted-foreground">{when(s.created_at)}</Table.Cell>
+                <Table.Cell className="text-muted-foreground">{when(s.updated_at)}</Table.Cell>
+                <Table.Cell className="text-right"><ConfirmButton label={`Delete ${s.name}`} onConfirm={() => void remove(s.name)} /></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
     </div>
   );

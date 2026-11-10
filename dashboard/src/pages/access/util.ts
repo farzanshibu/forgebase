@@ -24,4 +24,4 @@ export function useRun(after?: () => void) {
   return { run, error, busy, clearError: () => setError(undefined) };
 }
 
-export const rowCls = (deny?: boolean) => `border-t border-zinc-800 ${deny ? "bg-red-950/40" : ""}`;
+export const rowCls = (deny?: boolean) => `border-t border-border ${deny ? "bg-destructive/10" : ""}`;

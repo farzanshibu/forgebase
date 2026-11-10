@@ -6,6 +6,8 @@ import { ActionError, Empty, Field, MultiPick } from "../access/shared";
 import { useRun } from "../access/util";
 import { Check, Note, SecretOnce } from "./shared";
 import { fmtIso, lines, useRealm } from "./util";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 const GRACE = [{ s: 0, l: "no grace (old secret stops now)" }, { s: 3600, l: "1 hour" }, { s: 86400, l: "1 day" }, { s: 604800, l: "7 days" }];
 
@@ -26,18 +28,18 @@ export default function ClientsPage() {
         {l.loading && !l.error && <Loading what="Loading client apps" />}
         {l.data?.length === 0 && <Empty>No client apps yet.</Empty>}
         {l.data && l.data.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Name</th><th>Client id</th><th>Type</th><th>Secret</th><th /></tr></thead>
-            <tbody>
+          <Table className="w-full text-left text-sm">
+            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Name</Table.Head><Table.Head>Client id</Table.Head><Table.Head>Type</Table.Head><Table.Head>Secret</Table.Head><Table.Head /></Table.Row></Table.Header>
+            <Table.Body>
               {l.data.map((c) => (
-                <tr key={c.client_id} className="border-t border-zinc-800">
-                  <td className="py-1.5">{c.name}{c.disabled && <span className="ml-2 rounded bg-red-500/20 px-1.5 text-xs text-red-300">disabled</span>}{c.skip_consent && <span className="ml-2 text-xs text-zinc-500">first-party</span>}</td>
-                  <td className="font-mono text-xs">{c.client_id}</td>
-                  <td>{c.type}</td>
-                  <td className="text-xs text-zinc-400">
-                    {c.type === "public" ? "none (PKCE)" : <>set {fmtIso(c.secret_created_at)}{c.previous_secret_expires_at && <span className="block text-amber-300">old secret valid until {fmtIso(c.previous_secret_expires_at)}</span>}</>}
-                  </td>
-                  <td className="space-x-2 whitespace-nowrap text-right">
+                <Table.Row key={c.client_id} className="border-t border-border">
+                  <Table.Cell className="py-1.5">{c.name}{c.disabled && <span className="ml-2 rounded bg-destructive/15 px-1.5 text-xs text-destructive">disabled</span>}{c.skip_consent && <span className="ml-2 text-xs text-muted-foreground">first-party</span>}</Table.Cell>
+                  <Table.Cell className="font-mono text-xs">{c.client_id}</Table.Cell>
+                  <Table.Cell>{c.type}</Table.Cell>
+                  <Table.Cell className="text-xs text-muted-foreground">
+                    {c.type === "public" ? "none (PKCE)" : <>set {fmtIso(c.secret_created_at)}{c.previous_secret_expires_at && <span className="block text-warning">old secret valid until {fmtIso(c.previous_secret_expires_at)}</span>}</>}
+                  </Table.Cell>
+                  <Table.Cell className="space-x-2 whitespace-nowrap text-right">
                     <Button aria-label={`Edit ${c.name}`} onClick={() => setEditing(c.client_id)}>Edit</Button>
                     {c.type === "confidential" && (
                       <>
@@ -51,11 +53,11 @@ export default function ClientsPage() {
                       </>
                     )}
                     <ConfirmButton label={`Delete ${c.name}`} onConfirm={() => void run(() => deleteClient(c.client_id))} />
-                  </td>
-                </tr>
+                  </Table.Cell>
+                </Table.Row>
               ))}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table>
         )}
         <ActionError error={error} />
       </Panel>
@@ -93,8 +95,8 @@ function ClientForm({ realm, existing, onDone, onSecret }: { realm?: string; exi
     <Panel title={existing ? `Edit ${existing.name}` : "Create client app"}>
       <form aria-label={existing ? "Edit client app" : "Create client app"} className="space-y-3" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         <div className="flex flex-wrap gap-3">
-          <Field label="Name"><input aria-label="Name" required className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
-          <Field label="Description"><input aria-label="Description" className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
+          <Field label="Name"><Input size="sm" aria-label="Name" required value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <Field label="Description"><Input size="sm" aria-label="Description" value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
           {!existing && (
             <Field label="Type">
               <select aria-label="Type" className={inputCls} value={type} onChange={(e) => setType(e.target.value as ClientType)}>
@@ -108,8 +110,8 @@ function ClientForm({ realm, existing, onDone, onSecret }: { realm?: string; exi
         <MultiPick label="Grant types" options={[...GRANT_TYPES]} value={grants} onChange={setGrants} />
         <MultiPick label="Scopes" options={[...OIDC_SCOPES]} value={scopes} onChange={setScopes} />
         <div className="flex flex-wrap items-end gap-3">
-          <Field label="Access token lifetime (seconds, 60 to 86400)"><input aria-label="Access token lifetime" type="number" className={inputCls} value={at} onChange={(e) => setAt(e.target.value)} /></Field>
-          <Field label="Refresh token lifetime (seconds, 300 to 31536000)"><input aria-label="Refresh token lifetime" type="number" className={inputCls} value={rt} onChange={(e) => setRt(e.target.value)} /></Field>
+          <Field label="Access token lifetime (seconds, 60 to 86400)"><Input size="sm" aria-label="Access token lifetime" type="number" value={at} onChange={(e) => setAt(e.target.value)} /></Field>
+          <Field label="Refresh token lifetime (seconds, 300 to 31536000)"><Input size="sm" aria-label="Refresh token lifetime" type="number" value={rt} onChange={(e) => setRt(e.target.value)} /></Field>
         </div>
         <Check label="Skip consent screen" checked={skip} onChange={setSkip} hint="first-party apps only" />
         {existing && <Check label="Disabled" checked={disabled} onChange={setDisabled} />}

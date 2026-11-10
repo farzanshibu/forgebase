@@ -4,6 +4,8 @@ import type { GraphEdge } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel, inputCls } from "../../components/ui";
 import { parseJsonObject } from "../vector/util";
 import { usePaged } from "./usePaged";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 const PAGE = 50;
 interface Filters { type: string; source: string; target: string }
@@ -26,7 +28,7 @@ export default function EdgeBrowser() {
     }
   }
   const field = (k: keyof Filters, label: string) => (
-    <label className="text-sm">{label}<input aria-label={`${label} filter`} className={`${inputCls} mt-1 block`} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>
+    <label className="text-sm">{label}<Input size="sm" aria-label={`${label} filter`} className="mt-1 block" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>
   );
 
   return (
@@ -39,23 +41,23 @@ export default function EdgeBrowser() {
       <ErrorView error={error} />
       {!loaded && !error && <Loading what="Loading edges" />}
       {loaded && (
-        <table className="w-full text-left text-sm">
-          <thead className="text-xs uppercase tracking-wide text-zinc-500"><tr><th className="py-2">Id</th><th>Type</th><th>Source</th><th>Target</th><th>Properties</th><th /></tr></thead>
-          <tbody>
+        <Table className="w-full text-left text-sm">
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Id</Table.Head><Table.Head>Type</Table.Head><Table.Head>Source</Table.Head><Table.Head>Target</Table.Head><Table.Head>Properties</Table.Head><Table.Head /></Table.Row></Table.Header>
+          <Table.Body>
             {items.map((e) => (
-              <tr key={e.id} className="border-t border-zinc-800">
-                <td className="py-2 font-mono">{e.id}</td><td>{e.type}</td>
-                <td className="font-mono">{e.source}</td><td className="font-mono">{e.target}{e.directed ? "" : " (undirected)"}</td>
-                <td className="max-w-xs truncate font-mono text-xs text-zinc-400">{JSON.stringify(e.properties)}</td>
-                <td className="space-x-2 text-right">
+              <Table.Row key={e.id} className="border-t border-border">
+                <Table.Cell className="py-2 font-mono">{e.id}</Table.Cell><Table.Cell>{e.type}</Table.Cell>
+                <Table.Cell className="font-mono">{e.source}</Table.Cell><Table.Cell className="font-mono">{e.target}{e.directed ? "" : " (undirected)"}</Table.Cell>
+                <Table.Cell className="max-w-xs truncate font-mono text-xs text-muted-foreground">{JSON.stringify(e.properties)}</Table.Cell>
+                <Table.Cell className="space-x-2 text-right">
                   <Button onClick={() => setEditing(e)}>Edit {e.id}</Button>
                   <ConfirmButton label={`Delete ${e.id}`} onConfirm={() => void remove(e.id)} />
-                </td>
-              </tr>
+                </Table.Cell>
+              </Table.Row>
             ))}
-            {items.length === 0 && <tr><td colSpan={6} className="py-3 text-zinc-400">No edges.</td></tr>}
-          </tbody>
-        </table>
+            {items.length === 0 && <Table.Row><Table.Cell colSpan={6} className="py-3 text-muted-foreground">No edges.</Table.Cell></Table.Row>}
+          </Table.Body>
+        </Table>
       )}
       {next && <Button onClick={() => void more()}>Load more</Button>}
       {editing && <EdgeForm key={editing === "new" ? "new" : editing.id} edge={editing === "new" ? undefined : editing} onDone={() => { setEditing(undefined); refresh(); }} />}
@@ -89,9 +91,9 @@ function EdgeForm({ edge, onDone }: { edge?: GraphEdge; onDone: () => void }) {
       <form aria-label={edge ? "Edit edge" : "New edge"} onSubmit={(e) => void save(e)} className="space-y-3">
         {!edge && (
           <div className="grid gap-3 md:grid-cols-3">
-            <label className="text-sm">Type<input className={`${inputCls} mt-1 w-full`} value={type} onChange={(e) => setType(e.target.value)} required /></label>
-            <label className="text-sm">Source node id<input className={`${inputCls} mt-1 w-full`} value={source} onChange={(e) => setSource(e.target.value)} required /></label>
-            <label className="text-sm">Target node id<input className={`${inputCls} mt-1 w-full`} value={target} onChange={(e) => setTarget(e.target.value)} required /></label>
+            <label className="text-sm">Type<Input size="sm" className="mt-1 w-full" value={type} onChange={(e) => setType(e.target.value)} required /></label>
+            <label className="text-sm">Source node id<Input size="sm" className="mt-1 w-full" value={source} onChange={(e) => setSource(e.target.value)} required /></label>
+            <label className="text-sm">Target node id<Input size="sm" className="mt-1 w-full" value={target} onChange={(e) => setTarget(e.target.value)} required /></label>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={directed} onChange={(e) => setDirected(e.target.checked)} />Directed</label>
           </div>
         )}

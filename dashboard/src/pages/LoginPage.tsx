@@ -1,7 +1,13 @@
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../api";
 import { useSession } from "../auth/session";
-import { Button, inputCls } from "../components/ui";
+import { Fire03Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Alert } from "panelui-web/alert";
+import { Card } from "panelui-web/card";
+import { Input } from "panelui-web/input";
+import ThemeMenu from "../components/ThemeMenu";
+import { Button } from "../components/ui";
 
 export default function LoginPage() {
   const { signIn, submitMfa, mfaRequired, expiredNotice } = useSession();
@@ -27,48 +33,62 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-6">
-      <form onSubmit={submit} aria-label="Sign in" className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-800 bg-zinc-900 p-6">
-        <h1 className="text-lg font-semibold tracking-tight">
-          Forge<span className="text-amber-400">Base</span> admin
-        </h1>
-        {expiredNotice && (
-          <p role="status" className="rounded-md border border-amber-700/60 bg-amber-500/10 p-3 text-sm text-amber-300">
-            Your session expired. Sign in again.
-          </p>
-        )}
-        {mfaRequired ? (
-          <div>
-          <label className="block text-sm">
-            <span className="text-zinc-300">Authentication code</span>
-            <input
-              className={`${inputCls} mt-1 w-full`} value={code} onChange={(e) => setCode(e.target.value)}
-              autoComplete="one-time-code" inputMode="numeric" autoFocus required
-            />
-          </label>
-            <p className="mt-1 text-xs text-zinc-500">Enter the code from your authenticator app, or a recovery code.</p>
-          </div>
-        ) : (
-          <>
-            <label className="block text-sm">
-              <span className="text-zinc-300">Email</span>
-              <input className={`${inputCls} mt-1 w-full`} type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" autoFocus required />
-            </label>
-            <label className="block text-sm">
-              <span className="text-zinc-300">Password</span>
-              <input className={`${inputCls} mt-1 w-full`} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-            </label>
-          </>
-        )}
-        {error && (
-          <p role="alert" className="rounded-md border border-red-800/60 bg-red-500/10 p-3 text-sm text-red-300">
-            {error}
-          </p>
-        )}
-        <Button type="submit" tone="primary" className="w-full" disabled={busy}>
-          {mfaRequired ? "Verify" : "Sign in"}
-        </Button>
-      </form>
+    <main className="relative flex min-h-svh items-center justify-center bg-background p-4">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(60rem_30rem_at_50%_-10%,color-mix(in_oklab,var(--primary)_14%,transparent),transparent)]" />
+      <div className="absolute end-4 top-4">
+        <ThemeMenu />
+      </div>
+      <Card className="relative w-full max-w-sm">
+        <Card.Header>
+          <span className="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground" aria-hidden="true">
+            <HugeiconsIcon icon={Fire03Icon} size={22} strokeWidth={2} />
+          </span>
+          <h1 className="text-lg font-semibold leading-tight tracking-tight">ForgeBase admin</h1>
+          <Card.Description>{mfaRequired ? "Two-step verification" : "Sign in to manage this server."}</Card.Description>
+        </Card.Header>
+        <Card.Content>
+          <form onSubmit={submit} aria-label="Sign in" className="space-y-4">
+            {expiredNotice && (
+              <Alert tone="info" variant="plain">
+                <Alert.Icon />
+                <Alert.Title>Your session expired. Sign in again.</Alert.Title>
+              </Alert>
+            )}
+            {mfaRequired ? (
+              <div>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">Authentication code</span>
+                  <Input
+                    className="w-full" value={code} onChange={(e) => setCode(e.target.value)}
+                    autoComplete="one-time-code" inputMode="numeric" autoFocus required
+                  />
+                </label>
+                <p className="mt-1.5 text-xs text-muted-foreground">Enter the code from your authenticator app, or a recovery code.</p>
+              </div>
+            ) : (
+              <>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">Email</span>
+                  <Input className="w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" autoFocus required />
+                </label>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">Password</span>
+                  <Input className="w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+                </label>
+              </>
+            )}
+            {error && (
+              <Alert tone="destructive" variant="plain">
+                <Alert.Icon />
+                <Alert.Title>{error}</Alert.Title>
+              </Alert>
+            )}
+            <Button type="submit" tone="primary" className="w-full" disabled={busy}>
+              {mfaRequired ? "Verify" : "Sign in"}
+            </Button>
+          </form>
+        </Card.Content>
+      </Card>
     </main>
   );
 }

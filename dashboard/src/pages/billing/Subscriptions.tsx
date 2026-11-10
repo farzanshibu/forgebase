@@ -7,6 +7,8 @@ import { formatMoney } from "./money";
 import { Badge, BillingError, Empty, Field, Th, SubjectLink } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
 import { useAct } from "./useAct";
+import { Table } from "panelui-web/table";
+import { Input } from "panelui-web/input";
 
 function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]; onDone: () => void }) {
   const act = useAct(onDone);
@@ -31,7 +33,7 @@ function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]
         {live && <Button onClick={() => setChanging((v) => !v)}>Change plan</Button>}
       </div>
       {changing && (
-        <div className="space-y-2 rounded border border-zinc-800 p-3" role="group" aria-label={`Change plan of ${sub.id}`}>
+        <div className="space-y-2 rounded border border-border p-3" role="group" aria-label={`Change plan of ${sub.id}`}>
           <div className={FORM_GRID}>
             <Field label="New price">
               <select className={inputCls} value={target} onChange={(e) => setTarget(e.target.value)}>
@@ -43,11 +45,11 @@ function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]
                 <option value="create_prorations">create prorations</option><option value="always_invoice">invoice now</option><option value="none">none</option>
               </select>
             </Field>
-            <label className="flex items-center gap-2 pt-6 text-sm text-zinc-300"><input type="checkbox" checked={atEnd} onChange={(e) => setAtEnd(e.target.checked)} />At period end</label>
+            <label className="flex items-center gap-2 pt-6 text-sm text-foreground/80"><input type="checkbox" checked={atEnd} onChange={(e) => setAtEnd(e.target.checked)} />At period end</label>
           </div>
           {preview.error != null && <ErrorView error={preview.error} />}
           {preview.data && (
-            <p aria-label="Proration preview" className="text-sm text-zinc-300">
+            <p aria-label="Proration preview" className="text-sm text-foreground/80">
               {preview.data.at_period_end
                 ? `Takes effect ${when_(preview.data.effective_at)}; nothing is charged now. The next period costs ${formatMoney(preview.data.new_period_amount, preview.data.currency)}.`
                 : preview.data.proration === "none"
@@ -59,7 +61,7 @@ function Lifecycle({ sub, prices, onDone }: { sub: Subscription; prices: Price[]
         </div>
       )}
       <ErrorView error={act.error} />
-      {act.note && <p role="status" className="text-sm text-emerald-300">{act.note}</p>}
+      {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
     </div>
   );
 }
@@ -77,13 +79,13 @@ function NewSubscription({ prices, onDone }: { prices: Price[]; onDone: () => vo
   return (
     <form onSubmit={submit} aria-label="New subscription" className="space-y-3">
       <div className={FORM_GRID}>
-        <Field label="Subscriber (org:<id> or user key)"><input className={inputCls} value={subject} onChange={(e) => setSubject(e.target.value)} required /></Field>
+        <Field label="Subscriber (org:<id> or user key)"><Input size="sm" value={subject} onChange={(e) => setSubject(e.target.value)} required /></Field>
         <Field label="Recurring price"><select className={inputCls} value={price} onChange={(e) => setPrice(e.target.value)} required><option value="">choose…</option>{prices.filter((p) => p.type !== "one_time").map((p) => <option key={p.key} value={p.key}>{p.key}</option>)}</select></Field>
-        <Field label="Trial days (blank: price default)"><input className={inputCls} inputMode="numeric" value={trial} onChange={(e) => setTrial(e.target.value)} /></Field>
-        <Field label="Coupon"><input className={inputCls} value={coupon} onChange={(e) => setCoupon(e.target.value)} /></Field>
+        <Field label="Trial days (blank: price default)"><Input size="sm" inputMode="numeric" value={trial} onChange={(e) => setTrial(e.target.value)} /></Field>
+        <Field label="Coupon"><Input size="sm" value={coupon} onChange={(e) => setCoupon(e.target.value)} /></Field>
       </div>
       <ErrorView error={act.error} />
-      {act.note && <p role="status" className="text-sm text-emerald-300">{act.note}</p>}
+      {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
       <Button type="submit" tone="primary" disabled={act.busy}>Start subscription</Button>
     </form>
   );
@@ -104,28 +106,28 @@ export default function Subscriptions() {
             <option value="">all</option>{SUBSCRIPTION_STATUSES.map((s) => <option key={s}>{s}</option>)}
           </select>
         </label>
-        <label>Subject<input className={`${inputCls} ml-2 w-56`} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
+        <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
         <Button onClick={subs.reload}>Refresh</Button>
       </div>
       <BillingError error={subs.error} />
       {subs.loading && !subs.error && <Loading what="Loading subscriptions" />}
       {subs.data && rows.length === 0 && <Empty>No subscriptions match.</Empty>}
       {rows.length > 0 && (
-        <table aria-label="Subscriptions" className={TABLE}>
-          <thead className={THEAD}><tr><Th>Subscriber</Th><Th>Plan</Th><Th>Status</Th><Th>Period</Th><Th>Trial ends</Th><Th /></tr></thead>
-          <tbody>
+        <Table aria-label="Subscriptions" className={TABLE}>
+          <Table.Header className={THEAD}><Table.Row><Th>Subscriber</Th><Th>Plan</Th><Th>Status</Th><Th>Period</Th><Th>Trial ends</Th><Th /></Table.Row></Table.Header>
+          <Table.Body>
             {rows.map((s) => (
-              <tr key={s.id} className={`${ROW} align-top`}>
-                <td className="py-2 pr-3"><SubjectLink subject={s.subject} /></td>
-                <td className="pr-3 font-mono text-xs">{s.items.map((i) => `${i.price}×${i.quantity}`).join(", ")}{s.pending_price && <span className="ml-1 text-sky-300">→ {s.pending_price}</span>}</td>
-                <td className="pr-3"><Badge status={s.status} />{s.cancel_at_period_end && <span className="ml-1 text-xs text-amber-300">ends at period end</span>}</td>
-                <td className="pr-3 text-zinc-400">{when_(s.current_period_start)} to {when_(s.current_period_end)}</td>
-                <td className="pr-3 text-zinc-400">{s.trial_ends_at ? when_(s.trial_ends_at) : "-"}</td>
-                <td><Button aria-label={`Manage ${s.id}`} onClick={() => setOpen(open === s.id ? undefined : s.id)}>Manage</Button></td>
-              </tr>
+              <Table.Row key={s.id} className={`${ROW} align-top`}>
+                <Table.Cell className="py-2 pr-3"><SubjectLink subject={s.subject} /></Table.Cell>
+                <Table.Cell className="pr-3 font-mono text-xs">{s.items.map((i) => `${i.price}×${i.quantity}`).join(", ")}{s.pending_price && <span className="ml-1 text-info">→ {s.pending_price}</span>}</Table.Cell>
+                <Table.Cell className="pr-3"><Badge status={s.status} />{s.cancel_at_period_end && <span className="ml-1 text-xs text-warning">ends at period end</span>}</Table.Cell>
+                <Table.Cell className="pr-3 text-muted-foreground">{when_(s.current_period_start)} to {when_(s.current_period_end)}</Table.Cell>
+                <Table.Cell className="pr-3 text-muted-foreground">{s.trial_ends_at ? when_(s.trial_ends_at) : "-"}</Table.Cell>
+                <Table.Cell><Button aria-label={`Manage ${s.id}`} onClick={() => setOpen(open === s.id ? undefined : s.id)}>Manage</Button></Table.Cell>
+              </Table.Row>
             ))}
-          </tbody>
-        </table>
+          </Table.Body>
+        </Table>
       )}
       {rows.filter((s) => s.id === open).map((s) => (
         <Panel key={s.id} title={`Subscription ${s.id}`}>

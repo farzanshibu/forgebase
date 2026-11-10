@@ -1,4 +1,157 @@
 @import "tailwindcss";
+/*
+ * PanelUI web components ship compiled class names: let Tailwind see the ones in use
+ * (and what they build on: nav-rail draws its drawer with sheet). Scanning all of
+ * panelui-web/dist adds ~275 kB of CSS for components the dashboard does not use.
+ * Add a component here when you import a new one.
+ */
+@source "../node_modules/panelui-web/dist/components/{alert,badge,button,card,input,menu,nav-rail,sheet,spinner,stat,table,toast}";
 
-:root { color-scheme: dark; }
-body { @apply bg-zinc-950 text-zinc-100 antialiased; }
+/* Dark mode follows the `dark` class on <html> (set before first paint by index.html). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Theme tokens (shadcn/ui names, read by PanelUI). Plain hex so the contrast test
+ * (src/theme/contrast.test.ts) can check every pair against WCAG AA.
+ * `--accent` is the shadcn hover surface; the selectable accent colour is `--primary`,
+ * set per `data-accent` preset below.
+ */
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+
+  --background: #fafafa;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #52525b;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --border: #e4e4e7;
+  --input: #d4d4d8;
+
+  --success: #065f46;
+  --warning: #92400e;
+  --info: #1d4ed8;
+  --destructive: #b91c1c;
+
+  /* Accent preset "amber" (default). */
+  --primary: #92400e;
+  --primary-foreground: #ffffff;
+
+  --chart-2: #0d9488;
+  --chart-3: #2563eb;
+  --chart-4: #c026d3;
+  --chart-5: #ca8a04;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #09090b;
+  --foreground: #fafafa;
+  --card: #121214;
+  --card-foreground: #fafafa;
+  --popover: #18181b;
+  --popover-foreground: #fafafa;
+  --secondary: #1f1f23;
+  --secondary-foreground: #fafafa;
+  --muted: #1f1f23;
+  --muted-foreground: #a1a1aa;
+  --accent: #27272a;
+  --accent-foreground: #fafafa;
+  --border: #27272a;
+  --input: #3f3f46;
+
+  --success: #34d399;
+  --warning: #fbbf24;
+  --info: #60a5fa;
+  --destructive: #f87171;
+
+  --primary: #fbbf24;
+  --primary-foreground: #18181b;
+
+  --chart-2: #2dd4bf;
+  --chart-3: #60a5fa;
+  --chart-4: #e879f9;
+  --chart-5: #facc15;
+}
+
+/* Accent presets: light value, then dark value. Keep in step with ACCENTS in src/theme/theme.ts. */
+[data-accent="amber"] { --primary: #92400e; --primary-foreground: #ffffff; }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #fbbf24; --primary-foreground: #18181b; }
+
+[data-accent="indigo"] { --primary: #4f46e5; --primary-foreground: #ffffff; }
+.dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #818cf8; --primary-foreground: #09090b; }
+
+[data-accent="emerald"] { --primary: #065f46; --primary-foreground: #ffffff; }
+.dark[data-accent="emerald"], .dark [data-accent="emerald"] { --primary: #34d399; --primary-foreground: #09090b; }
+
+[data-accent="rose"] { --primary: #9f1239; --primary-foreground: #ffffff; }
+.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: #fb7185; --primary-foreground: #09090b; }
+
+[data-accent="sky"] { --primary: #075985; --primary-foreground: #ffffff; }
+.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: #38bdf8; --primary-foreground: #09090b; }
+
+[data-accent="violet"] { --primary: #6d28d9; --primary-foreground: #ffffff; }
+.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: #a78bfa; --primary-foreground: #09090b; }
+
+/* Tokens derived from the accent, declared wherever an accent is so they follow it. */
+:root, [data-accent] {
+  --ring: var(--primary);
+  --chart-1: var(--primary);
+}
+
+@theme inline {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { @apply bg-background; }
+  body { @apply bg-background font-sans text-foreground antialiased; }
+  ::selection { background: color-mix(in oklab, var(--primary) 30%, transparent); }
+}
+
+/* Native checkboxes, radios and ranges take the accent colour. */
+@layer base {
+  input[type="checkbox"], input[type="radio"], input[type="range"], progress { accent-color: var(--primary); }
+}

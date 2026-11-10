@@ -4,6 +4,7 @@ import type { ProviderAccount } from "../../api";
 import { Button, ConfirmButton, ErrorView, inputCls } from "../../components/ui";
 import { Badge, Field } from "./shared";
 import { useAct } from "./useAct";
+import { Input } from "panelui-web/input";
 
 type Where = "top" | "config";
 interface Spec {
@@ -103,14 +104,14 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
     if (ok) setValues((s) => Object.fromEntries(Object.entries(s).filter(([k]) => !card.fields.find((f) => f.name === k)?.secret)));
   };
   return (
-    <section aria-label={`${card.id} provider`} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+    <section aria-label={`${card.id} provider`} className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between">
-        <h3 className="font-medium">{card.title} <span className="text-xs font-normal text-zinc-500">{card.kind === "store" ? "merchant of record" : "payment provider"}</span></h3>
+        <h3 className="font-medium">{card.title} <span className="text-xs font-normal text-muted-foreground">{card.kind === "store" ? "merchant of record" : "payment provider"}</span></h3>
         <Badge status={account ? (account.enabled ? "active" : "paused") : "canceled"} label={account ? (account.enabled ? "configured" : "disabled") : "not configured"} />
       </div>
-      <p aria-label={`${card.id} test mode`} className="mt-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-300">Test mode{account ? ` (${account.environment})` : ""}. {card.test}</p>
+      <p aria-label={`${card.id} test mode`} className="mt-1 rounded bg-warning/10 px-2 py-1 text-xs text-warning">Test mode{account ? ` (${account.environment})` : ""}. {card.test}</p>
       {account && (
-        <p className="mt-2 text-sm text-zinc-400">
+        <p className="mt-2 text-sm text-muted-foreground">
           {account.hint ? `Key ${account.hint}` : "Credentials sealed"}{account.api_base ? <>, API base <span className="font-mono text-xs">{account.api_base}</span></> : ""} · {card.kind === "store" ? "notifications" : "webhook"} <span className="font-mono text-xs">{account.webhook_path}</span>
         </p>
       )}
@@ -123,25 +124,25 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
               ) : f.multiline ? (
                 <textarea className={`${inputCls} h-24 font-mono text-xs`} autoComplete="off" spellCheck={false} value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
               ) : (
-                <input className={inputCls} type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
+                <Input size="sm" type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
               )}
             </Field>
           ))}
           {card.apiBase && (
             <Field label={`${card.id} API base${card.apiBase === "required" ? "" : " (optional)"}`} className="sm:col-span-2">
-              <input className={inputCls} value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={account?.api_base ?? "https://..."} />
+              <Input size="sm" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={account?.api_base ?? "https://..."} />
             </Field>
           )}
         </div>
-        <label className="flex items-center gap-2 text-sm text-zinc-300"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />Enabled</label>
-        {bad && <p role="alert" className="text-sm text-red-300">{bad}</p>}
+        <label className="flex items-center gap-2 text-sm text-foreground/80"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />Enabled</label>
+        {bad && <p role="alert" className="text-sm text-destructive">{bad}</p>}
         <ErrorView error={act.error} />
-        {act.note && <p role="status" className="text-sm text-emerald-300">{act.note}</p>}
+        {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
         <div className="flex gap-2">
           <Button type="submit" tone="primary" disabled={act.busy}>Save {card.id}</Button>
           {account && <ConfirmButton label={`Remove ${card.id}`} disabled={act.busy} onConfirm={() => void act.run(() => deleteProvider(card.id), "Removed")} />}
         </div>
-        <p className="text-xs text-zinc-500">Secrets are never shown back. A secret or field left blank keeps its stored value; only what you change is replaced.</p>
+        <p className="text-xs text-muted-foreground">Secrets are never shown back. A secret or field left blank keeps its stored value; only what you change is replaced.</p>
       </form>
     </section>
   );

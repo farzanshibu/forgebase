@@ -8,7 +8,7 @@ import BucketSettings from "./BucketSettings";
 import ObjectBrowser from "./ObjectBrowser";
 import SignedUrls from "./SignedUrls";
 
-const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-amber-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-100"}`;
+const tab = ({ isActive }: { isActive: boolean }) => `-mb-px border-b-2 px-3 py-2 text-sm ${isActive ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`;
 
 export default function BucketView() {
   const { bucket = "" } = useParams();
@@ -18,16 +18,16 @@ export default function BucketView() {
   return (
     <div className="space-y-4">
       <div className="flex items-baseline gap-3">
-        <Link className="text-sm text-amber-300 hover:underline" to="/storage">All buckets</Link>
+        <Link className="text-sm text-primary hover:underline" to="/storage">All buckets</Link>
         <h2 className="text-xl font-semibold">{bucket}</h2>
-        {b.data && <span className="text-sm text-zinc-400">{b.data.visibility} · versioning {b.data.versioning ? "on" : "off"}</span>}
-        {usage.data && <span aria-label="Bucket usage" className="text-sm text-zinc-400">{usage.data.objects} objects · {formatBytes(usage.data.logical_bytes)}</span>}
+        {b.data && <span className="text-sm text-muted-foreground">{b.data.visibility} · versioning {b.data.versioning ? "on" : "off"}</span>}
+        {usage.data && <span aria-label="Bucket usage" className="text-sm text-muted-foreground">{usage.data.objects} objects · {formatBytes(usage.data.logical_bytes)}</span>}
       </div>
       <ErrorView error={b.error} />
       {b.loading && !b.error && <Loading what="Loading bucket" />}
       {b.data && (
         <>
-          <nav aria-label="Bucket sections" className="flex gap-1 border-b border-zinc-800">
+          <nav aria-label="Bucket sections" className="flex gap-1 border-b border-border">
             <NavLink to={base} end className={tab}>Objects</NavLink>
             <NavLink to={`${base}/settings`} className={tab}>Policy</NavLink>
             <NavLink to={`${base}/access`} className={tab}>Access (ACL)</NavLink>
@@ -38,7 +38,7 @@ export default function BucketView() {
             <Route path="settings" element={<BucketSettings bucket={b.data} onSaved={b.reload} />} />
             <Route path="access" element={<AclEditor bucket={b.data} />} />
             <Route path="share" element={<SignedUrls bucket={b.data} />} />
-            <Route path="*" element={<p className="text-zinc-400">No such page in this bucket.</p>} />
+            <Route path="*" element={<p className="text-muted-foreground">No such page in this bucket.</p>} />
           </Routes>
         </>
       )}
