@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-migrations"
-description = "Embedded, checksummed, atomic ForgeBase system migrations for SQLite."
+description = "Embedded, checksummed, atomic ForgeBase system migrations for SQLite and PostgreSQL."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,0 +1,608 @@
+//! System migrations on PostgreSQL (ADR-0028 §7.6).
+//!
+//! * System tables live in schema [`SCHEMA`] (`forgebase`); collection tables
+//!   in `public`. Every migration runs with `search_path = forgebase, public`,
+//!   so its unqualified `_forgebase_*` names land in `forgebase`.
+//! * Versions 1–25 are one hand-reviewed file,
+//!   `migrations/postgres/0025_baseline.sql`: the schema SQLite has after
+//!   `0025`. Applying it records every SQLite version it stands for in
+//!   `forgebase._forgebase_migrations`, each with the SQLite migration's name
+//!   and the baseline's checksum, so a version number means the same schema on
+//!   both backends. No PostgreSQL database is older than the baseline, so the
+//!   25 historical migrations are never replayed.
+//! * From `0026` on every migration is a pair, `migrations/system/NNNN_x.sql`
+//!   and `migrations/postgres/NNNN_x.sql` ([`pairing_problems`] checks it).
+//! * The rules of the SQLite runner hold: forward-only, checksums verified, a
+//!   database migrated by a newer binary refused, one transaction per
+//!   migration (the baseline is one transaction), running twice is a no-op.
+//!   PostgreSQL DDL is transactional, so a failed migration leaves nothing
+//!   behind. A transaction-level advisory lock serialises concurrent runners.
+//! * Migrations run as [`OWNER_ROLE`] (`SET LOCAL ROLE forgebase_owner`) when
+//!   that role exists and the session user is a member of it (the bundled
+//!   engine's `forgebase_server`, FB-132), so every object has the right owner.
+//!   Elsewhere (external servers without the role, tests) they run as the
+//!   session user.
+//! * After migrating, [`ensure_search_path`] makes sure the session user's
+//!   default `search_path` puts `forgebase` first (FB-132's roles already
+//!   carry it; on an external server it is set once with `ALTER ROLE …
+//!   IN DATABASE …`), and sets it on the current session.
+
+use std::time::Instant;
+
+use sqlx::{AssertSqlSafe, Connection, PgConnection, Row};
+
+use crate::{
+    AppliedMigration, BOOKKEEPING_TABLE, Migration, MigrationError, MigrationProblem, MigrationStatus,
+    PendingMigration, SYSTEM_MIGRATIONS,
+};
+
+/// Schema holding the system tables.
+pub const SCHEMA: &str = "forgebase";
+/// `search_path` of the server's roles and of every migration.
+pub const SEARCH_PATH: &str = "forgebase, public";
+/// Role that owns the system schema, when it exists (bundled engine).
+pub const OWNER_ROLE: &str = "forgebase_owner";
+/// Highest SQLite version the PostgreSQL baseline stands for.
+pub const BASELINE_VERSION: i64 = 25;
+/// Key of the transaction-level advisory lock taken by every migration
+/// (`"fbmigrat"` as a big-endian integer).
+pub const ADVISORY_LOCK_KEY: i64 = 0x6662_6d69_6772_6174;
+
+/// The bookkeeping table, schema-qualified (independent of `search_path`).
+const QUALIFIED_BOOKKEEPING: &str = "forgebase._forgebase_migrations";
+
+/// Same columns as SQLite's bookkeeping table (`applied_at` is RFC 3339 text).
+const CREATE_BOOKKEEPING: &str = "CREATE SCHEMA IF NOT EXISTS forgebase;
+CREATE TABLE IF NOT EXISTS forgebase._forgebase_migrations (
+    version      bigint NOT NULL PRIMARY KEY,
+    name         text   NOT NULL,
+    checksum     text   NOT NULL,
+    applied_at   text   NOT NULL,
+    execution_ms bigint NOT NULL
+)";
+
+/// ForgeBase's PostgreSQL schema, in order: the baseline (standing for SQLite
+/// versions 1–[`BASELINE_VERSION`]), then one twin per later SQLite migration,
+/// with the same version and name. Append only; never edit a shipped entry.
+pub static POSTGRES_MIGRATIONS: &[Migration] = &[Migration::new(
+    BASELINE_VERSION,
+    "baseline",
+    include_str!("../../../migrations/postgres/0025_baseline.sql"),
+)];
+
+/// The SQLite migrations the baseline stands for (versions up to
+/// [`BASELINE_VERSION`]).
+pub fn baseline_covers() -> &'static [Migration] {
+    let n = SYSTEM_MIGRATIONS
+        .iter()
+        .take_while(|m| m.version <= BASELINE_VERSION)
+        .count();
+    &SYSTEM_MIGRATIONS[..n]
+}
+
+/// What applying one step records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Expected {
+    version: i64,
+    name: &'static str,
+    checksum: String,
+}
+
+/// Applies an ordered set of PostgreSQL migrations.
+#[derive(Debug, Clone, Copy)]
+pub struct PgMigrator<'a> {
+    migrations: &'a [Migration],
+    covers: &'a [Migration],
+}
+
+impl PgMigrator<'static> {
+    /// Migrator for [`POSTGRES_MIGRATIONS`], whose baseline stands for
+    /// [`baseline_covers`].
+    pub fn system() -> Self {
+        Self {
+            migrations: POSTGRES_MIGRATIONS,
+            covers: baseline_covers(),
+        }
+    }
+}
+
+impl<'a> PgMigrator<'a> {
+    /// Migrator for a custom set. When `covers` is not empty, the first
+    /// migration is a baseline standing for those versions: its version must
+    /// be the highest covered one. Versions must be positive and strictly
+    /// increasing.
+    pub fn new(migrations: &'a [Migration], covers: &'a [Migration]) -> Result<Self, MigrationError> {
+        crate::Migrator::new(migrations)?;
+        crate::Migrator::new(covers)?;
+        if let Some(last) = covers.last() {
+            match migrations.first() {
+                Some(b) if b.version == last.version => {}
+                other => {
+                    return Err(MigrationError::InvalidSet(format!(
+                        "the baseline must have version {} (the highest version it stands for), found {:?}",
+                        last.version,
+                        other.map(|m| m.version)
+                    )));
+                }
+            }
+        }
+        Ok(Self { migrations, covers })
+    }
+
+    /// The migrations of this set (the baseline first, when there is one).
+    pub fn migrations(&self) -> &'a [Migration] {
+        self.migrations
+    }
+
+    /// Highest known version (0 for an empty set).
+    pub fn latest_version(&self) -> i64 {
+        self.migrations.last().map_or(0, |m| m.version)
+    }
+
+    /// The steps in order: the baseline (all covered versions at once), then
+    /// one per later migration.
+    fn steps(&self) -> Vec<(&'a Migration, Vec<Expected>)> {
+        let mut steps = Vec::new();
+        let mut rest = self.migrations;
+        if !self.covers.is_empty()
+            && let Some((baseline, later)) = self.migrations.split_first()
+        {
+            let checksum = baseline.checksum();
+            let rows = self
+                .covers
+                .iter()
+                .map(|c| Expected {
+                    version: c.version,
+                    name: c.name,
+                    checksum: checksum.clone(),
+                })
+                .collect();
+            steps.push((baseline, rows));
+            rest = later;
+        }
+        for m in rest {
+            steps.push((
+                m,
+                vec![Expected {
+                    version: m.version,
+                    name: m.name,
+                    checksum: m.checksum(),
+                }],
+            ));
+        }
+        steps
+    }
+
+    /// Reads the migration state without changing the database.
+    pub async fn status(&self, conn: &mut PgConnection) -> Result<MigrationStatus, MigrationError> {
+        let applied = read_applied(conn).await?;
+        let expected: Vec<Expected> = self.steps().into_iter().flat_map(|(_, rows)| rows).collect();
+        let mut problems = Vec::new();
+        for a in &applied {
+            match expected.iter().find(|e| e.version == a.version) {
+                Some(e) if e.checksum != a.checksum => problems.push(MigrationProblem::ChecksumMismatch {
+                    version: a.version,
+                    name: a.name.clone(),
+                    expected: e.checksum.clone(),
+                    found: a.checksum.clone(),
+                }),
+                Some(_) => {}
+                None => problems.push(MigrationProblem::UnknownVersion {
+                    version: a.version,
+                    name: a.name.clone(),
+                }),
+            }
+        }
+        let pending = expected
+            .iter()
+            .filter(|e| !applied.iter().any(|a| a.version == e.version))
+            .map(|e| PendingMigration {
+                version: e.version,
+                name: e.name,
+            })
+            .collect();
+        Ok(MigrationStatus {
+            current_version: applied.last().map_or(0, |a| a.version),
+            latest_version: self.latest_version(),
+            applied,
+            pending,
+            problems,
+        })
+    }
+
+    /// Applies every pending migration, each in its own transaction, then
+    /// makes sure of the session user's `search_path` ([`ensure_search_path`]).
+    /// Returns the versions recorded by this call (empty when up to date; the
+    /// baseline records one row per version it stands for).
+    pub async fn run(&self, conn: &mut PgConnection) -> Result<Vec<AppliedMigration>, MigrationError> {
+        let owner = owner_role(conn).await?;
+        {
+            let mut tx = conn.begin().await?;
+            lock_and_set_role(&mut tx, owner.as_deref()).await?;
+            sqlx::raw_sql(CREATE_BOOKKEEPING).execute(&mut *tx).await?;
+            tx.commit().await?;
+        }
+        let status = self.status(conn).await?;
+        if let Some(problem) = status.problems.into_iter().next() {
+            return Err(problem.into());
+        }
+
+        let mut done = Vec::new();
+        for (m, rows) in self.steps() {
+            let missing = rows
+                .iter()
+                .filter(|r| !status.applied.iter().any(|a| a.version == r.version))
+                .count();
+            if missing == 0 {
+                continue;
+            }
+            if missing != rows.len() {
+                return Err(MigrationError::InvalidSet(format!(
+                    "the PostgreSQL baseline ({}) is only partly recorded in {BOOKKEEPING_TABLE}: \
+                     {} of its {} versions are missing",
+                    m.name,
+                    missing,
+                    rows.len()
+                )));
+            }
+            done.extend(apply_step(conn, m, &rows, owner.as_deref()).await?);
+        }
+        ensure_search_path(conn).await?;
+        Ok(done)
+    }
+}
+
+/// Applies pending system migrations ([`PgMigrator::system`]).
+pub async fn migrate(conn: &mut PgConnection) -> Result<Vec<AppliedMigration>, MigrationError> {
+    PgMigrator::system().run(conn).await
+}
+
+/// Migration state of the system schema ([`PgMigrator::system`]).
+pub async fn status(conn: &mut PgConnection) -> Result<MigrationStatus, MigrationError> {
+    PgMigrator::system().status(conn).await
+}
+
+async fn read_applied(conn: &mut PgConnection) -> Result<Vec<AppliedMigration>, MigrationError> {
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(QUALIFIED_BOOKKEEPING)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query(
+        "SELECT version, name, checksum, applied_at, execution_ms
+         FROM forgebase._forgebase_migrations ORDER BY version",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(AppliedMigration {
+                version: row.try_get(0)?,
+                name: row.try_get(1)?,
+                checksum: row.try_get(2)?,
+                applied_at: row.try_get(3)?,
+                execution_ms: row.try_get(4)?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(Into::into)
+}
+
+/// [`OWNER_ROLE`] when it exists and the session user may `SET ROLE` to it.
+async fn owner_role(conn: &mut PgConnection) -> Result<Option<String>, MigrationError> {
+    let member: Option<bool> =
+        sqlx::query_scalar("SELECT pg_has_role(session_user, oid, 'MEMBER') FROM pg_roles WHERE rolname = $1")
+            .bind(OWNER_ROLE)
+            .fetch_optional(&mut *conn)
+            .await?;
+    match member {
+        Some(true) => Ok(Some(OWNER_ROLE.to_owned())),
+        Some(false) => {
+            tracing::warn!(
+                role = OWNER_ROLE,
+                "the session user is not a member of the owner role; migrating as the session user"
+            );
+            Ok(None)
+        }
+        None => Ok(None),
+    }
+}
+
+async fn lock_and_set_role(conn: &mut PgConnection, owner: Option<&str>) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(ADVISORY_LOCK_KEY)
+        .execute(&mut *conn)
+        .await?;
+    if let Some(role) = owner {
+        // A role name we own (OWNER_ROLE), quoted as an identifier.
+        sqlx::raw_sql(AssertSqlSafe(format!("SET LOCAL ROLE {}", quote_ident(role))))
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::raw_sql(AssertSqlSafe(format!("SET LOCAL search_path = {SEARCH_PATH}")))
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Applies one step atomically. Returns nothing when another runner applied
+/// it between our status read and taking the lock.
+async fn apply_step(
+    conn: &mut PgConnection,
+    m: &Migration,
+    rows: &[Expected],
+    owner: Option<&str>,
+) -> Result<Vec<AppliedMigration>, MigrationError> {
+    let mut tx = conn.begin().await?;
+    lock_and_set_role(&mut tx, owner).await?;
+
+    let versions: Vec<i64> = rows.iter().map(|r| r.version).collect();
+    let already: Vec<(i64, String)> =
+        sqlx::query_as("SELECT version, checksum FROM forgebase._forgebase_migrations WHERE version = ANY ($1)")
+            .bind(&versions)
+            .fetch_all(&mut *tx)
+            .await?;
+    if !already.is_empty() {
+        for (version, found) in already {
+            if let Some(r) = rows.iter().find(|r| r.version == version)
+                && r.checksum != found
+            {
+                return Err(MigrationError::ChecksumMismatch {
+                    version,
+                    name: r.name.to_owned(),
+                    expected: r.checksum.clone(),
+                    found,
+                });
+            }
+        }
+        return Ok(Vec::new());
+    }
+
+    let started = Instant::now();
+    sqlx::raw_sql(AssertSqlSafe(m.sql))
+        .execute(&mut *tx)
+        .await
+        .map_err(|source| MigrationError::Failed {
+            version: m.version,
+            name: m.name.to_owned(),
+            source,
+        })?;
+    let execution_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let applied_at = forgebase_core::now_rfc3339();
+    let mut done = Vec::with_capacity(rows.len());
+    for r in rows {
+        sqlx::query(
+            "INSERT INTO forgebase._forgebase_migrations (version, name, checksum, applied_at, execution_ms)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(r.version)
+        .bind(r.name)
+        .bind(&r.checksum)
+        .bind(&applied_at)
+        .bind(execution_ms)
+        .execute(&mut *tx)
+        .await?;
+        done.push(AppliedMigration {
+            version: r.version,
+            name: r.name.to_owned(),
+            checksum: r.checksum.clone(),
+            applied_at: applied_at.clone(),
+            execution_ms,
+        });
+    }
+    // Deferred constraints are checked here: a violation fails the migration.
+    tx.commit().await.map_err(|source| MigrationError::Failed {
+        version: m.version,
+        name: m.name.to_owned(),
+        source,
+    })?;
+    tracing::info!(
+        version = m.version,
+        name = m.name,
+        recorded = done.len(),
+        execution_ms,
+        "applied PostgreSQL migration"
+    );
+    Ok(done)
+}
+
+/// Makes sure new sessions of the session user find the system tables: when
+/// its default `search_path` lacks [`SCHEMA`], sets
+/// `ALTER ROLE <session_user> IN DATABASE <current_database> SET search_path
+/// = forgebase, public` (a role may change its own defaults). Then sets the
+/// same `search_path` on this session. Returns whether the default changed.
+///
+/// Connections opened before the change keep their old `search_path`; the
+/// server opens its read pool after migrating.
+pub async fn ensure_search_path(conn: &mut PgConnection) -> Result<bool, MigrationError> {
+    let default: String = sqlx::query_scalar("SELECT reset_val FROM pg_settings WHERE name = 'search_path'")
+        .fetch_one(&mut *conn)
+        .await?;
+    let changed = !search_path_has_schema(&default, SCHEMA);
+    if changed {
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "DO $fb$ BEGIN EXECUTE format('ALTER ROLE %I IN DATABASE %I SET search_path = {SEARCH_PATH}', \
+             session_user, current_database()); END $fb$"
+        )))
+        .execute(&mut *conn)
+        .await?;
+        tracing::info!(search_path = SEARCH_PATH, "set the default search_path of the database user");
+    }
+    sqlx::raw_sql(AssertSqlSafe(format!("SET search_path = {SEARCH_PATH}")))
+        .execute(&mut *conn)
+        .await?;
+    Ok(changed)
+}
+
+/// Whether a `search_path` value (`"$user", public`) names `schema`.
+fn search_path_has_schema(path: &str, schema: &str) -> bool {
+    path.split(',')
+        .map(|s| s.trim().trim_matches('"'))
+        .any(|s| s == schema)
+}
+
+fn quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// Every way the SQLite and PostgreSQL migration sets do not pair up, as
+/// readable sentences naming the file to add. Empty when every SQLite
+/// migration after the baseline has a PostgreSQL twin with the same version
+/// and name, and the reverse.
+pub fn pairing_problems() -> Vec<String> {
+    pairing_problems_of(SYSTEM_MIGRATIONS, POSTGRES_MIGRATIONS, BASELINE_VERSION)
+}
+
+/// [`pairing_problems`] for given sets.
+pub fn pairing_problems_of(sqlite: &[Migration], postgres: &[Migration], baseline: i64) -> Vec<String> {
+    let file = |m: &Migration| format!("{:04}_{}.sql", m.version, m.name);
+    let mut problems = Vec::new();
+    match postgres.first() {
+        Some(b) if b.version == baseline => {}
+        _ => problems.push(format!(
+            "the first PostgreSQL migration must be the baseline with version {baseline}"
+        )),
+    }
+    if !sqlite.iter().any(|m| m.version == baseline) {
+        problems.push(format!(
+            "the PostgreSQL baseline stands for SQLite versions up to {baseline}, but there is no SQLite migration {baseline}"
+        ));
+    }
+    for s in sqlite.iter().filter(|m| m.version > baseline) {
+        match postgres.iter().find(|p| p.version == s.version) {
+            None => problems.push(format!(
+                "SQLite migration migrations/system/{} has no PostgreSQL twin: add migrations/postgres/{} \
+                 and register it in POSTGRES_MIGRATIONS (crates/forgebase-migrations/src/postgres.rs)",
+                file(s),
+                file(s)
+            )),
+            Some(p) if p.name != s.name => problems.push(format!(
+                "version {} is migrations/system/{} on SQLite but migrations/postgres/{} on PostgreSQL: \
+                 the twins must have the same name",
+                s.version,
+                file(s),
+                file(p)
+            )),
+            Some(_) => {}
+        }
+    }
+    for p in postgres.iter().filter(|m| m.version > baseline) {
+        if !sqlite.iter().any(|s| s.version == p.version) {
+            problems.push(format!(
+                "PostgreSQL migration migrations/postgres/{} has no SQLite twin: add migrations/system/{} \
+                 (a file holding only a comment when the change is PostgreSQL-only) and register it in \
+                 SYSTEM_MIGRATIONS (crates/forgebase-migrations/src/lib.rs)",
+                file(p),
+                file(p)
+            ));
+        }
+    }
+    for p in postgres.iter().filter(|m| m.version < baseline) {
+        problems.push(format!(
+            "PostgreSQL migration {} is older than the baseline ({baseline}); versions up to the baseline are the baseline",
+            file(p)
+        ));
+    }
+    problems
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_set_is_valid() {
+        let m = PgMigrator::system();
+        assert_eq!(m.migrations()[0].version, BASELINE_VERSION);
+        assert_eq!(baseline_covers().last().map(|m| m.version), Some(BASELINE_VERSION));
+        assert!(PgMigrator::new(POSTGRES_MIGRATIONS, baseline_covers()).is_ok());
+    }
+
+    /// The pairing check of ADR-0028 §7.6: a number on one backend only fails
+    /// with the file to add.
+    #[test]
+    fn every_sqlite_migration_has_a_postgres_twin() {
+        let problems = pairing_problems();
+        assert!(problems.is_empty(), "migration pairs:\n- {}", problems.join("\n- "));
+    }
+
+    #[test]
+    fn pairing_names_the_missing_twin() {
+        static SQLITE: &[Migration] = &[
+            Migration::new(1, "one", ""),
+            Migration::new(2, "two", ""),
+            Migration::new(3, "functions_js", ""),
+            Migration::new(4, "rules", ""),
+        ];
+        static PG: &[Migration] = &[
+            Migration::new(2, "baseline", ""),
+            Migration::new(4, "resource_rules", ""),
+            Migration::new(5, "pg_only", ""),
+        ];
+        let p = pairing_problems_of(SQLITE, PG, 2);
+        assert_eq!(p.len(), 3, "{p:#?}");
+        assert!(p[0].contains("migrations/system/0003_functions_js.sql has no PostgreSQL twin"));
+        assert!(p[0].contains("add migrations/postgres/0003_functions_js.sql"));
+        assert!(p[1].contains("the twins must have the same name"));
+        assert!(p[2].contains("migrations/postgres/0005_pg_only.sql has no SQLite twin"));
+        assert!(pairing_problems_of(SQLITE, &PG[..1], 3).iter().any(|s| s.contains("baseline")));
+    }
+
+    #[test]
+    fn every_postgres_migration_file_is_registered() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations/postgres");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".sql"))
+            .collect();
+        files.sort();
+        let registered: Vec<String> = POSTGRES_MIGRATIONS
+            .iter()
+            .map(|m| format!("{:04}_{}.sql", m.version, m.name))
+            .collect();
+        assert_eq!(files, registered);
+    }
+
+    #[test]
+    fn baseline_rules() {
+        let sql = POSTGRES_MIGRATIONS[0].sql;
+        // The runner owns the transaction.
+        for word in ["BEGIN;", "COMMIT;", "ROLLBACK;"] {
+            assert!(!sql.contains(word), "the baseline must not contain {word}");
+        }
+        // The full-text wrapper FB-131's PgDialect relies on.
+        assert!(sql.contains("FUNCTION _forgebase_unaccent(text)"));
+        assert!(sql.contains("IMMUTABLE"));
+        // Every foreign key can be deferred by TxMode::SchemaChange.
+        let refs = sql.matches(" REFERENCES ").count();
+        let deferrable = sql.matches("DEFERRABLE INITIALLY IMMEDIATE").count();
+        assert!(refs > 0);
+        assert_eq!(refs, deferrable, "every REFERENCES must be DEFERRABLE INITIALLY IMMEDIATE");
+    }
+
+    #[test]
+    fn steps_record_every_covered_version() {
+        static COVERS: &[Migration] = &[Migration::new(1, "a", "x"), Migration::new(3, "c", "y")];
+        static SET: &[Migration] = &[Migration::new(3, "baseline", "z"), Migration::new(4, "d", "w")];
+        let m = PgMigrator::new(SET, COVERS).unwrap();
+        let steps = m.steps();
+        assert_eq!(steps.len(), 2);
+        let base: Vec<(i64, &str)> = steps[0].1.iter().map(|e| (e.version, e.name)).collect();
+        assert_eq!(base, [(1, "a"), (3, "c")]);
+        assert!(steps[0].1.iter().all(|e| e.checksum == SET[0].checksum()));
+        assert_eq!(steps[1].1[0].version, 4);
+        assert_eq!(m.latest_version(), 4);
+        static BAD: &[Migration] = &[Migration::new(2, "baseline", "z")];
+        assert!(PgMigrator::new(BAD, COVERS).is_err());
+    }
+
+    #[test]
+    fn search_path_parsing() {
+        assert!(!search_path_has_schema("\"$user\", public", SCHEMA));
+        assert!(search_path_has_schema("forgebase, public", SCHEMA));
+        assert!(search_path_has_schema("\"forgebase\",public", SCHEMA));
+    }
+}
