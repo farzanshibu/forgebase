@@ -216,8 +216,10 @@ impl AuthService {
         let reason: String = reason.chars().filter(|c| !c.is_control()).take(500).collect();
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
-            "INSERT OR REPLACE INTO _forgebase_suspensions (principal, reason, suspended_by, suspended_at, until_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO _forgebase_suspensions (principal, reason, suspended_by, suspended_at, until_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (principal) DO UPDATE SET reason = excluded.reason, suspended_by = excluded.suspended_by,
+               suspended_at = excluded.suspended_at, until_at = excluded.until_at",
             vec![
                 t(subject.actor()),
                 t(reason.clone()),
@@ -299,8 +301,10 @@ impl AuthService {
             return Err(AuthError::Conflict("this account is anonymised".into()));
         }
         tx.exec(
-            "INSERT OR REPLACE INTO _forgebase_auth_account_status (collection, user_id, status, reason, changed_by, changed_at)
-             VALUES (?1, ?2, 'deactivated', ?3, ?4, ?5)",
+            "INSERT INTO _forgebase_auth_account_status (collection, user_id, status, reason, changed_by, changed_at)
+             VALUES (?1, ?2, 'deactivated', ?3, ?4, ?5)
+             ON CONFLICT (collection, user_id) DO UPDATE SET status = excluded.status, reason = excluded.reason,
+               changed_by = excluded.changed_by, changed_at = excluded.changed_at",
             vec![t(coll), t(id), t(reason.clone()), t(caller.subject.actor()), i(self.now())],
         )
         .await?;
@@ -541,8 +545,10 @@ impl AuthService {
         let mut tx = Tx::begin(self.data().backend()).await?;
         self.erase_auth_rows(&mut tx, coll_name, id, email.as_deref()).await?;
         tx.exec(
-            "INSERT OR REPLACE INTO _forgebase_auth_account_status (collection, user_id, status, reason, changed_by, changed_at)
-             VALUES (?1, ?2, 'anonymised', '', ?3, ?4)",
+            "INSERT INTO _forgebase_auth_account_status (collection, user_id, status, reason, changed_by, changed_at)
+             VALUES (?1, ?2, 'anonymised', '', ?3, ?4)
+             ON CONFLICT (collection, user_id) DO UPDATE SET status = excluded.status, reason = excluded.reason,
+               changed_by = excluded.changed_by, changed_at = excluded.changed_at",
             vec![t(coll_name), t(id), t(caller.subject.actor()), i(self.now())],
         )
         .await?;

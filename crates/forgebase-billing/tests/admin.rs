@@ -25,7 +25,7 @@ impl Api {
         let env = Env::new().await;
         env.catalog().await;
         env.stripe().await;
-        let layout = DataLayout::new(env.tmp.path().join("data"));
+        let layout = DataLayout::new(env.tmp.data_dir().join("data"));
         let state = AppState::from_data(env.db.clone(), layout, env.data.clone());
         let app = forgebase_api::router(
             state,

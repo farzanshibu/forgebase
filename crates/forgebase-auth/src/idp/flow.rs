@@ -864,9 +864,10 @@ impl AuthService {
             .await?;
             let ins = tx
                 .exec(
-                    "INSERT OR IGNORE INTO _forgebase_oauth_device_codes
+                    "INSERT INTO _forgebase_oauth_device_codes
                         (device_code_hash, user_code_hash, realm, client_id, scopes, interval_secs, created_at, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT DO NOTHING",
                     vec![
                         t(kr.token_hash("oauth_device_code", &device_code)),
                         t(kr.token_hash("oauth_user_code", &user_code)),
@@ -1095,6 +1096,7 @@ impl AuthService {
     /// not granted `offline_access`.
     async fn end_sso_session(&self, s: &SsoSession, reason: &str, ci: &ClientInfo) -> Result<(), AuthError> {
         let now = self.now();
+        let (from, value) = self.data().backend().dialect().json_array_elements("scopes", "sc");
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
             "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = ?3 WHERE id = ?1 AND revoked_at IS NULL",
@@ -1103,9 +1105,11 @@ impl AuthService {
         .await?;
         let n = tx
             .exec(
-                "UPDATE _forgebase_oauth_families SET revoked_at = ?2, revoked_reason = 'session_ended'
-                 WHERE session_id = ?1 AND revoked_at IS NULL
-                   AND NOT EXISTS (SELECT 1 FROM json_each(scopes) WHERE value = 'offline_access')",
+                &format!(
+                    "UPDATE _forgebase_oauth_families SET revoked_at = ?2, revoked_reason = 'session_ended'
+                     WHERE session_id = ?1 AND revoked_at IS NULL
+                       AND NOT EXISTS (SELECT 1 FROM {from} WHERE {value} = 'offline_access')"
+                ),
                 vec![t(s.id.clone()), i(now)],
             )
             .await?

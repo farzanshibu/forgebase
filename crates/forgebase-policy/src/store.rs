@@ -686,7 +686,7 @@ impl PolicyService {
         }
         self.guard_grant(ctx, &s.snap, Some(&org), &patterns)?;
         self.write(vec![Statement::new(
-            "INSERT OR IGNORE INTO _forgebase_team_members (team_id, principal, created_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO _forgebase_team_members (team_id, principal, created_at) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
             vec![team.into(), principal.into(), now().into()],
         )])
         .await
@@ -1107,7 +1107,9 @@ impl PolicyService {
         self.require_super_admin(ctx, "suspensions:manage")?;
         check_principal(principal)?;
         self.write(vec![Statement::new(
-            "INSERT OR REPLACE INTO _forgebase_suspensions (principal, reason, suspended_by, suspended_at, until_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO _forgebase_suspensions (principal, reason, suspended_by, suspended_at, until_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (principal) DO UPDATE SET reason = excluded.reason, suspended_by = excluded.suspended_by,
+               suspended_at = excluded.suspended_at, until_at = excluded.until_at",
             vec![principal.into(), reason.into(), ctx.actor().into(), now().into(), until.into()],
         )])
         .await

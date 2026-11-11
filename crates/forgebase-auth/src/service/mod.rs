@@ -772,7 +772,7 @@ impl AuthService {
             self.db(),
             "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator
              FROM _forgebase_auth_audit
-             WHERE (?1 IS NULL OR substr(event, 1, length(?1)) = ?1)
+             WHERE (CAST(?1 AS TEXT) IS NULL OR substr(event, 1, length(CAST(?1 AS TEXT))) = CAST(?1 AS TEXT))
                AND (?2 IS NULL OR subject_id = ?2)
                AND (?3 IS NULL OR id < ?3)
                AND (?5 IS NULL OR realm = ?5)

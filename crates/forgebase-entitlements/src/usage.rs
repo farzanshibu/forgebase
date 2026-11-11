@@ -431,7 +431,7 @@ pub(crate) async fn bump(
             "UPDATE _forgebase_usage_counters
              SET used = used + ?5, reserved = reserved + ?6, updated_at = ?7, limit_value = ?9
              WHERE feature_key = ?1 AND subject = ?2 AND scope_key = ?3 AND window_start = ?4
-               AND (?8 IS NULL OR ?5 + ?6 <= 0 OR used + reserved + ?5 + ?6 <= ?8)",
+               AND (CAST(?8 AS BIGINT) IS NULL OR CAST(?5 AS BIGINT) + CAST(?6 AS BIGINT) <= 0 OR used + reserved + ?5 + ?6 <= ?8)",
             p,
         )
         .await?;

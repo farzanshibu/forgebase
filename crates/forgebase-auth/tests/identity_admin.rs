@@ -323,7 +323,7 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
 
     // A file defines `gh` too.
-    let auth_dir = h.dir.path().join("auth");
+    let auth_dir = h.dir.data_dir().join("auth");
     std::fs::create_dir_all(&auth_dir).ok();
     std::fs::write(
         auth_dir.join("oauth-providers.json"),
@@ -331,12 +331,12 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
     )
     .unwrap();
 
-    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(h.dir.path());
+    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(h.dir.data_dir());
     cfg.argon2 = forgebase_auth::Argon2Config::insecure_fast_for_tests();
     let again = forgebase_auth::AuthService::open_with_data(
         Arc::new(h.db.clone()),
         Arc::new(forgebase_data::DefaultAuthorizer),
-        h.dir.path(),
+        h.dir.data_dir(),
         cfg,
         None,
     )

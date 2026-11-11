@@ -14,7 +14,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use forgebase_auth::data::DefaultAuthorizer;
 use forgebase_auth::{Argon2Config, AuthConfig, AuthService, DevMailer, MailKind};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -25,7 +25,7 @@ pub struct H {
     pub auth: AuthService,
     pub mail: DevMailer,
     pub db: Database,
-    pub dir: tempfile::TempDir,
+    pub dir: forgebase_db::testing::TestDb,
 }
 
 pub struct Resp {
@@ -35,13 +35,9 @@ pub struct Resp {
 }
 
 pub async fn harness(tweak: impl FnOnce(&mut AuthConfig)) -> H {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = forgebase_core::Config::defaults(dir.path());
-    let db = Database::open(DbOptions::from_config(&cfg.database, dir.path().join("forgebase.db")))
-        .await
-        .unwrap();
-    db.migrate(None).await.unwrap();
-    let mut cfg = AuthConfig::for_data_dir(dir.path());
+    let dir = forgebase_db::testing::test_backend().await;
+    let db = dir.database().clone();
+    let mut cfg = AuthConfig::for_data_dir(dir.data_dir());
     cfg.argon2 = Argon2Config::insecure_fast_for_tests();
     cfg.trust_forwarded_for = true;
     cfg.cookie_secure = false;
@@ -50,7 +46,7 @@ pub async fn harness(tweak: impl FnOnce(&mut AuthConfig)) -> H {
     // guard (FB-80) is tested with this turned off in https_client.rs.
     cfg.allow_private_outbound = true;
     tweak(&mut cfg);
-    let auth = AuthService::open_with_data(Arc::new(db.clone()), Arc::new(DefaultAuthorizer), dir.path(), cfg, None)
+    let auth = AuthService::open_with_data(Arc::new(db.clone()), Arc::new(DefaultAuthorizer), dir.data_dir(), cfg, None)
         .await
         .unwrap();
     let app =
@@ -63,7 +59,7 @@ pub async fn harness(tweak: impl FnOnce(&mut AuthConfig)) -> H {
     H {
         app,
         auth,
-        mail: DevMailer::new(dir.path().join("mail")),
+        mail: DevMailer::new(dir.data_dir().join("mail")),
         db,
         dir,
     }
