@@ -364,6 +364,10 @@ pub struct RouterOptions {
     /// (FB-175). Without it those routes answer `503 topology_unavailable`
     /// on PostgreSQL (`400 postgres_required` on SQLite).
     pub database_topology: Option<Arc<dyn system_database::TopologyOps>>,
+    /// The graph service mounted at `/api/v1/graph` (FB-163: the server
+    /// passes one with the shard router and the `graph.materialise` job
+    /// hook attached). `None`: a plain one on the app state's data service.
+    pub graph: Option<forgebase_graph::GraphService>,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -396,6 +400,7 @@ impl Default for RouterOptions {
             ops_access: forgebase_core::OpsAccess::default(),
             system_config: None,
             database_topology: None,
+            graph: None,
         }
     }
 }
@@ -500,7 +505,11 @@ pub fn router_with(
     let graph = if graph_on {
         Router::new().nest_service(
             "/api/v1/graph",
-            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
+            forgebase_graph::router(
+                opts.graph
+                    .clone()
+                    .unwrap_or_else(|| forgebase_graph::GraphService::new(state.data().clone())),
+            ),
         )
     } else {
         Router::new()
@@ -770,10 +779,7 @@ mod tests {
         let d = &j["database"];
         assert_eq!(d["backend"], if pg { "postgres" } else { "sqlite" });
         // FB-155: what a new project of this build gets, for the System studio's SQLite notice.
-        assert_eq!(
-            d["default_backend"],
-            forgebase_core::config::DEFAULT_BACKEND.as_str()
-        );
+        assert_eq!(d["default_backend"], forgebase_core::config::DEFAULT_BACKEND.as_str());
         assert_eq!(d["bundled_postgres"], forgebase_core::config::BUNDLED_POSTGRES);
         assert!(d["server_version"].as_str().is_some_and(|v| !v.is_empty()), "{d}");
         if pg {

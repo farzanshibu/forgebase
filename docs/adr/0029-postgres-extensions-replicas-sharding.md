@@ -3724,3 +3724,152 @@ from before MFA, a fresh MFA session and an expired one; SQLite:
   `jobs:<id>` and show `cancellable`; nodes with `origin = config` are
   read-only; show `restart_required` as a banner; SQLite: `backend =
   "sqlite"`.
+
+## Addendum: FB-163, openCypher on Apache AGE (2026-11-11)
+
+Built as §1.5 describes, with decision 9a.1 (option B): label and edge-type
+rules are **enforced inside Cypher**, not refused. Where the code decides
+something the text left open, it is said here.
+
+**Rules inside Cypher.** Every table of a derived graph (each label table
+and the parents `_ag_label_vertex` / `_ag_label_edge`, which a `MATCH (n)`
+without a label scans) has row-level security with one policy, `fb_read`,
+that reads the request's claims (`forgebase.claims() -> 'graph'`) through
+`forgebase.graph_vis_all/labels/ids(kind)`:
+
+- a vertex is visible when its label id is in `v.labels` (names the caller
+  may read whole), or its `graphid` is in `v.ids` (rows of filtered names
+  that pass the rule, and rows of allowed names kept in the catch-all
+  table), or `v.all`;
+- an edge additionally needs its type (`e.*`) and **both ends** visible,
+  which is the REST rule (`GraphAccess::edge_sql`).
+
+The ids are computed per request from the canonical tables with the same
+compiled rules as the REST API (`Rules::compile`), joined to the map table,
+so Cypher sees exactly what REST shows (differential test). Only filtered
+names cost a scan; names allowed or denied whole cost nothing. Above
+100 000 ids (`MAX_VISIBLE_IDS`) the request gets `403
+cypher_rules_unsupported` (the only use of that code). AGE's
+`age.enforce_rls_in_traversal` (on; FB-160 patch 0002) applies the policies
+inside variable-length and shortest-path walks: a hidden node blocks a walk.
+Policies are `TO PUBLIC`: the server and reader roles bypass RLS (trusted,
+privileged callers), `forgebase_rls` and direct logins see what the claims
+allow (direct logins have none: nothing). **Cost, measured** (aarch64
+macOS, test engine, 5 000 nodes and 5 000 edges, `MATCH ({__id:
+'n1'})-[*1..12]->(b) RETURN count(DISTINCT b)`, mean of 5): 3.0 ms without
+rules, 48.7 ms with label rules (`rules_cost_of_variable_length_traversals_
+is_measured` prints it). The difference is AGE rebuilding its traversal
+cache through SPI on every statement once a label table has RLS (FB-160
+note), so it grows with the tenant's graph, not with the walk; plain `MATCH`
+patterns are unaffected beyond the policy itself.
+
+**Derived graph.** Names, catch-all labels and properties as §1.5, plus
+`__source` / `__target` on edges (so results carry ForgeBase ids without a
+map lookup). Representable label: `[A-Za-z][A-Za-z0-9_]{0,62}`; everything
+else (the empty label, `my-label`, non-ASCII) goes to `_fbnode` /
+`_fbedge`. Rows are written with plain SQL in set-based statements (`WITH b
+AS MATERIALIZED (… ag_catalog._graphid(label_id, nextval(seq)) …) INSERT …`),
+never Cypher writes or the CSV loaders. AGE's DDL functions name
+`graphid_ops` unqualified, so label and graph creation run with `ag_catalog`
+prepended to the transaction's `search_path` (restored afterwards).
+
+**Engine-setup DDL** (`EXTENSION_DDL`, `ext.graph.schema = 1`, applied by
+`setup_extensions` when AGE is in use): `_forgebase_graph_age_ids (tenant,
+kind, id, age_id graphid)` + an index on `(tenant, kind, age_id)`;
+`_forgebase_graph_age_state (tenant, graph, state materialising | ready |
+stale | failed, phase, cursor_id, job_id, placed, nodes, edges, done, error,
+started_at, updated_at)`; both with RLS enabled (no policies), placement
+class tenant, move strategy `Rebuild`, listed in the new
+`placement::EXTENSION_TABLES` (they exist only where AGE runs, so
+`placement::problems` does not require them). The visibility helpers and
+`forgebase.graph_cypher(graph, query, params, tag, ncols, lim)`: AGE requires
+a dollar-quoted query and a typed `agtype` parameter, which sqlx cannot bind;
+the plpgsql wrapper builds `SELECT json_build_array(agtype_out(c1)::text, …)
+FROM ag_catalog.cypher(%L, $tag$…$tag$, $1) AS (c1 agtype, …) LIMIT n` and
+passes the parameters with `EXECUTE … USING params::agtype`; it checks the
+graph name and tag shape and that the query does not contain the tag.
+`grants()` also gives `forgebase_rls` `USAGE` and `SELECT` on `ag_catalog`.
+
+**Same-transaction sync.** Every write path of the service calls
+`sync_node` / `sync_edge` after its canonical change, in its transaction,
+when the tenant's state is `materialising` or `ready` (one primary-key read
+otherwise): insert, property update (through the parent table), relabel (a
+new vertex in the other table, edges re-pointed, old vertex deleted), and
+delete (the vertex's edges and their map rows go with it). PostgreSQL has
+one writer, so the materialisation batches (1 000 rows, one transaction
+each, resumable from `phase` + `cursor_id`) never interleave with a write:
+a batch skips rows a write already synced, and edges are copied only once
+both ends are mapped. A failed write rolls back its AGE rows with it.
+
+**Materialisation.** First request: one write transaction drops leftovers,
+creates the graph (grants, parent policies) and the state row, then hands
+`graph.materialise` (payload `{"tenant"}`) to the `MaterialiseJobs` hook and
+answers `409 graph_materialising` with `error.job_id`. Without a hook (until
+the server wires it) a background task runs the same body and `job_id` is
+`null`. A `materialising` row without progress for 10 minutes is launched
+again (resumes). A step error marks the state `failed` (writes stop
+syncing); the next request starts over. `GET /graph/stats` gains `cypher:
+{state, graph, job_id, nodes, edges, done, error}` where AGE runs (absent
+elsewhere).
+
+**Moves.** The state row records the placement it was built for,
+`<set_id>@<moved_at>` (`''` without one). A move's flip changes it (and so
+does a move back within the retention window, which a set id alone would
+miss); `moving` and `frozen` do not, so the graph keeps answering and
+syncing during a move. A different value reads as `stale` and the next
+request rebuilds from the canonical tables; while the placement is not
+`active` a (re)build is refused with `409 tenant_moving`.
+`GraphService::mark_cypher_stale(tenant)` is the explicit hook for FB-174's
+switch (§3.8 step 4.7) on the source. (Keying on the placement epoch was
+tried first: every state change bumps it, which made a running move stop
+Cypher for the whole move.)
+
+**Execution.** `READ ONLY` transaction (`fetch_routed_as`), `SET LOCAL ROLE
+forgebase_rls` for non-privileged callers and `RunAs::session` (`SET ROLE
+NONE`) for privileged ones, claims `{v, principal, tenant, action:
+"graph_cypher", graph}`, `search_path = ag_catalog, pg_catalog`, and
+`statement_timeout` from the new `RunAs::settings`. Errors: tokenizer →
+`cypher_read_only` / `cypher_invalid`; engine `25006` → `cypher_read_only`;
+syntax and other statement errors → `cypher_error`; timeout →
+`cypher_timeout`; limits → `invalid_limit`, `invalid_timeout`. Result values
+are parsed from `agtype_out` text: vertices, edges and paths come back in
+ForgeBase shapes with ForgeBase ids; `NaN`/`Infinity` as strings.
+
+**Replicas.** The formal standby test passes (`tests/cypher_replica.rs`:
+`MATCH` and variable-length `MATCH` as `forgebase_rls` with rules on a hot
+standby), so Cypher reads route (`graph.cypher`, `fetch_routed_as`, taken
+verbatim from FB-171); a replica that has not replayed the graph yet (an
+error naming something that does not exist) is retried on the primary. The
+state check and the rule names read the primary.
+
+**Shards.** `GraphService::attach_router(router)`: every public call resolves
+the caller's tenant's set (`DbRouter::for_tenant`) and runs on it (also the
+materialise job, by tenant). Without shards nothing changes.
+
+**Permission.** `Action::GraphCypher` → `engine:graph_cypher` (from the
+action name), not implied by `engine:graph_read`; the label rules come from
+`GraphRead` (`list`), so a caller needs both. `drop` needs
+`engine:graph_cypher` too.
+
+**Files.** `forgebase-graph`: `src/age/{mod,tokenize,agtype}.rs` (new),
+`src/cypher.rs`, `src/routed.rs` (new), `service.rs`, `http.rs`, `error.rs`,
+`access.rs`, `model.rs`, `lib.rs`; tests `cypher.rs`, `cypher_off.rs`,
+`cypher_replica.rs`, `shards.rs`. `forgebase-db`: `backend.rs` (`RunAs::
+settings`, `with_setting`, `session`), `pg/mod.rs` (`set_run_as`),
+`pg/extensions.rs` (graph DDL v1, `forgebase_rls` grants), `placement.rs`;
+FB-171's `fetch_routed_as` files verbatim. `forgebase-data`:
+`Action::GraphCypher`. `forgebase-jobs`: `graph.` reserved prefix.
+`forgebase-api`: `RouterOptions::graph`.
+
+**Server wiring (not done here: `crates/forgebase-server/src/lib.rs` is
+FB-171's).** Build the service once, attach the router and the job hook,
+register the job, and hand it to the API (`RouterOptions::graph`); see the
+FB-163 done note for the exact lines. Until then the API builds a plain
+service: Cypher works, materialisation runs in a background task (`job_id:
+null`) and the graph service does not route by tenant on a sharded cluster.
+
+**Breaking.** `RunAs` has a new public field `settings` (struct literals
+need it; none in the tree). `GraphStats` has a new field `cypher`.
+`forgebase_data::Action` has a new variant (non-exhaustive).
+`RouterOptions` (API) has a new field `graph` (`..Default::default()`
+literals are unaffected). `RESERVED_PREFIXES` is `[&str; 9]`.

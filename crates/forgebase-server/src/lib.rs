@@ -594,6 +594,31 @@ async fn start_on(
         Some(v) => forgebase_vector::register_jobs(registry, v.clone()),
         None => registry,
     };
+    // FB-163: the graph service the API mounts, routed per tenant set, with
+    // the `graph.materialise` job (ADR-0029 §1.5).
+    let graph = forgebase_graph::GraphService::new(state.data().clone()).with_jobs(Arc::new(GraphJobs(jobs.clone())));
+    graph.attach_router(router.clone());
+    let registry = registry.register(forgebase_graph::MATERIALISE_JOB, {
+        let graph = graph.clone();
+        move |ctx: forgebase_jobs::JobContext| {
+            let graph = graph.clone();
+            async move {
+                let tenant = ctx
+                    .payload()
+                    .get("tenant")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                match graph.materialise(&tenant).await {
+                    Ok(r) => Ok(serde_json::to_value(r).unwrap_or_default()),
+                    Err(e @ forgebase_graph::GraphError::CypherUnsupported) => {
+                        Err(forgebase_jobs::HandlerError::fatal(e.to_string()))
+                    }
+                    Err(e) => Err(forgebase_jobs::HandlerError::retry(e.to_string())),
+                }
+            }
+        }
+    });
     // FB-93: the engines JavaScript functions reach through `ctx`. A module
     // switched off (FB-91) leaves its `ctx` service unset.
     if let Some(f) = &functions {
@@ -637,6 +662,7 @@ async fn start_on(
     }
     let opts = RouterOptions {
         extensions,
+        graph: Some(graph.clone()),
         gates: vec![
             entitlements.rate_gate(),
             Arc::new(forgebase_customize::AgreementGate::new(customize.clone())),
@@ -1572,4 +1598,24 @@ async fn open_storage(
     svc.attach_router(router.clone());
     svc.attach_entitlements(entitlements.clone());
     Ok(svc)
+}
+
+/// FB-163: enqueues `graph.materialise` jobs for the graph service.
+#[derive(Debug)]
+struct GraphJobs(JobService);
+
+impl forgebase_graph::MaterialiseJobs for GraphJobs {
+    fn enqueue<'a>(&'a self, tenant: &'a str) -> forgebase_db::BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let job = forgebase_jobs::NewJob::new(
+                forgebase_graph::MATERIALISE_JOB,
+                serde_json::json!({ "tenant": tenant }),
+            );
+            self.0
+                .enqueue(&forgebase_data::AccessContext::system(), job)
+                .await
+                .map(|(job, _)| job.id)
+                .map_err(|e| e.to_string())
+        })
+    }
 }
