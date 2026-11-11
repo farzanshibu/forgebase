@@ -575,7 +575,6 @@ async fn g5_hooks_run_with_an_explicit_context() {
         .await;
     assert_eq!(r.status, 201, "{}", r.text());
     let fns = env.server.functions().unwrap();
-    fns.run_after_hooks().await.unwrap();
     let lines = |logs: Vec<forgebase_functions::ExecutionLog>| -> Vec<Json> {
         logs.iter()
             .flat_map(|l| l.logs.iter())
@@ -584,8 +583,17 @@ async fn g5_hooks_run_with_an_explicit_context() {
             .collect()
     };
     let root = AccessContext::admin("root");
-    let after = lines(fns.logs(&root, "audit", 50).await.unwrap());
-    assert_eq!(after.len(), 2, "{after:?}");
+    // The server's after-hook task delivers the changes (at least once: a
+    // manual `run_after_hooks` would race it on the shared cursor).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let after = loop {
+        let after = lines(fns.logs(&root, "audit", 50).await.unwrap());
+        if after.len() >= 2 || std::time::Instant::now() > deadline {
+            break after;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(after.len() >= 2, "{after:?}");
     for a in &after {
         assert_eq!(a["type"], "service", "{a}");
         assert_eq!(a["tenant"], json!(ta), "after-hooks act in the change's tenant: {a}");
