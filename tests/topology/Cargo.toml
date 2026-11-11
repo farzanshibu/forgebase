@@ -31,6 +31,7 @@ path = "tests/wal.rs"
 forgebase-auth.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
+forgebase-pgengine.workspace = true
 forgebase-db = { workspace = true, features = ["testing"] }
 forgebase-server.workspace = true
 serde_json.workspace = true

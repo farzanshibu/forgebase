@@ -625,13 +625,19 @@ pub fn postmaster_info(data: &std::path::Path) -> Option<(u32, u16, PathBuf)> {
 }
 
 /// Runs `sql` with the engine's `psql` on the node whose data directory is
-/// `data`, as the engine's superuser over its socket; returns stdout
-/// (unaligned, tuples only).
-pub fn psql(data: &std::path::Path, db: &str, sql: &str) -> Result<String, String> {
-    let (_, port, sock) = postmaster_info(data).ok_or("node is not running")?;
+/// `data`, as the engine's superuser (its password from `roles.secret` under
+/// `data_dir`) over the node's socket; returns stdout (unaligned, tuples
+/// only).
+pub fn psql(data_dir: &std::path::Path, node: &std::path::Path, db: &str, sql: &str) -> Result<String, String> {
+    let (_, port, sock) = postmaster_info(node).ok_or("node is not running")?;
     let engine = forgebase_db::shard_testing::engine_dir().ok_or("no engine")?;
+    let secrets = forgebase_pgengine::RoleSecrets::load(&data_dir.join("postgres").join("roles.secret"))
+        .map_err(|e| e.to_string())?
+        .ok_or("no roles.secret")?;
+    let password = secrets.password(forgebase_pgengine::Role::Super).ok_or("no superuser password")?;
     let out = std::process::Command::new(engine.join("bin").join("psql"))
-        .args(["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "forgebase_super", "-d", db, "-h"])
+        .env("PGPASSWORD", password)
+        .args(["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-w", "-U", "forgebase_super", "-d", db, "-h"])
         .arg(&sock)
         .args(["-p", &port.to_string(), "-c", sql])
         .output()

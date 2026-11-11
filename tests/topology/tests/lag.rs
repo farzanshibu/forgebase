@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use forgebase_db::{Backend, ReadIntent, Statement};
+use forgebase_db::{ReadIntent, Statement};
 use forgebase_topology_tests::*;
 use serde_json::json;
 
@@ -51,30 +51,30 @@ async fn paused_replicas_never_serve_a_read_older_than_the_callers_writes_and_le
         assert_eq!(r.status, 201);
     }
     let replicas = t.server().router().control().replicas().cloned().expect("replicas");
-    let standby_count = async || {
+    let try_standby = async || {
         let rows = replicas
             .fetch(
                 &Statement::raw("SELECT CAST(pg_is_in_recovery() AS INT), (SELECT count(*) FROM events)"),
                 &ReadIntent::replica("fb178 lag"),
             )
             .await
-            .unwrap();
-        (rows.rows[0][0].as_i64().unwrap(), rows.rows[0][1].as_i64().unwrap())
+            .ok()?;
+        Some((rows.rows[0][0].as_i64().unwrap(), rows.rows[0][1].as_i64().unwrap()))
     };
+    let standby_count = async || try_standby().await.expect("a read answers");
     // Both standbys have the five.
     until("the standbys have the first five", Duration::from_secs(30), async || {
         let mut ok = 0;
-        for _ in 0..6 {
-            let (rec, n) = standby_count().await;
-            ok += usize::from(rec == 1 && n == 5);
+        for _ in 0..8 {
+            ok += usize::from(try_standby().await == Some((1, 5)));
         }
-        ok >= 4
+        ok >= 6
     })
     .await;
 
     // Pause the replay on both standbys, then write five more.
     for r in ["r1", "r2"] {
-        psql(&t.node_data(r), "postgres", "SELECT pg_wal_replay_pause()").expect("pause");
+        psql(&t.cfg.data_dir, &t.node_data(r), "postgres", "SELECT pg_wal_replay_pause()").expect("pause");
     }
     let mut token = String::new();
     for i in 0..5 {
@@ -118,7 +118,7 @@ async fn paused_replicas_never_serve_a_read_older_than_the_callers_writes_and_le
 
     // Resume: they catch up and come back; their reads include every write.
     for r in ["r1", "r2"] {
-        psql(&t.node_data(r), "postgres", "SELECT pg_wal_replay_resume()").expect("resume");
+        psql(&t.cfg.data_dir, &t.node_data(r), "postgres", "SELECT pg_wal_replay_resume()").expect("resume");
     }
     for r in ["r1", "r2"] {
         t.wait_in_rotation(r, Duration::from_secs(120)).await;
