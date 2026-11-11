@@ -797,7 +797,7 @@ impl AuthService {
             let mut tx = Tx::begin(self.data().backend()).await?;
             tx.exec(
                 "UPDATE _forgebase_oauth_identities SET last_login_at = ?2, email = COALESCE(?3, email),
-                    email_verified = CASE WHEN ?3 IS NULL THEN email_verified ELSE ?4 END WHERE id = ?1",
+                    email_verified = CASE WHEN CAST(?3 AS TEXT) IS NULL THEN email_verified ELSE ?4 END WHERE id = ?1",
                 vec![
                     t(identity_id),
                     i(now()),

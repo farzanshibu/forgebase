@@ -201,7 +201,7 @@ impl CreditService {
             .fetch_all(&Statement::new(
                 "SELECT (at / ?1) * ?1 AS b, COALESCE(feature_key, ''), kind, SUM(amount), SUM(COALESCE(units, 0)), COUNT(*)
                  FROM _forgebase_credit_ledger
-                 WHERE kind IN ('consumption', 'spend', 'refund') AND (?2 IS NULL OR subject = ?2)
+                 WHERE kind IN ('consumption', 'spend', 'refund') AND (CAST(?2 AS TEXT) IS NULL OR subject = ?2)
                    AND at >= ?3 AND at < ?4
                  GROUP BY b, 2, kind ORDER BY b",
                 vec![
@@ -265,7 +265,7 @@ impl CreditService {
             .db()
             .fetch_all(&Statement::new(
                 "SELECT kind, SUM(amount) FROM _forgebase_credit_ledger
-                 WHERE (?1 IS NULL OR subject = ?1) AND at >= ?2 AND at < ?3 GROUP BY kind",
+                 WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1) AND at >= ?2 AND at < ?3 GROUP BY kind",
                 vec![s.clone(), from.into(), to.into()],
             ))
             .await?;
@@ -302,7 +302,7 @@ impl CreditService {
         sum.balance = self
             .db()
             .fetch_all(&one(
-                "SELECT COALESCE(SUM(balance), 0) FROM _forgebase_credit_accounts WHERE (?1 IS NULL OR subject = ?1)",
+                "SELECT COALESCE(SUM(balance), 0) FROM _forgebase_credit_accounts WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1)",
                 vec![s.clone()],
             ))
             .await?
@@ -313,7 +313,7 @@ impl CreditService {
             .db()
             .fetch_all(&one(
                 "SELECT COALESCE(SUM(shortfall), 0) FROM _forgebase_credit_usage
-                 WHERE (?1 IS NULL OR subject = ?1) AND event_at >= ?2 AND event_at < ?3",
+                 WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1) AND event_at >= ?2 AND event_at < ?3",
                 vec![s, from.into(), to.into()],
             ))
             .await?

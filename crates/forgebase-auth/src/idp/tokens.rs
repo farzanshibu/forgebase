@@ -993,7 +993,8 @@ impl AuthService {
             {
                 let mut tx = Tx::begin(self.data().backend()).await?;
                 tx.exec(
-                    "INSERT OR IGNORE INTO _forgebase_oauth_revoked_tokens (jti, family_id, expires_at) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO _forgebase_oauth_revoked_tokens (jti, family_id, expires_at) VALUES (?1, ?2, ?3)
+                     ON CONFLICT DO NOTHING",
                     vec![t(jti), t(fid), i(exp)],
                 )
                 .await?;

@@ -214,7 +214,7 @@ impl BillingService {
                 let rows = t
                     .fetch(
                         "SELECT id FROM _forgebase_billing_customers
-                         WHERE (?1 IS NOT NULL AND id = ?1) OR (?2 IS NOT NULL AND provider = ?3 AND provider_customer_id = ?2)
+                         WHERE (CAST(?1 AS TEXT) IS NOT NULL AND id = ?1) OR (CAST(?2 AS TEXT) IS NOT NULL AND provider = ?3 AND provider_customer_id = ?2)
                          LIMIT 1",
                         vec![customer_id.clone().into(), provider_customer.clone().into(), provider.into()],
                     )
@@ -563,7 +563,7 @@ pub(crate) async fn record(
              payload_hash, status, result, processed_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?6)
          ON CONFLICT (provider, event_id) DO UPDATE SET status = excluded.status, result = excluded.result,
-             attempts = attempts + 1, processed_at = excluded.processed_at",
+             attempts = _forgebase_billing_webhook_events.attempts + 1, processed_at = excluded.processed_at",
         vec![
             new_id("whe").into(),
             provider.into(),

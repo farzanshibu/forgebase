@@ -21,7 +21,7 @@ use forgebase_auth::crypto::{base32_decode, hotp};
 use forgebase_auth::data::{AccessContext, DataService, DefaultAuthorizer};
 use forgebase_auth::{Argon2Config, AuthConfig, AuthService, ClientInfo, DevMailer, MailKind};
 use forgebase_core::ErrorCode;
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -32,7 +32,7 @@ struct H {
     auth: AuthService,
     mail: DevMailer,
     db: Database,
-    dir: tempfile::TempDir,
+    dir: forgebase_db::testing::TestDb,
 }
 
 async fn probe(State(data): State<DataService>, Extension(ctx): Extension<AccessContext>) -> Response {
@@ -63,22 +63,26 @@ fn test_config(dir: &std::path::Path) -> AuthConfig {
     cfg
 }
 
-async fn open_db(dir: &std::path::Path) -> Database {
-    let cfg = forgebase_core::Config::defaults(dir);
-    let db = Database::open(DbOptions::from_config(&cfg.database, dir.join("forgebase.db")))
-        .await
-        .unwrap();
+/// Opens the test's database again (a restart).
+async fn open_db(dir: &forgebase_db::testing::TestDb) -> Database {
+    let db = Database::open(dir.options()).await.unwrap();
     db.migrate(None).await.unwrap();
     db
 }
 
-async fn harness_in(dir: tempfile::TempDir, tweak: impl FnOnce(&mut AuthConfig)) -> H {
-    let db = open_db(dir.path()).await;
-    let mut cfg = test_config(dir.path());
+async fn harness_in(dir: forgebase_db::testing::TestDb, tweak: impl FnOnce(&mut AuthConfig)) -> H {
+    let db = open_db(&dir).await;
+    let mut cfg = test_config(dir.data_dir());
     tweak(&mut cfg);
-    let auth = AuthService::open_with_data(Arc::new(db.clone()), Arc::new(DefaultAuthorizer), dir.path(), cfg, None)
-        .await
-        .unwrap();
+    let auth = AuthService::open_with_data(
+        Arc::new(db.clone()),
+        Arc::new(DefaultAuthorizer),
+        dir.data_dir(),
+        cfg,
+        None,
+    )
+    .await
+    .unwrap();
     let probe_routes = Router::new()
         .route("/api/v1/collections/{name}/records", get(probe).post(probe))
         .with_state(auth.data().clone());
@@ -92,14 +96,14 @@ async fn harness_in(dir: tempfile::TempDir, tweak: impl FnOnce(&mut AuthConfig))
     H {
         app,
         auth,
-        mail: DevMailer::new(dir.path().join("mail")),
+        mail: DevMailer::new(dir.data_dir().join("mail")),
         db,
         dir,
     }
 }
 
 async fn harness(tweak: impl FnOnce(&mut AuthConfig)) -> H {
-    harness_in(tempfile::tempdir().unwrap(), tweak).await
+    harness_in(forgebase_db::testing::test_backend().await, tweak).await
 }
 
 struct Resp {
@@ -1405,10 +1409,7 @@ async fn no_secret_is_logged_stored_or_returned_after_creation() {
 
     // 2. Database: no plaintext anywhere (every text and blob cell of every table).
     use forgebase_db::{Backend, Statement, Value as V};
-    let tables =
-        h.db.fetch_all(&Statement::raw("SELECT name FROM sqlite_master WHERE type = 'table'"))
-            .await
-            .unwrap();
+    let tables = h.db.fetch_all(&h.db.dialect().introspect_tables()).await.unwrap();
     let mut dump = String::new();
     for row in &tables.rows {
         let V::Text(name) = &row[0] else { continue };
@@ -1491,16 +1492,16 @@ async fn signing_key_rotation_keeps_old_tokens_valid() {
     let dir = h.dir;
     h.db.close().await;
     std::fs::write(
-        dir.path().join("auth/master.key"),
+        dir.data_dir().join("auth/master.key"),
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
     )
     .unwrap();
-    let db = open_db(dir.path()).await;
+    let db = open_db(&dir).await;
     let err = AuthService::open_with_data(
         Arc::new(db.clone()),
         Arc::new(DefaultAuthorizer),
-        dir.path(),
-        test_config(dir.path()),
+        dir.data_dir(),
+        test_config(dir.data_dir()),
         None,
     )
     .await
