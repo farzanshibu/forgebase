@@ -325,7 +325,7 @@ pub(crate) fn rrf(vector: &[u64], text: &[u64], rrf_k: f64, w: HybridWeights) ->
 #[derive(Debug)]
 enum Gate {
     Allow,
-    Filter(Filter),
+    Filter(Box<Filter>),
     Deny,
 }
 
@@ -446,7 +446,7 @@ impl VectorService {
         Ok(match rule {
             Ok(None) => Gate::Allow,
             Ok(Some(p)) => match self.rule_filter(Some(p))? {
-                Some(f) => Gate::Filter(f),
+                Some(f) => Gate::Filter(Box::new(f)),
                 None => Gate::Allow,
             },
             Err(VectorError::Forbidden(_) | VectorError::Unauthenticated) => Gate::Deny,
@@ -1191,7 +1191,7 @@ impl VectorService {
                         return Err(Self::denied(ctx, format!("{op} of items in {name} is not allowed")));
                     }
                     Gate::Allow => None,
-                    Gate::Filter(f) => Some(f),
+                    Gate::Filter(f) => Some(&**f),
                 };
                 if let (Some(f), Some(k)) = (check, existing)
                     && !store::matches_tx(&mut *tx, dialect, cid, k, f).await?

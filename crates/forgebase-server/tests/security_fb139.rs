@@ -388,7 +388,7 @@ async fn g9_source_collection_rechecks_the_records_view_rule_and_field_mask() {
     let path = "/vector/collections/notevecs/search";
     let r = call(&env, &alice, t, "POST", path, Some(search.clone())).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(hit_ids(&r), [mine.clone()], "only records alice may view");
+    assert_eq!(hit_ids(&r), std::slice::from_ref(&mine), "only records alice may view");
     let meta = &r.json()["hits"][0]["metadata"];
     assert_eq!(meta["owner"], json!(user_id(&alice_pk)), "{meta}");
     assert!(meta.get("salary").is_none(), "the hidden field is masked: {meta}");
