@@ -1091,6 +1091,8 @@ async fn open_auth(
     let authorizer: Arc<dyn Authorizer> = Arc::new(channels);
     let auth = forgebase_auth::AuthService::open_with_data(backend, authorizer, layout.root(), cfg, None).await?;
     policy.attach_data(auth.data().clone());
+    // FIX-15: new environments are placed on a set (ADR-0029 §3.4).
+    policy.attach_router(router.clone());
     // FB-173: schema changes on every set, and the native-policy startup
     // sync below covers every shard. FB-171: records route per call.
     auth.data().attach_shards(router.clone());

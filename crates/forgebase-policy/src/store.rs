@@ -460,6 +460,17 @@ impl PolicyService {
             envs.push(json!({"id": eid, "name": e}));
         }
         self.write(stmts).await?;
+        let env_ids: Vec<String> = envs.iter().filter_map(|e| e["id"].as_str().map(str::to_owned)).collect();
+        if let Err(e) = self.place_environments(&id, &env_ids).await {
+            // Without a placement the project would be half made: undo it.
+            let _ = self
+                .write(vec![Statement::new(
+                    "DELETE FROM _forgebase_projects WHERE id = ?1",
+                    vec![id.clone().into()],
+                )])
+                .await;
+            return Err(e);
+        }
         Ok(json!({"id": id, "org_id": org_id, "owner_user": owner, "slug": slug, "name": name, "environments": envs}))
     }
 
@@ -545,7 +556,38 @@ impl PolicyService {
         check_slug(name, "environment name")?;
         let id = generate_id();
         self.write(vec![env_stmt(&id, project, name)]).await?;
+        if let Err(e) = self.place_environments(project, std::slice::from_ref(&id)).await {
+            let _ = self
+                .write(vec![Statement::new(
+                    "DELETE FROM _forgebase_environments WHERE id = ?1",
+                    vec![id.clone().into()],
+                )])
+                .await;
+            return Err(e);
+        }
         Ok(json!({"id": id, "project_id": project, "name": name}))
+    }
+
+    /// Places new environments (tenants) on a set per ADR-0029 §3.4: project
+    /// affinity, then the policy (least loaded or control). The environment
+    /// rows are already written (affinity reads them). With one set, or no
+    /// router attached, nothing happens: a tenant without a placement row is
+    /// on control. The placement row is its own control transaction, so
+    /// callers undo the environment when this fails (FIX-15).
+    async fn place_environments(&self, project: &str, envs: &[String]) -> Result<(), PolicyError> {
+        let Some(router) = self.inner.router.get() else {
+            return Ok(());
+        };
+        if !router.is_sharded() {
+            return Ok(());
+        }
+        for env in envs {
+            router
+                .place_new_tenant(env, Some(project), None)
+                .await
+                .map_err(|e| PolicyError::Internal(format!("placing environment {env}: {e}")))?;
+        }
+        Ok(())
     }
 
     // ----- memberships ------------------------------------------------------
