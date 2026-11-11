@@ -69,6 +69,8 @@ pub(crate) struct Inner {
     /// `true` once streams must end (server shutdown).
     pub(crate) closed: watch::Sender<bool>,
     pub(crate) background: Mutex<Option<(watch::Sender<bool>, JoinHandle<()>)>>,
+    /// Where deliveries are stored, resolved on first use (FB-164).
+    pub(crate) engine: crate::pgmq::EngineSlot,
 }
 
 /// Reads through the read pool or inside a write transaction.
@@ -588,6 +590,7 @@ impl QueueService {
                 wake,
                 closed,
                 background: Mutex::new(None),
+                engine: tokio::sync::RwLock::new(None),
             }),
         }
     }
@@ -981,6 +984,7 @@ impl QueueService {
             ResourceOp::Delete,
             None,
         )?;
+        let eng = self.store().await?;
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let shown = name;
@@ -1000,6 +1004,17 @@ impl QueueService {
                     "topic_has_subscriptions",
                     format!("topic {shown:?} has {subs} subscription(s); delete them first or pass force"),
                 ));
+            }
+            if subs > 0 && *eng == crate::model::DeliveryEngine::Pgmq {
+                let rows = tx
+                    .fetch_all(&Statement::new(
+                        "SELECT name FROM _forgebase_queue_subscriptions WHERE topic = ?1",
+                        vec![name.into()],
+                    ))
+                    .await?;
+                for r in Row::all(&rows) {
+                    crate::pgmq::drop_queue(&mut *tx, &r.text("name")).await?;
+                }
             }
             tx.execute(&Statement::new(
                 "DELETE FROM _forgebase_queue_topics WHERE name = ?1",
@@ -1466,6 +1481,7 @@ impl QueueService {
         };
         let owner = OwnerContext::of(ctx).to_text();
         let now = self.now();
+        let eng = self.store().await?;
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let topic = resolve_topic(&mut Db::Tx(&mut *tx), tenant.as_deref(), &new.topic).await?;
@@ -1532,10 +1548,14 @@ impl QueueService {
                 ],
             ))
             .await?;
+            if *eng == crate::model::DeliveryEngine::Pgmq {
+                crate::pgmq::create_queue(&mut *tx, &key, new.ordering).await?;
+            }
             sub_row(&mut Db::Tx(&mut *tx), &key).await
         }
         .await;
         let mut sub = finish(tx, r).await?.public();
+        drop(eng);
         sub.push_secret = secret.map(|(plain, _)| plain);
         if sub.push.is_some() {
             self.notify();
@@ -1779,8 +1799,12 @@ impl QueueService {
             .await?;
         let shown = name;
         let name = found.name.as_str();
+        let eng = self.store().await?;
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
+            if *eng == crate::model::DeliveryEngine::Pgmq {
+                crate::pgmq::drop_queue(&mut *tx, name).await?;
+            }
             let n = tx
                 .execute(&Statement::new(
                     "DELETE FROM _forgebase_queue_subscriptions WHERE name = ?1",
