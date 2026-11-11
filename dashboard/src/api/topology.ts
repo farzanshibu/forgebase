@@ -217,7 +217,7 @@ export interface MoveEstimate {
 }
 
 export const getTopology = (signal?: AbortSignal) => request<TopologyView>(`${BASE}/topology`, { signal });
-export const getNode = (id: string, signal?: AbortSignal) => request<NodeDetail>(`${BASE}/nodes/${enc(id)}`, { signal });
+export const getTopologyNode = (id: string, signal?: AbortSignal) => request<NodeDetail>(`${BASE}/nodes/${enc(id)}`, { signal });
 export const addNode = (body: AddNodeBody) => send<Added>("POST", `${BASE}/nodes`, body);
 export const setNodeWeight = (id: string, weight: number) => send<TopologyNode>("PATCH", `${BASE}/nodes/${enc(id)}`, { weight });
 /** `confirm` is the node's name. */

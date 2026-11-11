@@ -1,4 +1,5 @@
 import { Card } from "panelui-web/card";
+import { Link } from "react-router-dom";
 import type { FeatureSetting, ServerFeature, SettingValue } from "../../api";
 import SettingField from "./SettingField";
 import { groupSettings } from "./settingUtil";
@@ -24,6 +25,9 @@ export default function SettingsSections({ features, valueOf, errorOf, onEdit }:
               {groups.map((g) => (
                 <section key={g.title ?? ""} aria-label={g.title ? `${f.name}: ${g.title}` : undefined} className="divide-y divide-border">
                   {g.title && <h4 className="pt-2 text-sm font-semibold tracking-tight">{g.title}</h4>}
+                  {f.id === "database" && (g.title === "Read replicas" || g.title === "Sharding" || g.title === "Servers declared in the config file") && (
+                    <p className="pt-1 text-xs text-muted-foreground">These settings change how replicas and shards behave. Add, promote and move the servers themselves in <Link to="/system/topology" className="text-primary hover:underline">System › Database topology</Link>.</p>
+                  )}
                   {g.rows.map((s) => (
                     <SettingField key={s.key} setting={s} value={valueOf(s)} error={errorOf(s.key)} onChange={(v, e) => onEdit(s, v, e)} />
                   ))}
