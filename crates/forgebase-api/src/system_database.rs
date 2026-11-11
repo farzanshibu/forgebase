@@ -854,7 +854,7 @@ fn check_url(url: Option<&str>, what: &str) -> ApiResult<String> {
 }
 
 /// The SQLite answer of `GET …/topology`: one server, nothing to change.
-fn sqlite_view(app: &AppState) -> TopologyView {
+fn sqlite_view(location: String) -> TopologyView {
     let now = forgebase_core::now_rfc3339();
     TopologyView {
         backend: "sqlite".into(),
@@ -888,7 +888,7 @@ fn sqlite_view(app: &AppState) -> TopologyView {
             lag_bytes: None,
             replay_lsn: None,
             last_error: None,
-            agent: Some(json!({ "sqlite_file": app.db().location() })),
+            agent: Some(json!({ "sqlite_file": location })),
             created_at: now.clone(),
             updated_at: now,
         }],
@@ -908,7 +908,7 @@ fn sqlite_view(app: &AppState) -> TopologyView {
 pub async fn topology(State(s): State<DbApi>, Access(ctx): Access) -> ApiResult<Response> {
     require_admin(&ctx)?;
     if s.is_sqlite() {
-        return Ok(Json(sqlite_view(&s.app)).into_response());
+        return Ok(Json(sqlite_view(s.app.db().location())).into_response());
     }
     let view = s.ops(&ctx)?.topology().await?;
     Ok(Json(view).into_response())
@@ -1550,4 +1550,563 @@ pub struct DatabaseApiDoc;
 /// [`DatabaseApiDoc`] as a document.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     DatabaseApiDoc::openapi()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use forgebase_core::DataLayout;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    /// A topology service that records calls and answers canned values.
+    #[derive(Debug, Default)]
+    struct Mock {
+        calls: Mutex<Vec<String>>,
+        fail: Option<TopologyError>,
+    }
+
+    fn op(kind: &str) -> Operation {
+        Operation {
+            id: "j1".into(),
+            kind: kind.into(),
+            status: "queued".into(),
+            set: Some("control".into()),
+            node: None,
+            progress: None,
+            cancel_requested: false,
+            cancellable: true,
+            result: None,
+            last_error: None,
+            created_by: "admin:a".into(),
+            created_at: "2026-11-11T00:00:00Z".into(),
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    fn node_info() -> NodeInfo {
+        let mut v = sqlite_view_node();
+        v.kind = "external".into();
+        v.role = "replica".into();
+        v
+    }
+
+    fn sqlite_view_node() -> NodeInfo {
+        NodeInfo {
+            id: "n1".into(),
+            set: "control".into(),
+            name: "r1".into(),
+            kind: "local".into(),
+            role: "primary".into(),
+            state: "ready".into(),
+            weight: 1,
+            engine_version: None,
+            system_identifier: None,
+            timeline: None,
+            origin: "api".into(),
+            in_rotation: None,
+            lag_ms: None,
+            lag_bytes: None,
+            replay_lsn: None,
+            last_error: None,
+            agent: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    impl Mock {
+        fn hit<T>(&self, call: String, v: T) -> OpsFuture<'_, T>
+        where
+            T: Send + 'static,
+        {
+            self.calls.lock().unwrap().push(call);
+            let r = match &self.fail {
+                Some(e) => Err(e.clone()),
+                None => Ok(v),
+            };
+            Box::pin(async move { r })
+        }
+    }
+
+    impl TopologyOps for Mock {
+        fn topology(&self) -> OpsFuture<'_, TopologyView> {
+            let mut v = sqlite_view(String::new());
+            v.backend = "postgres".into();
+            self.hit("topology".into(), v)
+        }
+        fn node<'a>(&'a self, id: &'a str) -> OpsFuture<'a, NodeDetail> {
+            self.hit(
+                format!("node {id}"),
+                NodeDetail {
+                    node: node_info(),
+                    lag_history: vec![],
+                },
+            )
+        }
+        fn add_node<'a>(&'a self, _ctx: &'a AccessContext, req: AddNode) -> OpsFuture<'a, Added> {
+            let added = if req.kind == "local" {
+                Added {
+                    operation: Some(op(kinds::NODE_ADD)),
+                    node: None,
+                }
+            } else {
+                Added {
+                    operation: None,
+                    node: Some(node_info()),
+                }
+            };
+            self.hit(format!("add {} {} {:?}", req.kind, req.name, req.url.is_some()), added)
+        }
+        fn update_node<'a>(&'a self, id: &'a str, req: UpdateNode) -> OpsFuture<'a, NodeInfo> {
+            self.hit(format!("update {id} {}", req.weight), node_info())
+        }
+        fn remove_node<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, Removed> {
+            self.hit(format!("remove {id} {confirm}"), Removed { removed: id.into() })
+        }
+        fn promote_check<'a>(&'a self, id: &'a str) -> OpsFuture<'a, PromoteCheck> {
+            self.hit(
+                format!("check {id}"),
+                PromoteCheck {
+                    replayed: Some("0/10".into()),
+                    primary_lsn: Some("0/10".into()),
+                    behind_bytes: Some(0),
+                    primary_reachable: true,
+                },
+            )
+        }
+        fn promote<'a>(&'a self, _ctx: &'a AccessContext, id: &'a str, req: PromoteBody) -> OpsFuture<'a, Operation> {
+            self.hit(format!("promote {id} {} {}", req.confirm, req.accept_data_loss), op(kinds::PROMOTE))
+        }
+        fn rebuild<'a>(&'a self, _ctx: &'a AccessContext, id: &'a str) -> OpsFuture<'a, Operation> {
+            self.hit(format!("rebuild {id}"), op(kinds::NODE_REBUILD))
+        }
+        fn join_token<'a>(
+            &'a self,
+            _ctx: &'a AccessContext,
+            req: JoinTokenBody,
+            server_url: &'a str,
+        ) -> OpsFuture<'a, JoinToken> {
+            self.hit(
+                format!("join {} {} {server_url}", req.set, req.role),
+                JoinToken {
+                    id: "j".into(),
+                    token: "fbj_x".into(),
+                    set: req.set.clone(),
+                    role: req.role.clone(),
+                    expires_at: String::new(),
+                    command: "forgebase node join".into(),
+                },
+            )
+        }
+        fn add_shard<'a>(&'a self, _ctx: &'a AccessContext, req: AddShard) -> OpsFuture<'a, Operation> {
+            self.hit(format!("shard {} {}", req.name, req.node.kind), op(kinds::SHARD_ADD))
+        }
+        fn update_shard<'a>(&'a self, id: &'a str, req: UpdateShard) -> OpsFuture<'a, SetInfo> {
+            let v = sqlite_view(String::new()).sets.remove(0);
+            self.hit(format!("patch {id} {:?}", req.state), v)
+        }
+        fn remove_shard<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, Removed> {
+            self.hit(format!("rmshard {id} {confirm}"), Removed { removed: id.into() })
+        }
+        fn placements(&self, q: PlacementQuery) -> OpsFuture<'_, PlacementPage> {
+            self.hit(
+                format!("placements {:?} {:?} {:?} {:?} {:?}", q.set, q.project, q.q, q.cursor, q.limit),
+                PlacementPage {
+                    items: vec![],
+                    next_cursor: None,
+                },
+            )
+        }
+        fn operations<'a>(&'a self, _ctx: &'a AccessContext, q: OperationQuery) -> OpsFuture<'a, OperationList> {
+            self.hit(
+                format!("ops {} {:?}", q.active, q.limit),
+                OperationList {
+                    items: vec![op(kinds::PROMOTE)],
+                },
+            )
+        }
+        fn operation<'a>(&'a self, _ctx: &'a AccessContext, id: &'a str) -> OpsFuture<'a, Operation> {
+            self.hit(format!("op {id}"), op(kinds::PROMOTE))
+        }
+        fn cancel_operation<'a>(&'a self, _ctx: &'a AccessContext, id: &'a str) -> OpsFuture<'a, Operation> {
+            self.hit(format!("cancel {id}"), op(kinds::PROMOTE))
+        }
+        fn agent_join(&self, _body: Json_, peer: Option<IpAddr>) -> OpsFuture<'_, Json_> {
+            self.hit(format!("agent_join {peer:?}"), json!({"node_id": "n9"}))
+        }
+        fn agent_commands<'a>(
+            &'a self,
+            id: &'a str,
+            key: &'a str,
+            wait_ms: Option<u64>,
+            resend: bool,
+        ) -> OpsFuture<'a, Json_> {
+            self.hit(format!("commands {id} {key} {wait_ms:?} {resend}"), json!({"commands": []}))
+        }
+        fn agent_heartbeat<'a>(&'a self, id: &'a str, key: &'a str, _body: Json_) -> OpsFuture<'a, Json_> {
+            self.hit(format!("heartbeat {id} {key}"), json!({"node_state": "streaming"}))
+        }
+    }
+
+    struct Fixture {
+        app: Router,
+        mock: Arc<Mock>,
+        kind: BackendKind,
+        _db: forgebase_db::testing::TestDb,
+    }
+
+    async fn fixture(ops: Option<Mock>) -> Fixture {
+        let db = forgebase_db::testing::test_backend().await;
+        db.migrate(None).await.unwrap();
+        let layout = DataLayout::new(db.data_dir().join("data"));
+        layout.ensure().unwrap();
+        let state = AppState::new(db.database().clone(), layout).await.unwrap();
+        let mock = Arc::new(ops.unwrap_or_default());
+        let some = Arc::clone(&mock) as Arc<dyn TopologyOps>;
+        let app = crate::router(
+            state,
+            crate::RouterOptions {
+                database_topology: Some(some),
+                ..crate::RouterOptions::default()
+            },
+        );
+        Fixture {
+            app,
+            mock,
+            kind: db.kind(),
+            _db: db,
+        }
+    }
+
+    async fn call(
+        f: &Fixture,
+        ctx: Option<AccessContext>,
+        method: Method,
+        uri: &str,
+        body: Option<Json_>,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, Json_) {
+        let peer = SocketAddr::from(([10, 0, 0, 7], 40000));
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .extension(ConnectInfo(peer))
+            .header("content-type", "application/json");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        if let Some(c) = ctx {
+            req = req.extension(c);
+        }
+        let body = body.map(|b| Body::from(b.to_string())).unwrap_or_else(Body::empty);
+        let res = f.app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, headers, serde_json::from_slice(&bytes).unwrap_or(Json_::Null))
+    }
+
+    fn admin() -> Option<AccessContext> {
+        Some(AccessContext::admin("a1"))
+    }
+
+    fn code(j: &Json_) -> &str {
+        j["error"]["code"].as_str().unwrap_or("")
+    }
+
+    const ADMIN_ROUTES: &[(&str, &str)] = &[
+        ("GET", "/api/system/database/topology"),
+        ("GET", "/api/system/database/nodes/n1"),
+        ("POST", "/api/system/database/nodes"),
+        ("PATCH", "/api/system/database/nodes/n1"),
+        ("DELETE", "/api/system/database/nodes/n1?confirm=r1"),
+        ("GET", "/api/system/database/nodes/n1/promote-check"),
+        ("POST", "/api/system/database/nodes/n1/promote"),
+        ("POST", "/api/system/database/nodes/n1/rebuild"),
+        ("POST", "/api/system/database/join-tokens"),
+        ("POST", "/api/system/database/shards"),
+        ("PATCH", "/api/system/database/shards/s1"),
+        ("DELETE", "/api/system/database/shards/s1?confirm=x"),
+        ("GET", "/api/system/database/placements"),
+        ("POST", "/api/system/database/placements/t1/move"),
+        ("POST", "/api/system/database/rebalance/plan"),
+        ("POST", "/api/system/database/rebalance"),
+        ("GET", "/api/system/database/operations"),
+        ("GET", "/api/system/database/operations/j1"),
+        ("POST", "/api/system/database/operations/j1/cancel"),
+    ];
+
+    fn body_for(path: &str) -> Option<Json_> {
+        Some(if path.ends_with("/move") {
+            json!({"to": "s2", "confirm": "t1"})
+        } else if path.ends_with("/rebalance") {
+            json!({"plan_id": "p", "confirm": "p"})
+        } else if path.ends_with("/promote") {
+            json!({"confirm": "r1"})
+        } else if path.ends_with("/nodes") {
+            json!({"name": "r1", "kind": "local"})
+        } else if path.contains("/nodes/") {
+            json!({"weight": 2})
+        } else if path.ends_with("/shards") {
+            json!({"name": "s", "node": {"name": "s1p", "kind": "external", "url": "postgres://h/db"}})
+        } else if path.contains("/shards/") {
+            json!({"weight": 2})
+        } else {
+            json!({})
+        })
+    }
+
+    #[tokio::test]
+    async fn every_route_is_for_administrators_only() {
+        let f = fixture(None).await;
+        for (m, p) in ADMIN_ROUTES {
+            let method: Method = m.parse().unwrap();
+            let (s, _, j) = call(&f, None, method.clone(), p, body_for(p), &[]).await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{m} {p}: {j}");
+            let user = AccessContext::user("users", "u1");
+            let (s, _, j) = call(&f, Some(user), method, p, body_for(p), &[]).await;
+            assert_eq!(s, StatusCode::FORBIDDEN, "{m} {p}: {j}");
+        }
+        assert!(f.mock.calls.lock().unwrap().is_empty(), "nothing reached the service");
+    }
+
+    #[tokio::test]
+    async fn sqlite_shows_one_server_and_refuses_changes() {
+        let f = fixture(None).await;
+        if f.kind != BackendKind::Sqlite {
+            return;
+        }
+        let (s, _, j) = call(&f, admin(), Method::GET, "/api/system/database/topology", None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{j}");
+        assert_eq!(j["backend"], "sqlite");
+        assert_eq!(j["nodes"].as_array().unwrap().len(), 1);
+        for (m, p) in ADMIN_ROUTES.iter().skip(1) {
+            let (s, _, j) = call(&f, admin(), m.parse().unwrap(), p, body_for(p), &[]).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{m} {p}: {j}");
+            assert_eq!(code(&j), codes::POSTGRES_REQUIRED, "{m} {p}");
+        }
+        let (s, _, j) = call(
+            &f,
+            None,
+            Method::POST,
+            "/api/system/database/agent/join",
+            Some(json!({})),
+            &[],
+        )
+        .await;
+        assert_eq!((s, code(&j)), (StatusCode::BAD_REQUEST, codes::POSTGRES_REQUIRED));
+        assert!(f.mock.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_a_service_postgres_answers_topology_unavailable() {
+        let db = forgebase_db::testing::test_backend().await;
+        if db.kind() != BackendKind::Postgres {
+            return;
+        }
+        db.migrate(None).await.unwrap();
+        let layout = DataLayout::new(db.data_dir().join("data"));
+        layout.ensure().unwrap();
+        let state = AppState::new(db.database().clone(), layout).await.unwrap();
+        let f = Fixture {
+            app: crate::router(state, crate::RouterOptions::default()),
+            mock: Arc::new(Mock::default()),
+            kind: db.kind(),
+            _db: db,
+        };
+        let (s, _, j) = call(&f, admin(), Method::GET, "/api/system/database/topology", None, &[]).await;
+        assert_eq!((s, code(&j)), (StatusCode::SERVICE_UNAVAILABLE, codes::TOPOLOGY_UNAVAILABLE));
+    }
+
+    #[tokio::test]
+    async fn routes_check_input_and_reach_the_service() {
+        let f = fixture(None).await;
+        if f.kind != BackendKind::Postgres {
+            return;
+        }
+        let a = admin;
+        let base = "/api/system/database";
+        // Reads.
+        let (s, _, j) = call(&f, a(), Method::GET, &format!("{base}/topology"), None, &[]).await;
+        assert_eq!((s, j["backend"].as_str()), (StatusCode::OK, Some("postgres")));
+        let (s, _, j) = call(&f, a(), Method::GET, &format!("{base}/nodes/n1"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{j}");
+        assert!(j["node"]["id"].is_string() && j["lag_history"].is_array());
+        // Add: local is an operation, external a node; bad input never reaches the service.
+        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes"), Some(json!({"name": "r1", "kind": "local"})), &[]).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{j}");
+        assert_eq!(j["operation"]["kind"], kinds::NODE_ADD);
+        let ext = json!({"name": "e1", "kind": "external", "url": "postgres://u:p@h/db"});
+        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes"), Some(ext), &[]).await;
+        assert_eq!(s, StatusCode::CREATED, "{j}");
+        assert!(j["node"]["url_sealed"].is_null() && !j.to_string().contains("u:p@"), "no URL in answers");
+        for (bad, why) in [
+            (json!({"name": "e2", "kind": "external"}), "external without url"),
+            (json!({"name": "e2", "kind": "external", "url": "mysql://h"}), "not postgres"),
+            (json!({"name": "e2", "kind": "remote"}), "remote joins with a token"),
+            (json!({"name": "Primary", "kind": "local"}), "bad name"),
+            (json!({"name": "primary", "kind": "local"}), "reserved name"),
+            (json!({"name": "e2", "kind": "cloud"}), "unknown kind"),
+            (json!({"name": "e2", "kind": "local", "weight": 5000}), "weight"),
+            (json!({"name": "e2", "kind": "local", "extra": 1}), "unknown field"),
+        ] {
+            let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes"), Some(bad), &[]).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{why}: {j}");
+        }
+        let (s, _, _) = call(&f, a(), Method::PATCH, &format!("{base}/nodes/n1"), Some(json!({"weight": 3})), &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _, _) = call(&f, a(), Method::PATCH, &format!("{base}/nodes/n1"), Some(json!({"weight": 1001})), &[]).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _, j) = call(&f, a(), Method::DELETE, &format!("{base}/nodes/n1?confirm=r%201"), None, &[]).await;
+        assert_eq!((s, j["removed"].as_str()), (StatusCode::OK, Some("n1")));
+        let (s, _, j) = call(&f, a(), Method::GET, &format!("{base}/nodes/n1/promote-check"), None, &[]).await;
+        assert_eq!((s, j["primary_reachable"].as_bool()), (StatusCode::OK, Some(true)));
+        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes/n1/promote"), Some(json!({"confirm": "r1", "accept_data_loss": true})), &[]).await;
+        assert_eq!((s, j["operation"]["kind"].as_str()), (StatusCode::ACCEPTED, Some(kinds::PROMOTE)));
+        let (s, _, _) = call(&f, a(), Method::POST, &format!("{base}/nodes/n1/promote"), Some(json!({})), &[]).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "confirm is required");
+        let (s, _, _) = call(&f, a(), Method::POST, &format!("{base}/nodes/n1/rebuild"), None, &[]).await;
+        assert_eq!(s, StatusCode::ACCEPTED);
+        // Join tokens: shown once, not cached.
+        let (s, h, j) = call(&f, a(), Method::POST, &format!("{base}/join-tokens"), Some(json!({})), &[("host", "fb.example:8090")]).await;
+        assert_eq!(s, StatusCode::CREATED, "{j}");
+        assert_eq!(h.get("cache-control").unwrap(), "no-store");
+        // Shards: external works, local / remote wait for FB-174.
+        let shard = |kind: &str| json!({"name": "s2", "node": {"name": "s2p", "kind": kind, "url": "postgres://h/db"}});
+        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/shards"), Some(shard("external")), &[]).await;
+        assert_eq!((s, j["operation"]["kind"].as_str()), (StatusCode::ACCEPTED, Some(kinds::SHARD_ADD)));
+        for k in ["local", "remote"] {
+            let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/shards"), Some(shard(k)), &[]).await;
+            assert_eq!((s, code(&j)), (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED), "{k}");
+        }
+        let (s, _, _) = call(&f, a(), Method::PATCH, &format!("{base}/shards/s1"), Some(json!({"state": "draining"})), &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        for bad in [json!({"state": "retired"}), json!({}), json!({"weight": 0})] {
+            let (s, _, j) = call(&f, a(), Method::PATCH, &format!("{base}/shards/s1"), Some(bad), &[]).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{j}");
+        }
+        let (s, _, _) = call(&f, a(), Method::DELETE, &format!("{base}/shards/s1?confirm=shard-1"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        // Placements: filters and pages; limit is checked.
+        let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/placements?set=s1&project=p1&q=env&cursor=t5&limit=10"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/placements?limit=0"), None, &[]).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        // Moves and rebalancing: 501 until FB-174.
+        for (p, b) in [
+            (format!("{base}/placements/t1/move"), json!({"to": "s2", "confirm": "t1"})),
+            (format!("{base}/rebalance/plan"), json!({})),
+            (format!("{base}/rebalance"), json!({"plan_id": "p", "confirm": "p"})),
+        ] {
+            let (s, _, j) = call(&f, a(), Method::POST, &p, Some(b), &[]).await;
+            assert_eq!((s, code(&j)), (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED), "{p}");
+        }
+        // Operations.
+        let (s, _, j) = call(&f, a(), Method::GET, &format!("{base}/operations?active=1&limit=5"), None, &[]).await;
+        assert_eq!((s, j["items"].as_array().map(Vec::len)), (StatusCode::OK, Some(1)));
+        let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/operations/j1"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _, _) = call(&f, a(), Method::POST, &format!("{base}/operations/j1/cancel"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        // Agent routes: no session; the bearer key goes to the service.
+        let (s, h, _) = call(&f, None, Method::POST, &format!("{base}/agent/join"), Some(json!({"token": "fbj_x"})), &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(h.get("cache-control").unwrap(), "no-store");
+        let (s, _, j) = call(&f, None, Method::GET, &format!("{base}/agent/nodes/n1/commands?wait_ms=10"), None, &[]).await;
+        assert_eq!((s, code(&j)), (StatusCode::UNAUTHORIZED, "agent_unauthorized"));
+        let (s, _, _) = call(&f, None, Method::GET, &format!("{base}/agent/nodes/n1/commands?wait_ms=10&resend=1"), None, &[("authorization", "Bearer fba_k")]).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _, _) = call(&f, None, Method::POST, &format!("{base}/agent/nodes/n1/heartbeat"), Some(json!({})), &[("authorization", "Bearer fba_k")]).await;
+        assert_eq!(s, StatusCode::OK);
+
+        let calls = f.mock.calls.lock().unwrap().clone();
+        for want in [
+            "topology",
+            "node n1",
+            "add local r1 false",
+            "add external e1 true",
+            "update n1 3",
+            "remove n1 r 1",
+            "check n1",
+            "promote n1 r1 true",
+            "rebuild n1",
+            "join control replica http://fb.example:8090",
+            "shard s2 external",
+            "patch s1 Some(\"draining\")",
+            "rmshard s1 shard-1",
+            "placements Some(\"s1\") Some(\"p1\") Some(\"env\") Some(\"t5\") Some(10)",
+            "ops true Some(5)",
+            "op j1",
+            "cancel j1",
+            "agent_join Some(10.0.0.7)",
+            "commands n1 fba_k Some(10) true",
+            "heartbeat n1 fba_k",
+        ] {
+            assert!(calls.iter().any(|c| c == want), "{want} in {calls:#?}");
+        }
+        assert_eq!(calls.len(), 20, "refused input never reached the service: {calls:#?}");
+    }
+
+    #[tokio::test]
+    async fn service_errors_keep_their_status_and_code() {
+        let f = fixture(Some(Mock {
+            fail: Some(TopologyError::new(
+                409,
+                codes::OPERATION_IN_PROGRESS,
+                "operation j0 is already changing control",
+            )),
+            ..Mock::default()
+        }))
+        .await;
+        if f.kind != BackendKind::Postgres {
+            return;
+        }
+        let (s, _, j) = call(
+            &f,
+            admin(),
+            Method::POST,
+            "/api/system/database/nodes/n1/promote",
+            Some(json!({"confirm": "r1"})),
+            &[],
+        )
+        .await;
+        assert_eq!((s, code(&j)), (StatusCode::CONFLICT, codes::OPERATION_IN_PROGRESS));
+        assert!(j["error"]["message"].as_str().unwrap().contains("j0"));
+    }
+
+    #[test]
+    fn the_document_lists_every_route() {
+        let doc = openapi();
+        for p in [
+            "/api/system/database/topology",
+            "/api/system/database/nodes",
+            "/api/system/database/nodes/{id}",
+            "/api/system/database/nodes/{id}/promote-check",
+            "/api/system/database/nodes/{id}/promote",
+            "/api/system/database/nodes/{id}/rebuild",
+            "/api/system/database/join-tokens",
+            "/api/system/database/shards",
+            "/api/system/database/shards/{id}",
+            "/api/system/database/placements",
+            "/api/system/database/placements/{tenant}/move",
+            "/api/system/database/rebalance/plan",
+            "/api/system/database/rebalance",
+            "/api/system/database/operations",
+            "/api/system/database/operations/{id}",
+            "/api/system/database/operations/{id}/cancel",
+            "/api/system/database/agent/join",
+            "/api/system/database/agent/nodes/{id}/commands",
+            "/api/system/database/agent/nodes/{id}/heartbeat",
+        ] {
+            assert!(doc.paths.paths.contains_key(p), "{p}");
+        }
+        let whole = crate::openapi::document();
+        assert!(whole.paths.paths.contains_key("/api/system/database/topology"), "merged into the API document");
+    }
 }

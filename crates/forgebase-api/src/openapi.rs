@@ -255,6 +255,8 @@ pub fn document_with<'a>(
 ) -> utoipa::openapi::OpenApi {
     let mut doc = ApiDoc::openapi();
     doc.merge(forgebase_graph::openapi());
+    // FB-175: `/api/system/database/*`.
+    doc.merge(crate::system_database::openapi());
     for ext in extensions {
         doc.merge(ext.clone());
     }
