@@ -170,6 +170,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "key_tenant",
         include_str!("../../../migrations/system/0028_key_tenant.sql"),
     ),
+    Migration::new(
+        29,
+        "storage_rls",
+        include_str!("../../../migrations/system/0029_storage_rls.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

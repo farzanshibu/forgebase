@@ -117,7 +117,11 @@ and run against a live server; the others are crate tests.
 | Oversized uploads | Bucket and instance limits checked while streaming (`413`), also without `Content-Length` | same test; `storage::bucket_limits_and_content_types_are_checked` |
 | Type confusion: HTML or a PDF uploaded as `image/png` into an `image/*` bucket | **FB-80:** a declared PNG, JPEG, GIF, WebP or PDF must carry that file signature (`400 content_type_mismatch`); the allow-list is checked against the resolved type | same test; `util::declared_types_with_a_signature_must_match_the_bytes` |
 | Stored XSS through downloads | `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, HTML/SVG/XML served as attachments | same test |
-| Signed URL tampering | HMAC-SHA256 over method, bucket, key, expiry, version, file name, content type and subject | `storage.rs` signed-URL tests |
+| Signed URL tampering | HMAC-SHA256 over method, bucket, key, expiry, version, file name, content type and subject (FB-140: and tenant and uploader, length-prefixed) | `storage.rs` signed-URL tests |
+| Signed URL forgery from a database copy (G11) | **FB-140:** the signing key is sealed with the auth keyring; the plain key of older installs is sealed unchanged at start | `security_fb140::g11_the_signing_key_is_not_readable_through_sql`; `storage/tests/fb140.rs` |
+| A signed URL outlives the signer's access (G15) | By design (checked when issued, as S3 and Supabase): 15-minute default lifetime, 7-day cap, `rotate-signing-key` revokes all | `security_fb140::g15_rotating_the_signing_key_revokes_every_signed_url` |
+| Prefix ACL entry used as a bucket grant (G1) | **FB-140:** bucket operations match only entries with the empty prefix | `security_fb140::g1_a_prefix_grant_is_not_a_bucket_grant` |
+| Cross-tenant buckets; unchecked object owners (G14) | **FB-140:** buckets per tenant (`<tenant>/<name>` stored, never addressable); bucket rules over object fields compiled into the object SQL | `security_fb140::g14_*` |
 
 ### 4.5 Server functions (`forgebase-functions`, ADR-0017)
 
