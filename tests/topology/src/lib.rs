@@ -412,6 +412,10 @@ impl Topo {
         let id = r.json()["operation"]["id"].as_str().unwrap().to_owned();
         let done = self.wait_op(&id, Duration::from_secs(300)).await;
         assert_eq!(done["status"], "succeeded", "{done}");
+        if self.shards.is_empty() {
+            // Tenants live on the shards (control keeps its own data).
+            self.takes_tenants("control", false).await;
+        }
         self.shards.push((name.to_owned(), cluster));
         self.set(name).await.expect("the shard is listed")["id"]
             .as_str()
@@ -427,9 +431,10 @@ impl Topo {
     /// A new tenant (the production environment of a new project) and the
     /// access token of its owner.
     ///
-    /// New environments are not placed on shards yet: this server calls no
-    /// `place_new_tenant` when one is created (reported with FB-178), so
-    /// [`Topo::place`] puts the tenant on a set the way an operator would.
+    /// Creating the project places its environments through the placement
+    /// policy (FIX-15): [`Topo::add_shard`] keeps new tenants off control, so
+    /// they go to the least-loaded shard (a tie to the lower number), the
+    /// three environments of a project together.
     pub async fn new_tenant(&mut self) -> String {
         let user = self.user().await;
         self.seq += 1;
@@ -466,13 +471,16 @@ impl Topo {
             .to_owned()
     }
 
-    /// Places `tenant` on `set` (an active placement), before its first write.
-    pub async fn place(&self, tenant: &str, set: &str) {
-        self.server()
-            .router()
-            .place(tenant, set, forgebase_db::topology::PlacementState::Active)
-            .await
-            .unwrap();
+    /// Whether `set` takes new tenants (`PATCH /shards/{id}`).
+    pub async fn takes_tenants(&self, set: &str, on: bool) {
+        let r = self
+            .adm(
+                "PATCH",
+                &format!("{BASE}/shards/{set}"),
+                Some(json!({"hosts_tenants": on})),
+            )
+            .await;
+        assert_eq!(r.status, 200, "hosts_tenants of {set}: {}", r.text());
     }
 
     /// Creates a tenant-scoped collection `name` with a text `body` field and

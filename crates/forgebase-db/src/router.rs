@@ -1149,12 +1149,17 @@ impl DbRouter {
                     vec![project.into(), tenant.into()],
                 ))
                 .await?;
-            if let Some(sibling) = siblings.rows.first().and_then(|r| r.first()).and_then(Value::as_str) {
-                let set_id = self
-                    .placement(sibling)
-                    .map_or_else(|| CONTROL_SET_ID.to_owned(), |p| p.set_id);
-                if self.set(&set_id).is_some_and(|h| h.set().takes_new_tenants()) {
-                    return Ok(set_id);
+            // The earliest sibling that has a placement row: siblings made in
+            // the same call are placed one after the other, so the earliest
+            // may not be placed yet.
+            let sibling_set = siblings
+                .rows
+                .iter()
+                .filter_map(|r| r.first().and_then(Value::as_str))
+                .find_map(|sibling| self.placement(sibling));
+            if let Some(p) = sibling_set {
+                if self.set(&p.set_id).is_some_and(|h| h.set().takes_new_tenants()) {
+                    return Ok(p.set_id);
                 }
             }
         }

@@ -4379,6 +4379,7 @@ nightly job's summary and artifact; it was not run when this was written
   replayed the user (404 `record_not_found`): anonymous callers have no token.
 - Creating an environment never calls `place_new_tenant`; tenants stay on
   control until moved, so the harness places them with `router().place`.
+  (Fixed by FIX-15, below.)
 - Chaos not covered: kill a source or target mid-copy, promote the source
   mid-move, crash between the switch transaction and the flip.
 
@@ -4387,3 +4388,23 @@ FORGEBASE_TEST_PG_ENGINE=<engine> FORGEBASE_PG_ENGINE_DIR=<engine>
 FORGEBASE_TEST_PG_TMP=<short dir> cargo test -p forgebase-topology-tests`.
 On macOS killed clusters leak SysV shared-memory segments
 (`kern.sysv.shmmni = 32`).
+
+**FIX-15 (placement).** Cause: nothing called `place_new_tenant` (§3.4) when
+an environment was created, so on a sharded server every new tenant stayed
+on control. Fix: `PolicyService::attach_router` (the server calls it with the
+router in `open_auth`); `create_project` (its three default environments) and
+`create_environment` then place each new environment, after the environment
+rows are written (project affinity reads them): project affinity, then the
+least-loaded set, or control per `[database.sharding] placement`. A placement
+row is written for every new tenant on a sharded server, control included;
+with one set (or no router) nothing is written, as before. Placement is its
+own control transaction after the environment insert, not the same one; if
+it fails the environment (or project) is deleted again and the call returns
+an internal error, so no environment is left half made. `choose_set` now
+takes the earliest sibling that already has a placement row, because the
+environments of one project are placed one after another. `POST
+environments` has no `shard` field yet (§3.4's administrator choice is only
+in `place_new_tenant`'s `requested`). Test: `crates/forgebase-policy/tests/
+placement_fix15.rs` (real clusters). The topology suite now creates tenants
+through the real path: `Topo::add_shard` keeps control from taking tenants,
+`Topo::takes_tenants` toggles a shard, and `Topo::place` is gone.

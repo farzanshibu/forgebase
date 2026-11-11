@@ -146,6 +146,8 @@ struct Inner {
     hooks: RwLock<Hooks>,
     audit: AuditSink,
     data: OnceLock<DataService>,
+    /// The database router: new environments are placed on a set (FIX-15).
+    router: OnceLock<forgebase_db::DbRouter>,
     mailer: OnceLock<(Arc<dyn forgebase_auth::Mailer>, String)>,
     realms: OnceLock<forgebase_auth::realm::RealmDirectory>,
     /// Item fields of engine resources, as the engines registered them (FB-134).
@@ -167,6 +169,7 @@ impl PolicyService {
                 snap: RwLock::new(Arc::new(snap)),
                 hooks: RwLock::new(Hooks::default()),
                 data: OnceLock::new(),
+                router: OnceLock::new(),
                 mailer: OnceLock::new(),
                 realms: OnceLock::new(),
                 schemas: RwLock::new(HashMap::new()),
@@ -180,6 +183,13 @@ impl PolicyService {
     /// (needed to validate collection rules against schemas).
     pub fn attach_data(&self, data: DataService) {
         let _ = self.inner.data.set(data);
+    }
+
+    /// Attaches the database router. Once attached, every environment this
+    /// service creates is placed on a set per ADR-0029 §3.4 (a no-op while
+    /// the deployment has one set).
+    pub fn attach_router(&self, router: forgebase_db::DbRouter) {
+        let _ = self.inner.router.set(router);
     }
 
     /// The attached data service.
