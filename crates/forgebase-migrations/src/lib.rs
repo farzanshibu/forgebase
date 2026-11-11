@@ -175,6 +175,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "storage_rls",
         include_str!("../../../migrations/system/0029_storage_rls.sql"),
     ),
+    Migration::new(
+        30,
+        "queue_rls",
+        include_str!("../../../migrations/system/0030_queue_rls.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

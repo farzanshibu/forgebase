@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use forgebase_auth::crypto::Keyring;
-use forgebase_data::{AccessContext, Action, DataService};
+use forgebase_data::{AccessContext, Action, DataService, ResourceKind, ResourceOp};
 use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use forgebase_entitlements::{EntitlementError, EntitlementService, UsageRequest, parse_subject, subject_key};
 use forgebase_functions::{Fetcher, FunctionService};
@@ -23,6 +23,7 @@ use serde_json::Value as Json;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::access::{OwnerContext, bare, stored};
 use crate::error::QueueError;
 use crate::filter::Filter;
 use crate::model::{
@@ -131,12 +132,15 @@ pub(crate) async fn bump_rate(
 
 pub(crate) const TOPIC_COLS: &str = "name, retention_ms, retention_bytes, max_message_bytes, dedup_window_ms, \
     message_schema, source_collection, source_ops, source_after_seq, labels, published_total, published_bytes, \
-    created_by, created_at, updated_at";
+    created_by, created_at, updated_at, tenant";
 
 /// A topic as stored.
 #[derive(Debug, Clone)]
 pub(crate) struct TopicRow {
+    /// Stored name (`<tenant>/<name>` for a tenant topic).
     pub(crate) name: String,
+    /// Owning tenant; `None` for an instance-wide topic.
+    pub(crate) tenant: Option<String>,
     pub(crate) retention_ms: i64,
     pub(crate) retention_bytes: Option<i64>,
     pub(crate) max_message_bytes: i64,
@@ -164,6 +168,7 @@ impl TopicRow {
         };
         Ok(Self {
             name: r.text("name"),
+            tenant: r.opt_text("tenant"),
             retention_ms: r.int("retention_ms"),
             retention_bytes: r.opt_int("retention_bytes"),
             max_message_bytes: r.int("max_message_bytes"),
@@ -182,7 +187,8 @@ impl TopicRow {
 
     pub(crate) fn public(&self) -> Topic {
         Topic {
-            name: self.name.clone(),
+            name: bare(&self.name).to_owned(),
+            tenant: self.tenant.clone(),
             retention_ms: self.retention_ms,
             retention_bytes: self.retention_bytes,
             max_message_bytes: self.max_message_bytes,
@@ -212,13 +218,19 @@ pub(crate) async fn topic_row(db: &mut Db<'_>, name: &str) -> Result<Option<Topi
 pub(crate) const SUB_COLS: &str = "name, topic, filter, ack_deadline_ms, max_delivery_attempts, backoff_base_ms, \
     backoff_max_ms, dead_letter_topic, ordering, push_kind, push_endpoint, push_secret, cursor_seq, \
     delivered_total, acked_total, nacked_total, expired_total, dead_lettered_total, labels, created_by, \
-    created_at, updated_at";
+    created_at, updated_at, tenant, owner_context";
 
 /// A subscription as stored.
 #[derive(Debug, Clone)]
 pub(crate) struct SubRow {
+    /// Stored name (`<tenant>/<name>` for a tenant subscription).
     pub(crate) name: String,
+    /// Stored name of the topic.
     pub(crate) topic: String,
+    /// Owning tenant; `None` for an instance-wide subscription.
+    pub(crate) tenant: Option<String>,
+    /// The creator's recorded access context (JSON; `None` before FB-141).
+    pub(crate) owner_context: Option<String>,
     pub(crate) filter_json: Option<Json>,
     pub(crate) filter: Option<Filter>,
     pub(crate) ack_deadline_ms: i64,
@@ -236,7 +248,8 @@ pub(crate) struct SubRow {
     pub(crate) expired_total: i64,
     pub(crate) dead_lettered_total: i64,
     labels: BTreeMap<String, String>,
-    created_by: String,
+    /// Creator's principal key: the subscription's owner.
+    pub(crate) created_by: String,
     created_at: i64,
     updated_at: i64,
 }
@@ -258,6 +271,8 @@ impl SubRow {
         Ok(Self {
             name: r.text("name"),
             topic: r.text("topic"),
+            tenant: r.opt_text("tenant"),
+            owner_context: r.opt_text("owner_context"),
             filter_json,
             filter,
             ack_deadline_ms: r.int("ack_deadline_ms"),
@@ -283,14 +298,15 @@ impl SubRow {
 
     pub(crate) fn public(&self) -> Subscription {
         Subscription {
-            name: self.name.clone(),
-            topic: self.topic.clone(),
+            name: bare(&self.name).to_owned(),
+            tenant: self.tenant.clone(),
+            topic: bare(&self.topic).to_owned(),
             filter: self.filter_json.clone(),
             ack_deadline_ms: self.ack_deadline_ms,
             max_delivery_attempts: self.max_delivery_attempts,
             backoff_base_ms: self.backoff_base_ms,
             backoff_max_ms: self.backoff_max_ms,
-            dead_letter_topic: self.dead_letter_topic.clone(),
+            dead_letter_topic: self.dead_letter_topic.as_deref().map(|d| bare(d).to_owned()),
             ordering: self.ordering,
             push: self.push.clone(),
             push_secret: None,
@@ -300,6 +316,73 @@ impl SubRow {
             updated_at: iso(self.updated_at),
         }
     }
+
+    /// The owner's recorded access context.
+    pub(crate) fn owner(&self) -> Result<OwnerContext> {
+        OwnerContext::parse(self.owner_context.as_deref(), &self.created_by)
+    }
+}
+
+/// Whether `name` can name a queue resource (a stored tenant name never can).
+fn addressable(name: &str) -> bool {
+    check_name("name", name).is_ok()
+}
+
+/// The topic `name` resolves to for a caller in `tenant`: the tenant's own
+/// topic of that name, else the instance-wide one.
+pub(crate) async fn find_topic(db: &mut Db<'_>, tenant: Option<&str>, name: &str) -> Result<Option<TopicRow>> {
+    if !addressable(name) {
+        return Ok(None);
+    }
+    if let Some(t) = tenant
+        && let Some(row) = topic_row(db, &stored(Some(t), name)).await?
+    {
+        return Ok(Some(row));
+    }
+    topic_row(db, name).await
+}
+
+/// [`find_topic`], or `TopicNotFound`.
+pub(crate) async fn resolve_topic(db: &mut Db<'_>, tenant: Option<&str>, name: &str) -> Result<TopicRow> {
+    find_topic(db, tenant, name)
+        .await?
+        .ok_or_else(|| QueueError::TopicNotFound(name.to_owned()))
+}
+
+/// The subscription `name` resolves to for a caller in `tenant`.
+pub(crate) async fn find_sub(db: &mut Db<'_>, tenant: Option<&str>, name: &str) -> Result<Option<SubRow>> {
+    if !addressable(name) {
+        return Ok(None);
+    }
+    if let Some(t) = tenant
+        && let Some(row) = sub_row_opt(db, &stored(Some(t), name)).await?
+    {
+        return Ok(Some(row));
+    }
+    sub_row_opt(db, name).await
+}
+
+async fn sub_row_opt(db: &mut Db<'_>, stored_name: &str) -> Result<Option<SubRow>> {
+    let rows = db
+        .fetch(&Statement::new(
+            format!("SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions WHERE name = ?1"),
+            vec![stored_name.into()],
+        ))
+        .await?;
+    Row::all(&rows).next().map(|r| SubRow::from_row(&r)).transpose()
+}
+
+/// Rows of a listing in the caller's scope: the tenant's own plus the
+/// instance-wide ones it does not shadow.
+pub(crate) fn scoped<T>(rows: Vec<T>, name: impl Fn(&T) -> &str, tenant: impl Fn(&T) -> Option<&str>) -> Vec<T> {
+    let mine: std::collections::BTreeSet<String> = rows
+        .iter()
+        .filter(|r| tenant(r).is_some())
+        .map(|r| bare(name(r)).to_owned())
+        .collect();
+    rows.into_iter()
+        .filter(|r| tenant(r).is_some() || !mine.contains(name(r)))
+        .collect()
 }
 
 pub(crate) async fn sub_row(db: &mut Db<'_>, name: &str) -> Result<SubRow> {
@@ -313,10 +396,10 @@ pub(crate) async fn sub_row(db: &mut Db<'_>, name: &str) -> Result<SubRow> {
         .next()
         .map(|r| SubRow::from_row(&r))
         .transpose()?
-        .ok_or_else(|| QueueError::SubscriptionNotFound(name.to_owned()))
+        .ok_or_else(|| QueueError::SubscriptionNotFound(bare(name).to_owned()))
 }
 
-pub(crate) const MESSAGE_COLS: &str = "m.seq, m.topic, m.id, m.data, m.attributes, m.ordering_key, m.dedup_id, m.publisher, m.bytes, m.published_at, m.history";
+pub(crate) const MESSAGE_COLS: &str = "m.seq, m.topic, m.id, m.data, m.attributes, m.ordering_key, m.dedup_id, m.publisher, m.bytes, m.published_at, m.history, m.source_row";
 
 pub(crate) fn message_from(r: &Row<'_>) -> Result<Message> {
     let history = match r.opt_text("history") {
@@ -325,7 +408,7 @@ pub(crate) fn message_from(r: &Row<'_>) -> Result<Message> {
     };
     Ok(Message {
         id: r.text("id"),
-        topic: r.text("topic"),
+        topic: bare(&r.text("topic")).to_owned(),
         seq: r.int("seq"),
         data: r.json("data")?,
         attributes: r.map("attributes")?,
@@ -365,6 +448,8 @@ pub(crate) struct Prepared {
     pub(crate) dedup_id: Option<String>,
     pub(crate) bytes: i64,
     pub(crate) history: Option<String>,
+    /// The changed row of a record-change message ([`crate::access::source_row`]).
+    pub(crate) source_row: Option<String>,
 }
 
 pub(crate) fn prepare(topic: &TopicRow, m: &NewMessage, system: bool) -> Result<Prepared> {
@@ -388,6 +473,7 @@ pub(crate) fn prepare(topic: &TopicRow, m: &NewMessage, system: bool) -> Result<
         dedup_id: m.dedup_id.clone(),
         bytes,
         history: None,
+        source_row: None,
     })
 }
 
@@ -434,8 +520,8 @@ pub(crate) async fn insert_message_tx(
     let res = tx
         .execute(&Statement::new(
             "INSERT INTO _forgebase_queue_messages (topic, id, data, attributes, ordering_key, dedup_id, bytes, \
-             publisher, subject, metered, history, published_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             publisher, subject, metered, history, published_at, source_row) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             vec![
                 topic.name.as_str().into(),
                 id.as_str().into(),
@@ -449,6 +535,7 @@ pub(crate) async fn insert_message_tx(
                 metered.into(),
                 p.history.clone().into(),
                 now.into(),
+                p.source_row.clone().into(),
             ],
         ))
         .await?;
@@ -533,10 +620,52 @@ impl QueueService {
         Ok(self.inner.data.authorize_action(ctx, action)?)
     }
 
-    /// Asks the authorizer without doing anything (the HTTP layer calls it
-    /// before reading a body).
+    /// Asks the authorizer the plain question (`engine:queue_<action>`,
+    /// every topic and subscription) without doing anything.
     pub fn authorize(&self, ctx: &AccessContext, action: Action) -> Result<()> {
         self.allow(ctx, action)
+    }
+
+    /// Asks the authorizer about `action` (`op`) on topic `topic` without
+    /// doing anything (the HTTP layer calls it before reading a body).
+    pub fn authorize_topic(&self, ctx: &AccessContext, action: Action, topic: &str, op: ResourceOp) -> Result<()> {
+        self.check(ctx, action, ResourceKind::Topic, topic, op, None)
+    }
+
+    /// Asks the authorizer about `action` (`op`) on subscription `sub`, which
+    /// its owner holds every permission on; `SubscriptionNotFound` once the
+    /// check passes and `sub` does not exist in the caller's scope.
+    pub async fn authorize_subscription(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        sub: &str,
+        op: ResourceOp,
+    ) -> Result<()> {
+        self.sub_for(&mut Db::Ro(self.backend()), ctx, action, op, sub)
+            .await
+            .map(|_| ())
+    }
+
+    /// Checks that `ctx` may stream subscription `sub` and that it is a pull
+    /// subscription; returns its stored name.
+    pub(crate) async fn stream_subscription(&self, ctx: &AccessContext, sub: &str) -> Result<String> {
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueConsume,
+                ResourceOp::List,
+                sub,
+            )
+            .await?;
+        if s.push.is_some() {
+            return Err(QueueError::conflict(
+                "push_subscription",
+                format!("subscription {sub:?} delivers by push and cannot be streamed"),
+            ));
+        }
+        Ok(s.name)
     }
 
     pub(crate) async fn begin(&self) -> Result<Box<dyn WriteTx>> {
@@ -568,7 +697,14 @@ impl QueueService {
 
     /// Creates a topic.
     pub async fn create_topic(&self, ctx: &AccessContext, new: NewTopic) -> Result<Topic> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        self.check(
+            ctx,
+            Action::QueueAdmin,
+            ResourceKind::Topic,
+            &new.name,
+            ResourceOp::Create,
+            None,
+        )?;
         check_name("topic name", &new.name)?;
         check_labels(&new.labels)?;
         let s = &self.inner.settings;
@@ -618,10 +754,15 @@ impl QueueService {
                 )
             }
         };
+        let tenant = ctx.tenant.clone();
+        let key = stored(tenant.as_deref(), &new.name);
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
-            if topic_row(&mut Db::Tx(&mut *tx), &new.name).await?.is_some() {
+            // A tenant may not take a name an instance-wide topic holds.
+            if topic_row(&mut Db::Tx(&mut *tx), &key).await?.is_some()
+                || (tenant.is_some() && topic_row(&mut Db::Tx(&mut *tx), &new.name).await?.is_some())
+            {
                 return Err(QueueError::Exists {
                     kind: "topic",
                     name: new.name.clone(),
@@ -650,9 +791,10 @@ impl QueueService {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_topics (name, retention_ms, retention_bytes, max_message_bytes, \
                  dedup_window_ms, message_schema, source_collection, source_ops, source_after_seq, labels, \
-                 created_by, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                 created_by, created_at, updated_at, tenant) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
                 vec![
-                    new.name.as_str().into(),
+                    key.as_str().into(),
                     retention.into(),
                     retention_bytes.into(),
                     max_bytes.into(),
@@ -664,10 +806,11 @@ impl QueueService {
                     serde_json::to_string(&new.labels).unwrap_or_default().into(),
                     ctx.actor().into(),
                     now.into(),
+                    tenant.clone().into(),
                 ],
             ))
             .await?;
-            topic_row(&mut Db::Tx(&mut *tx), &new.name)
+            topic_row(&mut Db::Tx(&mut *tx), &key)
                 .await?
                 .ok_or_else(|| QueueError::Internal("topic vanished".into()))
         }
@@ -677,33 +820,82 @@ impl QueueService {
 
     /// One topic.
     pub async fn topic(&self, ctx: &AccessContext, name: &str) -> Result<Topic> {
-        self.allow(ctx, Action::QueueRead)?;
-        Ok(self.topic_internal(name).await?.public())
+        self.check(
+            ctx,
+            Action::QueueRead,
+            ResourceKind::Topic,
+            name,
+            ResourceOp::View,
+            None,
+        )?;
+        Ok(self.topic_for(ctx, name).await?.public())
     }
 
-    pub(crate) async fn topic_internal(&self, name: &str) -> Result<TopicRow> {
-        topic_row(&mut Db::Ro(self.backend()), name)
-            .await?
-            .ok_or_else(|| QueueError::TopicNotFound(name.to_owned()))
+    /// The topic `name` resolves to for `ctx` (read pool).
+    pub(crate) async fn topic_for(&self, ctx: &AccessContext, name: &str) -> Result<TopicRow> {
+        resolve_topic(&mut Db::Ro(self.backend()), ctx.tenant.as_deref(), name).await
     }
 
-    /// Every topic, by name.
+    /// The topics of the caller's scope (its tenant's and the instance-wide
+    /// ones), by name: every one with `engine:queue_read`, else those the
+    /// caller may list (resource keys and rules).
     pub async fn topics(&self, ctx: &AccessContext) -> Result<Vec<Topic>> {
-        self.allow(ctx, Action::QueueRead)?;
-        let rows = self
-            .backend()
-            .fetch_all(&Statement::raw(format!(
-                "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics ORDER BY name"
-            )))
-            .await?;
-        Row::all(&rows)
-            .map(|r| TopicRow::from_row(&r).map(|t| t.public()))
-            .collect()
+        let plain = self.allow(ctx, Action::QueueRead);
+        let rows = match &ctx.tenant {
+            Some(t) => {
+                self.backend()
+                    .fetch_all(&Statement::new(
+                        format!(
+                            "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant = ?1 OR tenant IS NULL \
+                             ORDER BY name"
+                        ),
+                        vec![t.as_str().into()],
+                    ))
+                    .await?
+            }
+            None => {
+                self.backend()
+                    .fetch_all(&Statement::raw(format!(
+                        "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant IS NULL ORDER BY name"
+                    )))
+                    .await?
+            }
+        };
+        let rows: Vec<TopicRow> = Row::all(&rows).map(|r| TopicRow::from_row(&r)).collect::<Result<_>>()?;
+        let mut out: Vec<Topic> = scoped(rows, |t| t.name.as_str(), |t| t.tenant.as_deref())
+            .into_iter()
+            .filter(|t| {
+                plain.is_ok()
+                    || self
+                        .check(
+                            ctx,
+                            Action::QueueRead,
+                            ResourceKind::Topic,
+                            bare(&t.name),
+                            ResourceOp::List,
+                            None,
+                        )
+                        .is_ok()
+            })
+            .map(|t| t.public())
+            .collect();
+        if out.is_empty() {
+            plain?;
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     /// Changes a topic's limits, schema or labels.
     pub async fn update_topic(&self, ctx: &AccessContext, name: &str, patch: TopicPatch) -> Result<Topic> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        self.check(
+            ctx,
+            Action::QueueAdmin,
+            ResourceKind::Topic,
+            name,
+            ResourceOp::Update,
+            None,
+        )?;
         let s = &self.inner.settings;
         let mut sets: Vec<String> = Vec::new();
         let mut params: Vec<Value> = vec![name.into()];
@@ -750,9 +942,9 @@ impl QueueService {
         set("updated_at", now.into());
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
-            let t = topic_row(&mut Db::Tx(&mut *tx), name)
-                .await?
-                .ok_or_else(|| QueueError::TopicNotFound(name.to_owned()))?;
+            let t = resolve_topic(&mut Db::Tx(&mut *tx), ctx.tenant.as_deref(), name).await?;
+            let mut params = params;
+            params[0] = t.name.as_str().into();
             if t.source.is_some() && patch.schema.is_some() {
                 return Err(QueueError::invalid(
                     "invalid_topic",
@@ -764,7 +956,7 @@ impl QueueService {
                 params,
             ))
             .await?;
-            topic_row(&mut Db::Tx(&mut *tx), name)
+            topic_row(&mut Db::Tx(&mut *tx), &t.name)
                 .await?
                 .ok_or_else(|| QueueError::Internal("topic vanished".into()))
         }
@@ -775,12 +967,21 @@ impl QueueService {
     /// Deletes a topic and its messages. A topic with subscriptions is only
     /// deleted with `force`, which deletes them too.
     pub async fn delete_topic(&self, ctx: &AccessContext, name: &str, force: bool) -> Result<()> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        self.check(
+            ctx,
+            Action::QueueAdmin,
+            ResourceKind::Topic,
+            name,
+            ResourceOp::Delete,
+            None,
+        )?;
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
-            if topic_row(&mut Db::Tx(&mut *tx), name).await?.is_none() {
-                return Err(QueueError::TopicNotFound(name.to_owned()));
-            }
+            let shown = name;
+            let name = resolve_topic(&mut Db::Tx(&mut *tx), ctx.tenant.as_deref(), name)
+                .await?
+                .name;
+            let name = name.as_str();
             let subs = scalar(
                 &tx.fetch_all(&Statement::new(
                     "SELECT COUNT(*) FROM _forgebase_queue_subscriptions WHERE topic = ?1",
@@ -791,7 +992,7 @@ impl QueueService {
             if subs > 0 && !force {
                 return Err(QueueError::conflict(
                     "topic_has_subscriptions",
-                    format!("topic {name:?} has {subs} subscription(s); delete them first or pass force"),
+                    format!("topic {shown:?} has {subs} subscription(s); delete them first or pass force"),
                 ));
             }
             tx.execute(&Statement::new(
@@ -973,9 +1174,16 @@ impl QueueService {
     /// (`duplicate: true`). Usage is metered through the quota engine when one
     /// is attached; a refusal publishes nothing.
     pub async fn publish(&self, ctx: &AccessContext, topic: &str, messages: Vec<NewMessage>) -> Result<Vec<Published>> {
-        self.allow(ctx, Action::QueuePublish)?;
+        self.check(
+            ctx,
+            Action::QueuePublish,
+            ResourceKind::Topic,
+            topic,
+            ResourceOp::Create,
+            None,
+        )?;
         self.check_batch(&messages)?;
-        let t = self.topic_internal(topic).await?;
+        let t = self.topic_for(ctx, topic).await?;
         let prepared = Self::prepare_all(&t, &messages)?;
         let subject = self.billable(ctx);
         let now = self.now();
@@ -994,7 +1202,7 @@ impl QueueService {
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             // The topic may have been deleted or changed since it was read.
-            let t = topic_row(&mut Db::Tx(&mut *tx), topic)
+            let t = topic_row(&mut Db::Tx(&mut *tx), &t.name)
                 .await?
                 .ok_or_else(|| QueueError::TopicNotFound(topic.to_owned()))?;
             let mut out = Vec::with_capacity(prepared.len());
@@ -1010,7 +1218,7 @@ impl QueueService {
                 let bytes: i64 = fresh.iter().map(|(_, p)| p.bytes).sum();
                 self.settle_holds(&holds, i64::try_from(fresh.len()).unwrap_or(0), bytes)
                     .await;
-                metrics::counter!("forgebase_queue_published_total", "topic" => topic.to_owned())
+                metrics::counter!("forgebase_queue_published_total", "topic" => t.name.clone())
                     .increment(fresh.len() as u64);
                 self.notify();
                 Ok(out)
@@ -1034,11 +1242,16 @@ impl QueueService {
         topic: &str,
         messages: Vec<NewMessage>,
     ) -> Result<Vec<Published>> {
-        self.allow(ctx, Action::QueuePublish)?;
+        self.check(
+            ctx,
+            Action::QueuePublish,
+            ResourceKind::Topic,
+            topic,
+            ResourceOp::Create,
+            None,
+        )?;
         self.check_batch(&messages)?;
-        let t = topic_row(&mut Db::Tx(&mut *tx), topic)
-            .await?
-            .ok_or_else(|| QueueError::TopicNotFound(topic.to_owned()))?;
+        let t = resolve_topic(&mut Db::Tx(&mut *tx), ctx.tenant.as_deref(), topic).await?;
         let prepared = Self::prepare_all(&t, &messages)?;
         let subject = self.billable(ctx);
         let metered = if let Some(s) = &subject {
@@ -1065,9 +1278,19 @@ impl QueueService {
     }
 
     /// Retained messages of a topic, oldest first, after sequence `after`.
+    /// Record-change messages carry the record as the caller sees it now;
+    /// those whose record the caller may not see are left out, so a page may
+    /// hold fewer than `limit` items (follow `next_after`).
     pub async fn messages(&self, ctx: &AccessContext, topic: &str, after: i64, limit: i64) -> Result<MessagePage> {
-        self.allow(ctx, Action::QueueRead)?;
-        self.topic_internal(topic).await?;
+        self.check(
+            ctx,
+            Action::QueueRead,
+            ResourceKind::Topic,
+            topic,
+            ResourceOp::List,
+            None,
+        )?;
+        let t = self.topic_for(ctx, topic).await?;
         let limit = limit.clamp(1, 500);
         let rows = self
             .backend()
@@ -1076,16 +1299,22 @@ impl QueueService {
                     "SELECT {MESSAGE_COLS} FROM _forgebase_queue_messages m WHERE m.topic = ?1 AND m.seq > ?2 \
                      ORDER BY m.seq LIMIT ?3"
                 ),
-                vec![topic.into(), after.into(), (limit + 1).into()],
+                vec![t.name.as_str().into(), after.into(), (limit + 1).into()],
             ))
             .await?;
-        let mut items: Vec<Message> = Row::all(&rows).map(|r| message_from(&r)).collect::<Result<_>>()?;
-        let next_after = if items.len() > usize::try_from(limit).unwrap_or(500) {
-            items.pop();
-            items.last().map(|m| m.seq)
-        } else {
-            None
-        };
+        let page = usize::try_from(limit).unwrap_or(500);
+        let all: Vec<Row<'_>> = Row::all(&rows).collect();
+        let next_after = (all.len() > page).then(|| all[page - 1].int("seq"));
+        let mut items = Vec::with_capacity(page.min(all.len()));
+        for r in all.iter().take(page) {
+            let mut m = message_from(r)?;
+            if let Some(src) = r.opt_text("source_row")
+                && !self.view_record(ctx, &mut m.data, &src).await?
+            {
+                continue;
+            }
+            items.push(m);
+        }
         Ok(MessagePage { items, next_after })
     }
 
@@ -1152,7 +1381,34 @@ impl QueueService {
     /// Creates a subscription. A webhook push subscription's signing secret is
     /// in the response (`push_secret`) and never shown again.
     pub async fn create_subscription(&self, ctx: &AccessContext, new: NewSubscription) -> Result<Subscription> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        self.check(
+            ctx,
+            Action::QueueAdmin,
+            ResourceKind::Subscription,
+            &new.name,
+            ResourceOp::Create,
+            None,
+        )?;
+        // A subscription receives its topic's messages and publishes to its
+        // dead-letter topic: the creator must be allowed both.
+        self.check(
+            ctx,
+            Action::QueueRead,
+            ResourceKind::Topic,
+            &new.topic,
+            ResourceOp::List,
+            None,
+        )?;
+        if let Some(d) = &new.dead_letter_topic {
+            self.check(
+                ctx,
+                Action::QueuePublish,
+                ResourceKind::Topic,
+                d,
+                ResourceOp::Create,
+                None,
+            )?;
+        }
         check_name("subscription name", &new.name)?;
         check_name("topic name", &new.topic)?;
         check_labels(&new.labels)?;
@@ -1196,25 +1452,25 @@ impl QueueService {
             Some(StartPosition::Time(t)) => Some(parse_time("start.time", t)?),
             _ => None,
         };
+        let tenant = ctx.tenant.clone();
+        let key = stored(tenant.as_deref(), &new.name);
         let secret = match &new.push {
-            Some(p) if p.kind == PushKind::Webhook => Some(self.new_secret(&new.name)?),
+            Some(p) if p.kind == PushKind::Webhook => Some(self.new_secret(&key)?),
             _ => None,
         };
+        let owner = OwnerContext::of(ctx).to_text();
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
-            if topic_row(&mut Db::Tx(&mut *tx), &new.topic).await?.is_none() {
-                return Err(QueueError::TopicNotFound(new.topic.clone()));
-            }
-            if let Some(d) = &new.dead_letter_topic
-                && topic_row(&mut Db::Tx(&mut *tx), d).await?.is_none()
-            {
-                return Err(QueueError::TopicNotFound(d.clone()));
-            }
+            let topic = resolve_topic(&mut Db::Tx(&mut *tx), tenant.as_deref(), &new.topic).await?;
+            let dead_letter = match &new.dead_letter_topic {
+                Some(d) => Some(resolve_topic(&mut Db::Tx(&mut *tx), tenant.as_deref(), d).await?.name),
+                None => None,
+            };
             let exists = tx
                 .fetch_all(&Statement::new(
-                    "SELECT 1 FROM _forgebase_queue_subscriptions WHERE name = ?1",
-                    vec![new.name.as_str().into()],
+                    "SELECT 1 FROM _forgebase_queue_subscriptions WHERE name = ?1 OR (?2 AND name = ?3)",
+                    vec![key.as_str().into(), tenant.is_some().into(), new.name.as_str().into()],
                 ))
                 .await?;
             if !exists.is_empty() {
@@ -1225,7 +1481,7 @@ impl QueueService {
             }
             let cursor = match (&new.start, start_ms) {
                 (Some(StartPosition::Earliest), _) => 0,
-                (Some(StartPosition::Time(_)), Some(ts)) => cursor_before(&mut *tx, &new.topic, ts).await?,
+                (Some(StartPosition::Time(_)), Some(ts)) => cursor_before(&mut *tx, &topic.name, ts).await?,
                 _ => scalar(
                     &tx.fetch_all(&Statement::raw(
                         "SELECT coalesce(max(seq), 0) FROM _forgebase_queue_messages",
@@ -1236,17 +1492,18 @@ impl QueueService {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_subscriptions (name, topic, filter, ack_deadline_ms, \
                  max_delivery_attempts, backoff_base_ms, backoff_max_ms, dead_letter_topic, ordering, push_kind, \
-                 push_endpoint, push_secret, cursor_seq, labels, created_by, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
+                 push_endpoint, push_secret, cursor_seq, labels, created_by, created_at, updated_at, tenant, \
+                 owner_context) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16, ?17, ?18)",
                 vec![
-                    new.name.as_str().into(),
-                    new.topic.as_str().into(),
+                    key.as_str().into(),
+                    topic.name.as_str().into(),
                     filter_text.clone().into(),
                     deadline.into(),
                     attempts.into(),
                     base.into(),
                     cap.into(),
-                    new.dead_letter_topic.clone().into(),
+                    dead_letter.into(),
                     new.ordering.into(),
                     new.push.as_ref().map(|p| p.kind.as_str().to_owned()).into(),
                     new.push.as_ref().map(|p| p.endpoint.clone()).into(),
@@ -1255,10 +1512,12 @@ impl QueueService {
                     serde_json::to_string(&new.labels).unwrap_or_default().into(),
                     ctx.actor().into(),
                     now.into(),
+                    tenant.clone().into(),
+                    owner.as_str().into(),
                 ],
             ))
             .await?;
-            sub_row(&mut Db::Tx(&mut *tx), &new.name).await
+            sub_row(&mut Db::Tx(&mut *tx), &key).await
         }
         .await;
         let mut sub = finish(tx, r).await?.public();
@@ -1269,35 +1528,91 @@ impl QueueService {
         Ok(sub)
     }
 
-    /// One subscription.
-    pub async fn subscription(&self, ctx: &AccessContext, name: &str) -> Result<Subscription> {
-        self.allow(ctx, Action::QueueRead)?;
-        Ok(sub_row(&mut Db::Ro(self.backend()), name).await?.public())
+    /// The subscription `name` resolves to for `ctx`, once `ctx` may do
+    /// `action` (`op`) on it: its owner holds every permission on it. A caller
+    /// without access gets `401`/`403` whether it exists or not.
+    pub(crate) async fn sub_for(
+        &self,
+        db: &mut Db<'_>,
+        ctx: &AccessContext,
+        action: Action,
+        op: ResourceOp,
+        name: &str,
+    ) -> Result<SubRow> {
+        let found = find_sub(db, ctx.tenant.as_deref(), name).await?;
+        self.check(
+            ctx,
+            action,
+            ResourceKind::Subscription,
+            name,
+            op,
+            found.as_ref().map(|s| s.created_by.as_str()),
+        )?;
+        found.ok_or_else(|| QueueError::SubscriptionNotFound(name.to_owned()))
     }
 
-    /// Subscriptions by name, optionally of one topic.
+    /// One subscription.
+    pub async fn subscription(&self, ctx: &AccessContext, name: &str) -> Result<Subscription> {
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueRead,
+                ResourceOp::View,
+                name,
+            )
+            .await?;
+        Ok(s.public())
+    }
+
+    /// Subscriptions of the caller's scope by name, optionally of one topic:
+    /// every one with `engine:queue_read`, else those the caller owns or may
+    /// list (resource keys and rules).
     pub async fn subscriptions(&self, ctx: &AccessContext, topic: Option<&str>) -> Result<Vec<Subscription>> {
-        self.allow(ctx, Action::QueueRead)?;
-        let rows = match topic {
-            Some(t) => {
-                self.backend()
-                    .fetch_all(&Statement::new(
-                        format!("SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions WHERE topic = ?1 ORDER BY name"),
-                        vec![t.into()],
-                    ))
-                    .await?
-            }
-            None => {
-                self.backend()
-                    .fetch_all(&Statement::raw(format!(
-                        "SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions ORDER BY name"
-                    )))
-                    .await?
-            }
+        let plain = self.allow(ctx, Action::QueueRead);
+        let topic = match topic {
+            Some(t) => match find_topic(&mut Db::Ro(self.backend()), ctx.tenant.as_deref(), t).await? {
+                Some(row) => Some(row.name),
+                None => {
+                    plain?;
+                    return Ok(Vec::new());
+                }
+            },
+            None => None,
         };
-        Row::all(&rows)
-            .map(|r| SubRow::from_row(&r).map(|s| s.public()))
-            .collect()
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions \
+                     WHERE (tenant IS NULL OR tenant = ?1) AND (?2 IS NULL OR topic = ?2) ORDER BY name"
+                ),
+                vec![ctx.tenant.clone().into(), topic.into()],
+            ))
+            .await?;
+        let rows: Vec<SubRow> = Row::all(&rows).map(|r| SubRow::from_row(&r)).collect::<Result<_>>()?;
+        let mut out: Vec<Subscription> = scoped(rows, |s| s.name.as_str(), |s| s.tenant.as_deref())
+            .into_iter()
+            .filter(|s| {
+                plain.is_ok()
+                    || self
+                        .check(
+                            ctx,
+                            Action::QueueRead,
+                            ResourceKind::Subscription,
+                            bare(&s.name),
+                            ResourceOp::List,
+                            Some(&s.created_by),
+                        )
+                        .is_ok()
+            })
+            .map(|s| s.public())
+            .collect();
+        if out.is_empty() {
+            plain?;
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     /// Changes a subscription. A new webhook endpoint gets a new signing
@@ -1308,7 +1623,40 @@ impl QueueService {
         name: &str,
         patch: SubscriptionPatch,
     ) -> Result<Subscription> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        let found = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueAdmin,
+                ResourceOp::Update,
+                name,
+            )
+            .await?;
+        if let Some(d) = &patch.dead_letter_topic {
+            self.check(
+                ctx,
+                Action::QueuePublish,
+                ResourceKind::Topic,
+                d,
+                ResourceOp::Create,
+                None,
+            )?;
+        }
+        let dead_letter = match &patch.dead_letter_topic {
+            Some(d) if !patch.clear_dead_letter_topic => {
+                check_name("dead_letter_topic", d)?;
+                let t = resolve_topic(&mut Db::Ro(self.backend()), found.tenant.as_deref(), d).await?;
+                if t.name == found.topic {
+                    return Err(QueueError::invalid(
+                        "invalid_dead_letter_topic",
+                        "the dead-letter topic must differ from the subscription's topic",
+                    ));
+                }
+                Some((d.clone(), t.name))
+            }
+            _ => None,
+        };
+        let name = found.name.as_str();
         let mut sets: Vec<String> = Vec::new();
         let mut params: Vec<Value> = vec![name.into()];
         let mut set = |col: &str, v: Value| {
@@ -1345,8 +1693,7 @@ impl QueueService {
         }
         if patch.clear_dead_letter_topic {
             set("dead_letter_topic", Value::Null);
-        } else if let Some(d) = &patch.dead_letter_topic {
-            check_name("dead_letter_topic", d)?;
+        } else if let Some((_, d)) = &dead_letter {
             set("dead_letter_topic", d.as_str().into());
         }
         let mut secret = None;
@@ -1374,17 +1721,11 @@ impl QueueService {
         set("updated_at", now.into());
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
-            let cur = sub_row(&mut Db::Tx(&mut *tx), name).await?;
-            if let Some(d) = &patch.dead_letter_topic {
-                if *d == cur.topic {
-                    return Err(QueueError::invalid(
-                        "invalid_dead_letter_topic",
-                        "the dead-letter topic must differ from the subscription's topic",
-                    ));
-                }
-                if topic_row(&mut Db::Tx(&mut *tx), d).await?.is_none() {
-                    return Err(QueueError::TopicNotFound(d.clone()));
-                }
+            sub_row(&mut Db::Tx(&mut *tx), name).await?;
+            if let Some((shown, d)) = &dead_letter
+                && topic_row(&mut Db::Tx(&mut *tx), d).await?.is_none()
+            {
+                return Err(QueueError::TopicNotFound(shown.clone()));
             }
             tx.execute(&Statement::new(
                 format!(
@@ -1412,7 +1753,17 @@ impl QueueService {
 
     /// Deletes a subscription with its deliveries, snapshots and dead letters.
     pub async fn delete_subscription(&self, ctx: &AccessContext, name: &str) -> Result<()> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        let found = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueAdmin,
+                ResourceOp::Delete,
+                name,
+            )
+            .await?;
+        let shown = name;
+        let name = found.name.as_str();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let n = tx
@@ -1423,7 +1774,7 @@ impl QueueService {
                 .await?
                 .rows_affected;
             if n == 0 {
-                return Err(QueueError::SubscriptionNotFound(name.to_owned()));
+                return Err(QueueError::SubscriptionNotFound(shown.to_owned()));
             }
             tx.execute(&Statement::new(
                 "DELETE FROM _forgebase_queue_rates WHERE scope = 'subscription' AND name = ?1",

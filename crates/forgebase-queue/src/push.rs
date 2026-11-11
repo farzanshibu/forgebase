@@ -19,6 +19,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::json;
 use sha2::Sha256;
 
+use crate::access::bare;
 use crate::model::{PushKind, ReceivedMessage};
 use crate::service::{QueueService, Result, SubRow};
 
@@ -112,14 +113,12 @@ impl QueueService {
     }
 
     async fn ack_internal(&self, sub: &str, ack_id: &str) -> Result<()> {
-        self.ack(&forgebase_data::AccessContext::system(), sub, &[ack_id.to_owned()])
-            .await
-            .map(|_| ())
+        self.ack_stored(sub, &[ack_id.to_owned()]).await.map(|_| ())
     }
 
     fn push_body(sub: &SubRow, m: &ReceivedMessage) -> serde_json::Value {
         json!({
-            "subscription": sub.name,
+            "subscription": bare(&sub.name),
             "delivery_attempt": m.delivery_attempt,
             "message": m.message,
         })
@@ -143,7 +142,7 @@ impl QueueService {
             headers: vec![
                 ("content-type".into(), "application/json".into()),
                 (SIGNATURE_HEADER.into(), sign(&secret, ts, &body)),
-                ("x-forgebase-subscription".into(), sub.name.clone()),
+                ("x-forgebase-subscription".into(), bare(&sub.name).to_owned()),
                 ("x-forgebase-message-id".into(), m.message.id.clone()),
                 ("x-forgebase-delivery-attempt".into(), m.delivery_attempt.to_string()),
             ],
