@@ -76,7 +76,7 @@ function KeyForm({ open, onOpenChange, kind, accountId, onMade }: CreateKeyDialo
   const [touched, setTouched] = useState(false);
   const [saveError, setSaveError] = useState<unknown>();
   // A retry after a failed key request must not create the service account twice.
-  const created = useRef<string>();
+  const created = useRef<string | undefined>(undefined);
 
   const choiceOf = (area: string) => choices[area] ?? emptyChoice(area);
   const setChoice = (area: string, patch: Partial<AreaChoice>) => setChoices((c) => ({ ...c, [area]: { ...(c[area] ?? emptyChoice(area)), ...patch } }));
