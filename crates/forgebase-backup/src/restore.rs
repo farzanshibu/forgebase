@@ -22,12 +22,13 @@ use serde::{Deserialize, Serialize};
 use crate::backup::{key_fingerprint, master_key_path, spawn};
 use crate::error::{BackupError, Result, io};
 use crate::fsutil::{self, copy_hashed, join_rel, mkdir_private};
-use crate::manifest::{DB_FILE, FileKind, KEY_FILE, Manifest};
-use crate::verify::verify;
+use crate::manifest::{DB_FILE, DUMP_FILE, FileKind, KEY_FILE, Manifest, Method, PG_DIR, ROLES_FILE};
+use crate::pg::{self, PgSource};
+use crate::verify::{VerifyOptions, verify_with};
 
 const JOURNAL: &str = ".restore-journal.json";
-/// Items of the data directory a restore replaces, in the order they are
-/// moved aside. The database is moved in last.
+/// Items of the data directory a SQLite restore replaces, in the order they
+/// are moved aside. The database is moved in last.
 const ITEMS: &[&str] = &[
     "forgebase.db-wal",
     "forgebase.db-shm",
@@ -35,6 +36,10 @@ const ITEMS: &[&str] = &[
     "storage",
     "indexes",
 ];
+/// The database items of a restore of a physical PostgreSQL backup.
+const PG_ITEMS: &[&str] = &["postgres/roles.secret", "postgres/data"];
+/// `PGDATA` and the login passwords inside a data directory.
+const PG_DATA: &str = "postgres/data";
 
 /// Restore settings.
 #[derive(Debug, Clone, Default)]
@@ -47,6 +52,10 @@ pub struct RestoreOptions {
     pub allow_missing_key: bool,
     /// Do not restore index files; they are rebuilt at startup.
     pub skip_indexes: bool,
+    /// The engine's tools and, for an external server, the way in. Needed to
+    /// check a PostgreSQL backup with `pg_verifybackup`, to refuse a
+    /// different major version, and to load a logical backup.
+    pub pg: Option<PgSource>,
     /// Test hook: stop with an error (no rollback, as after a crash) after
     /// this many items were moved or installed.
     #[doc(hidden)]
@@ -68,6 +77,8 @@ pub struct RestoreReport {
     pub previous_data: Option<PathBuf>,
     /// What happened to the master key.
     pub master_key: String,
+    /// The engine of the restored database (`sqlite`, `postgres 18.3 (managed)`).
+    pub engine: String,
     /// Non-blocking findings of the verification.
     pub warnings: Vec<String>,
 }
@@ -155,23 +166,50 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
     layout.ensure().map_err(io(layout.root()))?;
     recover(layout)?;
 
-    let report = verify(backup).await;
+    let report = verify_with(
+        backup,
+        &VerifyOptions {
+            pg: opts.pg.clone(),
+            tmp: Some(layout.tmp_dir()),
+        },
+    )
+    .await;
     if !report.ok {
         return Err(BackupError::Verify(report.problems));
     }
     let Some(manifest) = report.manifest else {
         return Err(BackupError::Internal("verified backup has no manifest".into()));
     };
-    let existing = layout.database_path().exists();
+    let engine = manifest.engine_info();
+    let physical = manifest.is_physical_postgres();
+    let logical = engine.is_postgres() && engine.method == Method::Dump;
+    let mut warnings = report.warnings;
+    let existing = if logical {
+        true
+    } else if physical {
+        pg_cluster_exists(layout)
+    } else {
+        layout.database_path().exists()
+    };
+    check_target(layout, &manifest, &opts, &mut warnings)?;
     if existing && !opts.force {
-        return Err(BackupError::Conflict(format!(
-            "{} already holds a database; use --force to replace it (the current data is kept in backups/pre-restore-*)",
-            layout.root().display()
-        )));
+        return Err(BackupError::Conflict(if logical {
+            "restoring a logical backup replaces the objects of the forgebase schema in the external database; \
+             use --force to go on (take a fresh backup of it first)"
+                .to_owned()
+        } else {
+            format!(
+                "{} already holds a database; use --force to replace it (the current data is kept in backups/pre-restore-*)",
+                layout.root().display()
+            )
+        }));
     }
 
+    // A database-only backup (pre-migration snapshot) leaves files and keys alone.
     let key_path = master_key_path(layout);
-    let source = if manifest.master_key.included {
+    let source = if manifest.database_only {
+        KeySource::Existing
+    } else if manifest.master_key.included {
         KeySource::Backup
     } else if let Some(p) = &opts.master_key {
         KeySource::Provided(p.clone())
@@ -180,7 +218,11 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
     } else {
         KeySource::None
     };
-    let key_note = resolve_key(&manifest, &source, &key_path, opts.allow_missing_key)?;
+    let key_note = if manifest.database_only {
+        "unchanged (database-only backup)".to_owned()
+    } else {
+        resolve_key(&manifest, &source, &key_path, opts.allow_missing_key)?
+    };
 
     let stamp = forgebase_core::now_rfc3339().replace([':', '-'], "");
     let staging = layout.tmp_dir().join(format!("restore-{stamp}-{}", std::process::id()));
@@ -198,12 +240,22 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
     };
     let (files, bytes) = spawn(move || stage(&backup_dir, &m, &st, skip_indexes, provided.as_deref())).await?;
 
+    // A logical backup is loaded first: one transaction, so a failure changes nothing.
+    if logical {
+        let src = opts.pg.as_ref().ok_or_else(|| {
+            BackupError::Invalid("restoring a logical backup needs the external server's connection (PgSource)".into())
+        })?;
+        src.restore_dump(&staging.join(DUMP_FILE), &layout.tmp_dir()).await?;
+    }
+
+    let items = items_of(&manifest, matches!(source, KeySource::Backup | KeySource::Provided(_)));
     let (lay, st, ad, crash_after) = (layout.clone(), staging.clone(), aside.clone(), opts.crash_after);
-    let replace_key = matches!(source, KeySource::Backup | KeySource::Provided(_));
-    let swapped = spawn(move || swap(&lay, &st, &ad, replace_key, crash_after)).await;
+    let swapped = spawn(move || swap(&lay, &st, &ad, items, crash_after)).await;
     match swapped {
         Ok(moved_any) => {
-            enable_wal(layout).await?;
+            if !engine.is_postgres() {
+                enable_wal(layout).await?;
+            }
             tracing::info!(id = %manifest.id, files, "restore complete");
             Ok(RestoreReport {
                 id: manifest.id,
@@ -212,7 +264,8 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
                 bytes,
                 previous_data: moved_any.then_some(aside),
                 master_key: key_note,
-                warnings: report.warnings,
+                engine: engine.describe(),
+                warnings,
             })
         }
         Err(e) => {
@@ -222,6 +275,92 @@ pub async fn restore(backup: &Path, layout: &DataLayout, opts: RestoreOptions) -
             Err(e)
         }
     }
+}
+
+/// Whether the data directory holds a bundled PostgreSQL cluster.
+fn pg_cluster_exists(layout: &DataLayout) -> bool {
+    layout.root().join(PG_DATA).join("PG_VERSION").is_file()
+}
+
+/// Refuses a backup the target cannot take: another engine, another
+/// PostgreSQL major, a running cluster, more than one data set.
+fn check_target(layout: &DataLayout, m: &Manifest, opts: &RestoreOptions, warnings: &mut Vec<String>) -> Result<()> {
+    let engine = m.engine_info();
+    let sqlite_here = layout.database_path().exists();
+    let pg_here = pg_cluster_exists(layout);
+    if engine.is_postgres() {
+        if sqlite_here && !m.database_only {
+            return Err(BackupError::Conflict(format!(
+                "{} holds a SQLite database but the backup is {}: a restore does not change the backend; \
+                 move the project with `forgebase db convert` (FB-151) or restore into an empty data directory",
+                layout.root().display(),
+                engine.describe()
+            )));
+        }
+    } else if pg_here {
+        return Err(BackupError::Conflict(format!(
+            "{} holds a PostgreSQL cluster but the backup is SQLite: a restore does not change the backend; \
+             move the project with `forgebase db convert` (FB-151) or restore into an empty data directory",
+            layout.root().display()
+        )));
+    }
+    if m.is_physical_postgres() {
+        pg::ensure_single_set(layout.root())?;
+        if let Some(pid) = pg::running_postmaster(&layout.root().join(PG_DATA)) {
+            return Err(BackupError::Conflict(format!(
+                "a PostgreSQL server (pid {pid}) is still running on {}; stop ForgeBase and wait for it to exit",
+                layout.root().join(PG_DATA).display()
+            )));
+        }
+        match (engine.major, opts.pg.as_ref().and_then(PgSource::major)) {
+            (Some(backup), Some(here)) if backup != here => {
+                return Err(BackupError::Invalid(format!(
+                    "the backup is {}, this engine is PostgreSQL {here}: a physical backup restores on the same major \
+                     only; restore it with an engine of major {backup}, or move the data with a logical export \
+                     (`forgebase export` and `forgebase import`)",
+                    engine.describe()
+                )));
+            }
+            (_, None) => warnings.push(
+                "the engine's major version is unknown here; the cluster is checked when the server starts".into(),
+            ),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The data-directory items a restore of `m` replaces.
+fn items_of(m: &Manifest, replace_key: bool) -> Vec<String> {
+    let mut items: Vec<String> = if m.is_physical_postgres() {
+        let mut v: Vec<String> = vec!["storage".into(), "indexes".into()];
+        v.extend(PG_ITEMS.iter().map(|s| (*s).to_owned()));
+        v
+    } else if m.engine_info().is_postgres() {
+        vec!["storage".into(), "indexes".into()]
+    } else {
+        ITEMS.iter().map(|s| (*s).to_owned()).collect()
+    };
+    if m.database_only {
+        items.retain(|i| i != "storage" && i != "indexes");
+    }
+    if replace_key {
+        items.push(KEY_FILE.to_owned());
+    }
+    items
+}
+
+/// Where a manifest path lands in the data directory.
+fn target_path(m: &Manifest, rel: &str) -> String {
+    if m.is_physical_postgres() {
+        if let Some(rest) = rel.strip_prefix(&format!("{PG_DIR}/")) {
+            return format!("{PG_DATA}/{rest}");
+        }
+        if rel == ROLES_FILE {
+            return format!("postgres/{ROLES_FILE}");
+        }
+    }
+    rel.to_owned()
 }
 
 fn resolve_key(m: &Manifest, source: &KeySource, existing: &Path, allow_missing: bool) -> Result<String> {
@@ -273,7 +412,7 @@ fn stage(
         if f.kind == FileKind::Index && skip_indexes {
             continue;
         }
-        let (sha, size) = copy_hashed(&join_rel(backup, &f.path), &join_rel(staging, &f.path))?;
+        let (sha, size) = copy_hashed(&join_rel(backup, &f.path), &join_rel(staging, &target_path(m, &f.path)))?;
         if sha != f.sha256 || size != f.size {
             return Err(BackupError::Verify(vec![format!(
                 "{} changed while it was being restored",
@@ -286,7 +425,23 @@ fn stage(
     if let Some(p) = provided_key {
         copy_hashed(p, &join_rel(staging, KEY_FILE))?;
     }
+    if m.is_physical_postgres() {
+        // PostgreSQL needs its (often empty) directories: pg_wal/archive_status, pg_tblspc, ...
+        copy_dirs(&backup.join(PG_DIR), &join_rel(staging, PG_DATA))?;
+    }
     Ok((files, bytes))
+}
+
+/// Creates every directory of `src` below `dst`.
+fn copy_dirs(src: &Path, dst: &Path) -> Result<()> {
+    mkdir_private(dst).map_err(io(dst))?;
+    for entry in std::fs::read_dir(src).map_err(io(src))? {
+        let entry = entry.map_err(io(src))?;
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            copy_dirs(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Moves the current data aside and the staged data in. Returns whether any
@@ -295,14 +450,10 @@ fn swap(
     layout: &DataLayout,
     staging: &Path,
     aside: &Path,
-    replace_key: bool,
+    items: Vec<String>,
     crash_after: Option<usize>,
 ) -> Result<bool> {
     let root = layout.root();
-    let mut items: Vec<String> = ITEMS.iter().map(|s| (*s).to_owned()).collect();
-    if replace_key {
-        items.push(KEY_FILE.to_owned());
-    }
     mkdir_private(aside).map_err(io(aside))?;
     let mut journal = Journal {
         aside: aside.to_path_buf(),
@@ -337,10 +488,8 @@ fn swap(
         }
     }
     // Staged items: database last, so its presence marks a complete restore.
-    let order = items
-        .iter()
-        .filter(|i| i.as_str() != DB_FILE)
-        .chain(items.iter().filter(|i| i.as_str() == DB_FILE));
+    let is_db = |i: &&String| i.as_str() == DB_FILE || i.as_str() == PG_DATA;
+    let order = items.iter().filter(|i| !is_db(i)).chain(items.iter().filter(is_db));
     for item in order {
         let from = join_rel(staging, item);
         if from.exists() {

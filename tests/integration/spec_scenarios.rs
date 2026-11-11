@@ -2066,12 +2066,6 @@ fn scenario_21_restart_the_server_and_verify_persistence() {
 /// while serving, data loss, restore, and every model back.
 #[test]
 fn scenario_22_back_up_and_restore_the_database() {
-    // `backup` on PostgreSQL arrives with FB-150 (pg_basebackup); until then the
-    // command refuses ("snapshot_to is not supported on the postgres backend").
-    if common::postgres() {
-        eprintln!("skipped on postgres: backups are FB-150");
-        return;
-    }
     let mut fb = Fb::start();
     fb.collection(json!({"name": "notes", "fields": [{"name": "text", "type": "text"}]}));
     let rows: Vec<Json> = (0..25).map(|i| json!({"text": format!("note {i}")})).collect();
@@ -2104,10 +2098,16 @@ fn scenario_22_back_up_and_restore_the_database() {
     fb.stop();
 
     let data = fb.data_dir();
-    for f in ["forgebase.db", "forgebase.db-wal", "forgebase.db-shm"] {
-        let _ = std::fs::remove_file(data.join(f));
+    if common::postgres() {
+        let _ = std::fs::remove_dir_all(data.join("postgres/data"));
+        std::fs::create_dir_all(data.join("postgres/data")).unwrap();
+        std::fs::write(data.join("postgres/data/PG_VERSION"), b"junk").unwrap();
+    } else {
+        for f in ["forgebase.db", "forgebase.db-wal", "forgebase.db-shm"] {
+            let _ = std::fs::remove_file(data.join(f));
+        }
+        std::fs::write(data.join("forgebase.db"), b"this is not a database").unwrap();
     }
-    std::fs::write(data.join("forgebase.db"), b"this is not a database").unwrap();
     let _ = std::fs::remove_dir_all(data.join("storage"));
     let _ = std::fs::remove_dir_all(data.join("indexes"));
     let out = fb.cli_ok(&["restore", "latest", "--force"]);
