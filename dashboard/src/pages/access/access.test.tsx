@@ -205,6 +205,21 @@ describe("roles and the permission matrix", () => {
     expect(last("put /api/v1/orgs/{org}/roles")).toMatchObject({ key: "support", allow: ["data:posts:*", "acl:manage"], deny: ["schema:read"] });
   });
 
+  it("offers engine:graph_cypher with its help line and saves it separately from graph_read", async () => {
+    open(`${ORG}/roles`);
+    await editRow("support");
+    const help = await screen.findByRole("list", { name: "Permission help" }, { timeout: 5000 }).catch(() => screen.findByLabelText("Permission help", {}, { timeout: 5000 }));
+    expect(within(help).getByText("engine:graph_cypher")).toBeInTheDocument();
+    expect(within(help).getByText("openCypher queries; graph label rules apply")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "engine:graph_read: inherit" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "engine:graph_cypher: inherit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save role" }));
+    await waitFor(() => expect(mock.bodies["put /api/v1/orgs/{org}/roles"]).toHaveLength(1));
+    expect(last("put /api/v1/orgs/{org}/roles")).toMatchObject({ key: "support" });
+    expect((last("put /api/v1/orgs/{org}/roles") as { allow: string[] }).allow).toContain("engine:graph_cypher");
+    expect((last("put /api/v1/orgs/{org}/roles") as { allow: string[] }).allow).not.toContain("engine:graph_read");
+  });
+
   it("creates a custom role and deletes it", async () => {
     open(`${ORG}/roles`);
     await rowOf("support");

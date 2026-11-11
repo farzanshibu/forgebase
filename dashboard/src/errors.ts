@@ -71,6 +71,16 @@ export const ERROR_WORDS = {
   no_trigram_index: { title: "No trigram index covers that field", next: "Create an index of kind trigram on the field in Indexes, then search again." },
   index_kind_unsupported: { title: "This database cannot build that kind of index", next: "Pick btree or fulltext, or move the project to PostgreSQL for trigram." },
   invalid_fuzzy_threshold: { title: "The fuzzy threshold must be between 0 and 1", next: "Use a number such as 0.3." },
+  cypher_unsupported: { title: "openCypher is not available on this server", next: "openCypher needs PostgreSQL with Apache AGE. Use the Traversal and Shortest path queries instead, they work everywhere." },
+  cypher_invalid: { title: "That query could not be understood", next: "Check the syntax. A query needs a final RETURN with named items, and RETURN * is not allowed." },
+  cypher_read_only: { title: "That query changes data", next: "Cypher here only reads; write through the REST graph API (Nodes and Edges tabs)." },
+  cypher_error: { title: "The query failed while running", next: "Check the labels, properties and parameters it uses. The server message below says what it hit." },
+  cypher_timeout: { title: "The query ran out of time", next: "Narrow it with a label or a filter, lower the depth, or raise the timeout (at most 30 000 ms)." },
+  invalid_limit: { title: "The limit is out of range", next: "Use a whole number from 1 to 1000." },
+  invalid_timeout: { title: "The timeout is out of range", next: "Use a whole number of milliseconds from 1 to 30000." },
+  cypher_rules_unsupported: { title: "Your graph access rules cannot be applied to openCypher", next: "Ask an administrator to simplify the label rules for your role, or use the REST graph API (Nodes, Edges, Traversal)." },
+  graph_materialising: { title: "The openCypher graph is still being built", next: "It is built once from your nodes and edges. Wait for it to finish, then run the query again." },
+  tenant_moving: { title: "Your data is being moved", next: "Wait a minute and try again. The openCypher graph is rebuilt on the new location." },
   internal: { title: "Something went wrong on the server", next: "Copy the request id and look it up in the server log." },
   network_error: { title: "Cannot reach the server", next: "Check that the server is running and the network is up, then try again." },
   invalid_response: { title: "The server sent an answer the dashboard could not read", next: "The dashboard and the server may be different versions. Check the version in System." },
@@ -104,6 +114,7 @@ export function explain(error: unknown): ExplainedError {
     // A failed sign-in is a 401 too: its own code (invalid_credentials) has better words than "session ended".
     if (error.status === 401 && error.code === "invalid_credentials") return { ...base, kind: "invalid", ...ERROR_WORDS.invalid_credentials };
     if (error.status === 401) return { ...base, kind: "session", title: "Your session ended", next: "Sign in again to carry on." };
+    if (error.status === 403 && error.code === "cypher_rules_unsupported") return { ...base, kind: "forbidden", ...ERROR_WORDS.cypher_rules_unsupported };
     if (error.status === 403) {
       const perm = missingPermission(error);
       return {
