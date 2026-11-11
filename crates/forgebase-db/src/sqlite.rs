@@ -590,6 +590,7 @@ mod tests {
                 synchronous: Synchronous::Full,
                 busy_timeout_ms: 5000,
                 read_pool_size: 4,
+                ..forgebase_core::config::Config::defaults(Path::new(".")).database
             },
             path,
         )

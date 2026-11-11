@@ -1132,3 +1132,209 @@ Checked 2026-11-11.
   `idle_replication_slot_timeout` —
   <https://www.postgresql.org/docs/18/runtime-config-replication.html>
 - Citus licence (AGPL-3.0) — <https://github.com/citusdata/citus/blob/main/LICENSE>
+
+## Addendum: FB-170, the sharding core in `forgebase-db` (2026-11-11)
+
+Built as §3.1–§3.5 and §4.2 describe. Nothing outside `forgebase-db` uses
+the router yet; the packages that wire it are listed at the end. Where the
+code differs from the text above, or decides something it left open, it is
+said here.
+
+**Files.** `crates/forgebase-db/src/{topology.rs, placement.rs, router.rs}`
+(new), the migration pair `migrations/{system,postgres}/0033_db_topology.sql`
+(registered in `SYSTEM_MIGRATIONS` and `POSTGRES_MIGRATIONS`), module and
+re-export lines in `crates/forgebase-db/src/lib.rs`, and the tests
+`crates/forgebase-db/tests/sharding.rs`.
+
+**Topology tables (0033).** The six tables of §4.2, all placement class
+`control`, with the columns §4.2 names plus:
+- `_forgebase_db_sets`: `number` 0 … 8 190 (8 191 sets, §3.12), unique;
+  `CHECK ((kind = 'control') = (number = 0))`, so exactly one control set.
+  States `provisioning | active | draining | migrating | retired`. The
+  migration seeds the control set (`id = name = 'control'`, number 0,
+  active, weight 1, hosts tenants) on both backends.
+- `_forgebase_db_nodes`: states of §2.7 plus `ready` (a primary that
+  answers); `origin api | config` (nodes from `[[database.nodes]]` are
+  read-only in the dashboard, §4.1); at most one non-retired primary per set
+  (partial unique index). Control's primary may have no row: it is the
+  database the server opened.
+- `_forgebase_tenant_placements`: `est_rows`, `est_bytes`, `stats_at`
+  (the hourly statistics of §3.4, read by the load score and plans). No
+  foreign key to `_forgebase_environments`: the row must outlive a deleted
+  environment until its data on the shard is gone.
+- `_forgebase_db_moves`: `state` as §3.8, `job_id`, `rebalance_id`,
+  `detail` (JSON checkpoint), `error`, `switched_at`, `finished_at`; one
+  open move per tenant (partial unique index).
+- `_forgebase_xact_journal`: `gid` (≤ 180 characters, so `<gid>_<set
+  number>` fits PostgreSQL's 200-byte prepared-transaction names), `nodes`
+  (JSON array of set ids), `state committing | committed`, `purpose`,
+  `resolved_at`. No `aborted` state: a failure before the row exists rolls
+  every part back, so recovery rolls back in-doubt transactions without a
+  row and commits those with a `committing` row.
+- `_forgebase_join_tokens`: `token_hash` (SHA-256 hex; the token is shown
+  once), `set_id`, `role`, `expires_at`, `used_at`, `node_id`.
+- Times are RFC 3339 text, as elsewhere.
+
+**Topology model (`topology.rs`).** Plain data with `serde` on every type
+(FB-175 and FB-176 show and edit it): `DbSet`, `DbNode`, `Placement`,
+`Topology { epoch, sets, nodes }`, and the stored enums `SetKind`,
+`SetState`, `NodeKind`, `NodeRole`, `NodeState`, `NodeOrigin`,
+`PlacementState`, `MoveState`, `XactState` (snake-case text; a unit test
+checks every value against both migrations' `CHECK`s). The **topology
+epoch** is one counter on control (`_forgebase_meta` key `topology_epoch`),
+bumped in the same transaction as every set, node or placement change; each
+placement row also has its own `epoch` (+1 on every change of the row).
+Store functions (control only): `load`, `load_placements`,
+`load_placement`, `insert_set` (next unused number, never reused: rows
+allocated from a retired set's range may exist elsewhere; state
+`provisioning`; PostgreSQL only), `update_set`, `insert_node`,
+`update_node_state`, `upsert_placement`, `record_placement_stats` (no epoch
+change), `bump_epoch`.
+
+**`topology.json`.** `write_topology_file` / `read_topology_file`:
+`{ version: 1, written_at, epoch, sets, nodes }`, written atomically
+(temporary file renamed over it, mode 0600 on Unix). Nodes carry
+`url_sealed` (ciphertext, sealed with the instance keyring) so a restart
+finds the control primary after a promote; placements are not in the file
+(there can be very many). The router writes it after every change it sees,
+only when a path is configured.
+
+**Sequence ranges (§3.3).** `sequence_range(k) = [k·2⁴⁰ + 1, (k+1)·2⁴⁰ −
+1]`, `set_number_of(id) = id >> 40`. `apply_sequence_range(db, k)` sets
+`MINVALUE`, `MAXVALUE` and `START` of every sequence in schemas `forgebase`
+and `public` (18 identity sequences at head) in one transaction; a sequence
+whose position is inside the range keeps it, one outside restarts at the
+start. Idempotent. On control (k = 0) only `MAXVALUE` changes and ids
+continue (tested). SQLite: k = 0 is a no-op, other numbers are
+`Unsupported`.
+
+**Placement registry (`placement.rs`).** `TABLES` lists all 154 system
+tables at head with `PlacementClass` (`control`, `tenant`, `per_set`,
+`control_replicated`), `TenantKey` (`Column`, `Parent { column, table,
+parent_column }`, or `Record { collection_column, record_column }` for
+record versions) and `MoveStrategy` (`stay`, `copy`, `renumber`, `remap`,
+`rebuild`). `collection_placement(tenant_scoped)` classifies user
+collection tables (`_tenant`, else control). `system_tables(db)` reads the
+schema (`forgebase` on PostgreSQL; `_forgebase_*` on SQLite, FTS5 shadow
+tables left out, a virtual table's hidden `rowid` included) and
+`problems(schema)` returns every gap: an unclassified or stale table, a
+missing key column, a parent that is not a tenant table, or a `tenant` /
+`_tenant` column that is neither the key nor in
+`TENANT_COLUMNS_NOT_KEYS` (with a reason). The tests run it on SQLite and
+PostgreSQL and also check both backends list the same tables. Choices the
+ADR left open:
+- `per_set`: `_forgebase_meta`, `_forgebase_migrations`,
+  `_forgebase_realtime_outbox`, `_forgebase_function_cursors`,
+  `_forgebase_queue_state` (relay cursors; a record-source topic on control
+  keeps one key per set there, §3.5), `_forgebase_queue_rates` (rate
+  windows restart on the target), `_forgebase_job_queues` (the claim SQL on
+  each set reads its own settings and windows; FB-172 keeps the settings in
+  step with control), `_forgebase_storage_blobs` (`rebuild`: content-
+  addressed reference counts are recounted on the target).
+- `control`: `_forgebase_job_workers` (HTTP workers register once and claim
+  round-robin), `_forgebase_storage_settings`, every audit log. API keys
+  and the authorization audit keep their `tenant` column as data.
+- `tenant` by column: KV, graph nodes and edges, vector collections, storage
+  buckets, jobs, schedules and workflows (`0030_job_tenant`), queue topics,
+  subscriptions (`remap`) and snapshots (`remap`) (`0031_queue_rls`). By
+  parent: vector fields, items, values and `_forgebase_vector_fts` (via the
+  item's `key`; logical apply fires no triggers, so the keyword rows are
+  copied), job events and attempts (`renumber`), job deps, queue messages
+  (`renumber`), deliveries and snapshot items (`remap`), dedup and dead
+  letters, storage objects, ACL, uploads and parts.
+  `_forgebase_record_versions` by record. `PENDING_TENANT_COLUMNS` (a key
+  column a package in flight adds, accepted while missing) is empty.
+- `control_replicated`: `_forgebase_resource_permissions`.
+
+**Router (`router.rs`).** `DbRouter::single(db)` (one fixed set, reads and
+writes nothing) and `DbRouter::open(control, RouterOptions { connector,
+topology_file, policy, freeze_timeout })` (reads topology and placements;
+opens every routable set other than control through a `SetConnector`, which
+the server implements by unsealing the node URL). `control()`,
+`for_tenant(TenantRef) -> SetHandle`, `try_for_tenant`, `sets()` (control
+first), `set(id)`, `set_by_number(k)`, `is_sharded()`, `epoch()`,
+`topology()`, `placement(t)`, `placements()`, `subscribe()` (epoch on a
+`watch` channel), `reload()`, `place(t, set, state)`,
+`place_new_tenant(t, project_id, requested)`, `apply_placement`,
+`set_loads()`; `least_loaded(&[SetLoad])`. `SetHandle` implements `Backend`
+on the set's primary and derefs to its `Database`. Routing rules:
+- No tenant, `""`, or a tenant without a placement row: control. A
+  placement on a set that is not open: `RouterError::SetUnavailable`, never
+  a silent fallback.
+- `frozen`: `for_tenant` waits for the next placement change, at most
+  `freeze_timeout` (10 s), then `RouterError::TenantMoving`;
+  `try_for_tenant` refuses at once (for background loops). `moving` routes
+  to the source, `cleanup` to the new set.
+- The cache only takes a row with a higher epoch than the one it holds, so
+  a reload that read before a concurrent `place` cannot undo it.
+- **One set behaves as today**: every call returns the one `Database`;
+  `place_new_tenant` writes no row (a tenant without a row is on control);
+  `open` reads the topology once and writes `topology.json` only when a
+  path is given. Tested on both backends.
+- New tenants (§3.4), once sharded: an existing placement is kept; an
+  administrator's `requested` set must be `active`; otherwise project
+  affinity (the set of the project's earliest other environment in
+  `_forgebase_environments`, if it takes tenants), then policy mode
+  `control`, or the least-loaded set taking tenants: estimated bytes ÷
+  weight, then placed tenants ÷ weight, then the lower number. A placement
+  row is written for every new tenant, control included.
+- Errors are `RouterError` (`ErrorCode`): `shard_not_found` (404),
+  `shard_unavailable` (503), `shard_closed`, `sharding_unsupported`,
+  `postgres_required` (400), `tenant_moving` (409),
+  `shard_connector_missing` (500), or the `DbError`. `DbError` is
+  unchanged.
+
+**Deviations.**
+- Migration number 0033 (god assigned it: FB-141 took 0031, FB-137 takes 0032).
+- `for_tenant` is `async` (it waits during a freeze); §3.5 does not say.
+- On PostgreSQL an **uncached** read (`Statement::raw`) whose result has a
+  `citext` column fails on a fresh read connection with "unnamed prepared
+  statement does not exist" (the second try works): FB-131's backend,
+  outside this package, not fixed here. The topology reads use cached
+  statements. FB-143 (SQL editor reads are uncached) should look at it.
+- Shared edit outside Owns: `crates/forgebase-db/src/sqlite.rs` test helper
+  gained `..Config::defaults(..).database` (main's `forgebase-db` unit tests
+  did not compile after FB-148 added `DatabaseConfig` fields).
+
+**For the next packages.**
+- **FB-167 (replica reads):** put the node pools and `fetch_routed` behind
+  `SetHandle` (today `{ set, db: Database }`, primary only); the set's
+  replicas are `Topology::nodes_of(set)` with role `replica`; health states
+  go through `topology::update_node_state` (bumps the epoch, so call
+  `reload` or keep health in memory and persist only transitions).
+  Read-your-writes tokens are `<set id>/<lsn>`.
+- **FB-171 (server, data core, realtime, functions):** build the router
+  with `DbRouter::open(control, RouterOptions { connector, topology_file:
+  Some(<data_dir>/topology.json), policy from [database.sharding],
+  freeze_timeout from move_freeze_timeout_ms })` after `migrate`, and pass
+  it instead of the one `Database`; implement `SetConnector` (unseal
+  `url_sealed`, open with the server's `DbOptions`). Route with
+  `for_tenant(TenantRef::new(ctx.tenant.as_deref()))`. Call
+  `place_new_tenant(env_id, Some(project_id), shard)` when an environment
+  is created. `tenant_required_sharded` uses `is_sharded()`. Realtime per
+  set: `sets()`; old cursors → `topology::set_number_of(cursor)`.
+  `_forgebase_record_versions` has no tenant column: write versions on the
+  record's set (its key is the record).
+- **FB-172 (jobs, queues, KV, vector, storage):** one loop per
+  `sets()` entry; skip tenants whose `placement(t)` is `moving` or `frozen`
+  (`try_for_tenant` returns `TenantMoving` for frozen ones);
+  `_forgebase_job_queues` is per set, keep its settings in step.
+- **FB-173 (fan-out, migrations):** `xact_journal` as described above;
+  `insert_set` then migrate, replay the catalog, `apply_sequence_range(db,
+  set.number)`, then `update_set(.., Active)` and `reload()`. Run
+  `apply_sequence_range(control, 0)` once when the first shard is added.
+- **FB-174 (moves, rebalance):** `TABLES` gives the row filter per table
+  (`tenant_column()`, `Parent`, `Record`) and the move strategy; moves are
+  rows in `_forgebase_db_moves`; the switch is `place(t, from, Frozen)` →
+  … → `place(t, to, Cleanup)` (epoch + 1 each, `moved_at` set when the set
+  changes) → `place(t, to, Active)` after cleanup. `set_loads()` and
+  `least_loaded` give the plan's scores. Before the first shard, write a
+  control placement row for every existing environment so control's load
+  is counted (tenants without a row have no size).
+- **FB-176 (dashboard):** every topology type serialises as stored (snake
+  case); show `origin = config` nodes read-only; never show `url_sealed`
+  (FB-175's API must leave it out).
+- **FB-153:** add `_forgebase_db_logins` to `TABLES` as
+  `control_replicated`. **FB-164:** pgmq queues are tenant-owned whole
+  tables outside the registry; their `msg_id` sequences live in schema
+  `pgmq`, which `apply_sequence_range` does not touch.
