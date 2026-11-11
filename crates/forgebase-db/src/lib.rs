@@ -39,12 +39,16 @@ mod pg;
 pub mod placement;
 pub mod router;
 pub mod routing;
+#[cfg(all(feature = "testing", unix))]
+pub mod shard_testing;
+pub mod shards;
 mod slow_log;
 mod sqlite;
 mod sqlite_backend;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod topology;
+pub mod twophase;
 
 pub use backend::{
     Backend, BoxFuture, ExecResult, PlanStep, QueryLabel, Rows, RunAs, SlowQuery, Statement, TxMode, Value, WriteTx,
