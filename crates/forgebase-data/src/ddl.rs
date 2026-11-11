@@ -145,10 +145,13 @@ pub(crate) fn create_table_sql(
     for f in &coll.fields {
         cols.push(column_sql(d, f, relation_table(f, coll, catalog)?.as_deref()));
     }
+    // FB-143 (minimal shared edit; FB-144 owns this file): `STRICT` is
+    // SQLite's; PostgreSQL is always strict.
     Ok(format!(
-        "CREATE TABLE {} (\n  {}\n) STRICT",
+        "CREATE TABLE {} (\n  {}\n){}",
         d.quote_ident(table),
-        cols.join(",\n  ")
+        cols.join(",\n  "),
+        if d.name() == "sqlite" { " STRICT" } else { "" }
     ))
 }
 
@@ -237,11 +240,9 @@ pub(crate) async fn verify_collections(
                 ),
             )
         };
+        // FB-143 (minimal shared edit): `PRAGMA table_info` on SQLite.
         let info = tx
-            .fetch_all(&Statement::raw(format!(
-                "PRAGMA table_info({})",
-                d.quote_ident(&c.name)
-            )))
+            .fetch_all(&d.introspect_columns(&c.name))
             .await
             .map_err(|e| broken(e.to_string()))?;
         let names: Vec<String> = match info.column("name") {
@@ -283,12 +284,15 @@ pub(crate) async fn verify_collections(
 }
 
 /// Whether a table, view or index with this name exists (any case).
-pub(crate) async fn object_exists(tx: &mut dyn WriteTx, name: &str) -> Result<bool, DataError> {
-    let rows = tx
-        .fetch_all(&Statement::new(
-            "SELECT 1 FROM sqlite_master WHERE lower(name) = lower(?1)",
-            vec![name.into()],
-        ))
-        .await?;
+pub(crate) async fn object_exists(d: &dyn Dialect, tx: &mut dyn WriteTx, name: &str) -> Result<bool, DataError> {
+    // FB-143 (minimal shared edit): PostgreSQL relations on ForgeBase's
+    // search path (`forgebase`, `public`).
+    let sql = if d.name() == "postgres" {
+        "SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = ANY (current_schemas(false)) AND lower(c.relname) = lower(?1)"
+    } else {
+        "SELECT 1 FROM sqlite_master WHERE lower(name) = lower(?1)"
+    };
+    let rows = tx.fetch_all(&Statement::new(sql, vec![name.into()])).await?;
     Ok(!rows.is_empty())
 }

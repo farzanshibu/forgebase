@@ -1,11 +1,42 @@
-//! Lexical analysis of raw SQL for the SQL editor (ADR-0003 §6).
+//! Lexical analysis of raw SQL for the SQL editor (ADR-0003 §6,
+//! ADR-0028 §7.5).
 //!
 //! This is a tokenizer, not a parser: it splits statements, finds the leading
 //! keyword and spots names that must never be touched. The engine has the
 //! final word on read vs write (`Backend::statement_writes`), and reads run on
 //! connections that cannot write.
+//!
+//! Two flavours ([`SqlFlavor`]): SQLite's (`[ident]`, `` `ident` ``,
+//! `:name`/`@name`/`$name` parameters, trigger bodies with `BEGIN ... END`)
+//! and PostgreSQL's (`$tag$ ... $tag$` and `E'...'` strings, nested block
+//! comments, `[`/`::`/`@` as operators, `BEGIN ATOMIC ... END` routine bodies,
+//! and its own deny list). On PostgreSQL the deny list is defence in depth:
+//! the boundary is the role the editor runs as (FB-153).
+
+use forgebase_db::Dialect;
 
 use crate::QueryError;
+
+/// Which engine's SQL the text is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SqlFlavor {
+    /// SQLite.
+    #[default]
+    Sqlite,
+    /// PostgreSQL.
+    Postgres,
+}
+
+impl SqlFlavor {
+    /// The flavour of a dialect.
+    pub fn of(d: &dyn Dialect) -> Self {
+        if d.name() == "postgres" {
+            SqlFlavor::Postgres
+        } else {
+            SqlFlavor::Sqlite
+        }
+    }
+}
 
 /// Maximum SQL text accepted by the editor (1 MiB).
 pub const MAX_SQL_LEN: usize = 1 << 20;
@@ -17,8 +48,10 @@ pub enum TokenKind {
     Word,
     /// `"ident"`, `` `ident` `` or `[ident]`.
     QuotedIdent,
-    /// `'string'`.
+    /// `'string'` (also PostgreSQL's `E'string'`).
     String,
+    /// PostgreSQL `$tag$ body $tag$` (the body, without the tags).
+    DollarString,
     /// Numeric literal.
     Number,
     /// `?`, `?NNN`, `:name`, `@name`, `$name`.
@@ -42,12 +75,32 @@ impl Token {
     }
 }
 
-/// Tokenizes SQL, skipping whitespace and comments.
+/// Tokenizes SQLite SQL, skipping whitespace and comments.
 pub fn tokenize(sql: &str) -> Result<Vec<Token>, QueryError> {
-    tokenize_spans(sql).map(|v| v.into_iter().map(|(t, _)| t).collect())
+    tokenize_for(sql, SqlFlavor::Sqlite)
 }
 
-fn tokenize_spans(sql: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, QueryError> {
+/// Tokenizes SQL of `flavor`, skipping whitespace and comments.
+pub fn tokenize_for(sql: &str, flavor: SqlFlavor) -> Result<Vec<Token>, QueryError> {
+    tokenize_spans(sql, flavor).map(|v| v.into_iter().map(|(t, _)| t).collect())
+}
+
+/// The closing `$tag$` of a PostgreSQL dollar quote opening at `i`, if `i`
+/// starts one: returns (end of the opening tag, the tag).
+fn dollar_tag(sql: &str, i: usize) -> Option<(usize, &str)> {
+    let b = sql.as_bytes();
+    let mut j = i + 1;
+    if b.get(j).is_some_and(u8::is_ascii_digit) {
+        return None; // `$1`: a parameter
+    }
+    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] >= 0x80) {
+        j += 1;
+    }
+    (b.get(j) == Some(&b'$')).then(|| (j + 1, &sql[i..=j]))
+}
+
+fn tokenize_spans(sql: &str, flavor: SqlFlavor) -> Result<Vec<(Token, std::ops::Range<usize>)>, QueryError> {
+    let pg = flavor == SqlFlavor::Postgres;
     if sql.len() > MAX_SQL_LEN {
         return Err(QueryError::TooComplex("SQL text is larger than 1 MiB".into()));
     }
@@ -72,12 +125,102 @@ fn tokenize_spans(sql: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, Que
                 }
                 continue;
             }
+            b'/' if pg && b.get(i + 1) == Some(&b'*') => {
+                // PostgreSQL block comments nest and must be closed.
+                let mut depth = 0usize;
+                let mut j = i;
+                loop {
+                    if j + 1 >= b.len() {
+                        return Err(QueryError::syntax(start, "unterminated comment"));
+                    }
+                    if b[j] == b'/' && b[j + 1] == b'*' {
+                        depth += 1;
+                        j += 2;
+                    } else if b[j] == b'*' && b[j + 1] == b'/' {
+                        depth -= 1;
+                        j += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+                i = j;
+                continue;
+            }
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 match sql[i + 2..].find("*/") {
                     Some(end) => i = i + 2 + end + 2,
                     None => i = b.len(), // SQLite accepts an unterminated trailing comment
                 }
                 continue;
+            }
+            b'$' if pg && dollar_tag(sql, i).is_some() => {
+                let Some((body_start, tag)) = dollar_tag(sql, i) else {
+                    unreachable!("checked by the guard")
+                };
+                let Some(end) = sql[body_start..].find(tag) else {
+                    return Err(QueryError::syntax(start, "unterminated dollar-quoted text"));
+                };
+                let text = sql[body_start..body_start + end].to_owned();
+                let j = body_start + end + tag.len();
+                out.push((
+                    Token {
+                        kind: TokenKind::DollarString,
+                        text,
+                    },
+                    start..j,
+                ));
+                i = j;
+            }
+            b'e' | b'E' if pg && b.get(i + 1) == Some(&b'\'') => {
+                // E'...': backslash escapes.
+                let mut j = i + 2;
+                let mut text = Vec::new();
+                loop {
+                    match b.get(j) {
+                        None => return Err(QueryError::syntax(start, "unterminated quoted text")),
+                        Some(b'\\') => {
+                            if let Some(&x) = b.get(j + 1) {
+                                text.push(x);
+                            }
+                            j += 2;
+                        }
+                        Some(b'\'') if b.get(j + 1) == Some(&b'\'') => {
+                            text.push(b'\'');
+                            j += 2;
+                        }
+                        Some(b'\'') => {
+                            j += 1;
+                            break;
+                        }
+                        Some(&x) => {
+                            text.push(x);
+                            j += 1;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&text).into_owned();
+                out.push((
+                    Token {
+                        kind: TokenKind::String,
+                        text,
+                    },
+                    start..j,
+                ));
+                i = j;
+            }
+            b'`' | b'[' if pg => {
+                // Operators in PostgreSQL (array subscripts), not quotes.
+                out.push((tok(TokenKind::Punct, &sql[i..i + 1]), start..i + 1));
+                i += 1;
+            }
+            b':' | b'@' if pg => {
+                // `::` casts and `@>`-style operators: PostgreSQL has no
+                // named parameters.
+                out.push((tok(TokenKind::Punct, &sql[i..i + 1]), start..i + 1));
+                i += 1;
             }
             b'\'' | b'"' | b'`' | b'[' => {
                 let close = if c == b'[' { b']' } else { c };
@@ -148,15 +291,23 @@ fn tokenize_spans(sql: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, Que
     Ok(out)
 }
 
-/// Splits SQL text into statements (without the trailing `;`). Semicolons
-/// inside strings, comments and `CREATE TRIGGER ... BEGIN ... END` bodies do
-/// not split. Empty statements are dropped.
+/// Splits SQLite SQL text into statements (without the trailing `;`).
+/// Semicolons inside strings, comments and `CREATE TRIGGER ... BEGIN ... END`
+/// bodies do not split. Empty statements are dropped.
 pub fn split_statements(sql: &str) -> Result<Vec<String>, QueryError> {
-    let tokens = tokenize_spans(sql)?;
+    split_statements_for(sql, SqlFlavor::Sqlite)
+}
+
+/// [`split_statements`] for `flavor`. On PostgreSQL, routine bodies are
+/// dollar-quoted strings or `BEGIN ATOMIC ... END` blocks; neither splits.
+pub fn split_statements_for(sql: &str, flavor: SqlFlavor) -> Result<Vec<String>, QueryError> {
+    let tokens = tokenize_spans(sql, flavor)?;
     let mut out = Vec::new();
     let mut stmt_start: Option<usize> = None;
     let mut stmt_tokens: Vec<&Token> = Vec::new();
-    let mut depth = 0i32; // BEGIN/CASE ... END nesting inside a trigger body
+    // BEGIN/CASE ... END nesting inside a trigger (SQLite) or `BEGIN ATOMIC`
+    // routine (PostgreSQL) body.
+    let mut depth = 0i32;
     for (tok, span) in &tokens {
         if tok.kind == TokenKind::Punct && tok.text == ";" && depth == 0 {
             if let Some(s) = stmt_start.take() {
@@ -168,17 +319,20 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, QueryError> {
         if stmt_start.is_none() {
             stmt_start = Some(span.start);
         }
+        let prev_begin = stmt_tokens.last().is_some_and(|t| t.is_word("BEGIN"));
         stmt_tokens.push(tok);
-        if is_create_trigger(&stmt_tokens) {
-            if tok.is_word("BEGIN") || (depth > 0 && tok.is_word("CASE")) {
-                depth += 1;
-            } else if tok.is_word("END") && depth > 0 {
-                depth -= 1;
-            }
+        let opens = match flavor {
+            SqlFlavor::Sqlite => is_create_trigger(&stmt_tokens) && tok.is_word("BEGIN"),
+            SqlFlavor::Postgres => is_create_routine(&stmt_tokens) && prev_begin && tok.is_word("ATOMIC"),
+        };
+        if opens || (depth > 0 && tok.is_word("CASE")) {
+            depth += 1;
+        } else if tok.is_word("END") && depth > 0 {
+            depth -= 1;
         }
     }
     if depth != 0 {
-        return Err(QueryError::syntax(sql.len(), "unterminated trigger body"));
+        return Err(QueryError::syntax(sql.len(), "unterminated trigger or routine body"));
     }
     if let Some(s) = stmt_start {
         let tail = sql[s..].trim();
@@ -192,6 +346,15 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, QueryError> {
 fn is_create_trigger(t: &[&Token]) -> bool {
     let words: Vec<&&Token> = t.iter().take(4).collect();
     words.first().is_some_and(|w| w.is_word("CREATE")) && words.iter().skip(1).take(2).any(|w| w.is_word("TRIGGER"))
+}
+
+/// `CREATE [OR REPLACE] FUNCTION|PROCEDURE`.
+fn is_create_routine(t: &[&Token]) -> bool {
+    t.first().is_some_and(|w| w.is_word("CREATE"))
+        && t.iter()
+            .skip(1)
+            .take(3)
+            .any(|w| w.is_word("FUNCTION") || w.is_word("PROCEDURE"))
 }
 
 /// What a statement does, by its leading keyword.
@@ -251,7 +414,7 @@ const ALLOWED_MODULES: &[&str] = &["fts5", "fts4", "fts3", "rtree", "rtree_i32"]
 /// Functions that are never allowed.
 const FORBIDDEN_FUNCTIONS: &[&str] = &["load_extension", "fts3_tokenizer", "readfile", "writefile", "edit"];
 
-/// Classifies one statement and rejects what the SQL editor never runs:
+/// Classifies one SQLite statement and rejects what the SQL editor never runs:
 /// transaction control (the service owns transactions), `ATTACH`/`DETACH`,
 /// `VACUUM`, writable or unknown pragmas, temporary objects, unknown
 /// virtual-table modules and dangerous functions.
@@ -325,6 +488,308 @@ pub fn analyze_statement(stmt: &str) -> Result<StatementInfo, QueryError> {
         }
     }
     let touches_system_tables = identifiers.iter().any(|n| n.starts_with("_forgebase"));
+    Ok(StatementInfo {
+        kind,
+        keyword,
+        touches_system_tables,
+        identifiers,
+    })
+}
+
+/// [`analyze_statement`] for `flavor`.
+pub fn analyze_statement_for(stmt: &str, flavor: SqlFlavor) -> Result<StatementInfo, QueryError> {
+    match flavor {
+        SqlFlavor::Sqlite => analyze_statement(stmt),
+        SqlFlavor::Postgres => analyze_pg(stmt),
+    }
+}
+
+/// Functions the SQL editor never calls on PostgreSQL: server files and
+/// programs, other sessions, configuration, session-level locks, sleeping on
+/// the single writer, and functions that run a query given as text (which
+/// would hide the rest of this list).
+const PG_FORBIDDEN_FUNCTIONS: &[&str] = &[
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "lo_import",
+    "lo_export",
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+    "pg_reload_conf",
+    "pg_rotate_logfile",
+    "pg_promote",
+    "pg_switch_wal",
+    "pg_sleep",
+    "pg_sleep_for",
+    "pg_sleep_until",
+    "set_config",
+    "query_to_xml",
+    "query_to_xmlschema",
+    "query_to_xml_and_xmlschema",
+    "cursor_to_xml",
+    "cursor_to_xmlschema",
+    "ts_stat",
+    "pg_import_system_collations",
+];
+
+/// Function-name prefixes never called on PostgreSQL (`dblink*`, files,
+/// replication, backups, session-level advisory locks).
+const PG_FORBIDDEN_PREFIXES: &[&str] = &[
+    "dblink",
+    "pg_ls_",
+    "pg_read_",
+    "pg_file_",
+    "pg_logical_",
+    "pg_replication_",
+    "pg_create_",
+    "pg_drop_replication",
+    "pg_backup_",
+    "pg_advisory",
+    "pg_try_advisory",
+];
+
+/// Objects the SQL editor does not create, alter or drop on PostgreSQL:
+/// cluster-wide or privileged objects, and schemas (collections live in
+/// `public`, ForgeBase's tables in `forgebase`).
+const PG_FORBIDDEN_OBJECTS: &[&str] = &[
+    "EXTENSION",
+    "ROLE",
+    "USER",
+    "GROUP",
+    "DATABASE",
+    "TABLESPACE",
+    "SCHEMA",
+    "SUBSCRIPTION",
+    "PUBLICATION",
+    "SERVER",
+    "FOREIGN",
+    "EVENT",
+    "LANGUAGE",
+    "SYSTEM",
+    "DEFAULT",
+    "ACCESS",
+    "TRANSFORM",
+    "OWNED",
+    "LARGE",
+];
+
+fn pg_function_forbidden(name: &str) -> bool {
+    PG_FORBIDDEN_FUNCTIONS.contains(&name) || PG_FORBIDDEN_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// The first forbidden function `tokens` call (a name followed by `(`),
+/// including inside dollar-quoted routine bodies.
+fn pg_forbidden_call(tokens: &[Token], depth: usize) -> Result<Option<String>, QueryError> {
+    for (i, t) in tokens.iter().enumerate() {
+        match t.kind {
+            TokenKind::Word | TokenKind::QuotedIdent => {
+                let lower = t.text.to_ascii_lowercase();
+                if pg_function_forbidden(&lower) && tokens.get(i + 1).is_some_and(|n| n.text == "(") {
+                    return Ok(Some(lower));
+                }
+            }
+            TokenKind::DollarString if depth < 4 => {
+                // A body that does not tokenize is still searched word by word.
+                let inner = match tokenize_for(&t.text, SqlFlavor::Postgres) {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        let lower = t.text.to_ascii_lowercase();
+                        let found = lower
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .find(|w| pg_function_forbidden(w))
+                            .map(str::to_owned);
+                        if found.is_some() {
+                            return Ok(found);
+                        }
+                        continue;
+                    }
+                };
+                if let Some(f) = pg_forbidden_call(&inner, depth + 1)? {
+                    return Ok(Some(f));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The object word of `CREATE|ALTER|DROP [OR REPLACE] [modifiers] <object>`.
+fn pg_object_word(tokens: &[Token]) -> String {
+    const SKIP: &[&str] = &[
+        "OR",
+        "REPLACE",
+        "UNIQUE",
+        "UNLOGGED",
+        "GLOBAL",
+        "LOCAL",
+        "TEMP",
+        "TEMPORARY",
+        "MATERIALIZED",
+        "RECURSIVE",
+        "TRUSTED",
+        "PROCEDURAL",
+        "CONSTRAINT",
+    ];
+    tokens
+        .iter()
+        .skip(1)
+        .take(6)
+        .map(|t| t.text.to_ascii_uppercase())
+        .find(|w| !SKIP.contains(&w.as_str()))
+        .unwrap_or_default()
+}
+
+/// Whether two consecutive words `a b` appear in `tokens`.
+fn has_words(tokens: &[Token], a: &str, b: &[&str]) -> bool {
+    tokens.windows(2).any(|w| {
+        w[0].is_word(a)
+            && (w[1].kind == TokenKind::Word || w[1].kind == TokenKind::String)
+            && b.iter().any(|x| w[1].text.eq_ignore_ascii_case(x))
+    })
+}
+
+/// A top-level `SELECT ... INTO new_table` (creates a table).
+fn pg_select_into(tokens: &[Token]) -> bool {
+    let mut depth = 0i32;
+    let mut verb = "";
+    for t in tokens {
+        match t.text.as_str() {
+            "(" if t.kind == TokenKind::Punct => depth += 1,
+            ")" if t.kind == TokenKind::Punct => depth -= 1,
+            _ if depth == 0 && t.kind == TokenKind::Word => {
+                let w = t.text.to_ascii_uppercase();
+                match w.as_str() {
+                    "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" => {
+                        verb = match w.as_str() {
+                            "SELECT" => "SELECT",
+                            _ => "DML",
+                        };
+                    }
+                    "INTO" if verb == "SELECT" => return true,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `EXPLAIN ANALYZE ...` / `EXPLAIN (ANALYZE ...) ...`: runs the statement.
+fn pg_explain_analyze(tokens: &[Token]) -> bool {
+    let is_analyze = |t: &Token| t.is_word("ANALYZE") || t.is_word("ANALYSE");
+    match tokens.get(1) {
+        Some(t) if t.text == "(" => tokens.iter().skip(2).take_while(|t| t.text != ")").any(is_analyze),
+        _ => tokens
+            .iter()
+            .skip(1)
+            .take_while(|t| t.kind == TokenKind::Word && ["ANALYZE", "ANALYSE", "VERBOSE"].iter().any(|w| t.is_word(w)))
+            .any(is_analyze),
+    }
+}
+
+/// The PostgreSQL deny list of ADR-0028 §7.5 (defence in depth: the
+/// editor's role is the boundary, FB-153).
+fn analyze_pg(stmt: &str) -> Result<StatementInfo, QueryError> {
+    let tokens = tokenize_for(stmt, SqlFlavor::Postgres)?;
+    let Some(first) = tokens.first() else {
+        return Err(QueryError::NotAllowed("empty statement".into()));
+    };
+    if first.kind != TokenKind::Word {
+        return Err(QueryError::NotAllowed("a statement must start with a keyword".into()));
+    }
+    let keyword = first.text.to_ascii_uppercase();
+    let not_allowed = |why: &str| Err(QueryError::NotAllowed(why.to_owned()));
+    let mut kind = match keyword.as_str() {
+        "SELECT" | "VALUES" | "WITH" | "TABLE" | "SHOW" => StatementKind::Read,
+        "EXPLAIN" => {
+            if pg_explain_analyze(&tokens) {
+                return not_allowed("EXPLAIN ANALYZE runs the statement; use the query-plan API");
+            }
+            StatementKind::Read
+        }
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "TRUNCATE" | "CALL" => StatementKind::Write,
+        "CREATE" | "ALTER" | "DROP" | "COMMENT" => StatementKind::Schema,
+        "ANALYZE" | "ANALYSE" | "REINDEX" | "REFRESH" => StatementKind::Maintenance,
+        "BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT" | "RELEASE" | "PREPARE" => {
+            return not_allowed("transaction control is managed by ForgeBase; send the statements as one batch");
+        }
+        "SET" | "RESET" | "DISCARD" => {
+            return not_allowed("session settings and roles are managed by ForgeBase");
+        }
+        "COPY" => return not_allowed("COPY is not allowed from the SQL editor; use the import and export APIs"),
+        "VACUUM" | "CHECKPOINT" | "CLUSTER" => {
+            return not_allowed("maintenance commands run through the maintenance API");
+        }
+        "LOAD" => return not_allowed("loading libraries is not allowed"),
+        "LISTEN" | "NOTIFY" | "UNLISTEN" => return not_allowed("notifications are not available from the SQL editor"),
+        "GRANT" | "REVOKE" | "REASSIGN" | "SECURITY" => {
+            return not_allowed("privileges and roles are managed by ForgeBase");
+        }
+        "DO" => return not_allowed("anonymous code blocks are not allowed; create a function"),
+        "EXECUTE" | "DEALLOCATE" | "DECLARE" | "FETCH" | "MOVE" | "CLOSE" | "LOCK" | "IMPORT" => {
+            return Err(QueryError::NotAllowed(format!(
+                "{keyword} is not available from the SQL editor"
+            )));
+        }
+        other => return Err(QueryError::NotAllowed(format!("unsupported statement {other}"))),
+    };
+    if kind == StatementKind::Read && keyword != "EXPLAIN" && pg_select_into(&tokens) {
+        kind = StatementKind::Schema;
+    }
+    if kind == StatementKind::Schema && keyword != "COMMENT" {
+        if tokens
+            .iter()
+            .take(5)
+            .any(|t| t.is_word("TEMP") || t.is_word("TEMPORARY"))
+        {
+            return not_allowed("temporary objects are not allowed");
+        }
+        let object = pg_object_word(&tokens);
+        if PG_FORBIDDEN_OBJECTS.contains(&object.as_str()) {
+            return Err(QueryError::NotAllowed(format!(
+                "{keyword} {object} is not available from the SQL editor"
+            )));
+        }
+        if has_words(&tokens, "LANGUAGE", &["c", "internal"]) {
+            return not_allowed("functions in LANGUAGE c or internal are not allowed");
+        }
+        if has_words(&tokens, "SECURITY", &["DEFINER"]) {
+            return not_allowed("SECURITY DEFINER functions are not allowed");
+        }
+        if has_words(&tokens, "OWNER", &["TO"]) {
+            return not_allowed("object owners are managed by ForgeBase");
+        }
+    }
+    if let Some(f) = pg_forbidden_call(&tokens, 0)? {
+        return Err(QueryError::NotAllowed(format!("function {f} is not allowed")));
+    }
+    let mut identifiers: Vec<String> = Vec::new();
+    let mut touches_system_tables = false;
+    for (i, t) in tokens.iter().enumerate() {
+        if matches!(t.kind, TokenKind::Word | TokenKind::QuotedIdent) {
+            let lower = t.text.to_ascii_lowercase();
+            let qualifier = tokens.get(i + 1).is_some_and(|n| n.text == ".");
+            let call = tokens.get(i + 1).is_some_and(|n| n.text == "(");
+            // `_forgebase*` tables, the `forgebase` schema and the catalogs.
+            if lower.starts_with("_forgebase")
+                || (qualifier
+                    && matches!(
+                        lower.as_str(),
+                        "forgebase" | "pg_catalog" | "information_schema" | "pg_toast"
+                    ))
+                || (lower.starts_with("pg_") && !call)
+            {
+                touches_system_tables = true;
+            }
+            if !identifiers.contains(&lower) {
+                identifiers.push(lower);
+            }
+        }
+    }
     Ok(StatementInfo {
         kind,
         keyword,
@@ -411,5 +876,158 @@ mod tests {
                 .unwrap()
                 .touches_system_tables
         );
+    }
+
+    fn pg(sql: &str) -> Result<StatementInfo, QueryError> {
+        analyze_statement_for(sql, SqlFlavor::Postgres)
+    }
+
+    #[test]
+    fn postgres_tokenizer_knows_its_quotes() {
+        let sql = "CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $body$ BEGIN INSERT INTO a VALUES ('x;'); RETURN NEW; END $body$; \
+                   SELECT E'it\\'s; fine', $$;$$, a[1], x::text /* a /* nested ; */ comment */; \
+                   CREATE PROCEDURE p() LANGUAGE sql BEGIN ATOMIC INSERT INTO a VALUES (1); SELECT CASE WHEN 1 = 1 THEN 1 END; END; SELECT 2";
+        let parts = split_statements_for(sql, SqlFlavor::Postgres).unwrap();
+        assert_eq!(parts.len(), 4, "{parts:#?}");
+        assert!(parts[0].ends_with("$body$"));
+        assert!(parts[1].starts_with("SELECT E'") && parts[1].ends_with("comment */"));
+        assert!(parts[2].starts_with("CREATE PROCEDURE") && parts[2].ends_with("END"));
+        assert_eq!(parts[3], "SELECT 2");
+        let toks = tokenize_for("SELECT $1, ?2, $tag$a'b$tag$", SqlFlavor::Postgres).unwrap();
+        assert_eq!(toks[1].kind, TokenKind::Param);
+        assert_eq!(toks[3].kind, TokenKind::Param);
+        assert_eq!(toks[5].kind, TokenKind::DollarString);
+        assert_eq!(toks[5].text, "a'b");
+        assert!(tokenize_for("SELECT $x$ open", SqlFlavor::Postgres).is_err());
+        assert!(tokenize_for("SELECT 1 /* open", SqlFlavor::Postgres).is_err());
+    }
+
+    #[test]
+    fn postgres_classifies_statements() {
+        for (sql, kind) in [
+            ("select 1", StatementKind::Read),
+            ("TABLE posts", StatementKind::Read),
+            ("SHOW server_version", StatementKind::Read),
+            ("EXPLAIN SELECT 1", StatementKind::Read),
+            ("WITH x AS (SELECT 1) SELECT * FROM x", StatementKind::Read),
+            (
+                "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+                StatementKind::Read,
+            ),
+            ("SELECT a INTO t2 FROM t", StatementKind::Schema),
+            ("INSERT INTO t SELECT a FROM u", StatementKind::Write),
+            (
+                "MERGE INTO t USING u ON t.id = u.id WHEN MATCHED THEN DELETE",
+                StatementKind::Write,
+            ),
+            ("TRUNCATE t", StatementKind::Write),
+            ("CREATE TABLE t (x bigint)", StatementKind::Schema),
+            (
+                "CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$",
+                StatementKind::Schema,
+            ),
+            ("COMMENT ON TABLE t IS 'x'", StatementKind::Schema),
+            ("ANALYZE t", StatementKind::Maintenance),
+            ("REFRESH MATERIALIZED VIEW v", StatementKind::Maintenance),
+        ] {
+            assert_eq!(pg(sql).unwrap().kind, kind, "{sql}");
+        }
+    }
+
+    #[test]
+    fn postgres_deny_list() {
+        for bad in [
+            "BEGIN",
+            "START TRANSACTION",
+            "COMMIT",
+            "ROLLBACK",
+            "SAVEPOINT a",
+            "PREPARE TRANSACTION 'x'",
+            "COPY t TO '/tmp/x'",
+            "COPY t FROM PROGRAM 'id'",
+            "ALTER SYSTEM SET work_mem = '1GB'",
+            "LOAD 'auto_explain'",
+            "SET ROLE postgres",
+            "SET SESSION AUTHORIZATION postgres",
+            "RESET ROLE",
+            "SET search_path = public",
+            "CREATE EXTENSION dblink",
+            "CREATE FUNCTION f() RETURNS int LANGUAGE c AS 'lib', 'f'",
+            "CREATE FUNCTION f() RETURNS int LANGUAGE 'internal' AS 'int4in'",
+            "CREATE FUNCTION f() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$",
+            "ALTER FUNCTION f() SECURITY DEFINER",
+            "ALTER TABLE t OWNER TO postgres",
+            "LISTEN x",
+            "NOTIFY x",
+            "UNLISTEN *",
+            "VACUUM",
+            "CHECKPOINT",
+            "CLUSTER t",
+            "SELECT pg_read_file('/etc/passwd')",
+            "SELECT pg_catalog.pg_read_binary_file('x')",
+            "SELECT \"pg_ls_dir\"('.')",
+            "SELECT lo_import('/etc/passwd')",
+            "SELECT lo_export(1, '/tmp/x')",
+            "SELECT pg_terminate_backend(1)",
+            "SELECT pg_cancel_backend(1)",
+            "SELECT pg_reload_conf()",
+            "SELECT set_config('forgebase.schema_gen', '1', false)",
+            "SELECT dblink_connect('x')",
+            "SELECT * FROM dblink('x', 'y') AS t(a int)",
+            "SELECT pg_advisory_lock(1)",
+            "SELECT pg_sleep(10)",
+            "SELECT query_to_xml('select 1', true, true, '')",
+            "CREATE FUNCTION f() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RETURN pg_read_file('x'); END $$",
+            "CREATE FUNCTION f() RETURNS text LANGUAGE plpgsql AS $q$ BEGIN RETURN pg_read_file('x'; END $q$",
+            "DO $$ BEGIN PERFORM 1; END $$",
+            "GRANT SELECT ON t TO PUBLIC",
+            "REVOKE ALL ON t FROM PUBLIC",
+            "CREATE ROLE r",
+            "ALTER ROLE r SUPERUSER",
+            "DROP ROLE r",
+            "CREATE SCHEMA s",
+            "CREATE DATABASE d",
+            "CREATE SERVER s FOREIGN DATA WRAPPER w",
+            "CREATE EVENT TRIGGER e ON ddl_command_start EXECUTE FUNCTION f()",
+            "CREATE TEMP TABLE x (a int)",
+            "CREATE OR REPLACE TEMP VIEW v AS SELECT 1",
+            "EXPLAIN ANALYZE DELETE FROM t",
+            "EXPLAIN (ANALYZE, FORMAT JSON) DELETE FROM t",
+            "PRAGMA table_info(t)",
+            "ATTACH DATABASE 'x' AS y",
+            "DISCARD ALL",
+            "LOCK TABLE t",
+            "EXECUTE p",
+            "DECLARE c CURSOR FOR SELECT 1",
+            "",
+        ] {
+            assert!(pg(bad).is_err(), "{bad}");
+        }
+        assert!(pg("SELECT pg_typeof(1), current_setting('server_version')").is_ok());
+        assert!(
+            pg("SELECT pg_advisory_xact_lock_shared").is_ok(),
+            "a column name, not a call"
+        );
+    }
+
+    #[test]
+    fn postgres_spots_system_objects() {
+        for s in [
+            "DELETE FROM _forgebase_collections",
+            "UPDATE \"_FORGEBASE_meta\" SET value = 1",
+            "INSERT INTO forgebase.anything VALUES (1)",
+            "UPDATE pg_catalog.pg_class SET relname = 'x'",
+            "DELETE FROM pg_authid",
+            "UPDATE information_schema.tables SET x = 1",
+        ] {
+            assert!(pg(s).unwrap().touches_system_tables, "{s}");
+        }
+        for s in [
+            "SELECT '_forgebase_x'",
+            "SELECT pg_typeof(1)",
+            "UPDATE forgebase_notes SET a = 1",
+        ] {
+            assert!(!pg(s).unwrap().touches_system_tables, "{s}");
+        }
     }
 }

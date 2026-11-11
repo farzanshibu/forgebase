@@ -83,7 +83,7 @@ impl DataService {
             .backend
             .fetch_all(&Statement::new(
                 "SELECT id, collection_id, collection, version, action, statements, before, after, actor, applied_at
-                 FROM _forgebase_schema_history WHERE ?1 IS NULL OR collection_id = ?1 ORDER BY id",
+                 FROM _forgebase_schema_history WHERE CAST(?1 AS TEXT) IS NULL OR collection_id = ?1 ORDER BY id",
                 vec![id.into()],
             ))
             .await?;
@@ -157,7 +157,7 @@ impl DataService {
             if cat.get(&def.id).is_some() {
                 return Err(DataError::AlreadyExists(format!("collection id {}", def.id)));
             }
-            if cat.get(&def.name).is_some() || object_exists(&mut *tx, &def.name).await? {
+            if cat.get(&def.name).is_some() || object_exists(d, &mut *tx, &def.name).await? {
                 return Err(DataError::AlreadyExists(format!("collection or table {}", def.name)));
             }
             let mut log = DdlLog::new(&mut *tx);
@@ -295,7 +295,7 @@ impl DataService {
             let renamed = !old.name.eq(&def.name);
             if renamed
                 && (cat.get(&def.name).is_some_and(|c| c.id != old.id)
-                    || (!old.name.eq_ignore_ascii_case(&def.name) && object_exists(&mut *tx, &def.name).await?))
+                    || (!old.name.eq_ignore_ascii_case(&def.name) && object_exists(d, &mut *tx, &def.name).await?))
             {
                 return Err(DataError::AlreadyExists(format!("collection or table {}", def.name)));
             }

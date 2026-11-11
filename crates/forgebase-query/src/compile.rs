@@ -21,7 +21,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use forgebase_db::{Dialect, JsonPathSeg, QueryLabel, Value};
-use forgebase_schema::{Collection, Field, FieldKind, SchemaMode};
+use forgebase_schema::{Collection, Field, FieldKind, SchemaMode, Storage};
 use serde_json::Value as Json;
 
 use crate::QueryError;
@@ -131,18 +131,117 @@ impl Default for CompileOptions {
     }
 }
 
+/// SQL type of a compiled expression. SQLite is dynamically typed, so only
+/// the PostgreSQL rendering looks at it: JSON values are `jsonb` there and
+/// compare with `jsonb` constants; text, numbers and booleans compare with
+/// parameters the server types from the column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarType {
+    /// Text (`text`).
+    Text,
+    /// 64-bit integer (`bigint`).
+    Integer,
+    /// Float (`double precision`).
+    Real,
+    /// Boolean stored as 0/1 (`smallint`).
+    Bool,
+    /// A JSON value (`jsonb` on PostgreSQL; JSON NULL reads as SQL NULL).
+    Json,
+}
+
+impl ScalarType {
+    fn of_storage(s: Storage) -> Self {
+        match s {
+            Storage::Text => ScalarType::Text,
+            Storage::Integer => ScalarType::Integer,
+            Storage::Real => ScalarType::Real,
+            Storage::Bool => ScalarType::Bool,
+            Storage::Json => ScalarType::Json,
+        }
+    }
+}
+
 /// A resolved operand.
 #[derive(Debug, Clone)]
 enum Res {
-    /// One value per row.
-    Scalar { sql: String, json: bool },
+    /// One value per row. `json`: the value is a JSON document or array
+    /// (`:length` counts its elements).
+    Scalar { sql: String, json: bool, ty: ScalarType },
     /// Several values per row: `SELECT .. FROM <from>` yields them as `<value>`.
     Multi {
         from: Vec<String>,
         value: String,
         /// The array expression, when the value is the bare element.
         array: Option<String>,
+        ty: ScalarType,
     },
+}
+
+impl Res {
+    fn ty(&self) -> ScalarType {
+        match self {
+            Res::Scalar { ty, .. } | Res::Multi { ty, .. } => *ty,
+        }
+    }
+}
+
+/// Whether the dialect is PostgreSQL's (typed comparisons, `jsonb`).
+fn is_pg(d: &dyn Dialect) -> bool {
+    d.name() == "postgres"
+}
+
+/// `path` inside the JSON value `base`. SQLite: `json_extract(base, '$.a.b')`.
+/// PostgreSQL: `nullif((base)::jsonb->'a'->'b', 'null'::jsonb)`, a `jsonb`
+/// value (typed, so numbers compare and sort as numbers; JSON `null` and a
+/// missing key are both SQL NULL, as `json_extract` returns them). The cast is
+/// a no-op on `jsonb` columns and accepts JSON held in `text` (`_data`).
+fn json_get(d: &dyn Dialect, base: &str, path: &[JsonPathSeg]) -> String {
+    if !is_pg(d) {
+        return d.json_extract(base, path);
+    }
+    let mut out = format!("({base})::jsonb");
+    for seg in path {
+        match seg {
+            JsonPathSeg::Key(k) => {
+                // Defence in depth: keys are validated identifiers.
+                assert!(
+                    forgebase_db::dialect::is_safe_ident(k),
+                    "json path keys are validated identifiers"
+                );
+                out.push_str(&format!("->'{k}'"));
+            }
+            JsonPathSeg::Index(i) => out.push_str(&format!("->{i}")),
+        }
+    }
+    format!("nullif({out}, 'null'::jsonb)")
+}
+
+/// `sql` as text (PostgreSQL; SQLite converts implicitly).
+fn as_text(d: &dyn Dialect, sql: &str, ty: ScalarType) -> String {
+    if !is_pg(d) {
+        return sql.to_owned();
+    }
+    match ty {
+        ScalarType::Text => sql.to_owned(),
+        ScalarType::Json => format!("({sql} #>> '{{}}')"),
+        _ => format!("CAST({sql} AS text)"),
+    }
+}
+
+/// Makes two path expressions comparable on PostgreSQL: a JSON value against
+/// anything else compares as `jsonb`, text against a number as text.
+fn coerce_pair(d: &dyn Dialect, a: (String, ScalarType), z: (String, ScalarType)) -> (String, String) {
+    let ((a, ta), (z, tz)) = (a, z);
+    if !is_pg(d) || ta == tz {
+        return (a, z);
+    }
+    match (ta, tz) {
+        (ScalarType::Json, _) => (a, format!("to_jsonb({z})")),
+        (_, ScalarType::Json) => (format!("to_jsonb({a})"), z),
+        (ScalarType::Text, _) => (a, format!("CAST({z} AS text)")),
+        (_, ScalarType::Text) => (format!("CAST({a} AS text)"), z),
+        _ => (a, z),
+    }
 }
 
 /// How a row is reached: directly through an alias, or by id lookup in a
@@ -214,16 +313,31 @@ impl<'a> Compiler<'a> {
         alias: &str,
         path: &FieldPath,
     ) -> Result<String, QueryError> {
+        self.scalar_typed(b, root, alias, path).map(|(sql, _)| sql)
+    }
+
+    /// [`Compiler::scalar`] with the expression's type. On PostgreSQL a
+    /// [`ScalarType::Json`] expression is `jsonb`: it sorts by JSON value
+    /// and comes back as JSON text.
+    pub fn scalar_typed(
+        &self,
+        b: &mut SqlBuilder<'_>,
+        root: &Collection,
+        alias: &str,
+        path: &FieldPath,
+    ) -> Result<(String, ScalarType), QueryError> {
         let row = RowRef::Alias(alias.to_owned());
         match self.path(b, root, &row, path, 0)? {
-            Res::Scalar { sql, .. } => Ok(sql),
+            Res::Scalar { sql, ty, .. } => Ok((sql, ty)),
             Res::Multi { .. } => Err(QueryError::InvalidOperation(format!(
                 "{path} holds several values; use {path}:length or a single-value field"
             ))),
         }
     }
 
-    /// `ORDER BY` items for sort keys (without the keyword).
+    /// `ORDER BY` items for sort keys (without the keyword). NULLs sort
+    /// first ascending and last descending on every engine
+    /// ([`Dialect::order_nulls`]), which keyset cursors rely on.
     pub fn order_by(
         &self,
         b: &mut SqlBuilder<'_>,
@@ -234,7 +348,7 @@ impl<'a> Compiler<'a> {
         keys.iter()
             .map(|k| {
                 let e = self.scalar(b, root, alias, &k.path)?;
-                Ok(format!("{e} {}", if k.desc { "DESC" } else { "ASC" }))
+                Ok(format!("{e} {}", b.dialect().order_nulls(k.desc)))
             })
             .collect()
     }
@@ -261,13 +375,31 @@ impl<'a> Compiler<'a> {
 
     /// The value of a non-path operand (not yet bound).
     fn constant(&self, o: &Operand) -> Result<Value, QueryError> {
+        Ok(match self.constant_json(o)? {
+            Json::Null => Value::Null,
+            Json::Bool(v) => Value::from(v),
+            Json::Number(n) => n
+                .as_i64()
+                .map(Value::Integer)
+                .or_else(|| n.as_f64().map(Value::Real))
+                .unwrap_or(Value::Null),
+            Json::String(s) => Value::Text(s),
+            _ => return Err(QueryError::InvalidOperation("expected a value".into())),
+        })
+    }
+
+    /// The value of a non-path operand as JSON (literals keep their kind:
+    /// `true` stays a boolean, for comparisons with JSON values).
+    fn constant_json(&self, o: &Operand) -> Result<Json, QueryError> {
         Ok(match o {
             Operand::Literal(l) => match l {
-                Literal::Null => Value::Null,
-                Literal::Bool(v) => Value::from(*v),
-                Literal::Int(i) => Value::Integer(*i),
-                Literal::Float(f) => Value::Real(*f),
-                Literal::Text(s) => Value::Text(s.clone()),
+                Literal::Null => Json::Null,
+                Literal::Bool(v) => Json::Bool(*v),
+                Literal::Int(i) => Json::from(*i),
+                Literal::Float(f) => serde_json::Number::from_f64(*f)
+                    .map(Json::Number)
+                    .ok_or_else(|| QueryError::InvalidOperation("numbers must be finite".into()))?,
+                Literal::Text(s) => Json::String(s.clone()),
             },
             Operand::Param(name) => {
                 if self.opts.inline_literals {
@@ -275,14 +407,7 @@ impl<'a> Compiler<'a> {
                 }
                 match self.opts.params.get(name) {
                     None => return Err(QueryError::MissingParam(name.clone())),
-                    Some(Json::Null) => Value::Null,
-                    Some(Json::Bool(v)) => Value::from(*v),
-                    Some(Json::Number(n)) => n
-                        .as_i64()
-                        .map(Value::Integer)
-                        .or_else(|| n.as_f64().map(Value::Real))
-                        .unwrap_or(Value::Null),
-                    Some(Json::String(s)) => Value::Text(s.clone()),
+                    Some(v @ (Json::Null | Json::Bool(_) | Json::Number(_) | Json::String(_))) => v.clone(),
                     Some(_) => {
                         return Err(QueryError::InvalidOperation(format!(
                             "parameter {name} must be a string, number, boolean or null"
@@ -296,7 +421,7 @@ impl<'a> Compiler<'a> {
                         "@now is not allowed in index definitions".into(),
                     ));
                 }
-                Value::Text(self.opts.now.clone())
+                Json::String(self.opts.now.clone())
             }
             Operand::Path(_) => return Err(QueryError::InvalidOperation("expected a value".into())),
         })
@@ -320,14 +445,45 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    /// A constant compared with an expression of type `ty`. PostgreSQL:
+    /// against a JSON value the constant is a `jsonb` value
+    /// (`CAST(? AS jsonb)` with the constant's JSON text bound); a fraction
+    /// against an integer column is cast to `double precision`; anything else
+    /// is a parameter the server types from the other side.
+    fn render_against(&self, b: &mut SqlBuilder<'_>, o: &Operand, ty: ScalarType) -> Result<String, QueryError> {
+        let d = b.dialect();
+        if is_pg(d) && ty == ScalarType::Json {
+            let text = self.constant_json(o)?.to_string();
+            return Ok(if self.opts.inline_literals {
+                format!("{}::jsonb", self.render(b, &Value::Text(text))?)
+            } else {
+                format!("CAST({} AS jsonb)", b.bind(text))
+            });
+        }
+        let v = self.constant(o)?;
+        let sql = self.render(b, &v)?;
+        Ok(match (&v, ty) {
+            (Value::Real(_), ScalarType::Integer | ScalarType::Bool) if is_pg(d) => {
+                format!("CAST({sql} AS double precision)")
+            }
+            _ => sql,
+        })
+    }
+
     fn operand(&self, b: &mut SqlBuilder<'_>, root: &Collection, row: &RowRef, o: &Operand) -> Result<Res, QueryError> {
         match o {
             Operand::Path(p) => self.path(b, root, row, p, 0),
             other => {
                 let v = self.constant(other)?;
+                let ty = match v {
+                    Value::Integer(_) => ScalarType::Integer,
+                    Value::Real(_) => ScalarType::Real,
+                    _ => ScalarType::Text,
+                };
                 Ok(Res::Scalar {
                     sql: self.render(b, &v)?,
                     json: false,
+                    ty,
                 })
             }
         }
@@ -372,10 +528,15 @@ impl<'a> Compiler<'a> {
                 }
             };
             let pattern = self.render(b, &Value::Text(format!("%{}%", d.escape_like(&text))))?;
-            let esc = d.like_escape_clause();
-            let test = |v: &str| match op {
-                Op::Like => format!("{v} LIKE {pattern} {esc}"),
-                _ => format!("coalesce({v}, '') NOT LIKE {pattern} {esc}"),
+            let ty = l.ty();
+            // Case-insensitive on every engine: `LIKE` (ASCII) on SQLite,
+            // `ILIKE` (Unicode) on PostgreSQL.
+            let test = |v: &str| {
+                let v = as_text(d, v, ty);
+                match op {
+                    Op::Like => d.like_ci(&v, &pattern),
+                    _ => format!("NOT ({})", d.like_ci(&format!("coalesce({v}, '')"), &pattern)),
+                }
             };
             return Ok(match l {
                 Res::Scalar { sql, .. } => test(&sql),
@@ -399,10 +560,18 @@ impl<'a> Compiler<'a> {
                 Res::Multi { from, value, .. } => self.quantified(c.any, &from, &format!("{value} {sql}")),
             });
         }
-        let r = self.operand(b, root, row, right)?;
         // Against a non-null constant, `=` and `IS` agree; `=` is what every
         // planner matches to an index. Path-to-path equality stays NULL-safe.
         let constant = !matches!(right, Operand::Path(_));
+        let r = if constant {
+            Res::Scalar {
+                sql: self.render_against(b, right, l.ty())?,
+                json: false,
+                ty: l.ty(),
+            }
+        } else {
+            self.operand(b, root, row, right)?
+        };
         let sym = match op {
             Op::Eq if constant => "=",
             Op::Eq => d.null_safe_eq(),
@@ -414,11 +583,25 @@ impl<'a> Compiler<'a> {
             Op::Like | Op::NotLike => unreachable!("handled above"),
         };
         match (l, r) {
-            (Res::Scalar { sql: a, .. }, Res::Scalar { sql: z, .. }) => Ok(format!("{a} {sym} {z}")),
-            (Res::Multi { from, value, .. }, Res::Scalar { sql: z, .. }) => {
+            (Res::Scalar { sql: a, ty: ta, .. }, Res::Scalar { sql: z, ty: tz, .. }) => {
+                let (a, z) = coerce_pair(d, (a, ta), (z, tz));
+                Ok(format!("{a} {sym} {z}"))
+            }
+            (
+                Res::Multi {
+                    from, value, ty: ta, ..
+                },
+                Res::Scalar { sql: z, ty: tz, .. },
+            ) => {
+                let (value, z) = coerce_pair(d, (value, ta), (z, tz));
                 Ok(self.quantified(c.any, &from, &format!("{value} {sym} {z}")))
             }
-            (Res::Scalar { sql: a, .. }, Res::Multi { from, value, .. }) => {
+            (
+                Res::Scalar { sql: a, ty: ta, .. },
+                Res::Multi {
+                    from, value, ty: tz, ..
+                },
+            ) => {
                 let flipped = match op.flipped() {
                     Op::Gt => ">",
                     Op::Ge => ">=",
@@ -426,6 +609,7 @@ impl<'a> Compiler<'a> {
                     Op::Le => "<=",
                     _ => sym,
                 };
+                let (value, a) = coerce_pair(d, (value, tz), (a, ta));
                 Ok(self.quantified(c.any, &from, &format!("{value} {flipped} {a}")))
             }
             (Res::Multi { .. }, Res::Multi { .. }) => Err(QueryError::InvalidOperation(
@@ -460,28 +644,33 @@ impl<'a> Compiler<'a> {
                 Res::Multi { array: Some(a), .. } => Res::Scalar {
                     sql: d.json_array_length(&a),
                     json: false,
+                    ty: ScalarType::Integer,
                 },
                 Res::Multi { .. } => {
                     return Err(QueryError::InvalidOperation(format!("{p}: :length needs an array")));
                 }
-                Res::Scalar { sql, json: true } => Res::Scalar {
+                Res::Scalar { sql, json: true, .. } => Res::Scalar {
                     sql: d.json_array_length(&sql),
                     json: false,
+                    ty: ScalarType::Integer,
                 },
-                Res::Scalar { sql, json: false } => Res::Scalar {
-                    sql: format!("length({sql})"),
+                Res::Scalar { sql, json: false, ty } => Res::Scalar {
+                    sql: format!("length({})", as_text(d, &sql, ty)),
                     json: false,
+                    ty: ScalarType::Integer,
                 },
             },
             Some(Modifier::Lower) => match res {
-                Res::Scalar { sql, .. } => Res::Scalar {
-                    sql: format!("lower({sql})"),
+                Res::Scalar { sql, ty, .. } => Res::Scalar {
+                    sql: format!("lower({})", as_text(d, &sql, ty)),
                     json: false,
+                    ty: ScalarType::Text,
                 },
-                Res::Multi { from, value, .. } => Res::Multi {
+                Res::Multi { from, value, ty, .. } => Res::Multi {
                     from,
-                    value: format!("lower({value})"),
+                    value: format!("lower({})", as_text(d, &value, ty)),
                     array: None,
+                    ty: ScalarType::Text,
                 },
             },
         })
@@ -510,6 +699,11 @@ impl<'a> Compiler<'a> {
             return Ok(Res::Scalar {
                 sql: row.col(d, &lower),
                 json: false,
+                ty: if lower == "_version" {
+                    ScalarType::Integer
+                } else {
+                    ScalarType::Text
+                },
             });
         }
 
@@ -518,8 +712,9 @@ impl<'a> Compiler<'a> {
             if coll.schema_mode == SchemaMode::Flexible && !lower.starts_with('_') && lower != "expand" {
                 let path = json_path(segs)?;
                 return Ok(Res::Scalar {
-                    sql: d.json_extract(&row.col(d, "_data"), &path),
+                    sql: json_get(d, &row.col(d, "_data"), &path),
                     json: true,
+                    ty: ScalarType::Json,
                 });
             }
             return Err(unknown());
@@ -544,7 +739,11 @@ impl<'a> Compiler<'a> {
                 ..
             } => {
                 if rest.is_empty() && *max_select <= 1 {
-                    return Ok(Res::Scalar { sql: col, json: false });
+                    return Ok(Res::Scalar {
+                        sql: col,
+                        json: false,
+                        ty: ScalarType::Text,
+                    });
                 }
                 if self.opts.inline_literals {
                     return multi_restricted("relations");
@@ -561,6 +760,7 @@ impl<'a> Compiler<'a> {
                         from: from.into_iter().collect(),
                         value: elem,
                         array: Some(col),
+                        ty: ScalarType::Text,
                     });
                 }
                 if depth + 1 > self.opts.max_relation_depth {
@@ -581,38 +781,55 @@ impl<'a> Compiler<'a> {
                 let inner = self.segments(b, target, &next, rest, depth + 1)?;
                 Ok(match (from, inner) {
                     (None, r) => r,
-                    (Some(f), Res::Scalar { sql, .. }) => Res::Multi {
+                    (Some(f), Res::Scalar { sql, ty, .. }) => Res::Multi {
                         from: vec![f],
                         value: sql,
                         array: None,
+                        ty,
                     },
-                    (Some(f), Res::Multi { from: more, value, .. }) => {
+                    (
+                        Some(f),
+                        Res::Multi {
+                            from: more, value, ty, ..
+                        },
+                    ) => {
                         let mut all = vec![f];
                         all.extend(more);
                         Res::Multi {
                             from: all,
                             value,
                             array: None,
+                            ty,
                         }
                     }
                 })
             }
             FieldKind::Json { .. } => {
                 if rest.is_empty() {
-                    Ok(Res::Scalar { sql: col, json: true })
+                    Ok(Res::Scalar {
+                        sql: col,
+                        json: true,
+                        ty: ScalarType::Json,
+                    })
                 } else {
                     Ok(Res::Scalar {
-                        sql: d.json_extract(&col, &json_path(rest)?),
+                        sql: json_get(d, &col, &json_path(rest)?),
                         json: true,
+                        ty: ScalarType::Json,
                     })
                 }
             }
             FieldKind::Geo => match rest {
                 [PathSeg::Name(k)] if k == "lon" || k == "lat" => Ok(Res::Scalar {
-                    sql: d.json_extract(&col, &json_path(rest)?),
+                    sql: json_get(d, &col, &json_path(rest)?),
                     json: false,
+                    ty: ScalarType::Json,
                 }),
-                [] => Ok(Res::Scalar { sql: col, json: true }),
+                [] => Ok(Res::Scalar {
+                    sql: col,
+                    json: true,
+                    ty: ScalarType::Json,
+                }),
                 _ => Err(QueryError::UnknownField(format!("{name}: geo has only lon and lat"))),
             },
             kind if kind.is_multi() => {
@@ -620,12 +837,32 @@ impl<'a> Compiler<'a> {
                     return multi_restricted("multi-value fields (use :length)");
                 }
                 let alias = b.alias("j");
-                let (from, elem) = d.json_array_elements(&col, &alias);
+                // Array items are any JSON value: on PostgreSQL iterate them
+                // as `jsonb` so they compare by type. Select and file values
+                // are strings.
+                let (from, elem, ty) = if is_pg(d) && matches!(kind, FieldKind::Array { .. }) {
+                    (
+                        format!(
+                            "jsonb_array_elements(CASE WHEN jsonb_typeof(({col})::jsonb) = 'array' THEN ({col})::jsonb END) AS {alias}(value)"
+                        ),
+                        format!("{alias}.value"),
+                        ScalarType::Json,
+                    )
+                } else {
+                    let (f, v) = d.json_array_elements(&col, &alias);
+                    (f, v, ScalarType::Text)
+                };
                 if rest.is_empty() {
+                    let value = if ty == ScalarType::Json {
+                        format!("nullif({elem}, 'null'::jsonb)")
+                    } else {
+                        elem
+                    };
                     return Ok(Res::Multi {
                         from: vec![from],
-                        value: elem,
+                        value,
                         array: Some(col),
+                        ty,
                     });
                 }
                 if self.opts.inline_literals {
@@ -634,15 +871,20 @@ impl<'a> Compiler<'a> {
                 match kind {
                     FieldKind::Array { .. } => Ok(Res::Multi {
                         from: vec![from],
-                        value: d.json_extract(&elem, &json_path(rest)?),
+                        value: json_get(d, &elem, &json_path(rest)?),
                         array: None,
+                        ty: ScalarType::Json,
                     }),
                     _ => Err(QueryError::UnknownField(format!("{name} has no sub-fields"))),
                 }
             }
-            _ => {
+            kind => {
                 if rest.is_empty() {
-                    Ok(Res::Scalar { sql: col, json: false })
+                    Ok(Res::Scalar {
+                        sql: col,
+                        json: false,
+                        ty: ScalarType::of_storage(kind.storage()),
+                    })
                 } else {
                     Err(QueryError::UnknownField(format!("{name} has no sub-fields")))
                 }
@@ -703,7 +945,7 @@ pub fn query_label(collection: &str, filter: Option<&Expr>, sort: &[SortKey]) ->
 mod tests {
     use super::*;
     use crate::filter::parse_filter;
-    use forgebase_db::SqliteDialect;
+    use forgebase_db::{PgDialect, SqliteDialect};
     use forgebase_schema::{Field, FieldKind};
 
     fn catalog() -> HashMap<String, Collection> {
@@ -758,13 +1000,125 @@ mod tests {
     }
 
     fn compile(coll: &str, filter: &str, opts: &CompileOptions) -> Result<(String, Vec<Value>), QueryError> {
+        compile_with(&SqliteDialect, coll, filter, opts)
+    }
+
+    fn compile_with(
+        d: &dyn Dialect,
+        coll: &str,
+        filter: &str,
+        opts: &CompileOptions,
+    ) -> Result<(String, Vec<Value>), QueryError> {
         let cat = catalog();
         let root = cat.get(coll).unwrap().clone();
         let expr = parse_filter(filter)?.unwrap();
-        let d = SqliteDialect;
-        let mut b = SqlBuilder::new(&d);
+        let mut b = SqlBuilder::new(d);
         let sql = Compiler::new(&cat, opts).filter(&mut b, &root, "t", &expr)?;
         Ok((sql, b.into_params()))
+    }
+
+    fn pg(coll: &str, filter: &str) -> (String, Vec<Value>) {
+        compile_with(&PgDialect, coll, filter, &CompileOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn postgres_json_paths_are_typed_jsonb() {
+        let (sql, params) = pg("p", "meta.a.b > 5 && meta.c = 'x' && meta.f = true");
+        assert_eq!(
+            sql,
+            "(nullif((t.\"meta\")::jsonb->'a'->'b', 'null'::jsonb) > CAST($1 AS jsonb)) AND \
+             (nullif((t.\"meta\")::jsonb->'c', 'null'::jsonb) = CAST($2 AS jsonb)) AND \
+             (nullif((t.\"meta\")::jsonb->'f', 'null'::jsonb) = CAST($3 AS jsonb))"
+        );
+        assert_eq!(
+            params,
+            vec![
+                Value::Text("5".into()),
+                Value::Text("\"x\"".into()),
+                Value::Text("true".into())
+            ]
+        );
+        let (sql, _) = pg("d", "metadata.specs.0.ram >= 16 && metadata.brand = null");
+        assert_eq!(
+            sql,
+            "(nullif((t.\"_data\")::jsonb->'metadata'->'specs'->0->'ram', 'null'::jsonb) >= CAST($1 AS jsonb)) AND \
+             (nullif((t.\"_data\")::jsonb->'metadata'->'brand', 'null'::jsonb) IS NULL)"
+        );
+    }
+
+    #[test]
+    fn postgres_like_is_ilike_on_text() {
+        let (sql, params) = pg("p", "title ~ 'A%' && meta.k ~ 'x' && title !~ 'y'");
+        assert_eq!(
+            sql,
+            "(t.\"title\" ILIKE $1 ESCAPE '\\') AND \
+             ((nullif((t.\"meta\")::jsonb->'k', 'null'::jsonb) #>> '{}') ILIKE $2 ESCAPE '\\') AND \
+             (NOT (coalesce(t.\"title\", '') ILIKE $3 ESCAPE '\\'))"
+        );
+        assert_eq!(params[0], Value::Text("%A\\%%".into()));
+        let (sql, _) = compile("p", "title !~ 'y'", &CompileOptions::default()).unwrap();
+        assert_eq!(sql, "NOT (coalesce(t.\"title\", '') LIKE ?1 ESCAPE '\\')");
+    }
+
+    #[test]
+    fn postgres_multi_values_and_relations() {
+        let (sql, _) = pg("p", "tags ?= 'a' && author.name = 'ann' && tags:length > 1");
+        assert_eq!(
+            sql,
+            "(EXISTS (SELECT 1 FROM jsonb_array_elements_text((t.\"tags\")::jsonb) AS j1(value) WHERE j1.value = $1)) AND \
+             ((SELECT r2.\"name\" FROM \"users\" AS r2 WHERE r2.\"id\" = t.\"author\") = $2) AND \
+             (coalesce(CASE WHEN jsonb_typeof((t.\"tags\")::jsonb) = 'array' THEN jsonb_array_length((t.\"tags\")::jsonb) END, 0) > $3)"
+        );
+        // Path to path: a JSON value against text compares as jsonb.
+        let (sql, _) = pg("p", "meta.t = title && title:lower = 'x'");
+        assert!(
+            sql.starts_with(
+                "(nullif((t.\"meta\")::jsonb->'t', 'null'::jsonb) IS NOT DISTINCT FROM to_jsonb(t.\"title\"))"
+            ),
+            "{sql}"
+        );
+        assert!(sql.ends_with("(lower(t.\"title\") = $1)"), "{sql}");
+    }
+
+    #[test]
+    fn postgres_inline_literals_for_indexes() {
+        let o = CompileOptions {
+            inline_literals: true,
+            ..CompileOptions::default()
+        };
+        let (sql, params) = compile_with(&PgDialect, "p", r"title = 'it\'s' && meta.n > 2.5", &o).unwrap();
+        assert!(params.is_empty());
+        assert_eq!(
+            sql,
+            "(t.\"title\" = 'it''s') AND (nullif((t.\"meta\")::jsonb->'n', 'null'::jsonb) > '2.5'::jsonb)"
+        );
+    }
+
+    #[test]
+    fn order_by_keeps_sqlite_null_order() {
+        let cat = catalog();
+        let root = cat.get("p").unwrap().clone();
+        let keys = crate::filter::parse_sort("-title,meta.n").unwrap();
+        let o = CompileOptions::default();
+        for (d, want) in [
+            (
+                &SqliteDialect as &dyn Dialect,
+                vec!["t.\"title\" DESC", "json_extract(t.\"meta\", '$.n') ASC"],
+            ),
+            (
+                &PgDialect,
+                vec![
+                    "t.\"title\" DESC NULLS LAST",
+                    "nullif((t.\"meta\")::jsonb->'n', 'null'::jsonb) ASC NULLS FIRST",
+                ],
+            ),
+        ] {
+            let mut b = SqlBuilder::new(d);
+            assert_eq!(
+                Compiler::new(&cat, &o).order_by(&mut b, &root, "t", &keys).unwrap(),
+                want
+            );
+        }
     }
 
     #[test]

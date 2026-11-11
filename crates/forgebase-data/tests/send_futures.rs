@@ -8,16 +8,17 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::{admin, open_db, service};
+use common::{admin, service, test_db};
+use forgebase_data::db::Database;
 use forgebase_data::{AggregateQuery, ListQuery, SqlStatement};
 
 fn assert_send<T: Send>(_: &T) {}
 
 #[tokio::test]
 async fn service_futures_are_send() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = open_db(tmp.path()).await;
-    let svc = service(&db).await;
+    let test = test_db().await;
+    let db: &Database = &test;
+    let svc = service(db).await;
     let ctx = admin();
     let q = ListQuery::default();
     let agg = AggregateQuery::default();

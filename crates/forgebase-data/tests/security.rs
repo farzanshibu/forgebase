@@ -7,8 +7,9 @@ mod common;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use common::{admin, open_db, service, service_with};
+use common::{admin, is_postgres, service, service_with, skip_on_postgres, test_db};
 use forgebase_core::ErrorCode;
+use forgebase_data::db::testing::TestDb;
 use forgebase_data::schema::{Collection, Field, FieldKind};
 use forgebase_data::{
     AccessContext, Action, Authorizer, DataError, Decision, GetOptions, IndexDefinition, ListQuery, Predicate,
@@ -23,8 +24,8 @@ fn text() -> FieldKind {
     }
 }
 
-async fn seeded(dir: &std::path::Path) -> (forgebase_data::db::Database, forgebase_data::DataService) {
-    let db = open_db(dir).await;
+async fn seeded() -> (TestDb, forgebase_data::DataService) {
+    let db = test_db().await;
     let svc = service(&db).await;
     let ctx = admin();
     svc.create_collection(
@@ -67,8 +68,7 @@ async fn count(
 
 #[tokio::test]
 async fn filter_injection_attempts_are_rejected_or_inert() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (db, svc) = seeded(tmp.path()).await;
+    let (db, svc) = seeded().await;
 
     // Syntax that would change the SQL if it were concatenated is refused.
     for f in [
@@ -200,8 +200,7 @@ async fn filter_injection_attempts_are_rejected_or_inert() {
 
 #[tokio::test]
 async fn names_and_index_definitions_cannot_inject() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (db, svc) = seeded(tmp.path()).await;
+    let (db, svc) = seeded().await;
     let ctx = admin();
     for name in [
         "x\"; DROP TABLE notes; --",
@@ -222,6 +221,9 @@ async fn names_and_index_definitions_cannot_inject() {
                 .is_err(),
             "{field}"
         );
+    }
+    if skip_on_postgres(&db, "the index manager on PostgreSQL is FB-144's") {
+        return;
     }
     // Partial-index conditions are compiled with escaped literals.
     let ix = svc
@@ -267,15 +269,14 @@ async fn names_and_index_definitions_cannot_inject() {
 
 #[tokio::test]
 async fn sql_editor_restrictions() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (db, svc) = seeded(tmp.path()).await;
+    let (db, svc) = seeded().await;
     let ctx = admin();
     let run = |s: &str| SqlStatement {
         sql: s.into(),
         params: vec![],
     };
 
-    for bad in [
+    let mut bads = vec![
         "SELECT 1; DROP TABLE notes",
         "ATTACH DATABASE 'x.db' AS x",
         "PRAGMA writable_schema = ON",
@@ -284,12 +285,41 @@ async fn sql_editor_restrictions() {
         "BEGIN; DELETE FROM notes; COMMIT",
         "VACUUM INTO 'copy.db'",
         "CREATE TEMP TABLE t (x)",
-        "SELECT load_extension('evil')",
         "DELETE FROM _forgebase_collections",
         "UPDATE \"_forgebase_meta\" SET value = 'x'",
         "INSERT INTO _forgebase_schema_history (action, statements, actor, applied_at) VALUES ('sql', '[]', 'x', 'x')",
         "DROP TABLE _forgebase_indexes",
-    ] {
+    ];
+    if is_postgres(&db) {
+        // ADR-0028 §7.5: PostgreSQL's deny list (the editor's role is the
+        // boundary, FB-153).
+        bads.extend([
+            "SELECT pg_read_file('/etc/passwd')",
+            "COPY notes TO '/tmp/notes.csv'",
+            "COPY notes FROM PROGRAM 'id'",
+            "SET ROLE postgres",
+            "SET search_path = public",
+            "RESET ROLE",
+            "ALTER SYSTEM SET work_mem = '1GB'",
+            "LOAD 'auto_explain'",
+            "CREATE EXTENSION dblink",
+            "CREATE FUNCTION f() RETURNS int LANGUAGE c AS 'lib', 'f'",
+            "CREATE FUNCTION f() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RETURN pg_read_file('x'); END $$",
+            "LISTEN x",
+            "CHECKPOINT",
+            "SELECT pg_terminate_backend(pg_backend_pid())",
+            "SELECT set_config('search_path', 'public', false)",
+            "SELECT pg_advisory_lock(1)",
+            "DELETE FROM forgebase._forgebase_meta",
+            "UPDATE pg_catalog.pg_class SET relname = 'x' WHERE false",
+            "EXPLAIN ANALYZE DELETE FROM _forgebase_meta",
+            "SELECT 1 INTO _forgebase_x",
+            "DO $$ BEGIN DELETE FROM _forgebase_meta; END $$",
+        ]);
+    } else {
+        bads.push("SELECT load_extension('evil')");
+    }
+    for bad in bads {
         let err = svc.execute_sql(&ctx, run(bad)).await.unwrap_err();
         assert!(
             matches!(
@@ -299,6 +329,34 @@ async fn sql_editor_restrictions() {
             "{bad}: {err:?}"
         );
     }
+    if is_postgres(&db) {
+        // A write the classifier cannot see (inside a function called from a
+        // SELECT) runs on the read path, in a READ ONLY transaction, and
+        // fails instead of writing (ADR-0028 §7.3).
+        svc.execute_sql_batch(
+            &ctx,
+            vec![
+                run("CREATE TABLE sink (x bigint)"),
+                run("CREATE FUNCTION sneaky() RETURNS bigint LANGUAGE sql AS $$ INSERT INTO sink VALUES (1) RETURNING x $$"),
+            ],
+        )
+        .await
+        .unwrap();
+        let err = svc.execute_sql(&ctx, run("SELECT sneaky()")).await.unwrap_err();
+        assert_eq!(err.code(), "statement_not_read_only", "{err:?}");
+        let n = svc.execute_sql(&ctx, run("SELECT count(*) FROM sink")).await.unwrap();
+        assert_eq!(n.rows[0][0], json!(0));
+        // The editor's tables land in `public`, never in ForgeBase's schema.
+        let r = svc
+            .execute_sql(
+                &ctx,
+                run("SELECT table_schema FROM information_schema.tables WHERE table_name = 'sink'"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.rows, vec![vec![json!("public")]]);
+    }
+
     // Administrators may read system tables, not write them.
     let r = svc
         .execute_sql(&ctx, run("SELECT count(*) FROM _forgebase_collections"))
@@ -383,8 +441,7 @@ impl Authorizer for OwnerOnly {
 
 #[tokio::test]
 async fn access_context_predicates_are_enforced_in_sql() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (db, _) = seeded(tmp.path()).await;
+    let (db, _) = seeded().await;
     let svc = service_with(&db, Arc::new(OwnerOnly), None).await;
     let u1 = AccessContext::user("users", "u1");
 

@@ -507,8 +507,8 @@ impl DataService {
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
-            if crate::ddl::object_exists(&mut *tx, &def.name).await?
-                || crate::ddl::object_exists(&mut *tx, &fts_table(&def.name)).await?
+            if crate::ddl::object_exists(d, &mut *tx, &def.name).await?
+                || crate::ddl::object_exists(d, &mut *tx, &fts_table(&def.name)).await?
             {
                 return Err(DataError::AlreadyExists(format!("index {}", def.name)));
             }

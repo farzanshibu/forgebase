@@ -5,7 +5,9 @@ use std::collections::HashMap;
 
 use base64::Engine;
 use forgebase_db::{Statement, Value};
-use forgebase_query::{Compiler, Expr, FieldPath, SortKey, SqlBuilder, parse_filter, parse_sort, query_label};
+use forgebase_query::{
+    Compiler, Expr, FieldPath, ScalarType, SortKey, SqlBuilder, SqlFlavor, parse_filter, parse_sort, query_label,
+};
 use forgebase_schema::Collection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
@@ -131,14 +133,32 @@ fn json_to_value(j: &Json) -> Result<Value, DataError> {
 }
 
 /// Sanitises a full-text query: every word is quoted, so FTS5 operators in
-/// user input are matched as text.
-fn fts_query(text: &str) -> Option<String> {
+/// user input are matched as text. PostgreSQL's `websearch_to_tsquery`
+/// never fails on user input, so there the words are passed as they are.
+fn fts_query(text: &str, flavor: SqlFlavor) -> Option<String> {
     let terms: Vec<String> = text
         .split_whitespace()
         .take(32)
-        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .map(|w| match flavor {
+            SqlFlavor::Sqlite => format!("\"{}\"", w.replace('"', "\"\"")),
+            SqlFlavor::Postgres => w.to_owned(),
+        })
         .collect();
     (!terms.is_empty()).then(|| terms.join(" "))
+}
+
+/// A value read back from an expression of type `ty`: PostgreSQL returns
+/// `jsonb` as JSON text (SQLite returns the scalar itself), and a `numeric`
+/// sum that should be an integer (SQLite sums integers as integers) as a
+/// float.
+fn typed_json(flavor: SqlFlavor, ty: ScalarType, v: &Value) -> Json {
+    match (flavor, ty, v) {
+        (SqlFlavor::Postgres, ScalarType::Json, Value::Text(s)) => serde_json::from_str(s).unwrap_or(Json::Null),
+        (SqlFlavor::Postgres, ScalarType::Integer, Value::Real(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => {
+            Json::from(*f as i64)
+        }
+        _ => sql_to_json(v),
+    }
 }
 
 impl DataService {
@@ -171,7 +191,7 @@ impl DataService {
         if let Some(p) = pred {
             wheres.push(self.compile_predicate(ctx, &mut b, coll, p)?);
         }
-        if let Some(text) = q.search.as_deref().and_then(fts_query) {
+        if let Some(text) = q.search.as_deref().and_then(|s| fts_query(s, SqlFlavor::of(d))) {
             let fts = fulltext.ok_or_else(|| {
                 DataError::invalid("no_fulltext_index", format!("{} has no full-text index", coll.name))
             })?;
@@ -188,11 +208,10 @@ impl DataService {
                     ));
                 }
             }
-            let t = d.quote_ident(&format!("{FTS_PREFIX}{}", fts.name));
-            wheres.push(format!(
-                "t.rowid IN (SELECT rowid FROM {t} WHERE {t} MATCH {})",
-                b.bind(text)
-            ));
+            // Same name as the index manager gives the FTS5 table (SQLite) or
+            // the `tsvector` column (PostgreSQL).
+            let p = b.bind(text);
+            wheres.push(d.fulltext_match("t", &format!("{FTS_PREFIX}{}", fts.name), &p));
         }
 
         let mut sort: Vec<SortKey> = parse_sort(q.sort.as_deref().unwrap_or(""))?;
@@ -284,7 +303,7 @@ impl DataService {
         let order: Vec<String> = exprs
             .iter()
             .zip(&sort)
-            .map(|(e, k)| format!("{e} {}", if k.desc { "DESC" } else { "ASC" }))
+            .map(|(e, k)| format!("{e} {}", d.order_nulls(k.desc)))
             .collect();
         let limit = b.bind(i64::from(per_page) + 1);
         let offset = b.bind(i64::from(page.map_or(0, |p| (p - 1) * per_page)));
@@ -308,8 +327,11 @@ impl DataService {
     }
 
     /// Rows strictly after `values` in the sort order. NULLs sort first
-    /// ascending and last descending (SQLite's order).
+    /// ascending and last descending on every engine (`Dialect::order_nulls`).
+    /// On PostgreSQL a JSON key is `jsonb`; its cursor value is the JSON text
+    /// the previous page returned, which binds back as `jsonb`.
     fn keyset(&self, b: &mut SqlBuilder<'_>, exprs: &[String], sort: &[SortKey], values: &[Value]) -> String {
+        let is = b.dialect().null_safe_eq();
         let mut clause = "1 = 0".to_owned();
         for i in (0..exprs.len()).rev() {
             let (e, desc, v) = (&exprs[i], sort[i].desc, &values[i]);
@@ -322,7 +344,7 @@ impl DataService {
             clause = if i == exprs.len() - 1 {
                 after
             } else {
-                format!("{after} OR ({e} IS {} AND ({clause}))", b.bind(v.clone()))
+                format!("{after} OR ({e} {is} {} AND ({clause}))", b.bind(v.clone()))
             };
         }
         clause
@@ -434,14 +456,20 @@ impl DataService {
                 "at most 8 group keys and 16 aggregates",
             ));
         }
+        let flavor = SqlFlavor::of(d);
+        let pg = flavor == SqlFlavor::Postgres;
         let mut select: Vec<String> = Vec::new();
         let mut groups: Vec<String> = Vec::new();
         let mut keys: Vec<String> = Vec::new();
+        // Type of each output column (JSON values come back as JSON text on
+        // PostgreSQL).
+        let mut types: Vec<ScalarType> = Vec::new();
         for (i, g) in q.group_by.iter().enumerate() {
-            let e = compiler.scalar(&mut b, &coll, "t", &FieldPath::parse(g)?)?;
+            let (e, ty) = compiler.scalar_typed(&mut b, &coll, "t", &FieldPath::parse(g)?)?;
             select.push(format!("{e} AS \"__g{i}\""));
             groups.push(e);
             keys.push(g.clone());
+            types.push(ty);
         }
         let specs = if q.aggregates.is_empty() {
             vec![AggregateSpec {
@@ -460,12 +488,44 @@ impl DataService {
                 AggregateFunction::Min => "min",
                 AggregateFunction::Max => "max",
             };
-            let arg = match &a.field {
-                Some(p) => compiler.scalar(&mut b, &coll, "t", &FieldPath::parse(p)?)?,
-                None if a.function == AggregateFunction::Count => "*".to_owned(),
+            let (arg, ty) = match &a.field {
+                Some(p) => compiler.scalar_typed(&mut b, &coll, "t", &FieldPath::parse(p)?)?,
+                None if a.function == AggregateFunction::Count => ("*".to_owned(), ScalarType::Integer),
                 None => return Err(DataError::invalid("invalid_aggregate", format!("{f} needs a field"))),
             };
-            select.push(format!("{f}({arg}) AS \"__a{i}\""));
+            // PostgreSQL: `jsonb` has no sum or average and no min/max
+            // aggregate; integer sums are `numeric`. Keep SQLite's results:
+            // numbers inside JSON are summed as numbers, JSON min/max use
+            // `jsonb` order, and integer sums stay integers.
+            let (expr, out_ty) = match (pg, a.function, ty) {
+                (true, AggregateFunction::Sum | AggregateFunction::Avg, ScalarType::Json) => (
+                    format!("{f}(CASE WHEN jsonb_typeof({arg}) = 'number' THEN ({arg} #>> '{{}}')::numeric END)"),
+                    // A whole sum reads as an integer, as SQLite sums integers.
+                    if a.function == AggregateFunction::Sum {
+                        ScalarType::Integer
+                    } else {
+                        ScalarType::Real
+                    },
+                ),
+                (true, AggregateFunction::Min | AggregateFunction::Max, ScalarType::Json) => (
+                    format!(
+                        "(array_agg({arg} ORDER BY {arg} {}) FILTER (WHERE {arg} IS NOT NULL))[1]",
+                        if a.function == AggregateFunction::Min {
+                            "ASC"
+                        } else {
+                            "DESC"
+                        }
+                    ),
+                    ScalarType::Json,
+                ),
+                (true, AggregateFunction::Sum, ScalarType::Integer | ScalarType::Bool) => {
+                    (format!("CAST(sum({arg}) AS bigint)"), ScalarType::Integer)
+                }
+                (_, AggregateFunction::Count, _) => (format!("{f}({arg})"), ScalarType::Integer),
+                _ => (format!("{f}({arg})"), ty),
+            };
+            types.push(out_ty);
+            select.push(format!("{expr} AS \"__a{i}\""));
             keys.push(a.alias.clone().unwrap_or_else(|| match &a.field {
                 Some(p) => format!("{f}_{}", p.replace(['.', ':'], "_")),
                 None => f.to_owned(),
@@ -493,10 +553,11 @@ impl DataService {
             ));
         }
         if !groups.is_empty() {
+            let order: Vec<String> = groups.iter().map(|g| format!("{g} {}", d.order_nulls(false))).collect();
             sql.push_str(&format!(
                 " GROUP BY {} ORDER BY {}",
                 groups.join(", "),
-                groups.join(", ")
+                order.join(", ")
             ));
         }
         let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
@@ -511,8 +572,8 @@ impl DataService {
             .iter()
             .map(|r| {
                 let mut m = Map::new();
-                for (k, v) in keys.iter().zip(r) {
-                    m.insert(k.clone(), sql_to_json(v));
+                for ((k, v), ty) in keys.iter().zip(r).zip(&types) {
+                    m.insert(k.clone(), typed_json(flavor, *ty, v));
                 }
                 m
             })
@@ -550,9 +611,13 @@ mod tests {
     #[test]
     fn fulltext_queries_are_quoted() {
         assert_eq!(
-            fts_query("laptop OR \"x\" NEAR(a b)").unwrap(),
+            fts_query("laptop OR \"x\" NEAR(a b)", SqlFlavor::Sqlite).unwrap(),
             "\"laptop\" \"OR\" \"\"\"x\"\"\" \"NEAR(a\" \"b)\""
         );
-        assert_eq!(fts_query("   "), None);
+        assert_eq!(fts_query("   ", SqlFlavor::Sqlite), None);
+        assert_eq!(
+            fts_query("  laptop  -bag \"x y\" ", SqlFlavor::Postgres).unwrap(),
+            "laptop -bag \"x y\""
+        );
     }
 }

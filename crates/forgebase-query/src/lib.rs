@@ -14,11 +14,14 @@ pub mod compile;
 pub mod filter;
 pub mod sql;
 
-pub use compile::{Catalog, CompileOptions, Compiler, FieldGuard, SqlBuilder, filter_keys, query_label};
+pub use compile::{Catalog, CompileOptions, Compiler, FieldGuard, ScalarType, SqlBuilder, filter_keys, query_label};
 pub use filter::{
     Compare, Expr, FieldPath, Literal, Modifier, Op, Operand, PathSeg, SortKey, parse_filter, parse_sort,
 };
-pub use sql::{StatementInfo, StatementKind, analyze_statement, split_statements};
+pub use sql::{
+    SqlFlavor, StatementInfo, StatementKind, analyze_statement, analyze_statement_for, split_statements,
+    split_statements_for,
+};
 
 use forgebase_core::{ErrorCode, ErrorKind};
 
