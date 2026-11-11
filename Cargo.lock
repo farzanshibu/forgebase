@@ -1323,6 +1323,7 @@ dependencies = [
  "forgebase-server",
  "fs4",
  "futures-util",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.1",
