@@ -97,6 +97,8 @@ impl Drop for PoolHandle {
 
 /// Starts the scheduler and, if the registry has handlers, the worker pool.
 pub fn start_pool(service: JobService, registry: JobRegistry, config: PoolConfig) -> PoolHandle {
+    // FB-142: who may enqueue each registered kind.
+    service.install_kinds(&registry);
     let (stop, stop_rx) = watch::channel(false);
     let task = tokio::spawn(run(service, registry, config, stop_rx));
     PoolHandle { stop, task: Some(task) }
