@@ -132,7 +132,8 @@ fn principal_key(ctx: &AccessContext) -> Option<String> {
         Principal::Admin { id } => format!("admin:{id}"),
         Principal::User { collection, id } => format!("user:{collection}:{id}"),
         Principal::Service { id, .. } => format!("service:{id}"),
-        Principal::Anonymous | Principal::System => return None,
+        // Anonymous, system and any later kind share no tokens.
+        _ => return None,
     };
     Some(format!("{}/{who}", ctx.realm_id))
 }
@@ -378,6 +379,8 @@ mod tests {
             "0,1"
         );
         cluster.resume_replay().await.unwrap();
+        // Replay can take longer than lsn_wait on a loaded machine.
+        cluster.wait_caught_up().await.unwrap();
         assert_eq!(call(&app, "GET", "/r", &[(READ_AFTER_HEADER, &token)]).await.1, "1,1");
     }
 
