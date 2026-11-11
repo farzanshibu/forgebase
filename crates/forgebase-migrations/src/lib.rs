@@ -175,6 +175,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "storage_rls",
         include_str!("../../../migrations/system/0029_storage_rls.sql"),
     ),
+    Migration::new(
+        33,
+        "db_topology",
+        include_str!("../../../migrations/system/0033_db_topology.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.
