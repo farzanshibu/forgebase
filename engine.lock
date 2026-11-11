@@ -189,9 +189,10 @@ os = ["linux"]
 # replace these tables with the release's engine.lock.archives fragment.
 [archives."aarch64-apple-darwin"]
 file = "forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst"
-sha256 = "8fd03e59898fa86f87ebfd0a8f3f75f780f66e82fb0294a31b131402b4d175e9"
-size = 7857850
-# Built and smoke-tested locally by FB-160 with Apache AGE (Apple clang 21,
+sha256 = "907d08d906ad4596d1b60522121a157ccb12ff6b662ea4e5a2340d94a6d9b13b"
+size = 7857923
+# Built and smoke-tested locally by FB-160, rebuilt by FB-160b with patch
+# 0004 (#2581); Apache AGE (Apple clang 21,
 # macOS 27 SDK, Homebrew bison 3.8.2); FB-130's archive without AGE was
 # c5a23a42..., 7661698 bytes. The CI release archive will differ: replace
 # this table with the release's engine.lock.archives fragment.
