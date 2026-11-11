@@ -4,7 +4,12 @@ import {
   kvStreamAdd, kvStreamDelete, kvZAdd, kvZRemove,
 } from "../../api";
 import type { Bin, KvKey, StreamEntry, ZMember } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { HelpTip } from "../../components/HelpTip";
+import { SkeletonLines } from "../../components/Skeleton";
+import { Button, ErrorView, Panel } from "../../components/ui";
+import { notify } from "../../toaster";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import { TTL_UNITS, formatTtl, omit, parseFields } from "./util";
@@ -23,22 +28,30 @@ export default function KeyViewer({ ns, keyName, onGone, onChanged }: { ns: stri
     setError(undefined);
     try { await f(); kv.reload(); onChanged(); } catch (e) { setError(e); }
   };
-  if (kv.error instanceof ApiError && kv.error.status === 404) return <Panel><p className="text-sm text-muted-foreground">Key <span className="font-mono">{keyName}</span> no longer exists.</p><div className="mt-2"><Button onClick={onGone}>Back to keys</Button></div></Panel>;
+  if (kv.error instanceof ApiError && kv.error.status === 404) return <EmptyState compact title={`Key ${keyName} is gone`} why="It was deleted or it expired." action={<Button onClick={onGone}>Back to keys</Button>} />;
   const d = kv.data;
   return (
     <div className="space-y-4" aria-label="Key details">
       <Panel title={keyName} actions={d && <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground/80">{d.type}</span>}>
         <ErrorView error={kv.error} />
-        {kv.loading && !kv.error && <Loading what="Loading key" />}
+        {kv.loading && !kv.error && <SkeletonLines lines={3} label="Loading key" />}
         {d && (
           <>
             <p className="text-sm text-muted-foreground" aria-label="Key summary">
               {d.type === "string" ? `${formatBytes(d.size)}` : `${d.size} ${d.type === "hash" ? "fields" : d.type === "stream" ? "entries" : d.type === "list" ? "items" : "members"}`}
-              {" · TTL "}<span aria-label="Remaining TTL">{formatTtl(d.ttl_ms)}</span>
+              {" · "}<HelpTip term="ttl">TTL</HelpTip>{" "}<span aria-label="Remaining TTL">{formatTtl(d.ttl_ms)}</span>
               {d.truncated && <span className="text-warning"> · showing the first 1000 only</span>}
             </p>
             <div className="mt-3"><Ttl ns={ns} data={d} act={act} /></div>
-            <div className="mt-3"><ConfirmButton label="Delete key" onConfirm={() => void (async () => { try { await kvDelete(ns, keyName); onGone(); } catch (e) { setError(e); } })()} /></div>
+            <div className="mt-3">
+              <ConfirmDialog
+                trigger={<Button tone="danger">Delete key</Button>}
+                title={`Delete key ${keyName}?`}
+                consequence="The key and its value are removed. Apps that read it get nothing back."
+                confirmLabel="Delete key"
+                onConfirm={async () => { await kvDelete(ns, keyName); notify.deleted(`Key ${keyName}`); onGone(); }}
+              />
+            </div>
           </>
         )}
         <div className="mt-2"><ErrorView error={error} /></div>
@@ -90,7 +103,7 @@ function HashEditor({ ns, data, act }: EditorProps) {
   const [val, setVal] = useState("");
   return (
     <div className="space-y-3">
-      {fields.length === 0 && <p className="text-sm text-muted-foreground">No fields.</p>}
+      {fields.length === 0 && <EmptyState compact title="No fields" why="Add the first field below." />}
       {fields.length > 0 && (
         <Table aria-label="Hash fields" className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Field</Table.Head><Table.Head>Value</Table.Head><Table.Head /></Table.Row></Table.Header>
@@ -127,7 +140,7 @@ function ListEditor({ ns, data, act }: EditorProps) {
   const [draft, setDraft] = useState("");
   return (
     <div className="space-y-3">
-      {items.length === 0 && <p className="text-sm text-muted-foreground">The list is empty.</p>}
+      {items.length === 0 && <EmptyState compact title="The list is empty" why="Push a value below." />}
       {items.length > 0 && (
         <ol aria-label="List items" className="space-y-1 text-sm">
           {items.map((it, i) => (
@@ -164,7 +177,7 @@ function SetEditor({ ns, data, act }: EditorProps) {
   const [val, setVal] = useState("");
   return (
     <div className="space-y-3">
-      {members.length === 0 && <p className="text-sm text-muted-foreground">The set is empty.</p>}
+      {members.length === 0 && <EmptyState compact title="The set is empty" why="Add a member below." />}
       {members.length > 0 && (
         <ul aria-label="Set members" className="space-y-1 text-sm">
           {members.map((m) => (
@@ -189,7 +202,7 @@ function ZSetEditor({ ns, data, act }: EditorProps) {
   const [score, setScore] = useState("0");
   return (
     <div className="space-y-3">
-      {rows.length === 0 && <p className="text-sm text-muted-foreground">The sorted set is empty.</p>}
+      {rows.length === 0 && <EmptyState compact title="The sorted set is empty" why="Add a member with a score below." />}
       {rows.length > 0 && (
         <Table aria-label="Sorted set members" className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Member</Table.Head><Table.Head>Score</Table.Head><Table.Head /></Table.Row></Table.Header>
@@ -232,7 +245,7 @@ function StreamEditor({ ns, data, act }: EditorProps) {
   };
   return (
     <div className="space-y-3">
-      {entries.length === 0 && <p className="text-sm text-muted-foreground">The stream has no entries.</p>}
+      {entries.length === 0 && <EmptyState compact title="The stream has no entries" why="Add an entry below." />}
       {entries.length > 0 && (
         <ul aria-label="Stream entries" className="space-y-2 text-sm">
           {entries.map((e) => {

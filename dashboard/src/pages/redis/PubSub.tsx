@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { binText, kvChannels, kvPublish, kvSubscribe } from "../../api";
 import type { PubSubMessage } from "../../api";
+import { EmptyState } from "../../components/EmptyState";
 import { Button, ErrorView, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { Input } from "panelui-web/input";
@@ -53,7 +54,7 @@ export default function PubSub({ ns }: { ns: string }) {
       </Panel>
       <Panel title="Active channels" actions={<Button onClick={channels.reload}>Refresh</Button>}>
         <ErrorView error={channels.error} />
-        {channels.data && channels.data.length === 0 && <p className="text-sm text-muted-foreground">No channel has a subscriber right now.</p>}
+        {channels.data && channels.data.length === 0 && <EmptyState compact title="No active channels" why="A channel appears here while something is listening to it. Listen above to start one." />}
         {channels.data && channels.data.length > 0 && (
           <ul aria-label="Active channels" className="space-y-1 text-sm">
             {channels.data.map((c) => (
@@ -74,7 +75,7 @@ export default function PubSub({ ns }: { ns: string }) {
       </Panel>
       <Panel title="Messages" actions={<Button onClick={() => setLines([])} disabled={lines.length === 0}>Clear</Button>}>
         {lagged > 0 && <p className="mb-2 text-sm text-warning">{lagged} message(s) were dropped because the listener fell behind.</p>}
-        {lines.length === 0 ? <p className="text-sm text-muted-foreground">No messages yet.</p> : (
+        {lines.length === 0 ? <EmptyState compact title="No messages yet" why="Listen to a channel, then publish to it to see messages arrive." /> : (
           <ul aria-label="Received messages" className="space-y-1 font-mono text-xs">
             {lines.map((l) => <li key={l.id}><span className="text-muted-foreground">{l.at}</span> <span className="text-warning">{l.channel}</span> {l.text}</li>)}
           </ul>

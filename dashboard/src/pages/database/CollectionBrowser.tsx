@@ -1,24 +1,28 @@
-import { Link } from "react-router-dom";
-import { listCollections } from "../../api";
-import { useLoad } from "../../hooks";
-import { ErrorView, Loading } from "../../components/ui";
+import { Link, useNavigate } from "react-router-dom";
 import { Table } from "panelui-web/table";
+import { listCollections } from "../../api";
+import { EmptyState } from "../../components/EmptyState";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button, ErrorView } from "../../components/ui";
+import { useLoad } from "../../hooks";
 
 export default function CollectionBrowser() {
-  const { data, error, loading } = useLoad(listCollections, "collections");
+  const nav = useNavigate();
+  const { data, error, loading, reload } = useLoad(listCollections, "collections");
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Every collection the server knows about.</p>
-        <Link to="/database/new" className="rounded-md border border-primary bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90">
-          New collection
-        </Link>
-      </div>
-      <ErrorView error={error} />
-      {loading && !error && <Loading what="Loading collections" />}
-      {data && data.length === 0 && <p className="text-sm text-muted-foreground">No collections yet. Create one to start storing records.</p>}
+      <ErrorView error={error} onRetry={reload} />
+      {loading && !error && <SkeletonTable rows={4} columns={5} label="Loading collections" />}
+      {data && data.length === 0 && (
+        <EmptyState
+          title="No collections yet"
+          why="A collection stores records that share a schema, like a table of products or orders. Create one, then add records and read them from your app."
+          action={<Button tone="primary" onClick={() => nav("/database/new")}>New collection</Button>}
+          docs="docs/database.md"
+        />
+      )}
       {data && data.length > 0 && (
-        <Table className="w-full text-left text-sm">
+        <Table className="w-full text-left text-sm" aria-label="Collections">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
             <Table.Row>
               <Table.Head className="py-2">Name</Table.Head>
