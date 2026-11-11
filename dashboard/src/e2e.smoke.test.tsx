@@ -18,10 +18,10 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   expect(await screen.findByRole("region", { name: "No collections yet" })).toBeInTheDocument();
   await u.click(screen.getAllByRole("button", { name: "New collection" })[0]!);
   await u.type(await screen.findByLabelText(/^Name/), "notes");
-  await u.click(screen.getByRole("button", { name: "Add field" }));
-  await u.type(screen.getByLabelText("Field 1 name"), "body");
-  await u.click(screen.getByLabelText("Field 1 required"));
-  await u.click(screen.getByRole("button", { name: "Create collection" }));
+  await u.click(await screen.findByRole("button", { name: "Add field" }));
+  await u.type(await screen.findByLabelText("Field 1 name"), "body");
+  await u.click(await screen.findByLabelText("Field 1 required"));
+  await u.click(await screen.findByRole("button", { name: "Create collection" }));
   expect(await screen.findByRole("heading", { name: "notes" })).toBeInTheDocument();
 
   // Add two records through the typed form (FB-100).
@@ -36,10 +36,10 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   expect(screen.getByText("beta")).toBeInTheDocument();
 
   // Filter, then edit the record in its form.
-  await u.type(screen.getByLabelText("Filter"), "body = beta");
-  await u.click(screen.getByRole("button", { name: "Apply filter" }));
+  await u.type(await screen.findByLabelText("Filter"), "body = beta");
+  await u.click(await screen.findByRole("button", { name: "Apply filter" }));
   await waitFor(() => expect(screen.queryByText("alpha")).not.toBeInTheDocument());
-  await u.click(screen.getByText("beta"));
+  await u.click(await screen.findByText("beta"));
   const edit = await screen.findByRole("form", { name: /^Edit record/ });
   const input = within(edit).getByLabelText(/^body/);
   await u.clear(input);
@@ -51,9 +51,9 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   expect(await screen.findByText("gamma")).toBeInTheDocument();
 
   // Index manager.
-  await u.click(within(screen.getByRole("tablist", { name: "Collection sections" })).getByRole("tab", { name: "Indexes" }));
+  await u.click(within(await screen.findByRole("tablist", { name: "Collection sections" })).getByRole("tab", { name: "Indexes" }));
   await u.type(await screen.findByLabelText(/^Keys/), "body");
-  await u.click(screen.getByRole("button", { name: "Create index" }));
+  await u.click(await screen.findByRole("button", { name: "Create index" }));
   expect(await screen.findByText("idx_notes_body")).toBeInTheDocument();
 
   // SQL editor + slow queries.
@@ -62,7 +62,7 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   await u.click(await screen.findByRole("tab", { name: "SQL editor" }));
   await u.click(await screen.findByRole("button", { name: "Run" }));
   expect(await screen.findByRole("table", { name: "Result" })).toBeInTheDocument();
-  await u.click(screen.getByRole("tab", { name: "Slow queries" }));
+  await u.click(await screen.findByRole("tab", { name: "Slow queries" }));
   expect(await screen.findByText(/250\.5 ms/)).toBeInTheDocument();
 
   expect(mock.problems).toEqual([]);
@@ -75,18 +75,18 @@ it("Identity Studio: realm -> public client app -> branding preview -> publish a
   const u = userEvent.setup();
   expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
 
-  await u.click(screen.getByRole("tab", { name: "Client apps" }));
+  await u.click(await screen.findByRole("tab", { name: "Client apps" }));
   await screen.findByText("app_web");
-  await u.type(screen.getByLabelText("Name"), "Mobile");
+  await u.type(await screen.findByLabelText("Name"), "Mobile");
   await pick(screen.getByLabelText("Type"), "public");
-  await u.click(screen.getByRole("button", { name: "Create client app" }));
+  await u.click(await screen.findByRole("button", { name: "Create client app" }));
   await waitFor(() => expect(st.clients.map((c) => c.name)).toContain("Mobile"));
 
-  await u.click(screen.getByRole("tab", { name: "Branding" }));
+  await u.click(await screen.findByRole("tab", { name: "Branding" }));
   await u.type(await screen.findByLabelText("Sign-in title"), "Hello");
   expect(screen.getByLabelText("Sign-in preview")).toHaveTextContent("Hello");
 
-  await u.click(screen.getByRole("tab", { name: "Legal agreements" }));
+  await u.click(await screen.findByRole("tab", { name: "Legal agreements" }));
   const form = await screen.findByRole("form", { name: "Publish agreement" });
   await u.type(within(form).getByLabelText("Kind"), "privacy");
   await u.type(within(form).getByLabelText("Title"), "Privacy");
