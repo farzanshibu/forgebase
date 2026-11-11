@@ -733,6 +733,12 @@ async fn switch(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     }
     ctx.check_cancel()?;
     check_subscription(target.database(), &name).await?;
+    ctx.report(
+        "switching",
+        88.0,
+        format!("freezing {} for at most {} ms", rec.tenant, ctx.options.freeze_timeout.as_millis()),
+    )
+    .await;
     let mut f = Freeze::new(ctx.options.freeze_timeout);
     ctx.router
         .place(&rec.tenant, &rec.from_set, PlacementState::Frozen)

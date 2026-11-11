@@ -4009,9 +4009,14 @@ clusters under the test suite's load, debug build): tenant with 300
 seeded posts, 300 KV keys, a job with 4 events, a topic with 567 messages
 and deliveries, a writer committing every 3 ms throughout: **540 ms**
 (drain 0, barrier 392, staged 5, source digests 99, switch transaction
-38, flip 1); the server test (records, a realtime subscriber, a queue
-publisher and consumer; writes every 5–7 ms): see the server test line
-below. The barrier wait is the apply worker's latency; the rest grows with
+38, flip 1). On a running server (`moves_fb174.rs`: records every 5 ms,
+a realtime subscriber, a queue publisher every 7 ms and a consumer pulling
+and acknowledging; ~1 100–2 500 rows moved): **819 ms** (hooks 300,
+barrier 188, source digests 74, switch transaction 25, flip 215) and
+**4 149 ms** on a second run while other agents loaded the machine
+(barrier 2 758, flip 1 059): both under the 10 s limit, with no failed
+call, no lost or duplicated record, event or delivery. The barrier wait is
+the apply worker's latency and dominates under load; the rest grows with
 the tenant's rows (digests). Plans estimate `150 ms + 4 ms per 1 000
 rows`.
 
@@ -4057,3 +4062,109 @@ same SCRAM verifier, FB-153/FB-173), `frozen`, `drain`, `switched`,
 `database.tenant.cleanup` (new), `database.shard.drain`,
 `database.rebalance` on queue `database`; `start_move`, `undo_move`,
 `plan`, `start_rebalance`, `start_drain`; `spawn_stats` (hourly).
+
+**Server wiring (FB-175's hand-over).**
+- Routes: `POST placements/{tenant}/move` (`{to, confirm}`, confirm = the
+  tenant id, `400 confirm_mismatch`; `202` operation `database.tenant.move`;
+  one topology change per set holds for both sets), `POST rebalance/plan`
+  (`max_moves` 1–500; `RebalancePlanView`: moves with sizes and estimated
+  freezes, loads before and after, spreads, `expires_at`), `POST
+  rebalance` (`{plan_id, confirm}`, confirm = the plan id; `202`
+  `database.rebalance`; refused while any other operation runs), new `GET
+  retired` and `DELETE retired/{id}?confirm=<node name>` (MFA step-up).
+  Admin check, step-up and audit as FB-175 (`db.topology.tenant.move`,
+  `db.topology.rebalance.plan`, `db.topology.rebalance`,
+  `db.topology.retired.delete`). Move errors keep their codes
+  (`tenant_moving`, `operation_in_progress`, `target_not_empty`,
+  `move_state`, `move_freeze_timeout`, `shard_not_found`, …).
+- `POST shards` takes `kind = local` (cluster created by the
+  `database.shard.add` job under `postgres/nodes/<name>`, opened over its
+  socket by the router's connector) and `remote` (the job waits up to an
+  hour for `forgebase node join` with a primary token, `POST join-tokens
+  {set, role: "primary"}`; the server answers the join with the role
+  passwords, seals `forgebase_server@<listen>` into the node, and marks it
+  `ready` on its first `primary` heartbeat). Before the first shard the
+  job writes control placement rows, drops cross-placement foreign keys
+  and logs rule offenders (FB-170, FB-171); a shard subscribes to
+  `fb_control` over control's superuser socket (local) or the configured
+  external control URL; otherwise it is skipped with a warning (a managed
+  control's superuser is socket-only).
+- `PATCH shards/{id}` to `draining` queues `database.shard.drain` (a fresh
+  drain plan, moves one at a time). `DELETE shards/{id}` also refuses while
+  a move uses the set (source rows until cleanup); a local primary's data
+  moves to `postgres/retired/`, local replicas of the shard are deleted.
+- Local replicas of a shard: `POST nodes {set: <shard>, kind: local}`
+  clones from the shard's local primary; remove and rebuild use it too.
+- Promote of a shard replica: `PoolSwitch::repoint` reloads the router,
+  which now **reopens a set whose primary node changed** (it kept the old
+  pool before) and returns that set's database.
+- Operations: the move job's stages are `preparing`, `copying`,
+  `catching_up`, `switching`, `cleanup`; `switching` and `cleanup` are
+  past the point of no return (cancel answers
+  `operation_not_cancellable`); cancel before that aborts the move
+  (nothing changed). `database.tenant.cleanup` jobs are not listed as
+  operations.
+- `[database.sharding]`: `move_freeze_timeout_ms` and
+  `move_source_retention_hours` reach `MoveOptions`;
+  `max_parallel_moves` is 1 by construction (plans run one move at a
+  time; one move per pair of sets).
+
+**Deviations, summed up.** Staged tables for data-parent tables instead of
+staging only order-defining ones (order-defining queue messages are
+renumbered in place); replication objects dropped right after the flip;
+undo is a move back; `database.tenant.cleanup` is a new reserved kind;
+`target_not_empty` and `move_state` are new codes; the router counts
+in-flight handles per tenant (`in_flight`, `wait_drained`); moves need a
+superuser-equivalent connection per set (the server's own role has no
+`REPLICATION`, `pg_create_subscription` or `session_replication_role`).
+
+**Shared edits outside Owns.** `forgebase-db`: `router.rs` (leases,
+`in_flight`, `wait_drained`, reopen on a new primary), `lib.rs` (module).
+`forgebase-pgengine`: `lib.rs` (module), `replication/service.rs` (primary
+join tokens, `JoinGrant.role` / `secrets`, `server_url`).
+`forgebase-cli`: `node.rs` (agent bootstraps a shard primary).
+`forgebase-api`: `system_database.rs` (routes, `TopologyOps` methods,
+shapes, codes `confirm_mismatch` / `target_not_empty`, OpenAPI).
+`forgebase-server`: `replicas.rs` (above), `lib.rs` (module, `Moves`
+built and registered), `Cargo.toml` (dev: `tokio-tungstenite`,
+`futures-util` sink).
+
+**Tests.** `forgebase-db/tests/moves.rs` (real clusters): a move under a
+writer with every row kind (posts with jsonb and bytea, KV, job events and
+attempts renumbered, messages renumbered, deliveries and cursors
+remapped), no lost or duplicated row, cleanup, undo; cancel and freeze
+timeout aborting with nothing changed, refusals; containers created
+during a move; a column the target lacks; rebalance plan, `run_plan`,
+drain, `check_removable`; SQLite refusal. `forgebase-pgengine/tests/shards.rs`:
+local shard lifecycle; primary join token, grant and bootstrap with the
+cluster's roles. `forgebase-server/tests/moves_fb174.rs`: the move under
+load on a running server (records, realtime, queue). `topology_fb174.rs`:
+the API (local shard add, move with confirmations, plan, rebalance,
+drain, removal, retired data, audit); SQLite `postgres_required`. Unit
+tests: planner, plan shapes, SQL builders, error codes, freeze accounting.
+
+**For FB-176 (dashboard).** Move dialog: target set, typed tenant id,
+`202` operation; progress from the operation (`stage`, `percent`,
+`message`: tables copied, KiB behind); result `freeze_ms`, `rows`. Undo =
+the same dialog with the original set while the move's cleanup is
+pending (the operation result has `from`). Rebalance: `POST
+rebalance/plan` shows `moves` (sizes, `est_freeze_ms`), `before` /
+`after` loads and spreads, `expires_at`; run with the typed plan id. Add
+shard: `kind` local / remote / external; remote shows "make a primary join
+token" (`POST join-tokens {set, role: "primary"}`) and the operation waits.
+Drain = `PATCH {state: "draining"}` (operation `database.shard.drain`).
+Retired data list with "Delete data" (typed node name).
+
+**For FB-178 (topology CI).** Engine tests need `FORGEBASE_TEST_PG_ENGINE`
+/ `FORGEBASE_PG_ENGINE_DIR` and a short `FORGEBASE_TEST_PG_TMP`;
+`forgebase-db --test moves` runs 5 tests in ~2 min (three clusters per
+test at most), `forgebase-pgengine --test shards` ~30 s, server
+`--test moves_fb174` and `--test topology_fb174` 1–4 min each. macOS
+allows 32 System V shared-memory segments (`kern.sysv.shmmni`): clusters
+killed by a crashed test leak theirs and the next `initdb` fails with
+"could not create shared memory segment"; remove segments with no
+attachment whose creator is gone (`ipcs -m -a`, `ipcrm -m`). Chaos ideas
+the suite does not cover yet: kill the source or target mid-copy (resume
+from `copying`), promote the source during a move (`failover` slots),
+crash between the switch transaction and the flip (abort cleans the
+target).

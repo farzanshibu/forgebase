@@ -1597,7 +1597,7 @@ impl TopologyOps for Replicas {
                 return Err(move_err(e));
             }
             if let Some(h) = self.router()?.set(id) {
-                let _ = forgebase_db::shards::unsubscribe_from_control(h.database(), &control, set.number).await;
+                self.unsubscribe_shard(&set, h.database()).await;
             }
             for n in topo.nodes_of(id).filter(|n| n.state != NodeState::Retired) {
                 retire_node(&control, n).await?;
@@ -2296,6 +2296,76 @@ impl Replicas {
         }
     }
 
+    /// A connection with administrative rights: a superuser URL over a
+    /// local socket, or an external node's URL.
+    async fn open_admin(&self, url: &str, local: bool) -> Result<Database, DbError> {
+        let mut opts = DbOptions::from_config_target(&self.config.database, DbTarget::postgres(url, local));
+        opts.read_pool_size = 1;
+        Database::open(opts).await
+    }
+
+    /// The shard's `fb_control` subscription (FB-173), made with control's
+    /// superuser (slot, publication) and the shard's (subscription; an
+    /// external shard: its own URL's role).
+    async fn subscribe_shard(
+        &self,
+        set: &DbSet,
+        node: &DbNode,
+        shard_db: &Database,
+        conninfo: &forgebase_db::SecretString,
+    ) -> Result<(), DbError> {
+        let control_url = self
+            .control_admin_url()
+            .ok_or_else(|| DbError::Unsupported("no administrative URL of control".into()))?;
+        let control = self.open_admin(control_url.expose(), self.primary().is_some()).await?;
+        let shard = match (node.kind, self.shards.get(&node.name).await) {
+            (NodeKind::Local, Some(h)) => Some(self.open_admin(h.url(Role::Super).expose(), true).await?),
+            _ => None,
+        };
+        let r = async {
+            forgebase_db::shards::ensure_control_publication(&control).await?;
+            forgebase_db::shards::subscribe_to_control(shard.as_ref().unwrap_or(shard_db), &control, set.number, conninfo)
+                .await
+                .map(|_| ())
+        }
+        .await;
+        control.close().await;
+        if let Some(s) = shard {
+            s.close().await;
+        }
+        r
+    }
+
+    /// Drops a shard's `fb_control` subscription and control's slot with
+    /// the superusers (removal).
+    async fn unsubscribe_shard(&self, set: &DbSet, shard_db: &Database) {
+        let topo = self.router().ok().map(DbRouter::topology);
+        let node = topo.as_ref().and_then(|t| t.primary_of(&set.id)).cloned();
+        let r = async {
+            let control_url = self
+                .control_admin_url()
+                .ok_or_else(|| DbError::Unsupported("no administrative URL of control".into()))?;
+            let control = self.open_admin(control_url.expose(), self.primary().is_some()).await?;
+            let shard = match node {
+                Some(n) if n.kind == NodeKind::Local => match self.shards.get(&n.name).await {
+                    Some(h) => Some(self.open_admin(h.url(Role::Super).expose(), true).await?),
+                    None => None,
+                },
+                _ => None,
+            };
+            let r = forgebase_db::shards::unsubscribe_from_control(shard.as_ref().unwrap_or(shard_db), &control, set.number).await;
+            control.close().await;
+            if let Some(s) = shard {
+                s.close().await;
+            }
+            r
+        }
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(shard = %set.name, error = %e, "fb_control subscription not dropped");
+        }
+    }
+
     /// How a new shard reaches control for the `fb_control` subscription:
     /// control's superuser socket for a shard on this host, an external
     /// control's configured URL otherwise; `None` when there is no such way.
@@ -2391,12 +2461,22 @@ impl Replicas {
                 "no way for the shard to reach control: fb_control (record ACLs, direct logins) is not replicated to it"
             );
         }
+        // The fb_control subscription needs slot and subscription rights the
+        // server's own role lacks: it is made below with the superusers.
         let setup = forgebase_db::shards::ShardSetup {
             backups_dir: Some(&backups),
             replay,
-            control_conninfo: conninfo.as_ref(),
+            control_conninfo: None,
         };
         let activated = forgebase_db::shards::activate_shard(router, &set, &db, setup).await;
+        if activated.is_ok()
+            && let Some(conninfo) = &conninfo
+        {
+            report(ctx, stage("subscribing", 90.0, "replicating control's ACL tables to the shard")).await;
+            if let Err(e) = self.subscribe_shard(&set, &node, &db, conninfo).await {
+                tracing::warn!(shard = %set.name, error = %e, "fb_control subscription not made");
+            }
+        }
         db.close().await;
         let set = activated.map_err(|e| fail(router_err(e)))?;
         report(ctx, stage("done", 100.0, format!("{} is active", set.name))).await;

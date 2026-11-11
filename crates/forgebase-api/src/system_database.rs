@@ -2479,9 +2479,15 @@ mod tests {
             "rebuild n1",
             "join control replica http://fb.example:8090",
             "shard s2 external",
+            "shard s3 local",
+            "shard s3 remote",
             "patch s1 Some(\"draining\")",
             "rmshard s1 shard-1",
             "placements Some(\"s1\") Some(\"p1\") Some(\"env\") Some(\"t5\") Some(10)",
+            "move t1 s2",
+            "plan None Some(3)",
+            "rebalance p",
+            "retired",
             "ops true Some(5)",
             "op j1",
             "cancel j1",
@@ -2491,7 +2497,7 @@ mod tests {
         ] {
             assert!(calls.iter().any(|c| c == want), "{want} in {calls:#?}");
         }
-        assert_eq!(calls.len(), 20, "refused input never reached the service: {calls:#?}");
+        assert_eq!(calls.len(), 26, "refused input never reached the service: {calls:#?}");
     }
 
     #[tokio::test]
