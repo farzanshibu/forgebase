@@ -59,7 +59,11 @@ fn age_plugin() -> bool {
         .iter()
         .find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()))
         .map(PathBuf::from)
-        .is_some_and(|e| ["so", "dylib"].iter().any(|x| e.join(format!("lib/plugins/age.{x}")).exists()))
+        .is_some_and(|e| {
+            ["so", "dylib"]
+                .iter()
+                .any(|x| e.join(format!("lib/plugins/age.{x}")).exists())
+        })
 }
 
 struct Env {
@@ -215,7 +219,10 @@ async fn cypher_reads_run_on_the_standby_with_rules() {
     let cy = AccessContext::user("users", "cy").with_tenant("t1");
     let ruled = AccessContext::user("users", "ruled").with_tenant("t1");
     let before = e.replica_reads();
-    assert_eq!(ids(g, &cy, "MATCH (n) RETURN n.__id").await, ["a", "b", "d1", "d2", "s"]);
+    assert_eq!(
+        ids(g, &cy, "MATCH (n) RETURN n.__id").await,
+        ["a", "b", "d1", "d2", "s"]
+    );
     assert_eq!(
         ids(g, &cy, "MATCH ({__id: 'a'})-[*1..3]->(n) RETURN DISTINCT n.__id").await,
         ["b", "d1", "d2", "s"]

@@ -464,7 +464,9 @@ fn stuck(updated_at: &str) -> bool {
 /// Engine errors of a query, as the caller's errors where they are.
 fn cypher_error(e: DbError) -> GraphError {
     match &e {
-        DbError::ReadOnly(m) => GraphError::invalid("cypher_read_only", format!("openCypher queries are read-only: {m}")),
+        DbError::ReadOnly(m) => {
+            GraphError::invalid("cypher_read_only", format!("openCypher queries are read-only: {m}"))
+        }
         DbError::Statement(m) => GraphError::invalid("cypher_error", m.clone()),
         _ if e.to_string().contains("statement timeout") => {
             GraphError::invalid("cypher_timeout", "the query ran longer than timeout_ms")

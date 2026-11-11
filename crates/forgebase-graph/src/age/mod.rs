@@ -291,7 +291,10 @@ async fn protect(tx: &mut dyn WriteTx, graph: &str, table: &str, kind: Kind) -> 
     for sql in [
         format!("ALTER TABLE {t} ENABLE ROW LEVEL SECURITY"),
         format!("DROP POLICY IF EXISTS fb_read ON {t}"),
-        format!("CREATE POLICY fb_read ON {t} FOR SELECT TO PUBLIC USING ({})", policy(kind)),
+        format!(
+            "CREATE POLICY fb_read ON {t} FOR SELECT TO PUBLIC USING ({})",
+            policy(kind)
+        ),
     ] {
         tx.execute(&Statement::raw(sql)).await?;
     }
@@ -420,13 +423,7 @@ fn edge_props(alias: &str, catch_all: bool) -> String {
 
 /// Copies the canonical nodes of label `fb_label` in `range` that are not
 /// in the map yet. Returns how many.
-async fn copy_nodes(
-    tx: &mut dyn WriteTx,
-    graph: &str,
-    tenant: &str,
-    fb_label: &str,
-    range: Range<'_>,
-) -> Result<u64> {
+async fn copy_nodes(tx: &mut dyn WriteTx, graph: &str, tenant: &str, fb_label: &str, range: Range<'_>) -> Result<u64> {
     let l = ensure_label(tx, graph, fb_label, Kind::Node).await?;
     let sql = format!(
         "WITH b AS MATERIALIZED (SELECT n.id, n.label, n.properties, \
@@ -720,7 +717,11 @@ async fn step_in(tx: &mut dyn WriteTx, tenant: &str) -> Result<Step> {
             vec![tenant.into(), next.into(), state.into(), now.into()],
         ))
         .await?;
-        return Ok(if kind == Kind::Edge { Step::Ready } else { Step::Copied(0) });
+        return Ok(if kind == Kind::Edge {
+            Step::Ready
+        } else {
+            Step::Copied(0)
+        });
     };
     let mut names: Vec<String> = batch.rows.iter().filter_map(|r| text(r.get(1))).collect();
     names.sort();
@@ -735,7 +736,12 @@ async fn step_in(tx: &mut dyn WriteTx, tenant: &str) -> Result<Step> {
     let n = batch.rows.len() as u64;
     tx.execute(&stmt(
         format!("UPDATE {STATE} SET cursor_id = ?2, done = done + ?3, updated_at = ?4 WHERE tenant = ?1"),
-        vec![tenant.into(), last.into(), i64::try_from(n).unwrap_or(i64::MAX).into(), now.into()],
+        vec![
+            tenant.into(),
+            last.into(),
+            i64::try_from(n).unwrap_or(i64::MAX).into(),
+            now.into(),
+        ],
     ))
     .await?;
     Ok(Step::Copied(n))
@@ -770,14 +776,23 @@ pub(crate) async fn drop_in(tx: &mut dyn WriteTx, tenant: &str) -> Result<bool> 
     let graph = graph_name(tenant);
     let mut existed = false;
     if graph_exists(tx, &graph).await? {
-        let drop = stmt("SELECT ag_catalog.drop_graph(?1::text::name, true)::text", vec![graph.into()]);
+        let drop = stmt(
+            "SELECT ag_catalog.drop_graph(?1::text::name, true)::text",
+            vec![graph.into()],
+        );
         with_ag_path!(tx, tx.fetch_all(&drop).await)?;
         existed = true;
     }
-    tx.execute(&stmt(format!("DELETE FROM {MAP} WHERE tenant = ?1"), vec![tenant.into()]))
-        .await?;
+    tx.execute(&stmt(
+        format!("DELETE FROM {MAP} WHERE tenant = ?1"),
+        vec![tenant.into()],
+    ))
+    .await?;
     let st = tx
-        .execute(&stmt(format!("DELETE FROM {STATE} WHERE tenant = ?1"), vec![tenant.into()]))
+        .execute(&stmt(
+            format!("DELETE FROM {STATE} WHERE tenant = ?1"),
+            vec![tenant.into()],
+        ))
         .await?;
     Ok(existed || st.rows_affected > 0)
 }
@@ -888,7 +903,16 @@ mod tests {
         for ok in ["Person", "p", "KNOWS_2", &"a".repeat(63)] {
             assert!(representable(ok), "{ok}");
         }
-        for bad in ["", "my-label", "_ag_label_vertex", "_fbnode", "9lives", "naïve", &"a".repeat(64), "a b"] {
+        for bad in [
+            "",
+            "my-label",
+            "_ag_label_vertex",
+            "_fbnode",
+            "9lives",
+            "naïve",
+            &"a".repeat(64),
+            "a b",
+        ] {
             assert!(!representable(bad), "{bad}");
         }
         assert_eq!(age_label("my-label", Kind::Node), CATCH_NODE);

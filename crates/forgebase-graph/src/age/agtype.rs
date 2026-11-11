@@ -84,7 +84,11 @@ impl Parser<'_> {
         if self.s[self.i..].starts_with(b"::") {
             self.i += 2;
             let start = self.i;
-            while self.s.get(self.i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') {
+            while self
+                .s
+                .get(self.i)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+            {
                 self.i += 1;
             }
             let ty = &self.text[start..self.i];
@@ -206,7 +210,10 @@ fn vertex(mut raw: Json) -> Json {
         Json::String(age_label.to_owned())
     };
     let id = text_of(&props, "__id");
-    let user: Map<String, Json> = props.into_iter().filter(|(k, _)| !NODE_KEYS.contains(&k.as_str())).collect();
+    let user: Map<String, Json> = props
+        .into_iter()
+        .filter(|(k, _)| !NODE_KEYS.contains(&k.as_str()))
+        .collect();
     serde_json::json!({"id": id, "label": label, "properties": user})
 }
 
@@ -224,7 +231,10 @@ fn edge(mut raw: Json) -> Json {
         text_of(&props, "__source"),
         text_of(&props, "__target"),
     );
-    let user: Map<String, Json> = props.into_iter().filter(|(k, _)| !EDGE_KEYS.contains(&k.as_str())).collect();
+    let user: Map<String, Json> = props
+        .into_iter()
+        .filter(|(k, _)| !EDGE_KEYS.contains(&k.as_str()))
+        .collect();
     serde_json::json!({
         "id": id, "type": ty, "source": source, "target": target, "directed": directed, "properties": user,
     })
@@ -264,7 +274,10 @@ mod tests {
     #[test]
     fn vertices_edges_and_paths_use_forgebase_ids() {
         let v = r#"{"id": 844424930131969, "label": "Person", "properties": {"__id": "a", "name": "Ann"}}::vertex"#;
-        assert_eq!(parse(v).unwrap(), json!({"id": "a", "label": "Person", "properties": {"name": "Ann"}}));
+        assert_eq!(
+            parse(v).unwrap(),
+            json!({"id": "a", "label": "Person", "properties": {"name": "Ann"}})
+        );
         let c = r#"{"id": 1, "label": "_fbnode", "properties": {"__id": "x", "__label": "my-label"}}::vertex"#;
         assert_eq!(parse(c).unwrap()["label"], "my-label");
         let e = r#"{"id": 1407374883553281, "label": "KNOWS", "end_id": 2, "start_id": 1, "properties": {"__id": "e1", "__source": "a", "__target": "b", "__undirected": true, "w": 2}}::edge"#;

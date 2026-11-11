@@ -46,7 +46,10 @@ async fn cypher_answers_unsupported_without_age() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
     assert_eq!(b["error"]["code"], "cypher_unsupported");
     let (s, b) = admin.post("/cypher/drop", json!({})).await;
-    assert_eq!((s, b["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("cypher_unsupported")));
+    assert_eq!(
+        (s, b["error"]["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("cypher_unsupported"))
+    );
     // The REST graph is unchanged, and stats carry no openCypher state.
     let (s, stats) = admin.get("/stats").await;
     assert_eq!(s, StatusCode::OK);

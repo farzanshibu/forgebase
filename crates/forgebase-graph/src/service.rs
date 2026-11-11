@@ -22,7 +22,9 @@ use std::sync::{Arc, OnceLock};
 
 use forgebase_data::query::SqlBuilder;
 use forgebase_data::{AccessContext, Action, DataError, DataService, Principal, ResourceKind, ResourceOp, ResourceRef};
-use forgebase_db::{Backend, DbRouter, Feature, ReadVia, Rows, SetHandle, Statement, TenantRef, TxMode, Value, WriteTx};
+use forgebase_db::{
+    Backend, DbRouter, Feature, ReadVia, Rows, SetHandle, Statement, TenantRef, TxMode, Value, WriteTx,
+};
 use serde_json::{Map, Value as Json};
 
 use crate::access::{GraphAccess, One, Rules, and};
@@ -499,7 +501,13 @@ impl GraphService {
     /// Replaces (`merge = false`) or merge-patches (`merge = true`) a node.
     /// The stored node must pass its label's `update` rule, and the changed
     /// node the `update` rule of its (possibly new) label.
-    pub(crate) async fn change_node_here(&self, ctx: &AccessContext, id: &str, change: NodeChange, merge: bool) -> Result<Node> {
+    pub(crate) async fn change_node_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        change: NodeChange,
+        merge: bool,
+    ) -> Result<Node> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let label = change.label.as_deref().map(|l| check_label(Some(l))).transpose()?;
         let props = change.properties.map(|p| check_props(Some(p))).transpose()?;
@@ -983,7 +991,12 @@ impl GraphService {
     }
 
     /// Nodes one hop from `id`, with the connecting edge.
-    pub(crate) async fn neighbors_here(&self, ctx: &AccessContext, id: &str, q: NeighborQuery) -> Result<Page<Neighbor>> {
+    pub(crate) async fn neighbors_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        q: NeighborQuery,
+    ) -> Result<Page<Neighbor>> {
         let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let types = check_types(q.edge_types)?;
         let limit = check_limit(q.limit)?;

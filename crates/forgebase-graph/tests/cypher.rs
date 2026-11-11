@@ -20,8 +20,8 @@ use forgebase_data::{
 use forgebase_db::testing::{TestDb, selected_backend, test_backend};
 use forgebase_db::{Backend, BackendKind, BoxFuture, Database, ExtensionSetup, Feature, RunAs, Statement, TxMode};
 use forgebase_graph::{
-    CypherQuery, CypherResult, Direction, EdgeChange, GraphError, GraphService, MaterialiseJobs, NeighborQuery, NewEdge,
-    NewNode, NodeChange, TraverseQuery,
+    CypherQuery, CypherResult, Direction, EdgeChange, GraphError, GraphService, MaterialiseJobs, NeighborQuery,
+    NewEdge, NewNode, NodeChange, TraverseQuery,
 };
 use serde_json::{Value as Json, json};
 use tower::ServiceExt;
@@ -194,9 +194,7 @@ async fn materialise(g: &GraphService, ctx: &AccessContext) {
 }
 
 async fn cy(g: &GraphService, ctx: &AccessContext, query: &str) -> CypherResult {
-    g.cypher(ctx, q(query))
-        .await
-        .unwrap_or_else(|e| panic!("{query}: {e}"))
+    g.cypher(ctx, q(query)).await.unwrap_or_else(|e| panic!("{query}: {e}"))
 }
 
 /// The first column of every row, as strings, sorted.
@@ -279,12 +277,12 @@ async fn every_write_updates_the_derived_graph_in_its_transaction() {
 
     // Create.
     node(g, &ctx, "c", "Person", json!({"name": "Cid"})).await;
-    assert_eq!(
-        col(g, &ctx, "MATCH (n:Person) RETURN n.__id").await,
-        ["a", "b", "c"]
-    );
+    assert_eq!(col(g, &ctx, "MATCH (n:Person) RETURN n.__id").await, ["a", "b", "c"]);
     edge(g, &ctx, "ac", "KNOWS", "a", "c", json!({"since": 2020})).await;
-    assert_eq!(col(g, &ctx, "MATCH (:Person {__id: 'a'})-[:KNOWS]->(b) RETURN b.__id").await, ["c"]);
+    assert_eq!(
+        col(g, &ctx, "MATCH (:Person {__id: 'a'})-[:KNOWS]->(b) RETURN b.__id").await,
+        ["c"]
+    );
     // Change properties (merge patch) of a node and an edge.
     g.change_node(
         &ctx,
@@ -324,7 +322,10 @@ async fn every_write_updates_the_derived_graph_in_its_transaction() {
     .await
     .unwrap();
     assert_eq!(col(g, &ctx, "MATCH (n:Person) RETURN n.__id").await, ["a", "b"]);
-    assert_eq!(col(g, &ctx, "MATCH (:Person)-[:KNOWS]->(r:Robot) RETURN r.name").await, ["Cid"]);
+    assert_eq!(
+        col(g, &ctx, "MATCH (:Person)-[:KNOWS]->(r:Robot) RETURN r.name").await,
+        ["Cid"]
+    );
     // Undirected edges carry `__undirected`.
     g.create_edge(
         &ctx,
@@ -362,9 +363,8 @@ async fn every_write_updates_the_derived_graph_in_its_transaction() {
     assert_eq!(count(g, &ctx, "MATCH (n) RETURN count(n)").await, 2);
     assert_eq!(count(g, &ctx, "MATCH ()-[e]->() RETURN count(e)").await, 0);
     // The map holds exactly the remaining rows.
-    let m = e
-        .db
-        .fetch_all(&Statement::raw(
+    let m =
+        e.db.fetch_all(&Statement::raw(
             "SELECT kind, id FROM _forgebase_graph_age_ids WHERE tenant = 't1' ORDER BY kind, id",
         ))
         .await
@@ -387,7 +387,10 @@ async fn names_age_cannot_take_use_the_catch_all_labels() {
     assert_eq!(labels, [&json!("my-label"), &json!("")]);
     let r = cy(g, &ctx, "MATCH ()-[e:_fbedge]->() RETURN e").await;
     assert_eq!(r.rows[0][0]["type"], "rel-x");
-    assert_eq!(col(g, &ctx, "MATCH (n:_fbnode {__label: 'my-label'}) RETURN n.__id").await, ["x"]);
+    assert_eq!(
+        col(g, &ctx, "MATCH (n:_fbnode {__label: 'my-label'}) RETURN n.__id").await,
+        ["x"]
+    );
 }
 
 #[tokio::test]
@@ -500,7 +503,11 @@ async fn cypher_needs_its_own_permission() {
         Err(GraphError::Unauthenticated)
     ));
     assert_eq!(
-        code(&g.cypher(&AccessContext::user("users", "cy"), q("RETURN 1 AS x")).await.unwrap_err()),
+        code(
+            &g.cypher(&AccessContext::user("users", "cy"), q("RETURN 1 AS x"))
+                .await
+                .unwrap_err()
+        ),
         "tenant_required"
     );
     assert_eq!(col(g, &user("cy", "t1"), "MATCH (n) RETURN n.__id").await, ["a"]);
@@ -611,7 +618,10 @@ async fn label_rules_apply_inside_cypher_as_in_rest() {
         v.dedup();
         v
     };
-    assert_eq!(col(g, &ruled, "MATCH ({__id: 'd1'})-[]-(b) RETURN DISTINCT b.__id").await, nb);
+    assert_eq!(
+        col(g, &ruled, "MATCH ({__id: 'd1'})-[]-(b) RETURN DISTINCT b.__id").await,
+        nb
+    );
     assert_eq!(count(g, &ruled, "MATCH (n:Secret) RETURN count(n)").await, 0);
     assert_eq!(col(g, &ruled, "MATCH (n:Doc) RETURN n.__id").await, ["d1"]);
     // An unrestricted caller sees everything.
@@ -694,7 +704,10 @@ async fn the_jobs_service_runs_graph_materialise() {
     }
     assert_eq!(*jobs.0.lock().unwrap(), ["t1"]);
     let st = g.stats(&ctx).await.unwrap().cypher.unwrap();
-    assert_eq!((st.state.as_str(), st.job_id.as_deref()), ("materialising", Some("job-1")));
+    assert_eq!(
+        (st.state.as_str(), st.job_id.as_deref()),
+        ("materialising", Some("job-1"))
+    );
     // The job body (the server registers it as `graph.materialise`).
     let report = g.materialise("t1").await.unwrap();
     assert_eq!((report.state.as_str(), report.copied), ("ready", 1));
@@ -725,16 +738,27 @@ async fn the_routes_answer_409_then_rows() {
             (status, serde_json::from_slice::<Json>(&bytes).unwrap())
         }
     };
-    let (s, b) = call("/api/v1/graph/cypher", json!({"query": "MATCH (n) RETURN n.name AS name"})).await;
+    let (s, b) = call(
+        "/api/v1/graph/cypher",
+        json!({"query": "MATCH (n) RETURN n.name AS name"}),
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{b}");
     assert_eq!(b["error"]["code"], "graph_materialising");
     assert!(b["error"].as_object().unwrap().contains_key("job_id"), "{b}");
     wait_ready(g, &ctx).await;
-    let (s, b) = call("/api/v1/graph/cypher", json!({"query": "MATCH (n) RETURN n.name AS name"})).await;
+    let (s, b) = call(
+        "/api/v1/graph/cypher",
+        json!({"query": "MATCH (n) RETURN n.name AS name"}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(b, json!({"columns": ["name"], "rows": [["Ann"]], "truncated": false}));
     let (s, b) = call("/api/v1/graph/cypher", json!({"query": "CREATE (n) RETURN n"})).await;
-    assert_eq!((s, b["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("cypher_read_only")));
+    assert_eq!(
+        (s, b["error"]["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("cypher_read_only"))
+    );
     let (s, b) = call("/api/v1/graph/cypher/drop", json!({})).await;
     assert_eq!((s, &b), (StatusCode::OK, &json!({"dropped": true})));
     let stats = g.stats(&ctx).await.unwrap();
@@ -827,13 +851,19 @@ async fn a_move_makes_the_graph_stale() {
     node(&g, &ctx, "a", "Person", json!({})).await;
     materialise(&g, &ctx).await;
     // A first placement is a new placement.
-    router.place("t1", CONTROL_SET_ID, PlacementState::Active).await.unwrap();
+    router
+        .place("t1", CONTROL_SET_ID, PlacementState::Active)
+        .await
+        .unwrap();
     assert_eq!(g.stats(&ctx).await.unwrap().cypher.unwrap().state, "stale");
     node(&g, &ctx, "b", "Person", json!({})).await;
     materialise(&g, &ctx).await;
     assert_eq!(col(&g, &ctx, "MATCH (n) RETURN n.__id").await, ["a", "b"]);
     // A move in progress: the graph still answers (and stays in sync).
-    router.place("t1", CONTROL_SET_ID, PlacementState::Moving).await.unwrap();
+    router
+        .place("t1", CONTROL_SET_ID, PlacementState::Moving)
+        .await
+        .unwrap();
     node(&g, &ctx, "c", "Person", json!({})).await;
     assert_eq!(col(&g, &ctx, "MATCH (n) RETURN n.__id").await, ["a", "b", "c"]);
     // ... but a stale graph is not rebuilt while it runs.

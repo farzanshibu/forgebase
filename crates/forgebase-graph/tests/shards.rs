@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use forgebase_data::{AccessContext, DataService, DefaultAuthorizer};
-use forgebase_db::topology::{self, DbNode, DbSet, NewNode, NewSet, NodeKind, NodeOrigin, NodeRole, NodeState, PlacementState, SetState};
+use forgebase_db::topology::{
+    self, DbNode, DbSet, NewNode, NewSet, NodeKind, NodeOrigin, NodeRole, NodeState, PlacementState, SetState,
+};
 use forgebase_db::{Backend, BoxFuture, Database, DbError, DbRouter, RouterOptions, SetConnector, Statement, testing};
 use forgebase_graph::{GraphService, NewEdge, NewNode as GraphNode};
 
@@ -76,7 +78,10 @@ async fn each_call_runs_on_its_tenants_set() {
     let router = DbRouter::open(
         control_db.clone(),
         RouterOptions {
-            connector: Some(Arc::new(Connector(HashMap::from([(node.name.clone(), shard_db.clone())])))),
+            connector: Some(Arc::new(Connector(HashMap::from([(
+                node.name.clone(),
+                shard_db.clone(),
+            )])))),
             ..RouterOptions::default()
         },
     )
@@ -124,7 +129,11 @@ async fn each_call_runs_on_its_tenants_set() {
         assert_eq!(graph.get_node(&ctx, "y").await.unwrap().id, "y");
         assert_eq!(graph.stats(&ctx).await.unwrap().nodes, 2);
         let walk = serde_json::from_value(serde_json::json!({"start": "x", "max_depth": 2})).unwrap();
-        assert_eq!(graph.traverse(&ctx, walk).await.unwrap().nodes.len(), 1, "y (the start is not listed)");
+        assert_eq!(
+            graph.traverse(&ctx, walk).await.unwrap().nodes.len(),
+            1,
+            "y (the start is not listed)"
+        );
     }
     // env-a lives on the shard, env-b on control.
     assert_eq!(count(&shard_db, "_forgebase_graph_nodes", "env-a").await, 2);

@@ -22,7 +22,9 @@
 pub const MAX_COLUMNS: usize = 100;
 
 /// Words that start a clause that writes or calls out.
-const REFUSED: &[&str] = &["create", "merge", "set", "delete", "detach", "remove", "call", "load", "foreach"];
+const REFUSED: &[&str] = &[
+    "create", "merge", "set", "delete", "detach", "remove", "call", "load", "foreach",
+];
 
 /// What the tokenizer found wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +220,10 @@ fn word(t: &Token) -> Option<&str> {
 /// dollar-quote tag.
 pub fn check(query: &str, tag: &str) -> Result<Checked, Refusal> {
     if query.contains(&format!("${tag}$")) {
-        return Err(refuse("cypher_invalid", "the query contains a reserved dollar-quote tag"));
+        return Err(refuse(
+            "cypher_invalid",
+            "the query contains a reserved dollar-quote tag",
+        ));
     }
     let toks = lex(query)?;
     let mut depth = 0i32;
@@ -241,10 +246,7 @@ pub fn check(query: &str, tag: &str) -> Result<Checked, Refusal> {
                     let msg = if w == "call" || w == "load" {
                         format!("{} is not allowed in openCypher queries", w.to_uppercase())
                     } else {
-                        format!(
-                            "openCypher queries are read-only: {} is not allowed",
-                            w.to_uppercase()
-                        )
+                        format!("openCypher queries are read-only: {} is not allowed", w.to_uppercase())
                     };
                     return Err(refuse("cypher_read_only", msg));
                 }
@@ -289,7 +291,10 @@ fn return_items(query: &str, toks: &[Token]) -> Result<Vec<String>, Refusal> {
     if toks.first().and_then(word) == Some("distinct") {
         i = 1;
     }
-    let close = |items: &mut Vec<(usize, usize, Option<String>)>, start: &mut Option<usize>, end: usize, alias: &mut Option<String>| {
+    let close = |items: &mut Vec<(usize, usize, Option<String>)>,
+                 start: &mut Option<usize>,
+                 end: usize,
+                 alias: &mut Option<String>| {
         if let Some(s) = start.take() {
             items.push((s, end, alias.take()));
         }
@@ -300,7 +305,9 @@ fn return_items(query: &str, toks: &[Token]) -> Result<Vec<String>, Refusal> {
             match word(t) {
                 Some("order" | "skip" | "limit") => break,
                 Some("as") if start.is_some() => {
-                    let name = toks.get(i + 1).ok_or_else(|| refuse("cypher_invalid", "AS needs a name"))?;
+                    let name = toks
+                        .get(i + 1)
+                        .ok_or_else(|| refuse("cypher_invalid", "AS needs a name"))?;
                     let text = &query[name.start..name.end];
                     alias = Some(text.trim_matches('`').replace("``", "`"));
                     end = toks[i].start;
@@ -365,14 +372,23 @@ mod tests {
     fn return_items_are_named_and_counted() {
         assert_eq!(cols("MATCH (n) RETURN n"), ["n"]);
         assert_eq!(cols("MATCH (n) RETURN n.name AS name, count(*)"), ["name", "count(*)"]);
-        assert_eq!(cols("MATCH (n) RETURN DISTINCT n.a, {k: [1, 2]} AS m ORDER BY n.a LIMIT 3"), ["n.a", "m"]);
+        assert_eq!(
+            cols("MATCH (n) RETURN DISTINCT n.a, {k: [1, 2]} AS m ORDER BY n.a LIMIT 3"),
+            ["n.a", "m"]
+        );
         assert_eq!(cols("MATCH (a)-[*1..3]->(b) RETURN b.__id AS `the id`"), ["the id"]);
         assert_eq!(cols("MATCH (n) WITH n RETURN  n.x  +  1"), ["n.x + 1"]);
         // The last RETURN decides (UNION).
-        assert_eq!(cols("MATCH (n:A) RETURN n.x AS x UNION MATCH (n:B) RETURN n.y AS x"), ["x"]);
+        assert_eq!(
+            cols("MATCH (n:A) RETURN n.x AS x UNION MATCH (n:B) RETURN n.y AS x"),
+            ["x"]
+        );
         // Keywords as properties and map keys are not clauses.
         assert_eq!(cols("MATCH (n) WHERE n.set = 1 RETURN {create: n.delete} AS m"), ["m"]);
-        assert_eq!(cols("MATCH (n) RETURN 'CREATE (x)' AS s, \"SET\" AS t // DELETE\n"), ["s", "t"]);
+        assert_eq!(
+            cols("MATCH (n) RETURN 'CREATE (x)' AS s, \"SET\" AS t // DELETE\n"),
+            ["s", "t"]
+        );
         assert_eq!(cols("MATCH (n) WHERE n.name = $name RETURN n /* MERGE */"), ["n"]);
     }
 
