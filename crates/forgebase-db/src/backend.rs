@@ -368,4 +368,20 @@ pub trait WriteTx: Send {
 
     /// Rolls back.
     fn rollback(self: Box<Self>) -> BoxFuture<'static, Result<(), DbError>>;
+
+    /// Ends the transaction with `PREPARE TRANSACTION '<gid>'` (first phase
+    /// of a two-phase commit across database sets, ADR-0029 §3.7, FB-173):
+    /// its changes survive a crash and are finished later with
+    /// [`crate::Database::commit_prepared`] or
+    /// [`crate::Database::rollback_prepared`] on any connection. `gid` is
+    /// lower-case letters, digits and `_`, at most 200 bytes. The default
+    /// (SQLite) rolls back and refuses.
+    fn prepare(self: Box<Self>, gid: String) -> BoxFuture<'static, Result<(), DbError>> {
+        let _ = gid;
+        let rollback = self.rollback();
+        Box::pin(async move {
+            let _ = rollback.await;
+            Err(DbError::Unsupported("two-phase commit needs PostgreSQL".into()))
+        })
+    }
 }

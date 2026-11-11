@@ -16,6 +16,7 @@
 //! PostgreSQL has its own runner and SQL files ([`postgres`]): a baseline for
 //! versions 1–25, then one twin per later SQLite migration.
 
+pub mod multi;
 pub mod postgres;
 
 use std::time::Instant;
