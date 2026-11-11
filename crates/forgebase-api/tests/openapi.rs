@@ -161,6 +161,8 @@ const EXPECTED: &[(&str, &str)] = &[
     ("post", "/api/v1/graph/traverse"),
     ("post", "/api/v1/graph/shortest-path"),
     ("get", "/api/v1/graph/stats"),
+    ("post", "/api/v1/graph/cypher"),
+    ("post", "/api/v1/graph/cypher/drop"),
     ("get", "/api/v1/realtime/ws"),
     ("get", "/api/v1/realtime/sse"),
     ("post", "/api/v1/realtime/channels/{channel}/messages"),

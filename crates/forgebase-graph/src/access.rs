@@ -82,6 +82,33 @@ impl Rules {
         r
     }
 
+    /// Restricted rules from given parts (FB-163: the part of a caller's
+    /// rules the derived graph applies by row id).
+    pub(crate) fn partial(kind: ResourceKind, allow: Vec<String>, filter: Vec<(String, Predicate)>) -> Self {
+        Self {
+            kind,
+            unrestricted: false,
+            any: !allow.is_empty() || !filter.is_empty(),
+            allow,
+            filter,
+        }
+    }
+
+    /// The kind (labels or edge types).
+    pub(crate) fn kind(&self) -> ResourceKind {
+        self.kind
+    }
+
+    /// Names allowed without a predicate (empty when unrestricted).
+    pub(crate) fn allowed(&self) -> &[String] {
+        &self.allow
+    }
+
+    /// Names allowed under a predicate.
+    pub(crate) fn filters(&self) -> &[(String, Predicate)] {
+        &self.filter
+    }
+
     /// Whether every name is allowed without a predicate.
     pub fn is_unrestricted(&self) -> bool {
         self.unrestricted

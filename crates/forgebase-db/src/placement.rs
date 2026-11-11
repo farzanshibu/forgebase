@@ -360,6 +360,10 @@ pub static TABLES: &[TablePlacement] = &[
     // --- Graph (canonical tables; the AGE graph is derived and rebuilt) ---
     tenant("_forgebase_graph_edges", "tenant", COPY),
     tenant("_forgebase_graph_nodes", "tenant", COPY),
+    // FB-163: the derived AGE graph's map and state (extension DDL, only
+    // where AGE runs). Not copied: the target rematerialises on next use.
+    tenant("_forgebase_graph_age_ids", "tenant", REBUILD),
+    tenant("_forgebase_graph_age_state", "tenant", REBUILD),
     // --- Vector ---
     tenant("_forgebase_vector_collections", "tenant", COPY),
     child(
@@ -486,6 +490,11 @@ pub const SQLITE_ONLY_TABLES: &[&str] = &[
     "_forgebase_vector_fts_docsize",
     "_forgebase_vector_fts_idx",
 ];
+
+/// Tables created by an accelerator's extension DDL (`ExtensionDdl`), present
+/// only on databases where that extension runs: [`problems`] does not
+/// require them in the schema.
+pub const EXTENSION_TABLES: &[&str] = &["_forgebase_graph_age_ids", "_forgebase_graph_age_state"];
 
 /// Column names that mark a tenant column ([`problems`] checks each one is
 /// a placement key or listed in [`TENANT_COLUMNS_NOT_KEYS`]).
@@ -641,6 +650,9 @@ pub fn problems(schema: &SchemaTables) -> Vec<String> {
     };
     for t in TABLES {
         let Some(columns) = schema.get(t.table) else {
+            if EXTENSION_TABLES.contains(&t.table) {
+                continue;
+            }
             out.push(format!(
                 "placement::TABLES lists {}, which is not in the schema: remove it",
                 t.table
@@ -760,6 +772,9 @@ mod tests {
         }
         for t in SQLITE_ONLY_TABLES {
             assert!(table(t).is_none(), "{t}");
+        }
+        for t in EXTENSION_TABLES {
+            assert!(table(t).is_some(), "{t}");
         }
     }
 

@@ -40,8 +40,10 @@ pub const READ_ALL_KEY: &str = "engine:read_jobs:all";
 /// Kind prefixes of ForgeBase modules. Kinds starting with one are reserved
 /// unless a handler registered them otherwise, so a module that is switched
 /// off cannot be handed jobs that would run when it is switched on again.
-pub const RESERVED_PREFIXES: [&str; 8] = [
+pub const RESERVED_PREFIXES: [&str; 9] = [
     "function.",
+    // FB-163: `graph.materialise` (the derived openCypher graph).
+    "graph.",
     "storage.",
     "billing.",
     "credits.",
