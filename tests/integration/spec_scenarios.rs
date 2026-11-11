@@ -240,6 +240,7 @@ impl Fb {
         // A clean machine: no state in the user's home directory.
         cmd.env("HOME", self.tmp.path().join("home"));
         cmd.env("NO_COLOR", "1");
+        common::backend_env(&mut cmd);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }

@@ -26,6 +26,7 @@ fn forgebase(cwd: &Path) -> Command {
         }
     }
     cmd.env("NO_COLOR", "1");
+    common::backend_env(&mut cmd);
     cmd
 }
 
