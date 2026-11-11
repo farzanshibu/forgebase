@@ -189,27 +189,22 @@ os = ["linux"]
 # replace these tables with the release's engine.lock.archives fragment.
 [archives."aarch64-apple-darwin"]
 file = "forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst"
-sha256 = "907d08d906ad4596d1b60522121a157ccb12ff6b662ea4e5a2340d94a6d9b13b"
-size = 7857923
-# Built and smoke-tested locally by FB-160, rebuilt by FB-160b with patch
-# 0004 (#2581); Apache AGE (Apple clang 21,
-# macOS 27 SDK, Homebrew bison 3.8.2); FB-130's archive without AGE was
-# c5a23a42..., 7661698 bytes. The CI release archive will differ: replace
-# this table with the release's engine.lock.archives fragment.
-status = "local"
-
-[archives."x86_64-apple-darwin"]
-file = "forgebase-pg18.6-r1-x86_64-apple-darwin.tar.zst"
-status = "pending-ci"
-
-[archives."x86_64-unknown-linux-musl"]
-file = "forgebase-pg18.6-r1-x86_64-unknown-linux-musl.tar.zst"
-status = "pending-ci"
+sha256 = "707ab0d5772ceeba9aee693583ed69afa1cb022458d231de3d94a0774d242dcf"
 
 [archives."aarch64-unknown-linux-musl"]
 file = "forgebase-pg18.6-r1-aarch64-unknown-linux-musl.tar.zst"
-status = "pending-ci"
+sha256 = "ce763b0212c1b125f10d2baf6bc72811aae51f5136d0e39a0ccbc834e063ed5e"
 
+[archives."x86_64-apple-darwin"]
+file = "forgebase-pg18.6-r1-x86_64-apple-darwin.tar.zst"
+sha256 = "6dbb10b9a6fe87a15e1a35c96942cc8bb615b1969618e4486c540c3bc9c31504"
+
+[archives."x86_64-unknown-linux-musl"]
+file = "forgebase-pg18.6-r1-x86_64-unknown-linux-musl.tar.zst"
+sha256 = "a7ea7504da5c4e9f5b857ef8b07c6bef8abd66b795bbb0bd384957a36b059ea0"
+
+# The Windows engine did not finish on CI for engine-pg18.6-r1 (the build hit
+# the 120-minute job limit); it ships in a later engine release.
 [archives."x86_64-pc-windows-msvc"]
 file = "forgebase-pg18.6-r1-x86_64-pc-windows-msvc.tar.zst"
 status = "pending-ci"
