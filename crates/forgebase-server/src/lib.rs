@@ -371,7 +371,7 @@ async fn start_on(
         tenant_max_bytes: usize::try_from(config.kv.tenant_max_bytes).unwrap_or(usize::MAX),
         ..KvConfig::default()
     };
-    let kv = match KvService::open(kv_cfg, authorizer, Some(Arc::new(db.clone()))).await {
+    let kv = match KvService::open_routed(kv_cfg, authorizer, router.clone()).await {
         Ok(kv) => kv,
         Err(e) => {
             db.close().await;
@@ -438,7 +438,7 @@ async fn start_on(
     };
     // Durable topics and queues (FB-63), unless `[queue] enabled = false`.
     let queue = if config.queue.enabled {
-        match open_queue(&auth, config, &entitlements, functions.as_ref()).await {
+        match open_queue(&auth, &router, config, &entitlements, functions.as_ref()).await {
             Ok(q) => Some(q),
             Err(e) => {
                 realtime.shutdown();
@@ -465,6 +465,8 @@ async fn start_on(
         state
     };
     let jobs = JobService::new(state.data().clone());
+    // FB-172: jobs resolve the tenant's set; one claim loop per set.
+    jobs.attach_router(router.clone());
     // FB-171: `ON DELETE` actions of shared records on every set, as jobs.
     state
         .data()
@@ -497,6 +499,7 @@ async fn start_on(
     let storage = if config.storage.enabled {
         match open_storage(
             &db,
+            &router,
             layout,
             config,
             state.data().clone(),
@@ -552,7 +555,14 @@ async fn start_on(
     let registry = forgebase_customize::register_jobs(registry, customize.clone());
     // Vector search (FB-50), unless `[vector] enabled = false`.
     let vector = if config.vector.enabled {
-        match VectorService::open(state.data().clone(), layout.indexes_dir(), VectorConfig::default()).await {
+        match VectorService::open_routed(
+            state.data().clone(),
+            router.clone(),
+            layout.indexes_dir(),
+            VectorConfig::default(),
+        )
+        .await
+        {
             Ok(v) => Some(v),
             Err(e) => {
                 db.close().await;
@@ -697,7 +707,7 @@ async fn start_on(
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
     // FB-165: schedules pg_cron can express fire from the database; the rest
     // (and everything on SQLite or without pg_cron) stay on the Rust tick.
-    let pgcron = forgebase_jobs::attach_pgcron(&jobs, &db).await;
+    let pgcron = forgebase_jobs::attach_pgcron_sets(&jobs, &db).await;
     if let Some(v) = &vector {
         v.start_background();
     }
@@ -871,6 +881,7 @@ async fn set_schedule_enabled(jobs: &JobService, name: &str, enabled: bool) {
 
 async fn open_queue(
     auth: &forgebase_auth::AuthService,
+    router: &forgebase_db::DbRouter,
     config: &Config,
     entitlements: &EntitlementService,
     functions: Option<&FunctionService>,
@@ -906,6 +917,8 @@ async fn open_queue(
     )
     .map_err(|e| ServerError::Queue(e.to_string()))?;
     let queue = forgebase_queue::QueueService::new(auth.data().clone(), keyring, settings);
+    // FB-172: topics and their deliveries live on the tenant's set.
+    queue.attach_router(router.clone());
     queue.attach_entitlements(entitlements.clone());
     // Without functions, push subscriptions to a function fail delivery.
     if let Some(f) = functions {
@@ -1476,6 +1489,7 @@ impl ErrorCode for ServerError {
 /// Builds the storage service for the configured driver.
 async fn open_storage(
     db: &Database,
+    router: &forgebase_db::DbRouter,
     layout: &DataLayout,
     config: &Config,
     data: forgebase_data::DataService,
@@ -1532,6 +1546,8 @@ async fn open_storage(
     )
     .await
     .map_err(|e| ServerError::Storage(e.to_string()))?;
+    // FB-172: buckets and objects live on the bucket's set.
+    svc.attach_router(router.clone());
     svc.attach_entitlements(entitlements.clone());
     Ok(svc)
 }
