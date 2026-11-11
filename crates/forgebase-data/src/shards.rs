@@ -296,17 +296,22 @@ impl DataService {
     /// created before the first shard have them; once tenant data can live
     /// on another set the data core enforces those relations instead
     /// (existence checks, `RESTRICT` on every set, the `ON DELETE` fan-out).
-    /// Idempotent. FB-174 runs it with [`DataService::cross_shard_offenders`]
-    /// when the first shard set row exists and before it is activated; the
-    /// server runs it at start on a topology with shards. Returns the number
-    /// of keys dropped.
+    /// Idempotent, and a no-op while the topology has no shard set (the keys
+    /// then still enforce the relations). FB-174 runs it with
+    /// [`DataService::cross_shard_offenders`] once the first shard set row
+    /// exists and before the set is activated; the server runs it at start on
+    /// a sharded topology. Returns the number of keys dropped.
     pub async fn drop_cross_placement_keys(&self) -> Result<u64, DataError> {
         let d = self.backend().dialect();
         if !crate::ddl::is_pg(d) {
             return Ok(0);
         }
         let _guard = self.inner.schema_lock.lock().await;
+        self.reload_locked().await?;
         let cat = self.catalog();
+        if !cat.has_shards() {
+            return Ok(0); // the foreign keys still enforce the relations
+        }
         let mut tx = self.begin(TxMode::SchemaChange).await?;
         let result = async {
             let mut n = 0u64;

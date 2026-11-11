@@ -6,7 +6,7 @@
 //!   opens every other routable set, and every replica, through
 //!   [`NodeConnector`].
 //! * [`NodeConnector`]: opens a node from its sealed URL (`url_sealed`:
-//!   standard base64 of [`Keyring::seal`] with the additional data
+//!   lowercase hex of [`Keyring::seal`] with the additional data
 //!   [`node_url_aad`]); [`seal_node_url`] writes that form (FB-175 stores
 //!   it). Local nodes (no URL) are opened by FB-174's shard provisioning.
 //! * [`RELATION_DELETES_JOB`]: the fan-out of `ON DELETE` actions of shared
@@ -16,7 +16,6 @@
 use std::fmt;
 use std::sync::Arc;
 
-use base64::Engine as _;
 use forgebase_auth::crypto::Keyring;
 use forgebase_core::config::DatabaseConfig;
 use forgebase_data::{DataService, RelationDeletes, RelationFanout};
@@ -40,14 +39,18 @@ pub fn seal_node_url(keyring: &Keyring, node_id: &str, url: &str) -> Result<Stri
     let sealed = keyring
         .seal(url.as_bytes(), &node_url_aad(node_id))
         .map_err(|e| e.to_string())?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(sealed))
+    Ok(sealed.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Opens a URL sealed by [`seal_node_url`].
 pub fn open_node_url(keyring: &Keyring, node_id: &str, sealed: &str) -> Result<String, String> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(sealed.trim())
-        .map_err(|e| format!("sealed URL of node {node_id} is not base64: {e}"))?;
+    let text = sealed.trim();
+    let bytes = (0..text.len())
+        .step_by(2)
+        .map(|i| text.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+        .collect::<Option<Vec<u8>>>()
+        .filter(|_| text.len() % 2 == 0)
+        .ok_or_else(|| format!("sealed URL of node {node_id} is not hex"))?;
     let plain = keyring
         .open(&bytes, &node_url_aad(node_id))
         .map_err(|e| e.to_string())?;
@@ -194,4 +197,19 @@ pub fn register_jobs(registry: JobRegistry, data: DataService) -> JobRegistry {
             Ok::<Json, HandlerError>(json!({ "sets": done }))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_urls_round_trip_and_bind_to_their_node() {
+        let k = Keyring::from_master(&[7u8; 32]);
+        let sealed = seal_node_url(&k, "n1", "postgres://u:p@h/db").unwrap();
+        assert!(!sealed.contains("postgres"));
+        assert_eq!(open_node_url(&k, "n1", &sealed).unwrap(), "postgres://u:p@h/db");
+        assert!(open_node_url(&k, "n2", &sealed).is_err());
+        assert!(open_node_url(&k, "n1", "zz").is_err());
+    }
 }
