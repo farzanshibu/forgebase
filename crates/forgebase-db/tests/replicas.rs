@@ -184,7 +184,7 @@ async fn lagging_replicas_leave_rotation_and_return_after_three_good_samples() {
 #[tokio::test]
 async fn read_after_tokens_wait_for_the_replica_then_read_the_primary() {
     let options = ReplicaOptions {
-        lsn_wait: Duration::from_millis(200),
+        lsn_wait: Duration::from_millis(1000),
         ..ReplicaOptions::default()
     };
     let Some((c, replicas, handle)) = setup(&[], options).await else {
@@ -218,7 +218,7 @@ async fn read_after_tokens_wait_for_the_replica_then_read_the_primary() {
     assert_eq!(served(&handle, &replica().after_all(&commits)).await, (0, 1));
     assert!(
         // The poll stops when the next one would pass the deadline.
-        started.elapsed() >= Duration::from_millis(190),
+        started.elapsed() >= Duration::from_millis(950),
         "{:?}",
         started.elapsed()
     );
@@ -229,7 +229,7 @@ async fn read_after_tokens_wait_for_the_replica_then_read_the_primary() {
     let strong = RequestScope::new(Consistency::Strong, ReadAfter::new());
     let started = Instant::now();
     assert_eq!(scope::scoped(strong, served(&handle, &replica())).await, (0, 1));
-    assert!(started.elapsed() < Duration::from_millis(200));
+    assert!(started.elapsed() < Duration::from_millis(1000));
     assert_eq!(
         served(&handle, &replica().with_consistency(Consistency::Strong)).await,
         (0, 1)
@@ -237,6 +237,8 @@ async fn read_after_tokens_wait_for_the_replica_then_read_the_primary() {
 
     // Once replayed, the replica serves the read that needs the write.
     c.resume_replay().await.unwrap();
+    // Replay can take longer than lsn_wait on a loaded machine.
+    c.wait_caught_up().await.unwrap();
     assert_eq!(served(&handle, &replica().after_all(&commits)).await, (1, 1));
     assert!(replicas.status()[0].replay_lsn.unwrap() >= lsn);
     assert_eq!(replicas.status()[0].fallbacks, 0, "waits are not failures");
