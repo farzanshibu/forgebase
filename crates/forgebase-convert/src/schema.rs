@@ -133,7 +133,11 @@ pub(crate) async fn build(target: &Database, cat: &SourceCatalog) -> Result<Buil
             .map_err(|e| fail(c, e))?;
     }
     for c in cat.collections.iter().filter(|c| c.is_view()) {
-        data.create_collection(&ctx, c.clone()).await.map_err(|e| {
+        // The stored definition carries the fields derived from the query;
+        // the target derives them again.
+        let mut def = c.clone();
+        def.fields.clear();
+        data.create_collection(&ctx, def).await.map_err(|e| {
             ConvertError::Schema(format!(
                 "view collection {} cannot be created on the target (its query may use SQL the other engine \
                  does not have; change the query and run the conversion again): {e}",

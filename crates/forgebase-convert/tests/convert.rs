@@ -156,7 +156,7 @@ async fn fixtures(db: &Database, dir: &Path) {
     graph
         .create_edge(
             &ctx,
-            serde_json::from_value(json!({"edge_type": "knows", "source": n1.id, "target": n2.id})).unwrap(),
+            serde_json::from_value(json!({"type": "knows", "source": n1.id, "target": n2.id})).unwrap(),
         )
         .await
         .unwrap();
@@ -197,10 +197,23 @@ async fn fixtures(db: &Database, dir: &Path) {
         .publish(
             &ctx,
             "orders",
-            vec![serde_json::from_value(json!({"data": {"order": 1}})).unwrap()],
+            vec![
+                serde_json::from_value(json!({"data": {"order": 1}})).unwrap(),
+                serde_json::from_value(json!({"data": {"order": 2}})).unwrap(),
+            ],
         )
         .await
         .unwrap();
+    // One message leased (a delivery row), one still owed.
+    let leased = queue
+        .pull(
+            &ctx,
+            "billing",
+            serde_json::from_value(json!({"max_messages": 1})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(leased.len(), 1);
 
     let vectors = forgebase_vector::VectorService::open(
         svc.clone(),
@@ -303,7 +316,7 @@ async fn check_services(db: &Database, dir: &Path) {
         )
         .await
         .unwrap();
-    assert_eq!(got.len(), 1, "the owed delivery survives");
+    assert_eq!(got.len(), 1, "the owed message is delivered and the leased one stays leased");
 
     let vectors = forgebase_vector::VectorService::open(
         svc.clone(),
