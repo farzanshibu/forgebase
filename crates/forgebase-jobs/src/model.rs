@@ -613,8 +613,12 @@ pub struct Schedule {
     pub visibility_timeout_ms: i64,
     /// Fires only while enabled.
     pub enabled: bool,
-    /// Next firing (RFC 3339).
+    /// Next firing (RFC 3339). For a schedule pg_cron fires it is computed
+    /// from the expression when read.
     pub next_run_at: String,
+    /// What fires it: `forgebase` (the server's tick) or `pg_cron` (FB-165;
+    /// PostgreSQL with the extension, expressions it reads like ForgeBase).
+    pub fired_by: String,
     /// Last firing (RFC 3339).
     pub last_run_at: Option<String>,
     /// Job of the last firing.

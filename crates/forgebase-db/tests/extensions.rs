@@ -246,7 +246,11 @@ async fn off_keeps_every_feature_portable_and_creates_nothing() {
             vector.reason.as_deref().unwrap().contains("vector.convert"),
             "{vector:?}"
         );
-        assert!(installed(&db, "vector").await.is_none());
+        // FB-162: the extension and its DDL are prepared for vector.convert,
+        // the data stays where it is.
+        assert_eq!(installed(&db, "vector").await.as_deref(), Some("forgebase"));
+        assert_eq!(vector.schema_version, 1);
+        assert_eq!(meta(&db, "ext.vector.engine").await.as_deref(), Some("portable"));
     }
     // while the derived-state features follow their mode.
     assert!(report.is_active(Feature::Trigram));

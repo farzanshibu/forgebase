@@ -21,9 +21,12 @@ time.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
+url.workspace = true
 utoipa.workspace = true
 
 [dev-dependencies]
+forgebase-pgengine.workspace = true
+sqlx.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 

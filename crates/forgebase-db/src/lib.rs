@@ -54,6 +54,7 @@ pub use pg::extensions::{
     EXTENSION_DDL, EXTENSION_SCHEMA, ExtensionDdl, ExtensionError, ExtensionReport, ExtensionSetup, Feature,
     FeatureState, FeatureStatus,
 };
+pub use pg::listen::Listener;
 pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_placeholders};
 pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
 pub use routing::{
@@ -242,6 +243,22 @@ enum Inner {
     Postgres(PgDatabase),
 }
 
+/// Takes the pre-migration snapshot of a PostgreSQL database (FB-150).
+///
+/// `forgebase-db` has no engine tools: the server installs a provider with
+/// [`Database::set_pre_migration`] (it runs `pg_basebackup`), and
+/// [`Database::migrate`] calls it before it applies anything to a database
+/// that already has applied migrations. A failure stops the migration.
+pub trait PreMigrationSnapshot: Send + Sync + fmt::Debug {
+    /// Writes a snapshot of the database at schema version `from_version`
+    /// somewhere below `backups_dir`; returns where.
+    fn take<'a>(
+        &'a self,
+        backups_dir: &'a Path,
+        from_version: i64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<PathBuf, DbError>> + Send + 'a>>;
+}
+
 /// Result of [`Database::migrate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrateReport {
@@ -382,6 +399,14 @@ impl Database {
         }
     }
 
+    /// Installs the provider of the pre-migration snapshot on PostgreSQL
+    /// (managed mode); SQLite writes its own and ignores it.
+    pub fn set_pre_migration(&self, hook: Arc<dyn PreMigrationSnapshot>) {
+        if let Inner::Postgres(db) = &*self.inner {
+            db.set_pre_migration(hook);
+        }
+    }
+
     /// Applies pending system migrations.
     ///
     /// SQLite: when the database already has applied migrations and
@@ -389,8 +414,9 @@ impl Database {
     /// written there first: that snapshot is the rollback path for
     /// forward-only migrations. PostgreSQL: the baseline and its twins
     /// (`forgebase_migrations::postgres`), then the session user's default
-    /// `search_path` is made `forgebase, public` if it is not; no snapshot
-    /// is taken yet (`backup` is `None`).
+    /// `search_path` is made `forgebase, public` if it is not; the
+    /// snapshot comes from the provider of [`Database::set_pre_migration`]
+    /// (`backup` is `None` when none is installed, as on an external server).
     pub async fn migrate(&self, backups_dir: Option<&Path>) -> Result<MigrateReport, DbError> {
         match &*self.inner {
             Inner::Sqlite(db) => db.migrate(backups_dir).await,
@@ -538,6 +564,18 @@ impl Database {
         }
     }
 
+    /// Listens on a PostgreSQL notification `channel` (`NOTIFY`) on a
+    /// connection of its own (FB-165).
+    ///
+    /// # Errors
+    /// `Unsupported` on SQLite; the connection failed.
+    pub async fn listen(&self, channel: &str) -> Result<Listener, DbError> {
+        match &*self.inner {
+            Inner::Sqlite(_) => Err(DbError::unsupported("LISTEN", BackendKind::Sqlite)),
+            Inner::Postgres(db) => db.listen(channel).await,
+        }
+    }
+
     /// Closes both pools, waiting for in-flight queries.
     pub async fn close(&self) {
         match &*self.inner {
@@ -672,6 +710,10 @@ impl Backend for Database {
 
     fn set_slow_query_threshold(&self, threshold: Duration) {
         self.backend().set_slow_query_threshold(threshold);
+    }
+
+    fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.backend().maintenance(statements)
     }
 }
 

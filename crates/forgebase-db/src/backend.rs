@@ -340,6 +340,18 @@ pub trait Backend: Send + Sync + fmt::Debug {
 
     /// Sets the slow-query threshold (`Duration::ZERO` logs every statement).
     fn set_slow_query_threshold(&self, threshold: Duration);
+
+    /// Runs statements that may not run inside a transaction block (`CREATE
+    /// INDEX CONCURRENTLY`, `REINDEX … CONCURRENTLY`, FB-162) on a
+    /// maintenance connection of their own: not the writer, not a reader,
+    /// each statement in autocommit, in order, stopping at the first error;
+    /// the connection is closed afterwards. Session settings (`SET …`) apply
+    /// to the statements after them. The default refuses with
+    /// [`DbError::Unsupported`] (SQLite has no such statements).
+    fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        let _ = statements;
+        Box::pin(async { Err(DbError::Unsupported("maintenance statements need PostgreSQL".into())) })
+    }
 }
 
 /// An open write transaction. Dropping it without [`WriteTx::commit`] rolls

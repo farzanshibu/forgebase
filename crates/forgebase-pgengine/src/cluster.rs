@@ -218,7 +218,8 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
              DO $fb$ BEGIN
                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'forgebase_login') THEN CREATE ROLE forgebase_login NOLOGIN; END IF;
              END $fb$;
-             ALTER ROLE forgebase_login NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
+             ALTER ROLE forgebase_login NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+             GRANT pg_checkpoint TO {server};"
         ),
     )
     .await?;

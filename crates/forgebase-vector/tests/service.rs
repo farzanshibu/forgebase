@@ -1,7 +1,10 @@
-//! The vector service against a real SQLite database and real USearch index
-//! files: SPEC §27 #12 (store and retrieve a vector), #13 (similarity search),
-//! #23 (rebuild derived indexes), filters, tenant isolation, hybrid search,
-//! validation, recall.
+//! The vector service against a real database and real indexes: SQLite or
+//! PostgreSQL without pgvector (USearch index files), PostgreSQL with
+//! pgvector (HNSW indexes in the database, FB-162): SPEC §27 #12 (store and
+//! retrieve a vector), #13 (similarity search), #23 (rebuild derived
+//! indexes), filters, tenant isolation, hybrid search, validation, recall.
+//! Tests about index files check what each engine derives: pgvector keeps
+//! none on disk.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -11,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use forgebase_data::AccessContext;
+use forgebase_db::Backend;
 use forgebase_vector::model::*;
 use forgebase_vector::{VectorConfig, VectorError};
 use serde_json::json;
@@ -593,6 +597,7 @@ fn last_rebuild(s: &CollectionStats) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn spec23_rebuild_after_deleting_index_files_returns_identical_results() {
     let h = harness_with(small(10)).await;
+    let pgvec = on_pgvector(&h.svc).await;
     let ctx = admin();
     create(&h.svc, &ctx, "docs", vec![field("emb", 24, Metric::Cosine)], None).await;
     let vectors = fill(&h.svc, &ctx, "docs", "emb", 3000, 24, 5).await;
@@ -613,7 +618,9 @@ async fn spec23_rebuild_after_deleting_index_files_returns_identical_results() {
     h.svc.start_background();
     wait_ready(&h.svc, &ctx, "docs").await;
     let s = h.svc.stats(&ctx, "docs").await.unwrap();
-    assert_eq!(last_rebuild(&s).as_deref(), Some("missing"));
+    // pgvector derives nothing on disk: its index is in the database.
+    let want = if pgvec { None } else { Some("missing") };
+    assert_eq!(last_rebuild(&s).as_deref(), want);
     assert_eq!(s.indexes[0].indexed_vectors, 3000);
     assert!(!s.indexes[0].dirty, "rebuilt index was saved");
     same(&before, &queries(&h, &ctx, &qs).await);
@@ -629,6 +636,31 @@ async fn corrupt_stale_and_foreign_version_files_are_rebuilt() {
     let before = queries(&h, &ctx, &qs).await;
     h.svc.shutdown().await;
     let dir = index_dir(h.dir.path());
+    if on_pgvector(&h.svc).await {
+        // No index files to damage; a crash after unsaved writes loses nothing.
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "pgvector writes no index files"
+        );
+        let h = h.reopen_without_shutdown(small(10)).await;
+        same(&before, &queries(&h, &ctx, &qs).await);
+        h.svc
+            .upsert(&ctx, "docs", vec![item("late", "emb", &[9.0; 8], json!({}))])
+            .await
+            .unwrap();
+        h.svc.delete_items(&ctx, "docs", vec!["v0".into()]).await.unwrap();
+        let h = h.reopen_without_shutdown(small(10)).await;
+        wait_ready(&h.svc, &ctx, "docs").await;
+        let s = h.svc.stats(&ctx, "docs").await.unwrap();
+        assert_eq!(last_rebuild(&s), None);
+        assert_eq!(s.indexes[0].indexed_vectors, 1500);
+        let r = h.svc.search(&ctx, "docs", query("emb", &[9.0; 8], 1)).await.unwrap();
+        assert_eq!(ids(&r), vec!["late"]);
+        let r = h.svc.search(&ctx, "docs", query("emb", &vectors[0], 1)).await.unwrap();
+        assert_ne!(ids(&r), vec!["v0"]);
+        return;
+    }
     let coll_dir = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
     let file = coll_dir.join("emb.usearch");
     let manifest = coll_dir.join("emb.manifest.json");
@@ -684,6 +716,29 @@ async fn searches_fall_back_to_exact_while_the_index_is_rebuilt() {
     let vectors = fill(&h.svc, &ctx, "docs", "emb", 4000, 16, 13).await;
     h.svc.shutdown().await;
     std::fs::remove_dir_all(index_dir(h.dir.path())).unwrap();
+    if on_pgvector(&h.svc).await {
+        // The index files are not pgvector's: nothing to rebuild.
+        let h = h.reopen_without_shutdown(small(10)).await;
+        let r = h.svc.search(&ctx, "docs", query("emb", &vectors[42], 5)).await.unwrap();
+        assert_eq!((r.strategy, r.hits[0].id.as_str()), (Strategy::Ann, "v42"));
+        // Without its HNSW index (dropped behind ForgeBase's back) the next
+        // start builds it in the background; searches stay correct.
+        drop_hnsw_indexes(&h).await;
+        let h = h.reopen_without_shutdown(small(10)).await;
+        let r = h.svc.search(&ctx, "docs", query("emb", &vectors[42], 5)).await.unwrap();
+        assert!(
+            matches!(r.strategy, Strategy::ExactFallback | Strategy::Ann),
+            "{:?}",
+            r.strategy
+        );
+        assert_eq!(r.hits[0].id, "v42");
+        wait_ready(&h.svc, &ctx, "docs").await;
+        let r = h.svc.search(&ctx, "docs", query("emb", &vectors[42], 5)).await.unwrap();
+        assert_eq!((r.strategy, r.hits[0].id.as_str()), (Strategy::Ann, "v42"));
+        let s = h.svc.stats(&ctx, "docs").await.unwrap();
+        assert_eq!(last_rebuild(&s).as_deref(), Some("missing"));
+        return;
+    }
 
     let h = h.reopen_without_shutdown(small(10)).await;
     let r = h.svc.search(&ctx, "docs", query("emb", &vectors[42], 5)).await.unwrap();
@@ -718,6 +773,38 @@ async fn searches_fall_back_to_exact_while_the_index_is_rebuilt() {
             .id,
         "v42"
     );
+}
+
+/// Drops ForgeBase's HNSW indexes directly (pgvector engine).
+async fn drop_hnsw_indexes(h: &Harness) {
+    let rows =
+        h.db.fetch_all(&forgebase_db::Statement::raw(
+            "SELECT indexname::text FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'",
+        ))
+        .await
+        .unwrap();
+    let mut tx = h.db.begin(forgebase_db::TxMode::SchemaChange).await.unwrap();
+    for r in &rows.rows {
+        tx.execute(&forgebase_db::Statement::raw(format!(
+            "DROP INDEX \"{}\"",
+            r[0].as_str().unwrap()
+        )))
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+/// ForgeBase's HNSW indexes in the database (pgvector engine).
+async fn hnsw_indexes(h: &Harness) -> i64 {
+    h.db.fetch_all(&forgebase_db::Statement::raw(
+        "SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'",
+    ))
+    .await
+    .unwrap()
+    .scalar()
+    .and_then(forgebase_db::Value::as_i64)
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -820,8 +907,15 @@ async fn fields_and_collections_can_be_added_and_dropped() {
         h.svc.search(&ctx, "docs", query("b", &[1.0, 2.0, 3.0], 5)).await,
         Err(VectorError::FieldNotFound(_))
     ));
+    let pgvec = on_pgvector(&h.svc).await;
+    if pgvec {
+        assert_eq!(hnsw_indexes(&h).await, 1, "field b's index was dropped with it");
+    }
     h.svc.delete_collection(&ctx, "docs").await.unwrap();
     assert!(h.svc.list_collections(&ctx).await.unwrap().is_empty());
+    if pgvec {
+        assert_eq!(hnsw_indexes(&h).await, 0, "indexes dropped with the collection");
+    }
     assert_eq!(
         std::fs::read_dir(index_dir(h.dir.path())).unwrap().count(),
         0,

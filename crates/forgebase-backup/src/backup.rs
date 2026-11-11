@@ -12,11 +12,15 @@
 use std::path::{Path, PathBuf};
 
 use forgebase_core::DataLayout;
-use forgebase_db::Database;
+use forgebase_db::{BackendKind, Database};
 
 use crate::error::{BackupError, Result, io};
 use crate::fsutil::{self, copy_hashed, join_rel, mkdir_private, sha256_file, walk_files};
-use crate::manifest::{DB_FILE, FORMAT, FileEntry, FileKind, KEY_FILE, KeyInfo, MANIFEST, Manifest};
+use crate::manifest::{
+    DB_FILE, DUMP_FILE, EngineInfo, FORMAT, FORMAT_PG, FileEntry, FileKind, KEY_FILE, KeyInfo, MANIFEST, Manifest,
+    Method, PG_DIR, ROLES_FILE,
+};
+use crate::pg::{self, DumpPlan, PgEndpoint, PgSource};
 
 /// Top-level entries of the storage directory that are never backed up
 /// (in-flight temporary files of the local driver).
@@ -34,6 +38,14 @@ pub struct BackupOptions {
     pub label: Option<String>,
     /// `backup` or `snapshot`.
     pub kind: String,
+    /// How to reach a PostgreSQL cluster (required when the database is
+    /// PostgreSQL: the engine's tools do the copy). Ignored on SQLite.
+    pub pg: Option<PgSource>,
+    /// Back up the database only: no storage, indexes or master key. A
+    /// restore of such a backup leaves those alone (pre-migration snapshots).
+    pub database_only: bool,
+    /// Recorded in the manifest.
+    pub note: Option<String>,
 }
 
 impl Default for BackupOptions {
@@ -43,6 +55,9 @@ impl Default for BackupOptions {
             include_master_key: false,
             label: None,
             kind: "backup".to_owned(),
+            pg: None,
+            database_only: false,
+            note: None,
         }
     }
 }
@@ -74,6 +89,32 @@ pub fn master_key_path(layout: &DataLayout) -> PathBuf {
 
 /// Creates a backup at `dest` (which must not exist) while `db` stays in use.
 pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: BackupOptions) -> Result<Manifest> {
+    create_with(Some(db), db.kind(), None, layout, dest, opts).await
+}
+
+/// [`create`] without a database handle, for a PostgreSQL cluster whose
+/// schema version the caller already knows (the pre-migration snapshot runs
+/// inside `Database::migrate`, which holds the only writer connection).
+///
+/// # Errors
+/// As [`create`]; SQLite needs a handle and is refused.
+pub async fn create_physical(
+    layout: &DataLayout,
+    dest: &Path,
+    schema_version: i64,
+    opts: BackupOptions,
+) -> Result<Manifest> {
+    create_with(None, BackendKind::Postgres, Some(schema_version), layout, dest, opts).await
+}
+
+async fn create_with(
+    db: Option<&Database>,
+    kind: BackendKind,
+    known_version: Option<i64>,
+    layout: &DataLayout,
+    dest: &Path,
+    opts: BackupOptions,
+) -> Result<Manifest> {
     if dest.exists() {
         return Err(BackupError::Conflict(format!("{} already exists", dest.display())));
     }
@@ -96,42 +137,45 @@ pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: Backu
         .await?;
     }
 
-    let db_copy = partial.join(DB_FILE);
-    db.snapshot_to(&db_copy).await?;
-    let schema_version = db.schema_version().await?;
+    let (db_files, engine) = copy_database(db, kind, layout, &partial, &opts, &name).await?;
+    let schema_version = match (known_version, db) {
+        (Some(v), _) => v,
+        (None, Some(db)) => db.schema_version().await?,
+        (None, None) => {
+            return Err(BackupError::Internal(
+                "no database to read the schema version from".into(),
+            ));
+        }
+    };
+    let format = if engine.is_postgres() { FORMAT_PG } else { FORMAT };
 
     let layout = layout.clone();
     let id = name.clone();
     let manifest = spawn(move || -> Result<Manifest> {
-        make_private(&db_copy)?;
-        let (sha, size) = sha256_file(&db_copy)?;
-        let mut files = vec![FileEntry {
-            path: DB_FILE.to_owned(),
-            size,
-            sha256: sha,
-            kind: FileKind::Database,
-        }];
-        copy_tree(
-            &layout.storage_dir(),
-            &partial,
-            "storage",
-            FileKind::Storage,
-            STORAGE_SKIP,
-            &mut files,
-        )?;
-        if opts.include_indexes {
+        let mut files = db_files;
+        if !opts.database_only {
             copy_tree(
-                &layout.indexes_dir(),
+                &layout.storage_dir(),
                 &partial,
-                "indexes",
-                FileKind::Index,
-                &[],
+                "storage",
+                FileKind::Storage,
+                STORAGE_SKIP,
                 &mut files,
             )?;
+            if opts.include_indexes {
+                copy_tree(
+                    &layout.indexes_dir(),
+                    &partial,
+                    "indexes",
+                    FileKind::Index,
+                    &[],
+                    &mut files,
+                )?;
+            }
         }
         let key_src = master_key_path(&layout);
         let fingerprint = key_fingerprint(&key_src)?;
-        let included = opts.include_master_key && fingerprint.is_some();
+        let included = !opts.database_only && opts.include_master_key && fingerprint.is_some();
         if included {
             let dst = join_rel(&partial, KEY_FILE);
             let (sha, size) = copy_hashed(&key_src, &dst)?;
@@ -143,16 +187,19 @@ pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: Backu
             });
         }
         let manifest = Manifest {
-            format: FORMAT,
+            format,
             id,
             kind: opts.kind,
             label: opts.label,
             created: forgebase_core::now_rfc3339(),
             forgebase_version: env!("CARGO_PKG_VERSION").to_owned(),
             schema_version,
-            includes_indexes: opts.include_indexes,
+            includes_indexes: opts.include_indexes && !opts.database_only,
             master_key: KeyInfo { included, fingerprint },
             files,
+            engine: Some(engine),
+            database_only: opts.database_only,
+            note: opts.note,
         };
         let json = serde_json::to_vec_pretty(&manifest).map_err(|e| BackupError::Internal(e.to_string()))?;
         fsutil::write_atomic(&partial.join(MANIFEST), &json)?;
@@ -165,6 +212,111 @@ pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: Backu
     .await?;
     tracing::info!(id = %manifest.id, files = manifest.files.len(), bytes = manifest.total_bytes(), "backup written");
     Ok(manifest)
+}
+
+/// Copies the database into `partial` with the engine's own method and
+/// returns its manifest entries and the engine description.
+async fn copy_database(
+    db: Option<&Database>,
+    kind: BackendKind,
+    layout: &DataLayout,
+    partial: &Path,
+    opts: &BackupOptions,
+    id: &str,
+) -> Result<(Vec<FileEntry>, EngineInfo)> {
+    if kind == BackendKind::Sqlite {
+        let db = db.ok_or_else(|| BackupError::Internal("a SQLite backup needs a database handle".into()))?;
+        let db_copy = partial.join(DB_FILE);
+        db.snapshot_to(&db_copy).await?;
+        let files = spawn(move || -> Result<Vec<FileEntry>> {
+            make_private(&db_copy)?;
+            let (sha, size) = sha256_file(&db_copy)?;
+            Ok(vec![FileEntry {
+                path: DB_FILE.to_owned(),
+                size,
+                sha256: sha,
+                kind: FileKind::Database,
+            }])
+        })
+        .await?;
+        return Ok((files, EngineInfo::sqlite()));
+    }
+
+    let src = opts.pg.clone().ok_or_else(|| {
+        BackupError::Invalid(
+            "this database is PostgreSQL: the backup needs the engine's tools (PgSource); \
+             use `forgebase backup`, or the server's snapshot API"
+                .into(),
+        )
+    })?;
+    let tmp = layout.tmp_dir();
+    let engine = EngineInfo {
+        kind: "postgres".to_owned(),
+        mode: Some(src.mode().to_owned()),
+        version: Some(src.version.clone()),
+        major: src.major(),
+        method: if src.is_managed() {
+            Method::Basebackup
+        } else {
+            Method::Dump
+        },
+    };
+    match &src.endpoint {
+        PgEndpoint::Managed { cluster_dir, .. } => {
+            pg::ensure_single_set(layout.root())?;
+            let dest = partial.join(PG_DIR);
+            src.basebackup(&dest, &tmp, &format!("forgebase {id}")).await?;
+            let (dest2, secret_src, partial2) = (dest, cluster_dir.join(ROLES_FILE), partial.to_path_buf());
+            let files = spawn(move || -> Result<Vec<FileEntry>> {
+                let mut out = Vec::new();
+                for rel in walk_files(&dest2, &[])? {
+                    let (sha, size) = sha256_file(&join_rel(&dest2, &rel))?;
+                    out.push(FileEntry {
+                        path: format!("{PG_DIR}/{rel}"),
+                        size,
+                        sha256: sha,
+                        kind: FileKind::Postgres,
+                    });
+                }
+                if secret_src.is_file() {
+                    let (sha, size) = copy_hashed(&secret_src, &partial2.join(ROLES_FILE))?;
+                    out.push(FileEntry {
+                        path: ROLES_FILE.to_owned(),
+                        size,
+                        sha256: sha,
+                        kind: FileKind::Postgres,
+                    });
+                }
+                Ok(out)
+            })
+            .await?;
+            Ok((files, engine))
+        }
+        PgEndpoint::External { .. } => {
+            let file = partial.join(DUMP_FILE);
+            src.dump(
+                &file,
+                &tmp,
+                &DumpPlan {
+                    forgebase_schema_only: true,
+                    ..DumpPlan::default()
+                },
+            )
+            .await?;
+            let files = spawn(move || -> Result<Vec<FileEntry>> {
+                make_private(&file)?;
+                let (sha, size) = sha256_file(&file)?;
+                Ok(vec![FileEntry {
+                    path: DUMP_FILE.to_owned(),
+                    size,
+                    sha256: sha,
+                    kind: FileKind::Dump,
+                }])
+            })
+            .await?;
+            Ok((files, engine))
+        }
+    }
 }
 
 /// `x.partial` → `x`.
