@@ -304,7 +304,7 @@ describe("Versions", () => {
   it("lists runtime and language, opens a JS version read-only and diffs it against the current one", async () => {
     setup();
     renderStudio("/functions/f/echo");
-    expect(await screen.findByText(/active v2 of 2/)).toBeInTheDocument();
+    expect(await screen.findByText(/Active v2 of 2/)).toBeInTheDocument();
     const rows = await screen.findAllByRole("row");
     expect(within(rows[1]!).getByText("js")).toBeInTheDocument();
     expect(within(rows[1]!).getByText("typescript")).toBeInTheDocument();
@@ -327,7 +327,7 @@ describe("Versions", () => {
   it("shows WebAssembly versions as wasm with no source button", async () => {
     setup();
     renderStudio("/functions/f/hello");
-    expect(await screen.findByText(/active v2 of 2/)).toBeInTheDocument();
+    expect(await screen.findByText(/Active v2 of 2/)).toBeInTheDocument();
     const rows = await screen.findAllByRole("row");
     expect(within(rows[1]!).getByText("wasm")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /View source/ })).not.toBeInTheDocument();

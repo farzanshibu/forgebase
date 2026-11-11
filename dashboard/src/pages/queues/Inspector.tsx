@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { ackQueueMessages, listQueueSubscriptions, listQueueTopics, nackQueueMessages, publishQueueMessages, streamQueueSubscription } from "../../api";
 import type { ReceivedMessage } from "../../api";
 import { Button, ErrorView, Panel } from "../../components/ui";
+import { EmptyState } from "../../components/EmptyState";
+import { HelpTip } from "../../components/HelpTip";
 import { useLoad } from "../../hooks";
 import { parseJson } from "./util";
 import { Input } from "panelui-web/input";
@@ -52,11 +54,12 @@ export default function Inspector() {
   return (
     <div className="space-y-4">
       <Panel title="Listen">
+        <p className="mb-3 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">Watch a subscription <HelpTip term="subscription" /> deliver messages live, and acknowledge each one. Record messages show the subscription owner&apos;s view; a message the owner may not see is withheld and does not appear.</p>
         <form onSubmit={start} className="flex flex-wrap items-end gap-3 text-sm">
           <label>Subscription
             <Sel aria-label="Subscription" className="ml-2" value={sub} onChange={setSub} options={[{ value: "", label: "choose…" }, ...(subs.data ?? []).filter((s) => !s.push).map((s) => ({ value: s.name, label: `${s.name} (${s.topic})` }))]} />
           </label>
-          <label>Most in flight<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label>
+          <label className="inline-flex items-center gap-1">Most in flight <HelpTip term="ack_deadline" /><Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label>
           {live ? <Button onClick={stop}>Stop listening</Button> : <Button type="submit" tone="primary" disabled={!sub}>Listen</Button>}
           {live && <span role="status" className="text-success">Listening on {live}</span>}
         </form>
@@ -65,7 +68,7 @@ export default function Inspector() {
       </Panel>
       <Publish topics={(topics.data ?? []).filter((t) => !t.source).map((t) => t.name)} />
       <Panel title="Deliveries" actions={<div className="flex gap-2"><Button disabled={held.length === 0} onClick={() => void settle(held, "ack")}>Ack all</Button><Button onClick={() => setLines([])} disabled={lines.length === 0}>Clear</Button></div>}>
-        {lines.length === 0 ? <p className="text-sm text-muted-foreground">No deliveries yet.</p> : (
+        {lines.length === 0 ? <EmptyState compact title="No deliveries yet" why="Choose a pull subscription and press Listen. Publish a message below to see one arrive." /> : (
           <ul aria-label="Deliveries" className="space-y-2 text-sm">
             {lines.map((l) => (
               <li key={l.n} className="rounded border border-border p-2">
