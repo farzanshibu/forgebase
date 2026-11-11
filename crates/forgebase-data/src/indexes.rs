@@ -7,14 +7,16 @@
 //! triggers; on PostgreSQL it is a GIN index over
 //! `to_tsvector('simple', _forgebase_unaccent(…))` of the indexed fields
 //! (an expression index, so no column is added to the table and nothing
-//! needs syncing), queried with `websearch_to_tsquery` (ADR-0028 §7.4, FB-144
-//! addendum). Statistics come from `sqlite_stat1` / `pg_class` and
+//! needs syncing), queried with `plainto_tsquery` (ADR-0028 §7.4, FB-144 addendum;
+//! ADR-0029 §1.8: user input is never read as operators). Statistics come from `sqlite_stat1` / `pg_class` and
 //! `pg_stat_user_indexes`, sizes from `dbstat` / `pg_relation_size`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
-use forgebase_db::{Dialect, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{
+    Dialect, EXTENSION_SCHEMA, Feature, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx,
+};
 use forgebase_query::{CompileOptions, Compiler, FieldPath, SqlBuilder, parse_filter};
 use forgebase_schema::{Collection, FieldKind};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,10 @@ pub enum IndexKind {
     Btree,
     /// Full-text index (FTS5 on SQLite, GIN over a `tsvector` on PostgreSQL).
     Fulltext,
+    /// Trigram index (`pg_trgm`, PostgreSQL only): a GIN index with
+    /// `gin_trgm_ops` per key. It serves the `~` (contains) filter and the
+    /// `fuzzy` list parameter (ADR-0029 §1.8).
+    Trigram,
 }
 
 impl IndexKind {
@@ -45,6 +51,7 @@ impl IndexKind {
         match self {
             IndexKind::Btree => "btree",
             IndexKind::Fulltext => "fulltext",
+            IndexKind::Trigram => "trigram",
         }
     }
 }
@@ -399,12 +406,20 @@ pub(crate) fn fulltext_match(
 ) -> Result<String, DataError> {
     if is_pg(d) {
         Ok(format!(
-            "{} @@ websearch_to_tsquery('simple', {PG_UNACCENT_FN}({param}))",
+            "{} @@ plainto_tsquery('simple', {PG_UNACCENT_FN}({param}))",
             pg_fts_document(d, cat, coll, def, alias)?
         ))
     } else {
         Ok(d.fulltext_match(alias, &fts_table(d, &def.name), param))
     }
+}
+
+/// `400 index_kind_unsupported`: trigram indexes need `pg_trgm`.
+pub(crate) fn trigram_unsupported_index() -> DataError {
+    DataError::invalid(
+        "index_kind_unsupported",
+        "trigram indexes need PostgreSQL with the pg_trgm extension",
+    )
 }
 
 /// DDL creating an index (and, for full-text, its triggers and initial
@@ -456,6 +471,28 @@ pub(crate) fn create_index_sql(
                 sql.push_str(&format!(" WHERE {cond}"));
             }
             Ok(vec![sql])
+        }
+        IndexKind::Trigram => {
+            if def.unique || def.partial.is_some() {
+                return Err(DataError::invalid(
+                    "invalid_index",
+                    "trigram indexes cannot be unique or partial",
+                ));
+            }
+            if !pg {
+                return Err(trigram_unsupported_index());
+            }
+            // One `gin_trgm_ops` key per field, written without a cast so
+            // the planner matches `~` (`ILIKE`) and `%` on the plain column.
+            let keys: Vec<String> = key_exprs(d, cat, coll, def, "")?
+                .iter()
+                .map(|e| format!("({e}) {EXTENSION_SCHEMA}.gin_trgm_ops"))
+                .collect();
+            Ok(vec![format!(
+                "CREATE INDEX {} ON {table} USING gin ({})",
+                q(&def.name),
+                keys.join(", ")
+            )])
         }
         IndexKind::Fulltext => {
             if def.unique || def.partial.is_some() {
@@ -534,7 +571,7 @@ pub(crate) fn fts_trigger_sql(
 pub(crate) fn drop_index_sql(d: &dyn Dialect, def: &IndexDefinition) -> Vec<String> {
     let q = |s: &str| d.quote_ident(s);
     match def.kind {
-        IndexKind::Btree => vec![format!("DROP INDEX IF EXISTS {}", rel(d, &def.name))],
+        IndexKind::Btree | IndexKind::Trigram => vec![format!("DROP INDEX IF EXISTS {}", rel(d, &def.name))],
         IndexKind::Fulltext if is_pg(d) => {
             vec![format!("DROP INDEX IF EXISTS {}", rel(d, &fts_table(d, &def.name)))]
         }
@@ -583,7 +620,15 @@ pub(crate) async fn insert_index_row(
             def.name.clone().into(),
             coll.id.clone().into(),
             origin.into(),
-            def.kind.as_str().into(),
+            // The `kind` column's CHECK allows btree and fulltext only (no
+            // migration in FB-166): a trigram index is a btree row there and
+            // says what it is in `definition`.
+            match def.kind {
+                IndexKind::Trigram => IndexKind::Btree,
+                k => k,
+            }
+            .as_str()
+            .into(),
             serde_json::to_string(def)?.into(),
             forgebase_schema::now_timestamp().into(),
         ],
@@ -653,6 +698,9 @@ impl DataService {
         }
         validate_index_name(&def.name)?;
         def.collection = coll.name.clone();
+        if def.kind == IndexKind::Trigram && !self.inner.backend.feature_active(Feature::Trigram) {
+            return Err(trigram_unsupported_index());
+        }
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
@@ -947,7 +995,7 @@ impl DataService {
             } else {
                 IndexOrigin::Sql
             }),
-            kind: IndexKind::Btree,
+            kind: definition.as_ref().map_or(IndexKind::Btree, |def| def.kind),
             unique: flag("uniq"),
             partial: flag("partial"),
             columns,
@@ -1062,7 +1110,8 @@ impl DataService {
     ) -> Result<QueryPlan, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
-        let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
+        let trigram = self.trigram_indexes(&coll, q).await?;
+        let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref(), &trigram)?;
         self.plan(&built.select).await
     }
 
