@@ -2847,3 +2847,17 @@ pattern and adds `col IN (?n, …)`, `col NOT IN (…)` and
 AND role <> 'admin')`; `revoke_key` keeps its `?6 OR …` boolean parameter
 (an integer on SQLite; FB-145 ports it with the rest of the file).
 Tests: `crates/forgebase-server/tests/security_fb137.rs`.
+
+## Addendum: FB-145 — auth, policy, customize, credits, entitlements and billing on PostgreSQL
+
+No new migration. The six crates' SQL now runs unchanged in meaning on both backends.
+
+- **Upserts.** `INSERT OR IGNORE` became `INSERT ... ON CONFLICT DO NOTHING`; `INSERT OR REPLACE` (suspensions, account status) became `ON CONFLICT (pk) DO UPDATE SET` for every column. In `DO UPDATE` the target's own columns are qualified with the table name (`next`, `attempts`, `product_id`, ...): PostgreSQL calls an unqualified one ambiguous.
+- **Scalar `MAX(a, b)` / `MIN(a, b)`** exist only in SQLite. They are now `CASE WHEN ... END` (`updated_at` bumps, cursors, `synced_version`, pack `remaining`, lockout `locked_until`), with `CAST(?N AS BIGINT)` on the parameter.
+- **Typed parameters.** PostgreSQL cannot type a parameter that only appears in `?N IS NULL` or in arithmetic (`?5 + ?6`, `?4 - ?1`). Every `?N IS [NOT] NULL OR col = ?N` filter is `CAST(?N AS TEXT|BIGINT) IS NULL OR ...`. Integer booleans bound as parameters (`?6 OR`, `NOT ?3`) are `CAST(?N AS BIGINT) = 1|0`.
+- **`col IS ?N`** (a NULL-safe compare against a parameter) is `IS NOT DISTINCT FROM ?N`, which SQLite 3.39+ also accepts.
+- **JSON.** `json_each(scopes)` in the OIDC logout path goes through `Dialect::json_array_elements`. The backend already encodes text parameters into `jsonb` columns, so no write needed a cast.
+- **Credits ledger.** The entry `seq` comes from `INSERT ... RETURNING seq` instead of `last_insert_id`, which is `None` on PostgreSQL.
+- **Audit filter.** `substr(event, 1, length(?1))` casts `?1` to text.
+- **Test harnesses.** All six crates' `tests/common` open the database with `forgebase_db::testing::test_backend()`, so `FORGEBASE_TEST_BACKEND=sqlite|postgres` selects the backend (dev-dependency `forgebase-db` with feature `testing`). Auth tests that restart a service reopen the same database through `TestDb::options()`. Tests that peeked at SQL specifics now use the dialect: `introspect_tables()` for the plaintext-secret scan, `CAST(jsonb_column AS TEXT) LIKE`, `ON CONFLICT DO NOTHING`. The append-only ledger test rolls back after each refused statement (PostgreSQL aborts the transaction). The social-login test that reads the SQLite file skips on PostgreSQL.
+- **Not ported / depends on others.** Seven tests that run the job queue (customize email deliveries x4, credits maintenance expiry, entitlements alert delivery, and the auth secret-dump test that needed the `forgebase-db` statement fix) pass only with FB-146's `forgebase-jobs` and `forgebase-db` changes (`rowid` ordering, statement preparation). They were verified green on a throwaway merge of `agent/worker-fb146` and fail on this branch alone until FB-146 merges. The entitlements quota `UPDATE` in `usage.rs` is identical to FB-146's version (same text, to merge without a conflict).

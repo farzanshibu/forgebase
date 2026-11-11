@@ -305,7 +305,13 @@ impl AuthService {
              VALUES (?1, ?2, 'deactivated', ?3, ?4, ?5)
              ON CONFLICT (collection, user_id) DO UPDATE SET status = excluded.status, reason = excluded.reason,
                changed_by = excluded.changed_by, changed_at = excluded.changed_at",
-            vec![t(coll), t(id), t(reason.clone()), t(caller.subject.actor()), i(self.now())],
+            vec![
+                t(coll),
+                t(id),
+                t(reason.clone()),
+                t(caller.subject.actor()),
+                i(self.now()),
+            ],
         )
         .await?;
         let revoked = Self::revoke_all_in(&mut tx, subject, "account_deactivated").await?;

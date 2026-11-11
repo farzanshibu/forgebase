@@ -46,9 +46,15 @@ pub async fn harness(tweak: impl FnOnce(&mut AuthConfig)) -> H {
     // guard (FB-80) is tested with this turned off in https_client.rs.
     cfg.allow_private_outbound = true;
     tweak(&mut cfg);
-    let auth = AuthService::open_with_data(Arc::new(db.clone()), Arc::new(DefaultAuthorizer), dir.data_dir(), cfg, None)
-        .await
-        .unwrap();
+    let auth = AuthService::open_with_data(
+        Arc::new(db.clone()),
+        Arc::new(DefaultAuthorizer),
+        dir.data_dir(),
+        cfg,
+        None,
+    )
+    .await
+    .unwrap();
     let app =
         Router::new()
             .merge(forgebase_auth::http::router(auth.clone()))

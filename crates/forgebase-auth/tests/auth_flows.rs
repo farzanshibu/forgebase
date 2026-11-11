@@ -74,9 +74,15 @@ async fn harness_in(dir: forgebase_db::testing::TestDb, tweak: impl FnOnce(&mut 
     let db = open_db(&dir).await;
     let mut cfg = test_config(dir.data_dir());
     tweak(&mut cfg);
-    let auth = AuthService::open_with_data(Arc::new(db.clone()), Arc::new(DefaultAuthorizer), dir.data_dir(), cfg, None)
-        .await
-        .unwrap();
+    let auth = AuthService::open_with_data(
+        Arc::new(db.clone()),
+        Arc::new(DefaultAuthorizer),
+        dir.data_dir(),
+        cfg,
+        None,
+    )
+    .await
+    .unwrap();
     let probe_routes = Router::new()
         .route("/api/v1/collections/{name}/records", get(probe).post(probe))
         .with_state(auth.data().clone());
@@ -1402,11 +1408,8 @@ async fn no_secret_is_logged_stored_or_returned_after_creation() {
     assert!(!logs.contains(&format!("code={code}")) && !logs.contains(&format!("\"{code}\"")));
 
     // 2. Database: no plaintext anywhere (every text and blob cell of every table).
-    use forgebase_db::{Backend, Dialect, Statement, Value as V};
-    let tables =
-        h.db.fetch_all(&h.db.dialect().introspect_tables())
-            .await
-            .unwrap();
+    use forgebase_db::{Backend, Statement, Value as V};
+    let tables = h.db.fetch_all(&h.db.dialect().introspect_tables()).await.unwrap();
     let mut dump = String::new();
     for row in &tables.rows {
         let V::Text(name) = &row[0] else { continue };
