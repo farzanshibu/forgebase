@@ -1375,13 +1375,19 @@ modules, and the FB-148 system-info test in `forgebase-api`. No migration.
 
 **Detection.** One read of `pg_available_extensions` full-joined with
 `pg_extension` (so an installed extension whose files are gone still
-shows), plus `shared_preload_libraries`, `session_preload_libraries`,
-`cron.database_name`, `current_database()` and `current_user`. A feature is
-usable when its control file exists or it is installed, and:
+shows), plus `shared_preload_libraries`, `session_preload_libraries` and
+`cron.database_name` read from `pg_settings` (superuser-only settings are
+hidden there, not an error), whether any `age.*` setting exists,
+`current_database()`, `current_user` and whether it has
+`pg_read_all_settings`. **The preload lists are superuser-only settings**:
+the bundled engine grants `pg_read_all_settings` to `forgebase_server` on
+every start. A feature is usable when its control file exists or it is
+installed, and:
 - pg_cron: `pg_cron` is in `shared_preload_libraries` and
-  `cron.database_name` is this database;
+  `cron.database_name` is this database; a role that cannot read the
+  settings accepts an installed pg_cron (installing it needs both);
 - AGE: `age` is in this session's `session_preload_libraries` (or
-  `shared_preload_libraries`).
+  `shared_preload_libraries`), or one of AGE's `age.*` settings exists.
 
 **Decision (decided here; §1.1 left it open).** Vector and queue are
 **stateful**: they keep canonical data in the extension's storage. The
@@ -1427,7 +1433,8 @@ DDL yet. A unit test checks versions count 1, 2, … per feature.
 
 **Engine side (`forgebase-pgengine`).** `EngineConfig.graph`
 (`[database.postgres.extensions] graph`, mapped by the server like `cron`).
-After the bootstrap of a primary, as `forgebase_super`: `ALTER ROLE
+After the bootstrap of a primary, as `forgebase_super`: `GRANT
+pg_read_all_settings TO forgebase_server`, and `ALTER ROLE
 forgebase_server|forgebase_reader SET session_preload_libraries =
 '$libdir/plugins/age'` when the engine has `lib/plugins/age.*` and graph is
 not `off`, otherwise `RESET` (a stale setting naming a missing library would

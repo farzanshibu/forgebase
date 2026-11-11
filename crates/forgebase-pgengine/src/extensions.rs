@@ -11,6 +11,8 @@
 //!   `$libdir/plugins/` so the non-superuser roles may load it. The setting
 //!   is reset when the engine has no AGE or `graph = "off"`: a role setting
 //!   naming a missing library would make every login of that role fail.
+//! * `forgebase_server` is granted `pg_read_all_settings`: the preload
+//!   lists the extension setup checks are superuser-only settings.
 //! * `search_path` keeps `forgebase, public`: the openCypher path sets
 //!   `ag_catalog` per transaction (`SET LOCAL`, ADR-0029 §1.5).
 //!
@@ -67,10 +69,13 @@ pub(crate) fn age_preload(engine: &EngineDir, cfg: &EngineConfig, warnings: &mut
 }
 
 /// The role settings for `age`: set or reset `session_preload_libraries`
-/// of the server and reader roles.
+/// of the server and reader roles; `pg_read_all_settings` for the server.
 pub(crate) fn role_settings_sql(age: bool) -> String {
     let (server, reader) = (Role::Server.name(), Role::Reader.name());
-    if age {
+    // The server reads the preload lists to decide which extensions it can
+    // use (superuser-only settings otherwise).
+    let read_settings = format!("GRANT pg_read_all_settings TO {server}; ");
+    let preload = if age {
         format!(
             "ALTER ROLE {server} SET session_preload_libraries = '{AGE_PRELOAD}'; \
              ALTER ROLE {reader} SET session_preload_libraries = '{AGE_PRELOAD}';"
@@ -80,7 +85,8 @@ pub(crate) fn role_settings_sql(age: bool) -> String {
             "ALTER ROLE {server} RESET session_preload_libraries; \
              ALTER ROLE {reader} RESET session_preload_libraries;"
         )
-    }
+    };
+    read_settings + &preload
 }
 
 /// Applies [`role_settings_sql`] as `forgebase_super` (a superuser-only
@@ -112,6 +118,7 @@ mod tests {
         let on = role_settings_sql(true);
         assert!(on.contains("ALTER ROLE forgebase_server SET session_preload_libraries = '$libdir/plugins/age'"));
         assert!(on.contains("ALTER ROLE forgebase_reader SET session_preload_libraries"));
+        assert!(on.starts_with("GRANT pg_read_all_settings TO forgebase_server;"));
         let off = role_settings_sql(false);
         assert!(off.contains("ALTER ROLE forgebase_server RESET session_preload_libraries"));
         assert!(off.contains("ALTER ROLE forgebase_reader RESET session_preload_libraries"));

@@ -364,9 +364,15 @@ pub(crate) struct Offer {
 pub(crate) struct Probe {
     pub(crate) offers: BTreeMap<String, Offer>,
     pub(crate) database: String,
+    /// The role may read superuser-only settings (`pg_read_all_settings`,
+    /// which the bundled engine grants `forgebase_server`). Without it the
+    /// preload lists below read as empty.
+    pub(crate) settings_visible: bool,
     pub(crate) shared_preload: String,
     pub(crate) session_preload: String,
     pub(crate) cron_database: Option<String>,
+    /// A setting of AGE (`age.*`) exists: the library is loaded in this session.
+    pub(crate) age_settings: bool,
     pub(crate) role: String,
 }
 
@@ -394,6 +400,17 @@ impl Probe {
             ));
         }
         match f {
+            // Installing pg_cron needs it preloaded in its database, so an
+            // installed one passed that check.
+            Feature::Cron if !self.settings_visible => {
+                if offer.installed.is_none() {
+                    return Err(format!(
+                        "role {:?} cannot read shared_preload_libraries (grant it pg_read_all_settings), so \
+                         pg_cron's preload cannot be checked; or install pg_cron as a superuser",
+                        self.role
+                    ));
+                }
+            }
             Feature::Cron => {
                 if !listed(&self.shared_preload, "pg_cron") {
                     return Err("pg_cron is not in shared_preload_libraries".into());
@@ -410,7 +427,16 @@ impl Probe {
                 }
             }
             Feature::Graph => {
-                if !listed(&self.session_preload, "age") && !listed(&self.shared_preload, "age") {
+                let loaded =
+                    self.age_settings || listed(&self.session_preload, "age") || listed(&self.shared_preload, "age");
+                if !loaded && !self.settings_visible {
+                    return Err(format!(
+                        "AGE does not appear loaded in ForgeBase's sessions, and role {:?} cannot read \
+                         session_preload_libraries (grant it pg_read_all_settings)",
+                        self.role
+                    ));
+                }
+                if !loaded {
                     return Err(format!(
                         "AGE is not loaded in ForgeBase's sessions: set session_preload_libraries = \
                          '$libdir/plugins/age' for role {:?}",
@@ -538,9 +564,14 @@ impl PgDatabase {
             .await?;
         let settings = self
             .read(&Statement::new(
-                "SELECT current_database()::text, current_setting('shared_preload_libraries'), \
-                 current_setting('session_preload_libraries'), current_setting('cron.database_name', true), \
-                 current_user::text",
+                // pg_settings hides superuser-only rows instead of failing.
+                "SELECT current_database()::text, \
+                 (SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries'), \
+                 (SELECT setting FROM pg_settings WHERE name = 'session_preload_libraries'), \
+                 (SELECT setting FROM pg_settings WHERE name = 'cron.database_name'), \
+                 current_user::text, \
+                 pg_has_role(current_user, 'pg_read_all_settings', 'USAGE'), \
+                 EXISTS (SELECT 1 FROM pg_settings WHERE name LIKE 'age.%')",
                 vec![],
             ))
             .await?;
@@ -567,6 +598,9 @@ impl PgDatabase {
             probe.shared_preload = text(1).unwrap_or_default();
             probe.session_preload = text(2).unwrap_or_default();
             probe.cron_database = text(3).filter(|s| !s.is_empty());
+            let flag = |i: usize| row.get(i).and_then(Value::as_i64) == Some(1);
+            probe.settings_visible = flag(5);
+            probe.age_settings = flag(6);
             probe.role = text(4).unwrap_or_default();
         }
         Ok(probe)
@@ -942,6 +976,7 @@ mod tests {
         let mut p = Probe {
             database: "forgebase".into(),
             role: "forgebase_server".into(),
+            settings_visible: true,
             ..Probe::default()
         };
         assert!(p.usable(Feature::Vector).is_err());
@@ -969,6 +1004,21 @@ mod tests {
         assert!(p.usable(Feature::Graph).unwrap_err().contains("forgebase_server"));
         p.session_preload = "'$libdir/plugins/age'".into();
         assert_eq!(p.usable(Feature::Graph), Ok(()));
+
+        // A role that cannot read the preload lists: pg_cron counts when
+        // installed, AGE when one of its settings exists.
+        let mut hidden = Probe {
+            settings_visible: false,
+            ..p.clone()
+        };
+        hidden.shared_preload.clear();
+        hidden.session_preload.clear();
+        assert!(hidden.usable(Feature::Cron).unwrap_err().contains("pg_read_all_settings"));
+        assert!(hidden.usable(Feature::Graph).unwrap_err().contains("pg_read_all_settings"));
+        hidden.offers.insert("pg_cron".into(), Offer { installed: Some("1.6".into()), ..Offer::default() });
+        assert_eq!(hidden.usable(Feature::Cron), Ok(()));
+        hidden.age_settings = true;
+        assert_eq!(hidden.usable(Feature::Graph), Ok(()));
     }
 
     #[test]
