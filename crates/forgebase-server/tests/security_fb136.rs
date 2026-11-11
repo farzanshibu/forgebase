@@ -121,7 +121,15 @@ async fn g18_realm_billing_managers_stay_in_their_realm() {
     let (mallory, mallory_pk) = env.user("mallory@example.com").await;
     let (alpha, _) = org(&env, &alice, "alpha").await;
     // Another realm with an organization of its own.
-    admin_ok(&env, &admin, "POST", "/api/v1/realms", json!({"slug": "beta", "name": "Beta"}), 201).await;
+    admin_ok(
+        &env,
+        &admin,
+        "POST",
+        "/api/v1/realms",
+        json!({"slug": "beta", "name": "Beta"}),
+        201,
+    )
+    .await;
     let r = env
         .as_(
             &admin,
@@ -164,12 +172,24 @@ async fn g18_realm_billing_managers_stay_in_their_realm() {
 
     // Her own realm's organization: the realm-level grant applies.
     let r = env
-        .as_(&mallory, "GET", &format!("/api/v1/billing/customer?subject={alpha_s}"), &[], None)
+        .as_(
+            &mallory,
+            "GET",
+            &format!("/api/v1/billing/customer?subject={alpha_s}"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!(r.status, 200, "same realm: {}", r.text());
     // Another realm's organization: no fallback to her realm-level grant.
     let r = env
-        .as_(&mallory, "GET", &format!("/api/v1/billing/customer?subject={victim_s}"), &[], None)
+        .as_(
+            &mallory,
+            "GET",
+            &format!("/api/v1/billing/customer?subject={victim_s}"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!(r.status, 403, "cross-realm customer read: {}", r.text());
     assert!(!r.text().contains("victim@example.test"), "{}", r.text());
@@ -208,7 +228,11 @@ async fn g18_realm_billing_managers_stay_in_their_realm() {
         let r = env.as_(&admin, "GET", path, &[], None).await;
         assert_eq!(r.status, 200, "{path} (admin): {}", r.text());
     }
-    for path in ["/api/v1/billing/customers", "/api/v1/billing/invoices", "/api/v1/billing/admin/orders"] {
+    for path in [
+        "/api/v1/billing/customers",
+        "/api/v1/billing/invoices",
+        "/api/v1/billing/admin/orders",
+    ] {
         let r = env.as_(&mallory, "GET", path, &[], None).await;
         assert!(r.text().contains(&alpha), "{path} keeps her realm: {}", r.text());
         let r = env.as_(&admin, "GET", path, &[], None).await;
@@ -241,9 +265,20 @@ async fn g18_realm_billing_managers_stay_in_their_realm() {
         .await;
     assert_eq!(r.status, 404, "cross-realm void: {}", r.text());
     let r = env
-        .as_(&admin, "GET", &format!("/api/v1/billing/invoices/{victim_inv}"), &[], None)
+        .as_(
+            &admin,
+            "GET",
+            &format!("/api/v1/billing/invoices/{victim_inv}"),
+            &[],
+            None,
+        )
         .await;
-    assert_eq!(r.json()["status"], "open", "the victim's invoice is untouched: {}", r.text());
+    assert_eq!(
+        r.json()["status"],
+        "open",
+        "the victim's invoice is untouched: {}",
+        r.text()
+    );
     let r = env
         .as_(
             &mallory,
@@ -258,22 +293,51 @@ async fn g18_realm_billing_managers_stay_in_their_realm() {
     // Credits: the same realm rule for reads and minting.
     let grant = |subject: &str, key: &str| json!({"subject": subject, "amount": 50, "idempotency_key": key});
     let r = env
-        .as_(&mallory, "POST", "/api/v1/credits/grants", &[], Some(grant(&victim_s, "g1")))
+        .as_(
+            &mallory,
+            "POST",
+            "/api/v1/credits/grants",
+            &[],
+            Some(grant(&victim_s, "g1")),
+        )
         .await;
     assert_eq!(r.status, 403, "cross-realm credit grant: {}", r.text());
     let r = env
-        .as_(&mallory, "GET", &format!("/api/v1/credits/balance?subject={victim_s}"), &[], None)
+        .as_(
+            &mallory,
+            "GET",
+            &format!("/api/v1/credits/balance?subject={victim_s}"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!(r.status, 403, "cross-realm balance: {}", r.text());
     let r = env
-        .as_(&mallory, "POST", "/api/v1/credits/grants", &[], Some(grant(&alpha_s, "g2")))
+        .as_(
+            &mallory,
+            "POST",
+            "/api/v1/credits/grants",
+            &[],
+            Some(grant(&alpha_s, "g2")),
+        )
         .await;
     assert_eq!(r.status, 201, "her realm's credit grant: {}", r.text());
     let r = env
-        .as_(&admin, "GET", &format!("/api/v1/credits/balance?subject={victim_s}"), &[], None)
+        .as_(
+            &admin,
+            "GET",
+            &format!("/api/v1/credits/balance?subject={victim_s}"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json()["balance"], 0, "nothing was minted for the victim: {}", r.text());
+    assert_eq!(
+        r.json()["balance"],
+        0,
+        "nothing was minted for the victim: {}",
+        r.text()
+    );
     env.shutdown().await;
 }
 
@@ -341,7 +405,10 @@ async fn sse(
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).await.unwrap();
     let mut st = Sse { s, buf: String::new() };
-    assert!(st.wait_for("\r\n\r\n", Duration::from_secs(5)).await, "no response headers");
+    assert!(
+        st.wait_for("\r\n\r\n", Duration::from_secs(5)).await,
+        "no response headers"
+    );
     let status: u16 = st.buf.split(' ').nth(1).unwrap().parse().unwrap();
     if status != 200 {
         st.wait_for("\"message\"", Duration::from_secs(2)).await;
@@ -395,11 +462,29 @@ async fn g17_tenants_using_the_same_channel_name_never_meet() {
     let mut bob_rx = bob_rx.unwrap();
     // Alice publishes on "chat" in her tenant, then bob in his: bob sees
     // his own message only (messages arrive in publish order).
-    assert_eq!(publish(&env, &alice, Some(&ta), "chat", json!({"secret": "alpha-only"})).await.status, 202);
-    assert_eq!(publish(&env, &bob, Some(&tb), "chat", json!({"marker": "bravo-1"})).await.status, 202);
+    assert_eq!(
+        publish(&env, &alice, Some(&ta), "chat", json!({"secret": "alpha-only"}))
+            .await
+            .status,
+        202
+    );
+    assert_eq!(
+        publish(&env, &bob, Some(&tb), "chat", json!({"marker": "bravo-1"}))
+            .await
+            .status,
+        202
+    );
     assert!(bob_rx.wait_for("bravo-1", WAIT).await, "{}", bob_rx.buf);
-    assert!(!bob_rx.buf.contains("alpha-only"), "another tenant's message: {}", bob_rx.buf);
-    assert!(bob_rx.buf.contains("\"channel\":\"chat\""), "the name bob used: {}", bob_rx.buf);
+    assert!(
+        !bob_rx.buf.contains("alpha-only"),
+        "another tenant's message: {}",
+        bob_rx.buf
+    );
+    assert!(
+        bob_rx.buf.contains("\"channel\":\"chat\""),
+        "the name bob used: {}",
+        bob_rx.buf
+    );
 
     // The explicit tenant form names the same channel, for its tenant only.
     let alpha_chat = format!("t:{ta}:chat");
@@ -422,13 +507,33 @@ async fn g17_tenants_using_the_same_channel_name_never_meet() {
         .await;
     assert_eq!(r.status, 403, "presence of alpha's channel: {}", r.text());
     // Bob's own explicit name, and an administrator addressing his tenant.
-    assert_eq!(publish(&env, &bob, Some(&tb), &bravo_chat, json!({"marker": "bravo-2"})).await.status, 202);
-    assert_eq!(publish(&env, &admin, None, &bravo_chat, json!({"marker": "from-admin"})).await.status, 202);
+    assert_eq!(
+        publish(&env, &bob, Some(&tb), &bravo_chat, json!({"marker": "bravo-2"}))
+            .await
+            .status,
+        202
+    );
+    assert_eq!(
+        publish(&env, &admin, None, &bravo_chat, json!({"marker": "from-admin"}))
+            .await
+            .status,
+        202
+    );
     assert!(bob_rx.wait_for("from-admin", WAIT).await, "{}", bob_rx.buf);
     assert!(bob_rx.buf.contains("bravo-2"), "{}", bob_rx.buf);
     // A plain name without a tenant is not any tenant's channel.
-    assert_eq!(publish(&env, &admin, None, "chat", json!({"secret": "plain"})).await.status, 202);
-    assert_eq!(publish(&env, &bob, Some(&tb), "chat", json!({"marker": "bravo-3"})).await.status, 202);
+    assert_eq!(
+        publish(&env, &admin, None, "chat", json!({"secret": "plain"}))
+            .await
+            .status,
+        202
+    );
+    assert_eq!(
+        publish(&env, &bob, Some(&tb), "chat", json!({"marker": "bravo-3"}))
+            .await
+            .status,
+        202
+    );
     assert!(bob_rx.wait_for("bravo-3", WAIT).await, "{}", bob_rx.buf);
     assert!(!bob_rx.buf.contains("\"plain\""), "{}", bob_rx.buf);
     env.shutdown().await;
@@ -450,7 +555,12 @@ async fn g17_global_channels_are_shared_and_only_privileged_callers_publish() {
     assert!(r.text().contains("global_channel"), "{}", r.text());
     let r = publish(&env, &alice, None, "global:news", json!({"forged": "by-alice"})).await;
     assert_eq!(r.status, 403, "{}", r.text());
-    assert_eq!(publish(&env, &admin, None, "global:news", json!({"n": "announcement"})).await.status, 202);
+    assert_eq!(
+        publish(&env, &admin, None, "global:news", json!({"n": "announcement"}))
+            .await
+            .status,
+        202
+    );
     assert!(rx.wait_for("announcement", WAIT).await, "{}", rx.buf);
     assert!(!rx.buf.contains("by-alice"), "{}", rx.buf);
     env.shutdown().await;
@@ -587,10 +697,24 @@ async fn in_band_keys_keep_their_tenant_binding() {
         )
         .await;
     assert_eq!(r.status, 201, "{}", r.text());
-    assert!(rx.wait_for("alpha note", WAIT).await, "the key's tenant's records: {}", rx.buf);
+    assert!(
+        rx.wait_for("alpha note", WAIT).await,
+        "the key's tenant's records: {}",
+        rx.buf
+    );
     // Channels: the key's tenant namespace, not another tenant's.
-    assert_eq!(publish(&env, &bob, Some(&tb), "chat", json!({"secret": "bravo-only"})).await.status, 202);
-    assert_eq!(publish(&env, &alice, Some(&ta), "chat", json!({"marker": "alpha-1"})).await.status, 202);
+    assert_eq!(
+        publish(&env, &bob, Some(&tb), "chat", json!({"secret": "bravo-only"}))
+            .await
+            .status,
+        202
+    );
+    assert_eq!(
+        publish(&env, &alice, Some(&ta), "chat", json!({"marker": "alpha-1"}))
+            .await
+            .status,
+        202
+    );
     assert!(rx.wait_for("alpha-1", WAIT).await, "{}", rx.buf);
     assert!(!rx.buf.contains("bravo-only"), "{}", rx.buf);
     env.shutdown().await;

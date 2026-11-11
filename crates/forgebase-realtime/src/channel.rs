@@ -48,7 +48,9 @@ pub struct Channel {
 }
 
 fn reserved(name: &str) -> bool {
-    name.starts_with(GLOBAL_PREFIX) || name.starts_with(TENANT_PREFIX) || SYSTEM_PREFIXES.iter().any(|p| name.starts_with(p))
+    name.starts_with(GLOBAL_PREFIX)
+        || name.starts_with(TENANT_PREFIX)
+        || SYSTEM_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
 fn invalid(message: &str) -> RealtimeError {
@@ -116,7 +118,10 @@ mod tests {
     #[test]
     fn tenant_callers_get_their_namespace() {
         let c = resolve(&user(Some("env1")), "chat").unwrap();
-        assert_eq!((c.name.as_str(), c.rule_name.as_str(), c.routed.as_str()), ("chat", "chat", "t:env1:chat"));
+        assert_eq!(
+            (c.name.as_str(), c.rule_name.as_str(), c.routed.as_str()),
+            ("chat", "chat", "t:env1:chat")
+        );
         let c = resolve(&user(Some("env1")), "t:env1:chat").unwrap();
         assert_eq!((c.rule_name.as_str(), c.routed.as_str()), ("chat", "t:env1:chat"));
         let e = resolve(&user(Some("env1")), "t:env2:chat").unwrap_err();
@@ -137,7 +142,12 @@ mod tests {
         assert_eq!(resolve(&user(Some("env1")), "jobs:j1").unwrap().routed, "jobs:j1");
         let admin = AccessContext::admin("a");
         assert_eq!(resolve(&admin, "t:env2:chat").unwrap().routed, "t:env2:chat");
-        assert_eq!(resolve(&AccessContext::system().with_tenant("env3"), "chat").unwrap().routed, "t:env3:chat");
+        assert_eq!(
+            resolve(&AccessContext::system().with_tenant("env3"), "chat")
+                .unwrap()
+                .routed,
+            "t:env3:chat"
+        );
         for bad in ["t:env1", "t::x", "t:env1:global:x", "t:env1:t:env2:x", "t:env1:jobs:1"] {
             assert!(resolve(&user(Some("env1")), bad).is_err(), "{bad}");
         }

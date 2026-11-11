@@ -123,7 +123,9 @@ impl BillingService {
         let only = realm_clause(realm, "subject", &mut params);
         let by_status = self
             .fetch(
-                &format!("SELECT status, COUNT(*) FROM _forgebase_billing_subscriptions WHERE 1 = 1{only} GROUP BY status"),
+                &format!(
+                    "SELECT status, COUNT(*) FROM _forgebase_billing_subscriptions WHERE 1 = 1{only} GROUP BY status"
+                ),
                 params,
             )
             .await?
