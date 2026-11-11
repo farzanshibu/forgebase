@@ -491,6 +491,11 @@ pub const TENANT_COLUMN_NAMES: &[&str] = &["tenant", "_tenant"];
 /// key, with the reason.
 pub const TENANT_COLUMNS_NOT_KEYS: &[(&str, &str, &str)] = &[
     (
+        "_forgebase_db_logins",
+        "tenant",
+        "the one tenant a direct login is bound to (FB-153); logins are control rows copied to every shard",
+    ),
+    (
         "_forgebase_auth_api_keys",
         "tenant",
         "the tenant a key is bound to; keys are control rows",
