@@ -120,22 +120,50 @@ async fn db_logins_and_extensions_are_for_administrators_on_postgres() {
     let env = Env::new().await;
     let admin = env.admin("fb153-gate@example.com").await;
     let (user, pk) = env.user("fb153-gate-user@example.com").await;
-    let r = post(&env, &user, "/api/v1/system/db-logins", json!({"name": "mine", "principal": pk})).await;
+    let r = post(
+        &env,
+        &user,
+        "/api/v1/system/db-logins",
+        json!({"name": "mine", "principal": pk}),
+    )
+    .await;
     assert!(matches!(r.status, 400 | 403), "{}", r.text());
     let r = env.as_(&user, "GET", "/api/v1/system/extensions", &[], None).await;
     assert!(matches!(r.status, 400 | 403), "{}", r.text());
     let r = sql(&env, &user, json!({"sql": "SELECT 1", "run_as": {"principal": pk}})).await;
     assert!(matches!(r.status, 400 | 403), "{}", r.text());
     if !postgres() {
-        let r = post(&env, &admin, "/api/v1/system/db-logins", json!({"name": "x", "principal": pk})).await;
-        assert_eq!((r.status, r.code()), (400, "db_logins_unavailable".into()), "{}", r.text());
+        let r = post(
+            &env,
+            &admin,
+            "/api/v1/system/db-logins",
+            json!({"name": "x", "principal": pk}),
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.code()),
+            (400, "db_logins_unavailable".into()),
+            "{}",
+            r.text()
+        );
         let r = env.as_(&admin, "GET", "/api/v1/system/extensions", &[], None).await;
-        assert_eq!((r.status, r.code()), (400, "extensions_unavailable".into()), "{}", r.text());
+        assert_eq!(
+            (r.status, r.code()),
+            (400, "extensions_unavailable".into()),
+            "{}",
+            r.text()
+        );
         env.shutdown().await;
         return;
     }
     assert_eq!(r.status, 403, "only administrators run as someone");
-    let r = post(&env, &user, "/api/v1/system/db-logins", json!({"name": "mine", "principal": pk})).await;
+    let r = post(
+        &env,
+        &user,
+        "/api/v1/system/db-logins",
+        json!({"name": "mine", "principal": pk}),
+    )
+    .await;
     assert_eq!(r.status, 403, "{}", r.text());
     env.shutdown().await;
 }
@@ -152,7 +180,13 @@ async fn a_direct_login_sees_only_its_rows_through_the_socket() {
     let (_, bob) = env.user("fb153-bob@example.com").await;
     notes(&env, &admin, &id_of(&alice), &id_of(&bob)).await;
 
-    let r = post(&env, &admin, "/api/v1/system/db-logins", json!({"name": "alice", "principal": alice})).await;
+    let r = post(
+        &env,
+        &admin,
+        "/api/v1/system/db-logins",
+        json!({"name": "alice", "principal": alice}),
+    )
+    .await;
     assert_eq!(r.status, 201, "{}", r.text());
     let created = r.json();
     let password = created["password"].as_str().unwrap().to_owned();
@@ -162,12 +196,20 @@ async fn a_direct_login_sees_only_its_rows_through_the_socket() {
     assert!(!r.text().contains(&password), "the password is shown once");
 
     let (dir, port) = socket(&env, &admin).await;
-    assert!(as_login(&dir, port, "fbu_alice", "wrong-password").await.is_err(), "SCRAM checks the password");
-    let mut conn = as_login(&dir, port, "fbu_alice", &password).await.expect("login over the socket");
+    assert!(
+        as_login(&dir, port, "fbu_alice", "wrong-password").await.is_err(),
+        "SCRAM checks the password"
+    );
+    let mut conn = as_login(&dir, port, "fbu_alice", &password)
+        .await
+        .expect("login over the socket");
     let mut want = vec!["n1".to_owned(), "n3".to_owned()];
     assert_eq!(ids(&mut conn).await, want, "only alice's notes");
     assert!(
-        sqlx::raw_sql("SELECT * FROM forgebase._forgebase_admins").execute(&mut conn).await.is_err(),
+        sqlx::raw_sql("SELECT * FROM forgebase._forgebase_admins")
+            .execute(&mut conn)
+            .await
+            .is_err(),
         "system tables are out of reach"
     );
 
@@ -200,9 +242,14 @@ async fn a_direct_login_sees_only_its_rows_through_the_socket() {
     as_login(&dir, port, "fbu_alice", &fresh).await.expect("new password");
 
     // Deleting ends the session and the role.
-    let r = env.as_(&admin, "DELETE", "/api/v1/system/db-logins/alice", &[], None).await;
+    let r = env
+        .as_(&admin, "DELETE", "/api/v1/system/db-logins/alice", &[], None)
+        .await;
     assert_eq!(r.status, 204, "{}", r.text());
-    assert!(sqlx::query("SELECT 1").execute(&mut conn).await.is_err(), "the session ended");
+    assert!(
+        sqlx::query("SELECT 1").execute(&mut conn).await.is_err(),
+        "the session ended"
+    );
     assert!(as_login(&dir, port, "fbu_alice", &fresh).await.is_err());
     assert_eq!(audit(&env, &admin, "db.login.create").await, 1);
     assert_eq!(audit(&env, &admin, "db.login.rotate").await, 1);
@@ -245,10 +292,21 @@ async fn the_sql_editor_has_no_secret_columns_and_runs_as_users() {
         assert_eq!(r.status, 403, "{stmt}: {}", r.text());
     }
     let r = sql(&env, &admin, json!({"sql": "CREATE EXTENSION hstore"})).await;
-    assert!(matches!(r.status, 400 | 403), "the editor refuses extensions: {}", r.text());
+    assert!(
+        matches!(r.status, 400 | 403),
+        "the editor refuses extensions: {}",
+        r.text()
+    );
 
     // Run as: what a direct login bound to that user would see.
-    let rows = |r: &Resp| -> Vec<Json> { r.json()["rows"].as_array().unwrap().iter().map(|x| x[0].clone()).collect() };
+    let rows = |r: &Resp| -> Vec<Json> {
+        r.json()["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x[0].clone())
+            .collect()
+    };
     let q = "SELECT id FROM notes ORDER BY id";
     let r = sql(&env, &admin, json!({"sql": q, "run_as": {"principal": alice}})).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -265,8 +323,17 @@ async fn the_sql_editor_has_no_secret_columns_and_runs_as_users() {
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json()["items"][0]["rows_affected"], 0, "alice cannot reach bob's note");
-    let r = sql(&env, &admin, json!({"sql": "CREATE TABLE t (a int)", "run_as": {"principal": alice}})).await;
+    assert_eq!(
+        r.json()["items"][0]["rows_affected"],
+        0,
+        "alice cannot reach bob's note"
+    );
+    let r = sql(
+        &env,
+        &admin,
+        json!({"sql": "CREATE TABLE t (a int)", "run_as": {"principal": alice}}),
+    )
+    .await;
     assert_eq!((r.status, r.code()), (400, "run_as_ddl".into()), "{}", r.text());
     assert_eq!(audit(&env, &admin, "sql.run_as").await, 3);
     env.shutdown().await;
@@ -287,7 +354,10 @@ async fn extensions_follow_the_allow_list() {
     assert_eq!(find("pgcrypto")["managed_by"], "api");
     assert_eq!(find("vector")["managed_by"], "feature:vector");
     assert_eq!(find("citext")["managed_by"], "schema");
-    assert!(find("citext")["installed_version"].is_string(), "the schema installs citext");
+    assert!(
+        find("citext")["installed_version"].is_string(),
+        "the schema installs citext"
+    );
 
     let r = post(&env, &admin, "/api/v1/system/extensions", json!({"name": "pgcrypto"})).await;
     assert_eq!(r.status, 201, "{}", r.text());
@@ -304,9 +374,13 @@ async fn extensions_follow_the_allow_list() {
         let r = post(&env, &admin, "/api/v1/system/extensions", json!({"name": name})).await;
         assert_eq!((r.status, r.code()), (status, code.into()), "{name}: {}", r.text());
     }
-    let r = env.as_(&admin, "DELETE", "/api/v1/system/extensions/citext", &[], None).await;
+    let r = env
+        .as_(&admin, "DELETE", "/api/v1/system/extensions/citext", &[], None)
+        .await;
     assert_eq!(r.status, 409, "{}", r.text());
-    let r = env.as_(&admin, "DELETE", "/api/v1/system/extensions/pgcrypto", &[], None).await;
+    let r = env
+        .as_(&admin, "DELETE", "/api/v1/system/extensions/pgcrypto", &[], None)
+        .await;
     assert_eq!(r.status, 204, "{}", r.text());
     assert_eq!(audit(&env, &admin, "db.extension.create").await, 1);
     assert_eq!(audit(&env, &admin, "db.extension.drop").await, 1);

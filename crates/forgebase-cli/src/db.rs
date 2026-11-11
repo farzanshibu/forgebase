@@ -582,7 +582,11 @@ async fn login(g: &GlobalArgs, cmd: LoginCommand) -> anyhow::Result<ExitCode> {
                             } else {
                                 "read-write"
                             },
-                            if l.has_claims || l.admin { "" } else { " (no claims: sees nothing)" }
+                            if l.has_claims || l.admin {
+                                ""
+                            } else {
+                                " (no claims: sees nothing)"
+                            }
                         );
                     }
                 }

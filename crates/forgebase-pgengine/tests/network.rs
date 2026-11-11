@@ -65,7 +65,9 @@ fn tcp(port: u16, user: &str, password: &str, ssl: PgSslMode) -> PgConnectOption
 }
 
 async fn show(h: &EngineHandle, name: &str) -> String {
-    let mut c = PgConnection::connect(h.url(Role::Super).expose()).await.expect("socket login");
+    let mut c = PgConnection::connect(h.url(Role::Super).expose())
+        .await
+        .expect("socket login");
     let v: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SHOW {name}")))
         .fetch_one(&mut c)
         .await
@@ -138,7 +140,11 @@ async fn listen_is_an_explicit_opt_in_and_always_uses_tls() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(tls.join("server.key")).expect("key").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(tls.join("server.key"))
+            .expect("key")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "the generated key is private");
     }
     let cert = std::fs::read(tls.join("server.crt")).expect("generated certificate");
@@ -194,7 +200,10 @@ async fn listen_is_an_explicit_opt_in_and_always_uses_tls() {
         key: own.join("server.key"),
     });
     let h = Engine::prepare(&layout, &cfg).await.expect("configured certificate");
-    assert_eq!(show(&h, "ssl_cert_file").await, own.join("server.crt").display().to_string());
+    assert_eq!(
+        show(&h, "ssl_cert_file").await,
+        own.join("server.crt").display().to_string()
+    );
     PgConnection::connect_with(&tcp(port, Role::Server.name(), &pw, PgSslMode::Require))
         .await
         .expect("TLS with the configured certificate");
@@ -203,5 +212,8 @@ async fn listen_is_an_explicit_opt_in_and_always_uses_tls() {
         cert: own.join("missing.crt"),
         key: own.join("server.key"),
     });
-    assert!(Engine::prepare(&layout, &cfg).await.is_err(), "a missing certificate refuses the start");
+    assert!(
+        Engine::prepare(&layout, &cfg).await.is_err(),
+        "a missing certificate refuses the start"
+    );
 }

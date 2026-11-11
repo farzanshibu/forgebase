@@ -444,7 +444,13 @@ impl DataService {
             let probe = Statement::new(sql.clone(), params.clone()).uncached();
             // A view the editor's role owns is checked with that role's
             // rights even here (the plan needs them).
-            if self.inner.backend.statement_writes(&probe).await.map_err(role_refusal)? {
+            if self
+                .inner
+                .backend
+                .statement_writes(&probe)
+                .await
+                .map_err(role_refusal)?
+            {
                 kind = StatementKind::Write;
             }
         }
@@ -517,7 +523,12 @@ impl DataService {
     /// Who one checked statement runs as: "run as" its login group; policy
     /// DDL and `show_secrets` (the audited way to see secrets) the pools'
     /// own roles; everything else the editor's role.
-    fn statement_role(&self, c: &Checked, run_as: Option<&SqlRunAs>, show_secrets: bool) -> Option<forgebase_db::RunAs> {
+    fn statement_role(
+        &self,
+        c: &Checked,
+        run_as: Option<&SqlRunAs>,
+        show_secrets: bool,
+    ) -> Option<forgebase_db::RunAs> {
         if let Some(r) = run_as {
             return Some(r.role(c.kind != StatementKind::Read));
         }
@@ -650,7 +661,10 @@ impl DataService {
             }
             return Ok(r);
         }
-        Ok(self.execute_sql_batch_checked(ctx, vec![c], opts, run_as).await?.remove(0))
+        Ok(self
+            .execute_sql_batch_checked(ctx, vec![c], opts, run_as)
+            .await?
+            .remove(0))
     }
 
     /// Runs statements in one write transaction: all succeed or none.
@@ -692,10 +706,7 @@ impl DataService {
         }
         let mut checked = Vec::with_capacity(statements.len());
         for s in &statements {
-            checked.push(
-                self.check_sql(ctx, s, !opts.show_secrets, run_as.is_some())
-                    .await?,
-            );
+            checked.push(self.check_sql(ctx, s, !opts.show_secrets, run_as.is_some()).await?);
         }
         self.execute_sql_batch_checked(ctx, checked, opts, run_as).await
     }
@@ -975,8 +986,14 @@ mod tests {
     fn policy_ddl_and_api_names_are_seen() {
         let name = |sql: &str| policy_ddl(&words(sql));
         assert_eq!(name("CREATE POLICY p1 ON posts USING (true)").as_deref(), Some("p1"));
-        assert_eq!(name("drop policy if exists \"FB_tenant\" on posts").as_deref(), Some("fb_tenant"));
-        assert_eq!(name("ALTER POLICY fb_rule_select ON t RENAME TO x").as_deref(), Some("fb_rule_select"));
+        assert_eq!(
+            name("drop policy if exists \"FB_tenant\" on posts").as_deref(),
+            Some("fb_tenant")
+        );
+        assert_eq!(
+            name("ALTER POLICY fb_rule_select ON t RENAME TO x").as_deref(),
+            Some("fb_rule_select")
+        );
         assert_eq!(name("SELECT 'create policy fb_x'"), None);
         assert_eq!(name("CREATE TABLE policy (id int)"), None);
         assert!(names_api_schema(&words("DROP VIEW api.posts")));

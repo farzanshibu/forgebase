@@ -163,7 +163,8 @@ fn valid_name(name: &str) -> bool {
     !b.is_empty()
         && b.len() <= 40
         && b[0].is_ascii_lowercase()
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
 }
 
 /// An RFC 3339 instant PostgreSQL parses (`VALID UNTIL`): digits and `T Z :
@@ -377,12 +378,22 @@ impl PolicyService {
                     ));
                 }
             }
-            _ => return Err(PolicyError::invalid("invalid_principal", "not a user or service account")),
+            _ => {
+                return Err(PolicyError::invalid(
+                    "invalid_principal",
+                    "not a user or service account",
+                ));
+            }
         }
         let mut ctx = match p {
             Principal::User { collection, id } => AccessContext::user(collection, id),
             Principal::Service { id, .. } => AccessContext::service(id, false),
-            _ => return Err(PolicyError::invalid("invalid_principal", "not a user or service account")),
+            _ => {
+                return Err(PolicyError::invalid(
+                    "invalid_principal",
+                    "not a user or service account",
+                ));
+            }
         };
         ctx.realm_id = home_realm(&self.snapshot(), &ctx);
         crate::http::resolve_parts(self, &mut ctx, None, None, tenant.map(str::to_owned))
@@ -411,10 +422,7 @@ impl PolicyService {
     ) -> Result<SqlRunAs, PolicyError> {
         self.require_admin(ctx, "sql_run_as")?;
         self.require_logins()?;
-        if !matches!(
-            self.native_rls_mode(),
-            Some(NativeMode::Logins | NativeMode::Enforce)
-        ) {
+        if !matches!(self.native_rls_mode(), Some(NativeMode::Logins | NativeMode::Enforce)) {
             return Err(PolicyError::invalid(
                 "run_as_unavailable",
                 "run as needs native row-level security (native_rls = logins or enforce)",
@@ -533,10 +541,7 @@ impl PolicyService {
         let bound = if spec.admin {
             None
         } else {
-            if !matches!(
-                self.native_rls_mode(),
-                Some(NativeMode::Logins | NativeMode::Enforce)
-            ) {
+            if !matches!(self.native_rls_mode(), Some(NativeMode::Logins | NativeMode::Enforce)) {
                 return Err(PolicyError::invalid(
                     "db_logins_unavailable",
                     "direct logins see data through native row-level security: set [database.postgres] native_rls = \"logins\" (the default) or \"enforce\"",
@@ -880,7 +885,12 @@ impl PolicyService {
         );
         let mut tx = self.backend().begin(forgebase_db::TxMode::Normal).await?;
         let writer = async {
-            let n = tx.fetch_all(&check).await?.scalar().and_then(Value::as_i64).unwrap_or(0);
+            let n = tx
+                .fetch_all(&check)
+                .await?
+                .scalar()
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
             if n > 0 {
                 tx.execute(&Statement::raw("SELECT forgebase.fb_editor_grants()"))
                     .await?;
@@ -932,7 +942,12 @@ mod tests {
 
     #[test]
     fn names_and_times_are_checked() {
-        for ok in ["a", "alice", "bi_reports2", "x234567890123456789012345678901234567890"[..40].as_ref()] {
+        for ok in [
+            "a",
+            "alice",
+            "bi_reports2",
+            "x234567890123456789012345678901234567890"[..40].as_ref(),
+        ] {
             assert!(valid_name(ok), "{ok}");
         }
         for bad in ["", "Alice", "1a", "a-b", "a b", "ä", &"a".repeat(41)] {

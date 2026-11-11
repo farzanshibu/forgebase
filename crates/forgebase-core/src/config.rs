@@ -838,7 +838,8 @@ impl Config {
         if !pg.listen.trim().is_empty() && !is_listen_address(&pg.listen) {
             invalid(
                 "database.postgres.listen",
-                "must be empty (Unix socket only) or an address with a port, such as 127.0.0.1:5433 or 0.0.0.0:5433".into(),
+                "must be empty (Unix socket only) or an address with a port, such as 127.0.0.1:5433 or 0.0.0.0:5433"
+                    .into(),
             );
         }
         if pg.tls_cert.is_empty() != pg.tls_key.is_empty() {

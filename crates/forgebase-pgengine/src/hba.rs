@@ -251,23 +251,23 @@ fn self_signed(ip: IpAddr, now: i64) -> Result<(String, String)> {
     let rng = SystemRandom::new();
     let fail = |what: &str| EngineError::Config(format!("cannot generate the TLS certificate: {what}"));
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).map_err(|_| fail("key"))?;
-    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-        .map_err(|_| fail("key"))?;
+    let pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).map_err(|_| fail("key"))?;
     let mut serial = [0u8; 16];
     rng.fill(&mut serial).map_err(|_| fail("serial"))?;
     serial[0] &= 0x7F;
     let alg = seq(&[tlv(0x06, OID_ECDSA_SHA256)]);
-    let name = seq(&[set(&[seq(&[
-        tlv(0x06, OID_CN),
-        tlv(0x0C, b"ForgeBase PostgreSQL"),
-    ])])]);
+    let name = seq(&[set(&[seq(&[tlv(0x06, OID_CN), tlv(0x0C, b"ForgeBase PostgreSQL")])])]);
     let spki = seq(&[
         seq(&[tlv(0x06, OID_EC_PUBLIC_KEY), tlv(0x06, OID_P256)]),
         bits(pair.public_key().as_ref()),
     ]);
     let mut names = vec![tlv(0x82, b"localhost")];
     let ips: Vec<IpAddr> = if ip.is_unspecified() {
-        vec![IpAddr::from([127, 0, 0, 1]), IpAddr::from(std::net::Ipv6Addr::LOCALHOST)]
+        vec![
+            IpAddr::from([127, 0, 0, 1]),
+            IpAddr::from(std::net::Ipv6Addr::LOCALHOST),
+        ]
     } else {
         vec![ip]
     };
@@ -323,14 +323,26 @@ mod tests {
         let s = render(&input(Some("0.0.0.0:5433"), true));
         let r = rules(&s);
         let first_host = r.iter().position(|l| l.starts_with("host")).expect("host lines");
-        assert!(r[first_host].starts_with("hostnossl") && r[first_host].ends_with("reject"), "{s}");
+        assert!(
+            r[first_host].starts_with("hostnossl") && r[first_host].ends_with("reject"),
+            "{s}"
+        );
         for l in r.iter().filter(|l| l.starts_with("hostssl")) {
             if l.contains("forgebase_server") || l.contains("forgebase_super") || l.contains("forgebase_reader") {
-                assert!(l.contains("127.0.0.1/32") || l.contains("::1/128"), "own roles off loopback: {l}");
+                assert!(
+                    l.contains("127.0.0.1/32") || l.contains("::1/128"),
+                    "own roles off loopback: {l}"
+                );
             }
         }
-        assert!(r.iter().any(|l| l.starts_with("hostssl") && l.contains("+forgebase_login") && l.contains(" all ")));
-        assert!(!r.iter().any(|l| l.starts_with("host ") && !l.ends_with("reject")), "{s}");
+        assert!(
+            r.iter()
+                .any(|l| l.starts_with("hostssl") && l.contains("+forgebase_login") && l.contains(" all "))
+        );
+        assert!(
+            !r.iter().any(|l| l.starts_with("host ") && !l.ends_with("reject")),
+            "{s}"
+        );
 
         let s = render(&input(Some("127.0.0.1:5433"), true));
         assert!(
@@ -349,7 +361,10 @@ mod tests {
         let s = render(&i);
         let r = rules(&s);
         assert!(!r.is_empty());
-        assert!(r.iter().all(|l| l.contains("127.0.0.1/32") || l.contains("::1/128")), "{s}");
+        assert!(
+            r.iter().all(|l| l.contains("127.0.0.1/32") || l.contains("::1/128")),
+            "{s}"
+        );
     }
 
     #[test]
@@ -367,9 +382,7 @@ mod tests {
         assert!(cert.starts_with("-----BEGIN CERTIFICATE-----\n"), "{cert}");
         assert!(key.starts_with("-----BEGIN PRIVATE KEY-----\n"));
         let b64: String = cert.lines().filter(|l| !l.starts_with("-----")).collect();
-        let der = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .expect("base64");
+        let der = base64::engine::general_purpose::STANDARD.decode(b64).expect("base64");
         // One outer SEQUENCE whose length covers the whole document.
         assert_eq!(der[0], 0x30);
         let (len, hdr) = match der[1] {

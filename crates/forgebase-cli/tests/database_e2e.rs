@@ -214,7 +214,11 @@ fn bundled_postgres_project_lifecycle() {
     // FB-153: the default session is the SQL editor's role.
     let out = run(&app, e, &["db", "psql", "-tA", "-c", "select current_user || ':' || 1"]);
     assert_eq!(ok(&out).trim(), "forgebase_sql_admin:1");
-    let out = run(&app, e, &["db", "psql", "-c", "select password_hash from _forgebase_admins"]);
+    let out = run(
+        &app,
+        e,
+        &["db", "psql", "-c", "select password_hash from _forgebase_admins"],
+    );
     assert!(!out.status.success(), "the editor's role reads no secret columns");
 
     // Named direct logins (FB-153): an admin login over the socket, with
@@ -233,12 +237,18 @@ fn bundled_postgres_project_lifecycle() {
     };
     let out = as_ops(&password, "select session_user || ':' || current_user");
     assert_eq!(ok(&out).trim(), "fbu_ops:forgebase_sql_admin");
-    assert!(!as_ops("wrong", "select 1").status.success(), "SCRAM checks the password");
+    assert!(
+        !as_ops("wrong", "select 1").status.success(),
+        "SCRAM checks the password"
+    );
     let list = ok(&run(&app, e, &["db", "login", "list"]));
     assert!(list.contains("ops") && list.contains("admin"), "{list}");
     let rotated = json(&run(&app, e, &["db", "login", "rotate", "ops", "--json"]));
     let fresh = rotated["password"].as_str().unwrap().to_owned();
-    assert!(!as_ops(&password, "select 1").status.success(), "the old password is gone");
+    assert!(
+        !as_ops(&password, "select 1").status.success(),
+        "the old password is gone"
+    );
     ok(&as_ops(&fresh, "select 1"));
     let r = run(&app, e, &["db", "login", "create", "Bad-Name", "--admin"]);
     assert!(!r.status.success());

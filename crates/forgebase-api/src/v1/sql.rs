@@ -67,9 +67,9 @@ pub struct RunAsBody {
 
 async fn run_as(s: &AppState, ctx: &AccessContext, body: Option<&RunAsBody>) -> Result<Option<SqlRunAs>, ApiError> {
     let Some(b) = body else { return Ok(None) };
-    let policy = s.policy().ok_or_else(|| {
-        ApiError::bad_request("run_as_unavailable", "run as needs the policy service")
-    })?;
+    let policy = s
+        .policy()
+        .ok_or_else(|| ApiError::bad_request("run_as_unavailable", "run as needs the policy service"))?;
     policy
         .run_as_claims(ctx, &b.principal, b.tenant.as_deref())
         .await

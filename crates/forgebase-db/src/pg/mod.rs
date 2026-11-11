@@ -700,12 +700,7 @@ impl PgDatabase {
     }
 
     async fn admin_batch_impl(&self, statements: &[String]) -> Result<(), DbError> {
-        let url = self
-            .inner
-            .admin_url
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let url = self.inner.admin_url.read().unwrap_or_else(|p| p.into_inner()).clone();
         let Some(url) = url else {
             let mut tx = self.begin_tx(TxMode::Normal).await?;
             for s in statements {

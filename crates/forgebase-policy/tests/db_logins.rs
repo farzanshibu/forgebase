@@ -43,7 +43,16 @@ async fn world() -> Option<Env> {
                 },
             )
             .await;
-        assert!(matches!(r, Err(PolicyError::Invalid { code: "db_logins_unavailable", .. })), "{r:?}");
+        assert!(
+            matches!(
+                r,
+                Err(PolicyError::Invalid {
+                    code: "db_logins_unavailable",
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
         return None;
     }
     env.policy.enable_native_rls(NativeMode::Logins).await.unwrap();
@@ -161,10 +170,7 @@ async fn a_login_sees_only_its_rows_and_its_claims_follow_every_reload() {
         .unwrap();
     assert_eq!(ids(&mut conn, q).await.unwrap(), ["n1", "n2", "n3", "n4"]);
     // A suspension (a snapshot change, no rule change) closes it at once.
-    env.policy
-        .suspend(&admin(), &pk("alice"), "test", None)
-        .await
-        .unwrap();
+    env.policy.suspend(&admin(), &pk("alice"), "test", None).await.unwrap();
     assert_eq!(ids(&mut conn, q).await.unwrap(), Vec::<String>::new());
     env.policy.unsuspend(&admin(), &pk("alice")).await.unwrap();
     assert_eq!(ids(&mut conn, q).await.unwrap().len(), 4);
@@ -217,7 +223,10 @@ async fn logins_are_for_administrators_and_validated() {
         principal: Some(principal.into()),
         ..LoginSpec::default()
     };
-    let r = env.policy.create_db_login(&user("alice"), spec("mine", &pk("alice"))).await;
+    let r = env
+        .policy
+        .create_db_login(&user("alice"), spec("mine", &pk("alice")))
+        .await;
     assert!(matches!(r, Err(PolicyError::Denied(_))), "{r:?}");
     for (name, principal, code) in [
         ("Bad-Name", pk("alice"), "invalid_name"),
@@ -225,7 +234,10 @@ async fn logins_are_for_administrators_and_validated() {
         ("ok", pk("nobody"), "invalid_principal"),
     ] {
         let r = env.policy.create_db_login(&admin(), spec(name, &principal)).await;
-        assert!(matches!(&r, Err(PolicyError::Invalid { code: c, .. }) if *c == code), "{name} {principal}: {r:?}");
+        assert!(
+            matches!(&r, Err(PolicyError::Invalid { code: c, .. }) if *c == code),
+            "{name} {principal}: {r:?}"
+        );
     }
     let r = env
         .policy
@@ -237,7 +249,16 @@ async fn logins_are_for_administrators_and_validated() {
             },
         )
         .await;
-    assert!(matches!(r, Err(PolicyError::Invalid { code: "invalid_valid_until", .. })), "{r:?}");
+    assert!(
+        matches!(
+            r,
+            Err(PolicyError::Invalid {
+                code: "invalid_valid_until",
+                ..
+            })
+        ),
+        "{r:?}"
+    );
     login(&env, "dup", "alice", true).await;
     let r = env.policy.create_db_login(&admin(), spec("dup", &pk("alice"))).await;
     assert!(matches!(r, Err(PolicyError::Conflict(_))), "{r:?}");
@@ -292,9 +313,17 @@ async fn run_as_in_the_sql_editor_sees_what_the_login_would() {
         r.rows.iter().map(|row| row[0].as_str().unwrap().to_owned()).collect()
     };
     let q = stmt("SELECT id FROM notes ORDER BY id");
-    let r = env.data.execute_sql_as(&a, q.clone(), none, Some(&as_alice)).await.unwrap();
+    let r = env
+        .data
+        .execute_sql_as(&a, q.clone(), none, Some(&as_alice))
+        .await
+        .unwrap();
     assert_eq!(rows(r), ["n1", "n3"]);
-    let r = env.data.execute_sql_as(&a, q.clone(), none, Some(&as_bob)).await.unwrap();
+    let r = env
+        .data
+        .execute_sql_as(&a, q.clone(), none, Some(&as_bob))
+        .await
+        .unwrap();
     assert_eq!(rows(r), ["n2"]);
     // Without run as, the editor (its own role) sees every row.
     let r = env.data.execute_sql_as(&a, q.clone(), none, None).await.unwrap();
@@ -302,7 +331,12 @@ async fn run_as_in_the_sql_editor_sees_what_the_login_would() {
     // Writes too, through the views' triggers.
     let w = env
         .data
-        .execute_sql_as(&a, stmt("UPDATE notes SET body = 'y' WHERE id = 'n2'"), none, Some(&as_alice))
+        .execute_sql_as(
+            &a,
+            stmt("UPDATE notes SET body = 'y' WHERE id = 'n2'"),
+            none,
+            Some(&as_alice),
+        )
         .await
         .unwrap();
     assert_eq!(w.rows_affected, 0, "alice cannot reach bob's note");
@@ -328,7 +362,12 @@ async fn run_as_in_the_sql_editor_sees_what_the_login_would() {
         .await;
     assert!(matches!(r, Err(DataError::Invalid { .. })), "{r:?}");
     // Only administrators pick someone to run as; every call is audited.
-    assert!(env.policy.run_as_claims(&user("alice"), &pk("bob"), None).await.is_err());
+    assert!(
+        env.policy
+            .run_as_claims(&user("alice"), &pk("bob"), None)
+            .await
+            .is_err()
+    );
     let n = env
         .db
         .fetch_all(&Statement::new(
@@ -350,7 +389,10 @@ async fn the_editor_role_has_no_secret_columns_of_collections() {
     .await;
     let a = admin();
     let none = SqlOptions::default();
-    let ok = env.data.execute_sql_as(&a, stmt("SELECT id, email FROM accounts"), none, None).await;
+    let ok = env
+        .data
+        .execute_sql_as(&a, stmt("SELECT id, email FROM accounts"), none, None)
+        .await;
     assert!(ok.is_ok(), "{ok:?}");
     // `pin` is caught by the name guard; `*` and a view over it by the role.
     for sql in [
@@ -361,14 +403,22 @@ async fn the_editor_role_has_no_secret_columns_of_collections() {
         assert!(matches!(r, Err(DataError::Forbidden(_))), "{sql}: {r:?}");
     }
     env.data
-        .execute_sql_as(&a, stmt("CREATE VIEW all_accounts AS SELECT * FROM accounts"), none, None)
+        .execute_sql_as(
+            &a,
+            stmt("CREATE VIEW all_accounts AS SELECT * FROM accounts"),
+            none,
+            None,
+        )
         .await
         .unwrap();
     let r = env
         .data
         .execute_sql_as(&a, stmt("SELECT count(*) FROM all_accounts"), none, None)
         .await;
-    assert!(matches!(r, Err(DataError::Forbidden(_))), "a view owned by the editor: {r:?}");
+    assert!(
+        matches!(r, Err(DataError::Forbidden(_))),
+        "a view owned by the editor: {r:?}"
+    );
     // Rows of collections are writable (no secret column named).
     env.data
         .execute_sql_as(&a, stmt("INSERT INTO accounts (id, created, updated, _version, _data, email) VALUES ('ac1', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 1, '{}', 'a@b.c')"), none, None)
