@@ -234,7 +234,7 @@ describe("openCypher tab: every error code, in the server's words with a hint", 
     [400, "invalid_limit", "limit must be 1 to 1000", /whole number from 1 to 1000/],
     [400, "invalid_timeout", "timeout_ms must be 1 to 30000", /from 1 to 30000/],
     [403, "cypher_rules_unsupported", "rules cannot be applied to cypher", /simplify the label rules/],
-    [409, "tenant_moving", "tenant is moving", /Wait a minute and try again/],
+    [409, "tenant_moving", "tenant is moving", /rebuilt on the new location/],
   ];
   it.each(codes)("%i %s", async (status, code, message, hint) => {
     setup({ answer: () => envelope(status, code, message) });
