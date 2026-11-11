@@ -32,8 +32,8 @@ use std::fmt::Write as _;
 use forgebase_db::{Rows, Statement, WriteTx};
 use sha2::{Digest, Sha256};
 
-pub use engine::{CONVERT_JOB, register_jobs};
 pub(crate) use engine::EngineSlot;
+pub use engine::{CONVERT_JOB, register_jobs};
 
 use crate::history::MAX_ENTRIES;
 use crate::row::{Row, scalar};
@@ -114,9 +114,7 @@ fn pushed(at: u8, consumer: u8) -> String {
 
 /// A new entry's body for message `seq` with ordering key `key` (SQL).
 fn body(seq: &str, key: &str) -> String {
-    format!(
-        "jsonb_build_object('seq', {seq}, 'key', {key}, 'lease', NULL, 'consumer', NULL, 'history', '[]'::jsonb)"
-    )
+    format!("jsonb_build_object('seq', {seq}, 'key', {key}, 'lease', NULL, 'consumer', NULL, 'history', '[]'::jsonb)")
 }
 
 /// The join of a queue table `q` with the message log.
@@ -150,8 +148,11 @@ pub(crate) fn ready_sql(t: &str, ordering: bool) -> String {
 /// `vt` (the reap) and, for an ordering subscription, entries by key.
 pub(crate) async fn create_queue(tx: &mut dyn WriteTx, sub: &str, ordering: bool) -> Result<()> {
     let q = queue_name(sub);
-    tx.execute(&Statement::new("SELECT pgmq.create(CAST(?1 AS TEXT))", vec![q.as_str().into()]))
-        .await?;
+    tx.execute(&Statement::new(
+        "SELECT pgmq.create(CAST(?1 AS TEXT))",
+        vec![q.as_str().into()],
+    ))
+    .await?;
     tx.execute(&Statement::raw(format!(
         "CREATE INDEX IF NOT EXISTS q_{q}_leased ON pgmq.q_{q} (vt) WHERE message->>'consumer' IS NOT NULL"
     )))
@@ -476,7 +477,13 @@ impl QueueService {
     }
 
     /// Moves the deadline of the leased entry an ack id names to `until`.
-    pub(crate) async fn pgmq_deadline(&self, tx: &mut dyn WriteTx, sub: &str, ack_id: &str, until: i64) -> Result<bool> {
+    pub(crate) async fn pgmq_deadline(
+        &self,
+        tx: &mut dyn WriteTx,
+        sub: &str,
+        ack_id: &str,
+        until: i64,
+    ) -> Result<bool> {
         let Some(id) = self.pgmq_entry(tx, sub, ack_id).await? else {
             return Ok(false);
         };

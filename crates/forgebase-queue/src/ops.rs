@@ -155,17 +155,17 @@ impl QueueService {
             self.pgmq_metrics(sub, now).await?
         } else {
             self.backend()
-            .fetch_all(&Statement::new(
-                "SELECT \
+                .fetch_all(&Statement::new(
+                    "SELECT \
                    coalesce(sum(CASE WHEN d.state = 'ready' AND d.available_at <= ?2 THEN 1 ELSE 0 END), 0) AS ready, \
                    coalesce(sum(CASE WHEN d.state = 'ready' AND d.available_at > ?2 THEN 1 ELSE 0 END), 0) AS delayed, \
                    coalesce(sum(CASE WHEN d.state = 'leased' THEN 1 ELSE 0 END), 0) AS in_flight, \
                    COUNT(*) AS n, coalesce(sum(m.bytes), 0) AS b, min(m.published_at) AS oldest \
                  FROM _forgebase_queue_deliveries d JOIN _forgebase_queue_messages m ON m.seq = d.seq \
                  WHERE d.subscription = ?1",
-                vec![sub.into(), now.into()],
-            ))
-            .await?
+                    vec![sub.into(), now.into()],
+                ))
+                .await?
         };
         drop(eng);
         let d = Row::new(&rows, 0);

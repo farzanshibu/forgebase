@@ -247,7 +247,10 @@ impl QueueService {
                     moved.0 += 1;
                 }
                 // Queues of subscriptions that no longer exist.
-                for q in queues.iter().filter(|q| !subs.iter().any(|(s, _)| queue_name(s) == **q)) {
+                for q in queues
+                    .iter()
+                    .filter(|q| !subs.iter().any(|(s, _)| queue_name(s) == **q))
+                {
                     let mut tx = self.begin().await?;
                     let r = drop_queue_named(&mut *tx, q).await;
                     finish(tx, r).await?;

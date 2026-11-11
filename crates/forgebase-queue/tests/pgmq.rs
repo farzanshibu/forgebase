@@ -32,9 +32,8 @@ async fn meta(h: &common::H) -> Option<String> {
 
 /// The table of the only ForgeBase queue.
 async fn only_table(h: &common::H) -> String {
-    let rows = h
-        .db
-        .fetch_all(&Statement::raw(
+    let rows =
+        h.db.fetch_all(&Statement::raw(
             "SELECT queue_name FROM pgmq.meta WHERE queue_name LIKE 'fbs\\_%'",
         ))
         .await
@@ -61,7 +60,11 @@ async fn each_subscription_owns_a_pgmq_queue_of_its_deliveries() {
     // Owed deliveries are pgmq entries: two leased (read once), one ready.
     assert_eq!(count(&h, &format!("SELECT COUNT(*) FROM {t}")).await, 3);
     assert_eq!(
-        count(&h, &format!("SELECT COUNT(*) FROM {t} WHERE message->>'consumer' IS NOT NULL AND read_ct = 1")).await,
+        count(
+            &h,
+            &format!("SELECT COUNT(*) FROM {t} WHERE message->>'consumer' IS NOT NULL AND read_ct = 1")
+        )
+        .await,
         2
     );
     assert_eq!(count(&h, "SELECT COUNT(*) FROM _forgebase_queue_deliveries").await, 0);
@@ -112,7 +115,10 @@ async fn convert_moves_owed_deliveries_both_ways() {
         let err = h.svc.convert(&admin(), DeliveryEngine::Pgmq).await.unwrap_err();
         assert_eq!(err.code(), "pgmq_unavailable", "{err}");
         let r = h.svc.convert(&admin(), DeliveryEngine::Portable).await.unwrap();
-        assert_eq!((r.from, r.to, r.deliveries), (DeliveryEngine::Portable, DeliveryEngine::Portable, 0));
+        assert_eq!(
+            (r.from, r.to, r.deliveries),
+            (DeliveryEngine::Portable, DeliveryEngine::Portable, 0)
+        );
         return;
     }
     // Tenants and non-admins may not convert.
@@ -125,7 +131,11 @@ async fn convert_moves_owed_deliveries_both_ways() {
         DeliveryEngine::Portable => DeliveryEngine::Pgmq,
     };
     let r = h.svc.convert(&admin(), other).await.unwrap();
-    assert_eq!((r.from, r.to, r.subscriptions, r.deliveries), (start, other, 2, 10), "{r:?}");
+    assert_eq!(
+        (r.from, r.to, r.subscriptions, r.deliveries),
+        (start, other, 2, 10),
+        "{r:?}"
+    );
     assert_eq!(h.svc.delivery_engine().await.unwrap(), other);
     assert_eq!(meta(&h).await.as_deref(), Some(stored(other)));
     // A lease handed out before the conversion is still acked.
@@ -134,7 +144,11 @@ async fn convert_moves_owed_deliveries_both_ways() {
     assert_eq!(ids(&rest), published[2..].to_vec(), "leased one stays leased");
 
     let r = h.svc.convert(&admin(), start).await.unwrap();
-    assert_eq!((r.from, r.to, r.subscriptions, r.deliveries), (other, start, 2, 9), "{r:?}");
+    assert_eq!(
+        (r.from, r.to, r.subscriptions, r.deliveries),
+        (other, start, 2, 9),
+        "{r:?}"
+    );
     assert_eq!(meta(&h).await.as_deref(), Some(stored(start)));
     h.ack("s", &rest).await;
     // The second early lease expires and is redelivered as attempt 2, with
@@ -174,9 +188,11 @@ async fn a_queue_table_layout_mismatch_falls_back_to_portable() {
     h.sub("s", "t").await;
     let t = only_table(&h).await;
     let mut tx = h.db.begin(forgebase_db::TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw(format!("ALTER TABLE {t} RENAME COLUMN vt TO vt_renamed")))
-        .await
-        .unwrap();
+    tx.execute(&Statement::raw(format!(
+        "ALTER TABLE {t} RENAME COLUMN vt TO vt_renamed"
+    )))
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let h = h.restart().await;
@@ -185,7 +201,11 @@ async fn a_queue_table_layout_mismatch_falls_back_to_portable() {
         DeliveryEngine::Portable,
         "the layout check refuses pgmq"
     );
-    assert_eq!(meta(&h).await.as_deref(), Some("extension"), "the stored engine is kept");
+    assert_eq!(
+        meta(&h).await.as_deref(),
+        Some("extension"),
+        "the stored engine is kept"
+    );
     let id = h.publish("t", json!("x")).await;
     let got = h.pull("s", 10).await;
     assert_eq!(ids(&got), vec![id], "the portable engine delivers");

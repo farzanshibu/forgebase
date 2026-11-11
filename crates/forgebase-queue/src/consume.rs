@@ -19,8 +19,8 @@ use crate::access::bare;
 use crate::error::QueueError;
 use crate::history;
 use crate::model::{
-    AckResult, DeliveryEngine, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage, SeekRequest,
-    SeekResult, Snapshot, check_name, iso, parse_time,
+    AckResult, DeliveryEngine, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage,
+    SeekRequest, SeekResult, Snapshot, check_name, iso, parse_time,
 };
 use crate::row::{Row, scalar};
 use crate::service::{
