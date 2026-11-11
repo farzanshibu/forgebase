@@ -623,7 +623,11 @@ async fn commit_tokens_are_tracked_and_sent_back() {
         .await
         .expect("strong list");
     let calls = m.calls();
-    assert_eq!(calls[0].header("x-forgebase-read-after"), None, "nothing before the first commit");
+    assert_eq!(
+        calls[0].header("x-forgebase-read-after"),
+        None,
+        "nothing before the first commit"
+    );
     assert_eq!(calls[0].header("x-forgebase-consistency"), None);
     assert_eq!(calls[2].header("x-forgebase-read-after"), Some("control/0/1A"));
     assert_eq!(calls[3].header("x-forgebase-read-after"), Some("control/0/1A, s1/0/5"));

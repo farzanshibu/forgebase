@@ -71,12 +71,10 @@ impl CommitTokens {
             let Some((set, lsn)) = parse_token(part) else {
                 continue;
             };
-            match by_set.get_mut(set) {
-                Some(held) => *held = (*held).max(lsn),
-                None if by_set.len() < MAX_SETS => {
-                    by_set.insert(set.to_owned(), lsn);
-                }
-                None => {}
+            if let Some(held) = by_set.get_mut(set) {
+                *held = (*held).max(lsn);
+            } else if by_set.len() < MAX_SETS {
+                by_set.insert(set.to_owned(), lsn);
             }
         }
     }
