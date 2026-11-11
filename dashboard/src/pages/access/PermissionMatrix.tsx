@@ -1,4 +1,4 @@
-import { catalogue, allKeys, fromCells, keyOf, NEXT, toCells, type Cell } from "./catalogue";
+import { ACTION_HELP, catalogue, allKeys, fromCells, keyOf, NEXT, toCells, type Cell } from "./catalogue";
 import { Table } from "panelui-web/table";
 
 const LABEL: Record<Cell, string> = { inherit: "–", allow: "Allow", deny: "Deny" };
@@ -60,6 +60,11 @@ export default function PermissionMatrix({
           </Table.Body>
         </Table>
       </div>
+      <dl aria-label="Permission help" className="mt-3 space-y-0.5 text-xs text-muted-foreground">
+        {Object.entries(ACTION_HELP).map(([k, text]) => (
+          <div key={k} className="flex flex-wrap gap-x-2"><dt className="font-mono text-foreground/80">{k}</dt><dd>{text}</dd></div>
+        ))}
+      </dl>
       {(customAllow.length > 0 || customDeny.length > 0) && (
         <div aria-label="Custom patterns" className="mt-3 text-xs text-muted-foreground">
           <p className="mb-1">Custom patterns (kept as they are):</p>

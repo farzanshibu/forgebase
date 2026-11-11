@@ -40,8 +40,8 @@ export default function BackendInfo({ children, info }: { children?: ReactNode; 
         </ul>
       )}
       {data.backend === "postgres" && (
-        <Link to={TOPOLOGY_PATH} data-slot="topology-link" className="text-primary hover:underline" title="Primary, replicas and shards (coming with the topology screen)">
-          Topology
+        <Link to={TOPOLOGY_PATH} data-slot="topology-link" className="text-primary hover:underline" title="Primary, replicas and shards: add, promote and move them in System">
+          View topology
         </Link>
       )}
       {children}

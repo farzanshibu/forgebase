@@ -50,6 +50,8 @@ export default function SettingField({ setting: s, value, error, onChange }: {
     control = <Switch label={s.label} checked={value === true} disabled={locked} onCheckedChange={(c) => onChange(c)} />;
   } else if (s.type === "enum") {
     control = <Sel id={id} aria-label={s.label} size="md" className="w-full" value={String(value ?? "")} disabled={locked} options={s.options ?? []} onChange={(v) => onChange(v)} />;
+  } else if (s.type === "list" && Array.isArray(value) && (value as unknown[]).some((v) => typeof v === "object" && v !== null)) {
+    control = <ObjectList id={id} label={s.label} value={value} describedBy={describedBy} />;
   } else if (s.type === "list") {
     control = (
       <Textarea
@@ -119,5 +121,18 @@ function MapValue({ id, label, value, describedBy }: { id: string; label: string
         ))}
       </tbody>
     </table>
+  );
+}
+
+/** A list of tables (`[[database.nodes]]`): one read-only row per entry, as `name = value` pairs. */
+function ObjectList({ id, label, value, describedBy }: { id: string; label: string; value: unknown[]; describedBy: string }) {
+  return (
+    <ul id={id} aria-label={label} aria-describedby={describedBy} className="space-y-1 text-xs">
+      {value.map((v, i) => (
+        <li key={i} className="rounded border border-border p-2 font-mono">
+          {typeof v === "object" && v !== null ? Object.entries(v as Record<string, unknown>).map(([k, x]) => `${k} = ${String(x)}`).join("   ") : String(v)}
+        </li>
+      ))}
+    </ul>
   );
 }

@@ -35,7 +35,7 @@ describe("backend line and tabs", () => {
     const features = within(screen.getByRole("list", { name: "Database features" }));
     expect(features.getByText("vector: pgvector 0.8.7")).toBeInTheDocument();
     expect(features.getByText("graph: portable")).toBeInTheDocument();
-    expect(within(slot).getByRole("link", { name: "Topology" })).toHaveAttribute("href", "/system/topology");
+    expect(within(slot).getByRole("link", { name: "View topology" })).toHaveAttribute("href", "/system/topology");
     const tabs = within(screen.getByRole("tablist", { name: "Database sections" }));
     for (const t of ["Policies", "Direct logins", "Extensions"]) expect(tabs.getByRole("tab", { name: t })).toBeInTheDocument();
   });
