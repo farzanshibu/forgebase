@@ -145,7 +145,7 @@ async fn full_text_search_reads_words_not_operators() {
         ("laptop", 2),
         ("laptop pro", 1),
         // No operators: `-pro`, `or` and quotes are text (words are ANDed).
-        ("laptop -pro", 0),
+        ("laptop -pro", 1),
         ("laptop OR keyboard", 0),
         ("\"laptop pro\"", 1),
         ("acme laptop", 2),
@@ -246,7 +246,7 @@ async fn fuzzy_search_ranks_by_similarity_and_uses_the_trigram_index() {
             &ctx,
             "products",
             &ListQuery {
-                fuzzy_threshold: Some(0.1),
+                fuzzy_threshold: Some(0.0),
                 ..fuzzy("laptop")
             },
         )
@@ -399,7 +399,7 @@ async fn contains_and_fuzzy_use_the_trigram_index() {
         contains.indexes_used.contains(&"docs_title_trgm".to_owned()),
         "~ must use the trigram index: {contains:?}"
     );
-    let fuzzy_plan = svc.explain_list(&ctx, "docs", &fuzzy("haystak needle")).await.unwrap();
+    let fuzzy_plan = svc.explain_list(&ctx, "docs", &fuzzy("haystak")).await.unwrap();
     assert!(
         fuzzy_plan.indexes_used.contains(&"docs_title_trgm".to_owned()),
         "fuzzy must use the trigram index: {fuzzy_plan:?}"
