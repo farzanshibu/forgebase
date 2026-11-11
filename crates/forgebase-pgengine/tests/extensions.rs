@@ -92,10 +92,16 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
     let has_pgmq = engine.join("share/extension/pgmq.control").is_file();
     let tmp = tempdir();
     let layout = Layout::primary(tmp.path());
-    let h = Engine::prepare(&layout, &config(&engine, 18_231)).await.expect("prepare");
+    let h = Engine::prepare(&layout, &config(&engine, 18_231))
+        .await
+        .expect("prepare");
     let has_cron = h.has_cron();
     assert!(!h.has_age(), "no engine ships AGE before FB-160");
-    assert!(h.warnings().iter().any(|w| w.contains("Apache AGE")), "{:?}", h.warnings());
+    assert!(
+        h.warnings().iter().any(|w| w.contains("Apache AGE")),
+        "{:?}",
+        h.warnings()
+    );
 
     let db = open(&h, Role::Server, false).await;
     db.migrate(None).await.expect("migrate");
@@ -110,16 +116,27 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
     assert_eq!(state(Feature::Trigram), FeatureState::Active);
     let graph = report.get(Feature::Graph).unwrap();
     assert_eq!(graph.state, FeatureState::Portable);
-    assert!(graph.reason.as_deref().unwrap().contains("no age extension"), "{graph:?}");
+    assert!(
+        graph.reason.as_deref().unwrap().contains("no age extension"),
+        "{graph:?}"
+    );
 
     // Owners: superuser-only extensions belong to forgebase_super, the
     // others to the server role.
     let owner = |ext: &str| {
-        format!("SELECT r.rolname::text FROM pg_extension e JOIN pg_roles r ON r.oid = e.extowner WHERE e.extname = '{ext}'")
+        format!(
+            "SELECT r.rolname::text FROM pg_extension e JOIN pg_roles r ON r.oid = e.extowner WHERE e.extname = '{ext}'"
+        )
     };
-    assert_eq!(scalar(&db, &owner("pg_trgm")).await, Value::Text("forgebase_server".into()));
+    assert_eq!(
+        scalar(&db, &owner("pg_trgm")).await,
+        Value::Text("forgebase_server".into())
+    );
     if has_vector {
-        assert_eq!(scalar(&db, &owner("vector")).await, Value::Text("forgebase_super".into()));
+        assert_eq!(
+            scalar(&db, &owner("vector")).await,
+            Value::Text("forgebase_super".into())
+        );
         assert_eq!(
             scalar(&db, "SELECT ('[1,2,3]'::vector <-> '[1,2,4]'::vector)::text").await,
             Value::Text("1".into())
@@ -127,12 +144,18 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
         assert!(report.get(Feature::Vector).unwrap().engine.starts_with("pgvector 0.8"));
     }
     if has_pgmq {
-        assert_eq!(scalar(&db, &owner("pgmq")).await, Value::Text("forgebase_server".into()));
+        assert_eq!(
+            scalar(&db, &owner("pgmq")).await,
+            Value::Text("forgebase_server".into())
+        );
         write(&db, "SELECT pgmq.create('fb161')").await;
         write(&db, "SELECT pgmq.send('fb161', '{\"a\": 1}'::jsonb)").await;
     }
     if has_cron {
-        assert_eq!(scalar(&db, &owner("pg_cron")).await, Value::Text("forgebase_super".into()));
+        assert_eq!(
+            scalar(&db, &owner("pg_cron")).await,
+            Value::Text("forgebase_super".into())
+        );
         write(&db, "SELECT cron.schedule('fb161', '0 3 * * *', 'SELECT 1')").await;
         assert_eq!(
             scalar(&db, "SELECT username::text FROM cron.job WHERE jobname = 'fb161'").await,
@@ -148,8 +171,14 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
         Value::Text("1".into())
     );
     if has_pgmq {
-        assert_eq!(scalar(&reader, "SELECT count(*) FROM pgmq.meta").await, Value::Integer(1));
-        assert_eq!(scalar(&reader, "SELECT count(*) FROM pgmq.q_fb161").await, Value::Integer(1));
+        assert_eq!(
+            scalar(&reader, "SELECT count(*) FROM pgmq.meta").await,
+            Value::Integer(1)
+        );
+        assert_eq!(
+            scalar(&reader, "SELECT count(*) FROM pgmq.q_fb161").await,
+            Value::Integer(1)
+        );
     }
     reader.close().await;
 
@@ -170,7 +199,9 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
     db.close().await;
     h.stop().await.expect("stop");
     drop(h);
-    let h = Engine::prepare(&layout, &config(&engine, 18_231)).await.expect("restart");
+    let h = Engine::prepare(&layout, &config(&engine, 18_231))
+        .await
+        .expect("restart");
     let db = open(&h, Role::Server, false).await;
     db.migrate(None).await.expect("migrate again");
     let again = db

@@ -783,7 +783,10 @@ mod tests {
             let f = j["database"]["features"].as_object().unwrap();
             assert_eq!(f.len(), 5, "{f:?}");
             assert_eq!(f["trigram"]["state"], "active", "{f:?}");
-            assert!(f["trigram"]["engine"].as_str().unwrap().starts_with("pg_trgm "), "{f:?}");
+            assert!(
+                f["trigram"]["engine"].as_str().unwrap().starts_with("pg_trgm "),
+                "{f:?}"
+            );
             assert_eq!(f["trigram"]["schema"], "forgebase");
             assert_eq!(f["trigram"]["mode"], "auto");
             assert_eq!(f["graph"]["state"], "portable", "{f:?}");

@@ -1013,9 +1013,25 @@ mod tests {
         };
         hidden.shared_preload.clear();
         hidden.session_preload.clear();
-        assert!(hidden.usable(Feature::Cron).unwrap_err().contains("pg_read_all_settings"));
-        assert!(hidden.usable(Feature::Graph).unwrap_err().contains("pg_read_all_settings"));
-        hidden.offers.insert("pg_cron".into(), Offer { installed: Some("1.6".into()), ..Offer::default() });
+        assert!(
+            hidden
+                .usable(Feature::Cron)
+                .unwrap_err()
+                .contains("pg_read_all_settings")
+        );
+        assert!(
+            hidden
+                .usable(Feature::Graph)
+                .unwrap_err()
+                .contains("pg_read_all_settings")
+        );
+        hidden.offers.insert(
+            "pg_cron".into(),
+            Offer {
+                installed: Some("1.6".into()),
+                ..Offer::default()
+            },
+        );
         assert_eq!(hidden.usable(Feature::Cron), Ok(()));
         hidden.age_settings = true;
         assert_eq!(hidden.usable(Feature::Graph), Ok(()));
