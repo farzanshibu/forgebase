@@ -82,6 +82,8 @@ pub struct RunningServer {
     upkeep: JoinHandle<()>,
     jobs: JobService,
     job_pool: Option<forgebase_jobs::PoolHandle>,
+    /// pg_cron schedule sync and `LISTEN` wake-up (FB-165); dropping it stops both.
+    pgcron: Option<forgebase_jobs::PgCronHandle>,
     kv: KvService,
     vector: Option<VectorService>,
     resp: Option<forgebase_resp::RespHandle>,
@@ -527,6 +529,11 @@ async fn start_on(
     } else {
         None
     };
+    // FB-162: `vector.convert` moves vectors between pgvector and portable rows.
+    let registry = match &vector {
+        Some(v) => forgebase_vector::register_jobs(registry, v.clone()),
+        None => registry,
+    };
     // FB-93: the engines JavaScript functions reach through `ctx`. A module
     // switched off (FB-91) leaves its `ctx` service unset.
     if let Some(f) = &functions {
@@ -655,6 +662,9 @@ async fn start_on(
     });
 
     let job_pool = forgebase_jobs::start_pool(jobs.clone(), registry, pool);
+    // FB-165: schedules pg_cron can express fire from the database; the rest
+    // (and everything on SQLite or without pg_cron) stay on the Rust tick.
+    let pgcron = forgebase_jobs::attach_pgcron(&jobs, &db).await;
     if let Some(v) = &vector {
         v.start_background();
     }
@@ -684,6 +694,7 @@ async fn start_on(
         upkeep,
         jobs,
         job_pool: Some(job_pool),
+        pgcron,
         kv,
         vector,
         resp,
@@ -1119,6 +1130,7 @@ impl RunningServer {
         if let Some(resp) = self.resp.take() {
             resp.shutdown().await;
         }
+        drop(self.pgcron.take());
         if let Some(pool) = self.job_pool.take() {
             pool.shutdown().await;
         }

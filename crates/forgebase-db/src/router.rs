@@ -183,6 +183,10 @@ impl Backend for SetHandle {
         self.db.dialect()
     }
 
+    fn feature_active(&self, feature: crate::Feature) -> bool {
+        self.db.feature_active(feature)
+    }
+
     fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>> {
         self.db.fetch_all(stmt)
     }

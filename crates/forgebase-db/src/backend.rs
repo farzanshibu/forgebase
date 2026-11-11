@@ -281,6 +281,14 @@ pub trait Backend: Send + Sync + fmt::Debug {
     /// SQL rendering rules of this engine.
     fn dialect(&self) -> &dyn Dialect;
 
+    /// Whether `feature` runs on its PostgreSQL extension on this backend
+    /// (ADR-0029 §1.1; FB-166 asks it for `pg_trgm`). `false` unless the
+    /// backend knows better: SQLite never has one.
+    fn feature_active(&self, feature: crate::Feature) -> bool {
+        let _ = feature;
+        false
+    }
+
     /// Runs a read-only statement on the read pool. A statement that tries to
     /// write fails ([`DbError::ReadOnly`]) instead of writing.
     fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>>;
