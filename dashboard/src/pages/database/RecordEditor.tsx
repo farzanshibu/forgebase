@@ -14,7 +14,7 @@ import { UseFromCode } from "../../components/UseFromCode";
 import { record as recordSnippet, serverUrl } from "../../snippets";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
-import { Loading } from "../../components/ui";
+import { SkeletonLines } from "../../components/Skeleton";
 import RecordForm from "./RecordForm";
 import { parseJsonBody, toBody, toDraft, type Draft } from "./recordDraft";
 
@@ -34,7 +34,7 @@ export default function RecordEditor({ collection, collections, recordId, onClos
   if (load.error || load.loading) {
     return (
       <DetailSheet open onOpenChange={(o) => !o && onClose()} title={`Record ${recordId}`}>
-        {load.error ? <ErrorPanel error={load.error} onRetry={load.reload} /> : <Loading what="Loading record" />}
+        {load.error ? <ErrorPanel error={load.error} onRetry={load.reload} /> : <SkeletonLines lines={4} label="Loading record" />}
       </DetailSheet>
     );
   }

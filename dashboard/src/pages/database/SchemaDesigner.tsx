@@ -6,6 +6,7 @@ import { createCollection, deleteCollection, listCollections, updateCollection, 
 import type { CollectionDef, FieldDef } from "../../api";
 import { Check, Sel } from "../../components/controls";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
 import { HelpTip } from "../../components/HelpTip";
 import { PageHeader } from "../../components/PageHeader";
@@ -93,7 +94,7 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
       </div>
 
       <h2 className="text-sm font-medium">Fields</h2>
-      {rows.length === 0 && <p className="text-sm text-muted-foreground">No fields yet. Add the first one below.</p>}
+      {rows.length === 0 && <EmptyState compact title="No fields yet" why="Fields are the typed columns of each record, such as a title (text) or a price (number). Add the first one below." />}
       {rows.length > 0 && (
         <div className="overflow-x-auto">
           <Table className="w-full text-left text-sm" aria-label="Fields">

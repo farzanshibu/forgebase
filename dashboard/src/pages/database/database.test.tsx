@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderStudio, seeded } from "../../test/helpers";
+import { confirmDialog } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -31,17 +32,18 @@ describe("collection browser and grid", () => {
     expect(mock.problems).toEqual([]);
   });
 
-  it("filters, sorts and paginates through the API query string", async () => {
+  it("filters, sorts and pages through the API query string and keeps them in the URL", async () => {
     const mock = seeded();
     renderStudio("/database/c/products");
     await screen.findByText("Pen");
     await userEvent.type(screen.getByLabelText("Filter"), "title = Pen");
     await userEvent.click(screen.getByRole("button", { name: "Apply filter" }));
     await waitFor(() => expect(screen.queryByText("Notebook")).not.toBeInTheDocument());
-    expect(screen.getByText(/1 records/)).toBeInTheDocument();
-    await userEvent.clear(screen.getByLabelText("Filter"));
-    await userEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    expect(screen.getByText("1–1 of 1")).toBeInTheDocument();
+    expect(mock.calls.filter((c) => c.endsWith("/records")).length).toBeGreaterThan(1);
+    await userEvent.click(screen.getByRole("button", { name: "Clear filter" }));
     await screen.findByText("Notebook");
+    expect(screen.getByLabelText("Filter")).toHaveValue("");
     await userEvent.click(screen.getByRole("button", { name: /^price/ }));
     await userEvent.click(screen.getByRole("button", { name: /^price/ }));
     await waitFor(() => {
@@ -53,23 +55,33 @@ describe("collection browser and grid", () => {
     expect(mock.problems).toEqual([]);
   });
 
-  it("edits a cell inline with If-Match and shows per-field errors from the envelope", async () => {
+  it("starts from the filter, sort and page in the URL and shows each column's type", async () => {
+    const mock = seeded();
+    renderStudio('/database/c/products?filter=title%20~%20%22Note%22&sort=-price&page=1');
+    expect(await screen.findByText("Notebook")).toBeInTheDocument();
+    expect(screen.queryByText("Pen")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Filter")).toHaveValue('title ~ "Note"');
+    const q = mock.calls.filter((c) => c.endsWith("/records"));
+    expect(q.length).toBeGreaterThan(0);
+    const head = screen.getByRole("columnheader", { name: /^price/ });
+    expect(head).toHaveAttribute("aria-sort", "descending");
+    expect(within(head).getByText("number")).toBeInTheDocument();
+    expect(screen.getByText("Filter help")).toBeInTheDocument();
+  });
+
+  it("opens a record in the form from a row click and saves it with the loaded version", async () => {
     const mock = seeded();
     renderStudio("/database/c/products");
-    const cell = await screen.findByText("Pen");
-    await userEvent.dblClick(cell);
-    const input = screen.getByLabelText("Edit title");
-    await userEvent.clear(input);
-    await userEvent.type(input, "Marker{Enter}");
-    expect(await screen.findByText("Marker")).toBeInTheDocument();
-    expect(mock.records.products![0]).toMatchObject({ title: "Marker", _version: 2 });
-
-    // A bad number is caught before the request is sent.
-    await userEvent.dblClick(screen.getByText("12"));
-    const price = screen.getByLabelText("Edit price");
-    await userEvent.clear(price);
-    await userEvent.type(price, "abc{Enter}");
-    expect(await screen.findByText(/price: Not a number/)).toBeInTheDocument();
+    await userEvent.click(await screen.findByText("Pen"));
+    const form = await screen.findByRole("form", { name: "Edit record p1" });
+    const title = within(form).getByLabelText(/^title/);
+    expect(title).toHaveValue("Pen");
+    await userEvent.clear(title);
+    await userEvent.type(title, "Pencil");
+    await userEvent.click(within(form).getByRole("button", { name: "Save record" }));
+    await waitFor(() => expect(mock.records.products![0]).toMatchObject({ title: "Pencil", price: 3, _version: 2 }));
+    expect(mock.bodies["put /api/v1/collections/{collection}/records/{id}"]![0]).toMatchObject({ title: "Pencil", price: 3 });
+    expect(mock.headers.some((h) => h["If-Match"] === '"1"')).toBe(true);
     expect(mock.problems).toEqual([]);
   });
 
@@ -77,16 +89,15 @@ describe("collection browser and grid", () => {
     const mock = seeded();
     renderStudio("/database/c/products");
     await screen.findByText("Pen");
-    const row = screen.getByText("Pen").closest("tr")!;
-    await userEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete p1" }));
     expect(mock.records.products).toHaveLength(2);
-    await userEvent.click(screen.getByRole("button", { name: /Confirm delete/ }));
+    await confirmDialog("Delete record p1?", "Delete record");
     await waitFor(() => expect(screen.queryByText("Pen")).not.toBeInTheDocument());
 
     await userEvent.click(screen.getByLabelText("Select all"));
     await userEvent.click(screen.getByRole("button", { name: "Delete selected" }));
-    await userEvent.click(screen.getByRole("button", { name: /Confirm delete selected/ }));
-    expect(await screen.findByText(/No records/)).toBeInTheDocument();
+    await confirmDialog("Delete 1 records?", "Delete selected");
+    expect(await screen.findByRole("region", { name: "No records yet" })).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
 
@@ -102,80 +113,122 @@ describe("collection browser and grid", () => {
   });
 });
 
-describe("JSON editor", () => {
-  it("creates a record and surfaces validation errors per field", async () => {
+describe("record form", () => {
+  it("adds a record through typed fields and maps server field errors under their fields", async () => {
     const mock = seeded();
-    renderStudio("/database/c/products/r/new");
-    const box = await screen.findByLabelText("Record JSON");
-    await userEvent.clear(box);
-    await userEvent.click(box);
-    await userEvent.paste('{"price": 5}');
-    await userEvent.click(screen.getByRole("button", { name: "Create record" }));
-    expect(await screen.findByText(/validation_failed/)).toBeInTheDocument();
-    expect(screen.getByText(/title is required/)).toBeInTheDocument();
+    renderStudio("/database/c/products?record=new");
+    const form = await screen.findByRole("form", { name: "New record" });
+    await userEvent.type(within(form).getByLabelText(/^price/), "5");
+    await userEvent.click(within(form).getByRole("button", { name: "Create record" }));
+    // the form catches the missing required field before any request is sent
+    expect(await within(form).findByText("This field is required.")).toBeInTheDocument();
+    expect(mock.records.products).toHaveLength(2);
 
-    await userEvent.clear(box);
-    await userEvent.click(box);
-    await userEvent.paste('{"title": "Stapler", "price": 5}');
-    await userEvent.click(screen.getByRole("button", { name: "Create record" }));
+    await userEvent.type(within(form).getByLabelText(/^title/), "Stapler");
+    await userEvent.click(within(form).getByRole("button", { name: "Create record" }));
     await waitFor(() => expect(mock.records.products).toHaveLength(3));
-    expect(await screen.findByText(/Record rec101/)).toBeInTheDocument();
+    expect(mock.bodies["post /api/v1/collections/{collection}/records"]![0]).toEqual({ title: "Stapler", price: 5 });
+    expect(await screen.findByText("Record created")).toBeInTheDocument();
+    expect(mock.problems).toEqual([]);
   });
 
-  it("rejects invalid JSON locally and saves edits with the loaded version", async () => {
+  it("shows the server's field error under the field", async () => {
     const mock = seeded();
-    renderStudio("/database/c/products/r/p1");
-    const box = await screen.findByLabelText("Record JSON");
+    mock.on("POST", "/api/v1/collections/{collection}/records", () => ({
+      status: 400,
+      body: { error: { code: "validation_failed", message: "invalid record", request_id: "r9", details: { fields: { title: { code: "too_short", message: "title must have at least 3 characters" } } } } },
+    }));
+    renderStudio("/database/c/products?record=new");
+    const form = await screen.findByRole("form", { name: "New record" });
+    await userEvent.type(within(form).getByLabelText(/^title/), "ab");
+    await userEvent.click(within(form).getByRole("button", { name: "Create record" }));
+    expect(await within(form).findByText("title must have at least 3 characters")).toBeInTheDocument();
+    expect(within(form).getByLabelText(/^title/)).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("edits as JSON: bad JSON is refused locally, good JSON strips read-only keys", async () => {
+    const mock = seeded();
+    renderStudio("/database/c/products?record=p1");
+    const form = await screen.findByRole("form", { name: "Edit record p1" });
+    await userEvent.click(within(form).getByRole("switch", { name: "Edit as JSON" }));
+    const box = await within(form).findByLabelText("Record JSON");
+    expect(JSON.parse((box as HTMLTextAreaElement).value)).toMatchObject({ title: "Pen", price: 3 });
+    await userEvent.click(box);
+    await userEvent.clear(box);
     await userEvent.type(box, "oops");
-    await userEvent.click(screen.getByRole("button", { name: "Save record" }));
-    expect(await screen.findByText(/Invalid JSON/)).toBeInTheDocument();
+    await userEvent.click(within(form).getByRole("button", { name: "Save record" }));
+    expect((await within(form).findAllByText(/Invalid JSON/)).length).toBeGreaterThan(0);
 
     await userEvent.clear(box);
     await userEvent.click(box);
     await userEvent.paste('{"id":"p1","_version":1,"title":"Pencil","price":2}');
-    await userEvent.click(screen.getByRole("button", { name: "Save record" }));
-    expect(await screen.findByText("Saved.")).toBeInTheDocument();
-    const sent = mock.bodies["put /api/v1/collections/{collection}/records/{id}"]![0];
-    expect(sent).toEqual({ title: "Pencil", price: 2 }); // read-only keys stripped
+    await userEvent.click(within(form).getByRole("button", { name: "Save record" }));
+    await waitFor(() => expect(mock.records.products![0]).toMatchObject({ title: "Pencil", price: 2 }));
+    expect(mock.bodies["put /api/v1/collections/{collection}/records/{id}"]![0]).toEqual({ title: "Pencil", price: 2 }); // read-only keys stripped
     expect(mock.problems).toEqual([]);
   });
 
   it("reports a version conflict from a stale If-Match", async () => {
     const mock = seeded();
-    renderStudio("/database/c/products/r/p1");
-    await screen.findByLabelText("Record JSON");
+    renderStudio("/database/c/products?record=p1");
+    const form = await screen.findByRole("form", { name: "Edit record p1" });
+    await within(form).findByLabelText(/^title/);
     mock.records.products![0]!._version = 9; // changed by someone else
-    await userEvent.click(screen.getByRole("button", { name: "Save record" }));
-    expect(await screen.findByText(/version_conflict/)).toBeInTheDocument();
+    await userEvent.click(within(form).getByRole("button", { name: "Save record" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/version/i);
+  });
+
+  it("old record links open the form on the grid", async () => {
+    seeded();
+    renderStudio("/database/c/products/r/p2");
+    expect(await screen.findByRole("form", { name: "Edit record p2" })).toBeInTheDocument();
+    expect(screen.getByText("Notebook", { selector: "td" })).toBeInTheDocument();
   });
 });
 
 describe("schema designer", () => {
-  it("creates a collection with typed fields", async () => {
+  it("creates a collection with typed fields and typed options", async () => {
     const mock = seeded();
     renderStudio("/database/new");
-    await userEvent.type(await screen.findByLabelText("Name"), "orders");
+    await userEvent.type(await screen.findByLabelText(/^Name/), "orders");
     await userEvent.click(screen.getByRole("button", { name: "Add field" }));
     await userEvent.type(screen.getByLabelText("Field 1 name"), "total");
     await pick(screen.getByLabelText("Field 1 type"), "number");
     await userEvent.click(screen.getByLabelText("Field 1 required"));
+    await userEvent.type(screen.getByLabelText("Field 1 min"), "0");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Whole numbers only" }));
     await userEvent.click(screen.getByRole("button", { name: "Create collection" }));
     await waitFor(() => expect(mock.collections.map((c) => c.name)).toContain("orders"));
     const sent = mock.bodies["post /api/v1/collections"]![0] as { fields: Record<string, unknown>[] };
-    expect(sent.fields[0]).toMatchObject({ name: "total", type: "number", required: true });
+    expect(sent.fields[0]).toMatchObject({ name: "total", type: "number", required: true, min: 0, integer: true });
     expect(mock.problems).toEqual([]);
   });
 
-  it("shows per-field validation errors and bad options JSON", async () => {
+  it("explains type and schema mode with help tips", async () => {
     seeded();
     renderStudio("/database/new");
-    await screen.findByLabelText("Name");
-    await userEvent.click(screen.getByRole("button", { name: "Create collection" }));
-    expect(await screen.findByText(/name is required/)).toBeInTheDocument();
+    await screen.findByLabelText(/^Name/);
+    expect(screen.getByRole("button", { name: "What is Base collection?" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "What is Auth collection?" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "What is View collection?" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "What is Schema mode?" })).toBeInTheDocument();
+  });
+
+  it("validates names as you type and refuses a bad option value", async () => {
+    const mock = seeded();
+    renderStudio("/database/new");
+    const name = await screen.findByLabelText(/^Name/);
+    await userEvent.type(name, "1bad");
+    expect(await screen.findByText("Use letters, digits and underscores, starting with a letter.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create collection" })).toBeDisabled;
+    await userEvent.clear(name);
+    await userEvent.type(name, "good");
     await userEvent.click(screen.getByRole("button", { name: "Add field" }));
-    await userEvent.type(screen.getByLabelText("Field 1 options"), "{{nope");
+    await userEvent.type(screen.getByLabelText("Field 1 name"), "title");
+    await userEvent.type(screen.getByLabelText("Field 1 min length"), "abc");
     await userEvent.click(screen.getByRole("button", { name: "Create collection" }));
-    expect(await screen.findByText(/not valid JSON/)).toBeInTheDocument();
+    expect(await screen.findByText(/must be a whole number/)).toBeInTheDocument();
+    expect(mock.bodies["post /api/v1/collections"]).toBeUndefined();
   });
 
   it("edits an existing schema, keeping system fields locked", async () => {
@@ -186,8 +239,21 @@ describe("schema designer", () => {
     expect(nameInputs[0]).toBeDisabled(); // system field `id`
     await userEvent.type(nameInputs.at(-1)!, "sku");
     await userEvent.click(screen.getByRole("button", { name: "Save schema" }));
-    expect(await screen.findByText("Schema saved.")).toBeInTheDocument();
+    expect(await screen.findByText("Schema saved")).toBeInTheDocument();
     expect(mock.collections[0]!.fields.map((f) => f.name)).toContain("sku");
+  });
+
+  it("deletes a collection only after its name is typed", async () => {
+    const mock = seeded();
+    renderStudio("/database/c/products/schema");
+    await userEvent.click(await screen.findByRole("button", { name: "Delete collection" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete collection products?" });
+    const confirm = within(dialog).getByRole("button", { name: "Delete collection" });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/), "products");
+    await userEvent.click(confirm);
+    await waitFor(() => expect(mock.collections).toHaveLength(0));
+    expect(await screen.findByRole("region", { name: "No collections yet" })).toBeInTheDocument();
   });
 });
 
@@ -195,7 +261,7 @@ describe("index manager", () => {
   it("creates, rebuilds, shows stats and drops an index", async () => {
     const mock = seeded();
     renderStudio("/database/c/products/indexes");
-    await screen.findByText("No indexes.");
+    await screen.findByRole("region", { name: "No indexes yet" });
     await userEvent.type(screen.getByLabelText(/^Keys/), "price, -title");
     await userEvent.click(screen.getByRole("button", { name: "Create index" }));
     expect(await screen.findByText("idx_products_price_title")).toBeInTheDocument();
@@ -204,9 +270,9 @@ describe("index manager", () => {
     expect(await screen.findByText("8.00 KiB")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Rebuild" }));
     await waitFor(() => expect(mock.calls).toContain("post /api/v1/indexes/idx_products_price_title/rebuild"));
-    await userEvent.click(screen.getByRole("button", { name: "Drop" }));
-    await userEvent.click(screen.getByRole("button", { name: /Confirm drop/ }));
-    await screen.findByText("No indexes.");
+    await userEvent.click(screen.getByRole("button", { name: "Drop idx_products_price_title" }));
+    await confirmDialog("Drop index idx_products_price_title?", "Drop index");
+    await screen.findByRole("region", { name: "No indexes yet" });
     expect(mock.problems).toEqual([]);
   });
 
@@ -250,8 +316,8 @@ describe("SQL editor and slow queries", () => {
     await userEvent.click(screen.getByRole("button", { name: "Set threshold" }));
     expect(await screen.findByText("50 ms")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear log" }));
-    await userEvent.click(screen.getByRole("button", { name: /Confirm clear log/ }));
-    expect(await screen.findByText("No slow queries recorded.")).toBeInTheDocument();
+    await confirmDialog("Clear the slow-query log?", "Clear log");
+    expect(await screen.findByRole("region", { name: "No slow queries recorded" })).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
 });

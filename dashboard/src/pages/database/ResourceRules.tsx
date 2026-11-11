@@ -13,7 +13,8 @@
 import { useState } from "react";
 import { Input } from "panelui-web/input";
 import { useLoad } from "../../hooks";
-import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { SkeletonLines } from "../../components/Skeleton";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { notify } from "../../toaster";
 import { OP_TEXT, deleteResourceRules, expand, getRuleKind, putResourceRules, toRow, toRules, type Mode, type Row, type RuleKind, type RuleKindInfo, type RuleOp, type RuleSet } from "./rules";
@@ -21,7 +22,7 @@ import { OP_TEXT, deleteResourceRules, expand, getRuleKind, putResourceRules, to
 export function ResourceRules({ kind, name, noun }: { kind: RuleKind; name: string; noun: string }) {
   const info = useLoad((s) => getRuleKind(kind, s), `rules:${kind}`);
   if (info.error) return <Panel title="Access rules"><ErrorView error={info.error} onRetry={info.reload} /></Panel>;
-  if (!info.data) return <Panel title="Access rules"><Loading what="Loading rules" /></Panel>;
+  if (!info.data) return <Panel title="Access rules"><SkeletonLines lines={3} label="Loading rules" /></Panel>;
   const own = info.data.items.find((i) => i.name === name);
   const fallback = info.data.items.find((i) => i.name === "*");
   return <Editor key={`${kind}/${name}`} kind={kind} name={name} noun={noun} info={info.data} stored={own?.rules} fallback={fallback?.rules} onSaved={info.reload} />;
