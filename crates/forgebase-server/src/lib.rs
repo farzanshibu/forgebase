@@ -325,6 +325,28 @@ async fn start_on(
     let recovery = (db.kind() == forgebase_db::BackendKind::Postgres)
         .then(|| forgebase_db::twophase::spawn_recovery(router.clone(), forgebase_db::twophase::RECOVERY_INTERVAL));
     shards::prepare_data(auth.data()).await;
+    // FB-179 (ADR-0029 §2.9): finish a cluster restore: schema reconcile of
+    // every set, every replica marked `needs_rebuild`. Replica rebuilds go
+    // through the replicas service (FB-168), not here.
+    if let Ok(Some(_)) = forgebase_backup::topology::read_pending(layout) {
+        let backups = layout.backups_dir();
+        match forgebase_backup::topology::complete_restore(
+            &db,
+            layout,
+            forgebase_backup::topology::CompleteOptions {
+                router: Some(&router),
+                backups_dir: Some(&backups),
+                rebuilder: None,
+            },
+        )
+        .await
+        {
+            Ok(r) => tracing::info!(report = ?r, "cluster restore completed"),
+            Err(e) => {
+                tracing::warn!(error = %e, "cluster restore could not be completed; it is retried at the next start")
+            }
+        }
+    }
     // First-run setup (FB-90): a one-time token while no administrator
     // exists. The caller prints it; it never goes to the log.
     let setup_token = match auth.begin_setup().await {
