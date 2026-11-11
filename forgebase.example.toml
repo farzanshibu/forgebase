@@ -42,6 +42,18 @@ shutdown_timeout_secs = 30
 # public_url = "https://forgebase.example.com"
 
 [database]
+# Engine: "postgres" (PostgreSQL: the bundled server, or your own with
+# [database.postgres] mode = "external") or "sqlite" (one file,
+# <data_dir>/forgebase.db). The default is "postgres" in the standard release
+# and "sqlite" in the -lite release (`forgebase --version` says which), so the
+# key is commented out here. `forgebase init --database` writes it. The data
+# directory records what it holds in forgebase.backend: an existing project
+# keeps its engine, and a setting that contradicts it stops startup; moving a
+# project to the other engine is `forgebase db convert`.
+# Env: FORGEBASE_DATABASE_BACKEND
+# backend = "postgres"
+
+# The SQLite keys below apply to backend = "sqlite" only.
 # "full": fsync the WAL on every commit, so committed data survives power loss.
 # "normal": faster, but a power cut can lose the most recent commits.
 # Env: FORGEBASE_DB_SYNCHRONOUS
@@ -55,6 +67,55 @@ busy_timeout_ms = 5000
 # Parallel read-only connections. Range 1..=64.
 # Env: FORGEBASE_DB_READ_POOL_SIZE
 read_pool_size = 8
+
+# PostgreSQL (backend = "postgres"; ADR-0028 §6.1).
+[database.postgres]
+# "managed": ForgeBase runs the bundled PostgreSQL inside the data directory
+# (<data_dir>/postgres/), started and stopped with the server. "external": a
+# server you run, named by FORGEBASE_DATABASE_URL.
+# Env: FORGEBASE_DATABASE_POSTGRES_MODE
+mode = "managed"
+
+# External server only. Keep the URL (it holds a password) out of this file:
+# set FORGEBASE_DATABASE_URL in the environment or in .env.
+# url = "postgres://forgebase:secret@db.example.com/forgebase"
+
+# Read connections, 1..=64; writes always use one connection.
+# Env: FORGEBASE_DATABASE_POSTGRES_POOL_SIZE
+pool_size = 16
+
+# Managed only. "" (default): logins through the Unix socket in the data
+# directory only (`forgebase db psql`). A loopback "host:port", such as
+# "127.0.0.1:5433", also accepts TCP logins from this machine; other hosts
+# need TLS, which this version does not set up.
+# Env: FORGEBASE_DATABASE_POSTGRES_LISTEN
+listen = ""
+
+# Managed only. An installed PostgreSQL 17+ to run instead of the bundled one,
+# for example one shared read-only engine for several projects.
+# Env: FORGEBASE_DATABASE_POSTGRES_ENGINE_DIR
+engine_dir = ""
+
+# Native row-level security: "off", "logins" (policies for direct database
+# logins) or "enforce" (also the server's own connections).
+# Env: FORGEBASE_DATABASE_POSTGRES_NATIVE_RLS
+native_rls = "logins"
+
+# Extra postgresql.conf parameters for the bundled engine. Settings ForgeBase
+# manages (listen_addresses, port, shared_preload_libraries, wal_level,
+# archive_command, cron.* and the rest of its deny list) are refused.
+[database.postgres.settings]
+# shared_buffers = "256MB"
+# work_mem = "16MB"
+
+# Accelerators (ADR-0029 §1.1): "auto" uses the extension when the server has
+# it, "on" refuses to start without it, "off" always takes the portable path.
+[database.postgres.extensions]
+vector = "auto"   # pgvector. Env: FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_VECTOR
+graph = "auto"    # Apache AGE (openCypher). Env: FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_GRAPH
+queue = "auto"    # pgmq. Env: FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_QUEUE
+cron = "auto"     # pg_cron. Env: FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_CRON
+trigram = "auto"  # pg_trgm. Env: FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_TRIGRAM
 
 [log]
 # Tracing filter, for example "info" or "forgebase=debug". Must not be empty.

@@ -1,6 +1,8 @@
 //! `forgebase admin`: bootstrap and recover administrator (superuser)
 //! accounts directly in the data directory. Works while the server runs
-//! (SQLite serialises the writes); the database must be migrated.
+//! (SQLite serialises the writes; on the bundled PostgreSQL the command logs
+//! in to the server's engine, and starts it itself when no server runs); the
+//! database must be migrated.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
@@ -10,7 +12,8 @@ use anyhow::{Context, bail};
 use clap::Subcommand;
 use forgebase_auth::{AuthConfig, AuthService, ClientInfo};
 use forgebase_core::{Config, DataLayout};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
+use forgebase_server::database::{Access, PrimaryDatabase};
 use serde_json::json;
 
 use crate::GlobalArgs;
@@ -70,49 +73,49 @@ fn read_password(stdin: bool, flag: Option<String>) -> anyhow::Result<String> {
     Ok(pw)
 }
 
-async fn open(g: &GlobalArgs) -> anyhow::Result<(Database, AuthService)> {
-    open_config(&g.load()?.config).await
-}
-
-/// Opens the database and the auth service of `config`'s data directory.
-async fn open_config(config: &Config) -> anyhow::Result<(Database, AuthService)> {
-    let layout = DataLayout::new(&config.data_dir);
-    if !layout.is_initialized() {
-        bail!(
-            "no database at {} (run `forgebase init`)",
-            layout.database_path().display()
-        );
-    }
-    let db = Database::open(DbOptions::from_config(&config.database, layout.database_path()).create_if_missing(false))
-        .await?;
-    let status = db.migration_status().await?;
+/// Opens the database (any backend) and the auth service of the data directory.
+async fn open(g: &GlobalArgs, access: Access) -> anyhow::Result<(PrimaryDatabase, AuthService)> {
+    let loaded = g.load()?;
+    let primary = crate::commands::open_attached(&loaded, access).await?;
+    let status = match primary.db().migration_status().await {
+        Ok(s) => s,
+        Err(e) => {
+            primary.close().await;
+            return Err(e.into());
+        }
+    };
     if !status.is_up_to_date() {
-        db.close().await;
+        primary.close().await;
         bail!(
             "the database schema is at v{} of v{}: run `forgebase migrate` first",
             status.current_version,
             status.latest_version
         );
     }
+    match auth_on(&loaded.config, primary.db()).await {
+        Ok(auth) => Ok((primary, auth)),
+        Err(e) => {
+            primary.close().await;
+            Err(e)
+        }
+    }
+}
+
+/// The auth service of `config`'s data directory on an open database.
+async fn auth_on(config: &Config, db: &Database) -> anyhow::Result<AuthService> {
+    let layout = DataLayout::new(&config.data_dir);
     let mut cfg = AuthConfig::for_data_dir(layout.root());
     // The CLI never creates collections; the server does at startup.
     cfg.default_collection = None;
     let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
-    match AuthService::open_with_data(
+    Ok(AuthService::open_with_data(
         backend,
         Arc::new(forgebase_auth::data::DefaultAuthorizer),
         layout.root(),
         cfg,
         None,
     )
-    .await
-    {
-        Ok(auth) => Ok((db, auth)),
-        Err(e) => {
-            db.close().await;
-            Err(e.into())
-        }
-    }
+    .await?)
 }
 
 fn cli_client() -> ClientInfo {
@@ -136,7 +139,7 @@ pub async fn run(g: &GlobalArgs, cmd: AdminCommand) -> anyhow::Result<ExitCode> 
             password,
         } => {
             let pw = read_password(password_stdin, password)?;
-            let (db, auth) = open(g).await?;
+            let (db, auth) = open(g, Access::Write).await?;
             let res = auth.create_admin(&email, &pw, "cli", &cli_client()).await;
             db.close().await;
             let admin = res?;
@@ -148,7 +151,7 @@ pub async fn run(g: &GlobalArgs, cmd: AdminCommand) -> anyhow::Result<ExitCode> 
             password,
         } => {
             let pw = read_password(password_stdin, password)?;
-            let (db, auth) = open(g).await?;
+            let (db, auth) = open(g, Access::Write).await?;
             let res = auth.reset_admin_password(&email, &pw, "cli", &cli_client()).await;
             db.close().await;
             res?;
@@ -158,7 +161,8 @@ pub async fn run(g: &GlobalArgs, cmd: AdminCommand) -> anyhow::Result<ExitCode> 
             );
         }
         AdminCommand::List { json } => {
-            let (db, auth) = open(g).await?;
+            // Opening the auth service prunes expired rows: a writing login.
+            let (db, auth) = open(g, Access::Write).await?;
             let res = auth.list_admins().await;
             db.close().await;
             let admins = res?;
@@ -245,10 +249,11 @@ pub fn preset_admin(args: &InitAdminArgs) -> anyhow::Result<Option<(String, Stri
 }
 
 /// The administrator step of `forgebase init`, after the database is
-/// migrated: `--no-admin`, the `--admin-email` preset, or a prompt on a
-/// terminal. Never creates a second administrator.
+/// migrated, on `init`'s open database: `--no-admin`, the `--admin-email`
+/// preset, or a prompt on a terminal. Never creates a second administrator.
 pub async fn init_admin(
     config: &Config,
+    db: &Database,
     args: &InitAdminArgs,
     preset: Option<(String, String)>,
 ) -> anyhow::Result<InitAdmin> {
@@ -257,7 +262,7 @@ pub async fn init_admin(
     }
     // A plain read: opening the auth service creates the master key, which
     // `init` leaves to the first start unless it creates an administrator.
-    if admin_exists(config).await? {
+    if admin_exists(db).await? {
         return Ok(InitAdmin::Exists);
     }
     let creds = match preset {
@@ -278,21 +283,15 @@ pub async fn init_admin(
     let Some((email, pw)) = creds else {
         return Ok(InitAdmin::Skipped("declined".into()));
     };
-    let (db, auth) = open_config(config).await?;
+    let auth = auth_on(config, db).await?;
     let res = auth.create_admin(&email, &pw, "cli", &cli_client()).await;
-    db.close().await;
     Ok(InitAdmin::Created(res?.email))
 }
 
-/// Whether the data directory of `config` has an administrator, over a
-/// read-only connection.
-async fn admin_exists(config: &Config) -> anyhow::Result<bool> {
-    let layout = DataLayout::new(&config.data_dir);
-    let db = Database::open(DbOptions::from_config(&config.database, layout.database_path()).read_only()).await?;
+/// Whether the database has an administrator (a read).
+async fn admin_exists(db: &Database) -> anyhow::Result<bool> {
     let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
-    let res = forgebase_auth::setup::admin_exists(&backend).await;
-    db.close().await;
-    Ok(res?)
+    Ok(forgebase_auth::setup::admin_exists(&backend).await?)
 }
 
 /// Attempts at a valid email and matching passwords before giving up.

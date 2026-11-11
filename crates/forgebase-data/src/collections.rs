@@ -2,29 +2,36 @@
 //! history (ADR-0003 §4).
 //!
 //! Every change runs in one write transaction together with its catalog and
-//! history rows. Table rebuilds (type changes, dropped fields) suspend
-//! foreign-key enforcement for the transaction and check the whole database
-//! before commit (SQLite's documented procedure). Any failure — bad data for a
-//! new type, a duplicate under a new unique field, a view that would break —
+//! history rows. On SQLite, table rebuilds (type changes, dropped fields)
+//! suspend foreign-key enforcement for the transaction and check the whole
+//! database before commit (SQLite's documented procedure). On PostgreSQL the
+//! same changes are `ALTER TABLE` statements (`ALTER COLUMN … TYPE … USING`,
+//! `DROP COLUMN`) in one `SchemaChange` transaction, with foreign keys
+//! deferred to the commit (ADR-0028 §7.5). Any failure — bad data for a new
+//! type, a duplicate under a new unique field, a view that would break —
 //! rolls everything back: table, catalog and history stay as they were.
 
 use std::collections::{BTreeMap, HashMap};
 
 use forgebase_db::{Statement, TxMode, Value, WriteTx};
 use forgebase_query::{StatementKind, analyze_statement, split_statements};
-use forgebase_schema::{Collection, CollectionType, Field, FieldKind, generate_id, is_valid_id, now_timestamp};
+use forgebase_schema::{
+    Collection, CollectionType, Field, FieldKind, Storage, generate_id, is_valid_id, now_timestamp,
+};
 use serde::Serialize;
 use serde_json::Value as Json;
 
 use crate::access::{READS_TENANT_DATA_OPTION, TENANT_COLUMN, is_tenant_scoped};
 use crate::catalog::CatalogSnapshot;
+use crate::catalog::pg::DependentView;
 use crate::ddl::{
-    DdlLog, SYSTEM_COLUMNS, TMP_PREFIX, column_signature, column_sql, create_table_sql, object_exists, record_history,
-    relation_table, system_column_names, verify_collections,
+    DdlLog, SYSTEM_COLUMNS, TMP_PREFIX, column_signature, column_sql, create_table_sql, create_view_sql,
+    foreign_key_sql, introspect_collection_columns, is_pg, object_exists, pg_regclass, record_history, rel,
+    relation_table, storage_check, storage_type, system_column_names, verify_collections,
 };
 use crate::indexes::{
     IndexDefinition, IndexKind, auto_indexes, create_index_sql, drop_index_sql, fields_used, fts_trigger_sql,
-    insert_index_row, managed_indexes, rename_fields,
+    insert_index_row, managed_indexes, rename_fields, tenant_index_name,
 };
 use crate::{AccessContext, Action, DataError, DataService, finish};
 
@@ -139,6 +146,9 @@ impl DataService {
             }
         }
         def.validate()?;
+        // New names must also be valid on PostgreSQL, on both backends, so a
+        // SQLite project can always be converted (FB-151).
+        def.validate_postgres_names(None)?;
         let view_sql = match def.kind {
             CollectionType::View => Some(
                 self.checked_view_query(ctx, def.view_query.as_deref().unwrap_or(""))
@@ -162,20 +172,20 @@ impl DataService {
             }
             let mut log = DdlLog::new(&mut *tx);
             if let Some(q) = &view_sql {
-                log.run(format!("CREATE VIEW {} AS {q}", d.quote_ident(&def.name))).await?;
+                log.run(create_view_sql(d, &def.name, q)).await?;
                 def.fields = infer_view_fields(log.tx, d, &def.name).await?;
             } else {
                 log.run(create_table_sql(d, &def.name, &def, &cat)?).await?;
                 if is_tenant_scoped(&def) {
                     log.run(format!(
                         "CREATE INDEX {} ON {} ({})",
-                        d.quote_ident(&format!("auto_{}_tenant", def.id)),
-                        d.quote_ident(&def.name),
+                        d.quote_ident(&tenant_index_name(d, &def)),
+                        rel(d, &def.name),
                         d.quote_ident(TENANT_COLUMN)
                     ))
                     .await?;
                 }
-                for ix in auto_indexes(&def) {
+                for ix in auto_indexes(d, &def) {
                     for sql in create_index_sql(d, &cat, &def, &ix)? {
                         log.run(sql).await?;
                     }
@@ -196,7 +206,7 @@ impl DataService {
                 ],
             )
             .await?;
-            for ix in auto_indexes(&def) {
+            for ix in auto_indexes(d, &def) {
                 insert_index_row(&mut log, &def, &ix, "auto").await?;
             }
             let statements = std::mem::take(&mut log.statements);
@@ -274,6 +284,9 @@ impl DataService {
             def.fields.clear();
         }
         def.validate()?;
+        // On PostgreSQL every name must fit; on SQLite only new names must
+        // (stored ones keep working, see `Collection::validate_postgres_names`).
+        def.validate_postgres_names((!is_pg(d)).then_some(&current))?;
         let view_sql = match def.kind {
             CollectionType::View => Some(
                 self.checked_view_query(ctx, def.view_query.as_deref().unwrap_or(""))
@@ -301,9 +314,13 @@ impl DataService {
             }
             let mut log = DdlLog::new(&mut *tx);
             if let Some(q) = &view_sql {
-                log.run(format!("DROP VIEW {}", d.quote_ident(&old.name))).await?;
-                log.run(format!("CREATE VIEW {} AS {q}", d.quote_ident(&def.name))).await?;
+                // PostgreSQL refuses to drop a view other views read: take
+                // them down and put them back (they must still compile).
+                let saved = drop_dependent_views(&mut log, d, &old.name, None).await?;
+                log.run(format!("DROP VIEW {}", rel(d, &old.name))).await?;
+                log.run(create_view_sql(d, &def.name, q)).await?;
                 def.fields = infer_view_fields(log.tx, d, &def.name).await?;
+                restore_views(&mut log, &saved).await?;
             } else {
                 self.alter_table(&mut log, &cat, &old, &def).await?;
             }
@@ -343,7 +360,7 @@ impl DataService {
         let q = |s: &str| d.quote_ident(s);
         let mut table = old.name.clone();
         if old.name != new.name {
-            log.run(format!("ALTER TABLE {} RENAME TO {}", q(&old.name), q(&new.name)))
+            log.run(format!("ALTER TABLE {} RENAME TO {}", rel(d, &old.name), q(&new.name)))
                 .await?;
             table = new.name.clone();
         }
@@ -354,6 +371,9 @@ impl DataService {
         let mut renames: BTreeMap<String, String> = BTreeMap::new();
         let mut rebuild = !dropped.is_empty();
         let mut added: Vec<&Field> = Vec::new();
+        // Fields whose column changes (type, check or foreign key): the old
+        // definition under its new name, and the new one.
+        let mut changed: Vec<(Field, &Field)> = Vec::new();
         // Renamed relation targets keep their table names; compare signatures
         // with the *new* names so a rename alone does not force a rebuild.
         let mut new_cat = cat.clone();
@@ -372,6 +392,7 @@ impl DataService {
                     let new_sig = column_signature(d, f, relation_table(f, new, &new_cat)?.as_deref());
                     if old_sig != new_sig {
                         rebuild = true;
+                        changed.push((o_renamed, f));
                     }
                 }
             }
@@ -406,15 +427,22 @@ impl DataService {
                 .unwrap_or_default();
             log.run(format!(
                 "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                q(&table),
+                rel(d, &table),
                 q(from_name),
                 q(to)
             ))
             .await?;
         }
 
-        let desired_auto = auto_indexes(new);
-        if rebuild {
+        let desired_auto = auto_indexes(d, new);
+        // Automatic indexes the PostgreSQL column changes dropped and that
+        // must be created again.
+        let mut recreate_auto: Vec<String> = Vec::new();
+        if rebuild && is_pg(d) {
+            recreate_auto = self
+                .alter_columns_pg(log, &new_cat, new, &table, &dropped, &changed, &old_auto, &manual)
+                .await?;
+        } else if rebuild {
             // Objects SQLite drops with the table that ForgeBase does not
             // manage (indexes and triggers created with raw SQL).
             let mut managed_names: Vec<String> = old_auto
@@ -483,11 +511,12 @@ impl DataService {
             for sql in keep {
                 log.run(sql).await?;
             }
-        } else {
+        }
+        if !rebuild || is_pg(d) {
             for f in &added {
                 log.run(format!(
                     "ALTER TABLE {} ADD COLUMN {}",
-                    q(&table),
+                    rel(d, &table),
                     column_sql(d, f, relation_table(f, new, &new_cat)?.as_deref())
                 ))
                 .await?;
@@ -502,7 +531,7 @@ impl DataService {
             }
             for ix in desired_auto
                 .iter()
-                .filter(|n| !old_auto.iter().any(|o| o.name == n.name))
+                .filter(|n| !old_auto.iter().any(|o| o.name == n.name) || recreate_auto.contains(&n.name))
             {
                 for sql in create_index_sql(d, &new_cat, new, ix)? {
                     log.run(sql).await.map_err(|e| unique_error(e, &new.name))?;
@@ -523,6 +552,114 @@ impl DataService {
             insert_index_row(log, new, ix, "manual").await?;
         }
         Ok(())
+    }
+
+    /// PostgreSQL: drops and changes columns in place (ADR-0028 §7.5).
+    ///
+    /// Per changed field: its single-column `CHECK` and foreign-key
+    /// constraints are dropped, the column gets its new type through a
+    /// conversion that fails on values that do not fit (as SQLite's `STRICT`
+    /// copy does), and the new constraints are added (a new foreign key is
+    /// checked against the existing rows at once). Views reading a changed
+    /// column are dropped first and created again after (PostgreSQL refuses
+    /// to change a column a view reads); a dropped column that a view reads
+    /// is a `schema_conflict`. Managed indexes using a changed field are
+    /// dropped and created again from their definitions. Returns the
+    /// automatic indexes the caller must create again.
+    #[allow(clippy::too_many_arguments)]
+    async fn alter_columns_pg(
+        &self,
+        log: &mut DdlLog<'_>,
+        new_cat: &CatalogSnapshot,
+        new: &Collection,
+        table: &str,
+        dropped: &[&Field],
+        changed: &[(Field, &Field)],
+        old_auto: &[IndexDefinition],
+        manual: &[IndexDefinition],
+    ) -> Result<Vec<String>, DataError> {
+        let d = self.inner.backend.dialect();
+        let q = |s: &str| d.quote_ident(s);
+        let t = rel(d, table);
+        let regclass = pg_regclass(d, table);
+
+        for f in dropped {
+            let readers =
+                crate::catalog::pg::dependent_views(log.tx, &regclass, Some(std::slice::from_ref(&f.name))).await?;
+            if let Some(v) = readers.first() {
+                return Err(view_conflict(&v.name, &format!("it reads {table}.{}", f.name)));
+            }
+        }
+
+        let changed_names: Vec<String> = changed.iter().map(|(_, f)| f.name.clone()).collect();
+        let lower: Vec<String> = changed_names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let saved = if changed.is_empty() {
+            Vec::new()
+        } else {
+            drop_dependent_views(log, d, table, Some(&changed_names)).await?
+        };
+
+        // Managed indexes on changed fields are built again from their
+        // definitions (an expression may not fit the new type).
+        let uses_changed = |ix: &IndexDefinition| -> Result<bool, DataError> {
+            Ok(fields_used(ix)?.iter().any(|u| lower.contains(u)))
+        };
+        let mut recreate_auto = Vec::new();
+        for ix in old_auto {
+            if uses_changed(ix)? {
+                for sql in drop_index_sql(d, ix) {
+                    log.run(sql).await?;
+                }
+                recreate_auto.push(ix.name.clone());
+            }
+        }
+        let mut rebuild_manual = Vec::new();
+        for ix in manual {
+            if uses_changed(ix)? {
+                for sql in drop_index_sql(d, ix) {
+                    log.run(sql).await?;
+                }
+                rebuild_manual.push(ix);
+            }
+        }
+
+        for f in dropped {
+            log.run(format!("ALTER TABLE {t} DROP COLUMN {}", q(&f.name))).await?;
+        }
+        for (old_f, new_f) in changed {
+            let col = q(&new_f.name);
+            for con in crate::catalog::pg::column_constraints(log.tx, &regclass, &new_f.name).await? {
+                log.run(format!("ALTER TABLE {t} DROP CONSTRAINT {}", q(&con))).await?;
+            }
+            let (from, to) = (old_f.kind.storage(), new_f.kind.storage());
+            if from != to {
+                log.run(format!(
+                    "ALTER TABLE {t} ALTER COLUMN {col} TYPE {} USING {}",
+                    storage_type(d, to),
+                    pg_convert(&col, from, to)
+                ))
+                .await
+                .map_err(|e| conversion_error(e, &new.name))?;
+            }
+            if let Some(check) = storage_check(d, to, &col) {
+                log.run(format!("ALTER TABLE {t} ADD {check}"))
+                    .await
+                    .map_err(|e| conversion_error(e, &new.name))?;
+            }
+            if let Some(fk) = foreign_key_sql(d, new_f, relation_table(new_f, new, new_cat)?.as_deref()) {
+                // A value with no target fails here as `foreign_key_violation`,
+                // the code SQLite's commit-time check gives.
+                log.run(format!("ALTER TABLE {t} ADD FOREIGN KEY ({col}) {fk}")).await?;
+            }
+        }
+
+        for ix in rebuild_manual {
+            for sql in create_index_sql(d, new_cat, new, ix)? {
+                log.run(sql).await.map_err(|e| unique_error(e, &new.name))?;
+            }
+        }
+        restore_views(log, &saved).await?;
+        Ok(recreate_auto)
     }
 
     /// Drops a collection, its table or view, its managed indexes and record
@@ -557,6 +694,14 @@ impl DataService {
                 }
             }
             let mut log = DdlLog::new(&mut *tx);
+            if is_pg(d) {
+                // PostgreSQL refuses to drop what a view reads; SQLite drops
+                // it and the verification below finds the broken view.
+                let readers = crate::catalog::pg::dependent_views(log.tx, &pg_regclass(d, &coll.name), None).await?;
+                if let Some(v) = readers.first() {
+                    return Err(view_conflict(&v.name, &format!("it reads {}", coll.name)));
+                }
+            }
             for (ix, _) in managed_indexes(log.tx, &coll.id).await? {
                 if ix.kind == IndexKind::Fulltext {
                     for sql in drop_index_sql(d, &ix) {
@@ -565,7 +710,7 @@ impl DataService {
                 }
             }
             let kind = if coll.is_view() { "VIEW" } else { "TABLE" };
-            log.run(format!("DROP {kind} {}", d.quote_ident(&coll.name))).await?;
+            log.run(format!("DROP {kind} {}", rel(d, &coll.name))).await?;
             for sql in [
                 "DELETE FROM _forgebase_indexes WHERE collection_id = ?1",
                 "DELETE FROM _forgebase_record_versions WHERE collection_id = ?1",
@@ -650,12 +795,11 @@ async fn infer_view_fields(
     d: &dyn forgebase_db::Dialect,
     view: &str,
 ) -> Result<Vec<Field>, DataError> {
-    let info = tx
-        .fetch_all(&Statement::raw(format!("PRAGMA table_info({})", d.quote_ident(view))))
-        .await?;
+    let info = tx.fetch_all(&introspect_collection_columns(d, view)).await?;
     let (Some(ni), Some(ti)) = (info.column("name"), info.column("type")) else {
-        return Err(DataError::Internal("PRAGMA table_info has no name/type".into()));
+        return Err(DataError::Internal("column introspection has no name/type".into()));
     };
+    let pg = is_pg(d);
     let mut has_id = false;
     let mut fields = Vec::new();
     for r in &info.rows {
@@ -668,7 +812,20 @@ async fn infer_view_fields(
         if SYSTEM_COLUMNS.contains(&name.to_ascii_lowercase().as_str()) {
             continue;
         }
-        let kind = if ty.contains("INT") {
+        let kind = if pg && ty.starts_with("BOOL") {
+            // PostgreSQL booleans decode as 0/1, like ForgeBase's bool fields.
+            FieldKind::Bool
+        } else if pg
+            && ["UUID", "DATE", "TIME", "INTERVAL", "INET", "CIDR", "MACADDR"]
+                .iter()
+                .any(|t| ty.contains(t))
+        {
+            // Read back as text (ADR-0028 §7.3, decoding).
+            FieldKind::Text {
+                min_length: None,
+                max_length: None,
+            }
+        } else if ty.contains("INT") {
             FieldKind::Number {
                 min: None,
                 max: None,
@@ -724,5 +881,78 @@ fn unique_error(e: DataError, coll: &str) -> DataError {
             format!("existing records of {coll} have duplicate values for a field that is now unique"),
         ),
         other => other,
+    }
+}
+
+/// Drops the views that read `table` (or, with `columns`, those columns of
+/// it), with the views reading them, so the table can change; returns them
+/// in creation order for [`restore_views`]. PostgreSQL only; nothing on
+/// SQLite, whose views name columns lazily (and whose rebuild keeps them).
+async fn drop_dependent_views(
+    log: &mut DdlLog<'_>,
+    d: &dyn forgebase_db::Dialect,
+    table: &str,
+    columns: Option<&[String]>,
+) -> Result<Vec<DependentView>, DataError> {
+    if !is_pg(d) {
+        return Ok(Vec::new());
+    }
+    let views = crate::catalog::pg::dependent_views(log.tx, &pg_regclass(d, table), columns).await?;
+    for v in views.iter().rev() {
+        log.run(format!("DROP VIEW {}", v.qualified)).await?;
+    }
+    Ok(views)
+}
+
+/// Creates views [`drop_dependent_views`] took down. A view that no longer
+/// compiles is a `schema_conflict` (the transaction then rolls back).
+async fn restore_views(log: &mut DdlLog<'_>, views: &[DependentView]) -> Result<(), DataError> {
+    for v in views {
+        log.run(v.create_sql()).await.map_err(|e| match e {
+            DataError::Db(db) => view_conflict(&v.name, &db.to_string()),
+            other => other,
+        })?;
+    }
+    Ok(())
+}
+
+/// The error for a change that would break view `view`.
+fn view_conflict(view: &str, why: &str) -> DataError {
+    DataError::conflict(
+        "schema_conflict",
+        format!("this change would break collection {view:?} ({why}); change collections through the collections API"),
+    )
+}
+
+/// PostgreSQL conversion of column `col` between storage classes, for
+/// `ALTER COLUMN … TYPE … USING`. It keeps SQLite's `STRICT` copy semantics:
+/// a value that does not fit fails the statement (`incompatible_data`)
+/// instead of being rounded or dropped: integral text and integral reals
+/// become integers, a fraction is refused; numbers become text in SQLite's
+/// form (`3.0` for an integral real); JSON is checked by the `jsonb` cast.
+fn pg_convert(col: &str, from: Storage, to: Storage) -> String {
+    use Storage::{Bool, Integer, Json, Real, Text};
+    // Text (and JSON as text) to an exact integer: through numeric, refusing
+    // fractions with an error that names the value.
+    let integral = |src: &str, ty: &str| {
+        format!(
+            "CASE WHEN ({src})::numeric = trunc(({src})::numeric) THEN ({src})::numeric::{ty} \
+             ELSE ('not an integer: ' || ({src})::text)::{ty} END"
+        )
+    };
+    match (from, to) {
+        (Real, Text) => format!(
+            "CASE WHEN {col} = trunc({col}) AND abs({col}) < 1e15 THEN trunc({col})::bigint::text || '.0' ELSE {col}::text END"
+        ),
+        (_, Text) => format!("{col}::text"),
+        (Text | Json | Real, Integer) => integral(&format!("{col}::text"), "bigint"),
+        (Text | Json | Real, Bool) => integral(&format!("{col}::text"), "smallint"),
+        (Bool, Integer) => format!("{col}::bigint"),
+        (Integer, Bool) => format!("{col}::smallint"),
+        (Json, Real) => format!("({col}::text)::double precision"),
+        (_, Real) => format!("{col}::double precision"),
+        (Text, Json) => format!("{col}::jsonb"),
+        (_, Json) => format!("to_jsonb({col})"),
+        (Integer, Integer) | (Bool, Bool) => col.to_owned(),
     }
 }
