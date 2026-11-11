@@ -708,7 +708,7 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
         );
         return Ok(ExitCode::SUCCESS);
     }
-    let Some(source) = cli.source else {
+    let Some(source) = cli.source.clone() else {
         bail!("name a backup directory, a snapshot id, `latest` or a time (or use --recover)");
     };
     let store = SnapshotStore::new(&layout);
