@@ -36,7 +36,10 @@ fn short_tempdir(prefix: &str) -> tempfile::TempDir {
 
 /// `18.3` from the engine's own `postgres --version`.
 fn engine_version(engine: &Path) -> String {
-    let out = Command::new(engine.join("bin/postgres")).arg("--version").output().unwrap();
+    let out = Command::new(engine.join("bin/postgres"))
+        .arg("--version")
+        .output()
+        .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.split_whitespace()
         .last()
@@ -182,8 +185,14 @@ async fn cluster() -> Option<Cluster> {
         .await
         .unwrap();
     s.router.reload().await.unwrap();
-    s.router.place("tenant-a", &alpha.0.id, PlacementState::Active).await.unwrap();
-    s.router.place("tenant-b", &beta.0.id, PlacementState::Active).await.unwrap();
+    s.router
+        .place("tenant-a", &alpha.0.id, PlacementState::Active)
+        .await
+        .unwrap();
+    s.router
+        .place("tenant-b", &beta.0.id, PlacementState::Active)
+        .await
+        .unwrap();
     exec(&s.control, &set_marker_sql("fb179", "control-before")).await;
     exec(&alpha.1, &set_marker_sql("fb179", "alpha-before")).await;
     // beta has no _forgebase_meta yet (never migrated): its rows live in a plain table.
@@ -194,7 +203,13 @@ async fn cluster() -> Option<Cluster> {
 
 fn set_sources(c: &Cluster, engine: &Path, scratch: &Path) -> Vec<SetSource> {
     let topo_sets = [
-        (dbtopo::DbSet::control(), c.s.control.clone(), 0usize, "postgres/data".to_owned(), "control".to_owned()),
+        (
+            dbtopo::DbSet::control(),
+            c.s.control.clone(),
+            0usize,
+            "postgres/data".to_owned(),
+            "control".to_owned(),
+        ),
         (
             c.alpha.0.clone(),
             c.alpha.1.clone(),
@@ -302,7 +317,11 @@ async fn a_sharded_cluster_backs_up_one_set_each_and_restores_every_set() {
     // The shard backups hold the database only; control also keeps storage, indexes.
     let on_disk = forgebase_backup::Manifest::read(&dest.join("sets/1")).unwrap();
     assert!(on_disk.database_only && on_disk.is_physical_postgres());
-    assert!(!forgebase_backup::Manifest::read(&dest.join("control")).unwrap().database_only);
+    assert!(
+        !forgebase_backup::Manifest::read(&dest.join("control"))
+            .unwrap()
+            .database_only
+    );
     // The manifest is what is on disk.
     assert_eq!(topology::ClusterManifest::read(&dest).unwrap(), m);
 
@@ -349,7 +368,9 @@ async fn a_sharded_cluster_backs_up_one_set_each_and_restores_every_set() {
         assert!(root.join(d).join("PG_VERSION").is_file(), "{d}");
         assert!(!root.join(d).join("standby.signal").exists());
     }
-    let file = dbtopo::read_topology_file(&root.join(dbtopo::TOPOLOGY_FILE)).unwrap().unwrap();
+    let file = dbtopo::read_topology_file(&root.join(dbtopo::TOPOLOGY_FILE))
+        .unwrap()
+        .unwrap();
     assert_eq!(file.topology.epoch, topo.epoch);
     assert_eq!(file.topology.sets.len(), 3);
     let pending = topology::read_pending(&dst_layout).unwrap().unwrap();
@@ -402,11 +423,20 @@ async fn a_sharded_cluster_backs_up_one_set_each_and_restores_every_set() {
     assert_eq!(done.migrated[0].0, c.beta.0.id);
     assert!(done.migrated[0].1 >= 1);
     assert!(done.up_to_date.contains(&"control".to_owned()) && done.up_to_date.contains(&c.alpha.0.id));
-    assert_eq!(db_.schema_version().await.unwrap(), head, "beta is at head after the reconcile");
+    assert_eq!(
+        db_.schema_version().await.unwrap(),
+        head,
+        "beta is at head after the reconcile"
+    );
     assert!(done.marked.is_empty(), "no replicas in this cluster");
-    assert!(topology::read_pending(&dst_layout).unwrap().is_none(), "the pending file is gone");
+    assert!(
+        topology::read_pending(&dst_layout).unwrap().is_none(),
+        "the pending file is gone"
+    );
     // Running it again finds nothing to do.
-    let again = topology::complete_restore(&dc, &dst_layout, CompleteOptions::default()).await.unwrap();
+    let again = topology::complete_restore(&dc, &dst_layout, CompleteOptions::default())
+        .await
+        .unwrap();
     assert!(!again.pending);
     // The rows survived the migration.
     assert_eq!(
@@ -460,7 +490,10 @@ async fn a_damaged_or_incomplete_cluster_backup_is_refused() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, BackupError::Invalid(ref m) if m.contains("beta")), "{err}");
+    assert!(
+        matches!(err, BackupError::Invalid(ref m) if m.contains("beta")),
+        "{err}"
+    );
     assert!(!dest.exists());
     // A data directory a restore cannot use is refused too.
     sources.push(SetSource {
@@ -482,7 +515,10 @@ async fn a_damaged_or_incomplete_cluster_backup_is_refused() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, BackupError::Invalid(ref m) if m.contains("data directory")), "{err}");
+    assert!(
+        matches!(err, BackupError::Invalid(ref m) if m.contains("data directory")),
+        "{err}"
+    );
 
     // A good backup, then damage.
     let dest = tmp.path().join("bk");
@@ -573,7 +609,10 @@ async fn a_damaged_or_incomplete_cluster_backup_is_refused() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, BackupError::Conflict(ref m) if m.contains("--force")), "{err}");
+    assert!(
+        matches!(err, BackupError::Conflict(ref m) if m.contains("--force")),
+        "{err}"
+    );
     let running = Running::start(&engine, &root.join("postgres/nodes/alpha-primary/data"));
     let err = topology::restore_cluster(
         &dest,
@@ -590,7 +629,10 @@ async fn a_damaged_or_incomplete_cluster_backup_is_refused() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, BackupError::Conflict(ref m) if m.contains("still running")), "{err}");
+    assert!(
+        matches!(err, BackupError::Conflict(ref m) if m.contains("still running")),
+        "{err}"
+    );
     drop(running);
     // Stopped, with --force: the old data is kept aside.
     let forced = topology::restore_cluster(
@@ -651,13 +693,17 @@ async fn an_interrupted_cluster_restore_is_rolled_back() {
         },
         ..Default::default()
     };
-    topology::restore_cluster(&dest, &target, opts(false, None)).await.unwrap();
+    topology::restore_cluster(&dest, &target, opts(false, None))
+        .await
+        .unwrap();
     let marker_file = target.root().join("postgres/nodes/beta-primary/data/PG_VERSION");
     std::fs::write(target.root().join("postgres/nodes/beta-primary/data/mine"), b"keep me").unwrap();
     assert!(marker_file.is_file());
 
     // A crash half-way through the swap leaves the journal; the next restore rolls it back.
-    let err = topology::restore_cluster(&dest, &target, opts(true, Some(4))).await.unwrap_err();
+    let err = topology::restore_cluster(&dest, &target, opts(true, Some(4)))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("simulated crash"), "{err}");
     assert!(forgebase_backup::restore::interrupted(&target));
     assert!(forgebase_backup::restore::recover(&target).unwrap());
@@ -667,11 +713,17 @@ async fn an_interrupted_cluster_restore_is_rolled_back() {
         b"keep me",
         "the previous data is back"
     );
-    for d in ["postgres/data", "postgres/nodes/alpha-primary/data", "postgres/nodes/beta-primary/data"] {
+    for d in [
+        "postgres/data",
+        "postgres/nodes/alpha-primary/data",
+        "postgres/nodes/beta-primary/data",
+    ] {
         assert!(target.root().join(d).join("PG_VERSION").is_file(), "{d}");
     }
     // And a restore that completes after that one works.
-    let ok = topology::restore_cluster(&dest, &target, opts(true, None)).await.unwrap();
+    let ok = topology::restore_cluster(&dest, &target, opts(true, None))
+        .await
+        .unwrap();
     assert_eq!(ok.sets.len(), 3);
     assert!(!target.root().join("postgres/nodes/beta-primary/data/mine").exists());
     let _ = NodeState::Ready;

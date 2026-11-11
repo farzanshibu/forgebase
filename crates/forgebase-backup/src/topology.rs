@@ -35,14 +35,14 @@ use std::path::{Path, PathBuf};
 use forgebase_core::{BackupSource, DataLayout};
 use forgebase_db::migrations::multi::{MultiOptions, NodeOutcome};
 use forgebase_db::topology::{
-    self, DbNode, DbSet, NodeKind, NodeRole, NodeState, Placement, SetKind, Topology, TOPOLOGY_FILE,
+    self, DbNode, DbSet, NodeKind, NodeRole, NodeState, Placement, SetKind, TOPOLOGY_FILE, Topology,
 };
 use forgebase_db::{BackendKind, Database, DbRouter};
 use serde::{Deserialize, Serialize};
 
 use crate::backup::{self, BackupOptions, spawn};
 use crate::error::{BackupError, Result, io};
-use crate::fsutil::{self, copy_hashed, join_rel, mkdir_private, safe_rel, sha256_file};
+use crate::fsutil::{self, copy_hashed, copy_hashed_unsynced, join_rel, mkdir_private, safe_rel, sha256_file};
 use crate::manifest::{FileKind, KEY_FILE, MANIFEST, Manifest, Method, PG_DIR, ROLES_FILE};
 use crate::pg::{self, PgSource};
 use crate::restore::{self, KeySource, RestoreOptions};
@@ -352,7 +352,11 @@ pub async fn create_cluster(
 
     let topo = topology::load(control).await?;
     let (placements, _) = placement_summary(control).await?;
-    let live: Vec<&DbSet> = topo.sets.iter().filter(|s| s.state != topology::SetState::Retired).collect();
+    let live: Vec<&DbSet> = topo
+        .sets
+        .iter()
+        .filter(|s| s.state != topology::SetState::Retired)
+        .collect();
     let missing: Vec<&str> = live
         .iter()
         .filter(|s| !opts.sets.iter().any(|x| x.set.id == s.id))
@@ -563,9 +567,9 @@ pub async fn verify_cluster(dir: &Path, opts: &VerifyOptions) -> ClusterVerifyRe
     };
     let controls = manifest.sets.iter().filter(|s| s.kind == SetKind::Control).count();
     if controls != 1 {
-        report
-            .problems
-            .push(format!("the manifest lists {controls} control sets, it needs exactly one"));
+        report.problems.push(format!(
+            "the manifest lists {controls} control sets, it needs exactly one"
+        ));
     }
     let mut ids = BTreeSet::new();
     let mut numbers = BTreeSet::new();
@@ -608,9 +612,12 @@ pub async fn verify_cluster(dir: &Path, opts: &VerifyOptions) -> ClusterVerifyRe
             .problems
             .extend(r.problems.iter().map(|p| format!("{}: {p}", s.name)));
         report.problems.extend(set_problems);
-        report
-            .warnings
-            .extend(r.warnings.iter().filter(|w| s.kind == SetKind::Control || !w.contains("master key")).map(|w| format!("{}: {w}", s.name)));
+        report.warnings.extend(
+            r.warnings
+                .iter()
+                .filter(|w| s.kind == SetKind::Control || !w.contains("master key"))
+                .map(|w| format!("{}: {w}", s.name)),
+        );
         report.files_checked += r.files_checked;
         report.bytes_checked += r.bytes_checked;
         report.sets.push(SetVerify {
@@ -638,7 +645,9 @@ pub async fn verify_cluster(dir: &Path, opts: &VerifyOptions) -> ClusterVerifyRe
         for e in rd.flatten() {
             let rel = format!("{SETS_DIR}/{}", e.file_name().to_string_lossy());
             if !known.contains(&rel) {
-                report.problems.push(format!("{rel} is not listed in {CLUSTER_MANIFEST}"));
+                report
+                    .problems
+                    .push(format!("{rel} is not listed in {CLUSTER_MANIFEST}"));
             }
         }
     }
@@ -826,7 +835,7 @@ fn stage_member(
         } else {
             f.path.clone()
         };
-        let (sha, size) = copy_hashed(&join_rel(backup, &f.path), &join_rel(staging, &target))?;
+        let (sha, size) = copy_hashed_unsynced(&join_rel(backup, &f.path), &join_rel(staging, &target))?;
         if sha != f.sha256 || size != f.size {
             return Err(BackupError::Verify(vec![format!(
                 "{} changed while it was being restored",
@@ -1037,6 +1046,8 @@ pub async fn restore_cluster(
         if let Some(k) = provided {
             copy_hashed(&k, &join_rel(&st, KEY_FILE))?;
         }
+        // One flush for the staged tree, before the journaled swap makes it live.
+        fsutil::sync_all_files();
         Ok((files, bytes))
     })
     .await?;
@@ -1077,7 +1088,11 @@ pub async fn restore_cluster(
     // The topology as it was, every replica needing a rebuild.
     let mut topo = cm.topology.clone();
     let mut replicas = Vec::new();
-    for n in topo.nodes.iter_mut().filter(|n| n.role == NodeRole::Replica && n.state != NodeState::Retired) {
+    for n in topo
+        .nodes
+        .iter_mut()
+        .filter(|n| n.role == NodeRole::Replica && n.state != NodeState::Retired)
+    {
         replicas.push(ReplicaRef {
             set_id: n.set_id.clone(),
             node_id: n.id.clone(),
@@ -1289,7 +1304,10 @@ pub async fn complete_restore(
     if left.is_empty() && report.schema_failed.is_empty() && opts.router.is_some() {
         std::fs::remove_file(&path).map_err(io(&path))?;
     } else {
-        let rest = PendingRestore { replicas: left, ..pending };
+        let rest = PendingRestore {
+            replicas: left,
+            ..pending
+        };
         let json = serde_json::to_vec_pretty(&rest).map_err(|e| BackupError::Internal(e.to_string()))?;
         fsutil::write_atomic(&path, &json)?;
     }

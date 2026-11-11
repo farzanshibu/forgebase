@@ -489,9 +489,7 @@ pub(crate) fn swap(
     }
     // Staged items: database last, so its presence marks a complete restore.
     let is_db = |i: &&String| {
-        i.as_str() == DB_FILE
-            || i.as_str() == PG_DATA
-            || (i.starts_with("postgres/nodes/") && i.ends_with("/data"))
+        i.as_str() == DB_FILE || i.as_str() == PG_DATA || (i.starts_with("postgres/nodes/") && i.ends_with("/data"))
     };
     let order = items.iter().filter(|i| !is_db(i)).chain(items.iter().filter(is_db));
     for item in order {

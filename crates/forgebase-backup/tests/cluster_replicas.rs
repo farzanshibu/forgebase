@@ -18,8 +18,8 @@ use std::time::Duration;
 use common::{PgInstance, engine_config, open_pg, open_pg_with, pg_engine_dir, short_tempdir};
 use forgebase_backup::manifest::Method;
 use forgebase_backup::topology::{
-    self, ClusterBackupOptions, ClusterRestoreOptions, CompleteOptions, NodeSource, RebuildOutcome,
-    ReplicaRebuilder, SetSource,
+    self, ClusterBackupOptions, ClusterRestoreOptions, CompleteOptions, NodeSource, RebuildOutcome, ReplicaRebuilder,
+    SetSource,
 };
 use forgebase_backup::{BackupError, BackupOptions, Password, PgSource, RestoreOptions, VerifyOptions};
 use forgebase_core::{BackupSource, DataLayout};
@@ -64,7 +64,10 @@ async fn count(h: &EngineHandle) -> i64 {
 
 async fn in_recovery(h: &EngineHandle) -> bool {
     let mut c = PgConnection::connect(h.url(Role::Super).expose()).await.unwrap();
-    sqlx::query_scalar("SELECT pg_is_in_recovery()").fetch_one(&mut c).await.unwrap()
+    sqlx::query_scalar("SELECT pg_is_in_recovery()")
+        .fetch_one(&mut c)
+        .await
+        .unwrap()
 }
 
 /// What the server's replica service does for a rebuild, and what state the
@@ -106,7 +109,11 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
     let tools = PgSource::tools_only(pg.src.engine_root.clone(), pg.src.version.clone());
     pg.inst.seed(25).await;
     sql(&pg.engine, "CREATE TABLE forgebase.fb179_load (id int)").await;
-    sql(&pg.engine, "INSERT INTO forgebase.fb179_load SELECT g FROM generate_series(1, 10) g").await;
+    sql(
+        &pg.engine,
+        "INSERT INTO forgebase.fb179_load SELECT g FROM generate_series(1, 10) g",
+    )
+    .await;
     let replicas = LocalReplicas::new(&root, &cfg);
     let added = service::add_local_replica(
         &pg.inst.db,
@@ -163,8 +170,15 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
     .unwrap();
     assert_eq!(m.source, BackupSource::Replica);
     let e = &m.sets[0];
-    assert_eq!((e.node.as_str(), e.role, e.method), ("r1", NodeRole::Replica, Method::Basebackup));
-    assert_eq!(e.data_dir.as_deref(), Some("postgres/data"), "restored where the primary lives");
+    assert_eq!(
+        (e.node.as_str(), e.role, e.method),
+        ("r1", NodeRole::Replica, Method::Basebackup)
+    );
+    assert_eq!(
+        e.data_dir.as_deref(),
+        Some("postgres/data"),
+        "restored where the primary lives"
+    );
     assert!(e.timeline.is_some() && e.start_lsn.is_some() && e.end_lsn.is_some());
     assert!(e.fallback.is_none() && m.warnings.is_empty(), "{:?}", m.warnings);
     assert!(
@@ -195,13 +209,25 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
     )
     .await
     .unwrap();
-    assert_eq!((fb.sets[0].role, fb.sets[0].node.as_str()), (NodeRole::Primary, "primary"));
-    assert!(fb.sets[0].fallback.as_deref().is_some_and(|f| f.contains("no healthy replica")));
+    assert_eq!(
+        (fb.sets[0].role, fb.sets[0].node.as_str()),
+        (NodeRole::Primary, "primary")
+    );
+    assert!(
+        fb.sets[0]
+            .fallback
+            .as_deref()
+            .is_some_and(|f| f.contains("no healthy replica"))
+    );
     assert_eq!(fb.warnings.len(), 1);
     assert!(!dest_fb.join("control/postgres/standby.signal").exists());
 
     // Rows written after the backup must not survive the restore.
-    sql(&pg.engine, "INSERT INTO forgebase.fb179_load SELECT g FROM generate_series(11, 15) g").await;
+    sql(
+        &pg.engine,
+        "INSERT INTO forgebase.fb179_load SELECT g FROM generate_series(11, 15) g",
+    )
+    .await;
     assert_eq!(count(&pg.engine).await, 15);
 
     // --- restore: refused while any cluster of the directory runs ...
@@ -213,8 +239,13 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
         },
         ..Default::default()
     };
-    let err = topology::restore_cluster(&dest, &layout, restore_opts(true)).await.unwrap_err();
-    assert!(matches!(err, BackupError::Conflict(ref m) if m.contains("still running")), "{err}");
+    let err = topology::restore_cluster(&dest, &layout, restore_opts(true))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, BackupError::Conflict(ref m) if m.contains("still running")),
+        "{err}"
+    );
     // ... and the single-set restore still refuses a directory with replicas.
     assert!(
         forgebase_backup::restore::restore(&dest.join("control"), &layout, RestoreOptions::default())
@@ -225,23 +256,39 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
     // --- ... stopped, it replaces the primary's data and moves the replica aside.
     replicas.stop_all().await;
     pg.close().await;
-    let report = topology::restore_cluster(&dest, &layout, restore_opts(true)).await.unwrap();
+    let report = topology::restore_cluster(&dest, &layout, restore_opts(true))
+        .await
+        .unwrap();
     assert_eq!(report.sets.len(), 1);
     assert_eq!(report.moved_aside, ["postgres/nodes/r1/data"]);
     assert_eq!(report.replicas.len(), 1);
-    assert_eq!((report.replicas[0].node.as_str(), report.replicas[0].kind), ("r1", NodeKind::Local));
+    assert_eq!(
+        (report.replicas[0].node.as_str(), report.replicas[0].kind),
+        ("r1", NodeKind::Local)
+    );
     let prev = report.previous_data.clone().expect("the old data is kept");
     assert!(prev.join("postgres/nodes/r1/data/PG_VERSION").is_file());
-    assert!(!root.join("postgres/nodes/r1/data").exists(), "the stale replica is gone");
-    assert!(!root.join("postgres/data/standby.signal").exists(), "a replica copy starts as a primary");
-    let file = dbtopo::read_topology_file(&root.join(dbtopo::TOPOLOGY_FILE)).unwrap().unwrap();
+    assert!(
+        !root.join("postgres/nodes/r1/data").exists(),
+        "the stale replica is gone"
+    );
+    assert!(
+        !root.join("postgres/data/standby.signal").exists(),
+        "a replica copy starts as a primary"
+    );
+    let file = dbtopo::read_topology_file(&root.join(dbtopo::TOPOLOGY_FILE))
+        .unwrap()
+        .unwrap();
     let r1_row = file.topology.nodes.iter().find(|n| n.name == "r1").unwrap();
     assert_eq!(r1_row.state, NodeState::NeedsRebuild, "topology.json already says so");
     assert!(topology::read_pending(&layout).unwrap().is_some());
 
     // --- the restored primary starts as a primary with the rows of the backup ...
     let pg2 = open_pg_with(&engine_dir, &root, false).await;
-    assert!(!in_recovery(&pg2.engine).await, "restored from a standby, started as a primary");
+    assert!(
+        !in_recovery(&pg2.engine).await,
+        "restored from a standby, started as a primary"
+    );
     assert_eq!(count(&pg2.engine).await, 10, "the row written after the backup is gone");
     assert_eq!(pg2.inst.count("books").await, 25);
 
@@ -252,7 +299,9 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
         replicas: &replicas2,
         seen: Mutex::new(Vec::new()),
     };
-    let router = DbRouter::open(pg2.inst.db.clone(), RouterOptions::default()).await.unwrap();
+    let router = DbRouter::open(pg2.inst.db.clone(), RouterOptions::default())
+        .await
+        .unwrap();
     let done = topology::complete_restore(
         &pg2.inst.db,
         &layout,
@@ -285,7 +334,12 @@ async fn a_replica_backup_restores_as_a_primary_and_the_replicas_are_rebuilt() {
     assert!(in_recovery(&r1).await);
     assert_eq!(count(&r1).await, 10);
     // Calling it again has nothing left to do.
-    assert!(!topology::complete_restore(&pg2.inst.db, &layout, CompleteOptions::default()).await.unwrap().pending);
+    assert!(
+        !topology::complete_restore(&pg2.inst.db, &layout, CompleteOptions::default())
+            .await
+            .unwrap()
+            .pending
+    );
 
     drop(router);
     replicas2.stop_all().await;

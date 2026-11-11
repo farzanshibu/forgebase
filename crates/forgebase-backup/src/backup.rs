@@ -116,7 +116,16 @@ pub async fn create_physical(
     schema_version: i64,
     opts: BackupOptions,
 ) -> Result<Manifest> {
-    create_with(None, BackendKind::Postgres, Some(schema_version), layout, dest, opts, false).await
+    create_with(
+        None,
+        BackendKind::Postgres,
+        Some(schema_version),
+        layout,
+        dest,
+        opts,
+        false,
+    )
+    .await
 }
 
 async fn create_with(

@@ -654,7 +654,11 @@ async fn verify_cluster_cli(
             }
         );
     }
-    Ok(if report.ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    Ok(if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 // ----------------------------------------------------------------- restore
@@ -774,9 +778,7 @@ async fn restore_cluster_cli(
     cli: RestoreCli,
 ) -> anyhow::Result<ExitCode> {
     let cm = topology::ClusterManifest::read(path)?;
-    let control = cm
-        .control()
-        .context("the cluster backup has no control set")?;
+    let control = cm.control().context("the cluster backup has no control set")?;
     let engine = Manifest::read(&path.join(&control.dir))?.engine_info();
     let target = restore_marker(config, layout, &engine)?;
     let report = topology::restore_cluster(
