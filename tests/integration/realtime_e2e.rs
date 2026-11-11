@@ -32,7 +32,7 @@ fn forgebase(cwd: &Path) -> Command {
 
 fn run(cwd: &Path, args: &[&str], input: Option<&str>) -> Output {
     let mut child = forgebase(cwd)
-        .args(args)
+        .args(common::backend_args(cwd, args))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -30,7 +30,7 @@ fn forgebase(cwd: &Path) -> Command {
 }
 
 fn run(cwd: &Path, args: &[&str]) -> Output {
-    forgebase(cwd).args(args).output().unwrap()
+    forgebase(cwd).args(common::backend_args(cwd, args)).output().unwrap()
 }
 
 fn ok(cwd: &Path, args: &[&str]) -> String {

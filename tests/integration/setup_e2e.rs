@@ -32,12 +32,12 @@ fn forgebase(cwd: &Path) -> Command {
 }
 
 fn run(cwd: &Path, args: &[&str]) -> Output {
-    forgebase(cwd).args(args).output().unwrap()
+    forgebase(cwd).args(common::backend_args(cwd, args)).output().unwrap()
 }
 
 fn run_stdin(cwd: &Path, args: &[&str], input: &str) -> Output {
     let mut child = forgebase(cwd)
-        .args(args)
+        .args(common::backend_args(cwd, args))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

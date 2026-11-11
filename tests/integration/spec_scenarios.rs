@@ -250,7 +250,7 @@ impl Fb {
     fn cli_in(&self, cwd: &Path, args: &[&str], stdin: Option<&str>) -> Output {
         let mut child = self
             .command(cwd)
-            .args(args)
+            .args(common::backend_args(cwd, args))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

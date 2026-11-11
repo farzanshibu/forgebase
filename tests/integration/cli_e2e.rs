@@ -26,7 +26,7 @@ fn forgebase(cwd: &Path) -> Command {
 }
 
 fn run(cwd: &Path, args: &[&str]) -> Output {
-    forgebase(cwd).args(args).output().unwrap()
+    forgebase(cwd).args(common::backend_args(cwd, args)).output().unwrap()
 }
 
 fn stdout(o: &Output) -> String {
@@ -124,6 +124,11 @@ fn check<'a>(report: &'a serde_json::Value, name: &str) -> &'a serde_json::Value
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn init_then_serve_from_an_empty_folder_and_survive_restart() {
+    // Reads the SQLite file directly (path, size, reopening it); the PostgreSQL
+    // lifecycle is database_e2e.rs and the 25 SPEC scenarios.
+    if common::postgres() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
 
@@ -339,6 +344,11 @@ fn the_resp_listener_is_off_unless_asked_and_serve_flags_turn_it_on() {
 
 #[test]
 fn doctor_flags_a_missing_database() {
+    // These two corrupt the SQLite file: the PostgreSQL equivalents are in
+    // crates/forgebase-cli/tests/database_e2e.rs (doctor with amcheck).
+    if common::postgres() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     assert!(run(root, &["init"]).status.success());
@@ -368,6 +378,11 @@ fn doctor_flags_an_uninitialized_directory() {
 
 #[test]
 fn doctor_flags_a_file_that_is_not_a_database() {
+    // These two corrupt the SQLite file: the PostgreSQL equivalents are in
+    // crates/forgebase-cli/tests/database_e2e.rs (doctor with amcheck).
+    if common::postgres() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     assert!(run(root, &["init"]).status.success());

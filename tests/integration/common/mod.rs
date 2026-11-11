@@ -98,3 +98,20 @@ pub fn backend_env(cmd: &mut std::process::Command) {
         cmd.env("FORGEBASE_DATABASE_BACKEND", "sqlite");
     }
 }
+
+/// The arguments of a `forgebase` call. On PostgreSQL, `init` of a new project
+/// gets `--database postgres` (the way a user picks the engine: a build
+/// without the embedded engine would otherwise create a SQLite project); a
+/// project that already has a `forgebase.toml` is left alone.
+pub fn backend_args(cwd: &Path, args: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    if postgres() && args.first() == Some(&"init") && !args.contains(&"--database") && !args.contains(&"--database-url")
+    {
+        let dir = args.get(1).filter(|a| !a.starts_with('-')).copied().unwrap_or(".");
+        if !cwd.join(dir).join("forgebase.toml").exists() {
+            out.push("--database".into());
+            out.push("postgres".into());
+        }
+    }
+    out
+}
