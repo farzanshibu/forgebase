@@ -152,6 +152,7 @@ async fn primary_is_initialised_configured_and_restartable() {
             "forgebase_login",
             "forgebase_owner",
             "forgebase_reader",
+            "forgebase_replicator",
             "forgebase_rls",
             "forgebase_server",
             "forgebase_sql_admin",
@@ -162,6 +163,8 @@ async fn primary_is_initialised_configured_and_restartable() {
         let want = match name.as_str() {
             "forgebase_super" => (true, true, true),
             "forgebase_server" | "forgebase_reader" => (true, false, true),
+            // FB-168: LOGIN REPLICATION, nothing else.
+            "forgebase_replicator" => (true, false, false),
             "forgebase_owner" | "forgebase_sql_admin" => (false, false, true),
             "forgebase_rls" | "forgebase_login" => (false, false, false),
             _ => unreachable!(),
