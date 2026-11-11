@@ -117,6 +117,13 @@ upstream_commit = "6e073cf40917731b4cd5b2654e4a93da005a2295"
 sha256 = "46da0aa2c42698679ea033977b255af5f654301b9195b4729119c487bc19de8d"
 note = "backport: TRUNCATE hunk and tests only (1.8.0 has no VACUUM/CLUSTER branch)"
 
+[[sources.age.patches]]
+file = "0004-pr2581-no-catalog-read-outside-transaction.patch"
+upstream_pr = "https://github.com/apache/age/pull/2581"
+upstream_commit = "06ce678d74210539705c77e2dc7c9fa861e2a331"
+sha256 = "de29e98108043c0a43adee4f53436a5557e7d736b088e55c100f95a7dcd4f1d9"
+note = "upstream commit verbatim (merge commit of #2581; code diff identical to the PR head 4556939f)"
+
 [sources.openssl]
 version = "3.5.9"
 url = "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz"

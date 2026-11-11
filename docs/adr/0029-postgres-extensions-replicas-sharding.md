@@ -2509,11 +2509,11 @@ Built as §1.3 describes, with the three fixes of decision 9a.1 (option B)
 carried as patches. Where the build decides something the text left open,
 it is said here.
 
-**Files.** `deploy/postgres-engine/age/{patches/0001..0003-*.patch,
-make-args, post-install.sh, README.md, proposed/0004-*.patch}`;
+**Files.** `deploy/postgres-engine/age/{patches/0001..0004-*.patch,
+make-args, post-install.sh, README.md}`;
 `THIRD_PARTY_LICENSES/postgres/age/{age.txt, NOTICE}` (and one row in
 `THIRD_PARTY_LICENSES/postgres/README.md`); `engine.lock` (`age` appended to
-`contents.extensions`, `[sources.age]`, three `[[sources.age.patches]]`,
+`contents.extensions`, `[sources.age]`, four `[[sources.age.patches]]`,
 and the local `[archives."aarch64-apple-darwin"]` pin now names the r1
 archive with AGE: AGE joins r1, no new revision);
 `deploy/postgres-engine/smoke.sh` (the AGE checks FB-130 left to FB-160);
@@ -2558,19 +2558,20 @@ a file when its resolved path starts with `/tmp/age/`, and macOS resolves
 `/tmp` to `/private/tmp`. Upstream behaviour, not patched; ForgeBase does not
 use the CSV loaders (§1.5 writes label tables with SQL).
 
-**A fourth fix found in review, not applied.** apache/age#2581 (commit
-`06ce678d74210539705c77e2dc7c9fa861e2a331`, master only, 9 lines in
-`ag_catalog.c`): with AGE loaded in a session, `post_parse_analyze` runs for
-the `ROLLBACK` of a failed transaction; when that backend's caches were reset
-meanwhile (shared invalidation queue overflow), `is_age_extension_exists()`
-reads `pg_extension` in the aborted transaction, the locks leak into the
-PGPROC, and every later backend on it fails with "failed to re-find shared
-lock object" until restart. 1.8.0 has the same code and ForgeBase's
-per-role preload reaches it. Decision 9a.1 lists three patches, so it is
-**not** carried: `age/proposed/0004-pr2581-no-catalog-read-outside-transaction.patch`
-(upstream commit verbatim, SHA-256 `de29e981…`, applies on top of 0003) is
-ready. To carry it: move it to `patches/`, add a `[[sources.age.patches]]`
-table, rebuild. Recommended.
+**A fourth fix found in review, carried: #2581 (human decision 2026-11-11).**
+apache/age#2581 (commit `06ce678d74210539705c77e2dc7c9fa861e2a331`, master
+only, 9 lines in `ag_catalog.c`): with AGE loaded in a session,
+`post_parse_analyze` runs for the `ROLLBACK` of a failed transaction; when
+that backend's caches were reset meanwhile (shared invalidation queue
+overflow), `is_age_extension_exists()` reads `pg_extension` in the aborted
+transaction, the locks leak into the PGPROC, and every later backend on it
+fails with "failed to re-find shared lock object" until restart. 1.8.0 has
+the same code and ForgeBase's per-role preload reaches it. FB-160b carries it
+as `patches/0004-pr2581-no-catalog-read-outside-transaction.patch`
+(SHA-256 `de29e981…`, upstream commit verbatim; re-reviewed: the code diff is
+byte-identical to the PR head `4556939f` and to the merged commit, it returns
+false outside a live transaction and caches nothing), with its
+`[[sources.age.patches]]` table in `engine.lock`.
 
 **Build.** PGXS through the FB-130 hook. AGE's grammar is a GLR grammar
 built with `-Werror -Wno-error=conflicts-sr`, which needs GNU Bison 3; macOS
