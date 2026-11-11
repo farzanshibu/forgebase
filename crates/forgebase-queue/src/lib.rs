@@ -31,6 +31,7 @@ mod access;
 mod consume;
 mod error;
 pub mod filter;
+mod history;
 mod http;
 mod model;
 mod ops;

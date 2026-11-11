@@ -13,7 +13,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::{self, Next};
-use common::open_db;
+use common::Store;
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, DefaultAuthorizer};
@@ -25,13 +25,13 @@ struct Api {
     app: Router,
     svc: JobService,
     clock: forgebase_jobs::ManualClock,
-    _dir: tempfile::TempDir,
+    _dir: Store,
 }
 
 impl Api {
     async fn new(ctx: Option<AccessContext>) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let db = open_db(dir.path()).await;
+        let dir = Store::new().await;
+        let db = dir.open().await;
         let layout = DataLayout::new(dir.path().join("data"));
         let state = AppState::with_authorizer(db, layout, Arc::new(DefaultAuthorizer))
             .await

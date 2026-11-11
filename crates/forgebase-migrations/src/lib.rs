@@ -190,6 +190,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "db_topology",
         include_str!("../../../migrations/system/0033_db_topology.sql"),
     ),
+    Migration::new(
+        35,
+        "job_queue_tenant",
+        include_str!("../../../migrations/system/0035_job_queue_tenant.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

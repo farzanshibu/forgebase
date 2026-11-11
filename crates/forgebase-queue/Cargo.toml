@@ -35,6 +35,8 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Test databases on both backends (forgebase_db::testing, ADR-0028 §7.7).
+forgebase-db = { workspace = true, features = ["testing"] }
 forgebase-policy.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true

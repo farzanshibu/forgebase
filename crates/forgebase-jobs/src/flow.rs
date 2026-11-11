@@ -92,7 +92,7 @@ impl JobService {
         let id = format!("wf-{}", uuid::Uuid::new_v4().simple());
         let policy = new.on_failure.unwrap_or_default();
         let origin = Origin::of(ctx);
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
             tx.execute(&Statement::new(
@@ -124,7 +124,7 @@ impl JobService {
                 job_ids[i] = Some(job.id);
             }
             fx.workflows.insert(id.clone());
-            workflow_detail_tx(&mut *tx, &id).await
+            workflow_detail_tx(&mut *tx, &id, fx.row_order).await
         }
         .await;
         self.commit(tx, r, fx).await
@@ -141,7 +141,10 @@ impl JobService {
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT {JOB_COLS} FROM _forgebase_jobs WHERE workflow_id = ?1 ORDER BY created_at, rowid"),
+                format!(
+                    "SELECT {JOB_COLS} FROM _forgebase_jobs WHERE workflow_id = ?1 ORDER BY created_at, {}",
+                    self.row_order()
+                ),
                 vec![id.into()],
             ))
             .await?;
@@ -192,7 +195,8 @@ impl JobService {
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {WORKFLOW_COLS} FROM _forgebase_job_workflows {where_sql} \
-                     ORDER BY created_at DESC, rowid DESC LIMIT ?{} OFFSET ?{}",
+                     ORDER BY created_at DESC, {} DESC LIMIT ?{} OFFSET ?{}",
+                    self.row_order(),
                     n + 1,
                     n + 2
                 ),
@@ -214,7 +218,7 @@ impl JobService {
         self.allow(ctx, Action::ManageJobs)?;
         let scope = self.access().scope(ctx);
         let now = self.now();
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
             let wf = workflow_tx(&mut *tx, id).await?;
@@ -238,7 +242,7 @@ impl JobService {
             )
             .await?;
             stop_unfinished(&mut *tx, id, false, now, &mut fx).await?;
-            workflow_detail_tx(&mut *tx, id).await
+            workflow_detail_tx(&mut *tx, id, fx.row_order).await
         }
         .await;
         self.commit(tx, r, fx).await
@@ -291,11 +295,11 @@ async fn workflow_tx(tx: &mut dyn WriteTx, id: &str) -> Result<Workflow> {
     workflow_from(&Row::new(&rows, 0))
 }
 
-async fn workflow_detail_tx(tx: &mut dyn WriteTx, id: &str) -> Result<WorkflowDetail> {
+async fn workflow_detail_tx(tx: &mut dyn WriteTx, id: &str, row_order: &str) -> Result<WorkflowDetail> {
     let wf = workflow_tx(tx, id).await?;
     let rows = tx
         .fetch_all(&Statement::new(
-            format!("SELECT {JOB_COLS} FROM _forgebase_jobs WHERE workflow_id = ?1 ORDER BY created_at, rowid"),
+            format!("SELECT {JOB_COLS} FROM _forgebase_jobs WHERE workflow_id = ?1 ORDER BY created_at, {row_order}"),
             vec![id.into()],
         ))
         .await?;
@@ -320,7 +324,7 @@ async fn set_status(
 ) -> Result<()> {
     tx.execute(&Statement::new(
         "UPDATE _forgebase_job_workflows SET status = ?2, failed_job_id = COALESCE(?3, failed_job_id), \
-         error = COALESCE(?4, error), updated_at = ?5, finished_at = CASE WHEN ?6 = 1 THEN ?5 ELSE NULL END \
+         error = COALESCE(?4, error), updated_at = ?5, finished_at = CASE WHEN ?6 = 1 THEN CAST(?5 AS BIGINT) ELSE NULL END \
          WHERE id = ?1",
         vec![
             id.into(),
@@ -344,7 +348,8 @@ async fn stop_unfinished(tx: &mut dyn WriteTx, wf: &str, compensations: bool, no
         .fetch_all(&Statement::new(
             format!(
                 "SELECT id FROM _forgebase_jobs WHERE workflow_id = ?1 AND compensates {role} \
-                 AND status IN ('queued', 'running') ORDER BY rowid"
+                 AND status IN ('queued', 'running') ORDER BY {}",
+                fx.row_order
             ),
             vec![wf.into()],
         ))
@@ -506,9 +511,12 @@ async fn step_finished(tx: &mut dyn WriteTx, job_id: &str, status: JobStatus, no
 async fn start_compensations(tx: &mut dyn WriteTx, wf: &str, actor: &str, now: i64, fx: &mut Fx) -> Result<usize> {
     let rows = tx
         .fetch_all(&Statement::new(
-            "SELECT id, queue, step, compensate, tenant, context FROM _forgebase_jobs WHERE workflow_id = ?1 \
-             AND compensates IS NULL AND status = 'succeeded' AND compensate IS NOT NULL \
-             ORDER BY finished_at DESC, rowid DESC",
+            format!(
+                "SELECT id, queue, step, compensate, tenant, context FROM _forgebase_jobs WHERE workflow_id = ?1 \
+                 AND compensates IS NULL AND status = 'succeeded' AND compensate IS NOT NULL \
+                 ORDER BY finished_at DESC, {} DESC",
+                fx.row_order
+            ),
             vec![wf.into()],
         ))
         .await?;

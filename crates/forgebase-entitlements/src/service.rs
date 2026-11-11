@@ -1078,7 +1078,7 @@ impl EntitlementService {
                 "SELECT seq, id, at, subject, feature_key, scope_key, units, pack_units, overage_units, window_start,
                         source, reservation_id, idempotency_key, actor, request_id, metadata
                  FROM _forgebase_usage_events
-                 WHERE seq > ?1 AND (?2 IS NULL OR subject = ?2) AND (?3 IS NULL OR feature_key = ?3)
+                 WHERE seq > ?1 AND (CAST(?2 AS TEXT) IS NULL OR subject = ?2) AND (CAST(?3 AS TEXT) IS NULL OR feature_key = ?3)
                  ORDER BY seq LIMIT ?4",
                 vec![
                     after.unwrap_or(0).into(),

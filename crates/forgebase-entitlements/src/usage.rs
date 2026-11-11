@@ -431,7 +431,8 @@ pub(crate) async fn bump(
             "UPDATE _forgebase_usage_counters
              SET used = used + ?5, reserved = reserved + ?6, updated_at = ?7, limit_value = ?9
              WHERE feature_key = ?1 AND subject = ?2 AND scope_key = ?3 AND window_start = ?4
-               AND (?8 IS NULL OR ?5 + ?6 <= 0 OR used + reserved + ?5 + ?6 <= ?8)",
+               AND (CAST(?8 AS BIGINT) IS NULL OR CAST(?5 AS BIGINT) + CAST(?6 AS BIGINT) <= 0
+                    OR used + reserved + ?5 + ?6 <= ?8)",
             p,
         )
         .await?;
@@ -489,7 +490,7 @@ pub(crate) async fn return_packs(db: &mut Db<'_>, taken: &[(String, i64)], units
         }
         let give = back.min(*n);
         db.exec(
-            "UPDATE _forgebase_pack_grants SET remaining = MIN(units, remaining + ?1) WHERE id = ?2",
+            "UPDATE _forgebase_pack_grants SET remaining = CASE WHEN units < remaining + CAST(?1 AS BIGINT) THEN units ELSE remaining + CAST(?1 AS BIGINT) END WHERE id = ?2",
             vec![give.into(), id.clone().into()],
         )
         .await?;

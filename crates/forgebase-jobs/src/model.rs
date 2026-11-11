@@ -704,6 +704,10 @@ pub struct Worker {
     pub last_seen_at: String,
     /// Seen in the last minute.
     pub online: bool,
+    /// Tenant of the caller that registered it (FB-146); `null`: none.
+    pub tenant: Option<String>,
+    /// Who registered it (FB-146); `null`: registered before FB-146.
+    pub created_by: Option<String>,
 }
 
 /// A worker to register.

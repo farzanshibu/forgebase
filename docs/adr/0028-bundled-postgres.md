@@ -2847,3 +2847,166 @@ pattern and adds `col IN (?n, …)`, `col NOT IN (…)` and
 AND role <> 'admin')`; `revoke_key` keeps its `?6 OR …` boolean parameter
 (an integer on SQLite; FB-145 ports it with the rest of the file).
 Tests: `crates/forgebase-server/tests/security_fb137.rs`.
+
+## Addendum (FB-146): jobs, queues and realtime on PostgreSQL
+
+Written 2026-11-11 by FB-146. `forgebase-jobs`, `forgebase-queue` and
+`forgebase-realtime` run on both engines; their crate suites run on the
+backend `FORGEBASE_TEST_BACKEND` selects (§7.7). Also closes the FB-141 /
+FB-142 follow-up: named-queue settings and workers are tenant-scoped.
+Migration pair 0035 (`job_queue_tenant`).
+
+**`rowid` tie-breaks.** Job and workflow reads order by
+`Dialect::row_order_col()`: SQLite's `rowid`, the `_rowid bigint GENERATED
+BY DEFAULT AS IDENTITY` column on PostgreSQL. `_forgebase_jobs` had it from
+the baseline; the PostgreSQL half of 0035 adds it to
+`_forgebase_job_workflows` (workflow lists break `created_at` ties on it), and
+`postgres::ROWID_TABLES` lists both, so the parity test and `db convert`
+(FB-151, which copies `rowid` into `_rowid` and `setval`s it) cover it.
+Transaction helpers get the column from `Fx::row_order` (the per-transaction
+effects value already threaded through every write path), so no SQL names
+`rowid` any more. The orders kept: claim `priority DESC, run_at, _rowid`;
+lists `created_at DESC, _rowid DESC`; workflow jobs and parents `created_at,
+_rowid`; compensations `finished_at DESC, _rowid DESC` (newest step first).
+
+**Delivery history** (`_forgebase_queue_deliveries.history`, text JSON) is
+built by `forgebase-queue/src/history.rs` from the dialect's JSON array
+functions: `json_array_append`, `json_set_last` (nested for outcome and
+error), `json_array_length`. Two pieces have no dialect method and are
+spelled per engine there: dropping the oldest of 25 entries
+(`json_remove(history, '$[0]')` / `history::jsonb - 0`) and building the
+entry (`json_object` / `jsonb_build_object` with `CAST(?n AS bigint|text)`,
+since PostgreSQL cannot type a bare parameter inside a variadic call). The
+`jsonb` result is stored into the `text` column by PostgreSQL's assignment
+cast (its text form has spaces after `:` and `,`; readers parse it).
+
+**`last_insert_id` → `RETURNING seq`** for queue messages (the published
+message's `seq`). No other caller in these crates used it.
+
+**Other PostgreSQL fixes.** `INSERT OR IGNORE` on job dependencies →
+`INSERT … ON CONFLICT DO NOTHING` (both engines); `CASE WHEN … THEN NULL
+ELSE ?n END` into `bigint` columns casts the parameter (`CAST(?n AS BIGINT)`;
+PostgreSQL resolves an untyped `CASE` to `text`); the queue's
+`?2 IS NULL OR topic = ?2` and the nack's `CASE WHEN ?4 IS NULL` cast the
+parameter to `TEXT` (42P18); arithmetic on a bare parameter
+(`?4 - 120000`, `?1 - 3600000` in the queue rate windows and pruning) casts
+it to `BIGINT` (PostgreSQL types `unknown - integer` as `int4`, too small
+for epoch milliseconds); the scalar two-argument `max(attempts - 1, 0)`
+(job and delivery release) → `CASE`; the rate upsert qualifies its target column
+(`_forgebase_queue_rates.count + excluded.count`; PostgreSQL calls a bare
+`count` ambiguous). The FB-141 SQL FB-141 asked to check runs on
+PostgreSQL: `(tenant IS NULL OR tenant = ?1)` with a NULL parameter types
+from the column, and the 0031 twin's `UPDATE … WHERE topic IN (SELECT …)`
+is in the migrated test template. Realtime had no SQLite-only SQL. The
+claim-plan guard (`explain_claim_plan`) runs `EXPLAIN (COSTS OFF)` with
+sequential scans off on PostgreSQL and fails on a `Sort` node, as it fails
+on `USE TEMP B-TREE` on SQLite. One fix outside these crates: the quota
+check in `forgebase-entitlements/src/usage.rs` (`?5 + ?6 <= 0`, "operator
+is not unique: unknown + unknown") casts its parameters; queue metering
+goes through it. That crate is FB-145's; the change is three casts.
+
+**Commit-ordered cursors and the single writer (ADR-0011, ADR-0022).** The
+queue's subscription cursors and the realtime dispatcher read rows with
+`seq > cursor` and never look back; that is correct only while sequence
+order is commit order, which holds because there is one writer connection
+(§7.3). Two tests per crate pin it (`tests/single_writer.rs` in
+forgebase-queue and forgebase-realtime), on both backends:
+
+1. `pool_stats().writer.max == 1`.
+2. Eight concurrent publishers (or record writers) commit while a cursor
+   tails the table; the cursor must read every committed `seq` once, in
+   order. A transaction that took a lower `seq` and committed after a higher
+   one would be skipped and fail the test.
+3. PostgreSQL: while they run, a sampler reads `pg_stat_activity` for
+   sessions of the database holding a transaction id (`backend_xid IS NOT
+   NULL`) other than ForgeBase's writer (`pg_backend_pid()` of the writer
+   connection). Each is classified (`tests/common/writers.rs`): allowed are
+   exactly the two writers of the FB-158 addendum: pg_cron running
+   `SELECT forgebase.fire_schedule(…)` and nothing else (backend type
+   `pg_cron`, or a client named `pg_cron` when it runs jobs over libpq),
+   and logical-replication apply, parallel-apply and table-sync workers
+   during a tenant move (ADR-0029 §1.7, §3.8). Autovacuum workers are
+   ignored (ANALYZE writes `pg_statistic`, never ForgeBase rows). Anything
+   else fails the test. `a_second_writer_is_detected` opens a second handle
+   on the same database and checks that its open write transaction is
+   reported. On SQLite every connection takes the file's write lock before
+   it allocates a row id, so commit order equals sequence order with any
+   number of connections; the pool check is what applies there.
+
+**Tenant-scoped queue settings and workers (FB-141/FB-142 follow-up).**
+Before, `_forgebase_job_queues` and `_forgebase_job_workers` were one
+instance-wide namespace: any `read_jobs` holder listed every tenant's
+settings, job counts and workers, any `manage_jobs` holder changed or
+deleted another tenant's settings (pausing `emails` paused it for every
+tenant), and any `work_jobs` holder took another tenant's worker id over.
+Now both tables have `tenant` and `created_by` (migration 0035; NULL on
+older rows):
+
+- Settings are per tenant: a caller configures the queues of its own tenant
+  (`ctx.tenant`; none: the tenantless queues). Tenant settings are stored as
+  `<tenant>/<queue>` (queue names never hold `/`), so two tenants configure
+  the same queue name. They govern only that tenant's jobs: enqueue
+  defaults, pause, concurrency and rate limits match a job by the key
+  `CASE WHEN tenant IS NULL THEN queue ELSE tenant || '/' || queue END`
+  (`queues::job_queue_key`). An administrator acting without a tenant
+  configures the tenantless queues only; to change a tenant's queue it acts
+  in that tenant (`X-ForgeBase-Tenant`).
+- Visibility follows FB-142's job scope: privileged callers see every row;
+  `engine:read_jobs:all` holders the rows of their tenant; others the rows
+  of their tenant that they created. Queue job counts include only jobs the
+  caller may see. Changing or deleting settings the caller cannot see
+  (same tenant, another creator) answers 403. `QueueInfo` gained `tenant`
+  and `created_by`.
+- Workers belong to the tenant and principal that registered them first.
+  Lists use the same scope. Registering an id the caller cannot see answers
+  `409 worker_id_taken`; a claim or heartbeat under such an id leaves the
+  row alone (it never creates or touches a row the caller cannot see).
+  `Worker` gained `tenant` and `created_by`.
+
+Tests: `crates/forgebase-server/tests/security_fb146.rs` (both fail before
+FB-146): `queue_settings_belong_to_a_tenant_and_govern_only_its_jobs`,
+`workers_belong_to_a_tenant_and_their_ids_cannot_be_taken_over`.
+
+**Test harnesses.** The three crates' `tests/common` open the test database
+through `forgebase_db::testing` (dev-dependency with feature `testing`):
+SQLite in a temp directory as before, or a database copied from the shared
+PostgreSQL template. `Store::open` reopens the same database, so the
+restart tests (crashed pool, restart survival, push secret) run on both.
+
+**Breaking.** Queue settings without a tenant no longer limit tenant jobs,
+and tenant callers no longer see or change tenantless settings; settings
+saved before FB-146 stay tenantless and keep governing tenantless jobs.
+Non-privileged callers without `engine:read_jobs:all` see only queue
+settings and workers they created (older rows have no creator: privileged
+callers only). Reusing another tenant's or user's worker id answers 409.
+`QueueInfo` and `Worker` gain fields (regenerate OpenAPI/SDK fixtures).
+
+**For FB-164 (pgmq deliveries).** Keep `seq` semantics: pgmq's `msg_id`
+is a sequence too and has the same commit-order property only under the
+single writer; the single-writer tests read `_forgebase_queue_messages`
+and must move to whatever table the cursor tails then. Delivery history
+can stay in ForgeBase's table (`history.rs`), or go into the pgmq message
+JSON with the same entry shape. Tenant settings keys (`<tenant>/<name>`)
+are FB-141's scheme; hash them to pgmq identifiers. **For FB-165 (pg_cron
+schedules).** `forgebase.fire_schedule()` must insert jobs exactly as
+`insert_job` does, including the FB-146 queue defaults lookup by
+`<tenant>/<queue>` (`default_priority`, `default_timeout_ms` of the
+schedule's tenant) and `_rowid` (identity default). pg_cron's session is
+allowed by the census only while it runs `SELECT forgebase.fire_schedule(…)`
+alone; the command must be exactly that. **For FB-157 (concurrent
+writers).** The census and cursor tests fail by design once a second writer
+exists; they are the gate to replace with per-set fences.
+
+## Addendum: FB-145 — auth, policy, customize, credits, entitlements and billing on PostgreSQL
+
+No new migration. The six crates' SQL now runs unchanged in meaning on both backends.
+
+- **Upserts.** `INSERT OR IGNORE` became `INSERT ... ON CONFLICT DO NOTHING`; `INSERT OR REPLACE` (suspensions, account status) became `ON CONFLICT (pk) DO UPDATE SET` for every column. In `DO UPDATE` the target's own columns are qualified with the table name (`next`, `attempts`, `product_id`, ...): PostgreSQL calls an unqualified one ambiguous.
+- **Scalar `MAX(a, b)` / `MIN(a, b)`** exist only in SQLite. They are now `CASE WHEN ... END` (`updated_at` bumps, cursors, `synced_version`, pack `remaining`, lockout `locked_until`), with `CAST(?N AS BIGINT)` on the parameter.
+- **Typed parameters.** PostgreSQL cannot type a parameter that only appears in `?N IS NULL` or in arithmetic (`?5 + ?6`, `?4 - ?1`). Every `?N IS [NOT] NULL OR col = ?N` filter is `CAST(?N AS TEXT|BIGINT) IS NULL OR ...`. Integer booleans bound as parameters (`?6 OR`, `NOT ?3`) are `CAST(?N AS BIGINT) = 1|0`.
+- **`col IS ?N`** (a NULL-safe compare against a parameter) is `IS NOT DISTINCT FROM ?N`, which SQLite 3.39+ also accepts.
+- **JSON.** `json_each(scopes)` in the OIDC logout path goes through `Dialect::json_array_elements`. The backend already encodes text parameters into `jsonb` columns, so no write needed a cast.
+- **Credits ledger.** The entry `seq` comes from `INSERT ... RETURNING seq` instead of `last_insert_id`, which is `None` on PostgreSQL.
+- **Audit filter.** `substr(event, 1, length(?1))` casts `?1` to text.
+- **Test harnesses.** All six crates' `tests/common` open the database with `forgebase_db::testing::test_backend()`, so `FORGEBASE_TEST_BACKEND=sqlite|postgres` selects the backend (dev-dependency `forgebase-db` with feature `testing`). Auth tests that restart a service reopen the same database through `TestDb::options()`. Tests that peeked at SQL specifics now use the dialect: `introspect_tables()` for the plaintext-secret scan, `CAST(jsonb_column AS TEXT) LIKE`, `ON CONFLICT DO NOTHING`. The append-only ledger test rolls back after each refused statement (PostgreSQL aborts the transaction). The social-login test that reads the SQLite file skips on PostgreSQL.
+- **Not ported / depends on others.** Seven tests that run the job queue (customize email deliveries x4, credits maintenance expiry, entitlements alert delivery, and the auth secret-dump test that needed the `forgebase-db` statement fix) pass only with FB-146's `forgebase-jobs` and `forgebase-db` changes (`rowid` ordering, statement preparation). They were verified green on a throwaway merge of `agent/worker-fb146` and fail on this branch alone until FB-146 merges. The entitlements quota `UPDATE` in `usage.rs` is identical to FB-146's version (same text, to merge without a conflict).

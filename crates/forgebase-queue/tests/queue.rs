@@ -952,8 +952,10 @@ async fn pull_claim_query_does_not_sort_the_backlog() {
     let h = harness().await;
     for ordering in [false, true] {
         let plan = h.svc.explain_claim_plan(ordering).await.unwrap();
+        // SQLite shows a sort as `USE TEMP B-TREE`, PostgreSQL as a `Sort` node.
+        let sorts = |l: &str| l.contains("TEMP B-TREE") || l.contains("Sort");
         assert!(
-            plan.iter().all(|l| !l.contains("TEMP B-TREE")),
+            plan.iter().all(|l| !sorts(l)),
             "claim query sorts the backlog (ordering={ordering}): {plan:?}"
         );
         assert!(

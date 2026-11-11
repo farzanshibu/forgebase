@@ -246,6 +246,9 @@ impl QueueSettings {
 pub struct QueueInfo {
     /// Queue name.
     pub name: String,
+    /// Tenant whose jobs these settings govern (FB-146); `null`: the jobs
+    /// without a tenant.
+    pub tenant: Option<String>,
     /// Settings were saved for it (otherwise it only has jobs).
     pub configured: bool,
     /// Most jobs running at once over every worker.
@@ -272,6 +275,9 @@ pub struct QueueInfo {
     pub dead: i64,
     /// Cancelled (until purged).
     pub cancelled: i64,
+    /// Who saved the settings first (FB-146); `null`: not configured, or
+    /// configured before FB-146.
+    pub created_by: Option<String>,
     /// Created (RFC 3339) when configured.
     pub created_at: Option<String>,
     /// Last settings change (RFC 3339) when configured.

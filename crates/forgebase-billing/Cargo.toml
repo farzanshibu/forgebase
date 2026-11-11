@@ -36,6 +36,7 @@ uuid.workspace = true
 webpki.workspace = true
 
 [dev-dependencies]
+forgebase-db = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tower.workspace = true
 
