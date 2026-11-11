@@ -153,7 +153,9 @@ impl Tx<'_> {
     }
 
     async fn insert(&mut self, sql: &str, params: Vec<Value>) -> Result<i64> {
-        Ok(self.0.execute(&Statement::new(sql, params)).await?.last_insert_id)
+        // `RETURNING seq` (SQL must end with it): `last_insert_id` is empty on PostgreSQL.
+        let rows = self.0.fetch_all(&Statement::new(sql, params)).await?;
+        Ok(rows.rows.first().map_or(0, |r| int(r, 0)))
     }
 }
 
@@ -283,7 +285,8 @@ async fn insert_entry(
             "INSERT INTO _forgebase_credit_ledger (id, at, subject, kind, amount, balance_after, lot_id, ref_entry,
                  feature_key, units, usage_event_id, usage_seq, expires_at, idempotency_key, actor, reason,
                  external_ref, request_id, metadata, request)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+             RETURNING seq",
             vec![
                 id.clone().into(),
                 now.into(),

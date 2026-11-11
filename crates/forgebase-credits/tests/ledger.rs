@@ -442,11 +442,13 @@ async fn the_ledger_allocations_and_usage_charges_are_append_only() {
         let r = tx.execute(&Statement::new(sql, vec![])).await;
         if sql.starts_with("INSERT") {
             r.unwrap();
+            tx.commit().await.unwrap();
         } else {
             let e = r.expect_err(sql).to_string();
             assert!(e.contains("immutable"), "{sql}: {e}");
+            // PostgreSQL aborts the transaction on a failed statement.
+            tx.rollback().await.unwrap();
         }
-        tx.commit().await.unwrap();
     }
     // The schema refuses a negative balance and a debit stored as a credit.
     let mut tx = Backend::begin(&env.db, TxMode::Normal).await.unwrap();

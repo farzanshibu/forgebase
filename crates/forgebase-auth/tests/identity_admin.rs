@@ -16,7 +16,7 @@ const MASK: &str = "********";
 
 async fn make_realm(h: &H, admin: &str, id: &str, config: Value) {
     h.sql(&format!(
-        "INSERT OR IGNORE INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0)"
+        "INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0) ON CONFLICT DO NOTHING"
     ))
     .await;
     let r = h

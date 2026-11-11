@@ -22,7 +22,7 @@ fn realm_h(r: &str) -> [(&'static str, &str); 1] {
 /// Creates realm `id` (as the policy API would) and gives it an identity.
 async fn realm(h: &H, admin: &str, id: &str, config: Value) -> Resp {
     h.sql(&format!(
-        "INSERT OR IGNORE INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0)"
+        "INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0) ON CONFLICT DO NOTHING"
     ))
     .await;
     put_realm(h, admin, id, json!({"config": config})).await
