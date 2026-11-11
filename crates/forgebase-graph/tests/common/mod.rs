@@ -7,7 +7,6 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::{self, Next};
-use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, Action, Authorizer, DataService, DefaultAuthorizer};
 use forgebase_db::Database;
 use forgebase_db::testing::{TestDb, test_backend};

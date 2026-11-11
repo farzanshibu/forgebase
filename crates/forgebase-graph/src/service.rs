@@ -379,6 +379,23 @@ impl GraphService {
         rows.rows.first().map(|r| text(&r[0])).transpose()
     }
 
+    /// The stored properties of a node or edge with the RFC 7396 merge
+    /// `patch` applied (objects merge, `null` removes a key).
+    async fn merged_props(tx: &mut dyn WriteTx, table: &str, tenant: &str, id: &str, patch: &Json) -> Result<Json> {
+        let rows = tx
+            .fetch_all(&Statement::new(
+                format!("SELECT properties FROM {table} WHERE tenant = ?1 AND id = ?2"),
+                vec![tenant.into(), id.into()],
+            ))
+            .await?;
+        let mut doc = match rows.rows.first().map(|r| &r[0]) {
+            Some(Value::Text(t)) => serde_json::from_str(t).unwrap_or(Json::Null),
+            _ => Json::Null,
+        };
+        merge_patch(&mut doc, patch);
+        Ok(doc)
+    }
+
     /// Replaces (`merge = false`) or merge-patches (`merge = true`) a node.
     /// The stored node must pass its label's `update` rule, and the changed
     /// node the `update` rule of its (possibly new) label.
@@ -406,8 +423,12 @@ impl GraphService {
             };
             let props_sql = match (&props, merge) {
                 (None, _) => "properties",
-                (Some(_), true) => "json_patch(properties, ?4)",
-                (Some(_), false) => "?4",
+                (Some(_), _) => "?4",
+            };
+            // RFC 7396 merge patch, applied here: PostgreSQL has no json_patch.
+            let props = match (&props, merge) {
+                (Some(p), true) => Some(Self::merged_props(&mut *tx, NODES, &tenant, id, p).await?),
+                _ => props,
             };
             let done = tx
                 .execute(&Statement::new(
@@ -532,8 +553,8 @@ impl GraphService {
             .backend()
             .fetch_all(&Statement::new(
                 format!(
-                    "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND (?2 IS NULL OR n.label = ?2) \
-                     AND (?3 IS NULL OR n.id > ?3){vis} ORDER BY n.id LIMIT ?4"
+                    "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND (CAST(?2 AS text) IS NULL OR n.label = ?2) \
+                     AND (CAST(?3 AS text) IS NULL OR n.id > ?3){vis} ORDER BY n.id LIMIT ?4"
                 ),
                 b.into_params(),
             ))
@@ -688,10 +709,14 @@ impl GraphService {
                     .refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "changing this edge")
                     .await?);
             }
+            let props = match &props {
+                Some(p) => Some(Self::merged_props(&mut *tx, EDGES, &tenant, id, p).await?),
+                None => None,
+            };
             let done = tx
                 .execute(&Statement::new(
                     format!(
-                        "UPDATE {EDGES} SET properties = coalesce(json_patch(properties, ?3), properties), \
+                        "UPDATE {EDGES} SET properties = coalesce(?3, properties), \
                          updated_at = ?4 WHERE tenant = ?1 AND id = ?2"
                     ),
                     vec![
@@ -790,9 +815,9 @@ impl GraphService {
             .backend()
             .fetch_all(&Statement::new(
                 format!(
-                    "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND (?2 IS NULL OR e.type = ?2) \
-                     AND (?3 IS NULL OR e.source = ?3) AND (?4 IS NULL OR e.target = ?4) \
-                     AND (?5 IS NULL OR e.id > ?5){vis} ORDER BY e.id LIMIT ?6"
+                    "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND (CAST(?2 AS text) IS NULL OR e.type = ?2) \
+                     AND (CAST(?3 AS text) IS NULL OR e.source = ?3) AND (CAST(?4 AS text) IS NULL OR e.target = ?4) \
+                     AND (CAST(?5 AS text) IS NULL OR e.id > ?5){vis} ORDER BY e.id LIMIT ?6"
                 ),
                 b.into_params(),
             ))
@@ -1485,7 +1510,7 @@ fn check_filter(filter: Option<NodeFilter>) -> Result<Conditions> {
         }
         let v = match &value {
             Json::String(s) => Value::Text(s.clone()),
-            Json::Bool(b) => Value::Integer(i64::from(b)),
+            Json::Bool(b) => Value::Integer(i64::from(*b)),
             Json::Number(n) => match n.as_i64() {
                 Some(i) => Value::Integer(i),
                 None => Value::Real(n.as_f64().unwrap_or(f64::NAN)),
@@ -1500,4 +1525,24 @@ fn check_filter(filter: Option<NodeFilter>) -> Result<Conditions> {
         conds.push((key, v, value));
     }
     Ok((label, conds))
+}
+
+/// RFC 7396 JSON merge patch.
+fn merge_patch(target: &mut Json, patch: &Json) {
+    let Json::Object(p) = patch else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = Json::Object(serde_json::Map::new());
+    }
+    if let Json::Object(t) = target {
+        for (k, v) in p {
+            if v.is_null() {
+                t.remove(k);
+            } else {
+                merge_patch(t.entry(k.clone()).or_insert(Json::Null), v);
+            }
+        }
+    }
 }

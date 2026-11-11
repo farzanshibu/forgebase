@@ -291,7 +291,7 @@ pub(crate) async fn upsert_item(
             "INSERT INTO _forgebase_vector_items (collection_id, id, _data, content, created, updated) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
              ON CONFLICT (collection_id, id) DO UPDATE SET _data = excluded._data, content = excluded.content, \
-             _version = _version + 1, updated = excluded.updated \
+             _version = _forgebase_vector_items._version + 1, updated = excluded.updated \
              RETURNING key, _version",
             vec![
                 cid.into(),
