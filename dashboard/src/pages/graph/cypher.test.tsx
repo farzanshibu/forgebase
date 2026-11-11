@@ -47,14 +47,14 @@ describe("openCypher tab: where it shows", () => {
   it("is a tab only when the stats carry a cypher block", async () => {
     setup();
     renderStudio("/graph");
-    expect(await screen.findByRole("link", { name: "openCypher" }, T)).toHaveAttribute("href", "/graph/cypher");
+    expect(await screen.findByRole("tab", { name: "openCypher" }, T)).toHaveAttribute("href", "/graph/cypher");
   });
 
   it("is hidden, and says why, on a server without Apache AGE", async () => {
     const { mock } = setup({ cypher: undefined });
     renderStudio("/graph");
     await screen.findByText("4 nodes", {}, T);
-    expect(screen.queryByRole("link", { name: "openCypher" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "openCypher" })).not.toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
 
