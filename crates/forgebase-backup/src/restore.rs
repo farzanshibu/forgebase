@@ -94,11 +94,11 @@ struct Journal {
     committed: bool,
 }
 
-fn journal_path(layout: &DataLayout) -> PathBuf {
+pub(crate) fn journal_path(layout: &DataLayout) -> PathBuf {
     layout.root().join(JOURNAL)
 }
 
-fn remove_any(p: &Path) -> Result<()> {
+pub(crate) fn remove_any(p: &Path) -> Result<()> {
     match std::fs::symlink_metadata(p) {
         Ok(m) if m.is_dir() => std::fs::remove_dir_all(p).map_err(io(p)),
         Ok(_) => std::fs::remove_file(p).map_err(io(p)),
@@ -106,7 +106,7 @@ fn remove_any(p: &Path) -> Result<()> {
     }
 }
 
-fn move_to(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn move_to(from: &Path, to: &Path) -> Result<()> {
     if let Some(parent) = to.parent() {
         mkdir_private(parent).map_err(io(parent))?;
     }
@@ -154,7 +154,7 @@ pub fn recover(layout: &DataLayout) -> Result<bool> {
     Ok(!j.committed)
 }
 
-enum KeySource {
+pub(crate) enum KeySource {
     Backup,
     Provided(PathBuf),
     Existing,
@@ -363,7 +363,7 @@ fn target_path(m: &Manifest, rel: &str) -> String {
     rel.to_owned()
 }
 
-fn resolve_key(m: &Manifest, source: &KeySource, existing: &Path, allow_missing: bool) -> Result<String> {
+pub(crate) fn resolve_key(m: &Manifest, source: &KeySource, existing: &Path, allow_missing: bool) -> Result<String> {
     let (path, label): (Option<PathBuf>, &str) = match source {
         KeySource::Backup => (None, "restored from the backup"),
         KeySource::Provided(p) => (Some(p.clone()), "installed from --master-key"),
@@ -446,7 +446,7 @@ fn copy_dirs(src: &Path, dst: &Path) -> Result<()> {
 
 /// Moves the current data aside and the staged data in. Returns whether any
 /// current data was moved aside.
-fn swap(
+pub(crate) fn swap(
     layout: &DataLayout,
     staging: &Path,
     aside: &Path,
@@ -488,7 +488,11 @@ fn swap(
         }
     }
     // Staged items: database last, so its presence marks a complete restore.
-    let is_db = |i: &&String| i.as_str() == DB_FILE || i.as_str() == PG_DATA;
+    let is_db = |i: &&String| {
+        i.as_str() == DB_FILE
+            || i.as_str() == PG_DATA
+            || (i.starts_with("postgres/nodes/") && i.ends_with("/data"))
+    };
     let order = items.iter().filter(|i| !is_db(i)).chain(items.iter().filter(is_db));
     for item in order {
         let from = join_rel(staging, item);
