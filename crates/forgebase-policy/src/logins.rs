@@ -611,10 +611,7 @@ impl PolicyService {
             return Err(PolicyError::Conflict(format!("PostgreSQL role {role}")));
         }
         self.backend().admin_batch(&stmts).await?;
-        let claims = match &bound {
-            Some(b) => Some(login_claims(&self.snapshot(), b, &catalog)),
-            None => None,
-        };
+        let claims = bound.as_ref().map(|b| login_claims(&self.snapshot(), b, &catalog));
         let now = forgebase_core::now_rfc3339();
         let principal_key = bound.as_ref().map_or(principal.clone(), AccessContext::principal_key);
         let inserted = async {

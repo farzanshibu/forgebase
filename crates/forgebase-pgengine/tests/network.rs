@@ -170,7 +170,7 @@ async fn listen_is_an_explicit_opt_in_and_always_uses_tls() {
         .await
         .expect("create login role");
     let _ = sup.close().await;
-    let mut c = PgConnection::connect_with(&tcp(port, "fbu_net", "net-test-only", PgSslMode::Require))
+    let c = PgConnection::connect_with(&tcp(port, "fbu_net", "net-test-only", PgSslMode::Require))
         .await
         .expect("named login over TLS");
     let _ = c.close().await;
