@@ -958,8 +958,15 @@ async fn pull_claim_query_does_not_sort_the_backlog() {
             plan.iter().all(|l| !sorts(l)),
             "claim query sorts the backlog (ordering={ordering}): {plan:?}"
         );
+        // Portable: the (subscription, state, seq) index; pgmq (FB-164): the
+        // queue table's primary key, in msg_id (= seq) order.
+        let index = if common::on_pgmq(&h).await {
+            "_pkey"
+        } else {
+            "_forgebase_queue_deliveries_order"
+        };
         assert!(
-            plan.iter().any(|l| l.contains("_forgebase_queue_deliveries_order")),
+            plan.iter().any(|l| l.contains(index)),
             "claim query does not use the seq-ordered index: {plan:?}"
         );
     }

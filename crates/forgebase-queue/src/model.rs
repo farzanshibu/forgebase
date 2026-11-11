@@ -328,6 +328,43 @@ pub struct MessagePage {
     pub next_after: Option<i64>,
 }
 
+// ------------------------------------------------------- delivery engines
+
+/// Where the owed deliveries of subscriptions are stored (ADR-0029 §1.6):
+/// ForgeBase's own table, or one pgmq queue per subscription (PostgreSQL
+/// with pgmq). Callers see the same behaviour either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryEngine {
+    /// `_forgebase_queue_deliveries` (SQLite, and PostgreSQL without pgmq).
+    Portable,
+    /// One pgmq queue per subscription.
+    Pgmq,
+}
+
+impl DeliveryEngine {
+    /// `portable` or `pgmq`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeliveryEngine::Portable => "portable",
+            DeliveryEngine::Pgmq => "pgmq",
+        }
+    }
+}
+
+/// What a `queue.convert` moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ConvertReport {
+    /// Engine before the conversion.
+    pub from: DeliveryEngine,
+    /// Engine now.
+    pub to: DeliveryEngine,
+    /// Subscriptions whose deliveries moved.
+    pub subscriptions: i64,
+    /// Owed deliveries moved.
+    pub deliveries: i64,
+}
+
 // ------------------------------------------------------------ subscriptions
 
 /// Where a new subscription starts reading.
