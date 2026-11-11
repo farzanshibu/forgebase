@@ -103,6 +103,61 @@ pub struct SetHandle {
     set: Arc<DbSet>,
     db: Database,
     replicas: Option<ReplicaSet>,
+    /// Held while a tenant's call uses this handle ([`DbRouter::for_tenant`]):
+    /// a move's freeze waits until no lease of the tenant is left
+    /// ([`DbRouter::wait_drained`]).
+    lease: Option<Arc<Lease>>,
+}
+
+/// One routed use of a tenant's set (FB-174): counted per tenant while any
+/// clone of the handle lives.
+#[derive(Debug)]
+struct Lease {
+    tenant: String,
+    flights: Arc<InFlight>,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.flights.release(&self.tenant);
+    }
+}
+
+/// Handles in use per tenant.
+#[derive(Debug, Default)]
+struct InFlight {
+    counts: std::sync::Mutex<HashMap<String, usize>>,
+    released: tokio::sync::Notify,
+}
+
+impl InFlight {
+    fn counts(&self) -> std::sync::MutexGuard<'_, HashMap<String, usize>> {
+        self.counts.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn acquire(self: &Arc<Self>, tenant: &str) -> Arc<Lease> {
+        *self.counts().entry(tenant.to_owned()).or_insert(0) += 1;
+        Arc::new(Lease {
+            tenant: tenant.to_owned(),
+            flights: self.clone(),
+        })
+    }
+
+    fn release(&self, tenant: &str) {
+        let mut counts = self.counts();
+        if let Some(n) = counts.get_mut(tenant) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                counts.remove(tenant);
+            }
+        }
+        drop(counts);
+        self.released.notify_waiters();
+    }
+
+    fn count(&self, tenant: &str) -> usize {
+        self.counts().get(tenant).copied().unwrap_or(0)
+    }
 }
 
 impl SetHandle {
@@ -112,7 +167,13 @@ impl SetHandle {
             set: Arc::new(set),
             db,
             replicas: None,
+            lease: None,
         }
+    }
+
+    fn leased(mut self, lease: Arc<Lease>) -> Self {
+        self.lease = Some(lease);
+        self
     }
 
     /// Same handle, routing replica reads over `replicas` (an empty set
@@ -470,6 +531,7 @@ struct Inner {
     state: RwLock<State>,
     changes: watch::Sender<u64>,
     options: RouterOptions,
+    in_flight: Arc<InFlight>,
 }
 
 #[derive(Debug)]
@@ -554,6 +616,7 @@ impl DbRouter {
                 control_db: control,
                 changes: watch::channel(epoch).0,
                 options,
+                in_flight: Arc::new(InFlight::default()),
             }),
         }
     }
@@ -636,7 +699,39 @@ impl DbRouter {
     pub fn try_for_tenant(&self, tenant: TenantRef<'_>) -> Result<SetHandle, RouterError> {
         match tenant {
             TenantRef::Instance => Ok(self.control()),
-            TenantRef::Tenant(t) => self.read().route(t),
+            TenantRef::Tenant(t) => self.route_leased(t),
+        }
+    }
+
+    /// Routes `tenant` and counts the handle as in flight. The count is
+    /// taken under the state lock, so once [`DbRouter::place`] has frozen
+    /// the tenant every handle routed before is counted.
+    fn route_leased(&self, tenant: &str) -> Result<SetHandle, RouterError> {
+        let state = self.read();
+        let handle = state.route(tenant)?;
+        Ok(handle.leased(self.inner.in_flight.acquire(tenant)))
+    }
+
+    /// Handles of `tenant` in use (routed by [`DbRouter::for_tenant`] or
+    /// [`DbRouter::try_for_tenant`] and not dropped yet).
+    pub fn in_flight(&self, tenant: &str) -> usize {
+        self.inner.in_flight.count(tenant)
+    }
+
+    /// Waits until no handle of `tenant` is in use, at most `timeout`
+    /// (a move's freeze, ADR-0029 §3.8 step 4.2). Returns whether it drained.
+    pub async fn wait_drained(&self, tenant: &str, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let released = self.inner.in_flight.released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            if self.inner.in_flight.count(tenant) == 0 {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, released).await.is_err() {
+                return self.inner.in_flight.count(tenant) == 0;
+            }
         }
     }
 
@@ -650,7 +745,7 @@ impl DbRouter {
         let deadline = tokio::time::Instant::now() + self.inner.options.freeze_timeout;
         let mut changes = self.inner.changes.subscribe();
         loop {
-            match self.read().route(t) {
+            match self.route_leased(t) {
                 Err(RouterError::TenantMoving(_)) => {}
                 other => return other,
             }
@@ -679,13 +774,21 @@ impl DbRouter {
         if control.kind() == BackendKind::Sqlite && !others.is_empty() {
             return Err(RouterError::PostgresRequired);
         }
-        // Open new sets outside the lock; keep the databases of known ones.
-        let known: HashMap<String, Database> = self
-            .read()
-            .handles
-            .iter()
-            .map(|(id, h)| (id.clone(), h.db.clone()))
-            .collect();
+        // Open new sets outside the lock; keep the databases of known ones
+        // whose primary is the same node (a promoted shard replica reopens,
+        // FB-174).
+        let known: HashMap<String, Database> = {
+            let state = self.read();
+            state
+                .handles
+                .iter()
+                .filter(|(id, _)| {
+                    id.as_str() == CONTROL_SET_ID
+                        || state.topology.primary_of(id).map(|n| &n.id) == topology.primary_of(id).map(|n| &n.id)
+                })
+                .map(|(id, h)| (id.clone(), h.db.clone()))
+                .collect()
+        };
         let mut handles = BTreeMap::new();
         handles.insert(
             CONTROL_SET_ID.to_owned(),

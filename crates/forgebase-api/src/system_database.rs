@@ -30,8 +30,11 @@
 //! * **Agents** (`forgebase node`, FB-168): `…/agent/*` sit outside
 //!   administrator authentication; the join token or the agent key
 //!   (`Authorization: Bearer`) is checked by the server.
-//! * Tenant moves and rebalancing answer `501 not_implemented` until
-//!   FB-174.
+//! * Tenant moves and rebalancing (FB-174) run as operations
+//!   `database.tenant.move` and `database.rebalance`; draining a shard
+//!   (`PATCH shards/{id}` with `state = draining`) starts
+//!   `database.shard.drain`. Retired shard data stays on disk until
+//!   `DELETE retired/{id}`.
 
 use std::borrow::Cow;
 use std::future::Future;
@@ -119,8 +122,12 @@ pub mod codes {
     pub const NOT_CANCELLABLE: &str = "operation_not_cancellable";
     /// 503: this server runs no topology service.
     pub const TOPOLOGY_UNAVAILABLE: &str = "topology_unavailable";
-    /// 501: tenant moves and rebalancing (FB-174).
+    /// 501: kept for clients of 0.3 previews (moves answered it before FB-174).
     pub const NOT_IMPLEMENTED: &str = "not_implemented";
+    /// 400: the typed confirmation does not match.
+    pub const CONFIRM_MISMATCH: &str = "confirm_mismatch";
+    /// 409: the tenant already holds rows on the target set.
+    pub const TARGET_NOT_EMPTY: &str = "target_not_empty";
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +226,18 @@ pub trait TopologyOps: Send + Sync + std::fmt::Debug + 'static {
     fn remove_shard<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, Removed>;
     /// Tenants with their set, newest filter semantics in [`PlacementQuery`].
     fn placements(&self, q: PlacementQuery) -> OpsFuture<'_, PlacementPage>;
+    /// Starts a move of `tenant` (operation `database.tenant.move`; FB-174).
+    /// `req.confirm` was checked against the tenant.
+    fn move_tenant<'a>(&'a self, ctx: &'a AccessContext, tenant: &'a str, req: MoveBody) -> OpsFuture<'a, Operation>;
+    /// A rebalance plan over fresh size estimates, stored for an hour.
+    fn rebalance_plan(&self, req: RebalancePlanBody) -> OpsFuture<'_, RebalancePlanView>;
+    /// Runs a stored plan (operation `database.rebalance`); `req.confirm`
+    /// was checked against the plan id.
+    fn rebalance<'a>(&'a self, ctx: &'a AccessContext, req: RebalanceBody) -> OpsFuture<'a, Operation>;
+    /// Data of removed shards kept on this server's disk.
+    fn retired_data(&self) -> OpsFuture<'_, RetiredList>;
+    /// Deletes retired data `id` (`confirm` = its shard node's name).
+    fn delete_retired<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, Removed>;
     /// Topology operations, newest first.
     fn operations<'a>(&'a self, ctx: &'a AccessContext, q: OperationQuery) -> OpsFuture<'a, OperationList>;
     /// One operation.
@@ -637,6 +656,85 @@ pub struct RebalanceBody {
     pub confirm: String,
 }
 
+/// One move of a rebalance plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PlannedMoveInfo {
+    /// Tenant.
+    pub tenant: String,
+    /// Its project (a project's environments move together).
+    pub project: Option<String>,
+    /// From set id.
+    pub from: String,
+    /// To set id.
+    pub to: String,
+    /// Estimated rows.
+    pub rows: u64,
+    /// Estimated bytes.
+    pub bytes: u64,
+    /// Estimated freeze in milliseconds.
+    pub est_freeze_ms: u64,
+}
+
+/// A set's load in a plan (bytes ÷ weight).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SetLoadInfo {
+    /// Set id.
+    pub set_id: String,
+    /// Set name.
+    pub name: String,
+    /// Weight.
+    pub weight: u32,
+    /// Tenants.
+    pub tenants: u64,
+    /// Estimated bytes.
+    pub bytes: u64,
+    /// Bytes ÷ weight.
+    pub score: f64,
+}
+
+/// `POST /api/system/database/rebalance/plan`: shown before it runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct RebalancePlanView {
+    /// Plan id (type it to run the plan).
+    pub id: String,
+    /// RFC 3339.
+    pub created_at: String,
+    /// RFC 3339: after this the plan must be made again.
+    pub expires_at: String,
+    /// Moves, in the order they run (one at a time).
+    pub moves: Vec<PlannedMoveInfo>,
+    /// Loads now.
+    pub before: Vec<SetLoadInfo>,
+    /// Loads after the plan.
+    pub after: Vec<SetLoadInfo>,
+    /// Spread of the scores now ((max − min) ÷ max).
+    pub spread_before: f64,
+    /// Spread after.
+    pub spread_after: f64,
+    /// Sum of the estimated freezes.
+    pub est_freeze_ms: u64,
+}
+
+/// Data of a removed shard kept on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RetiredInfo {
+    /// Id (`<node name>-<unix time>`).
+    pub id: String,
+    /// The shard node's name (type it to delete).
+    pub name: String,
+    /// The set it held.
+    pub set_id: Option<String>,
+    /// Bytes on disk.
+    pub bytes: u64,
+}
+
+/// `GET /api/system/database/retired`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RetiredList {
+    /// Oldest first.
+    pub items: Vec<RetiredInfo>,
+}
+
 /// `202 Accepted` body.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Accepted {
@@ -678,6 +776,11 @@ pub fn router(app: AppState, ops: Option<Arc<dyn TopologyOps>>) -> Router {
         .route("/api/system/database/placements/{tenant}/move", post(move_tenant))
         .route("/api/system/database/rebalance/plan", post(rebalance_plan))
         .route("/api/system/database/rebalance", post(rebalance))
+        .route("/api/system/database/retired", get(retired))
+        .route(
+            "/api/system/database/retired/{id}",
+            axum::routing::delete(delete_retired),
+        )
         .route("/api/system/database/operations", get(operations))
         .route("/api/system/database/operations/{id}", get(operation))
         .route("/api/system/database/operations/{id}/cancel", post(cancel_operation))
@@ -1156,7 +1259,6 @@ pub async fn join_token(
     responses(
         (status = 202, description = "Shard add started", body = Accepted),
         (status = 400, description = "sharding_unsupported, invalid_request"),
-        (status = 501, description = "local and remote shard primaries (FB-174)"),
     )
 )]
 pub async fn add_shard(
@@ -1169,29 +1271,38 @@ pub async fn add_shard(
     let r = async {
         let name = body.name.trim();
         if name.is_empty() || name.len() > 64 {
-            return Err(ApiError::bad_request("invalid_request", "a shard needs a name of 1 to 64 characters, such as shard-2"));
+            return Err(ApiError::bad_request(
+                "invalid_request",
+                "a shard needs a name of 1 to 64 characters, such as shard-2",
+            ));
         }
         check_name(&body.node.name)?;
         match body.node.kind.as_str() {
             "external" => {
                 check_url(body.node.url.as_deref(), "an external shard primary")?;
             }
+            // FB-174: `local` provisions a cluster on this server; `remote`
+            // waits for `forgebase node join` with a primary join token.
             "local" | "remote" => {
-                return Err(ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    codes::NOT_IMPLEMENTED,
-                    "shard primaries on this server or another host come with FB-174; add an external one (a PostgreSQL server you run)",
-                ));
+                if body.node.url.is_some() {
+                    return Err(ApiError::bad_request(
+                        "invalid_request",
+                        "a local or remote shard primary takes no url",
+                    ));
+                }
             }
             other => {
                 return Err(ApiError::bad_request(
                     "invalid_request",
-                    format!("node kind {other:?} must be external"),
+                    format!("node kind {other:?} must be local, remote or external"),
                 ));
             }
         }
         if body.weight.is_some_and(|w| !(1..=1_000).contains(&w)) {
-            return Err(ApiError::bad_request("invalid_request", "weight must be from 1 to 1000"));
+            return Err(ApiError::bad_request(
+                "invalid_request",
+                "weight must be from 1 to 1000",
+            ));
         }
         Ok(ops.add_shard(&ctx, body.clone()).await?)
     }
@@ -1306,67 +1417,88 @@ pub async fn placements(State(s): State<DbApi>, Access(ctx): Access, RawQuery(q)
     Ok(Json(page).into_response())
 }
 
-fn not_yet(what: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        codes::NOT_IMPLEMENTED,
-        format!("{what} comes with FB-174 (online tenant moves); nothing was changed"),
-    )
+fn confirm(given: &str, want: &str, what: &str) -> ApiResult<()> {
+    if given.trim() == want {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            codes::CONFIRM_MISMATCH,
+            format!("type {what} {want:?} to confirm"),
+        ))
+    }
 }
 
-// FB-174 HAND-OVER: replace the `not_yet(..)` answer below with a
-// `TopologyOps` call (admin check, step-up and audit stay as they are).
-/// Moves a tenant to another set (`{to, confirm}`, job
-/// `database.tenant.move`). MFA step-up. `501` until FB-174.
+/// Moves a tenant to another set online (`{to, confirm}`: `202`
+/// operation `database.tenant.move`; ADR-0029 §3.8). MFA step-up. Moving
+/// back to the set a move came from is its undo.
 #[utoipa::path(
     post, path = "/api/system/database/placements/{tenant}/move", operation_id = "database_tenant_move", tag = "system",
     params(("tenant" = String, Path, description = "Tenant id")),
     request_body = MoveBody,
-    responses((status = 501, description = "not_implemented (FB-174)"), (status = 409, description = "tenant_moving"))
+    responses(
+        (status = 202, description = "Move started", body = Accepted),
+        (status = 400, description = "confirm_mismatch, invalid_request, postgres_required, shard_closed"),
+        (status = 404, description = "shard_not_found"),
+        (status = 409, description = "tenant_moving, operation_in_progress, target_not_empty"),
+    )
 )]
 pub async fn move_tenant(
     State(s): State<DbApi>,
     Access(ctx): Access,
     auth: Option<Extension<Authenticated>>,
     Path(tenant): Path<String>,
-    ApiJson(_body): ApiJson<MoveBody>,
+    ApiJson(body): ApiJson<MoveBody>,
 ) -> ApiResult<Response> {
-    s.ops(&ctx)?;
-    let detail = json!({ "tenant": tenant });
-    let r: ApiResult<()> = async {
+    let ops = s.ops(&ctx)?;
+    let detail = json!({ "tenant": tenant, "to": body.to });
+    let r = async {
         s.step_up(&ctx, caller(auth.as_ref()), "Moving a tenant").await?;
-        Err(not_yet("Moving a tenant"))
+        confirm(&body.confirm, &tenant, "the tenant id")?;
+        Ok(ops.move_tenant(&ctx, &tenant, body.clone()).await?)
     }
     .await;
-    s.audited(&ctx, "db.topology.tenant.move", detail, r).await?;
-    Ok(StatusCode::NOT_IMPLEMENTED.into_response())
+    let op = s.audited(&ctx, "db.topology.tenant.move", detail, r).await?;
+    Ok(accepted(op))
 }
 
-// FB-174 HAND-OVER: replace the `not_yet(..)` answer below with a
-// `TopologyOps` call (admin check, step-up and audit stay as they are).
-/// A rebalance plan (moves, sizes, freeze estimates). `501` until FB-174.
+/// A rebalance plan (moves, sizes, freeze estimates; ADR-0029 §3.9): whole
+/// projects from the most to the least loaded set until the spread of load
+/// scores is within 10 % or `max_moves` (default 20). Changes nothing; the
+/// plan can be run for an hour.
 #[utoipa::path(
     post, path = "/api/system/database/rebalance/plan", operation_id = "database_rebalance_plan", tag = "system",
     request_body = RebalancePlanBody,
-    responses((status = 501, description = "not_implemented (FB-174)"))
+    responses((status = 200, description = "The plan", body = RebalancePlanView), (status = 400, description = "invalid_request, postgres_required"))
 )]
 pub async fn rebalance_plan(
     State(s): State<DbApi>,
     Access(ctx): Access,
-    ApiJson(_body): ApiJson<RebalancePlanBody>,
+    ApiJson(body): ApiJson<RebalancePlanBody>,
 ) -> ApiResult<Response> {
-    s.ops(&ctx)?;
-    Err(not_yet("Planning a rebalance"))
+    let ops = s.ops(&ctx)?;
+    if body.max_moves.is_some_and(|m| !(1..=500).contains(&m)) {
+        return Err(ApiError::bad_request(
+            "invalid_request",
+            "max_moves must be from 1 to 500",
+        ));
+    }
+    let detail = json!({ "sets": body.sets, "max_moves": body.max_moves });
+    let r = async { Ok(ops.rebalance_plan(body.clone()).await?) }.await;
+    let plan = s.audited(&ctx, "db.topology.rebalance.plan", detail, r).await?;
+    Ok(Json(plan).into_response())
 }
 
-// FB-174 HAND-OVER: replace the `not_yet(..)` answer below with a
-// `TopologyOps` call (admin check, step-up and audit stay as they are).
-/// Runs a rebalance plan (`{plan_id, confirm}`, job `database.rebalance`).
-/// MFA step-up. `501` until FB-174.
+/// Runs a rebalance plan (`{plan_id, confirm}`: `202` operation
+/// `database.rebalance`), its moves one at a time. MFA step-up.
 #[utoipa::path(
     post, path = "/api/system/database/rebalance", operation_id = "database_rebalance", tag = "system",
     request_body = RebalanceBody,
-    responses((status = 501, description = "not_implemented (FB-174)"))
+    responses(
+        (status = 202, description = "Rebalance started", body = Accepted),
+        (status = 400, description = "confirm_mismatch, postgres_required"),
+        (status = 404, description = "move_not_found (unknown plan)"),
+        (status = 409, description = "move_state (plan expired), operation_in_progress"),
+    )
 )]
 pub async fn rebalance(
     State(s): State<DbApi>,
@@ -1374,15 +1506,53 @@ pub async fn rebalance(
     auth: Option<Extension<Authenticated>>,
     ApiJson(body): ApiJson<RebalanceBody>,
 ) -> ApiResult<Response> {
-    s.ops(&ctx)?;
+    let ops = s.ops(&ctx)?;
     let detail = json!({ "plan_id": body.plan_id });
-    let r: ApiResult<()> = async {
+    let r = async {
         s.step_up(&ctx, caller(auth.as_ref()), "Running a rebalance").await?;
-        Err(not_yet("Running a rebalance"))
+        confirm(&body.confirm, &body.plan_id, "the plan id")?;
+        Ok(ops.rebalance(&ctx, body.clone()).await?)
     }
     .await;
-    s.audited(&ctx, "db.topology.rebalance", detail, r).await?;
-    Ok(StatusCode::NOT_IMPLEMENTED.into_response())
+    let op = s.audited(&ctx, "db.topology.rebalance", detail, r).await?;
+    Ok(accepted(op))
+}
+
+/// Data of removed shards kept on this server's disk
+/// (`postgres/retired/<name>-<time>`).
+#[utoipa::path(
+    get, path = "/api/system/database/retired", operation_id = "database_retired", tag = "system",
+    responses((status = 200, description = "Retired data", body = RetiredList))
+)]
+pub async fn retired(State(s): State<DbApi>, Access(ctx): Access) -> ApiResult<Response> {
+    let ops = s.ops(&ctx)?;
+    Ok(Json(ops.retired_data().await?).into_response())
+}
+
+/// Deletes the data of a removed shard (`?confirm=<node name>`). MFA step-up.
+#[utoipa::path(
+    delete, path = "/api/system/database/retired/{id}", operation_id = "database_retired_delete", tag = "system",
+    params(("id" = String, Path, description = "Retired data id"), ("confirm" = String, Query, description = "The shard node's name")),
+    responses((status = 200, description = "Deleted", body = Removed), (status = 400, description = "confirm_mismatch"))
+)]
+pub async fn delete_retired(
+    State(s): State<DbApi>,
+    Access(ctx): Access,
+    auth: Option<Extension<Authenticated>>,
+    Path(id): Path<String>,
+    RawQuery(q): RawQuery,
+) -> ApiResult<Response> {
+    let ops = s.ops(&ctx)?;
+    let confirm = query_value(q.as_deref(), "confirm").unwrap_or_default();
+    let detail = json!({ "id": id });
+    let r = async {
+        s.step_up(&ctx, caller(auth.as_ref()), "Deleting a removed shard's data")
+            .await?;
+        Ok(ops.delete_retired(&id, &confirm).await?)
+    }
+    .await;
+    let out = s.audited(&ctx, "db.topology.retired.delete", detail, r).await?;
+    Ok(Json(out).into_response())
 }
 
 /// Topology operations, newest first (`?active=1`: queued and running only).
@@ -1565,6 +1735,8 @@ pub async fn agent_heartbeat(
         move_tenant,
         rebalance_plan,
         rebalance,
+        retired,
+        delete_retired,
         operations,
         operation,
         cancel_operation,
@@ -1597,6 +1769,11 @@ pub async fn agent_heartbeat(
         MoveBody,
         RebalancePlanBody,
         RebalanceBody,
+        RebalancePlanView,
+        PlannedMoveInfo,
+        SetLoadInfo,
+        RetiredInfo,
+        RetiredList,
         Accepted,
     ))
 )]
@@ -1783,6 +1960,39 @@ mod tests {
                     next_cursor: None,
                 },
             )
+        }
+        fn move_tenant<'a>(
+            &'a self,
+            _ctx: &'a AccessContext,
+            tenant: &'a str,
+            req: MoveBody,
+        ) -> OpsFuture<'a, Operation> {
+            self.hit(format!("move {tenant} {}", req.to), op(kinds::TENANT_MOVE))
+        }
+        fn rebalance_plan(&self, req: RebalancePlanBody) -> OpsFuture<'_, RebalancePlanView> {
+            self.hit(
+                format!("plan {:?} {:?}", req.sets, req.max_moves),
+                RebalancePlanView {
+                    id: "rb_1".into(),
+                    created_at: String::new(),
+                    expires_at: String::new(),
+                    moves: vec![],
+                    before: vec![],
+                    after: vec![],
+                    spread_before: 0.0,
+                    spread_after: 0.0,
+                    est_freeze_ms: 0,
+                },
+            )
+        }
+        fn rebalance<'a>(&'a self, _ctx: &'a AccessContext, req: RebalanceBody) -> OpsFuture<'a, Operation> {
+            self.hit(format!("rebalance {}", req.plan_id), op(kinds::REBALANCE))
+        }
+        fn retired_data(&self) -> OpsFuture<'_, RetiredList> {
+            self.hit("retired".into(), RetiredList { items: vec![] })
+        }
+        fn delete_retired<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, Removed> {
+            self.hit(format!("rmretired {id} {confirm}"), Removed { removed: id.into() })
         }
         fn operations<'a>(&'a self, _ctx: &'a AccessContext, q: OperationQuery) -> OpsFuture<'a, OperationList> {
             self.hit(
@@ -2117,7 +2327,7 @@ mod tests {
         .await;
         assert_eq!(s, StatusCode::CREATED, "{j}");
         assert_eq!(h.get("cache-control").unwrap(), "no-store");
-        // Shards: external works, local / remote wait for FB-174.
+        // Shards: external, local and remote (FB-174); local and remote take no url.
         let shard = |kind: &str| json!({"name": "s2", "node": {"name": "s2p", "kind": kind, "url": "postgres://h/db"}});
         let (s, _, j) = call(
             &f,
@@ -2134,11 +2344,10 @@ mod tests {
         );
         for k in ["local", "remote"] {
             let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/shards"), Some(shard(k)), &[]).await;
-            assert_eq!(
-                (s, code(&j)),
-                (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED),
-                "{k}"
-            );
+            assert_eq!((s, code(&j)), (StatusCode::BAD_REQUEST, "invalid_request"), "{k}");
+            let body = json!({"name": "s3", "node": {"name": "s3p", "kind": k}});
+            let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/shards"), Some(body), &[]).await;
+            assert_eq!(s, StatusCode::ACCEPTED, "{k}: {j}");
         }
         let (s, _, _) = call(
             &f,
@@ -2177,22 +2386,49 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/placements?limit=0"), None, &[]).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        // Moves and rebalancing: 501 until FB-174.
-        for (p, b) in [
+        // Moves and rebalancing (FB-174): the typed confirmation, then the ops.
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/placements/t1/move"),
+            Some(json!({"to": "s2", "confirm": "t2"})),
+            &[],
+        )
+        .await;
+        assert_eq!((s, code(&j)), (StatusCode::BAD_REQUEST, codes::CONFIRM_MISMATCH));
+        for (p, b, want) in [
             (
                 format!("{base}/placements/t1/move"),
                 json!({"to": "s2", "confirm": "t1"}),
+                StatusCode::ACCEPTED,
             ),
-            (format!("{base}/rebalance/plan"), json!({})),
-            (format!("{base}/rebalance"), json!({"plan_id": "p", "confirm": "p"})),
+            (
+                format!("{base}/rebalance/plan"),
+                json!({"max_moves": 3}),
+                StatusCode::OK,
+            ),
+            (
+                format!("{base}/rebalance"),
+                json!({"plan_id": "p", "confirm": "p"}),
+                StatusCode::ACCEPTED,
+            ),
         ] {
             let (s, _, j) = call(&f, a(), Method::POST, &p, Some(b), &[]).await;
-            assert_eq!(
-                (s, code(&j)),
-                (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED),
-                "{p}"
-            );
+            assert_eq!(s, want, "{p}: {j}");
         }
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/rebalance/plan"),
+            Some(json!({"max_moves": 0})),
+            &[],
+        )
+        .await;
+        assert_eq!((s, code(&j)), (StatusCode::BAD_REQUEST, "invalid_request"));
+        let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/retired"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK);
         // Operations.
         let (s, _, j) = call(
             &f,
@@ -2272,9 +2508,15 @@ mod tests {
             "rebuild n1",
             "join control replica http://fb.example:8090",
             "shard s2 external",
+            "shard s3 local",
+            "shard s3 remote",
             "patch s1 Some(\"draining\")",
             "rmshard s1 shard-1",
             "placements Some(\"s1\") Some(\"p1\") Some(\"env\") Some(\"t5\") Some(10)",
+            "move t1 s2",
+            "plan None Some(3)",
+            "rebalance p",
+            "retired",
             "ops true Some(5)",
             "op j1",
             "cancel j1",
@@ -2284,7 +2526,7 @@ mod tests {
         ] {
             assert!(calls.iter().any(|c| c == want), "{want} in {calls:#?}");
         }
-        assert_eq!(calls.len(), 20, "refused input never reached the service: {calls:#?}");
+        assert_eq!(calls.len(), 26, "refused input never reached the service: {calls:#?}");
     }
 
     #[tokio::test]

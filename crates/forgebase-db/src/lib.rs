@@ -35,6 +35,7 @@ pub use forgebase_migrations as migrations;
 
 pub mod backend;
 pub mod dialect;
+pub mod moves;
 mod pg;
 pub mod placement;
 pub mod router;
