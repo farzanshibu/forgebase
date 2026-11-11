@@ -193,7 +193,7 @@ impl FeatureDef {
     }
 }
 
-use SettingType::{Bool, Enum, Int, Map, String as Text, Url};
+use SettingType::{Bool, Enum, Int, List, Map, String as Text, Url};
 
 /// `[database]` backend choice and `[database.postgres]` (ADR-0028 §6.1,
 /// ADR-0029 §4.1). The SQLite keys stay under the server module.
@@ -240,18 +240,18 @@ const DATABASE: &[SettingDef] = &[
     .read_only(),
     SettingDef::new(
         "database.postgres.tls_cert",
-        "TLS certificate for TCP logins",
+        "Certificate for TCP logins",
         Text,
-        "Bundled PostgreSQL only, with a listen address: a PEM certificate file (with its chain) for encrypted TCP logins. Empty (the default) uses a self-signed certificate ForgeBase generates in the data directory, which clients accept with sslmode=require. Set it together with the key file.",
+        "Bundled PostgreSQL only, with a listen address: a PEM certificate file (with its chain) for encrypted TCP logins, such as /etc/forgebase/pg.crt. Empty (the default) uses a self-signed certificate ForgeBase generates in the data directory, which clients accept with sslmode=require. Set it together with the key file.",
     )
     .env("FORGEBASE_DATABASE_POSTGRES_TLS_CERT")
     .example("/etc/forgebase/pg.crt")
     .read_only(),
     SettingDef::new(
         "database.postgres.tls_key",
-        "TLS key for TCP logins",
+        "Private key for TCP logins",
         Text,
-        "Bundled PostgreSQL only, with a listen address: the PEM private key of the TLS certificate, readable by the server's user only.",
+        "Bundled PostgreSQL only, with a listen address: the PEM private key of the certificate, such as /etc/forgebase/pg.key, readable by the server's user only.",
     )
     .env("FORGEBASE_DATABASE_POSTGRES_TLS_KEY")
     .example("/etc/forgebase/pg.key")
@@ -320,6 +320,108 @@ const DATABASE: &[SettingDef] = &[
     )
     .options(&["auto", "on", "off"])
     .env("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_TRIGRAM"),
+    // FB-175 (ADR-0029 §4.1): how replicas and shards behave. The topology
+    // itself (servers, shards, tenants) changes through the Database
+    // topology screen, not here.
+    SettingDef::new(
+        "database.replicas.read_routing",
+        "Reads from replicas",
+        Enum,
+        "PostgreSQL with read replicas only: replicas (the default) sends reads that may be slightly behind, such as lists and searches, to a healthy read replica (a copy of the database that follows the primary server), primary sends every read to the primary server. Without replicas nothing changes.",
+    )
+    .options(&["primary", "replicas"])
+    .env("FORGEBASE_DATABASE_REPLICAS_READ_ROUTING"),
+    SettingDef::new(
+        "database.replicas.read_your_writes",
+        "Read your own writes",
+        Bool,
+        "PostgreSQL with read replicas only: on (the default) makes a caller's reads always see its own earlier writes, waiting briefly for a replica or reading the primary server instead. Leave it on unless every client tolerates reading slightly older data.",
+    )
+    .env("FORGEBASE_DATABASE_REPLICAS_READ_YOUR_WRITES"),
+    SettingDef::new(
+        "database.replicas.lsn_wait_ms",
+        "Replica catch-up wait",
+        Int,
+        "PostgreSQL with read replicas only: how long, in milliseconds, a read waits for a replica to catch up with the caller's last write before it reads the primary server instead, from 0 to 10000. 50 suits most servers.",
+    )
+    .unit("ms")
+    .env("FORGEBASE_DATABASE_REPLICAS_LSN_WAIT_MS"),
+    SettingDef::new(
+        "database.replicas.max_lag_ms",
+        "Most replica delay",
+        Int,
+        "PostgreSQL with read replicas only: a replica more than this many milliseconds behind the primary server stops serving reads until it catches up, from 1 to 3600000. 2000 (two seconds) suits most servers.",
+    )
+    .unit("ms")
+    .env("FORGEBASE_DATABASE_REPLICAS_MAX_LAG_MS"),
+    SettingDef::new(
+        "database.replicas.max_lag_bytes",
+        "Most replica backlog",
+        Int,
+        "PostgreSQL with read replicas only: a replica that has more than this many bytes of changes left to apply stops serving reads until it catches up. 67108864 (64 MB) suits most servers.",
+    )
+    .unit("bytes")
+    .env("FORGEBASE_DATABASE_REPLICAS_MAX_LAG_BYTES"),
+    SettingDef::new(
+        "database.replicas.health_interval_ms",
+        "Replica health check interval",
+        Int,
+        "PostgreSQL with read replicas only: how often, in milliseconds, ForgeBase measures each replica's delay and takes it in or out of service, from 50 to 60000. 500 suits most servers.",
+    )
+    .unit("ms")
+    .env("FORGEBASE_DATABASE_REPLICAS_HEALTH_INTERVAL_MS"),
+    SettingDef::new(
+        "database.replicas.slot_wal_keep_size",
+        "Change log kept for replicas",
+        Text,
+        "Bundled PostgreSQL with replicas only: the most write-ahead log (the change log replicas copy from) the primary server keeps for a replica that falls behind or is switched off, such as 8GB (the default), 512MB or -1 for no limit. A replica that falls further behind must be rebuilt; a bigger value uses more disk space.",
+    )
+    .env("FORGEBASE_DATABASE_REPLICAS_SLOT_WAL_KEEP_SIZE"),
+    SettingDef::new(
+        "database.sharding.placement",
+        "Where new tenants go",
+        Enum,
+        "PostgreSQL with shards only: least_loaded (the default) puts each new tenant (a project environment) on the shard with the most room for its weight, control keeps new tenants on the main database. Existing tenants stay where they are.",
+    )
+    .options(&["least_loaded", "control"])
+    .env("FORGEBASE_DATABASE_SHARDING_PLACEMENT"),
+    SettingDef::new(
+        "database.sharding.project_affinity",
+        "Keep a project together",
+        Bool,
+        "PostgreSQL with shards only: on (the default) puts every environment of a project on the shard of its first environment, so they can be moved and backed up together. Leave it on unless one project is too big for one shard.",
+    )
+    .env("FORGEBASE_DATABASE_SHARDING_PROJECT_AFFINITY"),
+    SettingDef::new(
+        "database.sharding.move_freeze_timeout_ms",
+        "Most pause during a move",
+        Int,
+        "PostgreSQL with shards only: the longest time, in milliseconds, a tenant's requests wait while a move switches it to its new shard, from 100 to 600000; a move that would take longer is cancelled and the tenant stays where it was. 10000 (ten seconds) suits most servers.",
+    )
+    .unit("ms")
+    .env("FORGEBASE_DATABASE_SHARDING_MOVE_FREEZE_TIMEOUT_MS"),
+    SettingDef::new(
+        "database.sharding.move_source_retention_hours",
+        "Keep moved data for",
+        Int,
+        "PostgreSQL with shards only: how many hours a moved tenant's rows stay on its old shard, so the move can be undone, from 0 to 720. 24 suits most servers.",
+    )
+    .unit("hours")
+    .env("FORGEBASE_DATABASE_SHARDING_MOVE_SOURCE_RETENTION_HOURS"),
+    SettingDef::new(
+        "database.sharding.max_parallel_moves",
+        "Moves at the same time",
+        Int,
+        "PostgreSQL with shards only: how many tenant moves may run at the same time, from 1 to 16. 1 keeps the extra load on your servers lowest.",
+    )
+    .env("FORGEBASE_DATABASE_SHARDING_MAX_PARALLEL_MOVES"),
+    SettingDef::new(
+        "database.nodes",
+        "Servers declared in the file",
+        List,
+        "PostgreSQL only: read replicas and shard servers you run yourself, declared as [[database.nodes]] tables in forgebase.toml with a name, a set (control or a shard name), a role, a weight and url_env, the environment variable that holds the server's address, such as name = \"eu-read-1\" with url_env = \"FORGEBASE_DB_NODE_EU_READ_1_URL\". They are added when the server starts and shown as from forgebase.toml. Edit them in the file; add other servers from the Database topology screen.",
+    )
+    .read_only(),
 ];
 
 const SERVER: &[SettingDef] = &[

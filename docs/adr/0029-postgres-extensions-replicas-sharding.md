@@ -3533,3 +3533,194 @@ router and its `SetConnector` are built, so FB-168's managed replicas
 (`LocalReplicas`, `connect_replica` for local nodes, `PoolSwitch`) hook in
 there from `replicas.rs`; `NodeConnector::connect_replica` already opens
 sealed-URL replicas read-only and refuses local ones.
+
+## Addendum: FB-175, topology configuration and admin API (2026-11-11)
+
+Built as §4 describes, plus the server wiring FB-168 left (its addendum,
+"For the next packages") and FB-168's `pg_hba.conf` follow-up. Without a
+replica or a shard nothing changes, on either backend.
+
+**Files.** `crates/forgebase-core/src/topology_config.rs` (a child module
+of `config`), `crates/forgebase-api/src/system_database.rs`,
+`crates/forgebase-server/src/replicas.rs`,
+`crates/forgebase-server/tests/topology_fb175.rs`. Shared edits:
+`forgebase-core` `config.rs` (the `DatabaseConfig::topology` field, flattened,
+and its hooks in the file shape, environment, layering, keys and
+validation) and `features.rs` (13 registry entries; the `tls_cert` /
+`tls_key` labels no longer use the TLS abbreviation and their help gives an
+example, which the registry copy test asks for); `forgebase-api` `lib.rs`
+(`RouterOptions::database_topology`, the route mount, the agent routes
+outside the auth layer) and `openapi.rs` (the fragment);
+`forgebase-pgengine` `hba.rs` and one line in `lib.rs`;
+`forgebase-server` `lib.rs` (construct, `open_sets` takes the replicas,
+jobs, attach, `database_topology`, stop) and `database.rs` (`engine_layout`
+follows `topology.json`; slot limits from `[database.replicas]`).
+
+**Configuration (§4.1).** `[database.replicas]` (`read_routing`,
+`read_your_writes`, `lsn_wait_ms`, `max_lag_ms`, `max_lag_bytes`,
+`health_interval_ms`, `slot_wal_keep_size`), `[database.sharding]`
+(`placement`, `project_affinity`, `move_freeze_timeout_ms`,
+`move_source_retention_hours`, `max_parallel_moves`) and `[[database.nodes]]`
+(`name`, `set`, `role`, `url_env`, `weight`), with the defaults of §4.1.
+Environment: `FORGEBASE_DATABASE_REPLICAS_<KEY>`,
+`FORGEBASE_DATABASE_SHARDING_<KEY>`; `FORGEBASE_DB_NODE_<NAME>_URL` is
+accepted as a secret (the loader never reads it). Validation says what to
+enter (ranges, `8GB`-style sizes, node names, `url_env` must name a
+variable: a URL in the file is refused). Registry: every key with plain
+help; `database.nodes` is read-only (edit the file), the rest editable.
+The server maps them onto `forgebase_db::RouterOptions` (replica options,
+placement policy, freeze timeout) and `slot_wal_keep_size` onto
+`EngineConfig::replication`.
+
+**API (§4.3).** Every route of the §4.3 table, plus three the screen
+needs: `PATCH /nodes/{id} {weight}` (read share; 0 takes a replica out of
+rotation), `GET /nodes/{id}/promote-check` (the dialog's estimate), and the
+FB-168 agent routes `…/agent/join`, `…/agent/nodes/{id}/commands`,
+`…/agent/nodes/{id}/heartbeat`. The HTTP layer lives in `forgebase-api`
+behind a `TopologyOps` trait the server implements (`forgebase-jobs`
+depends on `forgebase-api`, so the API cannot call jobs or the engine).
+- **Who:** administrators (`401` / `403`); the agent routes sit outside the
+  session layer and the server checks the join token or agent key; the
+  peer address (or the last `X-Forwarded-For` entry with
+  `trust_forwarded_for`) goes to `redeem_join`.
+- **MFA step-up:** promote, node and shard removal, move and running a
+  rebalance: when the administrator has a second factor, the request must
+  come from a session that passed it at most 10 minutes ago
+  (`403 mfa_step_up_required`); API keys and tokens of such an
+  administrator cannot run them.
+- **Audit:** every change and every join token (`db.topology.node.add`,
+  `.node.update`, `.node.remove`, `.node.promote`, `.node.rebuild`,
+  `.join_token` with the token id, `.shard.add`, `.shard.update`,
+  `.shard.remove`, `.tenant.move`, `.rebalance`, `.operation.cancel`);
+  refusals as `db.topology.refused` with the action and code. Reads are not
+  audited (deviation: the screen polls every 5 s).
+- **Errors:** the service's codes pass through (`node_not_found`,
+  `confirm_mismatch`, `node_exists`, `node_state`, `node_unsupported`,
+  `data_loss_unconfirmed`, `engine_mismatch`, `join_token_invalid`,
+  `agent_unauthorized`); new: `operation_in_progress` 409,
+  `tenant_moving` 409, `shard_not_empty` 409, `node_mismatch` 400,
+  `sharding_unsupported` 400, `node_unreachable` 503, `postgres_required`
+  400, `mfa_step_up_required` 403, `operation_not_found` 404,
+  `operation_not_cancellable` 409, `node_from_config` 409, `shard_exists`
+  409, `topology_unavailable` 503, `not_implemented` 501.
+- **SQLite:** `GET …/topology` shows one SQLite server; everything else
+  `400 postgres_required`.
+- **501 until FB-174:** `POST …/placements/{tenant}/move`,
+  `POST …/rebalance/plan`, `POST …/rebalance` (after the step-up, audited);
+  shard primaries of kind `local` or `remote`; local replicas of a shard.
+- **URLs:** an external node's URL is checked (it answers; for a replica:
+  same `system_identifier` as the set's primary and in recovery, else
+  `400 node_mismatch` / `503 node_unreachable`), then stored only as
+  `url_sealed` (`shards::seal_node_url`, bound to the node id). A remote
+  replica's reader URL is sealed at join from the `listen` its agent
+  reported. No answer contains a URL or `url_sealed`.
+
+**Operations.** Jobs of the reserved kinds `database.node.add`,
+`database.node.rebuild`, `database.promote`, `database.shard.add` on queue
+`database` (`GET …/operations` is that queue), 3 attempts, progress
+(`percent`, `stage`, `message`) on `jobs:<id>`. One change per set: an
+operation queued or running on the set refuses the next with `409
+operation_in_progress`. Cancel: queued always; running until the stage
+reaches `fencing`, `promoting`, `switching` or `activating`; handlers
+check it before their first change. Checkpoints: a node add retried after
+a lost lease rebuilds the row it made; a promote saves its checkpoint
+before the fence, so the attempt after a restart sees the node promoted
+and succeeds. `database.shard.drain`, `database.tenant.move` and
+`database.rebalance` are reserved names for FB-174.
+- `POST /nodes {kind: local}` → `service::add_local_replica`; `{kind:
+  external, url}` registers the node at once (`201`, no clone); `remote`
+  answers 400 pointing at join tokens.
+- `POST /nodes/{id}/rebuild`: a local node in `needs_rebuild` (an old
+  primary, or a lost slot) → `rejoin_local` (pg_rewind, else a fresh
+  clone); otherwise `rebuild_replica`.
+- `POST /join-tokens` needs the primary on TCP (`[database.postgres]
+  listen`), else `400 node_unsupported`; the command uses the request's
+  `Host`.
+- `POST /shards {name, node: {name, kind: external, url}, weight}`: the set
+  and its external primary rows synchronously, then
+  `forgebase_db::shards::activate_shard` (migrate, sequence ranges,
+  catalog replay from the data service) in the job. The `fb_control`
+  subscription is skipped (no control connection string for another host
+  yet; FB-174). `PATCH /shards/{id}` sets `active` / `draining`, weight,
+  `hosts_tenants`; `DELETE` refuses a shard with placements (`409
+  shard_not_empty`), unsubscribes it, retires its nodes and the set.
+- `GET /placements`: every environment (no placement row = control) and
+  every placement, with project and organization, filters `set`,
+  `project`, `q`, cursor pages by tenant id.
+
+**Server wiring (FB-168's list).** `replicas::Replicas` (one per server):
+`LocalReplicas::new(data_dir, &engine_config)`; `start_existing()` right
+after the primary starts (before the router opens), `stop()` (loops, every
+local replica, a promoted primary) before the engine stops. The router is
+built by `Replicas::open_router` with `ReplicaConnector`: local replicas
+over their socket as `forgebase_reader` (`DbOptions::read_only`), every
+other node through FB-171's `NodeConnector` (sealed URL). At start the
+control primary is the `ready` local primary of `topology.json`
+(`replicas::control_layout`, used by `database::engine_layout`, so `status`,
+`doctor` and backups follow it too). Loops: lost slots
+(`service::mark_lost_slots`, every minute), lag history (sampled every
+10 s from the router, the highest per minute, 60 minutes, in memory),
+`[[database.nodes]]` seeding at start (external, `origin = config`,
+updated when the variable's URL or weight changes, retired when no longer
+declared; refused for API edits with `409 node_from_config`). `pg_hba.conf`
+peers (agents' addresses, and the primary's listen address as the reader)
+are applied after each join and removal and at start.
+
+**`pg_hba.conf` (FB-168 follow-up).** `hba::HbaInput` gains `replication:
+replication::HbaInput`; `render` emits its `hostssl` lines before
+`hostnossl … reject` (the same text `splice_hba` produces, which the test
+checks), only with a TLS port. Peers persist in
+`<node>/replication-peers.json` (0600; `load_peers` at every start,
+`save_peers`), and `apply_peers(handle, peers)` rewrites the file and runs
+`pg_ctl reload` when it changed. FB-168's TCP test now uses it.
+
+**Promote of control's primary needs a restart.** `PoolSwitch::fence`
+closes a shard's pools (control's are the server's own `Database`, which
+cannot switch while it runs; the old primary's stop is the fence);
+`repoint` opens the new primary for the topology write and, for control,
+sets `restart_required` (shown in `GET …/topology`) and logs it. Until the
+restart, requests that touch control fail. On restart the server opens
+`postgres/nodes/<name>`, the promote job resumes from its checkpoint and
+succeeds, the old primary is a `needs_rebuild` node named `primary` and
+`…/rebuild` rejoins it. A supervised `forgebase serve` that restarts
+itself after a control promote is left as a follow-up (it touches the
+CLI).
+
+**Tests.** `forgebase-core` config and registry (env, file, keys,
+validation, copy test); `forgebase-pgengine` `hba` unit tests (peer lines
+before the rejects, equal to `splice_hba`, no lines without TLS, peers file
+round trip, 0600) and `tests/replicas.rs` cloning over TLS through
+`apply_peers`; `forgebase-api` route tests with a mock service on both
+backends (admins only on every route, SQLite `postgres_required`,
+`topology_unavailable`, input checks never reach the service, `202` /
+`201` shapes, `no-store` on tokens, 501s, error pass-through, OpenAPI
+paths); `forgebase-server` `tests/topology_fb175.rs` (PostgreSQL: local
+replica added through the API, read on the standby through the router,
+`operation_in_progress`, removal with confirmation and slot dropped,
+promote check, promote, restart onto `nodes/r1` with every commit, the job
+resuming, old primary rejoined, audit entries; MFA step-up with a session
+from before MFA, a fresh MFA session and an expired one; SQLite:
+`postgres_required`).
+
+**For the next packages.**
+- **FB-174:** wire `move_tenant`, `rebalance_plan`, `rebalance` in
+  `system_database.rs` (they already pass admin, step-up and audit; add the
+  `TopologyOps` methods) and the job kinds `database.tenant.move`,
+  `database.rebalance`, `database.shard.drain` in `replicas::register_jobs`
+  (the enqueue helper gives one-change-per-set and the `database` queue);
+  local and remote shard primaries in `add_shard`; local replicas of a
+  shard (`LocalReplicas` with that shard's primary handle); the
+  `fb_control` subscription in `run_shard_add` needs a control connection
+  string reachable from the shard; `PoolSwitch::repoint` for shard sets
+  reloads the router (the connector opens the new primary from its row).
+- **FB-176:** read `GET …/topology` (sets with tenant counts and sizes,
+  nodes with `in_rotation`, `lag_ms`, `lag_bytes`, `agent`, `origin`,
+  running `operations`, `restart_required`), `GET …/nodes/{id}`
+  (`lag_history`, empty after a restart), `…/promote-check` for the
+  dialog (`primary_reachable = false` → "old primary is down" and
+  `accept_data_loss`); confirmations are the typed node or shard name
+  (`confirm`); on `403 mfa_step_up_required` send the operator through
+  sign-in with the second factor and retry; operations stream on
+  `jobs:<id>` and show `cancellable`; nodes with `origin = config` are
+  read-only; show `restart_required` as a banner; SQLite: `backend =
+  "sqlite"`.

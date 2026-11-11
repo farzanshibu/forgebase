@@ -112,7 +112,8 @@ pub fn marker_path(layout: &DataLayout) -> PathBuf {
 
 /// The bundled engine's cluster layout of a data directory.
 pub fn engine_layout(layout: &DataLayout) -> Layout {
-    Layout::primary(layout.root())
+    // FB-175: after a promote, control's primary is `postgres/nodes/<name>`.
+    crate::replicas::control_layout(layout.root())
 }
 
 /// Reads the backend marker (`None` when there is none).
@@ -228,6 +229,8 @@ pub fn engine_config(config: &DatabaseConfig) -> Result<EngineConfig, ServerErro
         settings: pg.settings.clone(),
         cron: mode(pg.extensions.cron),
         graph: mode(pg.extensions.graph),
+        // FB-175: [database.replicas] slot_wal_keep_size.
+        replication: crate::replicas::slot_limits(&config.topology.replicas),
         ..EngineConfig::default()
     })
 }
