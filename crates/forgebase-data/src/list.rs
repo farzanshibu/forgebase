@@ -500,7 +500,7 @@ impl DataService {
             params,
             ..ListQuery::default()
         };
-        let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None)?;
+        let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None, &[])?;
         let rows = self
             .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
             .await?;
