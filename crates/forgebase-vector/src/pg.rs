@@ -813,33 +813,80 @@ pub(crate) async fn recall_exact(
 /// Most `f32` values moved per conversion batch (bounds the statement).
 const BATCH_FLOATS: usize = 2_000_000;
 
-/// Moves up to `limit` vectors to `to`'s column in one transaction (bytea
-/// -> `vec`, or back). With `pin`, a batch that moves fewer than `limit`
-/// (the last one) also records `to` as the stored engine, in the same
-/// transaction (FB-161). Returns how many moved and whether it was the
-/// last batch.
+/// Which rows of `_forgebase_vector_values` a conversion takes (FB-172).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Rows<'a> {
+    /// Every row except those of these tenants' collections (the set's
+    /// exclusion list, [`forgebase_jobs::excluded_tenants`]). Empty: every
+    /// row, and the statement is the one without shards.
+    Except(&'a [String]),
+    /// Only the rows of these collections (a tenant taken over after a move).
+    Of(&'a [i64]),
+}
+
+impl Rows<'_> {
+    /// ` AND …` restricting the batch's `SELECT` (parameters from `?2`),
+    /// or `None` when no row can match.
+    fn clause(self) -> Option<(String, Vec<Value>)> {
+        match self {
+            Rows::Except([]) => Some((String::new(), Vec::new())),
+            Rows::Except(tenants) => {
+                let mut params = Vec::new();
+                let guard = forgebase_jobs::tenant_guard("tenant", tenants, &mut params, 1);
+                Some((
+                    format!(" AND collection_id IN (SELECT id FROM _forgebase_vector_collections WHERE 1 = 1{guard})"),
+                    params,
+                ))
+            }
+            Rows::Of([]) => None,
+            Rows::Of(ids) => {
+                let list: Vec<String> = ids.iter().map(i64::to_string).collect();
+                Some((format!(" AND collection_id IN ({})", list.join(", ")), Vec::new()))
+            }
+        }
+    }
+}
+
+/// Moves up to `limit` vectors of `rows` to `to`'s column in one
+/// transaction (bytea -> `vec`, or back). With `pin`, a batch that moves
+/// fewer than `limit` (the last one) also records `to` as the stored
+/// engine, in the same transaction (FB-161). Returns how many moved and
+/// whether it was the last batch.
 pub(crate) async fn move_batch(
     db: &dyn Backend,
     pgv: &Pgv,
     to: VectorEngine,
     limit: usize,
     pin: bool,
+    rows: Rows<'_>,
 ) -> Result<(u64, bool)> {
+    let Some((only, only_params)) = rows.clause() else {
+        if pin {
+            record_engine(db, to).await?;
+        }
+        return Ok((0, true));
+    };
     let mut tx = db.begin(TxMode::Normal).await?;
     let r = async {
         let (select, set) = match to {
             VectorEngine::Pgvector => (
-                "SELECT collection_id, field, key, vector FROM _forgebase_vector_values \
-                 WHERE vector IS NOT NULL ORDER BY collection_id, field, key LIMIT ?1 FOR UPDATE",
+                format!(
+                    "SELECT collection_id, field, key, vector FROM _forgebase_vector_values \
+                     WHERE vector IS NOT NULL{only} ORDER BY collection_id, field, key LIMIT ?1 FOR UPDATE"
+                ),
                 format!("vec = CAST(x.v AS {}), vector = NULL", pgv.ty("vector")),
             ),
             VectorEngine::Portable => (
-                "SELECT collection_id, field, key, CAST(vec AS text) FROM _forgebase_vector_values \
-                 WHERE vec IS NOT NULL ORDER BY collection_id, field, key LIMIT ?1 FOR UPDATE",
+                format!(
+                    "SELECT collection_id, field, key, CAST(vec AS text) FROM _forgebase_vector_values \
+                     WHERE vec IS NOT NULL{only} ORDER BY collection_id, field, key LIMIT ?1 FOR UPDATE"
+                ),
                 "vector = decode(x.v, 'hex'), vec = NULL".to_owned(),
             ),
         };
-        let rows = tx.fetch_all(&Statement::new(select, vec![int_of(limit as u64)])).await?;
+        let mut params = vec![int_of(limit as u64)];
+        params.extend(only_params);
+        let rows = tx.fetch_all(&Statement::new(select, params)).await?;
         let mut batch = Vec::with_capacity(rows.rows.len());
         for r in &rows.rows {
             let v = match (to, &r[3]) {
@@ -895,12 +942,19 @@ pub(crate) fn batch_rows(configured: usize, max_dim: u32) -> usize {
     configured.clamp(1, (BATCH_FLOATS / max_dim.max(1) as usize).max(1))
 }
 
-/// Moves every vector to `to`'s column; with `pin`, the last batch records
-/// the engine. Returns the vectors moved.
-pub(crate) async fn move_all(db: &dyn Backend, pgv: &Pgv, to: VectorEngine, batch: usize, pin: bool) -> Result<u64> {
+/// Moves every vector of `rows` to `to`'s column; with `pin`, the last
+/// batch records the engine. Returns the vectors moved.
+pub(crate) async fn move_all(
+    db: &dyn Backend,
+    pgv: &Pgv,
+    to: VectorEngine,
+    batch: usize,
+    pin: bool,
+    rows: Rows<'_>,
+) -> Result<u64> {
     let mut moved = 0;
     loop {
-        let (n, last) = move_batch(db, pgv, to, batch, pin).await?;
+        let (n, last) = move_batch(db, pgv, to, batch, pin, rows).await?;
         moved += n;
         if last {
             return Ok(moved);
