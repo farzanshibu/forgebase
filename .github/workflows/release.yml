@@ -85,7 +85,7 @@ jobs:
                   sums[name.strip().lstrip("*")] = digest
           lock = pathlib.Path("engine.lock")
           text = lock.read_text()
-          cut = text.index("[archives.")
+          cut = re.search(r'^\[archives\.', text, re.M).start()
           fragment = (d / "engine.lock.archives").read_text()
           lock.write_text(text[:cut] + fragment)
           archives = tomllib.loads(lock.read_text())["archives"]

@@ -13,7 +13,7 @@ use axum::http::{Request, StatusCode};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_auth::{Argon2Config, AuthConfig, AuthService, ClientInfo};
 use forgebase_core::DataLayout;
-use forgebase_db::{Backend, Statement, TxMode};
+use forgebase_db::{Backend, Database, Statement, TxMode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
