@@ -95,12 +95,12 @@ export default function KeyBrowser({ ns, creating, setCreating }: { ns: string; 
         </div>
       </div>
       {selected ? <KeyViewer key={`${ns}/${selected}`} ns={ns} keyName={selected} onGone={() => { select(null); reload(); }} onChanged={reload} /> : <EmptyState compact title="Select a key" why="Choose a key on the left to see its value, TTL and type, and to edit them." />}
-      <NewKeySheet ns={ns} open={creating} onOpenChange={setCreating} onCreated={(k) => { reload(); select(k); }} />
+      <NewKeySheet ns={ns} open={creating} onOpenChange={setCreating} onCreated={reload} />
     </div>
   );
 }
 
-function NewKeySheet({ ns, open, onOpenChange, onCreated }: { ns: string; open: boolean; onOpenChange: (o: boolean) => void; onCreated: (key: string) => void }) {
+function NewKeySheet({ ns, open, onOpenChange, onCreated }: { ns: string; open: boolean; onOpenChange: (o: boolean) => void; onCreated: () => void }) {
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [ttl, setTtl] = useState("");
@@ -117,8 +117,9 @@ function NewKeySheet({ ns, open, onOpenChange, onCreated }: { ns: string; open: 
         await kvSetString(ns, key, binFrom(value), ttl.trim() ? { ttl_ms: Number(ttl) * 1000 } : {});
         const k = key;
         setKey(""); setValue(""); setTtl("");
-        onCreated(k);
-        return { what: `Key ${k}` };
+        onCreated();
+        // Navigating after the sheet closes keeps `?key=` (two URL updates in one tick would drop one).
+        return { what: `Key ${k}`, href: `/redis?${new URLSearchParams({ ...(ns !== "default" ? { ns } : {}), key: k })}` };
       }}
     >
       <FormField label="Key" required>{(p) => <Input {...p} size="sm" className="font-mono" placeholder="user:42:session" value={key} onChange={(e) => setKey(e.target.value)} />}</FormField>

@@ -69,7 +69,7 @@ export function installStorage(mockApi: MockApi): StorageState {
   const stats = (): StorageStats => {
     const all = Object.values(st.versions).flat();
     const l = all.filter((o) => o.is_latest && !o.delete_marker);
-    return { buckets: st.buckets.length, objects: l.length, versions: all.length, logical_bytes: l.reduce((n, o) => n + o.size, 0), stored_bytes: all.reduce((n, o) => n + o.size, 0), open_uploads: Object.keys(st.uploads).length };
+    return { buckets: st.buckets.length, objects: l.length, versions: all.length, logical_bytes: l.reduce((n, o) => n + o.size, 0), stored_bytes: all.reduce((n, o) => n + o.size, 0), open_uploads: Object.keys(st.uploads).length, scope: "instance" };
   };
   const vkey = (b: string, k: string) => `${b}/${k}`;
   const put = (b: string, key: string, size: number, type: string): ObjectInfo => {
@@ -85,11 +85,14 @@ export function installStorage(mockApi: MockApi): StorageState {
   mock.on("POST", `${S}/maintenance/reconcile`, () => ({ status: 200, body: st.report }));
   mock.on("GET", "/api/v1/entitlements", () => ({ status: 200, body: { subject: "user:admin", plan: "pro", entitled: true, features: st.quota === null ? {} : { "storage.bytes": { enabled: true, kind: "quota", limit: st.quota, unit: "bytes", period: "none", source: "plan" } } } }), false);
   mock.on("GET", `${S}/buckets`, () => ({ status: 200, body: { items: st.buckets } }));
-  mock.on("POST", `${S}/buckets`, ({ body }) => {
+  mock.on("POST", `${S}/buckets`, ({ body, headers }) => {
     const b = body as { name: string; visibility?: Bucket["visibility"]; versioning?: boolean; max_object_bytes?: number | null };
     if (!/^[a-z0-9][a-z0-9-]{2,}$/.test(b.name)) return envelope(400, "invalid_bucket_name", "bucket names are 3+ lowercase letters, digits or dashes");
-    if (find(b.name)) return envelope(409, "bucket_exists", "bucket already exists");
-    const nb = bucket(b.name, { visibility: b.visibility ?? "private", versioning: !!b.versioning, max_object_bytes: b.max_object_bytes ?? null });
+    // A tenant's buckets are stored as `<tenant>/<name>` (FB-140).
+    const tenant = headers["X-ForgeBase-Tenant"];
+    const full = tenant ? `${tenant}/${b.name}` : b.name;
+    if (find(full)) return envelope(409, "bucket_exists", "bucket already exists");
+    const nb = bucket(full, { ...(tenant ? { tenant } : {}), visibility: b.visibility ?? "private", versioning: !!b.versioning, max_object_bytes: b.max_object_bytes ?? null });
     st.buckets.push(nb);
     return { status: 201, body: nb };
   });

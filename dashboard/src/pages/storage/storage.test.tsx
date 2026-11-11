@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MockApi, envelope } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
-import { installStorage } from "../../test/storageMock";
-import { uploadObject } from "../../api";
+import { bucket, installStorage } from "../../test/storageMock";
+import { storageQuotaFor, uploadObject } from "../../api";
+import { confirmDialog } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -20,15 +21,28 @@ function setup() {
 const rows = (name: string) => within(screen.getByRole("table", { name })).getAllByRole("row");
 
 describe("Storage buckets", () => {
-  it("lists buckets with usage against the quota", async () => {
-    setup();
+  it("lists buckets with their scope and instance totals, and asks for no quota for an administrator", async () => {
+    const { mock, st } = setup();
+    st.buckets.push(bucket("acme/uploads", { tenant: "acme" }));
     renderStudio("/storage");
     expect(await screen.findByRole("table", { name: "Buckets" })).toBeInTheDocument();
-    expect(rows("Buckets")).toHaveLength(3);
+    expect(rows("Buckets")).toHaveLength(4);
     expect(screen.getByRole("link", { name: "media" })).toBeInTheDocument();
-    expect(await screen.findByLabelText("Storage totals")).toHaveTextContent("2 buckets · 4 objects · 5 versions");
-    expect(screen.getByLabelText("Quota usage")).toHaveTextContent("2.31 KiB of 10.0 GiB used (0%)");
-    expect(screen.getByRole("progressbar", { name: "Storage quota" })).toHaveAttribute("aria-valuenow", "0");
+    expect(within(rows("Buckets")[3]!).getByText("acme")).toBeInTheDocument();
+    expect(within(rows("Buckets")[1]!).getByText("Instance")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Storage totals")).toHaveTextContent("3 buckets · 4 objects · 5 versions");
+    expect(await screen.findByText(/No quota applies to administrators/)).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar", { name: "Storage quota" })).not.toBeInTheDocument();
+    // A-21: an administrator has no entitlements subject, so the dashboard never asks.
+    expect(mock.calls.filter((c) => c.includes("/entitlements"))).toEqual([]);
+  });
+
+  it("shows a tenant-scoped total when the server reports one", async () => {
+    const { mock } = setup();
+    mock.custom = mock.custom.filter((c) => !c.template.endsWith("/storage/stats"));
+    mock.on("GET", "/api/v1/storage/stats", () => ({ status: 200, body: { buckets: 1, objects: 2, versions: 2, logical_bytes: 10, stored_bytes: 10, open_uploads: 0, scope: "tenant", tenant: "acme" } }));
+    renderStudio("/storage");
+    expect(await screen.findByLabelText("Storage totals")).toHaveTextContent("Tenant acme only1 buckets");
   });
 
   it("shows per-bucket usage from the usage endpoint", async () => {
@@ -39,38 +53,80 @@ describe("Storage buckets", () => {
     expect(mock.problems).toEqual([]);
   });
 
-  it("creates a bucket and reports a refused name", async () => {
+  it("creates a bucket from the header in a sheet and reports a refused name", async () => {
     const { st } = setup();
     renderStudio("/storage");
     await screen.findByRole("table", { name: "Buckets" });
-    await userEvent.type(screen.getByLabelText("Name"), "ab");
-    await userEvent.click(screen.getByRole("button", { name: "Create bucket" }));
-    expect(await screen.findByText(/invalid_bucket_name/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "New bucket" }));
+    const form = await screen.findByRole("form", { name: "New bucket" });
+    await userEvent.type(within(form).getByLabelText(/^Name/), "Bad Name");
+    expect(await within(form).findByText(/Use lower-case letters/)).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Create bucket" })).toBeDisabled();
+    await userEvent.clear(within(form).getByLabelText(/^Name/));
+    await userEvent.type(within(form).getByLabelText(/^Name/), "ab");
+    await userEvent.click(within(form).getByRole("button", { name: "Create bucket" }));
+    expect(await within(form).findByRole("alert")).toBeInTheDocument();
 
-    await userEvent.clear(screen.getByLabelText("Name"));
-    await userEvent.type(screen.getByLabelText("Name"), "reports");
-    await pick(screen.getByLabelText("Visibility"), "public");
-    await userEvent.click(screen.getByLabelText("Versioning"));
-    await userEvent.type(screen.getByLabelText("Max object size"), "10 MiB");
-    await userEvent.click(screen.getByRole("button", { name: "Create bucket" }));
-    await waitFor(() => expect(rows("Buckets")).toHaveLength(4));
-    expect(st.buckets.find((b) => b.name === "reports")).toMatchObject({ visibility: "public", versioning: true, max_object_bytes: 10 * 1024 * 1024 });
+    await userEvent.clear(within(form).getByLabelText(/^Name/));
+    await userEvent.type(within(form).getByLabelText(/^Name/), "reports");
+    await pick(within(form).getByLabelText("Visibility"), "public");
+    await userEvent.click(within(form).getByRole("checkbox", { name: "Versioning" }));
+    await userEvent.type(within(form).getByLabelText("Max object size"), "10 MiB");
+    await userEvent.click(within(form).getByRole("button", { name: "Create bucket" }));
+    await waitFor(() => expect(st.buckets.find((b) => b.name === "reports")).toMatchObject({ visibility: "public", versioning: true, max_object_bytes: 10 * 1024 * 1024 }));
+    expect(await screen.findByText("Bucket reports created")).toBeInTheDocument();
   });
 
-  it("deletes an empty bucket after confirmation, and a full one only with the force option", async () => {
+  it("opens the new-bucket sheet from ?new=1 (the palette's action) and sends the tenant header", async () => {
+    const { mock } = setup();
+    renderStudio("/storage?new=1");
+    const form = await screen.findByRole("form", { name: "New bucket" });
+    await userEvent.type(within(form).getByLabelText(/^Name/), "avatars");
+    await userEvent.type(within(form).getByLabelText("Tenant"), "acme");
+    await userEvent.click(within(form).getByRole("button", { name: "Create bucket" }));
+    await waitFor(() => expect(mock.headers.some((h) => h["X-ForgeBase-Tenant"] === "acme")).toBe(true));
+  });
+
+  it("deletes a bucket only after its name is typed; a full one only with \"Also delete its objects\" in that bucket's dialog", async () => {
     const { st } = setup();
     renderStudio("/storage");
     await screen.findByRole("table", { name: "Buckets" });
     await userEvent.click(screen.getByRole("button", { name: "Delete bucket docs" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm delete bucket docs" }));
-    expect(await screen.findByText(/bucket_not_empty/)).toBeInTheDocument();
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete bucket docs?" });
+    const confirm = within(dialog).getByRole("button", { name: "Delete bucket" });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/), "doc");
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/), "s");
+    await userEvent.click(confirm);
+    expect(await within(dialog).findByText("The bucket still holds files")).toBeInTheDocument();
     expect(st.buckets).toHaveLength(2);
 
-    await userEvent.click(screen.getByLabelText("Delete with their objects"));
-    await userEvent.click(screen.getByRole("button", { name: "Delete bucket docs" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm delete bucket docs" }));
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /Also delete its objects/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete bucket" }));
     await waitFor(() => expect(st.buckets.map((b) => b.name)).toEqual(["media"]));
-    expect(screen.queryByText(/bucket_not_empty/)).not.toBeInTheDocument();
+    // the option lives in each bucket's own dialog: media's starts unticked
+    await userEvent.click(screen.getByRole("button", { name: "Delete bucket media" }));
+    expect(within(await screen.findByRole("alertdialog", { name: "Delete bucket media?" })).getByRole("checkbox", { name: /Also delete its objects/ })).not.toBeChecked();
+  });
+
+  it("shows an empty state with the primary action when there are no buckets", async () => {
+    const { st } = setup();
+    st.buckets.length = 0;
+    renderStudio("/storage");
+    const region = await screen.findByRole("region", { name: "No buckets yet" });
+    await userEvent.click(within(region).getByRole("button", { name: "New bucket" }));
+    expect(await screen.findByRole("form", { name: "New bucket" })).toBeInTheDocument();
+  });
+
+  it("rotates the signing key only after confirmation", async () => {
+    const { mock } = setup();
+    mock.on("POST", "/api/v1/storage/maintenance/rotate-signing-key", () => ({ status: 204 }));
+    renderStudio("/storage");
+    await userEvent.click(await screen.findByRole("button", { name: "Rotate signing key" }));
+    expect(mock.calls).not.toContain("post /api/v1/storage/maintenance/rotate-signing-key");
+    await confirmDialog("Rotate the signing key?", "Rotate key");
+    await waitFor(() => expect(mock.calls).toContain("post /api/v1/storage/maintenance/rotate-signing-key"));
   });
 
   it("runs the reconciler and shows its report", async () => {
@@ -82,8 +138,7 @@ describe("Storage buckets", () => {
   });
 
   it("explains when instance totals are not permitted and shows no quota", async () => {
-    const { mock, st } = setup();
-    st.quota = null;
+    const { mock } = setup();
     mock.custom = mock.custom.filter((c) => !c.template.endsWith("/storage/stats"));
     mock.on("GET", "/api/v1/storage/stats", () => envelope(403, "forbidden", "storage_admin required"));
     renderStudio("/storage");
@@ -136,7 +191,7 @@ describe("Storage object browser", () => {
     expect(within(versions).getByText("latest")).toBeInTheDocument();
 
     await userEvent.click(within(details).getByRole("button", { name: "Restore version v1" }));
-    expect(await within(details).findByText("Version restored as the current version.")).toBeInTheDocument();
+    expect(await screen.findByText("Version restored as the current version")).toBeInTheDocument();
     await waitFor(() => expect(within(screen.getByRole("list", { name: "Versions" })).getAllByRole("listitem")).toHaveLength(3));
     expect(st.versions["media/photos/a.png"]![0]!.size).toBe(1024);
 
@@ -154,7 +209,7 @@ describe("Storage object browser", () => {
     await userEvent.clear(dest);
     await userEvent.type(dest, "copy/readme.txt");
     await userEvent.click(within(details).getByRole("button", { name: "Copy" }));
-    expect(await within(details).findByText("Copied to copy/readme.txt.")).toBeInTheDocument();
+    expect(await screen.findByText("Copied to copy/readme.txt")).toBeInTheDocument();
     expect(st.versions["media/copy/readme.txt"]).toBeDefined();
     expect(st.versions["media/readme.txt"]).toBeDefined();
 
@@ -171,7 +226,7 @@ describe("Storage object browser", () => {
     renderStudio("/storage/b/media?key=readme.txt");
     const details = await screen.findByLabelText("Object details");
     await userEvent.click(await within(details).findByRole("button", { name: "Delete object" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Confirm delete object" }));
+    await confirmDialog("Delete readme.txt?", "Delete object");
     expect(await within(details).findByText("delete marker")).toBeInTheDocument();
     expect(st.versions["media/readme.txt"]![0]!.delete_marker).toBe(true);
     await waitFor(() => expect(screen.queryByRole("button", { name: "Select readme.txt" })).not.toBeInTheDocument());
@@ -182,10 +237,10 @@ describe("Storage object browser", () => {
     renderStudio("/storage/b/docs?key=guide.md");
     const details = await screen.findByLabelText("Object details");
     await userEvent.click(await within(details).findByRole("button", { name: "Delete object" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Confirm delete object" }));
+    await confirmDialog("Delete guide.md?", "Delete object");
     await waitFor(() => expect(screen.queryByLabelText("Object details")).not.toBeInTheDocument());
     expect(st.versions["docs/guide.md"]).toBeUndefined();
-    expect(await screen.findByText("This folder is empty.")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "This folder is empty" })).toBeInTheDocument();
   });
 
   it("downloads through the authenticated API", async () => {
@@ -257,11 +312,11 @@ describe("Storage policy, ACL and signed URLs", () => {
     const { st } = setup();
     renderStudio("/storage/b/docs/settings");
     await pick(await screen.findByLabelText("Visibility"), "public");
-    await userEvent.click(screen.getByLabelText(/Keep versions/));
+    await userEvent.click(screen.getByRole("checkbox", { name: /Keep versions/ }));
     await userEvent.type(screen.getByLabelText("Max object size"), "10 MiB");
     await userEvent.type(screen.getByLabelText(/Allowed content types/), "image/png{enter}text/plain");
     await userEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    expect(await screen.findByText("Bucket policy saved")).toBeInTheDocument();
     expect(st.buckets.find((b) => b.name === "docs")).toMatchObject({ visibility: "public", versioning: true, max_object_bytes: 10485760, allowed_content_types: ["image/png", "text/plain"] });
   });
 
@@ -277,7 +332,7 @@ describe("Storage policy, ACL and signed URLs", () => {
     renderStudio("/storage/b/docs/settings");
     await userEvent.type(await screen.findByLabelText("Max object size"), "lots");
     await userEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Enter a size like");
+    expect(await screen.findByText(/Enter a size like/)).toBeInTheDocument();
     expect(mock.calls.some((c) => c.startsWith("patch"))).toBe(false);
   });
 
@@ -287,7 +342,7 @@ describe("Storage policy, ACL and signed URLs", () => {
     const t = await screen.findByRole("table", { name: "ACL entries" });
     expect(within(t).getByText("role:editor")).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Prefix"), "docs/");
-    await userEvent.type(screen.getByLabelText("Grantee"), "user:bo");
+    await userEvent.type(screen.getByLabelText(/^Grantee/), "user:bo");
     await pick(screen.getByLabelText("Permission"), "admin");
     await userEvent.click(screen.getByRole("button", { name: "Add entry" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "ACL entries" })).getAllByRole("row")).toHaveLength(3));
@@ -295,19 +350,19 @@ describe("Storage policy, ACL and signed URLs", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Remove role:editor on photos/" }));
     await waitFor(() => expect(st.acls.media!.entries).toHaveLength(1));
-    expect(await screen.findByText("ACL saved.")).toBeInTheDocument();
+    expect(await screen.findByText("Access list saved")).toBeInTheDocument();
   });
 
   it("says when the ACL is empty", async () => {
     setup();
     renderStudio("/storage/b/docs/access");
-    expect(await screen.findByText(/No entries/)).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No entries yet" })).toBeInTheDocument();
   });
 
   it("generates an upload (PUT) signed URL with the chosen expiry", async () => {
     const { st } = setup();
     renderStudio("/storage/b/media/share");
-    await userEvent.type(await screen.findByLabelText("Key"), "in/new.txt");
+    await userEvent.type(await screen.findByLabelText(/^Key/), "in/new.txt");
     await pick(screen.getByLabelText("Method"), "PUT");
     await pick(screen.getByLabelText("Expires in"), "5 minutes");
     await userEvent.click(screen.getByRole("button", { name: "Generate URL" }));
@@ -319,5 +374,55 @@ describe("Storage policy, ACL and signed URLs", () => {
     setup();
     renderStudio("/storage/b/ghost");
     expect(await screen.findByText(/no such bucket/)).toBeInTheDocument();
+  });
+});
+
+describe("Storage quota (A-21)", () => {
+  it("makes no entitlements call without a subject, and asks for the caller's own or an organization's", async () => {
+    const { mock } = setup();
+    expect(await storageQuotaFor(null)).toBeNull();
+    expect(await storageQuotaFor(undefined)).toBeNull();
+    expect(mock.calls.filter((c) => c.includes("/entitlements"))).toEqual([]);
+    expect(await storageQuotaFor("caller")).toBe(10 * 1024 * 1024 * 1024);
+    expect(await storageQuotaFor("org:acme")).toBe(10 * 1024 * 1024 * 1024);
+    expect(mock.calls.filter((c) => c.includes("/entitlements"))).toHaveLength(2);
+  });
+});
+
+describe("Storage upload area and bucket rules", () => {
+  it("offers a drop area that uploads dropped files", async () => {
+    const { st } = setup();
+    renderStudio("/storage/b/docs");
+    await screen.findByRole("button", { name: "Select guide.md" });
+    expect(screen.getByRole("region", { name: "Drop files here or choose files" })).toBeInTheDocument();
+    const area = screen.getByLabelText("Drop files here");
+    const file = new File(["dropped"], "d.txt", { type: "text/plain" });
+    fireEvent.drop(area, { dataTransfer: { files: [file] } });
+    expect(await screen.findByRole("button", { name: "Select d.txt" })).toBeInTheDocument();
+    expect(st.puts).toEqual([{ key: "d.txt", size: 7, type: "text/plain" }]);
+  });
+
+  it("shows the bucket's tenant in its header and edits object rules on the Rules tab", async () => {
+    const { mock, st } = setup();
+    st.buckets.push(bucket("acme/uploads", { tenant: "acme" }));
+    st.versions["acme/uploads/x.txt"] = [];
+    const rules: Record<string, string | null> = {};
+    mock.on("GET", "/api/v1/policies/resources/{kind}", () => ({ status: 200, body: { kind: "bucket", fields: [{ name: "owner", type: "text" }, { name: "folders", type: "json" }], operations: ["list", "view", "create", "update", "delete"], actions: [], items: [] } }));
+    mock.on("PUT", "/api/v1/policies/resources/{kind}/{name}", ({ params, body }) => { Object.assign(rules, (body as { rules: Record<string, string> }).rules, { name: params.name }); return { status: 200, body: {} }; });
+    renderStudio("/storage/b/acme%2Fuploads/rules");
+    expect(await screen.findByText(/Tenant acme/)).toBeInTheDocument();
+    expect(await screen.findByText(/An expression may also test the item/)).toBeInTheDocument();
+    await pick(screen.getByLabelText("View (read one) rule"), "expr");
+    await userEvent.clear(screen.getByLabelText("View (read one) expression"));
+    await userEvent.type(screen.getByLabelText("View (read one) expression"), "owner = @request.auth.id");
+    await userEvent.click(screen.getByRole("button", { name: "Save rules" }));
+    await waitFor(() => expect(rules).toMatchObject({ view: "owner = @request.auth.id", name: "acme/uploads" }));
+  });
+
+  it("puts Use from code in the bucket header", async () => {
+    setup();
+    renderStudio("/storage/b/media");
+    await userEvent.click(await screen.findByRole("button", { name: "Use from code" }));
+    expect(await screen.findByText(/\/api\/v1\/storage\/buckets\/media/)).toBeInTheDocument();
   });
 });
