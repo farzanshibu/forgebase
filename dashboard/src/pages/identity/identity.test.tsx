@@ -7,9 +7,17 @@ import { renderStudio, signedIn } from "../../test/helpers";
 import { installIdentity } from "../../test/idMock";
 import { nest } from "./util";
 
+// A test sets `adminScope.value` to see the studio as a realm administrator (what /api/auth/me reports, FB-137).
+const adminScope = vi.hoisted(() => ({ value: undefined as undefined | { realm: string } }));
+vi.mock("../../auth/session", async (orig) => {
+  const m = await orig<typeof import("../../auth/session")>();
+  return { ...m, useOptionalSession: () => (adminScope.value ? ({ adminScope: adminScope.value } as ReturnType<typeof m.useOptionalSession>) : m.useOptionalSession()) };
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
+  adminScope.value = undefined;
 });
 
 function setup() {
@@ -20,12 +28,31 @@ function setup() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const body = (mock: MockApi, key: string) => mock.bodies[key]![mock.bodies[key]!.length - 1] as Record<string, any>;
 
+describe("Realm administrator", () => {
+  it("sees their realm without Client apps or Create realm", async () => {
+    adminScope.value = { realm: "acme" };
+    const { mock } = setup();
+    renderStudio("/identity");
+    expect(await screen.findByRole("heading", { name: "Identity and tenants" })).toBeInTheDocument();
+    expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Client apps" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create realm" })).not.toBeInTheDocument();
+    expect(mock.problems).toEqual([]);
+  });
+  it("is told Client apps is for platform administrators when opening its link", async () => {
+    adminScope.value = { realm: "acme" };
+    setup();
+    renderStudio("/identity/clients");
+    expect(await screen.findByRole("region", { name: "Client apps is for platform administrators" })).toBeInTheDocument();
+  });
+});
+
 describe("Identity Studio shell", () => {
   it("is reachable from the sidebar and switches realm", async () => {
     const { mock } = setup();
     renderStudio("/");
     await userEvent.click(await screen.findByRole("link", { name: "Identity" }));
-    expect(await screen.findByRole("heading", { name: "Identity and Tenant Studio" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Identity and tenants" })).toBeInTheDocument();
     expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
     await pick(screen.getByLabelText("Realm"), "acme");
     await userEvent.click(screen.getByRole("tab", { name: "Client apps" }));
