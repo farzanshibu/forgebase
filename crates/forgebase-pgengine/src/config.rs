@@ -120,6 +120,9 @@ pub struct EngineConfig {
     /// Tests only: `fsync = off`, `synchronous_commit = off`,
     /// `full_page_writes = off` and `initdb --no-sync`. Never for real data.
     pub unsafe_fast: bool,
+    /// WAL limits of replication slots (ADR-0029 §2.2, FB-168):
+    /// `[database.replicas] slot_wal_keep_size` and the idle slot timeout.
+    pub replication: crate::replication::SlotLimits,
 }
 
 impl Default for EngineConfig {
@@ -139,6 +142,7 @@ impl Default for EngineConfig {
             cache_dir: None,
             remove_old_engines: true,
             unsafe_fast: false,
+            replication: crate::replication::SlotLimits::default(),
         }
     }
 }

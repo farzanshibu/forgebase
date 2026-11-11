@@ -2783,6 +2783,266 @@ statistics, queue and job screens are routed by the server.
   reads on replicas need the AGE graph on the standby (physical replication
   carries it); the stale marking after a move reads the primary.
 
+## Addendum: FB-168, managed replicas and `forgebase node` (2026-11-11)
+
+Built as §2.2, §2.3 and §2.8 describe, in `forgebase-pgengine` and the
+`forgebase` command. Nothing in the server calls it yet: the admin API
+(FB-175), the dashboard (FB-176) and the server wiring (FB-171, listed at
+the end) do. Without a replica nothing changes, on either backend.
+
+**Files.** `crates/forgebase-pgengine/src/standby.rs` (engine side of a
+standby), `src/replication.rs` (primary side) and `src/replication/service.rs`
+(the topology service the API and the agent call), `tests/replicas.rs`;
+`crates/forgebase-cli/src/node.rs`, one `Command::Node` variant (plus its
+`mod` line and match arm) in `main.rs`, `tests/node_e2e.rs`; the migration
+pair `migrations/{system,postgres}/0043_db_node_agents.sql`. Shared edits:
+`forgebase-pgengine` `secret.rs` (`Role::Replicator`), `cluster.rs`
+(bootstrap creates the role; readiness probe takes a role), `conf.rs` (slot
+limits, two deny-list keys), `config.rs` (`EngineConfig::replication`),
+`layout.rs` (`Layout::with_kind`), `lib.rs` (modules, `EngineHandle::pg_ctl`,
+probe role per node kind) and `Cargo.toml` (`forgebase-db`, `forgebase-core`,
+`time`, `uuid` become normal dependencies); `forgebase-db` `placement.rs`
+(two `control` rows); registration in `forgebase-migrations`;
+`forgebase-cli/Cargo.toml` (`axum` dev-dependency, `[[test]] node_e2e`).
+
+**The replicator role.** `forgebase_replicator` (`Role::Replicator`):
+`LOGIN REPLICATION`, nothing else, password in `roles.secret` (existing
+clusters get one through `RoleSecrets::fill_missing`; the bootstrap creates
+the role on the next start of a primary). It is also granted `EXECUTE` on
+the four file functions `pg_rewind` reads on its source
+(`REWIND_FUNCTIONS`, database `postgres`): the role can already copy the
+whole cluster with `pg_basebackup`, so this reveals nothing more, and a
+remote old primary can rewind from the new one without a superuser.
+
+**Slot WAL limits.** `SlotLimits { wal_keep_size: "8GB", idle_timeout: 1 day }`
+in `EngineConfig::replication` (`[database.replicas] slot_wal_keep_size`
+maps onto it) is written on every start: `max_slot_wal_keep_size`, and
+`idle_replication_slot_timeout` only on PostgreSQL ≥ 18 (17 refuses the
+key). Both are on the user deny list. `slots()` reads
+`pg_replication_slots`; `SlotInfo::needs_rebuild()` is `wal_status = lost`
+or an `invalidation_reason`; `service::mark_lost_slots(control, set,
+primary)` moves those nodes to `needs_rebuild` (run it with the health
+monitor; invalidation is final). Slot names are `fbr_<node>` with `-`
+written `_`.
+
+**Local standbys (§2.2).** `standby::clone_from` runs `pg_basebackup -D
+data.partial -X stream -R -S fbr_<node> --checkpoint=fast` as the
+replicator over the primary's socket (password in a private passfile,
+`PGPASSWORD` never set), renames the directory into place, then
+`write_follow` rewrites `postgresql.auto.conf`: `primary_conninfo` names the
+passfile `<node>/upstream.pgpass` (0600) and never holds the password
+(`pg_basebackup -R` copies a password it read from a passfile into the
+file; ForgeBase replaces that line), plus `primary_slot_name` and
+`standby.signal`. The standby then runs through `Engine::prepare` with a
+`NodeKind::Standby` layout: the same supervision, restart policy and log
+stream as the primary, tagged with the node name. `LocalReplicas` (one per
+server) holds the running handles: `add` (slot, clone, start), `start`,
+`start_existing` (server start: every `postgres/nodes/*` with a
+`standby.signal`, and `postgres/data` when the old primary rejoined),
+`stop`, `remove` (stop, drop slot, delete), `rebuild` (stop, delete, new
+slot, clone), `take` / `adopt`, `status`.
+
+**Least privilege on a standby.** Everything ForgeBase does on a standby
+logs in as the replicator (database `postgres`): readiness (the probe role
+is the replicator for `NodeKind::Standby`, the superuser for primaries),
+facts, replay waits and the WAL receiver status (without
+`pg_read_all_stats` its details are NULL; a live receiver that received WAL
+counts as streaming). Promotion and reload use `pg_ctl promote -w` and
+`pg_ctl reload` (`EngineHandle::pg_ctl`): ForgeBase owns the postmaster, so
+no SQL privilege is needed. A remote replica's host therefore holds only
+the replicator's password, never the superuser's (the end-to-end test
+checks it).
+
+**Remote replicas (§2.3).** Join tokens: `service::issue_join_token(control,
+{set, role: replica}, created_by, server_url)` → `fbj_` + 64 hex (only its
+SHA-256 in `_forgebase_join_tokens`), 15 minutes, and the exact command.
+`role = primary` is refused until FB-174. The agent: `forgebase node join
+<server url> --token … --data-dir DIR [--name N] [--engine-dir D]
+[--listen ADDR]` resolves the engine (embedded, else
+`FORGEBASE_PG_ENGINE_DIR`), sends `JoinRequest {token, name, engine, listen}`
+to `POST /api/system/database/agent/join`; `service::redeem_join` checks
+the token (unknown, used or expired: 401 `join_token_invalid`), the exact
+engine (`EngineIdentity {major, minor, version, build}`; the build comes
+from the archive manifest; any difference is 409 `engine_mismatch` and
+keeps the token for a retry with the right binary), inserts the node
+(`remote`, `replica`, `provisioning`) and its agent row, creates the slot on
+the primary, and returns `JoinGrant` (node id, agent key `fba_` + 64 hex,
+hashed in `_forgebase_db_node_agents`, the upstream login, heartbeat and
+poll intervals). The agent stores it in `<data dir>/node.json` (0600),
+writes `postgres/roles.secret` with the replicator's password only, clones,
+starts, then runs two loops: a long-poll `GET
+/api/system/database/agent/nodes/{id}/commands?wait_ms=…` (`resend=1` on
+the first poll after a start re-delivers commands sent but never answered)
+and a heartbeat `POST …/nodes/{id}/heartbeat` every 5 s (state, replay LSN,
+free disk, engine, command answers). Commands: `stop` (`{"remove": true}`
+also deletes the data and exits 0), `rebuild` (the replicator drops and
+recreates its own slot: `REPLICATION` is all the slot functions need),
+`promote` (`{min_lsn, slots}`), `follow` (`{upstream}` or
+`{upstream_change: {host, port, slot}}`), `rejoin` (`pg_rewind` as the
+replicator, else re-clone). `forgebase node run --data-dir DIR` resumes
+after a restart; `forgebase node status` prints the file without secrets.
+Heartbeats move the node in and out of service only
+(`state_after_heartbeat`: `provisioning`/`needs_rebuild`/`unreachable` →
+`catching_up` on streaming; cloning or rebuilding → `provisioning`; stopped
+→ `unreachable`; failed → `needs_rebuild`); lag stays the router monitor's
+(FB-167). A retired node may still answer its last `stop`.
+
+**pg_hba entries for FB-153.** `replication::hba_entries(&HbaInput { agents,
+readers })` returns data (`HbaEntry { kind, database, user, address,
+method, reason }`, `line()` renders it): `local replication
+forgebase_replicator` and `local postgres forgebase_replicator` (local
+standbys, standby checks, local rewind), then per agent `hostssl
+replication forgebase_replicator <ip>/32` and `hostssl postgres
+forgebase_replicator <ip>/32` (rewind), and per reader address `hostssl
+forgebase forgebase_reader <ip>/32` (the primary's file is copied to every
+replica, so the server's read pool on a remote replica is allowed there).
+All `scram-sha-256`. `replication::splice_hba(text, &entries)` inserts the
+`hostssl` lines before the first `hostnossl … reject` / `host … reject`
+line. `hba.rs` (FB-153, merged while this package ran) is untouched: its
+`render` admits only `forgebase_super`, `forgebase_server` and
+`forgebase_reader` over TCP, so remote replicas cannot stream until it
+emits these entries. The TCP tests splice them into the generated file and
+reload, which is what the generator has to do.
+
+**Promote (§2.8).** `standby::promote_local(replicas, target, OldPrimary,
+accept_data_loss, timeout)` does steps 1–4 and 6 on this host: the target
+must be in recovery; the old primary is stopped (fast shutdown) when it
+runs here; `pg_controldata` tells whether it stopped cleanly (`shut down`);
+if so the target must replay past the shutdown checkpoint record (its
+`Latest checkpoint location` + 1), which PostgreSQL's walsenders send
+before they exit, so every acknowledged commit is on the target; if not,
+`accept_data_loss` is required. Then `pg_ctl promote -w`, the follow
+settings are removed, and every other local replica gets a slot on the new
+primary and its `primary_conninfo` rewritten and reloaded (no restart; it
+follows the new timeline). `service::promote_local` wraps it with the
+control side: typed confirmation, `promoting`, `PoolSwitch::fence` (the
+server closes the writer pool) before the stop, `PoolSwitch::repoint`
+after it (the server points its pools at the new primary and hands back
+the control database to write to, which for the control set is the new
+primary), then in one transaction the old primary becomes a
+`needs_rebuild` replica (a row named `primary` is inserted when control's
+primary had none) and the target the `ready` primary, epoch + 1,
+`topology.json` rewritten. `service::promote_remote` does the same for a
+remote target: the agent's `promote` command waits for `min_lsn`, promotes
+and creates slots for the set's other remote replicas, which then get
+`follow` commands; the server reaches the new primary at the `listen` its
+agent reported. `service::promote_check` gives the step-1 estimate
+(replayed vs primary LSN, reachable). External primaries cannot be
+fenced, so nothing here promotes them.
+
+**Rejoin.** `standby::rejoin` runs `pg_rewind --target-pgdata …
+--source-server=…` (initdb uses `--data-checksums`, so it is possible),
+then rewrites the follow settings (`pg_rewind` copies the source's
+configuration files); when the engine has no `pg_rewind` or it fails, the
+old data is moved aside and re-cloned (restored on failure).
+`service::rejoin_local` creates `fbr_<name>` on the new primary, rejoins,
+starts the node as a standby and moves it to `catching_up`. The old primary
+of a single-server deployment keeps `postgres/data` and is named `primary`
+(`Layout::primary(..).with_kind(NodeKind::Standby)`).
+
+**Migration 0043 (both backends).** `_forgebase_db_node_agents (node_id PK →
+nodes ON DELETE CASCADE, key_hash UNIQUE, address, engine_version, state,
+replay_lsn, disk_free, detail, last_seen_at, …)` and
+`_forgebase_db_node_commands (id, node_id → nodes, kind rebuild | stop |
+promote | rejoin | follow, args JSON text, state queued | sent | done |
+failed | cancelled, result, created_by, created_at, sent_at, done_at)`,
+both placement class `control`. A unit test checks every wire value against
+both files' `CHECK`s.
+
+**Deviations.**
+- Promotion uses `pg_ctl promote -w` rather than `SELECT pg_promote(true,
+  60)`: the same wait, without a superuser on the standby.
+- Heartbeats store the last report in `_forgebase_db_node_agents`, not in
+  `_forgebase_db_nodes` (only health transitions bump the epoch, as FB-167
+  does).
+- Agent endpoints are `/api/system/database/agent/*` (`service::paths`),
+  authenticated by the token (join) or the agent key, not by an admin
+  session.
+- The agent speaks plain HTTP only to the server (`https://` is refused
+  with a message): the CLI has no TLS client yet. The replication
+  connection itself uses FB-153's engine TLS (`sslmode = require` with the
+  self-signed certificate, `verify-full` with an operator certificate);
+  the TCP tests run with `require`.
+- Removing a node retires the row and renames it `<name>~<id>`, so the
+  name can be used again.
+- The bundled engine (FB-130 archive) has no `pg_rewind`: rejoin re-clones
+  there (the test asserts which path ran). FB-130 should add it.
+
+**Tests.** `crates/forgebase-pgengine/tests/replicas.rs` (real clusters,
+gated on `FORGEBASE_PG_ENGINE_DIR`):
+`local_replica_is_promoted_under_write_load_without_losing_a_commit` (two
+replicas stream; a writer commits one row per transaction until the fence;
+r1 is promoted; every acknowledged id is on r1; r2 follows the new
+timeline; the old primary rejoins by `pg_rewind` or a fresh clone and
+catches up), `unclean_stop_needs_accept_data_loss`,
+`service_adds_promotes_and_rejoins_local_replicas` (node rows, confirmation,
+role swap, epoch, `topology.json`, rejoin, remove),
+`join_tokens_agents_commands_and_heartbeats` (engine mismatch keeps the
+token, one-time use, clone over TCP from the grant, key check, long-poll,
+answers, transitions). `crates/forgebase-cli/tests/node_e2e.rs`: the built
+binary joins through the agent endpoints mounted on a test router over the
+service functions, streams, reports its replay position, holds no
+superuser password, and exits 0 on `stop {remove}`.
+
+**For the next packages.**
+- **FB-171 (server wiring):** keep one `LocalReplicas::new(data_dir,
+  &engine_cfg)`; call `start_existing()` after the primary starts and
+  `stop_all()` before it stops. Map `[database.replicas]
+  slot_wal_keep_size` into `EngineConfig::replication.wal_keep_size`.
+  `SetConnector::connect_replica` for `kind = local` nodes: open
+  `replicas.get(name)`'s `url(Role::Reader)` with `DbOptions::read_only()`;
+  for `remote` nodes unseal `url_sealed` (`service::reader_url(listen,
+  reader password, sslmode)`, sealed at join by the API). Implement
+  `PoolSwitch`: `fence` closes the writer pool of the set; `repoint` opens
+  the new primary and swaps the set's pools (for control this is the
+  server's main `Database`, which today has no swap: a supervised restart
+  that reads `topology.json` is the simplest correct implementation), then
+  `router.reload()`. At start, the control primary is the `ready`
+  primary row of `topology.json` when there is one (after a promote it is
+  `postgres/nodes/<name>`), else `postgres/data`.
+- **FB-175 (admin API):** `POST /nodes {kind: local}` →
+  `service::add_local_replica`; `DELETE /nodes/{id}?confirm=` →
+  `remove_replica`; `POST /nodes/{id}/rebuild` → `rebuild_replica` (local,
+  remote) or `rejoin_local` (a `needs_rebuild` old primary);
+  `POST /nodes/{id}/promote` → `promote_check` for the confirmation dialog,
+  then `promote_local` / `promote_remote` as job `database.promote`;
+  `POST /join-tokens` → `issue_join_token` (audit-log `id`, never the
+  token); mount `service::paths::{JOIN, COMMANDS, HEARTBEAT}` outside
+  admin auth (token / agent key auth inside) and pass the peer address to
+  `redeem_join`; `GET /topology`, `GET /nodes/{id}` → `nodes` /
+  `node_view` (no `url_sealed`). Errors map with `ServiceError::status()`
+  and `code()`. Build `ReplicationSource::from_handle(primary, advertise,
+  sslmode)` once (it refuses a primary without TCP).
+- **FB-176 (dashboard):** node rows carry `kind`, `role`, `state`,
+  `engine_version`, `timeline`, `origin`, and for remote nodes `agent
+  {state, address, replay_lsn, disk_free, last_seen_at}`; show the join
+  command from `issue_join_token`; promote needs the typed name and, when
+  `promote_check.primary_reachable` is false, the "old primary is down"
+  box (`accept_data_loss`).
+- **FB-153 follow-up (hba.rs owner):** `hba::render` must emit
+  `replication::hba_entries(&replication::HbaInput { agents, readers })`
+  before its reject lines (`splice_hba` shows the order): agent addresses
+  from `_forgebase_db_node_agents.address`, readers the server's
+  addresses. Without it no remote replica can clone or stream. Use
+  `ReplicationSource { sslmode: VerifyFull }` when an operator
+  certificate is configured, `Require` otherwise; the agent still needs
+  an HTTPS client for the server URL.
+- **FB-169:** nothing new: replicas appear through the router once
+  FB-171's connector opens them.
+- **FB-174:** shard primaries on other hosts: `issue_join_token` refuses
+  `role = primary` today; a shard primary is `Layout::node(.., Primary)`
+  (bootstrapped), not a clone, so it needs its own join path. Local
+  replicas of a shard use the same `LocalReplicas` with the shard's
+  primary handle; slot names are per primary, so names must stay unique
+  per host.
+- **FB-179 (backups with replicas):** replicas keep their own data under
+  `postgres/nodes/<name>` (FB-150's `ensure_single_set` refuses them); a
+  replica-source backup can run `pg_basebackup` as the replicator against a
+  local standby's socket (`standby::Upstream::local`); after a restore,
+  mark every replica of the set `needs_rebuild` and call `rebuild_replica`.
+- **FB-130:** ship `pg_rewind` (and keep `pg_ctl`, `pg_controldata`) in
+  the engine archive.
+
 ## Addendum: FB-171, shard routing in the data core, realtime, functions and the server (2026-11-11)
 
 Built as §3.5 and §3.6 describe, on FB-170's router, FB-169's replica
@@ -2988,4 +3248,8 @@ with `tenant_moved`; after-hook cursors are per set, so events copied by a
 move are not re-run (the copy writes no outbox rows through the data core).
 **For FB-175.** Store node URLs with `forgebase_server::shards::seal_node_url`
 (or the same format). Add `[database.sharding]` / `[database.replicas]` to
-`RouterOptions` in `shards::open_router`.
+`RouterOptions` in `shards::open_router`: it is the one place where the
+router and its `SetConnector` are built, so FB-168's managed replicas
+(`LocalReplicas`, `connect_replica` for local nodes, `PoolSwitch`) hook in
+there from `replicas.rs`; `NodeConnector::connect_replica` already opens
+sealed-URL replicas read-only and refuses local ones.

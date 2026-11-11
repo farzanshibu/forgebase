@@ -49,11 +49,15 @@ pub enum Role {
     /// `forgebase_reader`: the read pool. `BYPASSRLS`, `SELECT` only,
     /// `default_transaction_read_only = on`.
     Reader,
+    /// `forgebase_replicator`: `LOGIN REPLICATION`, nothing else (ADR-0029
+    /// §2.2). Clones and streams to managed replicas; may run `pg_rewind`
+    /// against the primary (read-only file functions).
+    Replicator,
 }
 
 impl Role {
     /// Every login role, in bootstrap order.
-    pub const ALL: [Role; 3] = [Role::Super, Role::Server, Role::Reader];
+    pub const ALL: [Role; 4] = [Role::Super, Role::Server, Role::Reader, Role::Replicator];
 
     /// The PostgreSQL role name.
     pub fn name(self) -> &'static str {
@@ -61,6 +65,7 @@ impl Role {
             Role::Super => "forgebase_super",
             Role::Server => "forgebase_server",
             Role::Reader => "forgebase_reader",
+            Role::Replicator => "forgebase_replicator",
         }
     }
 }

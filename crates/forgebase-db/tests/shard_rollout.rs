@@ -75,7 +75,9 @@ async fn a_new_shard_is_migrated_confined_and_subscribed_to_control() {
     assert_eq!(max.as_i64(), Some((1_i64 << 40) - 1));
     // control_replicated rows reach the shard.
     let tables = shards::ensure_control_publication(&s.control).await.unwrap();
-    assert_eq!(tables, ["_forgebase_resource_permissions"]);
+    // FB-153 added `_forgebase_db_logins` to the control_replicated class.
+    assert_eq!(tables, shards::control_replicated_tables());
+    assert!(tables.iter().any(|t| t == "_forgebase_resource_permissions"));
     exec(
         &s.control,
         "INSERT INTO _forgebase_resource_permissions (id, realm_id, resource_type, resource_id, grantee, permission, effect, created_by, created_at) \
