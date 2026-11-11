@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use forgebase_core::ErrorCode;
 use forgebase_db::shard_testing::TestCluster;
-use forgebase_db::twophase::{
-    self, InDoubt, NodeWork, Participant, SameStatements, TwoPhase, TwoPhaseError, node_gid,
-};
+use forgebase_db::twophase::{self, InDoubt, NodeWork, Participant, SameStatements, TwoPhase, TwoPhaseError, node_gid};
 use forgebase_db::{Backend, BoxFuture, Database, DbError, Statement, TxMode, Value, WriteTx};
 use sqlx::{AssertSqlSafe, Connection};
 
@@ -40,7 +38,12 @@ async fn count(db: &Database, sql: &str) -> i64 {
 }
 
 async fn table_exists(db: &Database, name: &str) -> bool {
-    count(db, &format!("SELECT count(*) FROM pg_catalog.pg_tables WHERE tablename = '{name}'")).await == 1
+    count(
+        db,
+        &format!("SELECT count(*) FROM pg_catalog.pg_tables WHERE tablename = '{name}'"),
+    )
+    .await
+        == 1
 }
 
 async fn journal_state(control: &Database, gid: &str) -> Option<String> {
@@ -110,10 +113,7 @@ async fn a_schema_change_commits_on_every_node() {
     assert!(out.pending.is_empty());
     for n in &nodes {
         assert!(table_exists(&n.db, "t173").await, "{} has the table", n.set_id);
-        assert_eq!(
-            count(&n.db, "SELECT k FROM public.t173").await,
-            i64::from(n.number)
-        );
+        assert_eq!(count(&n.db, "SELECT k FROM public.t173").await, i64::from(n.number));
         assert!(n.db.prepared_transactions().await.unwrap().is_empty());
     }
     assert_eq!(journal_state(&control, &out.gid).await.as_deref(), Some("committed"));
@@ -155,7 +155,9 @@ async fn abort_and_drop_roll_back_prepared_parts() {
     let mut two = TwoPhase::new(&control, "test abort");
     for n in &nodes {
         let mut tx = n.db.begin(TxMode::Normal).await.unwrap();
-        tx.execute(&Statement::raw("CREATE TABLE public.t173 (k bigint)")).await.unwrap();
+        tx.execute(&Statement::raw("CREATE TABLE public.t173 (k bigint)"))
+            .await
+            .unwrap();
         two.prepare(n, tx).await.unwrap();
     }
     assert_eq!(nodes[1].db.prepared_transactions().await.unwrap().len(), 1);
@@ -196,7 +198,9 @@ async fn recovery_rolls_back_parts_without_a_decision_after_a_crash() {
     let nodes = vec![nodes[0].clone(), Participant::new("s1", 1, shard.clone())];
     assert_eq!(shard.prepared_transactions().await.unwrap().len(), 1);
     // Younger than the grace period: left alone.
-    let r = twophase::recover(&control, &nodes, Duration::from_secs(3600)).await.unwrap();
+    let r = twophase::recover(&control, &nodes, Duration::from_secs(3600))
+        .await
+        .unwrap();
     assert_eq!(r.skipped.len(), 2, "{r:?}");
     assert!(r.rolled_back.is_empty());
     let doubt = twophase::in_doubt(&control, &nodes, Duration::ZERO).await.unwrap();
@@ -214,7 +218,12 @@ async fn recovery_rolls_back_parts_without_a_decision_after_a_crash() {
         assert!(db.prepared_transactions().await.unwrap().is_empty());
         assert!(!table_exists(db, "t173").await);
     }
-    assert!(twophase::in_doubt(&control, &nodes, Duration::ZERO).await.unwrap().is_empty());
+    assert!(
+        twophase::in_doubt(&control, &nodes, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -225,7 +234,12 @@ async fn recovery_commits_decided_parts_after_a_node_crash() {
     let control = nodes[0].db.clone();
     let gid = twophase::new_gid();
     for (k, cl) in c.iter().enumerate() {
-        prepare_raw(cl, "CREATE TABLE public.t173 (k bigint)", &node_gid(&gid, u16::try_from(k).unwrap())).await;
+        prepare_raw(
+            cl,
+            "CREATE TABLE public.t173 (k bigint)",
+            &node_gid(&gid, u16::try_from(k).unwrap()),
+        )
+        .await;
     }
     // The decision was written, control and s1 committed, then s2 crashed.
     let mut tx = control.begin(TxMode::Normal).await.unwrap();
@@ -247,14 +261,23 @@ async fn recovery_commits_decided_parts_after_a_node_crash() {
     assert_eq!(journal_state(&control, &gid).await.as_deref(), Some("committing"));
     c[2].restart().await;
     let s2 = c[2].open("forgebase").await;
-    let nodes = vec![nodes[0].clone(), nodes[1].clone(), Participant::new("s2", 2, s2.clone())];
+    let nodes = vec![
+        nodes[0].clone(),
+        nodes[1].clone(),
+        Participant::new("s2", 2, s2.clone()),
+    ];
     let r = twophase::recover(&control, &nodes, Duration::ZERO).await.unwrap();
     assert_eq!(r.committed, vec![node_gid(&gid, 2)], "{r:?}");
     assert_eq!(r.closed, vec![gid.clone()]);
     assert!(table_exists(&s2, "t173").await);
     assert_eq!(journal_state(&control, &gid).await.as_deref(), Some("committed"));
     // Nothing left; a second run is a no-op.
-    assert!(twophase::recover(&control, &nodes, Duration::ZERO).await.unwrap().is_empty());
+    assert!(
+        twophase::recover(&control, &nodes, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -309,7 +332,12 @@ async fn nodes_without_prepared_transactions_are_refused() {
     assert!(!table_exists(&nodes[0].db, "t173").await);
     // PREPARE on such a node says what to change.
     let mut tx = nodes[1].db.begin(TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw("CREATE TABLE public.t173 (k bigint)")).await.unwrap();
-    let err = tx.prepare(node_gid(&twophase::new_gid(), 1)).await.expect_err("disabled");
+    tx.execute(&Statement::raw("CREATE TABLE public.t173 (k bigint)"))
+        .await
+        .unwrap();
+    let err = tx
+        .prepare(node_gid(&twophase::new_gid(), 1))
+        .await
+        .expect_err("disabled");
     assert!(err.to_string().contains("max_prepared_transactions"), "{err}");
 }

@@ -1113,7 +1113,12 @@ impl DataService {
     async fn apply_on_shard(&self, tx: &mut dyn WriteTx, step: &ShardStep) -> Result<(), DataError> {
         let d = self.inner.backend.dialect();
         match step {
-            ShardStep::Create { def, view_sql, cat, all } => {
+            ShardStep::Create {
+                def,
+                view_sql,
+                cat,
+                all,
+            } => {
                 let mut log = DdlLog::new(tx);
                 if let Some(q) = view_sql {
                     log.run(create_view_sql(d, &def.name, q)).await?;
@@ -1331,7 +1336,10 @@ pub struct IndexBuild {
 pub(crate) fn concurrently(sql: &str) -> String {
     let t = sql.trim_start();
     for (prefix, with) in [
-        ("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "),
+        (
+            "CREATE UNIQUE INDEX ",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ",
+        ),
         ("CREATE INDEX ", "CREATE INDEX CONCURRENTLY IF NOT EXISTS "),
         ("DROP INDEX ", "DROP INDEX CONCURRENTLY IF EXISTS "),
     ] {
@@ -1396,7 +1404,10 @@ impl DataService {
                 Ok(()) => ("ready", None),
                 Err(e) => {
                     // A failed concurrent build leaves an invalid index behind.
-                    let drop = drop_index_sql(d, def).iter().map(|s| concurrently(s)).collect::<Vec<_>>();
+                    let drop = drop_index_sql(d, def)
+                        .iter()
+                        .map(|s| concurrently(s))
+                        .collect::<Vec<_>>();
                     let _ = h.database().run_autocommit(&drop).await;
                     tracing::warn!(index = %def.name, set = %h.id(), error = %e, "index build failed on a shard");
                     ("failed", Some(e.to_string()))
@@ -1471,7 +1482,10 @@ mod fanout_tests {
             concurrently("CREATE INDEX IF NOT EXISTS i ON t (a)"),
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS i ON t (a)"
         );
-        assert_eq!(concurrently("DROP INDEX public.\"i\""), "DROP INDEX CONCURRENTLY IF EXISTS public.\"i\"");
+        assert_eq!(
+            concurrently("DROP INDEX public.\"i\""),
+            "DROP INDEX CONCURRENTLY IF EXISTS public.\"i\""
+        );
         assert_eq!(concurrently("ANALYZE t"), "ANALYZE t");
     }
 }

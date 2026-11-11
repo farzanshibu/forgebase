@@ -439,7 +439,10 @@ mod tests {
         assert!(matches!(report.shards[0].outcome, NodeOutcome::Failed { .. }));
         assert!(matches!(report.shards[1].outcome, NodeOutcome::Applied(ref a) if a.len() == 1));
         assert_eq!(report.shards[2].outcome, NodeOutcome::UpToDate);
-        assert_eq!(report.failed().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["s1"]);
+        assert_eq!(
+            report.failed().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["s1"]
+        );
         let events = log.events();
         assert!(events.contains(&"finished s1 false".to_owned()));
         assert!(!events.iter().any(|e| e.contains("s3")), "{events:?}");

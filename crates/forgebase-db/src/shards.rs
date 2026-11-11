@@ -64,11 +64,7 @@ struct MarkMigrating<'a> {
 impl MigrationHooks for MarkMigrating<'_> {
     fn starting<'a>(&'a self, node: &'a str) -> MigrationFuture<'a, Result<(), NodeError>> {
         Box::pin(async move {
-            let state = self
-                .router
-                .set(node)
-                .map(|h| h.set().state)
-                .unwrap_or(SetState::Active);
+            let state = self.router.set(node).map(|h| h.set().state).unwrap_or(SetState::Active);
             if state != SetState::Migrating {
                 self.before
                     .lock()
@@ -100,7 +96,10 @@ impl MigrationHooks for MarkMigrating<'_> {
 
 async fn mark(router: &DbRouter, set: &str, state: SetState) -> Result<(), NodeError> {
     topology::update_set(router.control().database(), set, Some(state), None, None).await?;
-    router.reload().await.map_err(|e| NodeError::new(e.code(), e.to_string()))
+    router
+        .reload()
+        .await
+        .map_err(|e| NodeError::new(e.code(), e.to_string()))
 }
 
 /// Where a set's pre-migration snapshots go: `<backups_dir>/sets/<set id>`
@@ -125,7 +124,12 @@ pub async fn migrate_sets(router: &DbRouter, backups_dir: Option<&Path>, options
         handle: h,
     };
     let control = node(router.control());
-    let shards: Vec<SetNode> = router.sets().into_iter().filter(|h| !h.is_control()).map(node).collect();
+    let shards: Vec<SetNode> = router
+        .sets()
+        .into_iter()
+        .filter(|h| !h.is_control())
+        .map(node)
+        .collect();
     let refs: Vec<&dyn MigrationNode> = shards.iter().map(|s| s as &dyn MigrationNode).collect();
     let hooks = MarkMigrating {
         router,
@@ -134,7 +138,9 @@ pub async fn migrate_sets(router: &DbRouter, backups_dir: Option<&Path>, options
     let report = multi::migrate_all(&control, &refs, options, &hooks).await;
     for (s, r) in shards.iter().zip(&report.shards) {
         if r.is_ok()
-            && router.set(s.handle.id()).is_some_and(|h| h.set().state == SetState::Migrating)
+            && router
+                .set(s.handle.id())
+                .is_some_and(|h| h.set().state == SetState::Migrating)
             && let Err(e) = mark(router, s.handle.id(), SetState::Active).await
         {
             tracing::warn!(set = %s.handle.id(), error = %e, "could not mark the set active");

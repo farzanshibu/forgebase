@@ -137,9 +137,7 @@ pub enum TwoPhaseError {
     #[error(transparent)]
     Db(#[from] DbError),
     /// A node cannot take part (`max_prepared_transactions = 0`).
-    #[error(
-        "database set {0:?} has max_prepared_transactions = 0; shards need it above 0 (managed nodes use 16)"
-    )]
+    #[error("database set {0:?} has max_prepared_transactions = 0; shards need it above 0 (managed nodes use 16)")]
     Unsupported(String),
     /// Writing the decision failed in a way that leaves it unknown: the
     /// prepared parts stay until [`recover`] finds the journal row (commit)
@@ -699,8 +697,12 @@ pub async fn recover(control: &Database, nodes: &[Participant], grace: Duration)
         .await?;
     report.pruned = pruned;
     if !report.is_empty() {
-        tracing::info!(committed = report.committed.len(), rolled_back = report.rolled_back.len(),
-            closed = report.closed.len(), "resolved in-doubt schema transactions");
+        tracing::info!(
+            committed = report.committed.len(),
+            rolled_back = report.rolled_back.len(),
+            closed = report.closed.len(),
+            "resolved in-doubt schema transactions"
+        );
     }
     Ok(report)
 }

@@ -162,7 +162,9 @@ pub struct LoginRole<'a> {
 
 impl std::fmt::Debug for LoginRole<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoginRole").field("name", &self.name).finish_non_exhaustive()
+        f.debug_struct("LoginRole")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
     }
 }
 
@@ -216,7 +218,10 @@ pub async fn create_login_role(db: &Database, role: &LoginRole<'_>) -> Result<()
         .is_empty();
     // Names and verifiers are checked above: plain characters, no quotes.
     let statements = if exists {
-        vec![format!("ALTER ROLE \"{}\" LOGIN PASSWORD '{}'", role.name, role.verifier)]
+        vec![format!(
+            "ALTER ROLE \"{}\" LOGIN PASSWORD '{}'",
+            role.name, role.verifier
+        )]
     } else {
         vec![
             format!(
@@ -312,7 +317,16 @@ mod tests {
     #[test]
     fn login_names_and_verifiers_are_checked() {
         assert!(check_role_name("app_reader").is_ok());
-        for bad in ["", "1abc", "Upper", "pg_x", "forgebase_rls", "a\"b", "a b", &"a".repeat(64)] {
+        for bad in [
+            "",
+            "1abc",
+            "Upper",
+            "pg_x",
+            "forgebase_rls",
+            "a\"b",
+            "a b",
+            &"a".repeat(64),
+        ] {
             assert!(check_role_name(bad).is_err(), "{bad}");
         }
         assert!(check_verifier("SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy").is_ok());

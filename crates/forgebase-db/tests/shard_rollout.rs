@@ -61,7 +61,11 @@ async fn a_new_shard_is_migrated_confined_and_subscribed_to_control() {
     );
     // Sequence ranges: control below 2^40, the shard in [k·2^40 + 1, …].
     let k = i64::from(set.number);
-    let min = scalar(&db, "SELECT min(min_value) FROM pg_catalog.pg_sequences WHERE schemaname = 'forgebase'").await;
+    let min = scalar(
+        &db,
+        "SELECT min(min_value) FROM pg_catalog.pg_sequences WHERE schemaname = 'forgebase'",
+    )
+    .await;
     assert_eq!(min.as_i64(), Some((k << 40) + 1));
     let max = scalar(
         &s.control,
@@ -80,14 +84,21 @@ async fn a_new_shard_is_migrated_confined_and_subscribed_to_control() {
     .await;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let n = scalar(&db, "SELECT count(*) FROM _forgebase_resource_permissions WHERE id = 'acl1'").await;
+        let n = scalar(
+            &db,
+            "SELECT count(*) FROM _forgebase_resource_permissions WHERE id = 'acl1'",
+        )
+        .await;
         if n.as_i64() == Some(1) {
             break;
         }
         assert!(Instant::now() < deadline, "the ACL row never reached the shard");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let sub = shards::control_subscription(&db, set.number).await.unwrap().expect("subscribed");
+    let sub = shards::control_subscription(&db, set.number)
+        .await
+        .unwrap()
+        .expect("subscribed");
     assert!(sub.enabled);
     assert_eq!(sub.tables, 1);
     // Activating again changes nothing and does not fail.
@@ -95,7 +106,9 @@ async fn a_new_shard_is_migrated_confined_and_subscribed_to_control() {
         .await
         .unwrap();
     // Unsubscribing drops the subscription and the slot on control.
-    shards::unsubscribe_from_control(&db, &s.control, set.number).await.unwrap();
+    shards::unsubscribe_from_control(&db, &s.control, set.number)
+        .await
+        .unwrap();
     assert!(shards::control_subscription(&db, set.number).await.unwrap().is_none());
     let slots = scalar(&s.control, "SELECT count(*) FROM pg_catalog.pg_replication_slots").await;
     assert_eq!(slots.as_i64(), Some(0));
@@ -110,11 +123,18 @@ async fn migrations_run_on_every_set_and_migrating_shards_answer_503() {
     let (set, db) = s.provision("s1").await;
     shards::activate_shard(&s.router, &set, &db, setup(None)).await.unwrap();
     s.router.place("t1", &set.id, PlacementState::Active).await.unwrap();
-    assert_eq!(s.router.try_for_tenant(TenantRef::new(Some("t1"))).unwrap().id(), set.id);
+    assert_eq!(
+        s.router.try_for_tenant(TenantRef::new(Some("t1"))).unwrap().id(),
+        set.id
+    );
 
     // Put the shard below head: forget the last migration and undo it.
     let head = forgebase_db::migrations::postgres::PgMigrator::system().latest_version();
-    exec(&db, &format!("DELETE FROM _forgebase_migrations WHERE version = {head}")).await;
+    exec(
+        &db,
+        &format!("DELETE FROM _forgebase_migrations WHERE version = {head}"),
+    )
+    .await;
     exec(&db, "DROP TABLE _forgebase_index_builds").await;
     // A set marked migrating refuses its tenants with 503 shard_migrating.
     topology::update_set(&s.control, &set.id, Some(SetState::Migrating), None, None)
@@ -127,7 +147,12 @@ async fn migrations_run_on_every_set_and_migrating_shards_answer_503() {
     let err = s.router.for_tenant(TenantRef::new(Some("t1"))).await.unwrap_err();
     assert_eq!(err.code(), "shard_migrating");
     // Control and tenants on control are not affected.
-    assert!(s.router.try_for_tenant(TenantRef::new(Some("elsewhere"))).unwrap().is_control());
+    assert!(
+        s.router
+            .try_for_tenant(TenantRef::new(Some("elsewhere")))
+            .unwrap()
+            .is_control()
+    );
 
     let report = shards::migrate_sets(&s.router, None, MultiOptions::default()).await;
     assert!(report.is_ok(), "{report:?}");
@@ -138,7 +163,10 @@ async fn migrations_run_on_every_set_and_migrating_shards_answer_503() {
     );
     assert_eq!(db.schema_version().await.unwrap(), head);
     assert_eq!(s.router.set(&set.id).unwrap().set().state, SetState::Active);
-    assert_eq!(s.router.try_for_tenant(TenantRef::new(Some("t1"))).unwrap().id(), set.id);
+    assert_eq!(
+        s.router.try_for_tenant(TenantRef::new(Some("t1"))).unwrap().id(),
+        set.id
+    );
     // A second run finds every set at head.
     let report = shards::migrate_sets(&s.router, None, MultiOptions::default()).await;
     assert!(report.shards.iter().all(|r| r.outcome == NodeOutcome::UpToDate));

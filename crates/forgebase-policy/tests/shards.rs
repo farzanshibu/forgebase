@@ -79,7 +79,11 @@ async fn native_policies_follow_schema_and_rule_changes_on_every_shard() {
     .unwrap();
     data.create_collection(&sys, posts).await.unwrap();
     policy
-        .put_policy(&admin(), "posts", &list_rule("owner = @request.auth.id || owner.email = 'x'"))
+        .put_policy(
+            &admin(),
+            "posts",
+            &list_rule("owner = @request.auth.id || owner.email = 'x'"),
+        )
         .await
         .unwrap();
     let want = policies(&s.control, "posts").await;
@@ -102,7 +106,11 @@ async fn native_policies_follow_schema_and_rule_changes_on_every_shard() {
     assert!(data.attach_shards(s.router.clone()));
     assert_eq!(policies(&shard, "posts").await, want);
     assert_eq!(
-        rows(&shard, "SELECT viewname::text FROM pg_catalog.pg_views WHERE schemaname = 'api' ORDER BY 1").await,
+        rows(
+            &shard,
+            "SELECT viewname::text FROM pg_catalog.pg_views WHERE schemaname = 'api' ORDER BY 1"
+        )
+        .await,
         ["people", "posts"]
     );
 
@@ -115,7 +123,11 @@ async fn native_policies_follow_schema_and_rule_changes_on_every_shard() {
     assert_ne!(changed, want);
     assert_eq!(policies(&shard, "posts").await, changed);
     assert_eq!(
-        rows(&s.control, "SELECT purpose FROM _forgebase_xact_journal WHERE state = 'committed'").await,
+        rows(
+            &s.control,
+            "SELECT purpose FROM _forgebase_xact_journal WHERE state = 'committed'"
+        )
+        .await,
         ["native policies"]
     );
     policy.delete_policy(&admin(), "posts").await.unwrap();
@@ -172,7 +184,10 @@ async fn direct_login_roles_live_on_their_shard_and_move_with_their_verifier() {
     ])
     .await
     .unwrap();
-    let verifier = native::login_role_verifier(&a, "fb173_tmp").await.unwrap().expect("verifier");
+    let verifier = native::login_role_verifier(&a, "fb173_tmp")
+        .await
+        .unwrap()
+        .expect("verifier");
     assert!(verifier.starts_with("SCRAM-SHA-256$"));
     native::create_login_role(
         &a,
@@ -192,7 +207,10 @@ async fn direct_login_roles_live_on_their_shard_and_move_with_their_verifier() {
     assert!(rows(&b, role).await.is_empty());
     // A move recreates it on the target with the same verifier.
     assert!(native::copy_login_role(&a, &b, "app_ann", None).await.unwrap());
-    assert_eq!(native::login_role_verifier(&b, "app_ann").await.unwrap(), Some(verifier.clone()));
+    assert_eq!(
+        native::login_role_verifier(&b, "app_ann").await.unwrap(),
+        Some(verifier.clone())
+    );
     assert_eq!(rows(&b, member).await, [native::LOGIN_GROUP]);
     // Creating again updates the verifier; dropping removes it.
     native::create_login_role(

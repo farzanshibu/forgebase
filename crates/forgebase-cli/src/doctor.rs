@@ -857,6 +857,10 @@ async fn check_two_phase(r: &mut Report, db: &Database) {
     match twophase::in_doubt(db, &nodes, twophase::RECOVERY_GRACE).await {
         Ok(list) if list.is_empty() => r.push("two_phase", Level::Ok, "no in-doubt schema transactions"),
         Ok(list) => r.push("two_phase", Level::Warn, twophase::describe_in_doubt(&list)),
-        Err(e) => r.push("two_phase", Level::Warn, format!("could not read the transaction journal: {e}")),
+        Err(e) => r.push(
+            "two_phase",
+            Level::Warn,
+            format!("could not read the transaction journal: {e}"),
+        ),
     }
 }

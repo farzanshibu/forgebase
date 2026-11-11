@@ -77,29 +77,45 @@ async fn collection_changes_and_indexes_reach_every_shard() {
 
     // A catalog made before any shard: a relation cycle, a tenant-scoped
     // collection, a view and a manual index.
-    data.create_collection(&sys, coll(json!({"id": "authors_c", "name": "authors", "fields": [
-        {"name": "name", "type": "text"}
-    ]})))
+    data.create_collection(
+        &sys,
+        coll(json!({"id": "authors_c", "name": "authors", "fields": [
+            {"name": "name", "type": "text"}
+        ]})),
+    )
     .await
     .unwrap();
-    data.create_collection(&sys, coll(json!({"id": "posts_c", "name": "posts", "fields": [
-        {"name": "title", "type": "text"},
-        {"name": "author", "type": "relation", "collection_id": "authors_c"}
-    ]})))
+    data.create_collection(
+        &sys,
+        coll(json!({"id": "posts_c", "name": "posts", "fields": [
+            {"name": "title", "type": "text"},
+            {"name": "author", "type": "relation", "collection_id": "authors_c"}
+        ]})),
+    )
     .await
     .unwrap();
     let mut authors = data.get_collection(&sys, "authors").await.unwrap();
-    authors.fields.push(coll(json!({"name": "x", "fields": [
-        {"name": "best", "type": "relation", "collection_id": "posts_c"}
-    ]})).fields.remove(0));
+    authors.fields.push(
+        coll(json!({"name": "x", "fields": [
+            {"name": "best", "type": "relation", "collection_id": "posts_c"}
+        ]}))
+        .fields
+        .remove(0),
+    );
     data.update_collection(&sys, "authors", authors).await.unwrap();
-    data.create_collection(&sys, coll(json!({"name": "notes", "options": {"tenant_scoped": true}, "fields": [
-        {"name": "body", "type": "text"}
-    ]})))
+    data.create_collection(
+        &sys,
+        coll(json!({"name": "notes", "options": {"tenant_scoped": true}, "fields": [
+            {"name": "body", "type": "text"}
+        ]})),
+    )
     .await
     .unwrap();
-    data.create_collection(&sys, coll(json!({"name": "post_titles", "type": "view",
-        "view_query": "SELECT id, title FROM posts"})))
+    data.create_collection(
+        &sys,
+        coll(json!({"name": "post_titles", "type": "view",
+        "view_query": "SELECT id, title FROM posts"})),
+    )
     .await
     .unwrap();
     let mut ix = IndexDefinition::btree("posts", &["title"]);
@@ -136,20 +152,30 @@ async fn collection_changes_and_indexes_reach_every_shard() {
     }
 
     // Create, update and delete run on every node.
-    data.create_collection(&sys, coll(json!({"name": "tags", "fields": [{"name": "label", "type": "text"}]})))
-        .await
-        .unwrap();
+    data.create_collection(
+        &sys,
+        coll(json!({"name": "tags", "fields": [{"name": "label", "type": "text"}]})),
+    )
+    .await
+    .unwrap();
     for db in &all {
         assert!(tables(db).await.contains(&"tags".to_owned()));
     }
     let mut posts = data.get_collection(&sys, "posts").await.unwrap();
     posts.fields.iter_mut().find(|f| f.name == "title").unwrap().name = "headline".into();
-    posts.fields.push(coll(json!({"name": "x", "fields": [{"name": "body", "type": "text"}]})).fields.remove(0));
+    posts.fields.push(
+        coll(json!({"name": "x", "fields": [{"name": "body", "type": "text"}]}))
+            .fields
+            .remove(0),
+    );
     // The view reads `title`: it follows the rename.
     data.update_collection(&sys, "posts", posts).await.unwrap();
     for db in &all {
         let cols = columns(db, "posts").await;
-        assert!(cols.contains(&"headline".to_owned()) && cols.contains(&"body".to_owned()), "{cols:?}");
+        assert!(
+            cols.contains(&"headline".to_owned()) && cols.contains(&"body".to_owned()),
+            "{cols:?}"
+        );
         assert!(!cols.contains(&"title".to_owned()));
     }
     data.delete_collection(&sys, "tags").await.unwrap();
@@ -166,7 +192,10 @@ async fn collection_changes_and_indexes_reach_every_shard() {
     // A failure on one shard changes nothing anywhere.
     exec(&shard_dbs[1], "CREATE TABLE public.clash (x int)").await;
     let err = data
-        .create_collection(&sys, coll(json!({"name": "clash", "fields": [{"name": "a", "type": "text"}]})))
+        .create_collection(
+            &sys,
+            coll(json!({"name": "clash", "fields": [{"name": "a", "type": "text"}]})),
+        )
         .await
         .unwrap_err();
     assert!(err.to_string().contains("clash"), "{err}");
@@ -197,7 +226,14 @@ async fn collection_changes_and_indexes_reach_every_shard() {
             assert_eq!(b.state, "ready");
         } else {
             assert_eq!(b.state, "failed");
-            assert!(b.error.as_deref().unwrap_or_default().to_ascii_lowercase().contains("unique"), "{b:?}");
+            assert!(
+                b.error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .contains("unique"),
+                "{b:?}"
+            );
         }
     }
     assert!(indexes(&shard_dbs[0], "posts").await.contains(&"posts_body".to_owned()));
