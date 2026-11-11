@@ -7,6 +7,11 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Builds that embed the PostgreSQL engine (forgebase-pgengine): PostgreSQL
+# becomes the default `[database] backend` (ADR-0029 §6). Off = the -lite build.
+bundled-postgres = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

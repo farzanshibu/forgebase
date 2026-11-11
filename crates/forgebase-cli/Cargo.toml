@@ -12,6 +12,12 @@ autotests = false
 name = "forgebase"
 path = "src/main.rs"
 
+[features]
+# The standard release: the PostgreSQL engine embedded (FORGEBASE_PG_ENGINE_ARCHIVE
+# at build time, checked against engine.lock) and PostgreSQL as the default
+# backend. Without it: the -lite build (SQLite default).
+bundled-postgres = ["forgebase-server/bundled-postgres"]
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
@@ -24,12 +30,14 @@ forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true
 forgebase-observability.workspace = true
+forgebase-pgengine.workspace = true
 forgebase-server.workspace = true
 fs4.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
-tokio.workspace = true
+# process: `forgebase db psql` runs the engine's psql.
+tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
 
 [dev-dependencies]
@@ -83,6 +91,11 @@ path = "../../tests/integration/spec_scenarios.rs"
 [[test]]
 name = "setup_e2e"
 path = "../../tests/integration/setup_e2e.rs"
+
+# FB-148: init --database, the backend marker, status, doctor, db status/psql.
+[[test]]
+name = "database_e2e"
+path = "tests/database_e2e.rs"
 
 [lints]
 workspace = true
