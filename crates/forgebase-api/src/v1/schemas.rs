@@ -123,7 +123,16 @@ pub struct ListQueryBody {
     pub sort: Option<String>,
     pub fields: Option<Vec<String>>,
     pub expand: Option<Vec<String>>,
+    /// Full-text query (needs a full-text index).
     pub search: Option<String>,
+    /// Fuzzy text: trigram similarity, best match first (PostgreSQL with
+    /// pg_trgm; `400 fuzzy_unsupported` otherwise).
+    pub fuzzy: Option<String>,
+    /// Fields `fuzzy` compares; each needs a trigram index (default: all
+    /// fields of the collection's trigram indexes).
+    pub fuzzy_fields: Option<Vec<String>>,
+    /// Minimum similarity from 0 to 1 (default 0.3).
+    pub fuzzy_threshold: Option<f64>,
     pub page: Option<u32>,
     pub per_page: Option<u32>,
     pub cursor: Option<String>,
@@ -178,7 +187,8 @@ pub struct IndexDefinitionSchema {
     pub keys: Vec<IndexKeySchema>,
     pub unique: Option<bool>,
     pub partial: Option<String>,
-    /// `btree` (default) or `fulltext`.
+    /// `btree` (default), `fulltext` or `trigram` (PostgreSQL with pg_trgm;
+    /// `400 index_kind_unsupported` elsewhere).
     pub kind: Option<String>,
 }
 

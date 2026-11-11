@@ -677,6 +677,10 @@ impl Backend for Database {
         self.backend().dialect()
     }
 
+    fn feature_active(&self, feature: Feature) -> bool {
+        Database::feature_active(self, feature)
+    }
+
     fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>> {
         self.backend().fetch_all(stmt)
     }

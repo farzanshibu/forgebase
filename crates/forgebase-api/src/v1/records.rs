@@ -24,7 +24,9 @@ use crate::http::{ApiJson, Query, if_match_version};
 use crate::principal::Access;
 
 const QUERY_PARAMS_DOC: &str = "Query string: `filter`, `p.<name>` (filter parameters), `sort` (`-created,name`), \
-    `fields`, `expand`, `search`, `page`, `per_page` (max 500), `cursor`, `skip_total`.";
+    `fields`, `expand`, `search` (full text; the words are ANDed), `fuzzy` (trigram match, PostgreSQL with \
+    pg_trgm: `400 fuzzy_unsupported` elsewhere), `fuzzy_fields` (fields with a trigram index), `fuzzy_threshold` \
+    (0 to 1, default 0.3), `page`, `per_page` (max 500), `cursor`, `skip_total`.";
 
 /// A record response with its version as `ETag`.
 pub(crate) fn record_response(status: StatusCode, rec: Record, location: Option<String>) -> Response {
