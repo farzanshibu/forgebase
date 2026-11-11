@@ -1871,3 +1871,124 @@ columns, no `pg_read_server_files`/`pg_execute_server_program`, `CREATE` on
 it on that role). The deny list stays as defence in depth; it refuses every
 `SET`, `DO` and `GRANT`, so role and privilege changes must go through an
 admin API.
+
+## Addendum (FB-136): billing, credits and realtime scoping
+
+Written 2026-11-11 by FB-136. Closes `rls-coverage.md` G18 (billing and
+credits) and G17 (realtime channels), and the FB-138 follow-up for
+realtime's in-band key authentication. Backend-neutral: the only new SQL is
+the realm filter below, checked on SQLite (the server suite) and on
+PostgreSQL 18.3 (a prepared statement over the same columns); no migration.
+
+**Realm-level grants stay in their realm (G18).** `billing:read` /
+`billing:write` (and `usage:write` for spending) held at realm level now
+reach a subject only when it belongs to the caller's realm
+(`ctx.realm_id`): an organization whose `_forgebase_orgs.realm_id` is that
+realm, a user whose auth collection that realm names, a service account
+of that realm (users and service accounts default to `default`, unknown
+organizations belong to no realm). The rule is
+`forgebase_policy::Snapshot::realm_of_subject` (new, public) and applies
+to every check: reads and management of a subject (`can_read`,
+`can_manage` in billing; reads and spends in credits), the operator
+actions that used to be subject-less (billing `can_operate(ctx, subject)`
+for tax exemption; mark-paid, void and credit notes look the invoice up
+first and answer `404` for another realm's invoice, `403` still comes first
+for a caller who is no operator at all; credits `can_mint(ctx, subject)` for
+top-ups, grants, consumption refunds and reversals). A refused fallback is
+a policy denial at step `tenant` (`403`), as before for a non-member.
+Organization-level grants are unchanged (policy step 2 already ties an
+organization to the caller's realm).
+
+**"All customers" lists are realm-filtered (G18).** `can_read_all` returns
+the realm the read is limited to (`None` for privileged callers, who still
+see every realm). Every instance-wide read applies
+`forgebase_billing::service::realm_clause` (an `AND` over the subject
+column, the realm as the last parameter): customers, subscriptions,
+invoices, payments, refunds and credit notes without a subject, store
+purchases, `admin/orders` (its `total` too), `admin/usage-meters`, the
+dunning queue, and every figure of `/billing/stats` (MRR, status counts,
+churn, revenue, refunds through their invoice, failed payments). The SQL
+(`subject_in_realm_sql`) mirrors `realm_of_subject` with
+`_forgebase_orgs`, `_forgebase_service_accounts.realm` and
+`_forgebase_realm_identity.collection` (unique), using only `||`, `substr`,
+`length`, `COALESCE` and scalar subqueries, valid on both engines; with
+paging the filter runs before `LIMIT`/`OFFSET`.
+
+**Channel namespaces (G17).** `forgebase_realtime::channel::resolve(ctx,
+name)` decides where a channel lives:
+- a caller with a tenant (bound key, selected `X-ForgeBase-Tenant`, a
+  function running for a tenant, the system with a tenant) is in
+  `t:<tenant>:`: `chat` is routed as `t:<tenant>:chat`; the explicit
+  `t:<tenant>:chat` names the same channel and is refused
+  (`403 tenant_mismatch`) to non-privileged callers of any other tenant or
+  of none; privileged callers may address any tenant's channel explicitly;
+- `global:<name>` is shared by every tenant; subscribing follows the
+  channel's permission or rule, publishing and joining presence need a
+  privileged caller (`403 global_channel`);
+- `jobs:<id>` (`SYSTEM_PREFIXES`, the job queue's own channels) is never
+  namespaced; `JobChannelAuthorizer` keeps deciding who reads it (FB-142);
+- callers without a tenant keep plain names (as before).
+Inside a tenant name, a reserved prefix (`t:`, `global:`, `jobs:`) is
+`400 invalid_channel`. Messages and presence frames carry the name the
+client used; rooms, the in-process bus and the cross-instance fan-out use
+the routed name (a rolling upgrade mixing versions would route tenant
+callers' channels differently for the overlap).
+
+**Channel rules (G17).** Channels are FB-134 resources of the new kind
+`realtime_channel` (`forgebase_data::ResourceKind::Channel`; operations
+`view` = subscribe and presence listing, `create` = publish and presence
+join; no item fields, `@request` only, so a rule is a yes/no). The two
+actions joined `perm::RESOURCE_ACTIONS`: `engine:channel_subscribe:<name>`
+and `engine:channel_publish:<name>` grant one channel, the plain keys keep
+meaning every channel (so existing grants are unchanged).
+`PolicyAuthorizer::authorize_channel` now asks `authorize_resource`; the
+name it sees is the tenant's own name for the channel
+(`Channel::rule_name`, without `t:<tenant>:`), so a rule is written once
+per channel and tells tenants apart with `@request.tenant`, e.g.
+`PUT /api/v1/policies/resources/realtime_channel/lobby {"rules": {"view":
+"@request.tenant != ''", "create": null}}`. Anonymous callers can now be
+admitted by a rule (`""`), as for other resources; before, only a
+permission could admit anyone. Rules are re-checked on every delivered
+message, as channel decisions were.
+
+**In-band keys keep their binding (FB-138).** Realtime's own
+authentication (`?access_token=` on the WebSocket/SSE upgrade, the
+`{"type":"auth"}` refresh, the periodic re-validation) uses
+`authenticate_key_bound`: a bound key's connection runs in its tenant (the
+binding was validated for the key's owner by the auth service), and in the
+identity's home realm (`access_context_for`; it was always `default`
+before). A refresh with a key bound to another tenant is
+`403 tenant_mismatch` (the connection's namespace is fixed), and a
+re-validation that finds the key's tenant changed or its owner gone closes
+the connection (`4001`).
+
+**Breaking.** Tenant-bound callers no longer meet callers of other tenants
+or tenant-less callers on plain channel names: cross-tenant broadcasts move
+to `global:` (published by the server or an administrator). A non-privileged
+caller publishing on `global:` is refused. Realm-level billing operators of
+one realm lose access to other realms' subjects and see only their realm in
+lists and statistics.
+
+**Edits outside FB-136's packages.** `forgebase-data/src/access.rs`
+(`ResourceKind::Channel`), `forgebase-policy/src/perm.rs` (two resource
+actions), `forgebase-policy/src/lib.rs` (`authorize_channel`),
+`forgebase-policy/src/snapshot.rs` (`realm_of_subject`),
+`forgebase-billing/src/{admin,stats,store}.rs` (the realm filter on their
+instance-wide reads). The OpenAPI description of
+`/api/v1/policies/resources/{kind}` still lists seven kinds (unchanged to
+keep the generated SDKs as they are); the kind list in the error message
+and the API itself include `realtime_channel`.
+
+**For FB-145 (billing and credits on PostgreSQL).** The realm filter is
+already portable; the surrounding `?N IS NULL OR subject = ?N` patterns
+need FB-143's `CAST(?N AS TEXT) IS NULL`. `realm_clause` always appends
+its parameter last, after `LIMIT`/`OFFSET` parameters, so numbering stays
+stable. **For FB-146 (realtime on PostgreSQL).** No SQL changed in
+realtime; routed channel names are memory and fan-out only. **For FB-152
+(native RLS).** Channels stay API-only; `realtime_channel` rules are not
+compiled into PostgreSQL policies. **For the dashboard.** Realtime studio:
+show and accept channel names as clients use them (the tenant prefix is
+implicit), offer `global:` for broadcasts (administrators only) and
+`realtime_channel` rules with `@request` only. Billing studio: a realm
+operator's lists and statistics are of their realm; a privileged caller
+still sees every realm.
