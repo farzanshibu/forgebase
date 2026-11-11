@@ -2415,3 +2415,83 @@ deny of `engine:vector_read:<name>` now hides that collection from
 listings. `NewCollection` and `VectorCollection` gained a public field
 (`source_collection`), so struct literals add it; `store` functions of
 the vector crate take the dialect and an optional filter (crate-private).
+
+## Addendum (FB-137): realm-scoped administrators
+
+Written 2026-11-11 by FB-137. Closes `rls-coverage.md` G19: every
+administrator was a cross-realm superuser, and impersonation never checked
+the target's realm. Backend-neutral: no migration; the new SQL is plain
+`IN`/`NOT IN` lists and sub-selects, valid on both engines.
+
+**Who is a realm administrator.** A user, or a service account without the
+`admin` role, that holds the permission key `identity:admin` in its **home
+realm** at realm level: through a realm binding (`PUT
+/api/v1/realm-bindings` with a realm role that allows `identity:admin`, or
+`*`) or a realm-level override. Org memberships and teams do not count.
+Auth cannot call the policy engine (policy depends on auth), so
+`forgebase_auth::RealmAdminCheck` (`Fn(&AccessContext) -> bool`) is
+installed with `AuthService::set_realm_admin_check`; the router
+(`forgebase_api::router_with`, next to the realm creator) wires it to
+`PolicyService::has(ctx, IDENTITY_ADMIN, None)` with the caller's context in
+its home realm. Policy step 2 refuses cross-realm access, so a binding in
+another realm makes nobody an administrator there, and a suspended account
+holds nothing. Without the check (the engine used on its own) only
+platform administrators administer.
+
+**Scope.** `AuthService::admin_scope(caller) -> AdminScope`:
+`Platform` for administrators and admin service accounts (unchanged),
+`Realm(home)` for a realm administrator, `403` otherwise. An impersonation
+session never administers, whoever it impersonates. Helpers in
+`service/mod.rs`: `require_realm_admin(caller, realm)`,
+`require_admin_of(caller, subject)` (users and non-admin service accounts
+of the realm; platform admins and admin service accounts are platform
+targets), and `realm_users_sql` / `realm_principals_sql`, which turn a
+realm into conditions over collection or principal columns (users of
+`default` are the auth collections no other realm names, as in
+`RealmDirectory::realm_of_collection`). `require_admin` keeps meaning
+"platform administrator".
+
+**What a realm administrator reaches.**
+- Users (`/api/auth/users/{collection}/{id}` detail, sessions, revoke,
+  sign-in history, and the lifecycle calls: status, suspend, unsuspend,
+  deactivate, reactivate, delete, anonymise, export): users of their realm.
+  The realm check runs before the existence check, so another realm's ids
+  give `403` whether or not they exist.
+- Service accounts and keys: create `service`-role accounts in their realm
+  only (`X-ForgeBase-Realm` defaults to it; `admin` role `403`); get, list,
+  delete and create keys for their realm's non-admin accounts (others are
+  `404`); `GET /api/auth/api-keys` and `DELETE /api/auth/api-keys/{id}`
+  cover their realm's users' PATs and accounts' keys (others `404`).
+  FB-138 tenant bindings are unchanged: `create_api_key_with` validates the
+  binding for the key's owner as before.
+- Realm identity: `GET /api/auth/realms` lists their realm only; `GET`/`PUT
+  /api/auth/realms/{realm}` and the FIX-4 endpoints under it (consents,
+  OIDC key ids, social providers, SMS) and `POST /api/auth/keys/oidc/rotate`
+  for their realm. Setting a realm's user pool up for the first time
+  (`PUT` on a realm without identity, `POST /api/auth/realms`) stays
+  platform-only.
+- Audit: `GET /api/auth/audit` returns the rows whose `realm` column
+  (0014) is their realm: events about their users, and subject-less events
+  of requests that selected their realm. Rows with no realm (requests
+  without `X-ForgeBase-Realm`, platform events) are platform-only.
+- Impersonation: users of their realm only (same rules: interactive
+  session, MFA when enrolled, reason, TTL), never another realm
+  administrator (`cannot_impersonate_admin`). The session's `impersonator`
+  is the realm administrator's principal `user:<collection>/<id>`
+  (platform administrators keep their id). They list and end
+  impersonations of their realm's users only.
+
+**Platform-only, unchanged:** administrators (`/api/auth/admins`), the
+auth signing key rotation, realm creation, IdP client apps
+(`/api/auth/clients`, still `require_admin`), and everything
+outside `/api/auth`. The first-run setup (FB-90) creates a platform
+administrator as before. `GET /api/auth/me` gains `admin_scope`
+(`"platform"` or `{"realm": "<id>"}`, absent for non-administrators) for
+the dashboard (FB-102).
+
+**PostgreSQL (FB-145).** The new SQL keeps the existing `?N IS NULL OR`
+pattern and adds `col IN (?n, …)`, `col NOT IN (…)` and
+`owner_id IN (SELECT id FROM _forgebase_service_accounts WHERE realm = ?n
+AND role <> 'admin')`; `revoke_key` keeps its `?6 OR …` boolean parameter
+(an integer on SQLite; FB-145 ports it with the rest of the file).
+Tests: `crates/forgebase-server/tests/security_fb137.rs`.
