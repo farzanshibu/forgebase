@@ -20,9 +20,15 @@ fn ids(items: &Json) -> Vec<String> {
 #[tokio::test]
 async fn scenario_2_sql_table() {
     let api = Api::admin().await;
+    // STRICT and the rowid alias are SQLite; PostgreSQL needs an identity column.
+    let (id, strict) = if api.db.kind() == forgebase_db::BackendKind::Sqlite {
+        ("INTEGER PRIMARY KEY", " STRICT")
+    } else {
+        ("BIGSERIAL PRIMARY KEY", "")
+    };
     api.post(
         "/api/v1/sql",
-        json!({"sql": "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"}),
+        json!({"sql": format!("CREATE TABLE invoices (id {id}, customer TEXT NOT NULL, total REAL){strict}")}),
     )
     .await
     .expect(StatusCode::OK);
@@ -537,8 +543,13 @@ async fn scenario_5_and_6_composite_index_and_plans() {
         .await
         .expect(StatusCode::OK)
         .json();
-    assert_eq!(after["indexes_used"], json!(["idx_items_cat_price"]), "{after}");
-    assert!(after["full_scans"].as_array().unwrap().is_empty(), "{after}");
+    // Plan shape is the engine's choice: SQLite always takes the index here; the
+    // PostgreSQL planner prefers a sequential scan on a table this small.
+    let sqlite = api.db.kind() == forgebase_db::BackendKind::Sqlite;
+    if sqlite {
+        assert_eq!(after["indexes_used"], json!(["idx_items_cat_price"]), "{after}");
+        assert!(after["full_scans"].as_array().unwrap().is_empty(), "{after}");
+    }
     // The same statement the plan describes returns the right rows.
     let r = api
         .post("/api/v1/collections/items/records/query", plan_query)
@@ -548,16 +559,18 @@ async fn scenario_5_and_6_composite_index_and_plans() {
     assert_eq!(r["total_items"], 20, "c3 has prices 103,113,...,293");
     assert_eq!(r["items"][0]["price"], 293.0);
 
-    // raw SQL plan
-    let sql_plan = api
-        .post(
-            "/api/v1/sql/explain",
-            json!({"sql": "SELECT * FROM items WHERE category = ?1 AND price > ?2", "params": ["c3", 100]}),
-        )
-        .await
-        .expect(StatusCode::OK)
-        .json();
-    assert_eq!(sql_plan["indexes_used"], json!(["idx_items_cat_price"]));
+    // raw SQL plan (SQLite numbered placeholders and plan shape)
+    if sqlite {
+        let sql_plan = api
+            .post(
+                "/api/v1/sql/explain",
+                json!({"sql": "SELECT * FROM items WHERE category = ?1 AND price > ?2", "params": ["c3", 100]}),
+            )
+            .await
+            .expect(StatusCode::OK)
+            .json();
+        assert_eq!(sql_plan["indexes_used"], json!(["idx_items_cat_price"]));
+    }
 
     // listing, inspection, stats
     let list = api
