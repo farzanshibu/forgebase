@@ -1788,6 +1788,17 @@ PostgreSQL without pgmq (portable), the bundled engine (pgmq), and the
 bundled engine with `FORGEBASE_TEST_PGMQ=off` (portable, and convert
 portable → pgmq → portable).
 
+**Bench** (`queue_pull_ack_10`, pull 10 + ack 10 with a standing backlog
+of 10 000, through `forgebase_server::start`; bench profile with thin LTO
+off for build time; a shared, loaded machine, so the spread is large on
+every engine): pgmq on the bundled engine 3.0 / 3.6 / 16.6 / 82 ms per
+round (one run at 1.76 s with every round slow, from the warm-up on);
+portable on Homebrew PostgreSQL 18 7.1 / 7.3 / 8.9 ms; SQLite 14.5 / 35 /
+210 ms. The pgmq round runs fewer statements than the portable one (one
+lease `UPDATE` and one ack `DELETE` for the batch instead of one per
+message); in-process, without the server, a round took about 2.3 ms in
+a debug build after 400 rounds, every statement well under 1 ms.
+
 **For the next packages.**
 - **FB-169 (replica reads):** claims, acks, nacks, deadline changes,
   releases, seeks and snapshots write pgmq queue tables: primary only.
