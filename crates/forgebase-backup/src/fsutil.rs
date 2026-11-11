@@ -63,6 +63,26 @@ pub(crate) fn mkdir_private(path: &Path) -> std::io::Result<()> {
 /// Copies `src` to a new file `dst` (private mode), returning its hash and
 /// size, and syncs it to disk.
 pub(crate) fn copy_hashed(src: &Path, dst: &Path) -> Result<(String, u64)> {
+    copy_hashed_with(src, dst, true)
+}
+
+/// [`copy_hashed`] without the per-file fsync: for a staging tree of thousands
+/// of files, flushed once afterwards with [`sync_all_files`].
+pub(crate) fn copy_hashed_unsynced(src: &Path, dst: &Path) -> Result<(String, u64)> {
+    copy_hashed_with(src, dst, false)
+}
+
+/// Flushes every file written since the last call (the whole file system, best
+/// effort): one `sync` instead of one full fsync per staged file.
+pub(crate) fn sync_all_files() {
+    let _ = std::process::Command::new("sync")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn copy_hashed_with(src: &Path, dst: &Path, sync: bool) -> Result<(String, u64)> {
     if let Some(parent) = dst.parent() {
         mkdir_private(parent).map_err(io(parent))?;
     }
@@ -80,7 +100,9 @@ pub(crate) fn copy_hashed(src: &Path, dst: &Path) -> Result<(String, u64)> {
         w.write_all(&buf[..n]).map_err(io(dst))?;
         size += n as u64;
     }
-    w.sync_all().map_err(io(dst))?;
+    if sync {
+        w.sync_all().map_err(io(dst))?;
+    }
     Ok((hex(&h.finalize()), size))
 }
 

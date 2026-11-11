@@ -18,8 +18,9 @@ pub mod features;
 pub mod layout;
 
 pub use config::{
-    AuthSettings, BillingConfig, Config, ConfigOrigin, ConfigOverrides, ConfigSources, LoadedConfig, LogFormat,
-    ModuleSwitch, OpsAccess, QueueConfig, Source, StorageConfig, StorageDriverKind, Synchronous,
+    AuthSettings, BackupSettings, BackupSource, BillingConfig, Config, ConfigOrigin, ConfigOverrides, ConfigSources,
+    LoadedConfig, LogFormat, ModuleSwitch, OpsAccess, QueueConfig, Source, StorageConfig, StorageDriverKind,
+    Synchronous,
 };
 pub use error::{ErrorCode, ErrorKind};
 pub use layout::DataLayout;

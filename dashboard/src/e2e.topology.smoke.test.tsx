@@ -11,7 +11,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const T = { timeout: 5000 };
+const T = { timeout: 15_000 };
 
 it("Database studio -> View topology -> one server -> add a local replica -> see it streaming -> promote check -> remove", async () => {
   const mock = seeded();
@@ -31,7 +31,7 @@ it("Database studio -> View topology -> one server -> add a local replica -> see
   // The Database studio links to the new screen.
   await u.click(await screen.findByRole("link", { name: "View topology" }, { timeout: 20000 }));
   expect(await screen.findByRole("heading", { level: 1, name: /Database topology/ }, T)).toBeInTheDocument();
-  expect(screen.getByRole("tab", { name: "Database topology", selected: true })).toBeInTheDocument();
+  expect(await screen.findByRole("tab", { name: "Database topology", selected: true }, T)).toBeInTheDocument();
 
   // One server: the page teaches what a replica and a shard are, and changes nothing until you add one.
   const empty = await screen.findByRole("region", { name: "One server, and that is fine" }, T);

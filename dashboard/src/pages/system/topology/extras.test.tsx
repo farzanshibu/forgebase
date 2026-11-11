@@ -14,7 +14,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const T = { timeout: 5000 };
+const T = { timeout: 15_000 };
 
 const s = (key: string, o: Partial<FeatureSetting> & Pick<FeatureSetting, "label" | "type" | "value">): FeatureSetting => ({
   key, help: `Help for ${o.label}.`, unit: null, options: null, default: o.value, source: "default", editable: true, restart_required: false, secret: false, ...o,

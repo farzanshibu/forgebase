@@ -114,6 +114,13 @@ max_connections_per_principal = 32  # FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRI
 [kv]
 tenant_max_bytes = 0        # FORGEBASE_KV_TENANT_MAX_BYTES
 
+# Backups of a cluster with replicas or shards (`forgebase backup --cluster`):
+# where each set's data is copied from. "replica" runs pg_basebackup against a
+# healthy replica of the set, so backups do not load the primary; a set
+# without a healthy replica is copied from its primary and the manifest says so.
+[backup]
+source = "primary"          # FORGEBASE_BACKUP_SOURCE (primary | replica)
+
 [auth]
 # Client address from the last X-Forwarded-For entry. Only behind a reverse
 # proxy you run (it must append the real address); off, the socket address.
@@ -520,6 +527,8 @@ pub struct Config {
     pub realtime: RealtimeSettings,
     /// Key-value engine settings (FB-138), `[kv]`.
     pub kv: KvSettings,
+    /// Backup settings (FB-179), `[backup]`.
+    pub backup: BackupSettings,
     /// Authentication deployment settings.
     pub auth: AuthSettings,
     /// Server functions (FB-60), `[functions]`.
@@ -553,6 +562,27 @@ impl Default for ModuleSwitch {
 pub struct KvSettings {
     /// Memory budget of one tenant in bytes; `0` = none.
     pub tenant_max_bytes: u64,
+}
+
+/// Where a cluster backup copies each set's data from, `[backup] source`
+/// (ADR-0029 §2.9, FB-179).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupSource {
+    /// The set's primary (the default, and what a single-set backup always does).
+    #[default]
+    Primary,
+    /// A healthy replica of the set, so the backup does not load the primary.
+    Replica,
+}
+
+config_choice!(BackupSource { Primary => "primary", Replica => "replica" });
+
+/// `[backup]`: backup settings (FB-179).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct BackupSettings {
+    /// `[backup] source`: `primary` or `replica`.
+    pub source: BackupSource,
 }
 
 /// Default most realtime connections one principal may hold (FIX-9).
@@ -771,6 +801,7 @@ impl Config {
                 max_connections_per_principal: DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL,
             },
             kv: KvSettings::default(),
+            backup: BackupSettings::default(),
             auth: AuthSettings::default(),
             functions: ModuleSwitch::default(),
             vector: ModuleSwitch::default(),
@@ -1199,6 +1230,9 @@ impl Config {
         if let Some(v) = o.kv_tenant_max_bytes {
             self.kv.tenant_max_bytes = v;
         }
+        if let Some(v) = o.backup_source {
+            self.backup.source = v;
+        }
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
@@ -1282,6 +1316,8 @@ pub struct ConfigOverrides {
     pub realtime_enabled: Option<bool>,
     /// `[kv] tenant_max_bytes` (FB-138).
     pub kv_tenant_max_bytes: Option<u64>,
+    /// `[backup] source` (FB-179).
+    pub backup_source: Option<BackupSource>,
     /// `[functions] enabled`.
     pub functions_enabled: Option<bool>,
     /// `[vector] enabled`.
@@ -1362,6 +1398,7 @@ impl ConfigOverrides {
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
                 "KV_TENANT_MAX_BYTES" => o.kv_tenant_max_bytes = Some(parse_num(&value).map_err(bad)?),
+                "BACKUP_SOURCE" => o.backup_source = Some(value.parse().map_err(bad)?),
                 "REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL" => {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
@@ -1492,6 +1529,7 @@ impl ConfigOverrides {
         );
         put(self.realtime_enabled.is_some(), "realtime.enabled");
         put(self.kv_tenant_max_bytes.is_some(), "kv.tenant_max_bytes");
+        put(self.backup_source.is_some(), "backup.source");
         put(self.functions_enabled.is_some(), "functions.enabled");
         put(self.vector_enabled.is_some(), "vector.enabled");
         put(self.graph_enabled.is_some(), "graph.enabled");
@@ -1884,6 +1922,8 @@ struct FileConfig {
     #[serde(default)]
     kv: FileKv,
     #[serde(default)]
+    backup: FileBackup,
+    #[serde(default)]
     auth: FileAuth,
     #[serde(default)]
     functions: FileSwitch,
@@ -1914,6 +1954,12 @@ struct FileRealtime {
 #[serde(deny_unknown_fields)]
 struct FileKv {
     tenant_max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBackup {
+    source: Option<BackupSource>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2014,6 +2060,7 @@ impl From<FileConfig> for ConfigOverrides {
             realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
             realtime_enabled: f.realtime.enabled,
             kv_tenant_max_bytes: f.kv.tenant_max_bytes,
+            backup_source: f.backup.source,
             functions_enabled: f.functions.enabled,
             vector_enabled: f.vector.enabled,
             graph_enabled: f.graph.enabled,

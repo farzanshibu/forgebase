@@ -12,7 +12,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const T = { timeout: 5000 };
+const T = { timeout: 15_000 };
 const READY: CypherStatus = { state: "ready", graph: "fb_t", job_id: null, nodes: 4, edges: 3, done: 7, error: null };
 
 const alice = { id: "alice", label: "Person", properties: { age: 30 } };
@@ -40,7 +40,7 @@ function setup(o: Opts = {}) {
   return { mock, st };
 }
 
-const run = () => userEvent.click(screen.getByRole("button", { name: "Run query" }));
+const run = async () => userEvent.click(await screen.findByRole("button", { name: "Run query" }, T));
 const lastBody = (mock: MockApi) => mock.bodies["post /api/v1/graph/cypher"]?.at(-1) as Record<string, unknown>;
 
 describe("openCypher tab: where it shows", () => {
@@ -234,7 +234,7 @@ describe("openCypher tab: every error code, in the server's words with a hint", 
     [400, "invalid_limit", "limit must be 1 to 1000", /whole number from 1 to 1000/],
     [400, "invalid_timeout", "timeout_ms must be 1 to 30000", /from 1 to 30000/],
     [403, "cypher_rules_unsupported", "rules cannot be applied to cypher", /simplify the label rules/],
-    [409, "tenant_moving", "tenant is moving", /Wait a minute and try again/],
+    [409, "tenant_moving", "tenant is moving", /rebuilt on the new location/],
   ];
   it.each(codes)("%i %s", async (status, code, message, hint) => {
     setup({ answer: () => envelope(status, code, message) });

@@ -89,7 +89,19 @@ pub fn master_key_path(layout: &DataLayout) -> PathBuf {
 
 /// Creates a backup at `dest` (which must not exist) while `db` stays in use.
 pub async fn create(db: &Database, layout: &DataLayout, dest: &Path, opts: BackupOptions) -> Result<Manifest> {
-    create_with(Some(db), db.kind(), None, layout, dest, opts).await
+    create_with(Some(db), db.kind(), None, layout, dest, opts, false).await
+}
+
+/// One set of a cluster backup (FB-179): like [`create`], but the data
+/// directory may hold replicas and other sets' clusters (the single-set
+/// guard is the cluster backup's own job).
+pub(crate) async fn create_member(
+    db: &Database,
+    layout: &DataLayout,
+    dest: &Path,
+    opts: BackupOptions,
+) -> Result<Manifest> {
+    create_with(Some(db), db.kind(), None, layout, dest, opts, true).await
 }
 
 /// [`create`] without a database handle, for a PostgreSQL cluster whose
@@ -104,7 +116,16 @@ pub async fn create_physical(
     schema_version: i64,
     opts: BackupOptions,
 ) -> Result<Manifest> {
-    create_with(None, BackendKind::Postgres, Some(schema_version), layout, dest, opts).await
+    create_with(
+        None,
+        BackendKind::Postgres,
+        Some(schema_version),
+        layout,
+        dest,
+        opts,
+        false,
+    )
+    .await
 }
 
 async fn create_with(
@@ -114,6 +135,7 @@ async fn create_with(
     layout: &DataLayout,
     dest: &Path,
     opts: BackupOptions,
+    member: bool,
 ) -> Result<Manifest> {
     if dest.exists() {
         return Err(BackupError::Conflict(format!("{} already exists", dest.display())));
@@ -137,7 +159,7 @@ async fn create_with(
         .await?;
     }
 
-    let (db_files, engine) = copy_database(db, kind, layout, &partial, &opts, &name).await?;
+    let (db_files, engine) = copy_database(db, kind, layout, &partial, &opts, &name, member).await?;
     let schema_version = match (known_version, db) {
         (Some(v), _) => v,
         (None, Some(db)) => db.schema_version().await?,
@@ -223,6 +245,7 @@ async fn copy_database(
     partial: &Path,
     opts: &BackupOptions,
     id: &str,
+    member: bool,
 ) -> Result<(Vec<FileEntry>, EngineInfo)> {
     if kind == BackendKind::Sqlite {
         let db = db.ok_or_else(|| BackupError::Internal("a SQLite backup needs a database handle".into()))?;
@@ -263,7 +286,9 @@ async fn copy_database(
     };
     match &src.endpoint {
         PgEndpoint::Managed { cluster_dir, .. } => {
-            pg::ensure_single_set(layout.root())?;
+            if !member {
+                pg::ensure_single_set(layout.root())?;
+            }
             let dest = partial.join(PG_DIR);
             src.basebackup(&dest, &tmp, &format!("forgebase {id}")).await?;
             let (dest2, secret_src, partial2) = (dest, cluster_dir.join(ROLES_FILE), partial.to_path_buf());

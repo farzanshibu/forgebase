@@ -459,6 +459,18 @@ pub fn running_postmaster(pgdata: &Path) -> Option<u32> {
     }
 }
 
+/// The Unix socket directory and port of a live postmaster of the cluster at
+/// `pgdata`, from `postmaster.pid` (line 4: port, line 5: socket directory).
+/// `None` when no postmaster runs there or it listens on TCP only.
+pub fn postmaster_socket(pgdata: &Path) -> Option<(PathBuf, u16)> {
+    running_postmaster(pgdata)?;
+    let text = std::fs::read_to_string(pgdata.join("postmaster.pid")).ok()?;
+    let mut lines = text.lines().skip(3);
+    let port: u16 = lines.next()?.trim().parse().ok()?;
+    let dir = lines.next()?.trim();
+    (!dir.is_empty() && dir.starts_with('/')).then(|| (PathBuf::from(dir), port))
+}
+
 /// Refuses a cluster with more than the primary's single data set
 /// (ADR-0029: replicas and shards live under `postgres/nodes/`).
 ///
@@ -469,9 +481,9 @@ pub fn ensure_single_set(data_dir: &Path) -> Result<()> {
     let any = std::fs::read_dir(&nodes).is_ok_and(|mut d| d.next().is_some());
     if any {
         return Err(BackupError::Invalid(format!(
-            "{} holds more than one PostgreSQL cluster (replicas or shard sets): backing up and restoring \
-             them is FB-179's work and arrives as `forgebase backup --cluster` (one backup per set under one \
-             directory with a combined manifest); this build backs up a single set only",
+            "{} holds more than one PostgreSQL cluster (replicas or shard sets): back them up with \
+             `forgebase backup --cluster` (one backup per set under one directory with a combined manifest); \
+             a plain backup and restore handle a single set only",
             nodes.display()
         )));
     }
@@ -517,11 +529,11 @@ mod tests {
     }
 
     #[test]
-    fn a_node_directory_is_refused_with_fb_179() {
+    fn a_node_directory_points_to_the_cluster_backup() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(ensure_single_set(tmp.path()).is_ok());
         std::fs::create_dir_all(tmp.path().join("postgres/nodes/replica1")).unwrap();
         let e = ensure_single_set(tmp.path()).unwrap_err().to_string();
-        assert!(e.contains("FB-179") && e.contains("backup --cluster"), "{e}");
+        assert!(e.contains("backup --cluster"), "{e}");
     }
 }
