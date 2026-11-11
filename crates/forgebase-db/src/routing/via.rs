@@ -11,9 +11,9 @@
 use std::time::Duration;
 
 use super::ReadIntent;
+use crate::DbError;
 use crate::backend::{Backend, BoxFuture, PlanStep, Rows, RunAs, SlowQuery, Statement, TxMode, WriteTx};
 use crate::dialect::Dialect;
-use crate::DbError;
 
 /// A read-only view of `inner` that routes `fetch_all` by `intent`.
 #[derive(Debug)]

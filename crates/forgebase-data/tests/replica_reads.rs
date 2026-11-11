@@ -124,7 +124,9 @@ async fn record_reads_use_a_lagging_replica_when_allowed() {
     let before = rc.replica_reads();
     assert!(svc.get_record(ctx, "notes", "n1", &GetOptions::default()).await.is_ok());
     assert!(
-        svc.get_record(ctx, "notes", "n2", &GetOptions::default()).await.is_err(),
+        svc.get_record(ctx, "notes", "n2", &GetOptions::default())
+            .await
+            .is_err(),
         "view read the lagging replica: n2 is not there yet"
     );
     assert_eq!(rc.replica_reads(), before + 2);
@@ -150,7 +152,10 @@ async fn record_reads_use_a_lagging_replica_when_allowed() {
         .await
         .unwrap();
     assert_eq!(expanded.items[0]["expand"]["author"]["name"], json!("Ada"));
-    assert!(rc.replica_reads() >= before + 2, "list and expand both read the replica");
+    assert!(
+        rc.replica_reads() >= before + 2,
+        "list and expand both read the replica"
+    );
 
     // versions: n1 has one version on the standby; n2 none yet.
     let before = rc.replica_reads();

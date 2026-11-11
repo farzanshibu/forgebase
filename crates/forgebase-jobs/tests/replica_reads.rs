@@ -31,7 +31,9 @@ async fn env() -> Option<Env> {
         return None;
     };
     let ctx = AccessContext::system();
-    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let jobs = JobService::with_clock(data, Arc::new(ManualClock::from_system()));
     let (j1, _) = jobs.enqueue(&ctx, NewJob::new("k", json!({"n": 1}))).await.unwrap();
     rc.sync().await;

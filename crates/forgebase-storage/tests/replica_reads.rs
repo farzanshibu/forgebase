@@ -58,7 +58,9 @@ async fn env() -> Option<Env> {
     let layout = DataLayout::new(tmp.path().join("data"));
     layout.ensure().unwrap();
     let backend = rc.backend();
-    let data = DataService::new(backend.clone(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(backend.clone(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let driver: Arc<dyn StorageDriver> = Arc::new(LocalDriver::new(layout.storage_dir()));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -2270,3 +2270,116 @@ has three new fields (all `Default`); `Backend` has a new defaulted method.
   (PostgreSQL with `database.features.trigram.state = active` only); list
   screens may offer a fuzzy toggle with a threshold slider. `explain` shows
   the trigram index in `indexes_used`.
+
+## Addendum: FB-169, replica reads in the services (2026-11-11)
+
+The §2.5 table, as code. Every call site below passes `ReadIntent::replica("<what>")`
+to `Backend::fetch_routed` (FB-167); everything else keeps `fetch_all`. Without
+replicas (SQLite, an unrouted PostgreSQL, a set with no healthy standby) a
+routed read is the plain read, so nothing changes. A request needs nothing
+more: the request scope (`X-ForgeBase-Read-After`, the principal's recent
+commits, `X-ForgeBase-Consistency: strong`) already decides whether a replica
+is eligible.
+
+**Files.** `forgebase-db`: `routing/via.rs` (new), `routing/testing.rs`
+(`RoutedCluster`), `backend.rs` and `router.rs` (`sample_commit_token`).
+`forgebase-data` `lib.rs`, `list.rs`, `records.rs`, `sql.rs`;
+`forgebase-vector` `service.rs`; `forgebase-graph` `service.rs`;
+`forgebase-storage` `service.rs`, `objects.rs`, `http.rs`; `forgebase-queue`
+`ops.rs`, `service.rs`, `pgmq/mod.rs`; `forgebase-jobs` `service.rs`;
+`forgebase-realtime` `outbox.rs`, `conn.rs`; the JavaScript and Rust SDK
+realtime clients. One `tests/replica_reads.rs` per crate. No migration.
+
+**Helper.** `forgebase_db::ReadVia` is a `Backend` view whose `fetch_all` goes
+through `fetch_routed`; everything else (transactions, `fetch_all_as`,
+`explain`, `maintenance`) is the inner backend's. The vector, graph and jobs
+services hand one to the helpers that run a call's reads, so a call site is one
+line, not a signature change. `DataService::fetch_replica(stmt, what)` and
+`QueueService::read_replica` / `StorageService::read_replica` do the same for
+single statements.
+
+**Call sites (reads a replica may serve).**
+
+| Area | Call sites (`what`) |
+|---|---|
+| Records | `records.list` (list, search, count), `records.view`, `records.aggregate`, `records.expand`, `records.versions` (the versions and its visibility probes) |
+| SQL editor | `sql.editor`: a read statement when the request body has `read_from_replica: true` (not with `show_secrets`) |
+| Vector | `vector.get`, `vector.list` / `vector.get_collection` (item counts), `vector.stats` (counts, change sequence), `vector.search` and `vector.hybrid` on pgvector; hybrid keyword-only on every engine |
+| Graph | `graph.get` (node, edge), `graph.list`, `graph.neighbors`, `graph.traverse`, `graph.shortest_path`, `graph.stats` |
+| Storage | `storage.head`, `storage.list_objects`, `storage.list_versions`, `storage.list_buckets`, `storage.bucket_usage`, `storage.stats` |
+| Queue | `queue.messages` (browser), `queue.dead_letters`, `queue.topic_metrics`, `queue.subscription_metrics`, `queue.backlog`, `queue.metrics` (rate buckets), the pgmq metrics and backlog reads |
+| Jobs | `jobs.get`, `jobs.list`, `jobs.events`, `jobs.attempts`, `jobs.stats` |
+
+"Dashboard statistics" are the aggregate, count and stats calls above; the
+dashboard adds no query of its own.
+
+**Primary only, kept (tested).**
+- Every write and everything inside a write transaction; the catalogue
+  (collection and index definitions, `fulltext_index` and `trigram_indexes`,
+  reloads after DDL), policy snapshots.
+- Reads as the RLS role (`fetch_all_as`): the role switch needs the primary's
+  session. A native-RLS list stays on the primary.
+- Graph rule names and access checks (`names`, `access`): a stale replica must
+  never decide what a caller may see. Storage bucket rows and ACLs
+  (`stored_bucket`, `load_acl`, `get_acl`), object *content* reads
+  (`get_object`, signed URLs), uploads, multipart state.
+- Queue claims, acks, nacks, deadline changes, releases, seeks, snapshots
+  (pull path), publish, maintenance; pgmq reads fall back to the primary
+  when a replica has not replayed a queue table yet (a statement error).
+- Job claims, heartbeats, progress, checkpoints, completion, results,
+  schedules (pg_cron, FB-165: primary only), workers.
+- Vector writes, DDL, index builds, the progress poll, convert, reconcile; and
+  kNN search and hybrid-with-a-vector on the portable engine: its in-process
+  index follows the primary, so mixing it with replica store reads could drop
+  hits. pgvector's HNSW is WAL-logged and replicates, so it routes.
+- Realtime: the outbox tail, replay and the pruner (§2.5 "always primary").
+
+**Realtime commit position (§2.6).** `Backend::sample_commit_token()` is a new
+defaulted method: `None` everywhere except a `SetHandle` with replicas, which
+answers `<set>/<current WAL insert LSN>`. `outbox::read_after` calls it once
+per page, after the read (so the position is at or after every event of the
+page) and stamps each event: `Event::commit`. A frame of a record event carries
+it as `"commit"`; the JavaScript client and the Rust client feed it to their
+commit tokens, so "event received, then read the record" sees the record. An
+empty page samples nothing; a failed sample leaves the page unstamped.
+
+**Tests.** `forgebase-db` `routing::testing::RoutedCluster` (feature
+`testing`): a migrated primary, one standby, a control `SetHandle` routing over
+it, `lag()` (pause replay), `sync()`, `catch_up()`, `replica_reads()` and
+`fallbacks()`. Each crate's `tests/replica_reads.rs` pauses replay, writes on the
+primary and checks, per call site, that the read saw the standby's older state
+and that the standby's read counter moved; that a strong request and a
+request's own writes see the primary; and that every primary-only path
+(writes, claims, acks, catalogue, authorisation reads) leaves the counter
+unchanged and fails nothing over (`fallbacks() == 0`). They need a PostgreSQL
+engine (`FORGEBASE_PG_ENGINE_DIR`) and skip without one; SQLite has no replicas
+and its behaviour is the unchanged suites.
+
+**Breaking.** `Backend` has a new defaulted method (`sample_commit_token`).
+`forgebase_realtime::Event` has a new public field `commit`. `SqlOptions` has a
+new field `read_from_replica` (struct literals need `..Default::default()`).
+Record-event frames may carry `commit` (additive).
+
+**New API flag.** `POST /sql` and `/sql/batch` bodies accept
+`read_from_replica` (boolean, default false); only a single read statement
+without `show_secrets` uses it. OpenAPI fixtures need regenerating.
+
+**Dashboard follow-ups.** The SQL editor gets a "Read from replica" toggle
+(shown when `/api/system/database` reports healthy replicas) that sends
+`read_from_replica: true`; results are as of the replica's replay position, so
+show the lag note. Nothing else changes for the dashboard: its record lists,
+statistics, queue and job screens are routed by the server.
+
+**Notes for next packages.**
+- FB-171 (server): build `RouterOptions { replicas, .. }` and a connector that
+  implements `connect_replica`; the services take the control `SetHandle` as their
+  `Backend` as before. Each `DataService` is per set, so the services already
+  route within their own set. `attach_pgcron` stays on the primary handle.
+  The realtime dispatcher per set stamps pages with that set's token.
+- FB-172 (tenant moves): after a move the target's replicas are behind until
+  they replay the copy: the move's last write returns a token; a read after it
+  routes correctly through the same scope. Queue metrics may briefly read old
+  counts (rates and backlog are not exact by design).
+- FB-163 (Cypher on AGE): `graph.*` call sites already route; Cypher `MATCH`
+  reads on replicas need the AGE graph on the standby (physical replication
+  carries it); the stale marking after a move reads the primary.

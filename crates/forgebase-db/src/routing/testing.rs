@@ -8,17 +8,17 @@
 //! the test binary exits; dropping the cluster stops them at once.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sqlx::{AssertSqlSafe, Connection, Row};
 
 use super::{Lsn, ReplicaNode, ReplicaOptions, ReplicaSet};
-use crate::router::SetHandle;
-use crate::topology::{DbNode, DbSet, NodeKind, NodeOrigin, NodeRole, NodeState};
 use crate::Backend;
+use crate::router::SetHandle;
 use crate::testing::{ENGINE_DIR_ENV, ENGINE_ENV};
+use crate::topology::{DbNode, DbSet, NodeKind, NodeOrigin, NodeRole, NodeState};
 use crate::{Database, DbError, DbOptions, DbTarget};
 
 /// Port number of every test server's Unix socket (each has its own directory).

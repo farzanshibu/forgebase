@@ -82,15 +82,18 @@ impl QueueService {
     pub async fn backlog(&self) -> Result<QueueBacklog> {
         let now = self.now();
         let rows = self
-            .read_replica("queue.backlog", &Statement::new(
-                "SELECT \
+            .read_replica(
+                "queue.backlog",
+                &Statement::new(
+                    "SELECT \
                    coalesce(sum(CASE WHEN state = 'ready' AND available_at <= ?1 THEN 1 ELSE 0 END), 0) AS ready, \
                    coalesce(sum(CASE WHEN state = 'ready' AND available_at > ?1 THEN 1 ELSE 0 END), 0) AS delayed, \
                    coalesce(sum(CASE WHEN state = 'leased' THEN 1 ELSE 0 END), 0) AS in_flight, \
                    (SELECT COUNT(*) FROM _forgebase_queue_messages) AS messages \
                  FROM _forgebase_queue_deliveries",
-                vec![now.into()],
-            ))
+                    vec![now.into()],
+                ),
+            )
             .await?;
         let r = Row::new(&rows, 0);
         let mut b = QueueBacklog {
@@ -125,13 +128,16 @@ impl QueueService {
         let now = self.now();
         // Subscriptions of the caller's scope only: other tenants' are not counted.
         let rows = self
-            .read_replica("queue.topic_metrics", &Statement::new(
-                "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
+            .read_replica(
+                "queue.topic_metrics",
+                &Statement::new(
+                    "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
                  (SELECT COUNT(*) FROM _forgebase_queue_subscriptions WHERE topic = ?1 \
                     AND (tenant IS NULL OR tenant = ?2)) AS subs \
                  FROM _forgebase_queue_messages WHERE topic = ?1",
-                vec![stored.as_str().into(), ctx.tenant.clone().into()],
-            ))
+                    vec![stored.as_str().into(), ctx.tenant.clone().into()],
+                ),
+            )
             .await?;
         let r = Row::new(&rows, 0);
         let (last, per_sec) = self.rate("topic", &stored, "published", now).await?;
@@ -167,8 +173,9 @@ impl QueueService {
         let rows = if *eng == DeliveryEngine::Pgmq {
             self.pgmq_metrics(sub, now).await?
         } else {
-            self
-            .read_replica("queue.subscription_metrics", &Statement::new(
+            self.read_replica(
+                "queue.subscription_metrics",
+                &Statement::new(
                     "SELECT \
                    coalesce(sum(CASE WHEN d.state = 'ready' AND d.available_at <= ?2 THEN 1 ELSE 0 END), 0) AS ready, \
                    coalesce(sum(CASE WHEN d.state = 'ready' AND d.available_at > ?2 THEN 1 ELSE 0 END), 0) AS delayed, \
@@ -177,18 +184,22 @@ impl QueueService {
                  FROM _forgebase_queue_deliveries d JOIN _forgebase_queue_messages m ON m.seq = d.seq \
                  WHERE d.subscription = ?1",
                     vec![sub.into(), now.into()],
-                ))
-                .await?
+                ),
+            )
+            .await?
         };
         drop(eng);
         let d = Row::new(&rows, 0);
         let rows = self
-            .read_replica("queue.subscription_metrics", &Statement::new(
-                "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
+            .read_replica(
+                "queue.subscription_metrics",
+                &Statement::new(
+                    "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
                  (SELECT COUNT(*) FROM _forgebase_queue_dead_letters WHERE subscription = ?3) AS dl \
                  FROM _forgebase_queue_messages WHERE topic = ?1 AND seq > ?2",
-                vec![s.topic.as_str().into(), s.cursor_seq.into(), sub.into()],
-            ))
+                    vec![s.topic.as_str().into(), s.cursor_seq.into(), sub.into()],
+                ),
+            )
             .await?;
         let u = Row::new(&rows, 0);
         let oldest = match (d.opt_int("oldest"), u.opt_int("oldest")) {

@@ -36,7 +36,9 @@ async fn env() -> Option<Env> {
         return None;
     };
     let ctx = AccessContext::admin("root");
-    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let q = QueueService::with_clock(
         data,
         Keyring::from_master(b"queue-tests-master-key-0123456789"),
@@ -129,11 +131,15 @@ async fn claims_acks_and_writes_read_the_primary() {
         .unwrap();
     assert_eq!(got.len(), 2, "claims see the primary");
     let ids: Vec<String> = got.iter().map(|m| m.ack_id.clone()).collect();
-    assert_eq!(q.ack(ctx, "s", &ids[..1]).await.unwrap().acked, 1);
+    assert_eq!(q.ack(ctx, "s", &ids[..1]).await.unwrap().count, 1);
     q.nack(ctx, "s", &ids[1..]).await.unwrap();
     q.publish(ctx, "t", msg(3)).await.unwrap();
     q.run_maintenance().await.unwrap();
-    assert_eq!(rc.replica_reads(), before, "claims, acks, nacks and publishes read the primary");
+    assert_eq!(
+        rc.replica_reads(),
+        before,
+        "claims, acks, nacks and publishes read the primary"
+    );
     assert_eq!(rc.fallbacks(), 0);
 }
 

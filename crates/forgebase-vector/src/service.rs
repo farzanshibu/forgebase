@@ -2080,10 +2080,22 @@ impl VectorService {
         let mut want = k;
         let (knn, mut items, mut vectors, kept) = loop {
             let knn = self
-                .knn(pgv, &coll, &f, &q, want, filter.as_ref(), req.filter_mode, req.exact, "vector.search")
+                .knn(
+                    pgv,
+                    &coll,
+                    &f,
+                    &q,
+                    want,
+                    filter.as_ref(),
+                    req.filter_mode,
+                    req.exact,
+                    "vector.search",
+                )
                 .await?;
             let keys: Vec<u64> = knn.hits.iter().map(|s| s.key).collect();
-            let (items, vectors) = self.hydrate(pgv, &coll, &f, &keys, req.include_vectors, "vector.search").await?;
+            let (items, vectors) = self
+                .hydrate(pgv, &coll, &f, &keys, req.include_vectors, "vector.search")
+                .await?;
             let Some(sc) = source.as_mut() else {
                 break (knn, items, vectors, keys);
             };
@@ -2209,7 +2221,17 @@ impl VectorService {
         if let (Some(v), Some(f)) = (&req.vector, &field) {
             let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, v)?;
             let knn = self
-                .knn(pgv, &coll, f, &q, candidates, filter.as_ref(), req.filter_mode, false, "vector.hybrid")
+                .knn(
+                    pgv,
+                    &coll,
+                    f,
+                    &q,
+                    candidates,
+                    filter.as_ref(),
+                    req.filter_mode,
+                    false,
+                    "vector.hybrid",
+                )
                 .await?;
             Self::record(f, knn.strategy, started.elapsed());
             vector_strategy = Some(knn.strategy);
@@ -2244,7 +2266,10 @@ impl VectorService {
             .collect();
         let keys: Vec<u64> = fused.iter().map(|(k, _)| *k).collect();
         let (mut items, mut vectors) = match &field {
-            Some(f) => self.hydrate(pgv, &coll, f, &keys, req.include_vectors, "vector.hybrid").await?,
+            Some(f) => {
+                self.hydrate(pgv, &coll, f, &keys, req.include_vectors, "vector.hybrid")
+                    .await?
+            }
             None => (
                 store::items_by_keys(&self.rdb("vector.hybrid", true), coll.row.id, &keys).await?,
                 HashMap::new(),

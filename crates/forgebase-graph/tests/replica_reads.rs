@@ -12,9 +12,7 @@ use std::sync::Arc;
 use forgebase_data::{AccessContext, DataService, DefaultAuthorizer};
 use forgebase_db::routing::testing::RoutedCluster;
 use forgebase_db::routing::{Consistency, ReadAfter, RequestScope, scope};
-use forgebase_graph::{
-    Direction, GraphError, GraphService, NeighborQuery, NewEdge, NewNode, PathQuery, TraverseQuery,
-};
+use forgebase_graph::{Direction, GraphError, GraphService, NeighborQuery, NewEdge, NewNode, PathQuery, TraverseQuery};
 use serde_json::json;
 
 struct Env {
@@ -50,7 +48,9 @@ async fn env() -> Option<Env> {
         return None;
     };
     let ctx = AccessContext::admin("root");
-    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let graph = GraphService::new(data);
     graph.create_node(&ctx, node("u1")).await.unwrap();
     graph.create_node(&ctx, node("u2")).await.unwrap();
@@ -87,7 +87,11 @@ async fn graph_reads_use_a_lagging_replica_when_allowed() {
     let before = rc.replica_reads();
     assert_eq!(g.list_nodes(ctx, None, None, None).await.unwrap().items.len(), 2);
     assert_eq!(
-        g.list_edges(ctx, None, None, None, None, None).await.unwrap().items.len(),
+        g.list_edges(ctx, None, None, None, None, None)
+            .await
+            .unwrap()
+            .items
+            .len(),
         1
     );
     assert!(rc.replica_reads() >= before + 2);

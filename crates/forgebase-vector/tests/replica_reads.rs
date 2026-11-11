@@ -66,7 +66,9 @@ async fn env() -> Option<Env> {
         })
         .await
         .unwrap();
-    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let layout = forgebase_core::DataLayout::new(dir.path().join("data"));
     layout.ensure().unwrap();
     let svc = VectorService::open(data, layout.indexes_dir(), VectorConfig::default())

@@ -943,7 +943,10 @@ impl GraphService {
             ),
         };
         let sql = format!("SELECT * FROM ({union}) ORDER BY 10, 2 LIMIT ?4 OFFSET ?5");
-        let rows = self.reader("graph.neighbors").fetch_all(&Statement::new(sql, b.into_params())).await?;
+        let rows = self
+            .reader("graph.neighbors")
+            .fetch_all(&Statement::new(sql, b.into_params()))
+            .await?;
         let has_more = rows.len() > limit as usize;
         let items = rows
             .rows
@@ -1082,7 +1085,10 @@ impl GraphService {
                  ORDER BY m.depth, n.id LIMIT ?7"
             )
         };
-        let rows = self.reader("graph.traverse").fetch_all(&Statement::new(sql, params)).await?;
+        let rows = self
+            .reader("graph.traverse")
+            .fetch_all(&Statement::new(sql, params))
+            .await?;
         let mut truncated = rows.len() > limit as usize;
         let nodes = rows
             .rows
@@ -1218,7 +1224,10 @@ impl GraphService {
                 (row_cap + 1).into(),
             ];
             params.extend(rule_params.iter().cloned());
-            let rows = self.reader("graph.shortest_path").fetch_all(&Statement::new(sql.clone(), params)).await?;
+            let rows = self
+                .reader("graph.shortest_path")
+                .fetch_all(&Statement::new(sql.clone(), params))
+                .await?;
             if rows.len() as i64 > row_cap {
                 return Err(search_limit());
             }

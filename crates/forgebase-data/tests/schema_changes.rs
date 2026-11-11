@@ -477,7 +477,10 @@ async fn auth_view_and_system_collections() {
                 sql: "SELECT password FROM users".into(),
                 params: vec![],
             },
-            forgebase_data::SqlOptions { show_secrets: true, ..Default::default() },
+            forgebase_data::SqlOptions {
+                show_secrets: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -509,7 +512,10 @@ async fn auth_view_and_system_collections() {
                 sql: "SELECT password, verified FROM users".into(),
                 params: vec![],
             },
-            forgebase_data::SqlOptions { show_secrets: true, ..Default::default() },
+            forgebase_data::SqlOptions {
+                show_secrets: true,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();

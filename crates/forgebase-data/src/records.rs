@@ -588,7 +588,9 @@ impl DataService {
     ) -> Result<Record, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
         let (stmt, follows) = self.select_by_id_flagged(ctx, &coll, id, pred.as_ref())?;
-        let rows = self.read_rows(ctx, Action::View, &coll, &stmt, follows, "records.view").await?;
+        let rows = self
+            .read_rows(ctx, Action::View, &coll, &stmt, follows, "records.view")
+            .await?;
         let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
             collection: coll.name.clone(),
             id: id.to_owned(),

@@ -34,7 +34,9 @@ async fn outbox_pages_carry_the_commit_position_and_are_read_on_the_primary() {
         return;
     };
     let ctx = AccessContext::admin("root");
-    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(rc.backend(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let rt = RealtimeService::start(data.clone(), None, quiet(), None).await.unwrap();
     data.create_collection(&ctx, Collection::base("things")).await.unwrap();
     rc.sync().await;
@@ -61,7 +63,12 @@ async fn outbox_pages_carry_the_commit_position_and_are_read_on_the_primary() {
     assert_eq!(page[0].commit, page[1].commit);
     assert!(page[0].commit.is_some());
     // An empty page samples nothing.
-    assert!(outbox::read_after(&*rc.backend(), 1_000_000, 100).await.unwrap().is_empty());
+    assert!(
+        outbox::read_after(&*rc.backend(), 1_000_000, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     rt.shutdown();
 }
 
@@ -70,7 +77,9 @@ async fn without_replicas_events_carry_no_token() {
     let test = forgebase_db::testing::test_backend().await;
     let backend: Arc<dyn forgebase_db::Backend> = Arc::new(test.database().clone());
     let ctx = AccessContext::admin("root");
-    let data = DataService::new(backend.clone(), Arc::new(DefaultAuthorizer)).await.unwrap();
+    let data = DataService::new(backend.clone(), Arc::new(DefaultAuthorizer))
+        .await
+        .unwrap();
     let rt = RealtimeService::start(data.clone(), None, quiet(), None).await.unwrap();
     data.create_collection(&ctx, Collection::base("things")).await.unwrap();
     data.create_record(&ctx, "things", json!({"id": "t1"})).await.unwrap();
