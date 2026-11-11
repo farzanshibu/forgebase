@@ -61,6 +61,15 @@ const EXPECTED: &[(&str, &str)] = &[
     ("get", "/api/v1/sql/tables/{name}"),
     ("get", "/api/v1/collections/{collection}/export"),
     ("post", "/api/v1/collections/{collection}/import"),
+    // Direct logins and extensions (FB-153).
+    ("get", "/api/v1/system/db-logins"),
+    ("post", "/api/v1/system/db-logins"),
+    ("get", "/api/v1/system/db-logins/{name}"),
+    ("delete", "/api/v1/system/db-logins/{name}"),
+    ("post", "/api/v1/system/db-logins/{name}/rotate"),
+    ("get", "/api/v1/system/extensions"),
+    ("post", "/api/v1/system/extensions"),
+    ("delete", "/api/v1/system/extensions/{name}"),
     // Policy and tenancy (FB-21, ADR-0008 §10).
     ("get", "/api/v1/realms"),
     ("post", "/api/v1/realms"),

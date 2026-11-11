@@ -130,6 +130,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "index_builds",
         include_str!("../../../migrations/postgres/0041_index_builds.sql"),
     ),
+    Migration::new(
+        42,
+        "db_logins",
+        include_str!("../../../migrations/postgres/0042_db_logins.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

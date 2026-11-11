@@ -10,11 +10,15 @@
 //! | slow queries | `GET/DELETE /slow-queries`, `PUT /slow-queries/threshold` |
 //! | SQL editor | `POST /sql`, `/sql/batch`, `/sql/explain`, `GET /sql/tables[/{name}]` |
 //! | import / export | `GET .../export`, `POST .../import` |
+//! | direct logins (FB-153) | `GET/POST /system/db-logins`, `GET/DELETE /system/db-logins/{name}`, `POST .../rotate` |
+//! | extensions (FB-153) | `GET/POST /system/extensions`, `DELETE /system/extensions/{name}` |
 //!
 //! Every handler reads the request's [`AccessContext`](forgebase_data::AccessContext)
 //! (see [`crate::principal`]) and the data core authorises each call.
 
 pub mod collections;
+pub mod db_logins;
+pub mod extensions;
 pub mod indexes;
 pub mod jsonschema;
 pub mod records;
@@ -89,6 +93,14 @@ pub fn router(opts: &RouterOptions) -> Router<AppState> {
         .route("/sql/explain", post(sql::explain))
         .route("/sql/tables", get(sql::tables))
         .route("/sql/tables/{name}", get(sql::table))
+        .route("/system/db-logins", get(db_logins::list).post(db_logins::create))
+        .route(
+            "/system/db-logins/{name}",
+            get(db_logins::get).delete(db_logins::delete),
+        )
+        .route("/system/db-logins/{name}/rotate", post(db_logins::rotate))
+        .route("/system/extensions", get(extensions::list).post(extensions::create))
+        .route("/system/extensions/{name}", axum::routing::delete(extensions::drop))
         .layer(RequestBodyLimitLayer::new(to_usize(opts.max_body_bytes)));
 
     // ... imports stream and enforce their own, larger, limit.

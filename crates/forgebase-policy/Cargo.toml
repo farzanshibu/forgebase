@@ -9,12 +9,15 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+# SCRAM verifiers of direct logins (FB-153).
+base64.workspace = true
 forgebase-auth.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true
 forgebase-query.workspace = true
 forgebase-schema.workspace = true
+hmac.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -26,6 +29,8 @@ utoipa.workspace = true
 
 [dev-dependencies]
 forgebase-db = { workspace = true, features = ["testing"] }
+# FB-153: connecting as a direct login.
+sqlx.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 

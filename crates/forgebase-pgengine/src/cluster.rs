@@ -19,8 +19,14 @@ pub const DATABASE: &str = "forgebase";
 pub const OWNER_ROLE: &str = "forgebase_owner";
 /// Role for requests in `enforce` mode and direct logins (no `BYPASSRLS`).
 pub const RLS_ROLE: &str = "forgebase_rls";
-/// Role of the SQL editor and administrator logins (FB-153 grants it).
+/// Role of the SQL editor and administrator logins (FB-153).
 pub const SQL_ADMIN_ROLE: &str = "forgebase_sql_admin";
+/// NOLOGIN group of every named direct login (`fbu_<name>`): `SELECT` on
+/// the `api` views (FB-152/FB-153).
+pub const LOGIN_ROLE: &str = "forgebase_login";
+/// Member of [`LOGIN_ROLE`] that may also write through the `api` views
+/// (logins made without `--readonly`).
+pub const LOGIN_WRITE_ROLE: &str = "forgebase_login_write";
 
 /// `search_path` of the server and reader roles (ADR-0028 §7.6).
 pub const SEARCH_PATH: &str = "forgebase, public";
@@ -182,7 +188,11 @@ const QUIET: &str = "SET log_statement = 'none'; SET log_min_error_statement = '
                      SET log_min_duration_statement = -1; SET client_min_messages = 'warning';";
 
 /// Creates or updates the bootstrap roles, the `forgebase` database and its
-/// schemas. Idempotent; runs on every start of a writable cluster, so a
+/// schemas. FB-153: the SQL editor runs as [`SQL_ADMIN_ROLE`] on both pools
+/// (the reader may `SET ROLE` to it; the owner, and the server through it,
+/// is a member so it owns what the editor creates); "run as" and the
+/// differential checks switch to the login groups, which the server and the
+/// reader may `SET ROLE` to without inheriting them. Idempotent; runs on every start of a writable cluster, so a
 /// later ForgeBase can add roles or grants to existing clusters.
 pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecrets) -> Result<()> {
     let pw = |r: Role| {
@@ -216,9 +226,16 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
              GRANT {RLS_ROLE} TO {server};
              GRANT {RLS_ROLE} TO {reader} WITH INHERIT FALSE, SET TRUE;
              DO $fb$ BEGIN
-               IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'forgebase_login') THEN CREATE ROLE forgebase_login NOLOGIN; END IF;
+               IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{LOGIN_ROLE}') THEN CREATE ROLE {LOGIN_ROLE} NOLOGIN; END IF;
+               IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{LOGIN_WRITE_ROLE}') THEN CREATE ROLE {LOGIN_WRITE_ROLE} NOLOGIN; END IF;
              END $fb$;
-             ALTER ROLE forgebase_login NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+             ALTER ROLE {LOGIN_ROLE} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+             ALTER ROLE {LOGIN_WRITE_ROLE} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+             GRANT {LOGIN_ROLE} TO {LOGIN_WRITE_ROLE};
+             GRANT {SQL_ADMIN_ROLE} TO {OWNER_ROLE};
+             GRANT {SQL_ADMIN_ROLE} TO {reader} WITH INHERIT FALSE, SET TRUE;
+             GRANT {LOGIN_ROLE}, {LOGIN_WRITE_ROLE} TO {server} WITH INHERIT FALSE, SET TRUE;
+             GRANT {LOGIN_ROLE}, {LOGIN_WRITE_ROLE} TO {reader} WITH INHERIT FALSE, SET TRUE;
              GRANT pg_checkpoint TO {server};"
         ),
     )
@@ -263,7 +280,10 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
              REVOKE CREATE ON SCHEMA public FROM PUBLIC;
              GRANT USAGE ON SCHEMA forgebase, public TO {reader};
              ALTER DEFAULT PRIVILEGES FOR ROLE {OWNER_ROLE} IN SCHEMA forgebase, public GRANT SELECT ON TABLES TO {reader};
-             ALTER DEFAULT PRIVILEGES FOR ROLE {server} IN SCHEMA forgebase, public GRANT SELECT ON TABLES TO {reader};"
+             ALTER DEFAULT PRIVILEGES FOR ROLE {server} IN SCHEMA forgebase, public GRANT SELECT ON TABLES TO {reader};
+             GRANT USAGE ON SCHEMA forgebase TO {SQL_ADMIN_ROLE};
+             GRANT USAGE, CREATE ON SCHEMA public TO {SQL_ADMIN_ROLE};
+             GRANT CONNECT ON DATABASE {DATABASE} TO {LOGIN_ROLE};"
         ),
     )
     .await?;

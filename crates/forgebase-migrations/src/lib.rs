@@ -211,6 +211,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "index_builds",
         include_str!("../../../migrations/system/0041_index_builds.sql"),
     ),
+    Migration::new(
+        42,
+        "db_logins",
+        include_str!("../../../migrations/system/0042_db_logins.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

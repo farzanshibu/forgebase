@@ -6,10 +6,17 @@
 //! - `db psql [ARGS…]`: the bundled engine's `psql`, logged in through the
 //!   Unix socket only (human decision 2026-11-11: TCP logins stay off by
 //!   default). With a server running it joins that server's engine; without
-//!   one it starts the engine for the session and stops it afterwards.
+//!   one it starts the engine for the session and stops it afterwards. The
+//!   default session is the SQL editor's role (`forgebase_sql_admin`, FB-153:
+//!   no secret columns); `--as <login>` logs in as a named direct login
+//!   (psql asks for its password, or reads `PGPASSWORD` / `~/.pgpass`).
+//! - `db login create|list|rotate|delete` (FB-153, rls-coverage §3.5): named
+//!   direct logins bound to one principal and at most one tenant. The
+//!   password is printed once.
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
@@ -50,19 +57,86 @@ pub enum DbCommand {
     /// Open psql on the bundled PostgreSQL, through its Unix socket.
     ///
     /// Arguments after the options go to psql, for example
-    /// `forgebase db psql -c 'select 1'`. Logs in as forgebase_server (the
-    /// server's own login: reads and writes every ForgeBase table, bypasses
-    /// row-level security, not a superuser).
+    /// `forgebase db psql -c 'select 1'`. The session runs as
+    /// forgebase_sql_admin, the SQL editor's role: reads and writes
+    /// collections, reads ForgeBase's tables except secret columns, bypasses
+    /// row-level security, not a superuser.
     Psql {
         /// Log in as forgebase_reader (read-only).
-        #[arg(long, conflicts_with = "superuser")]
+        #[arg(long, conflicts_with_all = ["superuser", "login"])]
         read_only: bool,
         /// Log in as forgebase_super (the cluster's superuser).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "login")]
         superuser: bool,
+        /// Log in as a named direct login (see `db login`): its rules apply.
+        /// psql asks for the login's password.
+        #[arg(long = "as", value_name = "LOGIN")]
+        login: Option<String>,
         /// Arguments passed to psql.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PSQL_ARGS")]
         args: Vec<String>,
+    },
+    /// Named direct logins: PostgreSQL logins bound to one ForgeBase user or
+    /// service account, whose rules apply to every query (FB-153).
+    Login {
+        #[command(subcommand)]
+        command: LoginCommand,
+    },
+}
+
+/// Subcommands of `forgebase db login`.
+#[derive(Debug, Subcommand)]
+pub enum LoginCommand {
+    /// Create a login and print its password (shown once).
+    Create {
+        /// Login name: a-z, 0-9 and _ (the PostgreSQL role is fbu_<name>).
+        name: String,
+        /// Principal it acts as: user:<collection>/<id> or service:<id>.
+        #[arg(long = "as", value_name = "PRINCIPAL")]
+        principal: Option<String>,
+        /// The one tenant its queries are scoped to.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Reads only.
+        #[arg(long)]
+        readonly: bool,
+        /// The SQL editor's rights (bypasses row-level security).
+        #[arg(long)]
+        admin: bool,
+        /// Most connections at once (default 10).
+        #[arg(long)]
+        connection_limit: Option<u32>,
+        /// Longest statement in milliseconds (default 30000).
+        #[arg(long)]
+        statement_timeout_ms: Option<u64>,
+        /// Expiry, such as 2027-01-31T00:00:00Z.
+        #[arg(long)]
+        valid_until: Option<String>,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List logins.
+    List {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give a login a new password (printed once).
+    Rotate {
+        /// Login name.
+        name: String,
+        /// New expiry, such as 2027-01-31T00:00:00Z.
+        #[arg(long)]
+        valid_until: Option<String>,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Drop a login and end its sessions.
+    Delete {
+        /// Login name.
+        name: String,
     },
 }
 
@@ -76,16 +150,40 @@ pub async fn run(g: &GlobalArgs, cli: DbCli) -> anyhow::Result<ExitCode> {
         DbCommand::Psql {
             read_only,
             superuser,
+            login,
             args,
         } => {
-            let access = if read_only {
-                Access::Read
-            } else if superuser {
-                Access::Super
-            } else {
-                Access::Write
+            let who = match (read_only, superuser, login) {
+                (true, _, _) => PsqlAs::Reader,
+                (_, true, _) => PsqlAs::Super,
+                (_, _, Some(l)) => PsqlAs::Login(l),
+                _ => PsqlAs::Editor,
             };
-            psql(g, access, &args).await
+            psql(g, who, &args).await
+        }
+        DbCommand::Login { command } => login(g, command).await,
+    }
+}
+
+/// Who `db psql` logs in as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PsqlAs {
+    /// forgebase_reader.
+    Reader,
+    /// forgebase_server, switched to forgebase_sql_admin.
+    Editor,
+    /// forgebase_super.
+    Super,
+    /// A named login (`fbu_<name>`), with its own password.
+    Login(String),
+}
+
+impl PsqlAs {
+    fn access(&self) -> Access {
+        match self {
+            PsqlAs::Reader | PsqlAs::Login(_) => Access::Read,
+            PsqlAs::Editor => Access::Write,
+            PsqlAs::Super => Access::Super,
         }
     }
 }
@@ -314,12 +412,216 @@ async fn status(g: &GlobalArgs, as_json: bool) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// psql as a named login over the socket: no passfile of ours, so psql
+/// asks for the password (or uses `PGPASSWORD` / `~/.pgpass`).
+async fn run_login_psql(
+    bin: &Path,
+    socket_dir: &Path,
+    port: u16,
+    name: &str,
+    args: &[String],
+) -> anyhow::Result<ExitCode> {
+    let role = format!("{}{name}", forgebase_policy::logins::ROLE_PREFIX);
+    let ignore = tokio::spawn(async {
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+        }
+    });
+    let status = tokio::process::Command::new(bin)
+        .args(args)
+        .env("PGHOST", socket_dir)
+        .env("PGPORT", port.to_string())
+        .env("PGUSER", &role)
+        .env("PGDATABASE", forgebase_pgengine::DATABASE)
+        .env("PGAPPNAME", "forgebase-psql")
+        .env_remove("PGOPTIONS")
+        .env_remove("PGSERVICE")
+        .env_remove("PGHOSTADDR")
+        .status()
+        .await;
+    ignore.abort();
+    let status = status.with_context(|| format!("cannot run {}", bin.display()))?;
+    Ok(match status.code() {
+        Some(0) => ExitCode::SUCCESS,
+        Some(c) => ExitCode::from(u8::try_from(c).unwrap_or(1)),
+        None => ExitCode::FAILURE,
+    })
+}
+
+/// The policy service of a data directory for `db login`: migrated
+/// database, auth and realms attached, the server's native RLS mode
+/// assumed, and the bundled engine's superuser as the role administrator.
+async fn login_service(
+    loaded: &forgebase_core::config::LoadedConfig,
+    layout: &DataLayout,
+    primary: &database::PrimaryDatabase,
+) -> anyhow::Result<forgebase_policy::PolicyService> {
+    let db = primary.db();
+    let status = db.migration_status().await?;
+    if !status.is_up_to_date() {
+        bail!(
+            "the database schema is at v{} of v{}: run `forgebase migrate` first",
+            status.current_version,
+            status.latest_version
+        );
+    }
+    if primary.marker() == BackendMarker::PostgresManaged
+        && let Some((dir, port)) = primary.socket()
+    {
+        let secrets = RoleSecrets::load(&database::engine_layout(layout).secrets_file())?
+            .context("postgres/roles.secret is missing")?;
+        let pw = secrets.password(Role::Super).unwrap_or_default();
+        db.set_admin_url(Some(forgebase_db::SecretString::new(database::socket_url(
+            Role::Super.name(),
+            pw,
+            forgebase_pgengine::DATABASE,
+            &dir,
+            port,
+        ))));
+    }
+    let backend: Arc<dyn Backend> = Arc::new(db.clone());
+    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
+    cfg.default_collection = None;
+    let auth = forgebase_auth::AuthService::open_with_data(
+        backend.clone(),
+        Arc::new(forgebase_auth::data::DefaultAuthorizer),
+        layout.root(),
+        cfg,
+        None,
+    )
+    .await?;
+    let policy = forgebase_policy::PolicyService::open(backend).await?;
+    policy.attach_data(auth.data().clone());
+    policy.attach_realms(auth.realms().clone()).await?;
+    use forgebase_core::config::NativeRls;
+    use forgebase_policy::native::NativeMode;
+    policy.assume_native_rls_mode(match loaded.config.database.postgres.native_rls {
+        NativeRls::Off => NativeMode::Off,
+        NativeRls::Logins => NativeMode::Logins,
+        NativeRls::Enforce => NativeMode::Enforce,
+    });
+    Ok(policy)
+}
+
+fn print_secret(out: &forgebase_policy::logins::LoginSecret, as_json: bool) -> anyhow::Result<()> {
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(out)?);
+        return Ok(());
+    }
+    let l = &out.login;
+    println!("login:     {} (role {})", l.name, l.role);
+    println!("acts as:   {}", l.principal);
+    if let Some(t) = &l.tenant {
+        println!("tenant:    {t}");
+    }
+    println!(
+        "rights:    {}",
+        if l.admin {
+            "SQL editor (bypasses row-level security)"
+        } else if l.readonly {
+            "read only, rules apply"
+        } else {
+            "read and write through the api views, rules apply"
+        }
+    );
+    println!("password:  {}", out.password);
+    println!("           shown once; ForgeBase does not keep it.");
+    println!("connect:   {}", out.hint);
+    Ok(())
+}
+
+async fn login(g: &GlobalArgs, cmd: LoginCommand) -> anyhow::Result<ExitCode> {
+    let loaded = g.load()?;
+    let layout = DataLayout::new(&loaded.config.data_dir);
+    if database::resolve(&loaded.config, explicit_backend(&loaded), &layout)? == BackendMarker::Sqlite {
+        bail!("direct database logins need PostgreSQL; this project uses SQLite");
+    }
+    let primary = open_attached(&loaded, Access::Write).await?;
+    let result = async {
+        let policy = login_service(&loaded, &layout, &primary).await?;
+        let ctx = forgebase_data::AccessContext::system().with_request_id("cli");
+        match cmd {
+            LoginCommand::Create {
+                name,
+                principal,
+                tenant,
+                readonly,
+                admin,
+                connection_limit,
+                statement_timeout_ms,
+                valid_until,
+                json,
+            } => {
+                let spec = forgebase_policy::logins::LoginSpec {
+                    name,
+                    principal,
+                    tenant,
+                    readonly,
+                    admin,
+                    connection_limit,
+                    statement_timeout_ms,
+                    valid_until,
+                };
+                let out = policy.create_db_login(&ctx, spec).await?;
+                print_secret(&out, json)?;
+            }
+            LoginCommand::List { json } => {
+                let items = policy.list_db_logins(&ctx).await?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&json!({ "items": items }))?);
+                } else if items.is_empty() {
+                    println!("no direct logins");
+                } else {
+                    for l in items {
+                        println!(
+                            "{:<20} {:<26} {:<14} {}{}",
+                            l.name,
+                            l.principal,
+                            l.tenant.as_deref().unwrap_or("-"),
+                            if l.admin {
+                                "admin"
+                            } else if l.readonly {
+                                "readonly"
+                            } else {
+                                "read-write"
+                            },
+                            if l.has_claims || l.admin {
+                                ""
+                            } else {
+                                " (no claims: sees nothing)"
+                            }
+                        );
+                    }
+                }
+            }
+            LoginCommand::Rotate {
+                name,
+                valid_until,
+                json,
+            } => {
+                let out = policy.rotate_db_login(&ctx, &name, valid_until).await?;
+                print_secret(&out, json)?;
+            }
+            LoginCommand::Delete { name } => {
+                policy.delete_db_login(&ctx, &name).await?;
+                println!("dropped login {name}");
+            }
+        }
+        Ok::<_, anyhow::Error>(ExitCode::SUCCESS)
+    }
+    .await;
+    primary.close().await;
+    result
+}
+
 /// A `.pgpass` line value: `:` and `\` escaped.
 fn pgpass_field(s: &str) -> String {
     s.replace('\\', "\\\\").replace(':', "\\:")
 }
 
-async fn psql(g: &GlobalArgs, access: Access, args: &[String]) -> anyhow::Result<ExitCode> {
+async fn psql(g: &GlobalArgs, who: PsqlAs, args: &[String]) -> anyhow::Result<ExitCode> {
     let loaded = g.load()?;
     let config = &loaded.config;
     let layout = DataLayout::new(&config.data_dir);
@@ -333,8 +635,8 @@ async fn psql(g: &GlobalArgs, access: Access, args: &[String]) -> anyhow::Result
             "db psql logs in to the bundled PostgreSQL only; for an external server run psql \"$FORGEBASE_DATABASE_URL\""
         ),
     }
-    let primary = open_attached(&loaded, access).await?;
-    let result = run_psql(config, &layout, &primary, access, args).await;
+    let primary = open_attached(&loaded, who.access()).await?;
+    let result = run_psql(config, &layout, &primary, &who, args).await;
     primary.close().await;
     result
 }
@@ -343,7 +645,7 @@ async fn run_psql(
     config: &forgebase_core::Config,
     layout: &DataLayout,
     primary: &database::PrimaryDatabase,
-    access: Access,
+    who: &PsqlAs,
     args: &[String],
 ) -> anyhow::Result<ExitCode> {
     let (socket_dir, port) = primary
@@ -359,10 +661,13 @@ async fn run_psql(
     if !bin.is_file() {
         bail!("{} is missing: this engine has no psql", bin.display());
     }
-    let role = match access {
-        Access::Read => Role::Reader,
-        Access::Write => Role::Server,
-        Access::Super => Role::Super,
+    if let PsqlAs::Login(name) = who {
+        return run_login_psql(&bin, &socket_dir, port, name, args).await;
+    }
+    let role = match who {
+        PsqlAs::Reader => Role::Reader,
+        PsqlAs::Super => Role::Super,
+        PsqlAs::Editor | PsqlAs::Login(_) => Role::Server,
     };
     let secrets = RoleSecrets::load(&database::engine_layout(layout).secrets_file())?
         .context("postgres/roles.secret is missing")?;
@@ -394,7 +699,20 @@ async fn run_psql(
             }
         }
     });
-    let status = tokio::process::Command::new(&bin)
+    let mut cmd = tokio::process::Command::new(&bin);
+    if *who == PsqlAs::Editor {
+        // The SQL editor's role (FB-153) and its search path.
+        cmd.env(
+            "PGOPTIONS",
+            format!(
+                "-c role={} -c search_path=public,forgebase",
+                forgebase_pgengine::SQL_ADMIN_ROLE
+            ),
+        );
+    } else {
+        cmd.env_remove("PGOPTIONS");
+    }
+    let status = cmd
         .args(args)
         .env("PGHOST", &socket_dir)
         .env("PGPORT", port.to_string())
