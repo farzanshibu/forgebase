@@ -18,7 +18,7 @@ use p256::ecdsa::{Signature, SigningKey};
 use serde_json::{Value as Json, json};
 
 use crate::crypto::{self, b64url};
-use crate::service::{ClientInfo, audit_in, require_admin};
+use crate::service::{ClientInfo, audit_in};
 use crate::store::{Tx, first, i, read, rows, t};
 use crate::{AuthError, AuthService, Authenticated};
 
@@ -306,7 +306,7 @@ impl AuthService {
         realm: &str,
         ci: &ClientInfo,
     ) -> Result<String, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         self.ensure_oidc_key(realm, true).await?;
         let kid = self.active_oidc_key(realm).await?.kid;
