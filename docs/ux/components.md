@@ -12,9 +12,10 @@ ask god (FB-98 has merged) and it is added here.
 
 | Job | Use | Import from |
 |---|---|---|
-| Top of a studio page: name, one sentence, docs link, primary action | `PageHeader` | `components/PageHeader` |
+| Top of a studio page: name, one sentence, docs link, primary action | `PageHeader` (its studio's glossary term shows as a "?" after the title; `term` overrides, `term={null}` hides) | `components/PageHeader` |
 | An empty list | `EmptyState` | `components/EmptyState` |
-| Any error | `ErrorPanel` (also `ErrorView`) | `components/ErrorPanel` or `components/ui` |
+| Any error | `ErrorPanel` (also `ErrorView`); with a request id it links "Find in logs" (`/functions/logs?request=<id>`) | `components/ErrorPanel` or `components/ui` |
+| Who may do what with a resource (namespace, vector collection, graph label or edge type, bucket, queue topic or subscription) | `ResourceRules kind name noun`, one panel for the database, storage, vector, graph, queue and key-value studios | `components/ResourceRules` (types and routes in `components/resourceRulesApi`) |
 | An error for one field | `FormField` `error`, fed by `fieldErrors(error)` | `components/FormField`, `errors` |
 | A term that needs explaining (TTL, RLS, ACL…) | `HelpTip` with a `glossary.ts` term | `components/HelpTip` |
 | "How do I call this from my app?" | `UseFromCodeButton` in the header, or `UseFromCode` inline | `components/UseFromCode` |
@@ -27,7 +28,7 @@ ask god (FB-98 has merged) and it is added here.
 | Paging a stream (logs, objects, messages, keys) | `Pager mode="more"` with `useCursorList` | `components/Pager`, `hooks` |
 | A save, create, delete or copy happened | `notify.saved / created / deleted / copied` | `toaster` |
 | A save failed and nothing on screen can show it | `notify.failed(error)` | `toaster` |
-| Checkbox, switch, select | `Check`, `Toggle`, `Sel` | `components/controls` |
+| Checkbox, switch, select | `Check`, `Toggle`, `Sel` (`aria-label` is the accessible name, also next to a visible `label`) | `components/controls` |
 | Section tabs | `RouteTabs` (router driven) | `components/controls` |
 | Validate a name as the user types | `validate.collectionName`, `bucketName`, `functionName`, `topicName`, `namespaceName`, `json`, `integer`, `required`, `all` | `validate` |
 | Better breadcrumb names on a detail page | `useCrumbs([...])` | `components/crumbs` |
@@ -199,15 +200,29 @@ For custom arguments pass the snippet itself:
 ## The shell (FB-98 owns it)
 
 - `studios.ts` holds one record per studio: `label`, `title`, `summary`,
-  `group`, `docs`, an optional fb92 `feature` id, and `tabs` for the palette.
+  `group`, `docs`, an optional fb92 `feature` id, an optional glossary `term`
+  (PageHeader shows it as a "?" after the title), and `tabs` for the palette.
+  Tab labels are the words on the page's own tabs (Authentication: "API keys"; Billing: its four groups Catalog, Customers, Money, Settings).
   If you add a tab to a studio's RouteTabs, add it to `tabs` too, so the palette
   finds it.
-- `visibleStudios(features)` hides a switched-off studio from the nav and the
-  palette, along with its Create action and its resources.
+- `visibleStudios(features, { platform })` hides a switched-off studio from the
+  nav and the palette, along with its Create action and its resources. With
+  `platform: false` (a realm administrator, `useAdminScope()`) it also hides the
+  platform-only studios in `PLATFORM_ONLY`: Billing, System and Features and
+  settings. The shell passes the scope; do not filter again in a page.
 - Breadcrumbs come from the route. Detail routes follow `/<studio>/<kind>/<name>`
   (`c`, `b`, `f`, `t`, `s`, `j`, `w`); keep to it, or call `useCrumbs`.
 - `docsHref(doc, version)` links to `github.com/farzanshibu/forgebase/blob/v<version>/<doc>`,
   and to `main` for a dev build (decision Q2).
+
+## Toasts
+
+`toaster.add` shows one card per action: an identical toast (same title,
+description and type) added again within 600 ms returns the first one. PanelUI
+writes each toast's words twice in the DOM (a hidden spacer and the visible
+text), so a test that counts `getByText` hits sees two for one toast. Count
+`[data-slot="toast"]` instead, or wait with `toast()` from
+`test/dataStudioMock.ts`.
 
 ## Tests
 

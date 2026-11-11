@@ -7,7 +7,7 @@ import { UseFromCodeButton } from "../../components/UseFromCode";
 import { ErrorView } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
-import ResourceRules from "../database/ResourceRules";
+import ResourceRules from "../../components/ResourceRules";
 import AclEditor from "./AclEditor";
 import BucketSettings from "./BucketSettings";
 import ObjectBrowser from "./ObjectBrowser";

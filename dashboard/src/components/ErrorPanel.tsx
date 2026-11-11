@@ -8,6 +8,9 @@
  *   <ErrorPanel error={e} onRetry={reload} />                 // adds a "Try again" button
  *   const byField = fieldErrors(saveError);                   // re-exported from errors.ts for FormField
  *
+ * With a request id the panel also links "Find in logs" (Functions › Logs search, request id prefilled) when it is
+ * inside a router.
+ *
  * Wording comes from src/errors.ts. 401 says the session ended; 403 names the missing permission and never says
  * "sign in". A feature switched off (feature_disabled) shows where to switch it back on.
  */
@@ -32,6 +35,7 @@ export interface ErrorPanelProps {
 }
 
 export function ErrorPanel({ error, fields = "list", onRetry, className }: ErrorPanelProps) {
+  const inRouter = useInRouterContext();
   if (!error) return null;
   if (error instanceof ApiError && error.code === "feature_disabled") return <FeatureDisabled message={error.message} />;
   const e = explain(error);
@@ -71,6 +75,11 @@ export function ErrorPanel({ error, fields = "list", onRetry, className }: Error
               <>
                 <span className="font-mono">Request id {e.requestId}</span>
                 <CopyButton text={e.requestId} label="Copy request id" />
+                {inRouter && (
+                  <Link to={`/functions/logs?request=${encodeURIComponent(e.requestId)}`} className="font-medium text-primary underline-offset-2 hover:underline">
+                    Find in logs
+                  </Link>
+                )}
               </>
             )}
           </div>
@@ -122,7 +131,7 @@ export function FeatureDisabled({ message }: { message: string }) {
       <p className="mt-1 text-sm text-muted-foreground">An administrator turned this feature off, so the server does not run it.</p>
       {inRouter ? (
         <Link to="/system/features" className="mt-3 inline-block text-sm font-medium text-primary underline-offset-2 hover:underline">
-          Open Features &amp; settings
+          Open Features and settings
         </Link>
       ) : null}
     </section>

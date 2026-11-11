@@ -7,7 +7,7 @@ import { UseFromCodeButton } from "../../components/UseFromCode";
 import { ErrorView } from "../../components/ui";
 import { serverUrl, vectorCollection } from "../../snippets";
 import { useLoad } from "../../hooks";
-import ResourceRules from "../database/ResourceRules";
+import ResourceRules from "../../components/ResourceRules";
 import VectorIndex from "./VectorIndex";
 import VectorRecords from "./VectorRecords";
 import VectorSearch from "./VectorSearch";

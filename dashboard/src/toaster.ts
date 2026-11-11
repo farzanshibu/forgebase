@@ -14,7 +14,27 @@
 import { createToaster } from "panelui-web/toast";
 import { explain } from "./errors";
 
-export const toaster = createToaster();
+const base = createToaster();
+
+/**
+ * One toast per action: an identical toast (same title, description and type) added again within `DUPLICATE_MS`
+ * returns the first one's id instead of drawing a second card. A handler that fires twice (a double click, a
+ * save plus a refresh that also reports it) then shows one toast. PanelUI draws each toast's words twice in the DOM
+ * (a hidden spacer and the visible text); that is one card, not two.
+ */
+const DUPLICATE_MS = 600;
+let last: { key: string; at: number; id: ReturnType<typeof base.add> } | undefined;
+
+export const toaster: typeof base = Object.assign(Object.create(base) as typeof base, {
+  add: ((options: Parameters<typeof base.add>[0]) => {
+    const key = JSON.stringify([options.title, options.description, options.type]);
+    const now = Date.now();
+    if (last && last.key === key && now - last.at < DUPLICATE_MS) return last.id;
+    const id = base.add(options);
+    last = { key, at: now, id };
+    return id;
+  }) as typeof base.add,
+});
 
 let navigate: ((to: string) => void) | undefined;
 

@@ -10,7 +10,7 @@ import { SkeletonLines } from "../../components/Skeleton";
 import { Button, ErrorView, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
-import ResourceRules from "../database/ResourceRules";
+import ResourceRules from "../../components/ResourceRules";
 import { loadGraphSample } from "./sample";
 
 /** The API serves one graph per tenant (ADR-0006), so the graph list is that graph with its statistics. */

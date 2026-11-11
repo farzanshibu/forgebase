@@ -4,7 +4,8 @@
  *
  * Usage:
  *   <PageHeader studio="queues" primary={<Button tone="primary" onClick={() => setCreating(true)}>New topic</Button>} />
- *   <PageHeader title="orders" description="Topic" docs="docs/adr/0022-queues-pubsub.md"
+ *   <PageHeader studio="functions" />                       // the studio's glossary term shows as a "?" after the title
+ *   <PageHeader title="orders" term="topic" description="Topic" docs="docs/adr/0022-queues-pubsub.md"
  *               primary={<Button>Publish</Button>} secondary={<UseFromCodeButton kind="topic" name="orders" />} />
  *
  * With `studio`, title, description and docs come from studios.ts; any prop you pass wins. The docs link points at
@@ -13,13 +14,17 @@
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import type { GlossaryTerm } from "../glossary";
 import { useServerVersion } from "../hooks";
+import { HelpTip } from "./HelpTip";
 import { docsHref, studio as studioByPath } from "../studios";
 
 export interface PageHeaderProps {
   /** A studios.ts path ("database", "system/features"): fills title, description and docs. */
   studio?: string;
   title?: ReactNode;
+  /** A glossary term to explain next to the title ("?" button). With `studio`, the studio's own term is used unless you pass one; `null` hides it. */
+  term?: GlossaryTerm | null;
   description?: ReactNode;
   /** Repo-relative docs page; `null` hides the link. */
   docs?: string | null;
@@ -32,15 +37,19 @@ export interface PageHeaderProps {
   className?: string;
 }
 
-export function PageHeader({ studio, title, description, docs, primary, secondary, children, className = "" }: PageHeaderProps) {
+export function PageHeader({ studio, title, term, description, docs, primary, secondary, children, className = "" }: PageHeaderProps) {
   const s = studio !== undefined ? studioByPath(studio) : undefined;
   const heading = title ?? s?.title;
   const text = description ?? s?.summary;
+  const helpTerm = term === null ? undefined : (term ?? s?.term);
   const doc = docs === null ? undefined : (docs ?? s?.docs);
   return (
     <header className={`flex flex-wrap items-start justify-between gap-x-6 gap-y-3 ${className}`.trim()}>
       <div className="min-w-0 max-w-3xl">
-        <h1 className="text-2xl font-semibold tracking-tight">{heading}</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-semibold tracking-tight">{heading}</h1>
+          {helpTerm && <HelpTip term={helpTerm} />}
+        </div>
         {(text || doc) && (
           <p className="mt-1 text-sm text-muted-foreground">
             {text}

@@ -33,6 +33,7 @@ import ImpersonationBanner from "../auth/ImpersonationBanner";
 import { useSession } from "../auth/session";
 import { FeaturesContext, useFeatureData } from "../pages/setup/features";
 import { GROUPS, studioAt, studioHref, visibleStudios, type Studio } from "../studios";
+import { useAdminScope } from "../auth/scope";
 import { setToastNavigator } from "../toaster";
 import { Breadcrumbs, CrumbsProvider } from "./Breadcrumbs";
 import { CommandPalette } from "./CommandPalette";
@@ -80,7 +81,8 @@ function StudioItem({ studio, active }: { studio: Studio; active: boolean }) {
 export default function Layout() {
   const { admin, signOut } = useSession();
   const features = useFeatureData();
-  const studios = visibleStudios(features.snapshot?.features);
+  const { platform } = useAdminScope();
+  const studios = visibleStudios(features.snapshot?.features, { platform });
   const { pathname } = useLocation();
   const navigate = useNavigate();
   useEffect(() => setToastNavigator(navigate), [navigate]);
