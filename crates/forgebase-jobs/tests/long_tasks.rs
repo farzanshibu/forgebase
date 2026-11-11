@@ -279,14 +279,20 @@ async fn in_process_handlers_report_progress_through_their_context() {
     let job = enqueue(&h.svc, NewJob::new("steps", Json::Null)).await;
     let done = wait_status(&h.svc, &job.id, JobStatus::Succeeded).await;
     assert_eq!(done.progress.unwrap().stage.as_deref(), Some("load"));
-    let updates = sink.on(&channel(&job.id));
+    // Events are sent after the commit, so the status the database shows can
+    // be ahead of the sink for a moment.
+    let succeeded = |u: &Json| u["status"] == "succeeded";
+    let updates = wait_for(Duration::from_secs(5), || {
+        let updates = sink.on(&channel(&job.id));
+        async move { updates.iter().any(succeeded).then_some(updates) }
+    })
+    .await;
     let stages: Vec<&str> = updates
         .iter()
         .filter(|u| u["event"] == "progress")
         .filter_map(|u| u["progress"]["stage"].as_str())
         .collect();
     assert_eq!(stages, ["fetch", "transform", "load"]);
-    assert!(updates.iter().any(|u| u["status"] == "succeeded"));
     pool.shutdown().await;
 }
 

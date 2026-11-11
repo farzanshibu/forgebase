@@ -99,7 +99,7 @@ async fn one_writer_keeps_message_sequence_order_equal_to_commit_order() {
                 if last_round {
                     return seen;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         })
     };
@@ -111,7 +111,7 @@ async fn one_writer_keeps_message_sequence_order_equal_to_commit_order() {
             if let Some(pid) = writer {
                 while !done.load(Ordering::SeqCst) {
                     others.extend(census(&db, pid).await);
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
             }
             others
