@@ -9,7 +9,7 @@
 # shipped extension; an HNSW vector query; pg_trgm; pgmq send/read; a pg_cron
 # job that fires; TLS library check; Apache AGE where the engine ships it
 # (lib/plugins/age.*: create_graph, MATCH and a variable-length MATCH as a
-# non-superuser that preloads $libdir/plugins/age, and the three carried
+# non-superuser that preloads $libdir/plugins/age, and the four carried
 # patches); pg_dump/pg_restore; pg_basebackup, pg_verifybackup and a hot
 # standby started from the backup (with MATCH on it when AGE ships); stop.
 # Prints idle memory (RSS) of the primary.
@@ -169,6 +169,60 @@ SQL
   gq "$PORT" smoke_noage -c "CREATE TABLE t (id int); INSERT INTO t VALUES (1); TRUNCATE t" \
     || fail "TRUNCATE in a database without AGE while AGE is preloaded (patch 0003)"
   echo "  TRUNCATE in a database without AGE, AGE preloaded: ok"
+
+  # 0004 (apache/age#2581): the ROLLBACK of a failed transaction, parsed after
+  # the backend's caches were reset, read pg_extension with the resource owner
+  # already released; the locks leaked into the backend's PGPROC and every
+  # later backend on that slot failed at connect ("failed to re-find shared
+  # lock object") until a restart. Session A (fb_graph, AGE preloaded) fails a
+  # statement inside BEGIN and waits; it is stopped (SIGSTOP) while another
+  # session overflows the shared invalidation queue, so it resets its caches
+  # on SIGCONT; then it gets its ROLLBACK. Then every free PGPROC is taken at
+  # once (the free list is FIFO) and no connection may fail.
+  say "AGE: ROLLBACK after a cache reset leaves no leaked locks (patch 0004)"
+  fifo=$W/a.fifo; aout=$W/a.out
+  rm -f "$fifo" "$aout"; mkfifo "$fifo"
+  "$BIN/psql" -X -q -A -t -h "$SOCK" -p "$PORT" -U fb_graph -d postgres <"$fifo" >"$aout" 2>&1 &
+  apsql=$!
+  exec 3>"$fifo"
+  echo "SELECT pg_backend_pid();" >&3
+  apid=""; n=0
+  while [ "$n" -lt 100 ] && [ -z "$apid" ]; do
+    apid=$(grep -m1 -E '^[0-9]+$' "$aout" 2>/dev/null || true); n=$((n + 1)); [ -n "$apid" ] || sleep 0.1
+  done
+  [ -n "$apid" ] || { exec 3>&-; fail "patch 0004: session A did not report its pid"; }
+  echo "BEGIN; SELECT 1/0;" >&3
+  sleep 0.5
+  kill -STOP "$apid"
+  q <<'SQL' || { kill -CONT "$apid"; exec 3>&-; fail "patch 0004: the invalidation queue overflow did not run"; }
+DO $$ BEGIN
+  FOR i IN 1..1000 LOOP EXECUTE format('CREATE TABLE age_inval_%s (a int)', i); END LOOP;
+  FOR i IN 1..1000 LOOP EXECUTE format('DROP TABLE age_inval_%s', i); END LOOP;
+END $$;
+SQL
+  kill -CONT "$apid"
+  sleep 0.5
+  echo "ROLLBACK;" >&3
+  echo '\q' >&3
+  exec 3>&-
+  wait "$apsql" || true
+  grep -q 'division by zero' "$aout" || fail "patch 0004: session A did not fail as arranged: $(cat "$aout")"
+  grep -q 'ResourceOwnerEnlarge' "$aout" && fail "patch 0004: ROLLBACK read the catalog outside a transaction: $(cat "$aout")"
+  max=$(q -c "SHOW max_connections")
+  used=$(q -c "SELECT count(*) FROM pg_stat_activity WHERE backend_type IN ('client backend', 'walsender')")
+  free=$((max - used)); n=0
+  rm -f "$W"/sat.*
+  while [ "$n" -lt "$free" ]; do
+    "$BIN/psql" -X -q -A -t -h "$SOCK" -p "$PORT" -U postgres -d postgres -c "SELECT pg_sleep(4)" >"$W/sat.$n" 2>&1 &
+    n=$((n + 1))
+  done
+  wait || true
+  if cat "$W"/sat.* | grep -q "failed to re-find shared"; then
+    fail "patch 0004: a backend failed at connect after the ROLLBACK ($(cat "$W"/sat.* | grep -m1 'failed to re-find')): locks leaked into a PGPROC"
+  fi
+  [ "$(cat "$W"/sat.* | grep -c 'FATAL\|ERROR')" = 0 ] || fail "patch 0004: $(cat "$W"/sat.* | grep -m1 'FATAL\|ERROR')"
+  [ "$(q -c "SELECT 1")" = 1 ] || fail "patch 0004: connect after the saturation"
+  echo "  ROLLBACK after a cache reset: ok; $free concurrent connections took every free PGPROC, none failed"
   q -c "SELECT extversion FROM pg_extension WHERE extname = 'age'" | sed 's/^/  age /'
 fi
 
