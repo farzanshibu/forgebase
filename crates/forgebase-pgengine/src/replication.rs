@@ -372,6 +372,28 @@ pub struct ClusterFacts {
     pub receiver: Option<String>,
 }
 
+/// The WAL receiver's status on a standby (`streaming`, …), `None` without
+/// one. Roles without `pg_read_all_stats` see the row's details as NULL,
+/// so for them a receiver that received WAL (`pg_last_wal_receive_lsn()`)
+/// with a live receiver process counts as `streaming`.
+///
+/// # Errors
+/// SQL errors.
+pub async fn receiver_status(conn: &mut PgConnection) -> Result<Option<String>> {
+    let row: Option<(Option<String>, Option<i32>, Option<String>)> = sqlx::query_as(
+        "SELECT status::text, pid, pg_last_wal_receive_lsn()::text FROM pg_stat_wal_receiver",
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(sql_err("read pg_stat_wal_receiver"))?;
+    Ok(match row {
+        None => None,
+        Some((Some(status), _, _)) => Some(status),
+        Some((None, Some(_), Some(_))) => Some("streaming".to_owned()),
+        Some((None, _, _)) => Some("starting".to_owned()),
+    })
+}
+
 /// Reads [`ClusterFacts`] (any role that may log in).
 ///
 /// # Errors
@@ -390,17 +412,17 @@ pub async fn facts(conn: &mut PgConnection) -> Result<ClusterFacts> {
     let (timeline, lsn, receiver) = if in_recovery {
         let row = sqlx::query(
             "SELECT pg_last_wal_replay_lsn()::text, \
-                    (SELECT status::text FROM pg_stat_wal_receiver), \
                     COALESCE((SELECT received_tli::bigint FROM pg_stat_wal_receiver), \
                              (SELECT timeline_id::bigint FROM pg_control_checkpoint()))",
         )
         .fetch_one(&mut *conn)
         .await
         .map_err(sql_err("read the standby position"))?;
+        let receiver = receiver_status(conn).await?;
         (
-            row.try_get::<Option<i64>, _>(2).map_err(sql_err("timeline"))?,
+            row.try_get::<Option<i64>, _>(1).map_err(sql_err("timeline"))?,
             opt_lsn(row.try_get(0).map_err(sql_err("replay_lsn"))?)?,
-            row.try_get(1).map_err(sql_err("wal receiver"))?,
+            receiver,
         )
     } else {
         let row = sqlx::query(
@@ -578,13 +600,22 @@ pub struct HbaInput {
 ///   read pool on a remote replica).
 pub fn hba_entries(input: &HbaInput) -> Vec<HbaEntry> {
     let repl = Role::Replicator.name();
-    let mut out = vec![HbaEntry::new(
-        HbaType::Local,
-        "replication",
-        repl,
-        None,
-        "FB-168: managed replicas on this host",
-    )];
+    let mut out = vec![
+        HbaEntry::new(
+            HbaType::Local,
+            "replication",
+            repl,
+            None,
+            "FB-168: managed replicas on this host",
+        ),
+        HbaEntry::new(
+            HbaType::Local,
+            "postgres",
+            repl,
+            None,
+            "FB-168: standby checks and pg_rewind on this host",
+        ),
+    ];
     for a in &input.agents {
         out.push(HbaEntry::new(
             HbaType::Hostssl,
@@ -767,11 +798,12 @@ mod tests {
             lines[0],
             "local\treplication\tforgebase_replicator\tscram-sha-256\t# FB-168: managed replicas on this host"
         );
-        assert!(lines[1].starts_with("hostssl\treplication\tforgebase_replicator\t10.0.0.7/32\tscram-sha-256"));
-        assert!(lines[2].starts_with("hostssl\tpostgres\tforgebase_replicator\t10.0.0.7/32"));
-        assert!(lines[3].starts_with("hostssl\tforgebase\tforgebase_reader\tfd00::1/128"));
-        assert_eq!(e.len(), 4);
-        assert_eq!(hba_entries(&HbaInput::default()).len(), 1);
+        assert!(lines[1].starts_with("local\tpostgres\tforgebase_replicator\tscram-sha-256"));
+        assert!(lines[2].starts_with("hostssl\treplication\tforgebase_replicator\t10.0.0.7/32\tscram-sha-256"));
+        assert!(lines[3].starts_with("hostssl\tpostgres\tforgebase_replicator\t10.0.0.7/32"));
+        assert!(lines[4].starts_with("hostssl\tforgebase\tforgebase_reader\tfd00::1/128"));
+        assert_eq!(e.len(), 5);
+        assert_eq!(hba_entries(&HbaInput::default()).len(), 2);
     }
 
     #[test]

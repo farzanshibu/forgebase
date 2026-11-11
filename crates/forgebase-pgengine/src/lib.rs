@@ -359,6 +359,15 @@ fn endpoint(layout: &Layout, cfg: &EngineConfig) -> Result<Endpoint> {
     }
 }
 
+/// The role readiness logs in as: a standby's host may hold only the
+/// replicator's password (FB-168 remote replicas).
+fn probe_role(kind: NodeKind) -> Role {
+    match kind {
+        NodeKind::Primary => Role::Super,
+        NodeKind::Standby => Role::Replicator,
+    }
+}
+
 /// Spawns the postmaster and waits until it accepts our login.
 async fn start_once(ctx: &Ctx) -> Result<Postmaster> {
     let pgdata = ctx.layout.pgdata();
@@ -370,12 +379,12 @@ async fn start_once(ctx: &Ctx) -> Result<Postmaster> {
         return Err(e);
     }
     loop {
-        match cluster::probe(&ctx.endpoint, &ctx.secrets).await {
+        match cluster::probe(&ctx.endpoint, &ctx.secrets, probe_role(ctx.layout.kind())).await {
             Ok(()) => return Ok(pm),
             Err(e) if Instant::now() >= deadline || pm.exited().is_some() => {
                 pm.stop(&pgdata, &ctx.engine, Duration::from_secs(5), true).await;
                 return Err(EngineError::Start {
-                    reason: format!("cannot log in as {}: {e}", Role::Super.name()),
+                    reason: format!("cannot log in as {}: {e}", probe_role(ctx.layout.kind()).name()),
                     log: ctx.log.lines(),
                 });
             }
@@ -652,6 +661,35 @@ impl EngineHandle {
     /// The engine's last log lines.
     pub fn recent_log(&self) -> Vec<String> {
         self.ctx.log.lines()
+    }
+
+    /// Runs `pg_ctl <action> -D <pgdata>` (`reload`, or `promote -w`):
+    /// signals the postmaster as the OS user that owns it, no SQL role
+    /// needed (FB-168 standbys).
+    ///
+    /// # Errors
+    /// `pg_ctl` fails; its output is in the message.
+    pub async fn pg_ctl(&self, args: &[&str]) -> Result<()> {
+        let bin = self.ctx.engine.bin("pg_ctl");
+        let out = tokio::process::Command::new(&bin)
+            .args(args)
+            .arg("-D")
+            .arg(self.ctx.layout.pgdata())
+            .env_remove("PGDATA")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(|e| EngineError::io("run", &bin, e))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(EngineError::State(format!(
+                "pg_ctl {} failed: {}{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stdout).trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )))
+        }
     }
 
     /// Tests: kill the postmaster with `SIGKILL` to exercise crash restart.

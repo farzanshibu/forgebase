@@ -285,12 +285,14 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
     Ok(())
 }
 
-/// Connects once as `forgebase_super`, proving the password works.
-pub(crate) async fn probe(ep: &crate::process::Endpoint, secrets: &RoleSecrets) -> Result<()> {
+/// Connects once as `role` (`forgebase_super`; `forgebase_replicator` on a
+/// standby, FB-168: a remote replica's host holds only that password),
+/// proving the password works.
+pub(crate) async fn probe(ep: &crate::process::Endpoint, secrets: &RoleSecrets, role: Role) -> Result<()> {
     let pw = secrets
-        .password(Role::Super)
-        .ok_or_else(|| EngineError::Config("roles.secret has no forgebase_super password".into()))?;
-    let conn = connect(&connect_options(ep, Role::Super.name(), pw, "postgres")).await?;
+        .password(role)
+        .ok_or_else(|| EngineError::Config(format!("roles.secret has no {} password", role.name())))?;
+    let conn = connect(&connect_options(ep, role.name(), pw, "postgres")).await?;
     let _ = conn.close().await;
     Ok(())
 }

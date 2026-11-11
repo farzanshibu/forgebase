@@ -41,6 +41,8 @@ tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# node_e2e mounts the agent endpoints (FB-168) on a test router.
+axum.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 sha2.workspace = true
 tempfile.workspace = true
@@ -100,6 +102,11 @@ path = "tests/backup_pg_e2e.rs"
 [[test]]
 name = "database_e2e"
 path = "tests/database_e2e.rs"
+
+# FB-168: `forgebase node join` against the agent endpoints.
+[[test]]
+name = "node_e2e"
+path = "tests/node_e2e.rs"
 
 [lints]
 workspace = true

@@ -137,6 +137,23 @@ impl Upstream {
             .join(" ")
     }
 
+    /// A connection URL for `database` on the primary with the password
+    /// (for slot functions over a normal connection; never log it).
+    pub fn url(&self, database: &str) -> Secret {
+        let host = if self.host.starts_with('/') {
+            format!("localhost/{}?host={}&port={}&sslmode={}", crate::pct(database), crate::pct_path(&self.host), self.port, self.sslmode.as_str())
+        } else {
+            let h = if self.host.contains(':') { format!("[{}]", self.host) } else { self.host.clone() };
+            format!("{h}:{}/{}?sslmode={}", self.port, crate::pct(database), self.sslmode.as_str())
+        };
+        Secret::new(format!(
+            "postgres://{}:{}@{host}&application_name={}",
+            crate::pct(&self.user),
+            crate::pct(self.password.expose()),
+            crate::pct(&self.application_name)
+        ))
+    }
+
     /// Writes the passfile (`*:*:*:user:password`, 0600) at `path`.
     ///
     /// # Errors
@@ -324,25 +341,27 @@ pub async fn refollow(standby: &EngineHandle, up: &Upstream) -> Result<()> {
     reload(standby).await
 }
 
-/// `SELECT pg_reload_conf()` as `forgebase_super`.
+/// Reloads the node's configuration (`pg_ctl reload`).
 ///
 /// # Errors
-/// SQL errors.
+/// `pg_ctl` fails.
 pub async fn reload(handle: &EngineHandle) -> Result<()> {
-    let mut c = replication::connect(&handle.url_for(Role::Super, "postgres")).await?;
-    sqlx::query("SELECT pg_reload_conf()")
-        .execute(&mut c)
-        .await
-        .map_err(|e| EngineError::Sql(format!("pg_reload_conf: {e}")))?;
-    Ok(())
+    handle.pg_ctl(&["reload", "-s"]).await
 }
 
-/// Facts of a running node ([`replication::facts`]) as `forgebase_super`.
+/// The URL standby-side checks use: `forgebase_replicator` on database
+/// `postgres`. A remote replica's host holds only that password, never the
+/// superuser's, so everything this module does on a standby works with it.
+pub fn standby_url(handle: &EngineHandle) -> Secret {
+    handle.url_for(Role::Replicator, "postgres")
+}
+
+/// Facts of a running node ([`replication::facts`]) as the replicator.
 ///
 /// # Errors
 /// SQL errors.
 pub async fn facts(handle: &EngineHandle) -> Result<replication::ClusterFacts> {
-    let mut c = replication::connect(&handle.url_for(Role::Super, "postgres")).await?;
+    let mut c = replication::connect(&standby_url(handle)).await?;
     replication::facts(&mut c).await
 }
 
@@ -352,7 +371,7 @@ pub async fn facts(handle: &EngineHandle) -> Result<replication::ClusterFacts> {
 /// # Errors
 /// `timeout` passed first, or SQL errors.
 pub async fn wait_replayed(standby: &EngineHandle, lsn: Lsn, timeout: Duration) -> Result<Lsn> {
-    let mut c = replication::connect(&standby.url_for(Role::Super, "postgres")).await?;
+    let mut c = replication::connect(&standby_url(standby)).await?;
     let deadline = Instant::now() + timeout;
     loop {
         let at: Option<String> = sqlx::query_scalar("SELECT pg_last_wal_replay_lsn()::text")
@@ -374,18 +393,16 @@ pub async fn wait_replayed(standby: &EngineHandle, lsn: Lsn, timeout: Duration) 
     }
 }
 
-/// Waits until the standby's WAL receiver is `streaming`.
+/// Waits until the standby's WAL receiver is `streaming` (and received
+/// WAL from its primary).
 ///
 /// # Errors
 /// `timeout` passed first, or SQL errors.
 pub async fn wait_streaming(standby: &EngineHandle, timeout: Duration) -> Result<()> {
-    let mut c = replication::connect(&standby.url_for(Role::Super, "postgres")).await?;
+    let mut c = replication::connect(&standby_url(standby)).await?;
     let deadline = Instant::now() + timeout;
     loop {
-        let status: Option<String> = sqlx::query_scalar("SELECT status::text FROM pg_stat_wal_receiver")
-            .fetch_optional(&mut c)
-            .await
-            .map_err(|e| EngineError::Sql(format!("pg_stat_wal_receiver: {e}")))?;
+        let status = replication::receiver_status(&mut c).await?;
         if status.as_deref() == Some("streaming") {
             return Ok(());
         }
@@ -400,14 +417,14 @@ pub async fn wait_streaming(standby: &EngineHandle, timeout: Duration) -> Result
     }
 }
 
-/// `SELECT pg_promote(true, <timeout>)` on the standby, then removes its
+/// Promotes the standby (`pg_ctl promote -w`), then removes its
 /// follow settings. The node is a primary on a new timeline when this
 /// returns.
 ///
 /// # Errors
 /// The node is not in recovery, or promotion did not finish in time.
 pub async fn promote(standby: &EngineHandle, timeout: Duration) -> Result<()> {
-    let mut c = replication::connect(&standby.url_for(Role::Super, "postgres")).await?;
+    let mut c = replication::connect(&standby_url(standby)).await?;
     let in_recovery: bool = sqlx::query_scalar("SELECT pg_is_in_recovery()")
         .fetch_one(&mut c)
         .await
@@ -418,17 +435,26 @@ pub async fn promote(standby: &EngineHandle, timeout: Duration) -> Result<()> {
             standby.layout().name()
         )));
     }
-    let secs = i32::try_from(timeout.as_secs().clamp(1, 3600)).unwrap_or(60);
-    let done: bool = sqlx::query_scalar("SELECT pg_promote(true, $1)")
-        .bind(secs)
-        .fetch_one(&mut c)
-        .await
-        .map_err(|e| EngineError::Sql(format!("pg_promote: {e}")))?;
-    if !done {
-        return Err(EngineError::State(format!(
-            "node {} did not finish promotion within {secs} s",
-            standby.layout().name()
-        )));
+    // `pg_ctl promote -w` is `pg_promote(true, …)` without a superuser:
+    // ForgeBase owns the postmaster, a remote host has no superuser login.
+    let secs = timeout.as_secs().clamp(1, 3600).to_string();
+    standby.pg_ctl(&["promote", "-w", "-s", "-t", &secs]).await?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let still: bool = sqlx::query_scalar("SELECT pg_is_in_recovery()")
+            .fetch_one(&mut c)
+            .await
+            .map_err(|e| EngineError::Sql(format!("pg_is_in_recovery: {e}")))?;
+        if !still {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(EngineError::State(format!(
+                "node {} did not finish promotion within {secs} s",
+                standby.layout().name()
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     clear_follow(standby.layout())?;
     tracing::info!(target: "forgebase::postgres", node = standby.layout().name(), "promoted to primary");

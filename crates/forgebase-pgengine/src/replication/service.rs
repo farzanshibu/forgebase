@@ -47,7 +47,9 @@ pub const AGENT_KEY_PREFIX: &str = "fba_";
 pub mod paths {
     /// `POST` [`super::JoinRequest`] → [`super::JoinGrant`] (no other auth: the token is it).
     pub const JOIN: &str = "/api/system/database/agent/join";
-    /// `GET ?wait_ms=` → [`super::CommandBatch`] (`Authorization: Bearer <agent key>`).
+    /// `GET ?wait_ms=&resend=1` → [`super::CommandBatch`] (`Authorization:
+    /// Bearer <agent key>`); `resend=1` (the agent's first poll after a
+    /// start) also returns commands sent before but never answered.
     pub const COMMANDS: &str = "/api/system/database/agent/nodes/{id}/commands";
     /// `POST` [`super::Heartbeat`] → [`super::HeartbeatReply`] (bearer agent key).
     pub const HEARTBEAT: &str = "/api/system/database/agent/nodes/{id}/heartbeat";
@@ -658,13 +660,14 @@ pub trait PoolSwitch: Send + Sync {
     fn fence<'a>(&'a self, set_id: &'a str) -> forgebase_db::BoxFuture<'a, ()>;
 
     /// Step 5: point the set's writer and read pools at `new_primary`
-    /// (running here as `handle`) and return the control database to write
-    /// the topology change to: for the control set, the new primary itself.
+    /// (running here as `handle`; `None` for a remote node, reached by its
+    /// sealed URL) and return the control database to write the topology
+    /// change to: for the control set, the new primary itself.
     fn repoint<'a>(
         &'a self,
         set_id: &'a str,
         new_primary: &'a DbNode,
-        handle: Arc<EngineHandle>,
+        handle: Option<Arc<EngineHandle>>,
     ) -> forgebase_db::BoxFuture<'a, ServiceResult<Database>>;
 }
 
@@ -797,10 +800,31 @@ pub async fn promote_local(
     let mut promoted = node.clone();
     promoted.role = NodeRole::Primary;
     promoted.state = NodeState::Ready;
-    let new_control = pools.repoint(&node.set_id, &promoted, handle.clone()).await?;
+    let new_control = pools.repoint(&node.set_id, &promoted, Some(handle.clone())).await?;
     let facts = facts_of(&handle).await;
+    let (old_id, epoch) = swap_roles(&new_control, &node, old_row.as_ref(), &facts, topology_file).await?;
+    Ok((
+        PromoteOutcome {
+            report,
+            epoch,
+            old_primary: old_id,
+        },
+        handle,
+    ))
+}
+
+/// Step 5 on control: the old primary becomes a `needs_rebuild` replica
+/// (a row named [`standby::OLD_PRIMARY`] when control's primary had none),
+/// the target the `ready` primary; epoch + 1; `topology.json` rewritten.
+async fn swap_roles(
+    new_control: &Database,
+    node: &DbNode,
+    old_row: Option<&DbNode>,
+    facts: &NodeFacts,
+    topology_file: Option<&Path>,
+) -> ServiceResult<(String, u64)> {
     let mut tx = new_control.begin(TxMode::Normal).await?;
-    let old_id = match &old_row {
+    let old_id = match old_row {
         Some(o) => {
             set_node(tx.as_mut(), &o.id, Some(NodeRole::Replica), NodeState::NeedsRebuild, None).await?;
             o.id.clone()
@@ -822,21 +846,171 @@ pub async fn promote_local(
             .await?
         }
     };
-    set_node(tx.as_mut(), node_id, Some(NodeRole::Primary), NodeState::Ready, Some(&facts)).await?;
+    set_node(tx.as_mut(), &node.id, Some(NodeRole::Primary), NodeState::Ready, Some(facts)).await?;
     let epoch = topology::bump_epoch(tx.as_mut()).await?;
     commit(tx).await?;
     if let Some(path) = topology_file {
-        let topo = topology::load(&new_control).await?;
+        let topo = topology::load(new_control).await?;
         topology::write_topology_file(path, &topo)?;
     }
-    Ok((
-        PromoteOutcome {
-            report,
-            epoch,
-            old_primary: old_id,
-        },
-        handle,
-    ))
+    Ok((old_id, epoch))
+}
+
+/// What [`promote_remote`] returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemotePromoteOutcome {
+    /// The old primary stopped cleanly and the agent waited for its last record.
+    pub clean: bool,
+    /// The position the agent waited for (`None` without a clean stop).
+    pub min_lsn: Option<Lsn>,
+    /// The agent's answer (`{"lsn", "timeline"}`).
+    pub agent: Option<String>,
+    /// The new topology epoch.
+    pub epoch: u64,
+    /// The old primary's node id (`needs_rebuild`).
+    pub old_primary: String,
+    /// `follow` commands queued for the set's other remote replicas.
+    pub follow_commands: Vec<String>,
+}
+
+/// Job `database.promote` for a remote replica (`forgebase node`), with the
+/// set's primary running here: fence and stop it, then the agent's
+/// `promote` command waits for the old primary's last record (clean stop)
+/// and runs `pg_promote`, creating slots for the other remote replicas;
+/// then [`PoolSwitch::repoint`] (no local handle), the role swap on
+/// control, and a `follow` command per other remote replica. The new
+/// primary is reached at the `listen` its agent reported at join.
+///
+/// # Errors
+/// Any step; `node_unreachable` when the agent does not answer in `timeout`.
+#[allow(clippy::too_many_arguments)]
+pub async fn promote_remote(
+    control: &dyn Backend,
+    old_primary: OldPrimary<'_>,
+    node_id: &str,
+    req: &PromoteRequest,
+    pools: &dyn PoolSwitch,
+    topology_file: Option<&Path>,
+    timeout: Duration,
+) -> ServiceResult<RemotePromoteOutcome> {
+    require_pg(control)?;
+    let topo = topology::load(control).await?;
+    let node = topo
+        .nodes
+        .iter()
+        .find(|n| n.id == node_id && n.state != NodeState::Retired)
+        .cloned()
+        .ok_or_else(|| ServiceError::NodeNotFound(node_id.to_owned()))?;
+    if req.confirm != node.name {
+        return Err(ServiceError::ConfirmMismatch(node.name));
+    }
+    if node.kind != NodeKind::Remote || node.role != NodeRole::Replica {
+        return Err(ServiceError::Unsupported(format!(
+            "{} is a {} {}: promote_remote promotes a remote replica",
+            node.name, node.kind, node.role
+        )));
+    }
+    let (_, listen) = agent_addresses(control, node_id).await?;
+    let listen = listen.ok_or_else(|| {
+        ServiceError::Unsupported(format!(
+            "{} reported no listen address at join: the server cannot reach it as a primary",
+            node.name
+        ))
+    })?;
+    let old_row = topo.primary_of(&node.set_id).cloned();
+    let others: Vec<DbNode> = topo
+        .nodes_of(&node.set_id)
+        .filter(|n| n.id != node.id && n.role == NodeRole::Replica && n.kind == NodeKind::Remote)
+        .filter(|n| !matches!(n.state, NodeState::Retired | NodeState::NeedsRebuild))
+        .cloned()
+        .collect();
+    update_node(control, node_id, None, NodeState::Promoting, None).await?;
+    pools.fence(&node.set_id).await;
+    let (layout, engine) = match &old_primary {
+        OldPrimary::Running(h) => {
+            h.stop().await?;
+            (h.layout().clone(), h.engine().clone())
+        }
+        OldPrimary::Stopped { layout, engine } => ((*layout).clone(), (*engine).clone()),
+    };
+    let control_data = if layout.pgdata().join("global").join("pg_control").is_file() {
+        Some(super::control_data(&engine, &layout.pgdata()).await?)
+    } else {
+        None
+    };
+    let min_lsn = control_data
+        .as_ref()
+        .filter(|c| c.primary_stopped_cleanly())
+        .map(|c| Lsn(c.checkpoint.0 + 1));
+    if min_lsn.is_none() && !req.accept_data_loss {
+        return Err(ServiceError::DataLoss(
+            "the old primary did not stop cleanly, so commits may be lost: confirm with accept_data_loss".into(),
+        ));
+    }
+    let slots: Vec<String> = others.iter().map(|n| super::slot_name(&n.name)).collect();
+    let cmd = queue_command(
+        control,
+        node_id,
+        CommandKind::Promote,
+        serde_json::json!({ "min_lsn": min_lsn, "slots": slots }),
+        None,
+    )
+    .await?;
+    let out = wait_command(control, &cmd.id, timeout).await?;
+    if out.state != "done" {
+        return Err(ServiceError::State(format!(
+            "{} did not promote: {}",
+            node.name,
+            out.result.unwrap_or_default()
+        )));
+    }
+    let mut promoted = node.clone();
+    promoted.role = NodeRole::Primary;
+    promoted.state = NodeState::Ready;
+    let new_control = pools.repoint(&node.set_id, &promoted, None).await?;
+    let (old_id, epoch) = swap_roles(&new_control, &node, old_row.as_ref(), &NodeFacts::default(), topology_file).await?;
+    let (host, port) = listen
+        .rsplit_once(':')
+        .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.trim_matches(['[', ']']).to_owned(), p)))
+        .ok_or_else(|| ServiceError::Invalid(format!("bad listen address {listen:?}")))?;
+    let mut follow_commands = Vec::new();
+    for other in &others {
+        let grant = UpstreamGrantArgs {
+            host: host.clone(),
+            port,
+            slot: super::slot_name(&other.name),
+        };
+        let c = queue_command(
+            &new_control,
+            &other.id,
+            CommandKind::Follow,
+            serde_json::json!({ "upstream_change": grant }),
+            None,
+        )
+        .await?;
+        follow_commands.push(c.id);
+    }
+    Ok(RemotePromoteOutcome {
+        clean: min_lsn.is_some(),
+        min_lsn,
+        agent: out.result,
+        epoch,
+        old_primary: old_id,
+        follow_commands,
+    })
+}
+
+/// The part of an upstream a `follow` after a remote promote changes (the
+/// agent keeps its replicator login: the new primary is a clone with the
+/// same roles).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpstreamGrantArgs {
+    /// New primary host.
+    pub host: String,
+    /// Port.
+    pub port: u16,
+    /// Slot on the new primary.
+    pub slot: String,
 }
 
 /// "Rejoin" for a local old primary (`needs_rebuild`): `pg_rewind` from
@@ -1252,8 +1426,7 @@ pub async fn agent_addresses(control: &dyn Backend, node_id: &str) -> ServiceRes
 pub async fn authenticate_agent(control: &dyn Backend, node_id: &str, key: &str) -> ServiceResult<()> {
     let rows = control
         .fetch_all(&Statement::new(
-            "SELECT a.key_hash FROM _forgebase_db_node_agents a JOIN _forgebase_db_nodes n ON n.id = a.node_id \
-             WHERE a.node_id = ?1 AND n.state <> 'retired'",
+            "SELECT a.key_hash FROM _forgebase_db_node_agents a WHERE a.node_id = ?1",
             vec![node_id.into()],
         ))
         .await?;
@@ -1531,7 +1704,13 @@ pub fn state_after_heartbeat(stored: NodeState, reported: AgentState) -> Option<
 /// Bad agent key, or database errors.
 pub async fn heartbeat(control: &dyn Backend, node_id: &str, agent_key: &str, hb: &Heartbeat) -> ServiceResult<HeartbeatReply> {
     authenticate_agent(control, node_id, agent_key).await?;
-    let node = node_by_id(control, node_id).await?;
+    // A removed (retired) node still reports once: the answer to its `stop`.
+    let node = topology::load(control)
+        .await?
+        .nodes
+        .into_iter()
+        .find(|n| n.id == node_id)
+        .ok_or_else(|| ServiceError::NodeNotFound(node_id.to_owned()))?;
     let ts = now();
     let mut tx = control.begin(TxMode::Normal).await?;
     tx.execute(&Statement::new(

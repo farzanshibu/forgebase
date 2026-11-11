@@ -279,9 +279,9 @@ impl PoolSwitch for TestPools {
         &'a self,
         _set_id: &'a str,
         _new_primary: &'a topology::DbNode,
-        handle: Arc<EngineHandle>,
+        handle: Option<Arc<EngineHandle>>,
     ) -> forgebase_db::BoxFuture<'a, service::ServiceResult<Database>> {
-        Box::pin(async move { Ok(open_db(&handle).await) })
+        Box::pin(async move { Ok(open_db(&handle.expect("local")).await) })
     }
 }
 
