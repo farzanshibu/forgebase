@@ -57,6 +57,10 @@ name = "server_lifecycle"
 path = "../../tests/integration/server_lifecycle.rs"
 
 [[test]]
+name = "serve_signal_e2e"
+path = "../../tests/integration/serve_signal_e2e.rs"
+
+[[test]]
 name = "cli_e2e"
 path = "../../tests/integration/cli_e2e.rs"
 
