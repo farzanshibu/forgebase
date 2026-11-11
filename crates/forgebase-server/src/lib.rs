@@ -1080,7 +1080,9 @@ async fn open_auth(
     cfg.allow_private_outbound = config.auth.allow_private_outbound;
     let public_url = cfg.public_url.clone();
     // FB-171: control's set handle (its replica reads route per §2.5).
-    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(router.control());
+    // FIX-15: the live one, so replicas added or removed while the server
+    // runs are used (or dropped) by auth, policy and the data core at once.
+    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(router.control_backend());
     let policy = forgebase_policy::PolicyService::open(backend.clone())
         .await
         .map_err(|e| ServerError::Policy(e.to_string()))?;

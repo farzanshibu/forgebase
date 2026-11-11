@@ -61,7 +61,7 @@ pub use pg::extensions::{
 };
 pub use pg::listen::Listener;
 pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_placeholders};
-pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
+pub use router::{ControlBackend, DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
 pub use routing::{
     CommitToken, Consistency, Lsn, PrimaryOnly, ReadAfter, ReadIntent, ReadRequest, ReadRouter, ReadRouting,
     ReadTarget, ReadVia, ReplicaOptions, ReplicaSet,
