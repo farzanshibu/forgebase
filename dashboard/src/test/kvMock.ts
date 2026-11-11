@@ -80,9 +80,9 @@ export function installKv(mockApi: MockApi): KvState {
   mock.on("PUT", `${K}/{ns}/keys/{key}/ttl`, ({ params, body }) => { const it = space(params.ns!)[params.key!]; if (!it) return nokey(); it.ttl_ms = (body as { ttl_ms: number }).ttl_ms; return { status: 200, body: { applied: true } }; });
   mock.on("DELETE", `${K}/{ns}/keys/{key}/ttl`, ({ params }) => { const it = space(params.ns!)[params.key!]; if (!it) return nokey(); const had = it.ttl_ms !== null; it.ttl_ms = null; return { status: 200, body: { persisted: had } }; });
   mock.on("PUT", `${K}/{ns}/strings/{key}`, ({ params, body }) => {
-    const b = body as { value: string; keepttl?: boolean };
+    const b = body as { value: string; keepttl?: boolean; ttl_ms?: number };
     const prev = space(params.ns!)[params.key!];
-    space(params.ns!)[params.key!] = { type: "string", value: b.value, ttl_ms: b.keepttl ? prev?.ttl_ms ?? null : null };
+    space(params.ns!)[params.key!] = { type: "string", value: b.value, ttl_ms: b.ttl_ms ?? (b.keepttl ? prev?.ttl_ms ?? null : null) };
     return { status: 200, body: { stored: true } };
   });
   mock.on("POST", `${K}/{ns}/hashes/{key}/set`, ({ params, body }) => {

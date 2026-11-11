@@ -38,7 +38,6 @@ export default function NodeBrowser() {
       <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setApplied(label.trim()); }}>
         <FormField label="Label">{(p) => <Input {...p} size="sm" aria-label="Label filter" value={label} onChange={(e) => setLabel(e.target.value)} />}</FormField>
         <Button type="submit">Apply filter</Button>
-        <Button type="button" tone="primary" className="ml-auto" onClick={() => setCreating(true)}>New node</Button>
       </form>
       <ErrorView error={error} onRetry={reload} />
       {!loaded && !error && <SkeletonTable rows={4} columns={4} label="Loading nodes" />}
