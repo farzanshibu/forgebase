@@ -1,8 +1,9 @@
 //! The set router (ADR-0029 §3.4, §3.5).
 //!
 //! [`DbRouter`] maps a tenant to the set that holds its rows and hands out a
-//! [`SetHandle`], which implements [`Backend`] on that set's primary
-//! (FB-167 adds replica reads behind the same handle):
+//! [`SetHandle`], which implements [`Backend`] on that set's primary and,
+//! when the set has replicas, routes [`Backend::fetch_routed`] reads to them
+//! ([`ReplicaSet`], FB-167):
 //!
 //! * [`DbRouter::control`]: the control set (identity, policy, catalog,
 //!   billing, topology; every table of placement class `control`);
@@ -44,7 +45,10 @@ use tokio::sync::watch;
 
 use crate::backend::{Backend, BoxFuture, PlanStep, Rows, SlowQuery, Statement, TxMode, Value, WriteTx};
 use crate::dialect::Dialect;
-use crate::topology::{self, CONTROL_SET_ID, DbNode, DbSet, Placement, PlacementState, SetState, Topology};
+use crate::routing::{ReadIntent, ReadRouting, ReplicaNode, ReplicaOptions, ReplicaSet, check_replica};
+use crate::topology::{
+    self, CONTROL_SET_ID, DbNode, DbSet, NodeRole, NodeState, Placement, PlacementState, SetState, Topology,
+};
 use crate::{BackendKind, Database, DbError};
 
 /// How long a request for a frozen tenant waits by default (ADR-0029 §3.8
@@ -98,12 +102,30 @@ impl<'a> From<&'a str> for TenantRef<'a> {
 pub struct SetHandle {
     set: Arc<DbSet>,
     db: Database,
+    replicas: Option<ReplicaSet>,
 }
 
 impl SetHandle {
     /// A handle over `db` for `set`.
     pub fn new(set: DbSet, db: Database) -> Self {
-        Self { set: Arc::new(set), db }
+        Self {
+            set: Arc::new(set),
+            db,
+            replicas: None,
+        }
+    }
+
+    /// Same handle, routing replica reads over `replicas` (an empty set
+    /// routes nothing). Its commits then record read-your-writes tokens.
+    #[must_use]
+    pub fn with_replicas(mut self, replicas: ReplicaSet) -> Self {
+        self.replicas = (!replicas.is_empty()).then_some(replicas);
+        self
+    }
+
+    /// The set's replicas, when it has any.
+    pub fn replicas(&self) -> Option<&ReplicaSet> {
+        self.replicas.as_ref()
     }
 
     /// Set id.
@@ -143,6 +165,7 @@ impl fmt::Debug for SetHandle {
             .field("id", &self.set.id)
             .field("number", &self.set.number)
             .field("location", &self.db.location())
+            .field("replicas", &self.replicas.as_ref().map_or(0, ReplicaSet::len))
             .finish()
     }
 }
@@ -164,8 +187,21 @@ impl Backend for SetHandle {
         self.db.fetch_all(stmt)
     }
 
+    fn fetch_routed<'a>(&'a self, stmt: &'a Statement, intent: &'a ReadIntent) -> BoxFuture<'a, Result<Rows, DbError>> {
+        match &self.replicas {
+            None => self.db.fetch_all(stmt),
+            Some(replicas) => Box::pin(replicas.fetch(stmt, intent)),
+        }
+    }
+
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
-        self.db.begin(mode)
+        match &self.replicas {
+            None => self.db.begin(mode),
+            Some(replicas) => Box::pin(async move {
+                let tx = self.db.begin(mode).await?;
+                Ok(replicas.wrap_tx(tx))
+            }),
+        }
     }
 
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {
@@ -199,6 +235,19 @@ impl Backend for SetHandle {
 pub trait SetConnector: Send + Sync + fmt::Debug {
     /// Opens `set`'s primary.
     fn connect<'a>(&'a self, set: &'a DbSet, primary: &'a DbNode) -> BoxFuture<'a, Result<Database, DbError>>;
+
+    /// Opens a replica of `set` (control included) read-only
+    /// (`DbOptions::read_only`). The default refuses: a connector that
+    /// cannot open replicas leaves every read on the primary.
+    fn connect_replica<'a>(&'a self, set: &'a DbSet, node: &'a DbNode) -> BoxFuture<'a, Result<Database, DbError>> {
+        let _ = set;
+        Box::pin(async move {
+            Err(DbError::Unsupported(format!(
+                "the set connector cannot open replica {}",
+                node.name
+            )))
+        })
+    }
 }
 
 /// Where new tenants go (`[database.sharding] placement`).
@@ -241,6 +290,8 @@ pub struct RouterOptions {
     pub policy: PlacementPolicy,
     /// How long a request for a frozen tenant waits.
     pub freeze_timeout: Duration,
+    /// Replica routing (`[database.replicas]`).
+    pub replicas: ReplicaOptions,
 }
 
 impl Default for RouterOptions {
@@ -250,8 +301,18 @@ impl Default for RouterOptions {
             topology_file: None,
             policy: PlacementPolicy::default(),
             freeze_timeout: DEFAULT_FREEZE_TIMEOUT,
+            replicas: ReplicaOptions::default(),
         }
     }
+}
+
+/// Replica states the router opens: a replica being provisioned, promoted,
+/// rebuilt or retired is not routed to.
+fn routable_replica(state: NodeState) -> bool {
+    matches!(
+        state,
+        NodeState::Ready | NodeState::CatchingUp | NodeState::Streaming | NodeState::Lagging | NodeState::Unreachable
+    )
 }
 
 /// Load of one set, for placement and rebalance plans.
@@ -588,6 +649,22 @@ impl DbRouter {
             };
             handles.insert(set.id.clone(), SetHandle::new(set.clone(), db));
         }
+        // Replicas per set (control included); a set keeps its replica set
+        // while its nodes are the same.
+        let known_replicas: HashMap<String, ReplicaSet> = self
+            .read()
+            .handles
+            .iter()
+            .filter_map(|(id, h)| h.replicas.clone().map(|r| (id.clone(), r)))
+            .collect();
+        for handle in handles.values_mut() {
+            if let Some(replicas) = self
+                .replicas_for(&topology, handle, known_replicas.get(handle.id()))
+                .await
+            {
+                *handle = handle.clone().with_replicas(replicas);
+            }
+        }
         let epoch = {
             let mut state = self.write();
             let epoch = state.topology.epoch.max(topology.epoch);
@@ -604,6 +681,80 @@ impl DbRouter {
             epoch
         };
         self.changed(epoch)
+    }
+
+    /// The replica set of `handle`'s set: its replica nodes in a routable
+    /// state, opened through the connector and checked
+    /// ([`check_replica`]). A node that cannot be opened or fails the check
+    /// is left out with a warning: a missing replica never fails routing.
+    async fn replicas_for(
+        &self,
+        topology: &Topology,
+        handle: &SetHandle,
+        old: Option<&ReplicaSet>,
+    ) -> Option<ReplicaSet> {
+        let options = self.inner.options.replicas;
+        if options.read_routing == ReadRouting::Primary || handle.db.kind() != BackendKind::Postgres {
+            return None;
+        }
+        let nodes: Vec<&DbNode> = topology
+            .nodes_of(handle.id())
+            .filter(|n| n.role == NodeRole::Replica && routable_replica(n.state))
+            .collect();
+        if nodes.is_empty() {
+            return None;
+        }
+        let mut ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        ids.sort();
+        if let Some(old) = old
+            && old.node_ids() == ids
+        {
+            return Some(old.clone());
+        }
+        let open: HashMap<String, Database> = old
+            .map(ReplicaSet::node_databases)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut replicas = Vec::new();
+        for node in nodes {
+            let db = match open.get(&node.id) {
+                Some(db) => db.clone(),
+                None => {
+                    let Some(connector) = self.inner.options.connector.as_ref() else {
+                        tracing::warn!(set = %handle.id(), node = %node.name, "no set connector: replica not used");
+                        continue;
+                    };
+                    let db = match connector.connect_replica(handle.set(), node).await {
+                        Ok(db) => db,
+                        Err(e) => {
+                            tracing::warn!(set = %handle.id(), node = %node.name, error = %e, "replica not opened");
+                            continue;
+                        }
+                    };
+                    if let Err(e) = check_replica(&handle.db, &db, &node.name).await {
+                        tracing::error!(set = %handle.id(), node = %node.name, error = %e, "replica refused");
+                        db.close().await;
+                        continue;
+                    }
+                    db
+                }
+            };
+            replicas.push(ReplicaNode { node: node.clone(), db });
+        }
+        if replicas.is_empty() {
+            return None;
+        }
+        Some(
+            ReplicaSet::open(
+                handle.id(),
+                handle.db.clone(),
+                replicas,
+                options,
+                Some(self.inner.control_db.clone()),
+            )
+            .await,
+        )
     }
 
     /// Places `tenant` on set `set_id` with `state` (moves and their

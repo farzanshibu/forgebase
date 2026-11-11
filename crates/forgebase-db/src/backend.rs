@@ -20,6 +20,7 @@ use serde::Serialize;
 
 use crate::DbError;
 use crate::dialect::Dialect;
+use crate::routing::ReadIntent;
 
 /// A boxed, sendable future (object-safe async trait methods without extra crates).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -246,6 +247,16 @@ pub trait Backend: Send + Sync + fmt::Debug {
     /// Runs a read-only statement on the read pool. A statement that tries to
     /// write fails ([`DbError::ReadOnly`]) instead of writing.
     fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>>;
+
+    /// Runs a read-only statement where `intent` allows (ADR-0029 §2.5):
+    /// on a set with replicas ([`crate::SetHandle`]), a healthy replica that
+    /// has replayed the caller's commits, else the primary. Every other
+    /// backend runs [`Backend::fetch_all`]. Only the call sites of the §2.5
+    /// table pass [`ReadIntent::replica`].
+    fn fetch_routed<'a>(&'a self, stmt: &'a Statement, intent: &'a ReadIntent) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let _ = intent;
+        self.fetch_all(stmt)
+    }
 
     /// Starts a write transaction on the single writer.
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>>;
