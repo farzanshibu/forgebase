@@ -184,7 +184,6 @@ impl JobService {
             .scalar()
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        let mut params = params;
         let n = params.len();
         params.push(limit.unwrap_or(50).clamp(1, crate::model::MAX_PAGE).into());
         params.push(offset.unwrap_or(0).max(0).into());
