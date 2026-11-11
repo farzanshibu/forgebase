@@ -730,6 +730,8 @@ impl DataService {
         }
         .await;
         finish(tx, result).await?;
+        // FB-173: then on every shard, concurrently (no-op without shards).
+        self.build_index_on_shards(&coll, &def).await;
         self.index_info(&def.name).await
     }
 
@@ -775,10 +777,13 @@ impl DataService {
                 &ctx.actor(),
             )
             .await?;
-            Ok(())
+            Ok(def)
         }
         .await;
-        finish(tx, result).await
+        let def = finish(tx, result).await?;
+        // FB-173: then on every shard (no-op without shards).
+        self.drop_index_on_shards(&def).await;
+        Ok(())
     }
 
     /// Indexes of one collection (or of every table when `None`), with their

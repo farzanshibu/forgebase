@@ -3362,6 +3362,188 @@ incl. FB-179, snapshots and the migrate hook, external logical round trip),
 `forgebase-cli/tests/backup_e2e.rs` (3, both backends), unit tests in
 `pg.rs`.
 
+## Addendum: FB-151 — `forgebase db convert`
+
+Built as §6.4 describes, with the FB-158 rows for FB-151 (ADR-0029). Where
+the code differs from the text above, or decides something it left open, it
+is said here.
+
+**Files.** `crates/forgebase-convert/**` (new crate: `lib.rs` orchestration,
+`canon.rs` canonical encoding and SHA-256, `copytext.rs` the `COPY` text
+format, `pg.rs` / `sqlite.rs` the copy connections and catalog reads,
+`plan.rs` table pairing, `schema.rs` target collections and indexes,
+`refusals.rs` the `--to sqlite` list, `extensions.rs` extension data to
+portable rows; `tests/convert.rs`); `crates/forgebase-cli/src/convert.rs`
+(new) and `tests/convert_e2e.rs` (new). Shared edits: `mod convert` in
+`main.rs`, the `DbCommand::Convert` variant in `db.rs` (the command is
+`forgebase db convert`, so the variant lives next to `db dump`, not in
+`main.rs`'s `Command`), the workspace dependency line, the CLI's
+`Cargo.toml` (dependency, `toml_edit`, the `[[test]]` entry). No
+migration. The workspace `members` is `crates/*`, so no members edit.
+
+**Command.** `forgebase db convert --to postgres|sqlite [--no-backup]
+[--no-prepare] [--json]`. `--to postgres` goes to the bundled engine, or to
+the external server when `[database.postgres] mode = "external"` (URL from
+`FORGEBASE_DATABASE_URL`, never written by convert). Steps, in order:
+data-directory lock (a running server is refused); refuse the same backend,
+a missing project, an existing target (`forgebase.db`, `postgres/data`, or
+an external database with tables in `public`/`forgebase`), a managed source
+with `postgres/nodes/*` (replicas or sets); open the source with
+`open_owned` (the bundled engine started for the run); a snapshot labelled
+`before db convert` (`BackupOptions{pg}`, FB-150's note); migrate the source
+(SQLite pre-migration snapshot / FB-150 hook); `--to sqlite` brings
+extension data to portable rows (below); create and migrate the target
+(`Engine::prepare` = `initdb` + start, or a new file); `forgebase_convert::
+convert`; close both, stop the new engine; rename the old database
+(`forgebase.db` + `-wal`/`-shm` → `forgebase.db.pre-postgres`,
+`postgres/data` → `postgres/data.pre-sqlite`; `.<unix time>` appended when
+the name is taken; never deleted; an external source is left as is);
+write the marker after the data (`database::write_marker`); set
+`[database] backend` in the config file with `features::set_keys`
+(comments kept; a contradicting `FORGEBASE_DATABASE_BACKEND` is named). A
+failed run removes the target it made (the new file, the new cluster, or on
+an external server the tables in `public` and schema `forgebase`, which
+were empty before) and leaves the source as it was.
+
+**Copy (library).** `convert(source, target, progress)` takes both
+`Database` handles (migrated) and a copy connection for each
+(`Conn::Sqlite(path)` / `Conn::Postgres(url)`).
+- Preconditions: source has no pending migration; target at the same
+  version; target has no collections. SQLite source: `integrity_check`, no
+  foreign-key violations, `validate_postgres_names(None)` on every
+  collection (FB-144's note). PostgreSQL source: the refusal list.
+- *Decided here:* collection tables and their indexes are **made by the
+  data core on the target** — `create_collection` in relation order (a
+  relation cycle is created without its closing fields, which
+  `update_collection` adds once their target exists; views last) and
+  `create_index` for every `manual` row of `_forgebase_indexes`
+  (b-tree, unique, partial, expression, full text). No DDL is translated,
+  so the target holds exactly what that engine would have made, including
+  automatic and tenant indexes. A source whose automatic index names
+  differ from what the target derives (names longer than 63 bytes,
+  fitted on PostgreSQL) is refused. The catalog rows these calls write are
+  then replaced by the source's rows (next point).
+- Tables: the PostgreSQL catalog (`forgebase` and `public` base tables) is
+  the list; every table and column must exist on both sides
+  (`_forgebase_migrations` is not copied: each engine keeps its own ledger;
+  SQLite's `sqlite_*`, FTS5 tables and their shadow tables are engine
+  internals). A PostgreSQL-only column must be NULL in every row (`vec`
+  after `vector.convert`). `_rowid` ↔ SQLite `rowid` for
+  `ROWID_TABLES` (`_forgebase_jobs`, `_forgebase_job_workflows`).
+  `_forgebase_meta` rows `ext.%` (FB-161 pins) are not copied: the target's
+  first start decides the engines again.
+- One transaction on the target for everything: `TRUNCATE` (PostgreSQL) /
+  `DELETE` (SQLite) of every copied table, then the rows. PostgreSQL:
+  `COPY … FROM STDIN` (text format, 1 MiB chunks) as `forgebase_super` with
+  `SET LOCAL session_replication_role = replica` (triggers and FK triggers
+  off; the source's foreign keys were checked); a role that is not a
+  superuser gets `ALTER TABLE … DISABLE TRIGGER USER` per table and
+  `SET CONSTRAINTS ALL DEFERRED` (checked before the commit). SQLite: the
+  copy connection runs with `foreign_keys` off, drops the triggers of
+  `_forgebase*` tables for the copy (append-only guards, the vector FTS
+  sync) and recreates them from `sqlite_master`, keeps collection-table
+  triggers (full-text sync fills the new FTS5 tables as rows arrive), and
+  runs `PRAGMA foreign_key_check` before the commit. The PostgreSQL source
+  is read in one `REPEATABLE READ READ ONLY` transaction with `COPY (SELECT
+  …) TO STDOUT`.
+- Types by the PostgreSQL column (`canon::Kind`): integers, `boolean`
+  (0/1), `double precision`, text types (`citext` too), `jsonb`/`json`
+  (SQLite JSON text; `jsonb` output is compacted on the way back, key
+  order is `jsonb`'s), `bytea` (BLOB; hex both ways); anything else as its
+  text form.
+- Derived: `_forgebase_vector_fts` is rebuilt from
+  `_forgebase_vector_items.content` (contentless FTS5 on SQLite cannot be
+  read). Identity sequences: `setval` past `max(col)` and past SQLite's
+  `sqlite_sequence` (deleted ids are not handed out again);
+  `--to sqlite` raises `sqlite_sequence` to the PostgreSQL sequence's last
+  value.
+- Verification, inside the same transaction: per table the row count and
+  SHA-256 over the rows in primary-key order (text keys in byte order:
+  `COLLATE "C"` / `COLLATE BINARY`; a table without a key hashes its
+  sorted row digests) in a canonical encoding: tagged, length-prefixed
+  values; JSON with sorted keys, no whitespace and integral numbers as
+  integers (so `jsonb`'s normalisation compares equal); floats by bit
+  pattern. Any difference rolls the transaction back (`Mismatch`).
+- Report: per-table rows and SHA-256 (system tables first), collections and
+  indexes made, derived rows, sequences, and `manual`: raw-SQL objects not
+  recreated — SQLite indexes and triggers on collection tables and views
+  that the target does not have, PostgreSQL indexes on collection tables
+  that SQLite does not have — with their SQL.
+
+**`--to sqlite` refusals** (all listed in one error): more than one
+non-retired database set; replicas; row-level security policies not named
+`fb_*` (FB-152's own are regenerated, not copied); functions in `public`
+that no extension owns; non-internal triggers on collection tables; enum,
+domain, range and multirange types and free-standing sequences in
+`public`; views and materialized views in `public` that are not view
+collections; trigram indexes (FB-166: `pg_trgm` only; fuzzy search is
+PostgreSQL only, so the index is dropped by hand first); columns of
+extension types other than `citext`; vectors in
+pgvector, pgmq subscription queues, pg_cron `fbsched_*` jobs (each message
+names the job kind or setting that moves it). A derived Apache AGE graph is
+**not** refused: it is not copied, and the report says so.
+
+**Extension data (`prepare_portable`, `--to sqlite` unless
+`--no-prepare`).** On the source, with the services' own conversions:
+`VectorService::convert(Portable)` when vectors sit in `vec` or the pin
+says `extension`; `QueueService::convert(Portable)` when `pgmq.q_fbs_*`
+queues exist or the pin says `extension`; pg_cron released by
+`attach_pgcron` on a handle without the extension setup (the cron feature
+is not active there, so FB-165's release removes `fbsched_*` jobs and
+hands the schedules back to the tick). The source stays a valid
+PostgreSQL project on the portable engines. `--to postgres` lands
+everything portable and copies no `ext.*` pin, so the first start in
+`auto` mode pins and moves vectors to pgvector and deliveries to pgmq
+(FB-162/FB-164 reconcile) and attaches pg_cron.
+
+**Tests.** `crates/forgebase-convert`: unit tests (canonical encoding,
+`COPY` text codec, pairing); `tests/convert.rs` — a SQLite database built
+by the data core (collections of every field storage, a relation cycle, a
+view, manual b-tree and full-text indexes, unicode/tab/newline/backslash
+text, JSON, booleans, numbers), the graph, jobs (jobs and a schedule),
+queue (topic, subscription, an owed delivery) and vector (collection,
+vectors with text) services and a raw `bytea` row; converted to
+PostgreSQL and back to SQLite: every table's count and SHA-256 equal at
+both steps, the raw-SQL index reported, a second conversion into the now
+non-empty target refused; then the services run against both results
+(full-text search, filters, JSON, the view, a unique index, new ids after
+the copied ones, the delivery pulled, a vector search, a new job);
+refusals for PostgreSQL-only objects (with a trigram index where the engine
+has `pg_trgm`) and for a SQLite source with a
+dangling relation; a project born on PostgreSQL after the server's
+extension setup (vectors in pgvector, deliveries and a lease in pgmq):
+`--to sqlite` refused naming `vector.convert` / `queue.convert`, then
+`prepare_portable` and the conversion, no `ext.*` pin copied, the services
+on the result. Also fixed on the way: a stored view definition carries the
+fields derived from its query, which `create_collection` refuses, so they
+are cleared and the target derives them again. `crates/forgebase-cli/tests/convert_e2e.rs`: refusals
+(no project, same backend, a lite build without an engine) and, on
+PostgreSQL, the full CLI round trip (marker, kept files, config, status,
+admin login data, the snapshot, equal hashes, doctor).
+
+**Results** (after merging `main` with FB-166). `forgebase-convert`: 9 unit
+and 4 integration tests green on Homebrew PostgreSQL 18
+(`FORGEBASE_PG_ENGINE_DIR`) and on the bundled engine
+(`FORGEBASE_TEST_PG_ENGINE`; pgvector, pgmq and pg_trgm present there, so
+the extension and trigram paths run; Homebrew has none of them, so the
+extension test checks the plain path). `forgebase-cli`: all 14 test targets
+green with `FORGEBASE_TEST_BACKEND=sqlite` and `=postgres` (101 tests each;
+`convert_e2e`'s CLI round trip also run on the bundled engine). `cargo fmt
+--check` and `clippy -p forgebase-convert -p forgebase-cli --all-targets
+-D warnings` clean.
+
+**For FB-177 (docs).** Document `forgebase db convert` (flags above), that
+the server must be stopped, the snapshot, the kept files and how to go back
+(`db convert` the other way, or put `forgebase.db.pre-postgres` back and
+write `sqlite` into `forgebase.backend`), the `manual` list (raw SQL from
+the SQL editor is not translated), the refusal list, and that extension
+data is converted in the source first for `--to sqlite`.
+**For FB-179 (multi-set).** `--to sqlite` refuses more than one set or any
+replica (`_forgebase_db_sets`, `_forgebase_db_nodes`, `postgres/nodes/*`);
+`--to postgres` creates a single set (the control set the migrations seed).
+A multi-set conversion would run `convert` per set into each set's
+database; the library takes any two `Database` handles and URLs.
+
 ## Addendum (FB-153): direct logins, the SQL editor's role, TCP with TLS, extensions
 
 Written 2026-11-11 by FB-153 (rls-coverage §3.5–§3.6, G11). Human decision

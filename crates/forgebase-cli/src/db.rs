@@ -50,6 +50,10 @@ pub enum DbCommand {
     /// Write a `pg_dump` of the database that any PostgreSQL can load (works
     /// while the server runs). `forgebase backup` is the restorable backup.
     Dump(crate::dataops::DumpCli),
+    /// Move a stopped project between SQLite and PostgreSQL: a verified
+    /// table-level copy (counts and SHA-256 per table); the old database is
+    /// kept (FB-151).
+    Convert(crate::convert::ConvertCli),
     /// Open psql on the bundled PostgreSQL, through its Unix socket.
     ///
     /// Arguments after the options go to psql, for example
@@ -142,6 +146,7 @@ pub async fn run(g: &GlobalArgs, cli: DbCli) -> anyhow::Result<ExitCode> {
     match cli.command {
         DbCommand::Status { json } => status(g, json).await,
         DbCommand::Dump(args) => crate::dataops::run_db_dump(g, args).await,
+        DbCommand::Convert(args) => crate::convert::run(g, args).await,
         DbCommand::Psql {
             read_only,
             superuser,

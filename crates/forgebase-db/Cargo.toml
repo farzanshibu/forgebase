@@ -21,6 +21,7 @@ sqlx.workspace = true
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
+time.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

@@ -16,6 +16,7 @@
 //! PostgreSQL has its own runner and SQL files ([`postgres`]): a baseline for
 //! versions 1–25, then one twin per later SQLite migration.
 
+pub mod multi;
 pub mod postgres;
 
 use std::time::Instant;
@@ -204,6 +205,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         40,
         "native_rls",
         include_str!("../../../migrations/system/0040_native_rls.sql"),
+    ),
+    Migration::new(
+        41,
+        "index_builds",
+        include_str!("../../../migrations/system/0041_index_builds.sql"),
     ),
     Migration::new(
         42,

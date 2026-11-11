@@ -126,6 +126,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/postgres/0040_native_rls.sql"),
     ),
     Migration::new(
+        41,
+        "index_builds",
+        include_str!("../../../migrations/postgres/0041_index_builds.sql"),
+    ),
+    Migration::new(
         42,
         "db_logins",
         include_str!("../../../migrations/postgres/0042_db_logins.sql"),
