@@ -2284,7 +2284,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("forgebase.toml"),
-            "[database]\nbackend = \"postgres\"\n[database.postgres]\nurl = \"postgres://u:pw@db/x\"\nengine_dir = \"engine\"\n[database.postgres.settings]\nshared_buffers = \"256MB\"\nmax_connections = 100\njit = false\n",
+            "[database]\nbackend = \"postgres\"\n[database.postgres]\nurl = \"postgres://u:not-in-debug-7f3a@db/x\"\nengine_dir = \"engine\"\n[database.postgres.settings]\nshared_buffers = \"256MB\"\nmax_connections = 100\njit = false\n",
         )
         .unwrap();
         let loaded = load(
@@ -2301,8 +2301,14 @@ mod tests {
         assert_eq!(db.backend, crate::config::DatabaseBackend::Postgres);
         assert_eq!(db.postgres.mode, crate::config::PostgresMode::External);
         assert_eq!(db.postgres.extensions.graph, crate::config::ExtensionMode::Off);
-        assert_eq!(db.postgres.url.as_ref().unwrap().expose(), "postgres://u:pw@db/x");
-        assert!(!format!("{db:?}").contains("pw"), "the URL is redacted in Debug");
+        assert_eq!(
+            db.postgres.url.as_ref().unwrap().expose(),
+            "postgres://u:not-in-debug-7f3a@db/x"
+        );
+        assert!(
+            !format!("{db:?}").contains("not-in-debug-7f3a"),
+            "the URL is redacted in Debug"
+        );
         assert_eq!(db.postgres.engine_dir, tmp.path().join("engine").display().to_string());
         let st: Vec<(&str, &str)> = db
             .postgres
