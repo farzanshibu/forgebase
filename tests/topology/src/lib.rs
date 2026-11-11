@@ -642,3 +642,17 @@ pub fn psql(data: &std::path::Path, db: &str, sql: &str) -> Result<String, Strin
         Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
     }
 }
+
+/// Records a measurement: one `FB178_MEASURE <name> <json>` line on stderr,
+/// and appended to the file named by `FORGEBASE_TOPOLOGY_OUT` when set (CI
+/// uploads it).
+pub fn record(name: &str, value: &Json) {
+    let line = format!("FB178_MEASURE {name} {value}");
+    eprintln!("{line}");
+    if let Some(path) = std::env::var_os("FORGEBASE_TOPOLOGY_OUT") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}

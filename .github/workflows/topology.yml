@@ -1,0 +1,155 @@
+name: topology
+
+# FB-178 (ADR-0029): the replica and sharding stack end to end on Linux. One
+# primary with two local replicas and three shards, driven through the public
+# HTTP API (tests/topology), with chaos tests (a killed replica, a promotion
+# under writes, two-phase recovery after a crash, tenant moves under load),
+# lag and read-your-writes tests, and the measurements recorded in the
+# addendum of docs/adr/0029-postgres-extensions-replicas-sharding.md.
+#
+# Nightly, and on changes to the routing, shard, replica and move code. The
+# suites are gated by FORGEBASE_TOPOLOGY=1 so a plain `cargo test --workspace`
+# stays fast. The engine is the one engine.lock pins, downloaded the way the
+# CI workflow's PostgreSQL jobs do.
+
+on:
+  schedule:
+    - cron: "43 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/forgebase-db/src/router*"
+      - "crates/forgebase-db/src/routing/**"
+      - "crates/forgebase-db/src/shards*"
+      - "crates/forgebase-db/src/replicas*"
+      - "crates/forgebase-db/src/moves*"
+      - "crates/forgebase-db/src/twophase*"
+      - "crates/forgebase-pgengine/**"
+      - "crates/forgebase-server/src/replicas*"
+      - "crates/forgebase-server/src/moves*"
+      - "crates/forgebase-server/src/shards*"
+      - "tests/topology/**"
+      - "engine.lock"
+      - ".github/workflows/topology.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/forgebase-db/src/router*"
+      - "crates/forgebase-db/src/routing/**"
+      - "crates/forgebase-db/src/shards*"
+      - "crates/forgebase-db/src/replicas*"
+      - "crates/forgebase-db/src/moves*"
+      - "crates/forgebase-db/src/twophase*"
+      - "crates/forgebase-pgengine/**"
+      - "crates/forgebase-server/src/replicas*"
+      - "crates/forgebase-server/src/moves*"
+      - "crates/forgebase-server/src/shards*"
+      - "tests/topology/**"
+      - "engine.lock"
+      - ".github/workflows/topology.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: topology-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  topology:
+    name: topology (primary, two replicas, three shards)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      FORGEBASE_TEST_BACKEND: postgres
+      FORGEBASE_TOPOLOGY: "1"
+      GH_TOKEN: ${{ github.token }}
+      TARGET: x86_64-unknown-linux-musl
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: topology
+
+      # Short paths: the engine's Unix-socket path is limited to 103 bytes.
+      - name: Test engine directory
+        run: |
+          {
+            echo "FORGEBASE_TEST_PG_TMP=$RUNNER_TEMP"
+            echo "FORGEBASE_TOPOLOGY_OUT=$RUNNER_TEMP/topology-measurements.txt"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the dashboard so rust-embed embeds the real assets
+        run: |
+          cd dashboard
+          npm ci
+          npm run build
+
+      - name: zstd for the engine archive
+        run: command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd
+
+      - name: Download and unpack the pinned engine
+        run: |
+          set -euo pipefail
+          release=$(python3 deploy/postgres-engine/engine.py get engine.release)
+          mkdir -p "$RUNNER_TEMP/engine-dl"
+          gh release download "$release" --repo "$GITHUB_REPOSITORY" \
+            -p "forgebase-pg*-$TARGET.tar.zst" -p SHA256SUMS -D "$RUNNER_TEMP/engine-dl"
+          python3 - "$RUNNER_TEMP/engine-dl" <<'PY'
+          import hashlib, pathlib, sys
+          d = pathlib.Path(sys.argv[1])
+          archive = next(d.glob("forgebase-pg*.tar.zst"))
+          want = {l.split()[1].lstrip("*"): l.split()[0] for l in (d / "SHA256SUMS").read_text().splitlines() if l.strip()}
+          got = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if want.get(archive.name) != got:
+              sys.exit(f"{archive.name}: sha256 {got} is not the release's {want.get(archive.name)}")
+          print(f"{archive.name} verified ({got})")
+          PY
+          archive=$(ls "$RUNNER_TEMP"/engine-dl/forgebase-pg*.tar.zst)
+          python3 deploy/postgres-engine/engine.py extract "$archive" "$RUNNER_TEMP/engine"
+          {
+            echo "FORGEBASE_TEST_PG_ENGINE=$RUNNER_TEMP/engine"
+            echo "FORGEBASE_PG_ENGINE_DIR=$RUNNER_TEMP/engine"
+          } >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/engine/bin/postgres" --version
+
+      # Each test starts several PostgreSQL clusters (15 to 60 s each): three
+      # tests at a time fit a 4-core runner; the chaos tests kill processes,
+      # which is why every test has its own data directory and clusters.
+      - name: Topology suites
+        run: cargo test -p forgebase-topology-tests --locked -- --test-threads=3 --nocapture
+
+      - name: Measurements
+        if: always()
+        run: |
+          if [ -f "$FORGEBASE_TOPOLOGY_OUT" ]; then
+            {
+              echo '### Topology measurements (FB-178)'
+              echo '```'
+              cat "$FORGEBASE_TOPOLOGY_OUT"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: topology-measurements
+          path: ${{ runner.temp }}/topology-measurements.txt
+          if-no-files-found: ignore
