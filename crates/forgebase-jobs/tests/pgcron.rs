@@ -64,8 +64,7 @@ fn new(name: &str, cron: &str) -> NewSchedule {
 }
 
 /// The job columns that must not depend on who fired the schedule.
-const JOB_COLUMNS: &str = "queue, kind, payload::text, priority, status, max_attempts, backoff_base_ms, \
-    backoff_max_ms, visibility_timeout_ms, timeout_ms, waiting_for, attempts, tenant, context::text, schedule_id IS NOT NULL";
+const JOB_COLUMNS: &str = "j.queue, j.kind, j.payload::text, j.priority, j.status, j.max_attempts, j.backoff_base_ms, j.backoff_max_ms, j.visibility_timeout_ms, j.timeout_ms, j.waiting_for, j.attempts, j.tenant, j.context::text, j.schedule_id IS NOT NULL";
 
 #[tokio::test]
 async fn fire_schedule_inserts_the_job_the_tick_inserts() {
@@ -540,6 +539,53 @@ async fn a_restart_fires_a_missed_schedule_once_and_cleans_up_when_pg_cron_goes(
     let back = c.svc.schedule(&sys, &a.id).await.unwrap();
     assert_eq!(back.fired_by, "forgebase");
     plain.close().await;
+    c.db.close().await;
+    c.handle.stop().await.unwrap();
+}
+
+/// The differential test's live half: the real pg_cron accepts every
+/// expression the mapping produces and rejects the ones it must not map.
+#[tokio::test]
+async fn the_real_pg_cron_accepts_what_the_mapping_produces() {
+    let Some(c) = cron_engine(18_463).await else { return };
+    let mapped = [
+        "* * * * *",
+        "*/15 * * * *",
+        "0 9 * * MON-FRI",
+        "0 9 * * mon-fri",
+        "30 2 1 JAN *",
+        "0 0 * * 7",
+        "0 0 13 * FRI",
+        "1-5/2,10 */6 * * *",
+        "0 0 *,5 * *",
+        "0-59/20 */4 * jan-mar *",
+        "*/10 * * * * *",
+        "*/1 * * * * *",
+        "*/30 * * * * *",
+        "0 0 0 * * *",
+    ];
+    for expr in mapped {
+        let text = forgebase_jobs::map_expression(expr).unwrap_or_else(|| panic!("{expr:?} should map"));
+        let sql = format!("SELECT cron.schedule('fbdiff', '{text}', 'SELECT 1')");
+        let mut tx = c.db.begin(TxMode::Normal).await.unwrap();
+        tx.fetch_all(&Statement::new(sql, vec![]))
+            .await
+            .unwrap_or_else(|e| panic!("pg_cron refused {text:?} (from {expr:?}): {e}"));
+        tx.commit().await.unwrap();
+    }
+    // What pg_cron refuses must not be mapped.
+    for expr in ["5/10 * * * *", "0 0 1/2 * *", "? * * * *"] {
+        assert!(forgebase_jobs::map_expression(expr).is_none(), "{expr:?}");
+        let mut tx = c.db.begin(TxMode::Normal).await.unwrap();
+        let r = tx
+            .fetch_all(&Statement::new(
+                format!("SELECT cron.schedule('fbdiff', '{expr}', 'SELECT 1')"),
+                vec![],
+            ))
+            .await;
+        let _ = tx.rollback().await;
+        assert!(r.is_err(), "pg_cron should refuse {expr:?}");
+    }
     c.db.close().await;
     c.handle.stop().await.unwrap();
 }
