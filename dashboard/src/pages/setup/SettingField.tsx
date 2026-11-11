@@ -5,15 +5,19 @@ import { Switch } from "panelui-web/switch";
 import { Textarea } from "panelui-web/textarea";
 import type { FeatureSetting, SettingSource, SettingValue } from "../../api";
 import { Sel } from "../../components/controls";
+import { Hint, SOURCE_TEXT } from "./Hint";
 import { readOnlyReason } from "./settingUtil";
 
 const SOURCE_VARIANT: Record<SettingSource, "outline" | "info" | "warning"> = { default: "outline", file: "info", env: "warning", flag: "warning" };
 
+/** Where a value comes from, with a tooltip that says what that means. */
 export function SourceBadge({ source }: { source: SettingSource }) {
   return (
-    <Badge variant={SOURCE_VARIANT[source]} size="sm">
-      {source}
-    </Badge>
+    <Hint text={SOURCE_TEXT[source]} label={`Source: ${source}. What does this mean?`}>
+      <Badge variant={SOURCE_VARIANT[source]} size="sm" data-source={source}>
+        {source}
+      </Badge>
+    </Hint>
   );
 }
 
@@ -36,9 +40,12 @@ export default function SettingField({ setting: s, value, error, onChange }: {
   const descId = `${id}-help`;
   const errId = `${id}-error`;
 
+  const describedBy = [descId, error ? errId : undefined, reason ? `${id}-why` : undefined].filter(Boolean).join(" ");
   let control;
   if (s.secret) {
     control = null;
+  } else if (s.type === "map") {
+    control = <MapValue id={id} label={s.label} value={value} describedBy={describedBy} />;
   } else if (s.type === "bool") {
     control = <Switch label={s.label} checked={value === true} disabled={locked} onCheckedChange={(c) => onChange(c)} />;
   } else if (s.type === "enum") {
@@ -46,7 +53,7 @@ export default function SettingField({ setting: s, value, error, onChange }: {
   } else if (s.type === "list") {
     control = (
       <Textarea
-        id={id} aria-label={s.label} aria-describedby={descId} aria-invalid={error ? true : undefined} rows={3} className="w-full font-mono" disabled={locked} value={text}
+        id={id} aria-label={s.label} aria-describedby={describedBy} aria-invalid={error ? true : undefined} rows={3} className="w-full font-mono" disabled={locked} value={text}
         onChange={(e) => {
           setText(e.target.value);
           onChange(e.target.value.split("\n").map((x) => x.trim()).filter(Boolean));
@@ -57,7 +64,7 @@ export default function SettingField({ setting: s, value, error, onChange }: {
     control = (
       <div className="flex items-center gap-2">
         <Input
-          id={id} aria-label={s.label} aria-describedby={descId} aria-invalid={error ? true : undefined} className="w-full" disabled={locked} value={text}
+          id={id} aria-label={s.label} aria-describedby={describedBy} aria-invalid={error ? true : undefined} className="w-full" disabled={locked} value={text}
           type={s.type === "url" ? "url" : "text"} inputMode={s.type === "int" ? "numeric" : undefined}
           onChange={(e) => {
             const t = e.target.value;
@@ -75,7 +82,7 @@ export default function SettingField({ setting: s, value, error, onChange }: {
   return (
     <div className="space-y-1.5 py-3 text-sm" data-setting={s.key}>
       <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={s.type === "bool" || s.secret ? undefined : id} className="font-medium">
+        <label htmlFor={s.type === "bool" || s.secret || s.type === "map" ? undefined : id} className="font-medium">
           {s.label}
         </label>
         <code className="text-xs text-muted-foreground">{s.key}</code>
@@ -87,12 +94,30 @@ export default function SettingField({ setting: s, value, error, onChange }: {
       <p id={descId} className="text-xs text-muted-foreground">
         {s.help}
       </p>
-      {reason && <p className="text-xs text-foreground/80">Read-only: {reason}</p>}
+      {reason && <p id={`${id}-why`} className="text-xs text-foreground/80">Read-only: {reason}</p>}
       {error && (
         <p id={errId} role="alert" className="text-xs font-medium text-destructive">
           {s.label}: {error}
         </p>
       )}
     </div>
+  );
+}
+
+/** A map setting (name and value pairs) as a read-only table. */
+function MapValue({ id, label, value, describedBy }: { id: string; label: string; value: SettingValue; describedBy: string }) {
+  const rows = value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value) : [];
+  if (rows.length === 0) return <p id={id} className="text-xs text-muted-foreground" aria-describedby={describedBy}>None set.</p>;
+  return (
+    <table id={id} aria-label={label} aria-describedby={describedBy} className="w-full text-left text-xs">
+      <tbody>
+        {rows.map(([k, v]) => (
+          <tr key={k} className="border-t border-border first:border-t-0">
+            <th scope="row" className="py-1 pr-3 font-mono font-normal text-muted-foreground">{k}</th>
+            <td className="py-1 font-mono">{String(v)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

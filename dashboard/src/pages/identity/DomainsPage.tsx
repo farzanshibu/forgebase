@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { addDomain, deleteDomain, listDomains, reissueDomain, verifyDomain, type Domain } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, TextField } from "../access/shared";
+import { ActionError, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { fmtTime, useRealm } from "./util";
@@ -19,7 +20,7 @@ export default function DomainsPage() {
       <Panel title={`Custom domains of ${realm}`}>
         <ErrorView error={l.error} />
         {l.loading && !l.error && <Loading what="Loading domains" />}
-        {l.data?.length === 0 && <Empty>No custom domains yet.</Empty>}
+        {l.data?.length === 0 && <EmptyState compact title="No custom domains yet." why="A custom domain lets sign-in pages use your own address, such as login.example.com. Claim one below." />}
         <ul className="space-y-3">
           {l.data?.map((d) => (
             <li key={d.id} className="rounded-md border border-border p-3 text-sm">

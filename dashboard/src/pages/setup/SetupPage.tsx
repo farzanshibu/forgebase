@@ -8,7 +8,9 @@ import { Input } from "panelui-web/input";
 import { ApiError, createSetupAdmin } from "../../api";
 import { useSession } from "../../auth/session";
 import ThemeMenu from "../../components/ThemeMenu";
-import { Button, ErrorView, Loading } from "../../components/ui";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { FormField } from "../../components/FormField";
+import { Button, Loading } from "../../components/ui";
 import FeaturesFlow from "./FeaturesFlow";
 import { useFeatureData } from "./features";
 import { useSetupStatus } from "./useSetupStatus";
@@ -51,12 +53,15 @@ export default function SetupPage() {
         ) : features.snapshot ? (
           <FeaturesFlow snapshot={features.snapshot} apply={features.apply} before={1} />
         ) : (
-          <ErrorView error={features.error ?? new Error("The feature list is not available")} />
+          <ErrorPanel error={features.error ?? new Error("The feature list is not available")} />
         )}
       </div>
     </main>
   );
 }
+
+/** Same rule as the server's `ADMIN_PASSWORD_MIN` (crates/forgebase-auth/src/service/machine.rs). */
+export const PASSWORD_MIN = 10;
 
 function CreateAdmin({ onCreated }: { onCreated: () => void }) {
   const { adoptSession } = useSession();
@@ -64,6 +69,7 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [confirmTouched, setConfirmTouched] = useState(false);
   const [token, setToken] = useState(params.get("token") ?? "");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -73,10 +79,18 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
     if (params.get("token")) window.history.replaceState(window.history.state, "", window.location.pathname);
   }, [params]);
 
+  // The confirm field is checked when it loses focus, not only on submit (first-run contract, rule 4).
+  const mismatch = confirm !== password ? "The passwords do not match" : undefined;
+  const confirmError = (confirmTouched ? mismatch : undefined) ?? errors.confirm;
+  const clear = (k: string) => setErrors((e) => (k in e ? Object.fromEntries(Object.entries(e).filter(([x]) => x !== k)) : e));
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(undefined);
-    if (password !== confirm) return setErrors({ confirm: "The passwords do not match" });
+    if (mismatch) {
+      setConfirmTouched(true);
+      return setErrors({ confirm: mismatch });
+    }
     setErrors({});
     setBusy(true);
     try {
@@ -96,11 +110,6 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
     }
   }
 
-  const fieldErr = (k: string) => errors[k] && (
-    <p role="alert" className="text-xs font-medium text-destructive">
-      {errors[k]}
-    </p>
-  );
   return (
     <Card className="max-w-md" aria-label="Create administrator">
       <Card.Header>
@@ -108,30 +117,25 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
         <Card.Description>This account manages the server. It can be created once.</Card.Description>
       </Card.Header>
       <Card.Content>
-        <form onSubmit={submit} aria-label="Create administrator" className="space-y-4">
-          <label className="block space-y-1.5 text-sm">
-            <span className="font-medium">Email</span>
-            <Input className="w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
-            {fieldErr("email")}
-          </label>
-          <label className="block space-y-1.5 text-sm">
-            <span className="font-medium">Password</span>
-            <Input className="w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
-            {fieldErr("password")}
-          </label>
-          <label className="block space-y-1.5 text-sm">
-            <span className="font-medium">Confirm password</span>
-            <Input className="w-full" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
-            {fieldErr("confirm")}
-          </label>
-          <div className="space-y-1.5 text-sm">
-            <label className="block space-y-1.5">
-              <span className="font-medium">Setup token</span>
-              <Input className="w-full font-mono" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" spellCheck={false} aria-describedby="setup-token-help" required />
-            </label>
-            <span id="setup-token-help" className="block text-xs text-muted-foreground">Printed by <code>forgebase serve</code> as the setup link; it fills in when you open that link.</span>
-            {fieldErr("token")}
-          </div>
+        <form onSubmit={submit} aria-label="Create administrator" className="space-y-4" noValidate>
+          <FormField label="Email" error={errors.email}>
+            {(p) => <Input {...p} className="w-full" type="email" value={email} onChange={(e) => { setEmail(e.target.value); clear("email"); }} autoComplete="username" required />}
+          </FormField>
+          <FormField label="Password" help={`At least ${PASSWORD_MIN} characters. A long phrase of several words is easy to remember and hard to guess.`} error={errors.password}>
+            {(p) => <Input {...p} className="w-full" type="password" value={password} onChange={(e) => { setPassword(e.target.value); clear("password"); }} autoComplete="new-password" required />}
+          </FormField>
+          <FormField label="Confirm password" error={confirmError}>
+            {(p) => (
+              <Input
+                {...p} className="w-full" type="password" value={confirm} autoComplete="new-password" required
+                onChange={(e) => { setConfirm(e.target.value); clear("confirm"); }}
+                onBlur={() => confirm !== "" && setConfirmTouched(true)}
+              />
+            )}
+          </FormField>
+          <FormField label="Setup token" error={errors.token} help={<>Printed by <code>forgebase serve</code> as the setup link; it fills in when you open that link.</>}>
+            {(p) => <Input {...p} className="w-full font-mono" value={token} onChange={(e) => { setToken(e.target.value); clear("token"); }} autoComplete="off" spellCheck={false} required />}
+          </FormField>
           {error !== undefined &&
             (error instanceof ApiError && error.code === "setup_complete" ? (
               <Alert tone="info" variant="plain">
@@ -140,7 +144,7 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
                 <Alert.Description>An administrator exists. <Link className="underline" to="/">Sign in</Link> instead.</Alert.Description>
               </Alert>
             ) : (
-              <ErrorView error={error} />
+              <ErrorPanel error={error} />
             ))}
           <Button type="submit" tone="primary" className="w-full" disabled={busy}>
             Create administrator

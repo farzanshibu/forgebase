@@ -1,14 +1,18 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { createOrg, deleteOrg, getOrg, listOrgs, renameOrg } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { HelpTip } from "../../components/HelpTip";
+import { notify } from "../../toaster";
+import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { RouteTabs } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import RolesPanel from "./RolesPanel";
 import RoleSetsPanel from "./RoleSetsPanel";
 import { InvitationsTab, MembersTab, OverridesTab, ProjectsTab, TeamsTab } from "./OrgTabs";
 import AclPanel from "./AclPanel";
-import { ActionError, Empty, TextField } from "./shared";
+import { ActionError, TextField } from "./shared";
 import { useRun } from "./util";
 import { Table } from "panelui-web/table";
 
@@ -21,10 +25,10 @@ export function OrgList() {
     <div className="space-y-4">
       <ErrorView error={orgs.error} />
       {orgs.loading && !orgs.error && <Loading what="Loading organizations" />}
-      {orgs.data?.length === 0 && <Empty>No organizations yet.</Empty>}
+      {orgs.data?.length === 0 && <EmptyState compact title="No organizations yet." why="An organization groups your team's members, projects and roles. Create one below." />}
       {orgs.data && orgs.data.length > 0 && (
         <Table className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Slug</Table.Head><Table.Head>Name</Table.Head><Table.Head>Realm</Table.Head></Table.Row></Table.Header>
+          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Slug</Table.Head><Table.Head>Name</Table.Head><Table.Head><span className="inline-flex items-center gap-1">Realm <HelpTip term="realm" /></span></Table.Head></Table.Row></Table.Header>
           <Table.Body>
             {orgs.data.map((o) => (
               <Table.Row key={o.id} className="border-t border-border">
@@ -70,7 +74,14 @@ export function OrgDetail() {
             <div className="flex items-end gap-2">
               <TextField label="Rename to" value={name} onChange={setName} />
               <Button disabled={!name} onClick={() => void run(async () => { await renameOrg(org, name); setName(""); })}>Rename</Button>
-              <ConfirmButton label="Delete organization" onConfirm={() => void run(async () => { await deleteOrg(org); nav("/access"); })} />
+              <ConfirmDialog
+                trigger={<Button tone="danger">Delete organization</Button>}
+                title={`Delete organization ${o.data.name}?`}
+                consequence="Its projects, members, teams and roles are removed. Apps that use them lose access."
+                confirmLabel="Delete organization"
+                confirmText={o.data.slug}
+                onConfirm={async () => { await deleteOrg(org); notify.deleted(`Organization ${o.data!.name}`); nav("/access"); }}
+              />
             </div>
           </div>
           <ActionError error={error} />

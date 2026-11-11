@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { listOidcKeys, listRealmConsents, revokeRealmConsent, rotateOidcKeys } from "../../api";
 import { ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, TextField } from "../access/shared";
+import { ActionError, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { fmtIso, useRealm } from "./util";
@@ -21,10 +22,11 @@ export default function ConsentsPage() {
   return (
     <div className="space-y-6">
       <Panel title={`Consents in ${realm}`}>
+        <p className="mb-2 text-sm text-muted-foreground">A consent is a user's remembered “yes” to a client app, so the app is not asked about again. Revoke one to ask the user next time.</p>
         <ErrorView error={l.error} />
         <TextField label="Filter by client id" value={client} onChange={setClient} placeholder="all clients" />
         {l.loading && !l.error && <Loading what="Loading consents" />}
-        {l.data && rows.length === 0 && <Empty>No consents in this realm.</Empty>}
+        {l.data && rows.length === 0 && <EmptyState compact title="No consents in this realm." why="A consent records that a user allowed a client app to act for them." />}
         {rows.length > 0 && (
           <Table className="w-full text-left text-sm">
             <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Client app</Table.Head><Table.Head>User</Table.Head><Table.Head>Scopes</Table.Head><Table.Head>Granted</Table.Head><Table.Head>Last used</Table.Head><Table.Head /></Table.Row></Table.Header>

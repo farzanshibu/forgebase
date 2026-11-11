@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { Link } from "react-router-dom";
 import { listPayments, listRefunds } from "../../api";
 import type { PaymentStatus } from "../../api";
 import { Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Money, Th, SubjectLink } from "./shared";
+import { Badge, BillingError, Money, Th, SubjectLink } from "./shared";
 import { ROW, TABLE, THEAD, when_ } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
@@ -26,7 +27,7 @@ export default function Payments() {
       </div>
       <BillingError error={payments.error} />
       {payments.loading && !payments.error && <Loading what="Loading payments" />}
-      {payments.data && rows.length === 0 && <Empty>No payments match.</Empty>}
+      {payments.data && rows.length === 0 && <EmptyState compact title="No payments match." why="Change the filters to see more." />}
       {rows.length > 0 && (
         <Table aria-label="Payments" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Payment</Th><Th>Subject</Th><Th>Status</Th><Th>Amount</Th><Th>Refunded</Th><Th>Provider</Th><Th>Invoice</Th><Th>Failure</Th><Th>When</Th></Table.Row></Table.Header>
@@ -44,7 +45,7 @@ export default function Payments() {
         </Table>
       )}
       <Panel title="Refunds">
-        {refunds.data && refunds.data.length === 0 && <Empty>No refunds.</Empty>}
+        {refunds.data && refunds.data.length === 0 && <EmptyState compact title="No refunds." why="Refunded payments are listed here." />}
         {refunds.data && refunds.data.length > 0 && (
           <Table aria-label="Refunds" className={TABLE}>
             <Table.Header className={THEAD}><Table.Row><Th>Refund</Th><Th>Payment</Th><Th>Status</Th><Th>Amount</Th><Th>Reason</Th><Th>When</Th></Table.Row></Table.Header>

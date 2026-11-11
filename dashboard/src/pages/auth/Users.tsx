@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { listCollections, searchUsers } from "../../api";
-import { ErrorView, Loading, Button } from "../../components/ui";
+import { EmptyState } from "../../components/EmptyState";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { Pager } from "../../components/Pager";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { THEAD, Th } from "./common";
@@ -46,10 +50,17 @@ export default function Users() {
         <Input size="sm" aria-label="Search users" className="w-64" placeholder="Search email or name" value={input} onChange={(e) => setInput(e.target.value)} />
         <Button type="submit">Search</Button>
       </form>
-      <ErrorView error={cols.error ?? list.error} />
-      {(cols.loading || list.loading) && !cols.error && !list.error && <Loading what="Loading users" />}
-      {!cols.loading && !cols.error && authCols.length === 0 && <p className="text-sm text-muted-foreground">No auth collections exist yet.</p>}
-      {d && d.items.length === 0 && <p className="text-sm text-muted-foreground">No users match.</p>}
+      <ErrorPanel error={cols.error ?? list.error} onRetry={() => { cols.reload(); list.reload(); }} />
+      {(cols.loading || list.loading) && !cols.error && !list.error && <SkeletonTable rows={5} columns={4} label="Loading users" />}
+      {!cols.loading && !cols.error && authCols.length === 0 && (
+        <EmptyState
+          title="No user accounts yet"
+          why="Users sign in to your app. Make a collection of type Auth in the Database studio and its records become accounts that can sign in with a password, a link or a provider."
+          action={<Link to="/database/new" className="text-sm text-primary underline-offset-2 hover:underline">Create an Auth collection</Link>}
+          docs="docs/adr/0004-auth.md"
+        />
+      )}
+      {d && d.items.length === 0 && (search ? <EmptyState compact title="No users match" why="Clear the search to see every user." /> : <EmptyState compact title="No users yet" why="Nobody has signed up to this collection." />)}
       {d && d.items.length > 0 && collection && (
         <>
           <Table className="w-full text-sm">
@@ -76,17 +87,7 @@ export default function Users() {
               ))}
             </Table.Body>
           </Table>
-          <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-            <Button disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              Previous
-            </Button>
-            <span>
-              Page {d.page ?? page} of {d.total_pages ?? 1}
-            </span>
-            <Button disabled={page >= (d.total_pages ?? 1)} onClick={() => setPage(page + 1)}>
-              Next
-            </Button>
-          </div>
+          <Pager page={d.page ?? page} perPage={d.per_page ?? 25} total={d.total_items ?? undefined} onPage={setPage} label="Users pages" />
         </>
       )}
     </div>

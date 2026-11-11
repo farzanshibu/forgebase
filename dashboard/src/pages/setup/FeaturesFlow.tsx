@@ -1,19 +1,14 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Alert } from "panelui-web/alert";
-import { Badge } from "panelui-web/badge";
-import { Card } from "panelui-web/card";
 import { Steps } from "panelui-web/steps";
-import { Switch } from "panelui-web/switch";
-import { ApiError, patchConfig, type ServerFeature, type FeatureSetting, type FeaturesResponse, type SettingValue } from "../../api";
-import { Button, ErrorView } from "../../components/ui";
-import SettingField, { SourceBadge } from "./SettingField";
-import { isUnchanged, readOnlyReason } from "./settingUtil";
-
-const enabledKey = (f: ServerFeature) => `${f.id}.enabled`;
-
-/** The feature's own on/off setting, when it has one. */
-const enabledSetting = (f: ServerFeature): FeatureSetting | undefined => f.settings.find((s) => s.key === enabledKey(f));
+import type { ServerFeature, FeaturesResponse } from "../../api";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { Button } from "../../components/ui";
+import FeatureCard from "./FeatureCard";
+import SettingsSections from "./SettingsSections";
+import { enabledKey, enabledSetting } from "./settingUtil";
+import { useSettingsDraft } from "./useSettingsDraft";
 
 type Step = "map" | "configure" | "done";
 const ORDER: Step[] = ["map", "configure", "done"];
@@ -33,82 +28,37 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
 }) {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("map");
-  const [draft, setDraft] = useState<Record<string, SettingValue>>({});
-  const [clientErr, setClientErr] = useState<Record<string, string>>({});
-  const [serverErr, setServerErr] = useState<Record<string, string>>({});
-  const [saveErr, setSaveErr] = useState<unknown>();
-  const [busy, setBusy] = useState(false);
+  const d = useSettingsDraft();
   const [restart, setRestart] = useState(false);
   const [saved, setSaved] = useState<string[]>([]);
   const [written, setWritten] = useState<string>();
 
   const features = snapshot.features;
 
-  function edit(s: FeatureSetting, value: SettingValue, err?: string) {
-    setDraft((d) => {
-      const next = { ...d };
-      if (isUnchanged(s, value)) delete next[s.key];
-      else next[s.key] = value;
-      return next;
-    });
-    setClientErr((c) => {
-      const next = { ...c };
-      if (err) next[s.key] = err;
-      else delete next[s.key];
-      return next;
-    });
-    setServerErr((e) => {
-      if (!(s.key in e)) return e;
-      const next = { ...e };
-      delete next[s.key];
-      return next;
-    });
-  }
-
-  const valueOf = (s: FeatureSetting): SettingValue => (s.key in draft ? draft[s.key]! : s.value);
-  const isOn = (f: ServerFeature) => {
-    const k = enabledKey(f);
-    return k in draft ? draft[k] === true : f.enabled;
-  };
-  const changed = Object.keys(draft);
-
   async function save() {
-    setBusy(true);
-    setSaveErr(undefined);
-    setServerErr({});
-    try {
-      if (changed.length === 0) {
-        setSaved([]);
-        setRestart(snapshot.restart_pending);
-        setStep("done");
-        return;
-      }
-      const set: Record<string, SettingValue> = {};
-      for (const k of changed) set[k] = draft[k]!;
-      const r = await patchConfig(set);
-      apply(r.features, r.restart_required ? true : undefined);
-      setSaved(r.applied);
-      setWritten(r.written);
-      setRestart(r.restart_required || snapshot.restart_pending);
-      if (r.restart_required) onRestartPending?.();
-      setDraft({});
+    if (d.changed.length === 0) {
+      setSaved([]);
+      setRestart(snapshot.restart_pending);
       setStep("done");
-    } catch (e) {
-      if (e instanceof ApiError && e.code === "validation_failed" && Object.keys(e.details).length > 0) {
-        setServerErr(e.details);
-        // An error on a switch is shown on the map; the rest on the configure step.
-        const keys = Object.keys(e.details);
-        if (keys.some((k) => k.endsWith(".enabled")) && !keys.some((k) => !k.endsWith(".enabled"))) setStep("map");
-      }
-      setSaveErr(e);
-    } finally {
-      setBusy(false);
+      return;
     }
+    const r = await d.save();
+    if ("fields" in r) {
+      // An error on a switch is shown on the map; the rest on the configure step.
+      if (r.fields.length > 0 && r.fields.every((k) => k.endsWith(".enabled"))) setStep("map");
+      return;
+    }
+    apply(r.features, r.restart_required ? true : undefined);
+    setSaved(r.applied);
+    setWritten(r.written);
+    setRestart(r.restart_required || snapshot.restart_pending);
+    if (r.restart_required) onRestartPending?.();
+    setStep("done");
   }
 
-  const sections = features.filter((f) => f.always_on || isOn(f));
+  const sections = features.filter((f) => f.always_on || d.isOn(f));
   const visibleKeys = new Set(sections.flatMap((f) => f.settings.map((s) => s.key)));
-  const elsewhere = Object.entries(serverErr).filter(([k]) => !visibleKeys.has(k) && !k.endsWith(".enabled"));
+  const elsewhere = Object.entries(d.serverErr).filter(([k]) => !visibleKeys.has(k) && !k.endsWith(".enabled"));
   const idx = ORDER.indexOf(step);
 
   return (
@@ -146,43 +96,13 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
             <h2 className="text-lg font-semibold tracking-tight">Feature map</h2>
             <p className="text-sm text-muted-foreground">Choose what this server runs. A feature that is off answers “disabled” and starts nothing.</p>
           </div>
-          <ErrorView error={Object.keys(serverErr).some((k) => k.endsWith(".enabled")) ? saveErr : undefined} />
+          <ErrorPanel error={Object.keys(d.serverErr).some((k) => k.endsWith(".enabled")) ? d.saveErr : undefined} />
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {features.map((f) => {
               const es = enabledSetting(f);
-              const reason = es ? readOnlyReason(es) : null;
-              const locked = !f.can_disable || !es || reason !== null || !es.editable;
-              const on = f.always_on ? true : isOn(f);
-              const err = serverErr[enabledKey(f)];
               return (
                 <li key={f.id}>
-                  <Card className="h-full" data-feature={f.id}>
-                    <Card.Header>
-                      <div className="flex items-center justify-between gap-2">
-                        <h3 className="font-medium leading-tight">{f.name}</h3>
-                        {f.always_on || !f.can_disable ? (
-                          <Badge variant="secondary" size="sm">always on</Badge>
-                        ) : (
-                          <Switch label={`${f.name} enabled`} checked={on} disabled={locked} onCheckedChange={(c) => es && edit(es, c)} />
-                        )}
-                      </div>
-                      <Card.Description>{f.summary}</Card.Description>
-                    </Card.Header>
-                    <Card.Content className="space-y-1.5 text-xs text-muted-foreground">
-                      {es && (
-                        <p className="flex items-center gap-1.5">
-                          <SourceBadge source={es.source} />
-                          {es.source === "env" || es.source === "flag" ? `Set by ${es.source === "env" ? "an environment variable" : "a command-line flag"}: read-only.` : null}
-                        </p>
-                      )}
-                      {err && <p role="alert" className="font-medium text-destructive">{f.name}: {err}</p>}
-                      {f.studio_path && on && (
-                        <Link className="text-primary underline-offset-2 hover:underline" to={f.studio_path}>
-                          Open {f.name} studio
-                        </Link>
-                      )}
-                    </Card.Content>
-                  </Card>
+                  <FeatureCard feature={f} on={f.always_on ? true : d.isOn(f)} error={d.serverErr[enabledKey(f)]} onToggle={(on) => es && d.edit(es, on)} />
                 </li>
               );
             })}
@@ -203,22 +123,7 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
               Settings of the enabled features. Saving writes only what you changed to <code>{snapshot.config_file}</code>.
             </p>
           </div>
-          {sections.map((f) => {
-            const rows = f.settings.filter((s) => s.key !== enabledKey(f));
-            if (rows.length === 0) return null;
-            return (
-              <Card key={f.id} aria-label={`${f.name} settings`}>
-                <Card.Header>
-                  <h3 className="font-medium">{f.name}</h3>
-                </Card.Header>
-                <Card.Content className="divide-y divide-border">
-                  {rows.map((s) => (
-                    <SettingField key={s.key} setting={s} value={valueOf(s)} error={clientErr[s.key] ?? serverErr[s.key]} onChange={(v, e) => edit(s, v, e)} />
-                  ))}
-                </Card.Content>
-              </Card>
-            );
-          })}
+          <SettingsSections features={sections} valueOf={d.valueOf} errorOf={(k) => d.clientErr[k] ?? d.serverErr[k]} onEdit={d.edit} />
           {elsewhere.length > 0 && (
             <Alert tone="destructive" variant="plain">
               <Alert.Icon />
@@ -234,15 +139,15 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
               </Alert.Description>
             </Alert>
           )}
-          {saveErr !== undefined && Object.keys(serverErr).length === 0 && <ErrorView error={saveErr} />}
+          {d.saveErr !== undefined && Object.keys(d.serverErr).length === 0 && <ErrorPanel error={d.saveErr} />}
           <div className="flex items-center justify-between gap-2">
             <Button onClick={() => setStep("map")}>Back</Button>
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground" aria-live="polite">
-                {changed.length === 0 ? "No changes" : `${changed.length} changed`}
+                {d.changed.length === 0 ? "No changes" : `${d.changed.length} changed`}
               </span>
-              <Button tone="primary" disabled={busy || Object.keys(clientErr).length > 0} onClick={() => void save()}>
-                {changed.length === 0 ? "Finish" : "Save and finish"}
+              <Button tone="primary" disabled={d.busy || Object.keys(d.clientErr).length > 0} onClick={() => void save()}>
+                {d.changed.length === 0 ? "Finish" : "Save and finish"}
               </Button>
             </div>
           </div>

@@ -5,12 +5,21 @@ import { pick } from "../../test/pick";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installBilling } from "../../test/billingMock";
+import { GROUPS, groupOf } from "./groups";
+
+// Sign-in answers /api/auth/me; a test sets `adminScope.value` to see Billing as a realm administrator.
+const adminScope = vi.hoisted(() => ({ value: undefined as undefined | { realm: string } }));
+vi.mock("../../auth/session", async (orig) => {
+  const m = await orig<typeof import("../../auth/session")>();
+  return { ...m, useOptionalSession: () => (adminScope.value ? ({ adminScope: adminScope.value } as ReturnType<typeof m.useOptionalSession>) : m.useOptionalSession()) };
+});
 
 let current: MockApi | undefined;
 afterEach(() => {
   // Every billing request and response matched the OpenAPI document.
   expect(current?.problems ?? []).toEqual([]);
   current = undefined;
+  adminScope.value = undefined;
   vi.unstubAllGlobals();
   localStorage.clear();
 });
@@ -28,32 +37,48 @@ describe("Billing shell", () => {
     setup({ disabled: true });
     renderStudio("/billing");
     expect(await screen.findByRole("status", { name: "Billing disabled" }, { timeout: 5000 })).toHaveTextContent(/on by default/);
-    expect(screen.queryByRole("tablist", { name: "Billing sections" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Billing groups" })).not.toBeInTheDocument();
   });
 
-  it("offers every section as a tab", async () => {
+  it("offers four groups, and every page in its group's second row", async () => {
     setup();
     renderStudio("/billing");
-    const nav = await screen.findByRole("tablist", { name: "Billing sections" });
-    expect(within(nav).getAllByRole("tab").map((a) => a.textContent)).toEqual([
-      "Revenue", "Catalog", "Customers", "Subscriptions", "Orders", "Usage meters", "Invoices", "Payments", "Stores", "Coupons", "Dunning", "Credits", "Providers and settings",
-    ]);
+    const groups = await screen.findByRole("tablist", { name: "Billing groups" });
+    expect(within(groups).getAllByRole("tab").map((a) => a.textContent)).toEqual(["Catalog", "Customers", "Money", "Settings"]);
+    expect(within(groups).getByRole("tab", { name: "Money" })).toHaveAttribute("aria-selected", "true");
+    const pages = screen.getByRole("tablist", { name: "Money pages" });
+    expect(within(pages).getAllByRole("tab").map((a) => a.textContent)).toEqual(["Revenue", "Invoices", "Payments", "Credits", "Dunning"]);
   });
 });
 
-describe("Billing tab row", () => {
-  it("wraps instead of clipping, and every tab is reachable", async () => {
+describe("Billing groups", () => {
+  it("puts every route in one group, and the 13 pages in four", () => {
+    expect(groupOf("/billing").id).toBe("money");
+    expect(groupOf("/billing/invoices/inv1").id).toBe("money");
+    expect(groupOf("/billing/coupons").id).toBe("catalog");
+    expect(groupOf("/billing/stores").id).toBe("catalog");
+    expect(groupOf("/billing/usage").id).toBe("customers");
+    expect(groupOf("/billing/settings").id).toBe("settings");
+    expect(GROUPS.flatMap((g) => g.pages)).toHaveLength(13);
+  });
+  it("moves between groups and pages", async () => {
     setup();
     renderStudio("/billing");
-    const list = await screen.findByRole("tablist", { name: "Billing sections" });
-    // The PanelUI tab row scrolls sideways (with a fade at the end that has more) rather than wrapping: it never clips a tab.
-    expect(list).toHaveClass("data-[orientation=horizontal]:overflow-x-auto");
-    expect(within(list).getAllByRole("tab")).toHaveLength(13);
     const user = userEvent.setup();
-    for (const label of ["Providers and settings", "Dunning", "Revenue"]) {
-      await user.click(within(list).getByRole("tab", { name: label }));
-      await waitFor(() => expect(within(screen.getByRole("tablist", { name: "Billing sections" })).getByRole("tab", { name: label })).toHaveAttribute("aria-selected", "true"));
-    }
+    const groups = await screen.findByRole("tablist", { name: "Billing groups" });
+    await user.click(within(groups).getByRole("tab", { name: "Catalog" }));
+    const pages = await screen.findByRole("tablist", { name: "Catalog pages" });
+    await user.click(within(pages).getByRole("tab", { name: "Coupons" }));
+    await waitFor(() => expect(within(screen.getByRole("tablist", { name: "Catalog pages" })).getByRole("tab", { name: "Coupons" })).toHaveAttribute("aria-selected", "true"));
+    await user.click(within(screen.getByRole("tablist", { name: "Billing groups" })).getByRole("tab", { name: "Settings" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true"));
+  });
+  it("shows Billing to a platform administrator only", async () => {
+    setup();
+    adminScope.value = { realm: "acme" };
+    renderStudio("/billing");
+    expect(await screen.findByRole("region", { name: "Billing is for platform administrators" })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Billing groups" })).not.toBeInTheDocument();
   });
 });
 
@@ -586,7 +611,8 @@ describe("Stores", () => {
   it("is a tab of the studio", async () => {
     setup();
     renderStudio("/billing");
-    const nav = await screen.findByRole("tablist", { name: "Billing sections" });
+    await userEvent.click(within(await screen.findByRole("tablist", { name: "Billing groups" })).getByRole("tab", { name: "Catalog" }));
+    const nav = await screen.findByRole("tablist", { name: "Catalog pages" });
     expect(within(nav).getByRole("tab", { name: "Stores" })).toHaveAttribute("href", "/billing/stores");
   });
 });

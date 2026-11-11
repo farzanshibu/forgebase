@@ -1,23 +1,38 @@
 import { Alert } from "panelui-web/alert";
-import { Loading, ErrorView } from "../../components/ui";
-import FeaturesFlow from "./FeaturesFlow";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { PageHeader } from "../../components/PageHeader";
+import { SkeletonCards } from "../../components/Skeleton";
+import FeaturesForm from "./FeaturesForm";
 import { useSharedFeatures } from "./features";
 
-/** System studio, "Features & settings": the feature map, configure and done steps of first-run setup. */
+/** System, "Features and settings": switch features on or off and edit their settings, on one page with one Save. */
 export default function FeaturesPage() {
   const data = useSharedFeatures();
-  if (!data || data.loading) return <Loading what="Features" />;
-  if (!data.snapshot) return data.error ? <ErrorView error={data.error} /> : (
-    <Alert tone="warning" variant="plain">
-      <Alert.Icon />
-      <Alert.Title>The feature list is not available</Alert.Title>
-    </Alert>
-  );
+  const header = <PageHeader studio="system/features" />;
+  if (!data || data.loading) return <div>{header}<div className="mt-6"><SkeletonCards count={6} label="Loading features" /></div></div>;
+  if (!data.snapshot) {
+    return (
+      <div>
+        {header}
+        <div className="mt-6">
+          {data.error ? (
+            <ErrorPanel error={data.error} onRetry={data.reload} />
+          ) : (
+            <Alert tone="warning" variant="plain">
+              <Alert.Icon />
+              <Alert.Title>The feature list is not available</Alert.Title>
+            </Alert>
+          )}
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="max-w-5xl space-y-2">
-      <h1 className="text-2xl font-semibold tracking-tight">Features &amp; settings</h1>
-      <p className="mb-4 text-muted-foreground">Switch modules on or off and edit their settings in {data.snapshot.config_file}.</p>
-      <FeaturesFlow snapshot={data.snapshot} apply={data.apply} />
+    <div className="max-w-5xl">
+      {header}
+      <div className="mt-6">
+        <FeaturesForm snapshot={data.snapshot} apply={data.apply} />
+      </div>
     </div>
   );
 }

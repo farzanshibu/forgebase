@@ -33,6 +33,8 @@ export class AuthFake {
   ];
   requests: string[] = [];
   forbidden = false;
+  /** The next key request answers 400 for its tenant. */
+  rejectTenant = false;
 
   constructor() {
     const users = makeCollection("users", [{ name: "email", type: "email" }]);
@@ -81,11 +83,13 @@ export class AuthFake {
     });
     m.on("GET", "/api/auth/service-accounts/{id}/keys", ({ params }) => ({ status: 200, body: { items: this.keys.filter((k) => k.owner_id === params.id) } }));
     m.on("POST", "/api/auth/service-accounts/{id}/keys", ({ params, body }) => {
-      const b = body as { name: string; scopes: string[] };
-      const k: ApiKeyView = { id: `k${this.keys.length + 1}`, kind: "api_key", name: b.name, owner_type: "service_account", collection: null, owner_id: params.id!, scopes: b.scopes, created_at: "2026-11-09T00:00:00Z", expires_at: null, last_used_at: null, revoked: false };
+      const b = body as { name: string; scopes: string[]; tenant?: string };
+      if (this.rejectTenant && b.tenant) return { status: 400, body: { error: { code: "validation_failed", message: "validation failed", request_id: "r", details: { fields: { tenant: { code: "invalid", message: "This tenant does not exist" } } } } } };
+      const k: ApiKeyView = { tenant: b.tenant ?? null, id: `k${this.keys.length + 1}`, kind: "api_key", name: b.name, owner_type: "service_account", collection: null, owner_id: params.id!, scopes: b.scopes, created_at: "2026-11-09T00:00:00Z", expires_at: null, last_used_at: null, revoked: false };
       this.keys.push(k);
       return { status: 201, body: { ...k, key: `fbk_${k.id}_SECRETVALUE` } };
     });
+    m.on("GET", "/api/v1/storage/buckets", () => ({ status: 200, body: { items: [] } }));
     m.on("GET", "/api/auth/api-keys", () => ({ status: 200, body: { items: this.keys } }));
     m.on("DELETE", "/api/auth/api-keys/{id}", ({ params }) => {
       const k = this.keys.find((x) => x.id === params.id);
