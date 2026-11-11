@@ -774,13 +774,21 @@ impl DbRouter {
         if control.kind() == BackendKind::Sqlite && !others.is_empty() {
             return Err(RouterError::PostgresRequired);
         }
-        // Open new sets outside the lock; keep the databases of known ones.
-        let known: HashMap<String, Database> = self
-            .read()
-            .handles
-            .iter()
-            .map(|(id, h)| (id.clone(), h.db.clone()))
-            .collect();
+        // Open new sets outside the lock; keep the databases of known ones
+        // whose primary is the same node (a promoted shard replica reopens,
+        // FB-174).
+        let known: HashMap<String, Database> = {
+            let state = self.read();
+            state
+                .handles
+                .iter()
+                .filter(|(id, _)| {
+                    id.as_str() == CONTROL_SET_ID
+                        || state.topology.primary_of(id).map(|n| &n.id) == topology.primary_of(id).map(|n| &n.id)
+                })
+                .map(|(id, h)| (id.clone(), h.db.clone()))
+                .collect()
+        };
         let mut handles = BTreeMap::new();
         handles.insert(
             CONTROL_SET_ID.to_owned(),

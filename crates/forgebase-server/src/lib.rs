@@ -487,9 +487,26 @@ async fn start_on(
     let registry = shards::register_jobs(registry, state.data().clone());
     // FB-175: the `database.*` topology operations.
     let registry = replicas::register_jobs(registry, replicas.clone());
+    // FB-174: tenant moves, shard drains and rebalancing.
+    let moves = moves::Moves::new(moves::MovesConfig {
+        router: router.clone(),
+        jobs: jobs.clone(),
+        kv: Some(kv.clone()),
+        queue: queue.clone(),
+        keyring: replicas.keyring().clone(),
+        database: config.database.clone(),
+        control_url: replicas.control_admin_url(),
+        shards: Some(replicas.shards().clone()),
+        options: moves::options_from(config),
+    });
+    let registry = moves::register_jobs(registry, moves.clone());
     replicas
         .attach(router.clone(), jobs.clone(), state.data().clone())
         .await;
+    replicas.attach_moves(moves.clone());
+    if router.control().database().kind() == forgebase_db::BackendKind::Postgres {
+        moves.spawn_stats();
+    }
     // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
     jobs.attach_access(job_access);
     let jp = fn_policy.clone();

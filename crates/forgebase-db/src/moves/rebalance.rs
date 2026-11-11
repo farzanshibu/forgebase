@@ -500,6 +500,14 @@ fn rfc3339_ago(d: std::time::Duration) -> String {
         .unwrap_or_default()
 }
 
+/// When `plan` can no longer be run (RFC 3339).
+pub fn expires_at(plan: &RebalancePlan) -> String {
+    time::OffsetDateTime::parse(&plan.created_at, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .and_then(|t| (t + PLAN_TTL).format(&time::format_description::well_known::Rfc3339).ok())
+        .unwrap_or_default()
+}
+
 /// A stored plan, refused once older than [`PLAN_TTL`].
 pub async fn load_plan(control: &dyn Backend, id: &str) -> Result<RebalancePlan, MoveError> {
     let rows = control

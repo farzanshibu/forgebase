@@ -46,7 +46,7 @@ pub mod kinds {
 }
 
 /// Queue of topology operations (FB-175's operations list reads it).
-pub const OPERATIONS_QUEUE: &str = "database";
+pub const OPERATIONS_QUEUE: &str = forgebase_api::system_database::OPERATIONS_QUEUE;
 
 /// How often tenant sizes are refreshed.
 pub const STATS_INTERVAL: Duration = Duration::from_secs(3600);
@@ -85,6 +85,25 @@ pub struct Moves {
 struct Inner {
     cfg: MovesConfig,
     admins: tokio::sync::Mutex<HashMap<String, Database>>,
+    stats: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Some(t) = self.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            t.abort();
+        }
+    }
+}
+
+/// Move tuning from `[database.sharding]`.
+pub fn options_from(config: &forgebase_core::Config) -> MoveOptions {
+    let s = &config.database.topology.sharding;
+    MoveOptions {
+        freeze_timeout: Duration::from_millis(s.move_freeze_timeout_ms.max(100)),
+        source_retention: Duration::from_secs(s.move_source_retention_hours.saturating_mul(3600)),
+        ..MoveOptions::default()
+    }
 }
 
 impl std::fmt::Debug for Moves {
@@ -104,6 +123,7 @@ impl Moves {
             inner: Arc::new(Inner {
                 cfg,
                 admins: tokio::sync::Mutex::new(HashMap::new()),
+                stats: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -284,13 +304,16 @@ impl Moves {
     }
 
     /// Refreshes size estimates every [`STATS_INTERVAL`] while the cluster
-    /// is sharded. The task stops when the returned handle is dropped.
-    pub fn spawn_stats(&self) -> StatsTask {
-        let me = self.clone();
-        StatsTask(tokio::spawn(async move {
+    /// is sharded, until the last clone of this service is dropped.
+    pub fn spawn_stats(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        let task = tokio::spawn(async move {
             let mut tick = tokio::time::interval(STATS_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
+                let Some(inner) = weak.upgrade() else { return };
+                let me = Moves { inner };
                 if !me.router().is_sharded() {
                     continue;
                 }
@@ -299,7 +322,16 @@ impl Moves {
                     Err(e) => tracing::warn!(error = %e, "tenant size estimates not refreshed"),
                 }
             }
-        }))
+        });
+        if let Some(old) = self
+            .inner
+            .stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(task)
+        {
+            old.abort();
+        }
     }
 
     async fn run_move_job(&self, ctx: &JobContext) -> Result<Json, HandlerError> {
@@ -365,16 +397,6 @@ impl Moves {
             .await
             .map_err(|e| HandlerError::fatal(e.to_string()))?;
         self.run_plan_job(ctx, plan).await
-    }
-}
-
-/// The stats loop; aborted on drop.
-#[derive(Debug)]
-pub struct StatsTask(tokio::task::JoinHandle<()>);
-
-impl Drop for StatsTask {
-    fn drop(&mut self) {
-        self.0.abort();
     }
 }
 
