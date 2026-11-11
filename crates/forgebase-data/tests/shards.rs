@@ -197,7 +197,7 @@ async fn collection_changes_and_indexes_reach_every_shard() {
             assert_eq!(b.state, "ready");
         } else {
             assert_eq!(b.state, "failed");
-            assert!(b.error.as_deref().unwrap_or_default().contains("unique"), "{b:?}");
+            assert!(b.error.as_deref().unwrap_or_default().to_ascii_lowercase().contains("unique"), "{b:?}");
         }
     }
     assert!(indexes(&shard_dbs[0], "posts").await.contains(&"posts_body".to_owned()));

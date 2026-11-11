@@ -137,10 +137,20 @@ async fn native_policies_follow_schema_and_rule_changes_on_every_shard() {
     assert!(rows(&shard, api_cols).await.contains(&"score".to_owned()));
 
     // Startup sync brings a set that drifted back (each set has its own fingerprint).
+    let first = rows(
+        &shard,
+        "SELECT policyname::text FROM pg_catalog.pg_policies WHERE schemaname = 'public' AND tablename = 'posts' ORDER BY 1 LIMIT 1",
+    )
+    .await;
+    let first = first.first().expect("posts has a native policy");
     shard
-        .run_autocommit(&["DROP POLICY fb_rule_select ON public.posts".into(), "DELETE FROM forgebase._forgebase_meta WHERE key = 'native_rls.fingerprint'".into()])
+        .run_autocommit(&[
+            format!("DROP POLICY \"{first}\" ON public.posts"),
+            format!("DELETE FROM _forgebase_meta WHERE key = '{}'", native::FINGERPRINT_KEY),
+        ])
         .await
         .unwrap();
+    assert_ne!(policies(&shard, "posts").await, policies(&s.control, "posts").await);
     policy.sync_native_rls().await.unwrap();
     assert_eq!(policies(&shard, "posts").await, policies(&s.control, "posts").await);
 }
