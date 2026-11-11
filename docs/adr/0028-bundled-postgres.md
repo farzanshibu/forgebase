@@ -1871,3 +1871,438 @@ columns, no `pg_read_server_files`/`pg_execute_server_program`, `CREATE` on
 it on that role). The deny list stays as defence in depth; it refuses every
 `SET`, `DO` and `GRANT`, so role and privilege changes must go through an
 admin API.
+
+## Addendum: FB-144, collections, schema changes, indexes and full text on PostgreSQL (2026-11-11)
+
+Built as §7.4–§7.5 describe, in `crates/forgebase-data/src/{ddl.rs,
+collections.rs,indexes.rs,catalog.rs}` and `crates/forgebase-schema`. What
+the next packages need to know, and where the code differs from the text
+above.
+
+**DDL.** Collection tables use the §7.4 type mapping through
+`Dialect::column_type`: `id`, `created`, `updated`, `_tenant` are `text`,
+`_version` `bigint`, `_data` and JSON fields `jsonb` (no `CHECK`, `jsonb` is
+always valid; SQLite keeps `TEXT CHECK (json_valid(…))`), booleans
+`smallint CHECK (x IN (0, 1))`; no `STRICT`. Single relations are `REFERENCES
+public."target"(id) ON DELETE … DEFERRABLE INITIALLY IMMEDIATE`. Every
+statement that creates, drops or alters a collection object names schema
+`public` (`ddl::rel`), because schema `forgebase` comes first on the search
+path (FB-133): `CREATE TABLE public."posts"`, `DROP INDEX IF EXISTS
+public."idx"` (an unqualified `DROP INDEX` would hit a system index of the
+same name first). Reads keep unqualified names; they resolve to `public`
+because collection names never start with `_forgebase`.
+
+**Catalog introspection** (`catalog::pg`) reads `pg_catalog` for objects in
+schema `public` through `to_regclass('public."name"')`, never through the
+search path: columns (`PRAGMA table_info` shape), dependent views (a
+recursive walk of `pg_depend`/`pg_rewrite`, optionally from given columns),
+single-column `CHECK`/foreign-key constraints, index names and one index's
+row. `object_exists` (name taken?) checks both schemas on the search path,
+so a collection or index can never shadow a system object or be shadowed.
+
+**Schema changes** are `ALTER TABLE` statements in the existing
+`SchemaChange` transaction; the SQLite rebuild (`_forgebase_tmp_…`, row copy,
+`legacy_alter_table`) is untouched. Renames are `RENAME TO` / `RENAME
+COLUMN`; added fields `ADD COLUMN`; dropped fields `DROP COLUMN`; a field
+whose column signature changes (storage class, check, foreign key) gets, in
+order: its single-column `CHECK` and foreign-key constraints dropped (found in
+`pg_constraint`), `ALTER COLUMN … TYPE … USING <conversion>` when the storage
+class changes, the new `CHECK`, and the new foreign key (checked against the
+existing rows at once; a missing target is `foreign_key_violation`, the code
+SQLite's commit-time check gives). Conversions keep SQLite's `STRICT` copy
+semantics: a value that does not fit fails the statement
+(`incompatible_data`) rather than being rounded: text and reals become
+integers through `numeric` and only when integral (`'2.5'` is refused,
+`3.0` becomes 3); integral reals become text as `3.0`; text becomes `jsonb`
+by a cast that rejects invalid JSON; numbers become JSON with `to_jsonb`.
+*Differs:* JSON turned into text is PostgreSQL's `jsonb` text
+(`{"x": [1, 2]}`, with spaces) where SQLite keeps the stored compact text;
+the documents are equal. Managed indexes (automatic and manual) that use a
+changed field are dropped before and created again from their definitions
+after (an expression may not fit the new type); other indexes, and raw-SQL
+indexes and triggers, stay as they are (no rebuild drops them).
+
+**Views** are `CREATE VIEW public."v" WITH (security_invoker = true) AS …`.
+PostgreSQL binds views to columns, so where SQLite lets a change break a view
+and the verification step catches it, PostgreSQL needs explicit handling:
+a type change on a column views read drops those views (and the views
+reading them, transitively), changes the column and creates them again from
+`pg_get_viewdef` with their `reloptions` (so `security_invoker` stays);
+a view that no longer compiles is `schema_conflict`. Dropping a column, a
+table or a view that a view reads is `schema_conflict` up front (found in
+`pg_depend`), the same code SQLite's verification gives. Changing a view
+collection's query does the same drop-and-restore for views reading it.
+*Note for FB-152:* recreated views lose grants, policies and `INSTEAD OF`
+triggers attached to them; the regeneration hook must run after the column
+changes, inside the same transaction (`update_collection`, after
+`alter_table`, before `verify_collections`). View fields are inferred from
+`pg_attribute` types: integer types → integer number, `double
+precision`/`numeric`/`real` → number, `text`/`varchar`/`citext` → text,
+`boolean` → bool, `uuid`/date and time types/network types → text, anything
+else → JSON.
+
+**Verification** runs as before, after every change, inside the transaction:
+columns from the catalog (`pg_attribute` on PostgreSQL), compared ignoring
+case, plus `SELECT * … LIMIT 0` for views.
+
+**Identifier length.** Derived names go through `Dialect::fit_ident` (63
+bytes on PostgreSQL, a 10-hex FNV-1a suffix when longer; no change on
+SQLite): automatic index names `auto_<collection id>_<field id>_u|r` and
+`auto_<collection id>_tenant` (ids may be 64 characters), and full-text
+index objects `_forgebase_fts_<index>` (index names may use all 63 bytes).
+The fitted name is the one stored in `_forgebase_indexes`, so lookups by
+name match the engine. Index names are now refused when longer than 63
+bytes or starting with `pg_` (both backends).
+
+**Full text.** *Differs from §7.4:* not a generated `tsvector` column but a
+GIN expression index, `CREATE INDEX "_forgebase_fts_<index>" ON public."t"
+USING gin ((to_tsvector('simple', _forgebase_unaccent(coalesce((k1)::text,
+'') || ' ' || …))))`, matched with the same expression `@@
+websearch_to_tsquery('simple', _forgebase_unaccent($n))`
+(`indexes::fulltext_match`, which list queries call). Why: a generated
+column is a real table column, so `SELECT t.*` would put it into every record
+(`row_to_record` keeps unknown columns), every change snapshot and every
+record version; adding it rewrites the table under an exclusive lock; and
+PostgreSQL refuses to change the type of a column a generated column uses.
+The expression index has none of these, needs no triggers or sync, follows
+column renames and is dropped with its table. `FB-131`'s
+`Dialect::fulltext_*` PostgreSQL methods (generated column) are not used by
+the data core. Ranking (`fulltext_rank`, lower is better) is not used by
+list queries today; FB-166 adds it with `ts_rank` over the same expression.
+
+**Index manager.** B-tree, unique (per tenant on tenant-scoped
+collections), partial, expression and JSON-path indexes map directly; every
+key is parenthesised on PostgreSQL (a parenthesised column is still a column
+key). `list_indexes` reads `pg_index` for tables in `public` (excluding
+`_forgebase_…` objects) plus the managed rows; `get_index` reports table,
+unique, partial, columns (`<expr>` for expression keys), the
+`pg_get_indexdef` DDL, origin `engine` for primary-key and unique-constraint
+indexes, and statistics: `rows_estimate` and `stat` from `pg_class.reltuples`
+(absent until `ANALYZE` or `CREATE INDEX` has counted), `size_bytes` from
+`pg_relation_size`, and a new `IndexStats::scans` from
+`pg_stat_user_indexes.idx_scan` (PostgreSQL only; not serialised when absent,
+so SQLite output is unchanged). `rebuild_index` is `REINDEX INDEX
+public."i"` (not `CONCURRENTLY`, which cannot run in a transaction; it blocks
+writes to the table while it runs) then `ANALYZE` of the table; `analyze` is
+`ANALYZE public."t"` or `ANALYZE`. Plans: `explain_list` and
+`recommend_indexes` read `EXPLAIN (FORMAT JSON)` themselves
+(`QueryPlan::from_pg_json`), because a full scan on PostgreSQL is a `Seq
+Scan` *or* an `Index Scan` without an `Index Cond` (the planner walks the
+primary key in `ORDER BY id` order and filters every row), which the
+`forgebase-db` step text cannot tell from a lookup. Recommendation probes
+bind `'0'` instead of NULL on PostgreSQL: the planner folds `x = NULL` to a
+constant and the plan would show no scan.
+
+**Name rules** (`forgebase-schema`): `validate_postgres_collection_name`
+(`pg_` is reserved: `pg_catalog` is searched before every schema, so a
+collection named like a catalog relation would be shadowed),
+`validate_postgres_field_name` (`tableoid`, `xmin`, `cmin`, `xmax`, `cmax`,
+`ctid`: PostgreSQL's system columns; `oid` was already reserved),
+`POSTGRES_MAX_IDENT`, and `Collection::validate_postgres_names(previous)`,
+which checks only names that are new relative to `previous`. The data core
+checks every name on PostgreSQL and new names on SQLite, so a SQLite project
+cannot pick a name that would block `forgebase db convert` (FB-151 should
+run `validate_postgres_names(None)` on every collection before converting),
+while names it already has keep working.
+
+**Tests.** `crates/forgebase-data/tests/schema_changes.rs` calls
+`forgebase_db::testing::test_backend()` directly (FB-143 switches the shared
+`tests/common` helper) and runs on both backends: the three original tests
+(with backend-specific assertions where the mechanism differs: column type
+`bigint` vs `INTEGER`, `ALTER COLUMN … TYPE` vs the `_forgebase_tmp_`
+rebuild in the history, `effective_pragmas` SQLite only) and six new ones
+(type conversions, views over changed columns and `security_invoker`,
+fitted names and accent-insensitive full text, name rules, the index manager
+with statistics, plans and recommendations, relation changes). One minimal
+edit outside the owned files: `list.rs` calls `indexes::fulltext_match`
+instead of building the FTS5 `MATCH` itself.
+
+## Addendum: FB-148, configuration, CLI and server wiring (2026-11-11)
+
+Built as §4.3, §6.1–§6.3 and ADR-0029 §4.1 and §6 describe. What the next
+packages need, and where the code differs from the text above.
+
+**Configuration** (`forgebase-core/src/config.rs`). `DatabaseConfig` gained
+`backend: DatabaseBackend` (`Postgres` | `Sqlite`) and `postgres:
+PostgresConfig { mode, url: Option<DatabaseUrl>, pool_size (16, 1–64),
+listen, engine_dir, native_rls, settings: BTreeMap<String, String>,
+extensions: PostgresExtensions { vector, graph, queue, cron, trigram } }`.
+The default backend is a compile-time constant: `DEFAULT_BACKEND` is
+`Postgres` when `forgebase-core` is built with `bundled-postgres` (enabled by
+`forgebase-cli/bundled-postgres` → `forgebase-server/bundled-postgres`, which
+also embeds the engine), `Sqlite` otherwise (the `-lite` build;
+`forgebase --version` says `lite`). The test and development builds are
+`-lite`, so every existing suite keeps SQLite unless it asks otherwise.
+`DatabaseUrl` redacts its password in `Debug` and is never serialised.
+`[database.postgres.settings]` accepts text, numbers and booleans (stored as
+text; `on`/`off` for booleans); names must be PostgreSQL parameter names and
+values one line; the engine's deny list is applied at start
+(`Engine::prepare`). Environment: `FORGEBASE_DATABASE_BACKEND`,
+`FORGEBASE_DATABASE_URL` (recorded as a secret by name; the file's `url` is
+reported as source `file`), `FORGEBASE_DATABASE_POSTGRES_{MODE, POOL_SIZE,
+LISTEN, ENGINE_DIR, NATIVE_RLS}` and
+`FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_{VECTOR, GRAPH, QUEUE, CRON, TRIGRAM}`.
+*Differs:* the unknown-variable guard now ignores `FORGEBASE_PG_ENGINE_DIR`,
+`FORGEBASE_PG_ENGINE_ARCHIVE`, `FORGEBASE_PG_ENGINE_LOCK` and every
+`FORGEBASE_TEST_*` variable: before, a `forgebase` binary spawned by a test
+running with `FORGEBASE_TEST_BACKEND` refused to start. The SQLite keys keep
+their `FORGEBASE_DB_*` names.
+
+**Registry** (`features.rs`). The `database` module now lists
+`database.backend`, `database.postgres.{mode, url, pool_size, listen,
+engine_dir, native_rls, settings}` and `database.postgres.extensions.*`; the
+SQLite keys stay under `server`. Editable from the dashboard: `pool_size`,
+`native_rls` and the five extension switches. Read-only: `backend` and `mode`
+(§6.1: they need `db convert`), `listen` (opens a network listener),
+`engine_dir` (ForgeBase runs the programs in it, so an administrator could run
+code as the server's OS user) and `settings` (file only, as the deny list is
+the engine's). `url` is a secret. New `SettingType::Map` (`"map"`) for
+`settings`; `set_keys` writes nested sections (`[database.postgres.extensions]`)
+and `keys_of` in the tests walks them. The module's docs link is
+`docs/deployment.md#35-database-postgresql-or-sqlite`.
+
+**Backend marker and resolution** (`forgebase_server::database`).
+`resolve(config, explicit, layout)`: the marker, else what is on disk
+(`forgebase.db` → SQLite, `postgres/data/PG_VERSION` → managed), else the
+configuration. `explicit` is "`database.backend` or `database.postgres.mode`
+came from the file, the environment or a flag" (`backend_is_explicit`); a
+configuration built in code (`forgebase_server::start(&Config)`) counts as
+explicit. A data directory keeps its backend when the configuration only has
+the default; an explicit contradiction is `ServerError::BackendMismatch`
+(`backend_mismatch`, 409) with the §6.3 message plus the `db convert` hint.
+This reconciles §6.3 ("refuse a mismatch") with ADR-0029 §6 ("the marker
+wins"): existing SQLite projects never switch on their own, and an edited
+config never opens an empty PostgreSQL next to a full SQLite project. The
+marker is written atomically by `init` and by the first start of an empty
+directory (and by `db convert`, FB-151: `database::write_marker`).
+
+**Server** (`forgebase-server/src/lib.rs`). After the lock,
+`database::open_owned(config, explicit, layout, Create::Yes)` starts the
+bundled engine (`Engine::prepare(Layout::primary(data_dir), engine_config)`:
+`engine_dir` → `EngineSource::Dir`, `listen`, `settings`, `extensions.cron`
+→ pg_cron), then opens `Database` with `url(Role::Server)` and
+`read_pool_size = pool_size`; an external server uses `FORGEBASE_DATABASE_URL`
+(`create_if_missing` creates its database). A failing startup closes the
+pools, stops the engine and only then releases the lock. Shutdown closes the
+pools, then `EngineHandle::stop()` (fast shutdown), then releases the lock.
+`RunningServer::{backend, engine, db}` are new. *Differs:* the final
+`CHECKPOINT` runs on SQLite only (`database::checkpoint`): `forgebase_server`
+has no `pg_checkpoint` membership, so `Database::checkpoint` fails on the
+bundled engine (`permission denied to execute CHECKPOINT`); the engine's fast
+shutdown checkpoints anyway. FB-150 (backups) should either grant
+`pg_checkpoint` to `forgebase_server` in the FB-132 bootstrap or run its
+checkpoint as `forgebase_super`.
+
+**One-off commands** (`database::open_attached(config, explicit, layout,
+Access::{Read, Write, Super})`). SQLite opens the file (read-only for
+`Read`). The bundled engine: when the lock is free the command takes it and
+starts the engine for its duration (`PrimaryDatabase::close` stops it and
+releases the lock); when a server holds the lock, it reads
+`postgres/data/postmaster.pid` (pid alive, status `ready`, socket directory,
+port; waits up to 10 s for a starting server) and logs in through the socket
+with the role's password from `roles.secret` (`forgebase_reader`,
+`forgebase_server` or `forgebase_super`). `PrimaryDatabase` derefs to
+`Database`. Used by `status`, `doctor` (`Super`, for `amcheck`), `migrate
+--status`, `admin`, `export`/`import` and `db`; `init` and `migrate` use
+`open_owned` under their own lock. *Differs:* §6.2 has `init` start and stop
+the engine once; it now runs the migrations and the administrator step on one
+open database (`admin::init_admin` takes the `Database`), so the engine starts
+once per `init`.
+
+**CLI.** `forgebase init [DIR] --database postgres|sqlite` and
+`--database-url URL` (conflicting flags); on a terminal without either, the
+ADR-0029 §6 prompt (`[1]` is the build's default). An existing data directory
+or an explicit `backend` in an existing `forgebase.toml` decides without
+asking, and a flag that contradicts either is refused. The new
+`forgebase.toml` gets `backend = "…"` (and `[database.postgres] mode =
+"external"`); the URL goes to `DIR/.env` (single-quoted, 0600; a different
+URL already there is refused). Root: `PostgreSQL cannot run as root: run as an
+unprivileged user, or use --database sqlite`. A build without an engine and
+without `engine_dir`/`FORGEBASE_PG_ENGINE_DIR` answers with
+`database::NO_BUNDLED_ENGINE`. `status` shows the backend, the cluster or
+server, the socket and who started the engine, and the SQLite notice of
+ADR-0029 §6 (only while PostgreSQL is the default). `doctor` adds `backend`,
+`engine` (`archive::verify_extracted` for extracted engines, `postgres
+--version`, major against `PG_VERSION`, `MIN_MAJOR`), `cluster` (mode 0700),
+`roles`, `postmaster` (left behind) and runs `amcheck` plus the foreign-key
+check as `forgebase_super`; the WAL-size warning is SQLite only.
+`forgebase db status [--json]` never starts the engine. `forgebase db psql
+[--read-only | --superuser] [ARGS…]` runs the engine's `psql` over the Unix
+socket only (human decision 2026-11-11), with a 0600 passfile in
+`<data_dir>/tmp/` (removed afterwards; never argv or `PGPASSWORD`), ignoring
+Ctrl-C itself so psql gets it; external servers and SQLite are refused with a
+hint. One-off commands filter `forgebase::postgres` out of their log (the
+pg_cron launcher logs `database "forgebase" does not exist` on a first start,
+before the bootstrap creates it); a start failure still carries the engine's
+last lines.
+
+**API** (`forgebase-api`). `AppState::with_database_runtime(DatabaseRuntime {
+mode, location, extensions, engine })`, where `engine` is a closure returning
+`EngineReport { state, version, pid, restarts, last_error, socket_dir, tcp,
+warnings }` (no `forgebase-pgengine` dependency in the API crate).
+`/api/system/info` `database` gained `backend`, `mode`, `server_version`,
+`connections`, `engine` and `features` (per feature: `engine: "portable"`,
+`mode`, `extension`, `available`, `installed`, `state` = `off` |
+`installed` | `available` | `unavailable`, from `pg_available_extensions` and
+`pg_extension`; `{}` on SQLite); `path` is the SQLite file, the cluster
+directory or the external URL without password. `/health/ready` fails the
+`database` check while the engine is `restarting` or `failed` (with its last
+error); its body keeps the Phase 1 contract shape (`status`, `checks`,
+`errors`), so the backend is reported by `/api/system/info` only (the
+dashboard's backend-info slot reads `database.backend` and
+`database.features` there).
+
+**Bench.** `forgebase_bench::Rig` and the queue/jobs bench follow
+`FORGEBASE_TEST_BACKEND` (`postgres` starts the bundled engine through
+`open_owned`, from `FORGEBASE_PG_ENGINE_DIR` in a `-lite` build);
+`run-load.sh` takes an optional `postgres|sqlite` argument for `init`.
+
+**Engine fixes (FB-132 follow-ups).** Extraction no longer calls `sync_all`
+per file (on macOS that is `F_FULLFSYNC`, a full flush of the drive's cache,
+938 times). The whole tree is made durable once, before the rename that
+publishes it: Linux `syncfs` of the file system; macOS a plain `fsync` of
+every file and directory, then one `F_FULLFSYNC`; other platforms keep the
+per-file sync. The rename is followed by a sync of the parent directory, and
+a directory left without a matching `forgebase-engine.sha256` is replaced
+instead of kept. Measured with the real FB-130 archive
+(`forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst`, 938 files, debug build,
+external SSD): first extraction **143.6 s before, 2.6 s after**; finding it
+again 0.09 s (`examples/extract_engine.rs`). With the archive embedded
+(`--features bundled-postgres`), `forgebase init` on a fresh directory
+started the engine in 5.2 s (extraction about 1.8 s, then `initdb`, start and
+bootstrap) and finished in 7.5 s with the migrations; a later start of the
+same cluster takes about 0.1 s. The archive test packs `bin lib
+share`, so it passes with a relocatable engine.
+
+**Not done here / for the next packages.**
+- `serve` on PostgreSQL stops at the first unported service query until
+  FB-143–FB-147 merge (on this branch: `forgebase-data/src/ddl.rs` asks
+  `sqlite_master`); the full-server test
+  `crates/forgebase-server/tests/database_fb148.rs::the_server_runs_on_the_bundled_engine`
+  is `#[ignore]` for that reason and should be switched on by god or FB-149
+  after the merge.
+- FB-149: release builds enable `forgebase-cli/bundled-postgres` (with
+  `FORGEBASE_PG_ENGINE_ARCHIVE`); the `-lite` archive builds without it. CI's
+  PostgreSQL job runs these suites with `FORGEBASE_TEST_BACKEND=postgres` and
+  `FORGEBASE_PG_ENGINE_DIR`.
+- FB-150/FB-151: open the data directory through `database::open_owned` /
+  `open_attached` (they handle the marker and the engine), write the marker
+  with `database::write_marker`, and take the `pg_checkpoint` point above.
+  `forgebase backup` still opens `forgebase.db` directly.
+- FB-155/FB-102: the new `database.*` settings (type `map` included) and the
+  `database.features` and `engine` objects above.
+- External servers: the text-collation check FB-133 suggested (a libc locale
+  may sort differently from the bundled engine's builtin C.UTF-8) is not done.
+
+## Addendum (FB-140): object storage tenancy, object rules and the sealed signing key
+
+Written 2026-11-11 by FB-140. Closes `rls-coverage.md` G1, G14 and G15 and
+the storage part of G11 in `forgebase-storage`. Backend-neutral: new SQL is
+valid on both engines (numbered `?N` placeholders, `Dialect::insert_ignore`,
+`Dialect::column_type` casts); migration pair 0029 (`storage_rls`).
+
+**Bucket ACLs (G1).** An ACL entry for a prefix covers the keys under it
+and never the bucket: get, update, ACL get/set, usage, delete (also
+`force`) and the bucket listing match only entries with the empty prefix.
+A user with `admin` on `users/alice/` keeps writing there and administers
+nothing.
+
+**Authorization order.** Privileged callers; the bucket owner; visibility
+(reads); ACL entries; then `Authorizer::authorize_resource(ctx,
+Storage<need>, bucket <name>, op)` (FB-134): the permission
+`engine:storage_<need>:<bucket>` or the plain key, else the bucket's
+resource rule for the operation. Operations: object listing and version
+listing `list`; get, head, signed GET, copy source and restore source
+`view`; put, upload, copy target and restore `create` when the key holds
+no live object at install time, `update` otherwise; delete and move
+source `delete`. Bucket get and listing ask `view` / `list`; admin needs
+are decided by permissions only. `create_bucket` asks
+`authorize_resource(StorageAdmin, bucket <name>, create)`, so
+`engine:storage_admin:<name>` lets one create that name. Anonymous callers
+reach the rule step (a rule may open a bucket to them). Statistics and the
+reconciler keep the plain `authorize`.
+
+**Object rules (G14).** Storage registers its own `bucket` schema
+(`forgebase_storage::object_schema`): `key`, `created_by` (principal key
+as stored), `owner` (the creator's id, as `@request.auth.id` gives it),
+`owner_collection` (a user creator's auth collection), `size`,
+`content_type`, `folders` (JSON array of the key's folder names, as
+Supabase's `storage.foldername`; `folders.0` is the first). They are
+columns of `_forgebase_storage_objects` (0029 adds `owner`,
+`owner_collection`, `folders` and fills existing rows with the values the
+service writes), so a `Decision::Filter` compiles with
+`ResourceSchema::compile` straight into the object SQL over alias `o`.
+Reads add it to `WHERE` (hidden objects are `404`; folder prefixes of a
+delimiter listing come only from visible objects). Writes that add a
+version get both the `create` and `update` decisions up front
+(`WriteCheck`); an early check refuses before any byte is received when
+the current state's decision denies or the version being replaced fails
+the `update` filter; the decision for the state found **inside the
+install transaction** is applied there: the replaced version must pass
+(`USING`) and the new one, as a one-row derived table of its fields
+(`WITH CHECK`), must pass too, else `403` and nothing is written.
+Multipart and resumable uploads are checked when they complete. Deletes
+check the version removed (or the latest). Owner-only pattern:
+`owner = @request.auth.id && owner_collection = @request.auth.collection`
+(the second term keeps users of two auth collections with the same id
+apart); per-user folders: `folders.0 = @request.auth.id`.
+
+**Tenant buckets (G14).** `_forgebase_storage_buckets.tenant` (NULL =
+instance-wide, every bucket before FB-140). A caller with a tenant creates
+buckets of that tenant, stored as `<tenant>/<name>` (bucket names never
+hold `/`, so names are unique per tenant and the stored name is never
+addressable: every name is validated before lookup). A name resolves to
+the caller's tenant bucket, else the instance-wide bucket of that name;
+another tenant's bucket is unreachable, and so are its upload sessions. A
+tenant may not create a name an instance-wide bucket holds (`409`); an
+instance-wide bucket created later is hidden in a tenant that has its own.
+Listings show the tenant's buckets plus the instance-wide ones; the wire
+`Bucket` gained `tenant`; objects and uploads keep showing the bare name.
+`GET /api/v1/storage/stats` gained `scope` (`tenant`, `instance` for
+non-privileged callers without a tenant, `engine` for privileged callers
+without one) and `tenant`; stored bytes are the distinct blobs the scope
+references. Resource permissions and rules name the bare bucket name, so
+`engine:storage_read:files` and the rules of `files` apply to every
+tenant's `files` (rules are super-admin, instance-level settings, as FB-134
+decided for engine names).
+
+**Signing key (G11).** The 32-byte key lives in
+`_forgebase_storage_settings` row `signing_key_sealed`, sealed with the
+auth keyring (XChaCha20-Poly1305, AAD `forgebase/storage/url-signing-key/v1`).
+At start a plain `signing_key` row from before FB-140 is sealed
+**unchanged** and deleted in one transaction, so URLs issued before the
+upgrade stay valid until they expire. A master key that does not open the
+sealed key fails the start with a message naming the row to delete;
+nothing is overwritten. `StorageService::open` takes a `Keyring` (server:
+the data directory's master key, as billing and queues).
+
+**Signed URLs (G15).** Checked when issued, never when used (as S3 and
+Supabase), documented in `signed.rs`, ADR-0018 §7 and `docs/security.md`.
+New URLs carry `v=2`, `t` (bucket tenant) and `by` (the uploader, recorded
+as `created_by`; format 1 recorded `signed-url`), each value length-prefixed
+in the signed message; format-1 URLs still verify. Signing a PUT is
+refused when the rule for the key's state could fail for an upload the URL
+accepts (a rule on `size`, or on `content_type` without `content_type`
+pinned). `POST /api/v1/storage/maintenance/rotate-signing-key`
+(administrators, `StorageService::rotate_signing_key`) replaces the key and
+revokes every URL at once.
+
+**Breaking.** A prefix ACL entry no longer shows its bucket in listings or
+opens bucket metadata. Rules that read `owner`/`folders` see the new
+columns only (0029 fills existing rows). `StorageService::open` gained the
+keyring argument; `SignedParams` gained `format`, `tenant`, `signer`;
+`StorageStats` gained `scope`, `tenant`; `Bucket` gained `tenant`.
+`DataService::authorizer()` added in `forgebase-data` (one accessor).
+
+**For FB-147 (storage on PostgreSQL).** The new SQL is portable; check on
+PostgreSQL: the `CAST(?n AS jsonb)` of `folders` in the new-row check, JSON
+paths (`o."folders"->>0`) on the `jsonb` column, `trim_array` in the 0029
+twin (PG 14+), and the SQLite twin's `json_remove(…, '$[#-1]')`. The
+signing key row is text hex on both engines. Native RLS stays out of scope
+(engine tables are API-only, rls-coverage §3.4); if storage objects are
+ever exposed, the rule fields are real columns, so policies can reuse them.
+**For the dashboard storage studio (FB-100).** Show `tenant` on buckets and
+`scope` on stats; send `X-ForgeBase-Tenant` when creating buckets; offer
+`bucket` resource rules with the fields above (`folders.0`, `owner`); a
+"rotate signing key" action for administrators; expect `404` for objects a
+rule hides.

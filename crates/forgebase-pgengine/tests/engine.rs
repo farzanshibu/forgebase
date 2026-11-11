@@ -400,7 +400,7 @@ async fn engine_from_an_archive_is_extracted_once_and_old_minors_are_removed() {
         .version;
     archive::pack_dir(
         &engine,
-        &["bin/postgres", "bin/initdb"],
+        &["bin", "lib", "share"],
         &archive::PackInfo {
             postgres: version.text.clone(),
             build: "t1".into(),

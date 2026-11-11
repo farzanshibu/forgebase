@@ -1,10 +1,12 @@
 #!/bin/sh
-# Usage: run-load.sh <forgebase binary> <fb-load binary> <empty work dir> [concurrency] [duration]
+# Usage: run-load.sh <forgebase binary> <fb-load binary> <empty work dir> [concurrency] [duration] [database]
 # Starts a release server in <work dir>, runs every fb-load scenario, stops the server.
+# database: postgres (the bundled PostgreSQL) or sqlite; default: the build's default.
 set -eu
-FB=$1; LOAD=$2; DIR=$3; C=${4:-16}; D=${5:-10}
+FB=$1; LOAD=$2; DIR=$3; C=${4:-16}; D=${5:-10}; DB=${6:-}
 mkdir -p "$DIR"; cd "$DIR"
-"$FB" init app >/dev/null; cd app
+if [ -n "$DB" ]; then "$FB" init app --database "$DB" --no-admin >/dev/null; else "$FB" init app --no-admin >/dev/null; fi
+cd app
 echo "root password 1" | "$FB" admin create --email root@example.com --password-stdin >/dev/null
 "$FB" serve --port 18091 >../server.log 2>&1 &
 PID=$!

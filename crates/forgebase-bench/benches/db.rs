@@ -1,4 +1,5 @@
-//! SQLite writer and reader pool (single-writer WAL, ADR-0001).
+//! The writer and the reader pool (single writer, ADR-0001), on SQLite or the
+//! bundled PostgreSQL (`FORGEBASE_TEST_BACKEND=postgres`, FB-148).
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
