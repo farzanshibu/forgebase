@@ -316,7 +316,11 @@ async fn check_services(db: &Database, dir: &Path) {
         )
         .await
         .unwrap();
-    assert_eq!(got.len(), 1, "the owed message is delivered and the leased one stays leased");
+    assert_eq!(
+        got.len(),
+        1,
+        "the owed message is delivered and the leased one stays leased"
+    );
 
     let vectors = forgebase_vector::VectorService::open(
         svc.clone(),
@@ -648,7 +652,11 @@ async fn to_sqlite_brings_extension_data_to_portable_rows() {
         ))
         .await
         .unwrap();
-    assert_eq!(meta.scalar().and_then(Value::as_i64), Some(0), "extension pins are not copied");
+    assert_eq!(
+        meta.scalar().and_then(Value::as_i64),
+        Some(0),
+        "extension pins are not copied"
+    );
     check_services(&back, &back_dir).await;
     back.close().await;
 }
