@@ -153,7 +153,12 @@ impl JobAccess {
         if ctx.principal == Principal::Anonymous {
             return false;
         }
-        let check = self.shared.permissions.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let check = self
+            .shared
+            .permissions
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         check.is_some_and(|c| c(ctx, key))
     }
 
@@ -444,7 +449,11 @@ mod tests {
             .with_tenant("t1")
             .with_scopes(vec!["jobs:write".into()]);
         let text = RecordedContext::encode(&ctx).unwrap();
-        let back = RecordedContext::decode(Some(&text)).unwrap().unwrap().context().unwrap();
+        let back = RecordedContext::decode(Some(&text))
+            .unwrap()
+            .unwrap()
+            .context()
+            .unwrap();
         assert_eq!(back, ctx);
         assert!(RecordedContext::encode(&AccessContext::system()).is_none());
         let sa = AccessContext::service("sa", true);

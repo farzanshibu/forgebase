@@ -137,7 +137,11 @@ fn id_of(pk: &str) -> &str {
 }
 
 async fn deploy(env: &Env, name: &str, source: &str, access: InvokeAccess, hooks: Vec<HookSpec>) {
-    let caps = if hooks.is_empty() { vec![] } else { vec!["db.read".to_owned()] };
+    let caps = if hooks.is_empty() {
+        vec![]
+    } else {
+        vec!["db.read".to_owned()]
+    };
     env.server
         .functions()
         .expect("functions enabled")
@@ -178,21 +182,41 @@ async fn g3_jobs_reads_and_channels_follow_tenant_and_creator() {
         &admin,
         &carol_pk,
         "fb142_jobs",
-        &["engine:read_jobs", "engine:enqueue_job", "engine:manage_jobs", "engine:channel_subscribe"],
+        &[
+            "engine:read_jobs",
+            "engine:enqueue_job",
+            "engine:manage_jobs",
+            "engine:channel_subscribe",
+        ],
     )
     .await;
 
-    let r = enqueue(&env, &alice, Some(&ta), json!({"kind": "report", "payload": {"secret": "alpha"}})).await;
+    let r = enqueue(
+        &env,
+        &alice,
+        Some(&ta),
+        json!({"kind": "report", "payload": {"secret": "alpha"}}),
+    )
+    .await;
     assert_eq!(r.status, 201, "alice enqueues: {}", r.text());
     assert_eq!(r.json()["tenant"], json!(ta), "the job records its tenant");
     let a_job = r.json()["id"].as_str().unwrap().to_owned();
-    let r = enqueue(&env, &bob, Some(&tb), json!({"kind": "report", "payload": {"secret": "beta"}})).await;
+    let r = enqueue(
+        &env,
+        &bob,
+        Some(&tb),
+        json!({"kind": "report", "payload": {"secret": "beta"}}),
+    )
+    .await;
     assert_eq!(r.status, 201, "bob enqueues: {}", r.text());
     let b_job = r.json()["id"].as_str().unwrap().to_owned();
 
     // Another tenant: not listed, not readable, not manageable.
     let seen = listed(&env, &bob, Some(&tb)).await;
-    assert!(seen.contains(&b_job) && !seen.contains(&a_job), "bob lists only his tenant: {seen:?}");
+    assert!(
+        seen.contains(&b_job) && !seen.contains(&a_job),
+        "bob lists only his tenant: {seen:?}"
+    );
     let r = env.as_(&bob, "GET", "/api/v1/jobs", &[], None).await;
     assert!(
         r.status == 403 || !r.text().contains(&a_job),
@@ -212,7 +236,12 @@ async fn g3_jobs_reads_and_channels_follow_tenant_and_creator() {
     }
     let r = env.as_(&bob, "GET", "/api/v1/jobs/stats", &tenant(&tb), None).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json()["totals"]["queued"], 1, "stats count bob's own job only: {}", r.text());
+    assert_eq!(
+        r.json()["totals"]["queued"],
+        1,
+        "stats count bob's own job only: {}",
+        r.text()
+    );
     let r = enqueue(
         &env,
         &bob,
@@ -228,7 +257,12 @@ async fn g3_jobs_reads_and_channels_follow_tenant_and_creator() {
         json!({"kind": "report", "idempotency_key": "k1", "payload": {}}),
     )
     .await;
-    assert_eq!(r.status, 201, "another tenant's idempotency key is not matched: {}", r.text());
+    assert_eq!(
+        r.status,
+        201,
+        "another tenant's idempotency key is not matched: {}",
+        r.text()
+    );
     assert_eq!(r.json()["tenant"], json!(ta));
 
     // Same tenant, another creator: only with `engine:read_jobs:all`.
@@ -236,14 +270,22 @@ async fn g3_jobs_reads_and_channels_follow_tenant_and_creator() {
     assert_eq!(r.status, 201, "carol enqueues: {}", r.text());
     let c_job = r.json()["id"].as_str().unwrap().to_owned();
     let seen = listed(&env, &carol, Some(&ta)).await;
-    assert!(seen.contains(&c_job) && !seen.contains(&a_job), "carol sees her own jobs: {seen:?}");
+    assert!(
+        seen.contains(&c_job) && !seen.contains(&a_job),
+        "carol sees her own jobs: {seen:?}"
+    );
     let r = env.as_(&carol, "GET", &path, &tenant(&ta), None).await;
     assert_eq!(r.status, 404, "another member's job: {}", r.text());
-    let r = env.as_(&carol, "POST", &format!("{path}/cancel"), &tenant(&ta), None).await;
+    let r = env
+        .as_(&carol, "POST", &format!("{path}/cancel"), &tenant(&ta), None)
+        .await;
     assert_eq!(r.status, 404, "cancel another member's job: {}", r.text());
     // The owner (`*`) sees every job of the tenant.
     let seen = listed(&env, &alice, Some(&ta)).await;
-    assert!(seen.contains(&a_job) && seen.contains(&c_job) && !seen.contains(&b_job), "{seen:?}");
+    assert!(
+        seen.contains(&a_job) && seen.contains(&c_job) && !seen.contains(&b_job),
+        "{seen:?}"
+    );
 
     // Job channels follow the same visibility.
     let realtime = env.server.realtime();
@@ -265,14 +307,25 @@ async fn g3_jobs_reads_and_channels_follow_tenant_and_creator() {
         &admin,
         &carol_pk,
         "fb142_jobs",
-        &["engine:read_jobs", "engine:read_jobs:all", "engine:enqueue_job", "engine:channel_subscribe"],
+        &[
+            "engine:read_jobs",
+            "engine:read_jobs:all",
+            "engine:enqueue_job",
+            "engine:channel_subscribe",
+        ],
     )
     .await;
     let seen = listed(&env, &carol, Some(&ta)).await;
-    assert!(seen.contains(&a_job) && !seen.contains(&b_job), "read_jobs:all: the tenant only: {seen:?}");
+    assert!(
+        seen.contains(&a_job) && !seen.contains(&b_job),
+        "read_jobs:all: the tenant only: {seen:?}"
+    );
     let r = env.as_(&carol, "GET", &path, &tenant(&ta), None).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert!(realtime.presence(&carol_ctx, &ch).is_ok(), "read_jobs:all watches the tenant's jobs");
+    assert!(
+        realtime.presence(&carol_ctx, &ch).is_ok(),
+        "read_jobs:all watches the tenant's jobs"
+    );
     env.shutdown().await;
 }
 
@@ -291,15 +344,31 @@ async fn g4_reserved_kinds_invoke_access_and_worker_claims() {
         &admin,
         &carol_pk,
         "fb142_worker",
-        &["engine:read_jobs", "engine:enqueue_job", "engine:manage_jobs", "engine:work_jobs"],
+        &[
+            "engine:read_jobs",
+            "engine:enqueue_job",
+            "engine:manage_jobs",
+            "engine:work_jobs",
+        ],
     )
     .await;
     deploy(&env, "secret", WHOAMI, InvokeAccess::Permission, vec![]).await;
     deploy(&env, "open", WHOAMI, InvokeAccess::Public, vec![]).await;
 
     // System kinds are reserved, even for an owner with `*`.
-    for kind in ["customize.email.send", "storage.reconcile", "billing.maintenance", "forgebase.x"] {
-        let r = enqueue(&env, &alice, Some(&ta), json!({"kind": kind, "payload": {"to": "x@y.z"}})).await;
+    for kind in [
+        "customize.email.send",
+        "storage.reconcile",
+        "billing.maintenance",
+        "forgebase.x",
+    ] {
+        let r = enqueue(
+            &env,
+            &alice,
+            Some(&ta),
+            json!({"kind": kind, "payload": {"to": "x@y.z"}}),
+        )
+        .await;
         assert_eq!(r.status, 403, "{kind}: {}", r.text());
     }
     let r = env
@@ -347,7 +416,12 @@ async fn g4_reserved_kinds_invoke_access_and_worker_claims() {
                         "payload": {"function": "secret"}})),
         )
         .await;
-    assert_eq!(r.status, 403, "a schedule invoking a function carol may not: {}", r.text());
+    assert_eq!(
+        r.status,
+        403,
+        "a schedule invoking a function carol may not: {}",
+        r.text()
+    );
     let r = enqueue(
         &env,
         &carol,
@@ -462,8 +536,22 @@ async fn g5_hooks_run_with_an_explicit_context() {
             events: vec![e],
         }]
     };
-    deploy(&env, "gate", WHOAMI, InvokeAccess::Permission, hook(HookEvent::BeforeCreate)).await;
-    deploy(&env, "audit", WHOAMI, InvokeAccess::Permission, hook(HookEvent::AfterCreate)).await;
+    deploy(
+        &env,
+        "gate",
+        WHOAMI,
+        InvokeAccess::Permission,
+        hook(HookEvent::BeforeCreate),
+    )
+    .await;
+    deploy(
+        &env,
+        "audit",
+        WHOAMI,
+        InvokeAccess::Permission,
+        hook(HookEvent::AfterCreate),
+    )
+    .await;
 
     let h = [("X-ForgeBase-Org", org_a.as_str()), ("X-ForgeBase-Tenant", ta.as_str())];
     let r = env
@@ -509,9 +597,11 @@ async fn g5_hooks_run_with_an_explicit_context() {
         before.iter().all(|a| a["type"] != "admin"),
         "an administrator's write runs the hook as the function: {before:?}"
     );
-    assert!(before
-        .iter()
-        .any(|a| a["type"] == "service" && a["id"] == "function.gate" && a["tenant"] == json!(ta)));
+    assert!(
+        before
+            .iter()
+            .any(|a| a["type"] == "service" && a["id"] == "function.gate" && a["tenant"] == json!(ta))
+    );
     env.shutdown().await;
 }
 

@@ -29,8 +29,8 @@ use forgebase_jobs::{HandlerError, JobContext, JobError, JobRegistry};
 use serde_json::{Value as Json, json};
 
 use crate::error::{ExecError, FunctionError};
-use crate::model::Trigger;
 use crate::model::Outcome;
+use crate::model::Trigger;
 use crate::{FunctionService, identity};
 
 /// Job kind that invokes a function.
@@ -45,7 +45,11 @@ fn function_of(payload: &Json) -> Option<&str> {
 /// `enqueuer` (FB-142): the enqueuer itself, unless it is privileged (or
 /// `None`, the system); then the function's own identity in the enqueuer's
 /// realm, organization and tenant (`tenant` when the enqueuer has none).
-pub(crate) fn invocation_context(function: &str, enqueuer: Option<&AccessContext>, tenant: Option<&str>) -> AccessContext {
+pub(crate) fn invocation_context(
+    function: &str,
+    enqueuer: Option<&AccessContext>,
+    tenant: Option<&str>,
+) -> AccessContext {
     match enqueuer {
         Some(e) if !e.is_privileged() => e.clone(),
         Some(e) => {

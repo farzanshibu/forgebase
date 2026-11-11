@@ -340,12 +340,7 @@ impl JobRegistry {
     /// Registers `handler` for `kind` with `guard` checking every
     /// non-privileged enqueuer and payload before the job is stored.
     #[must_use]
-    pub fn register_guarded(
-        self,
-        kind: impl Into<String>,
-        handler: impl JobHandler,
-        guard: impl EnqueueGuard,
-    ) -> Self {
+    pub fn register_guarded(self, kind: impl Into<String>, handler: impl JobHandler, guard: impl EnqueueGuard) -> Self {
         self.register_with(kind, handler, KindAccess::Guarded(Arc::new(guard)))
     }
 
