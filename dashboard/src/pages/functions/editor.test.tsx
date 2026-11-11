@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MockApi } from "../../test/mockApi";
+import { MockApi, makeCollection } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { addJsFunction, installFunctions, SYNTAX_ERROR } from "../../test/fnMock";
 import { monacoState, setEditorCode } from "../../test/monacoMock";
 import { pick } from "../../test/pick";
-import { TEMPLATES } from "./templates";
+import { TEMPLATES, hooksFor, template } from "./templates";
 import { FALLBACK_FORGEBASE_DTS } from "./fallbackTypes";
 
 vi.mock("./monacoEnv", async () => (await import("../../test/monacoMock")).monacoEnvMock());
@@ -28,44 +28,72 @@ function setup() {
 const editor = (name: string) => screen.findByRole("textbox", { name: `${name} source` });
 const wasm = () => new File([new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0])], "mod.wasm", { type: "application/wasm" });
 
+/** Opens New function (one page), picks a template and a language, and names the function. */
 async function openNew(name: string, template?: string, language?: string) {
   renderStudio("/functions/new");
-  const form = await screen.findByRole("form", { name: "New function" });
-  await userEvent.type(within(form).getByLabelText("Name"), name);
-  if (template) await pick(within(form).getByLabelText("Template"), template);
+  const form = await screen.findByRole("form", { name: "Function settings" });
+  const nameBox = within(form).getByLabelText(/^Name/);
+  await userEvent.clear(nameBox);
+  await userEvent.type(nameBox, name);
+  if (template) await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${template}`) }));
   if (language) await pick(within(form).getByLabelText("Language"), language);
-  await userEvent.click(within(form).getByRole("button", { name: "Open editor" }));
   return form;
 }
 
 describe("New function", () => {
-  it.each(TEMPLATES)("starts from the $label template in TypeScript, deploys it and opens the function", async (t) => {
+  it.each(TEMPLATES)("starts from the $label template in TypeScript, deploys it and opens the Test tab", async (t) => {
     const { mock, st } = setup();
-    await openNew("fresh", t.id);
+    const form = await openNew("fresh", t.label);
+    if (t.needsCollection) await userEvent.type(within(form).getByLabelText("Collection"), "orders");
+    const collection = t.needsCollection ? "orders" : "";
+    const source = t.source(collection || "your_collection");
     const ta = await editor("fresh");
-    expect(ta).toHaveValue(t.source.typescript);
-    expect(t.source.typescript).toContain('from "forgebase"');
+    await waitFor(() => expect(ta).toHaveValue(source.typescript));
+    expect(source.typescript).toContain('from "forgebase"');
     for (const c of t.capabilities) expect(screen.getByRole("switch", { name: c })).toBeChecked();
     expect(screen.getByRole("switch", { name: "service_role" })).not.toBeChecked();
 
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
-    expect(await screen.findByText("fresh", { selector: "h2" })).toBeInTheDocument();
+    // A deploy toasts and opens the function's Test tab.
+    expect(await screen.findByRole("form", { name: "Test run" })).toBeInTheDocument();
+    expect(await screen.findByText("fresh", { selector: "h1" })).toBeInTheDocument();
     const body = mock.bodies["post /api/v1/functions"]![0] as Record<string, unknown>;
-    expect(body).toMatchObject({ name: "fresh", language: "typescript", source: t.source.typescript, capabilities: t.capabilities, access: "permission", activate: true });
+    expect(body).toMatchObject({ name: "fresh", language: "typescript", source: source.typescript, capabilities: t.capabilities, access: "permission", activate: true });
     expect(body.wasm).toBeUndefined();
-    if (t.hooks.length) expect(body.hooks).toEqual(t.hooks);
+    expect(body.hooks).toEqual(hooksFor(t, collection));
     expect(st.versions.fresh![0]).toMatchObject({ runtime: "js", language: "typescript" });
     expect(mock.problems).toEqual([]);
   });
 
+  it("lists a db.read template, with a collection picker over the real collections", () => {
+    const read = TEMPLATES.find((t) => t.label === "Read a collection")!;
+    expect(read.capabilities).toContain("db.read");
+    expect(read.needsCollection).toBe(true);
+    expect(read.source("orders").typescript).toContain('ctx.db.from("orders")');
+    // No template assumes a collection name: the webhook and the hook take the chosen one.
+    for (const t of TEMPLATES.filter((x) => x.needsCollection)) expect(t.source("books").typescript).not.toContain("orders");
+    expect(TEMPLATES.find((t) => t.id === "hook")!.source("books").typescript).toContain("books");
+  });
+
+  it("picks the newest collection by default and generates the code for the one chosen", async () => {
+    const mock = signedIn(new MockApi({ collections: [makeCollection("alpha", []), makeCollection("zeta", [])] }).install());
+    addJsFunction(installFunctions(mock));
+    renderStudio("/functions/new");
+    const ta = await editor("read-zeta");
+    expect(ta).toHaveValue(expect.stringContaining('from("zeta")'));
+    expect(screen.getByLabelText("Collection")).toHaveTextContent("zeta");
+    await pick(screen.getByLabelText("Collection"), "alpha");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "read-alpha source" })).toHaveValue(expect.stringContaining('from("alpha")')));
+  });
+
   it("offers JavaScript, which strips the type annotations", async () => {
     const { mock } = setup();
-    await openNew("plain", "http", "javascript");
+    await openNew("plain", "HTTP API", "JavaScript");
     const ta = await editor("plain");
-    expect(ta).toHaveValue(TEMPLATES[0]!.source.javascript);
+    await waitFor(() => expect(ta).toHaveValue(template("http").source("").javascript));
     expect((ta as HTMLTextAreaElement).value).not.toContain(": Request");
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
-    await screen.findByText("plain", { selector: "h2" });
+    await screen.findByRole("form", { name: "Test run" });
     expect(mock.bodies["post /api/v1/functions"]![0]).toMatchObject({ language: "javascript" });
   });
 
@@ -82,26 +110,31 @@ describe("New function", () => {
     expect(st.functions.map((f) => f.name)).not.toContain("power");
   });
 
-  it("rejects a bad name before opening the editor", async () => {
+  it("checks the name as you type and does not offer Deploy for a bad one", async () => {
     setup();
-    renderStudio("/functions/new");
-    const form = await screen.findByRole("form", { name: "New function" });
-    await userEvent.type(within(form).getByLabelText("Name"), "Bad Name");
-    await userEvent.click(within(form).getByRole("button", { name: "Open editor" }));
-    expect(await screen.findByText(/Name: lower-case letters/)).toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: /source$/ })).not.toBeInTheDocument();
+    await openNew("Bad Name");
+    expect(await screen.findByText(/Use lower-case letters, digits, dashes or underscores/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deploy" })).toBeDisabled();
   });
 
-  it("still uploads a WebAssembly module", async () => {
-    const { mock, st } = setup();
+  it("suggests a valid name from the template and the collection", async () => {
+    setup();
     renderStudio("/functions/new");
-    const form = await screen.findByRole("form", { name: "New function" });
-    await pick(within(form).getByLabelText("Language"), "wasm");
+    const form = await screen.findByRole("form", { name: "Function settings" });
+    await waitFor(() => expect(within(form).getByLabelText(/^Name/)).toHaveValue("read"));
+    await userEvent.type(within(form).getByLabelText("Collection"), "Order Items");
+    await waitFor(() => expect(within(form).getByLabelText(/^Name/)).toHaveValue("read-order-items"));
+  });
+
+  it("still uploads a WebAssembly module, from Upload .wasm on the list", async () => {
+    const { mock, st } = setup();
+    renderStudio("/functions");
+    await userEvent.click(await screen.findByRole("button", { name: "Upload .wasm" }));
     const up = await screen.findByRole("form", { name: "Deploy function" });
     await userEvent.type(within(up).getByLabelText("Name"), "modfn");
     await userEvent.upload(within(up).getByLabelText("WebAssembly module"), wasm());
     await userEvent.click(within(up).getByRole("button", { name: "Deploy" }));
-    expect(await screen.findByText("modfn", { selector: "h2" })).toBeInTheDocument();
+    expect(await screen.findByText("modfn", { selector: "h1" })).toBeInTheDocument();
     expect(mock.bodies["post /api/v1/functions"]![0]).toMatchObject({ name: "modfn", wasm: "AGFzbQEAAAA=" });
     expect(st.versions.modfn![0]).toMatchObject({ runtime: "wasm" });
   });
@@ -110,7 +143,7 @@ describe("New function", () => {
     setup();
     renderStudio("/functions");
     await userEvent.click(await screen.findByRole("button", { name: "New function" }));
-    expect(await screen.findByRole("form", { name: "New function" })).toBeInTheDocument();
+    expect(await screen.findByRole("form", { name: "Function settings" })).toBeInTheDocument();
   });
 });
 
@@ -157,7 +190,7 @@ describe("Editor", () => {
     // Fixing the code and deploying again clears the markers.
     act(() => setEditorCode(ta, "serve(() => new Response('ok'));\n"));
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
-    expect(await screen.findByText("broken", { selector: "h2" })).toBeInTheDocument();
+    expect(await screen.findByRole("form", { name: "Test run" })).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
 
@@ -181,7 +214,7 @@ describe("Editor", () => {
     expect(screen.getByText(/Restored your unsaved draft/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Discard draft" }));
-    await waitFor(() => expect(ta2).toHaveValue(TEMPLATES[0]!.source.typescript));
+    await waitFor(() => expect(ta2).toHaveValue(TEMPLATES[0]!.source("your_collection").typescript));
     expect(localStorage.getItem("forgebase.fn-draft.new:drafty")).toBeNull();
   });
 
@@ -203,7 +236,7 @@ describe("Editor", () => {
     expect(screen.getByRole("switch", { name: "kv" })).toBeChecked();
     act(() => setEditorCode(ta, 'serve(async () => new Response("three"));\n'));
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
-    expect(await screen.findByText("Deployed v3 (active)")).toBeInTheDocument();
+    expect(await screen.findByRole("form", { name: "Test run" })).toBeInTheDocument();
     const body = mock.bodies["post /api/v1/functions"]![0] as Record<string, unknown>;
     expect(body).toMatchObject({ name: "echo", language: "typescript", capabilities: ["log", "kv"], env: { MODE: "x" }, limits: { timeout_ms: 5000 } });
     expect(st.sources.echo![3]!.source).toContain("three");
@@ -227,7 +260,7 @@ describe("Test panel", () => {
     await userEvent.type(within(form).getByLabelText(/^Headers/), "X-Test: yes");
     await userEvent.click(within(form).getByLabelText("JSON body"));
     await userEvent.paste('{"n": 1}');
-    await userEvent.click(within(form).getByRole("button", { name: "Send test request" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Run test" }));
 
     const result = await screen.findByRole("group", { name: "Test result" });
     expect(within(result).getByText("HTTP 200")).toBeInTheDocument();
@@ -248,11 +281,11 @@ describe("Test panel", () => {
     renderStudio("/functions/f/echo/test");
     const form = await screen.findByRole("form", { name: "Test run" });
     await pick(within(form).getByLabelText("Version"), "1");
-    await userEvent.click(within(form).getByRole("button", { name: "Send test request" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Run test" }));
     expect(await screen.findByText("HTTP 502")).toBeInTheDocument();
     expect(new URLSearchParams(st.invokes[0]!.query).get("version")).toBe("1");
     expect(screen.getByLabelText("Response body")).toHaveTextContent("function_trap");
-    expect(await screen.findByText("No log lines for this run.")).toBeInTheDocument();
+    expect(await screen.findByText(/No log lines for this run/)).toBeInTheDocument();
   });
 
   it("refuses a body that is not JSON without calling the server", async () => {
@@ -261,7 +294,7 @@ describe("Test panel", () => {
     const form = await screen.findByRole("form", { name: "Test run" });
     await userEvent.click(within(form).getByLabelText("JSON body"));
     await userEvent.paste("{oops");
-    await userEvent.click(within(form).getByRole("button", { name: "Send test request" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Run test" }));
     expect(await screen.findByText("The body is not valid JSON")).toBeInTheDocument();
     expect(st.invokes).toHaveLength(0);
   });

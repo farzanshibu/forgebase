@@ -92,7 +92,7 @@ export default function NewFunction() {
               key={`${tpl}:${lang}:${collection}`}
               name={nameError ? "" : name}
               language={lang}
-              initialSource={t.source(collection)[lang]}
+              initialSource={t.source(collection || "your_collection")[lang]}
               storageKey={`new:${name}`}
               capabilities={t.capabilities}
               config={{ hooks: hooksFor(t, collection) }}

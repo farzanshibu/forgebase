@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { PageHeader } from "../../components/PageHeader";
+import { SkeletonLines } from "../../components/Skeleton";
+import { notify } from "../../toaster";
+import Tenant from "./Tenant";
 import { cancelWorkflow, getWorkflow } from "../../api";
-import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { usePolling } from "../../hooks";
 import { when } from "../functions/util";
 import ProgressBar from "./ProgressBar";
@@ -21,24 +26,23 @@ export default function WorkflowDetail() {
 
   async function cancel() {
     setError(undefined);
-    try {
-      await cancelWorkflow(id);
-      wf.refresh();
-    } catch (e) {
-      setError(e);
-    }
+    await cancelWorkflow(id);
+    notify.saved("Workflow", "Cancelled: its queued steps will not run.");
+    wf.refresh();
   }
 
   return (
     <div className="space-y-4">
-      <Link to="/jobs/workflows" className="text-sm text-primary hover:underline">← All workflows</Link>
+      <PageHeader title={w?.name ?? "Workflow"} description={w ? <>Created {when(w.created_at)} · tenant <Tenant value={w.tenant} /></> : "A workflow joins jobs into steps."} docs="docs/adr/0007-jobs.md"
+        primary={w && (w.status === "running" || w.status === "compensating") ? (
+          <ConfirmDialog trigger={<Button tone="danger">Cancel workflow</Button>} title="Cancel this workflow?" consequence="Steps that have not started will not run. Steps already running stop at their next heartbeat." confirmLabel="Cancel workflow" onConfirm={cancel} />
+        ) : undefined} />
       <ErrorView error={error ?? wf.error} />
-      {wf.loading && !wf.error && <Loading what="Loading workflow" />}
+      {wf.loading && !wf.error && <SkeletonLines lines={4} label="Loading workflow" />}
       {w && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg">{w.name} <span role="status" aria-label="Workflow status" className="ml-2 rounded bg-muted px-2 py-0.5 text-xs">{w.status}</span></h2>
-            {(w.status === "running" || w.status === "compensating") && <Button tone="danger" onClick={() => void cancel()}>Cancel workflow</Button>}
+            <span role="status" aria-label="Workflow status" className="rounded bg-muted px-2 py-0.5 text-xs">{w.status}</span>
           </div>
           <p className="text-sm text-muted-foreground">On failure: {w.on_failure}. Created {when(w.created_at)}{w.finished_at ? `, finished ${when(w.finished_at)}` : ""}.</p>
           {w.error && <p className="text-sm text-destructive">Error: {w.error}{w.failed_job_id ? <> (job <Link className="underline" to={`/jobs/j/${encodeURIComponent(w.failed_job_id)}`}>{w.failed_job_id}</Link>)</> : null}</p>}
