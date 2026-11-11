@@ -480,10 +480,29 @@ async fn to_sqlite_refuses_postgres_only_objects() {
     let ctx = AccessContext::system();
     svc.create_collection(
         &ctx,
-        Collection::base("things").with_field(field(json!({"name": "n", "type": "number"}))),
+        Collection::base("things")
+            .with_field(field(json!({"name": "n", "type": "number"})))
+            .with_field(field(json!({"name": "t", "type": "text"}))),
     )
     .await
     .unwrap();
+    // A trigram index (FB-166) where the engine has pg_trgm.
+    pg.setup_extensions(&forgebase_db::ExtensionSetup::default())
+        .await
+        .unwrap();
+    let trigram = pg.feature_active(forgebase_db::Feature::Trigram);
+    if trigram {
+        svc.create_index(
+            &ctx,
+            IndexDefinition {
+                name: "things_tri".into(),
+                kind: IndexKind::Trigram,
+                ..IndexDefinition::btree("things", &["t"])
+            },
+        )
+        .await
+        .unwrap();
+    }
     let mut tx = pg.begin(TxMode::Normal).await.unwrap();
     for sql in [
         "CREATE FUNCTION public.fb151_double(x integer) RETURNS integer LANGUAGE plpgsql AS $$ BEGIN RETURN x * 2; END $$",
@@ -517,6 +536,7 @@ async fn to_sqlite_refuses_postgres_only_objects() {
     for needle in ["fb151_double", "raw_view", "mood", "hand_made"] {
         assert!(text.contains(needle), "{needle} is listed:\n{text}");
     }
+    assert_eq!(text.contains("trigram index things_tri"), trigram, "{text}");
     // Nothing was made on the target.
     let n = back
         .fetch_all(&Statement::raw("SELECT count(*) FROM _forgebase_collections"))

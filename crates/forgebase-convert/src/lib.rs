@@ -257,7 +257,19 @@ pub async fn convert(
                 .collect();
             let found = refusals::check(&mut conn, &views).await;
             let _ = sqlx::Connection::close(conn).await;
-            let found = found?;
+            let mut found = found?;
+            // Trigram indexes (FB-166) need pg_trgm; SQLite has none.
+            for ix in cat
+                .indexes
+                .iter()
+                .filter(|i| i.kind == forgebase_data::IndexKind::Trigram)
+            {
+                found.problems.push(format!(
+                    "trigram index {} on {} needs pg_trgm, which SQLite does not have: drop the index first \
+                     (fuzzy search is PostgreSQL only)",
+                    ix.name, ix.collection
+                ));
+            }
             if !found.problems.is_empty() {
                 return Err(ConvertError::Refused(found.problems));
             }
