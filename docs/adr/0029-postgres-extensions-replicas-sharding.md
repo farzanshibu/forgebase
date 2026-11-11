@@ -2513,7 +2513,9 @@ it is said here.
 make-args, post-install.sh, README.md, proposed/0004-*.patch}`;
 `THIRD_PARTY_LICENSES/postgres/age/{age.txt, NOTICE}` (and one row in
 `THIRD_PARTY_LICENSES/postgres/README.md`); `engine.lock` (`age` appended to
-`contents.extensions`, `[sources.age]`, three `[[sources.age.patches]]`);
+`contents.extensions`, `[sources.age]`, three `[[sources.age.patches]]`,
+and the local `[archives."aarch64-apple-darwin"]` pin now names the r1
+archive with AGE: AGE joins r1, no new revision);
 `deploy/postgres-engine/smoke.sh` (the AGE checks FB-130 left to FB-160);
 one step in `.github/workflows/postgres-engine.yml` (Bison 3 on the macOS
 runners). Test-only Rust: `crates/forgebase-pgengine/tests/extensions.rs`
