@@ -38,6 +38,8 @@ const EXPECTED: &[(&str, &str)] = &[
     ("get", "/api/system/database/operations"),
     ("get", "/api/system/database/operations/{id}"),
     ("post", "/api/system/database/operations/{id}/cancel"),
+    ("get", "/api/system/database/retired"),
+    ("delete", "/api/system/database/retired/{id}"),
     ("post", "/api/system/database/agent/join"),
     ("get", "/api/system/database/agent/nodes/{id}/commands"),
     ("post", "/api/system/database/agent/nodes/{id}/heartbeat"),

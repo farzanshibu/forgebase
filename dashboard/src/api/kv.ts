@@ -17,6 +17,8 @@ export interface KvKey {
 }
 export interface KvScan { cursor: string; keys: string[] }
 export interface KvStats {
+  /** `engine` (every tenant) or `tenant` (the caller's tenant only). */
+  scope: string; tenant?: string | null;
   keys: number; used_memory_bytes: number; max_memory_bytes: number; eviction_policy: string; hits: number; misses: number;
   expired_keys: number; evicted_keys: number; channels: number; unsaved_keys: number; persistent: boolean;
 }

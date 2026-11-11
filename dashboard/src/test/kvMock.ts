@@ -51,7 +51,7 @@ export function installKv(mockApi: MockApi): KvState {
       },
       other: { x: { type: "string", value: "1", ttl_ms: null } },
     },
-    stats: { keys: 8, used_memory_bytes: 5 * 1024 * 1024, max_memory_bytes: 10 * 1024 * 1024, eviction_policy: "allkeys-lru", hits: 90, misses: 10, expired_keys: 3, evicted_keys: 1, channels: 2, unsaved_keys: 0, persistent: true },
+    stats: { scope: "engine", keys: 8, used_memory_bytes: 5 * 1024 * 1024, max_memory_bytes: 10 * 1024 * 1024, eviction_policy: "allkeys-lru", hits: 90, misses: 10, expired_keys: 3, evicted_keys: 1, channels: 2, unsaved_keys: 0, persistent: true },
     execs: [], published: [], frames: [], channels: [{ name: "news", subscribers: 2 }],
   };
   const K = "/api/v1/kv";
