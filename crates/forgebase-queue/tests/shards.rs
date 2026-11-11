@@ -321,9 +321,14 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
         0,
         "the cursor moved in the same transaction"
     );
-    let relayed = svc.messages(&admin(), "changes", 0, 10).await.unwrap();
-    assert_eq!(relayed.items.len(), 1);
-    assert_eq!(relayed.items[0].data["record_id"], "r1");
-    assert_eq!(relayed.items[0].data["tenant"], "tb");
+    // The message is on control with the set's dedup id (the browser shows
+    // a record change only to a reader who may see the row; `posts` is not
+    // a collection here, so read the log directly).
+    let dedup = format!(
+        "SELECT count(*) FROM _forgebase_queue_messages WHERE topic = 'changes' \
+         AND dedup_id LIKE 'outbox:{}:%' AND data LIKE '%\"record_id\":\"r1\"%' AND data LIKE '%\"tenant\":\"tb\"%'",
+        set.number
+    );
+    assert_eq!((count(&control, &dedup).await, count(&s1, &dedup).await), (1, 0));
     drop(sh);
 }
