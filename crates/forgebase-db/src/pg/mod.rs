@@ -758,24 +758,47 @@ impl PgDatabase {
 /// in one round trip (`set_config(.., true)` is transaction-local). Both
 /// values are bound parameters, never SQL text.
 async fn set_run_as(conn: &mut sqlx::PgConnection, run_as: &RunAs) -> Result<(), sqlx::Error> {
-    match &run_as.search_path {
-        None => sqlx::query("SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true)")
+    if run_as.settings.is_empty() {
+        return match &run_as.search_path {
+            None => sqlx::query("SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true)")
+                .bind(run_as.claims.as_str())
+                .bind(run_as.role.as_str())
+                .execute(conn)
+                .await
+                .map(|_| ()),
+            Some(path) => sqlx::query(
+                "SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true), \
+                 set_config('search_path', $3, true)",
+            )
             .bind(run_as.claims.as_str())
             .bind(run_as.role.as_str())
+            .bind(path.as_str())
             .execute(conn)
             .await
             .map(|_| ()),
-        Some(path) => sqlx::query(
-            "SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true), \
-             set_config('search_path', $3, true)",
-        )
-        .bind(run_as.claims.as_str())
-        .bind(run_as.role.as_str())
-        .bind(path.as_str())
-        .execute(conn)
-        .await
-        .map(|_| ()),
+        };
     }
+    // FB-163: the extra settings, in order, after the role.
+    let mut sql = "SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true)".to_owned();
+    let mut n = 2;
+    if run_as.search_path.is_some() {
+        n += 1;
+        sql.push_str(&format!(", set_config('search_path', ${n}, true)"));
+    }
+    for _ in &run_as.settings {
+        sql.push_str(&format!(", set_config(${}, ${}, true)", n + 1, n + 2));
+        n += 2;
+    }
+    let mut q = sqlx::query(AssertSqlSafe(sql))
+        .bind(run_as.claims.as_str())
+        .bind(run_as.role.as_str());
+    if let Some(path) = &run_as.search_path {
+        q = q.bind(path.as_str());
+    }
+    for (name, value) in &run_as.settings {
+        q = q.bind(name.as_str()).bind(value.as_str());
+    }
+    q.execute(conn).await.map(|_| ())
 }
 
 /// Back to the transaction's own identity after one statement ran as

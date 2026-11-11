@@ -358,6 +358,10 @@ pub struct RouterOptions {
     /// the routes of disabled modules into `404 feature_disabled`. Without
     /// it nothing is gated and both endpoints answer `503`.
     pub system_config: Option<Arc<features::SystemConfig>>,
+    /// The graph service mounted at `/api/v1/graph` (FB-163: the server
+    /// passes one with the shard router and the `graph.materialise` job
+    /// hook attached). `None`: a plain one on the app state's data service.
+    pub graph: Option<forgebase_graph::GraphService>,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -389,6 +393,7 @@ impl Default for RouterOptions {
             gates: Vec::new(),
             ops_access: forgebase_core::OpsAccess::default(),
             system_config: None,
+            graph: None,
         }
     }
 }
@@ -493,7 +498,11 @@ pub fn router_with(
     let graph = if graph_on {
         Router::new().nest_service(
             "/api/v1/graph",
-            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
+            forgebase_graph::router(
+                opts.graph
+                    .clone()
+                    .unwrap_or_else(|| forgebase_graph::GraphService::new(state.data().clone())),
+            ),
         )
     } else {
         Router::new()

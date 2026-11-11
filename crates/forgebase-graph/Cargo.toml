@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-graph"
-description = "ForgeBase graph model on SQLite: nodes, typed edges, traversal, neighbours, shortest path, REST."
+description = "ForgeBase graph model: nodes, typed edges, traversal, neighbours, shortest path, REST; openCypher on Apache AGE (PostgreSQL)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,7 +14,10 @@ forgebase-data.workspace = true
 forgebase-db.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 url.workspace = true

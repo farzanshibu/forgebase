@@ -289,6 +289,10 @@ pub struct GraphStats {
     pub edges: i64,
     /// Edge count per relationship type.
     pub edge_types: Vec<TypeCount>,
+    /// The tenant's derived openCypher graph, where Apache AGE runs
+    /// (FB-163): its state and materialisation progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cypher: Option<crate::cypher::CypherStatus>,
 }
 
 /// Edges of one type.

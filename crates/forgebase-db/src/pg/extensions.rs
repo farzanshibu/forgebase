@@ -288,7 +288,96 @@ pub const EXTENSION_DDL: &[ExtensionDdl] = &[
         sql: "ALTER TABLE _forgebase_vector_values ADD COLUMN IF NOT EXISTS vec {schema}.vector, \
               ALTER COLUMN vector DROP NOT NULL",
     },
+    // ADR-0029 §1.5 (FB-163): the derived openCypher graph. `{schema}` is
+    // `ag_catalog`.
+    ExtensionDdl {
+        feature: Feature::Graph,
+        version: 1,
+        sql: GRAPH_DDL_1,
+    },
 ];
+
+/// FB-163: the map table (ForgeBase id to AGE `graphid`), the state of
+/// each tenant's derived graph, the visibility helpers the label tables'
+/// row-level security policies call, and the Cypher call wrapper (AGE needs
+/// a typed `agtype` parameter and a dollar-quoted query; the wrapper takes
+/// both as text). Tenant tables (`tenant` column); derived, so a move
+/// rebuilds them (`placement::EXTENSION_TABLES`).
+const GRAPH_DDL_1: &str = r#"
+CREATE TABLE IF NOT EXISTS _forgebase_graph_age_ids (
+    tenant text NOT NULL,
+    kind   text NOT NULL CHECK (kind IN ('n', 'e')),
+    id     text NOT NULL,
+    age_id {schema}.graphid NOT NULL,
+    PRIMARY KEY (tenant, kind, id)
+);
+CREATE INDEX IF NOT EXISTS _forgebase_graph_age_ids_by_age ON _forgebase_graph_age_ids (tenant, kind, age_id);
+CREATE TABLE IF NOT EXISTS _forgebase_graph_age_state (
+    tenant     text PRIMARY KEY,
+    graph      text NOT NULL,
+    state      text NOT NULL CHECK (state IN ('materialising', 'ready', 'stale', 'failed')),
+    phase      text NOT NULL DEFAULT 'nodes' CHECK (phase IN ('nodes', 'edges', 'done')),
+    cursor_id  text NOT NULL DEFAULT '',
+    job_id     text,
+    epoch      bigint NOT NULL DEFAULT 0,
+    nodes      bigint NOT NULL DEFAULT 0,
+    edges      bigint NOT NULL DEFAULT 0,
+    done       bigint NOT NULL DEFAULT 0,
+    error      text,
+    started_at text NOT NULL,
+    updated_at text NOT NULL
+);
+ALTER TABLE _forgebase_graph_age_ids ENABLE ROW LEVEL SECURITY;
+ALTER TABLE _forgebase_graph_age_state ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION forgebase.graph_vis(k text) RETURNS jsonb
+LANGUAGE sql STABLE SET search_path = forgebase, pg_catalog AS $$
+  SELECT forgebase.claims() -> 'graph' -> k
+$$;
+CREATE OR REPLACE FUNCTION forgebase.graph_vis_all(k text) RETURNS boolean
+LANGUAGE sql STABLE SET search_path = forgebase, pg_catalog AS $$
+  SELECT coalesce((forgebase.graph_vis(k) ->> 'all')::boolean, false)
+$$;
+CREATE OR REPLACE FUNCTION forgebase.graph_vis_labels(k text) RETURNS integer[]
+LANGUAGE sql STABLE SET search_path = forgebase, pg_catalog AS $$
+  SELECT coalesce(array(SELECT jsonb_array_elements_text(forgebase.graph_vis(k) -> 'labels')::integer), '{}')
+$$;
+CREATE OR REPLACE FUNCTION forgebase.graph_vis_ids(k text) RETURNS SETOF {schema}.graphid
+LANGUAGE sql STABLE SET search_path = forgebase, pg_catalog AS $$
+  SELECT jsonb_array_elements_text(forgebase.graph_vis(k) -> 'ids')::{schema}.graphid
+$$;
+
+CREATE OR REPLACE FUNCTION forgebase.graph_cypher(graph text, query text, params text, tag text, ncols integer, lim integer)
+RETURNS SETOF text LANGUAGE plpgsql STABLE AS $fn$
+DECLARE
+  cols text;
+  outs text;
+BEGIN
+  IF graph !~ '^fbg_[a-z0-9_]{1,59}$' OR tag !~ '^fb[0-9a-f]{16,32}$' OR strpos(query, '$' || tag || '$') > 0
+     OR ncols NOT BETWEEN 1 AND 100 OR lim NOT BETWEEN 1 AND 100000 THEN
+    RAISE EXCEPTION 'invalid openCypher call' USING ERRCODE = '22023';
+  END IF;
+  SELECT string_agg(format('c%s {schema}.agtype', i), ', ' ORDER BY i),
+         string_agg(format('{schema}.agtype_out(c%s)::text', i), ', ' ORDER BY i)
+    INTO cols, outs FROM generate_series(1, ncols) AS i;
+  RETURN QUERY EXECUTE format(
+    'SELECT json_build_array(%s)::text FROM {schema}.cypher(%L, $%s$%s$%s$, $1) AS (%s) LIMIT %s',
+    outs, graph, tag, query, tag, cols, lim)
+  USING params::{schema}.agtype;
+END
+$fn$;
+
+-- Invoker functions: calling them grants nothing (`forgebase.claims()`
+-- itself is not PUBLIC). The reader (replicas) runs `graph_cypher` too.
+DO $fb$
+BEGIN
+  IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'forgebase_rls') THEN
+    GRANT EXECUTE ON FUNCTION forgebase.graph_vis(text), forgebase.graph_vis_all(text), forgebase.graph_vis_labels(text),
+      forgebase.graph_vis_ids(text), forgebase.graph_cypher(text, text, text, text, integer, integer) TO forgebase_rls;
+  END IF;
+END
+$fb$;
+"#;
 
 /// The DDL steps of `feature`, in version order.
 pub fn ddl_steps(feature: Feature) -> impl Iterator<Item = &'static ExtensionDdl> {
@@ -716,16 +805,28 @@ impl PgDatabase {
             }
             // cron.schedule and friends are PUBLIC; the schema is not.
             Feature::Cron => Some(format!("GRANT USAGE ON SCHEMA cron TO {server};")),
+            // FB-163: openCypher reads run as `forgebase_rls` (non-privileged
+            // callers) and as the reader on replicas; AGE reads its catalog
+            // as the current role.
             Feature::Graph => Some(match reader {
                 Some(reader) => format!(
                     "GRANT USAGE ON SCHEMA ag_catalog TO {server}, {reader}; \
-                     GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO {reader};"
+                     GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO {reader};{}",
+                    Self::rls_grants()
                 ),
-                None => format!("GRANT USAGE ON SCHEMA ag_catalog TO {server};"),
+                None => format!("GRANT USAGE ON SCHEMA ag_catalog TO {server};{}", Self::rls_grants()),
             }),
             // In the forgebase schema, which both roles already use.
             Feature::Vector | Feature::Trigram => None,
         }
+    }
+
+    /// `forgebase_rls` (FB-152) may read AGE's catalog, when it exists.
+    fn rls_grants() -> &'static str {
+        " DO $fb$ BEGIN IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'forgebase_rls') THEN \
+           GRANT USAGE ON SCHEMA ag_catalog TO forgebase_rls; \
+           GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO forgebase_rls; \
+         END IF; END $fb$;"
     }
 
     /// Applies the pending [`EXTENSION_DDL`] steps of `f`; returns the

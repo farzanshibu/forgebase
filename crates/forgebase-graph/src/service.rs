@@ -16,14 +16,18 @@
 //!   SQL text is assembled only from fixed fragments and compiled rules;
 //! * depth, result size, filter size and search effort are capped.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
 use forgebase_data::query::SqlBuilder;
 use forgebase_data::{AccessContext, Action, DataError, DataService, Principal, ResourceKind, ResourceOp, ResourceRef};
-use forgebase_db::{Backend, ReadVia, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, DbRouter, Feature, ReadVia, Rows, SetHandle, Statement, TenantRef, TxMode, Value, WriteTx};
 use serde_json::{Map, Value as Json};
 
 use crate::access::{GraphAccess, One, Rules, and};
+use crate::age;
+use crate::cypher::MaterialiseJobs;
 use crate::error::GraphError;
 use crate::model::*;
 
@@ -45,13 +49,86 @@ pub const MAX_RULE_NAMES: usize = 1000;
 /// The graph service. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct GraphService {
-    data: DataService,
+    pub(crate) data: DataService,
+    /// The database set this view is bound to (ADR-0029 §3.5, FB-163): the
+    /// caller's tenant's set on a sharded cluster, else `None` (the data
+    /// core's backend).
+    set: Option<SetHandle>,
+    pub(crate) shared: Arc<Shared>,
+}
+
+/// What every view of one service shares.
+#[derive(Debug, Default)]
+pub(crate) struct Shared {
+    /// The shard router, once attached.
+    pub(crate) router: OnceLock<DbRouter>,
+    /// The `graph.materialise` job hook (FB-163).
+    pub(crate) jobs: OnceLock<Arc<dyn MaterialiseJobs>>,
 }
 
 impl GraphService {
     /// A graph service on the data core's database and authorizer.
     pub fn new(data: DataService) -> Self {
-        Self { data }
+        Self {
+            data,
+            set: None,
+            shared: Arc::new(Shared::default()),
+        }
+    }
+
+    /// Routes every call to its tenant's database set (ADR-0029 §3.5,
+    /// FB-163). Without shards (one set) nothing changes. Returns `false`
+    /// when a router was attached already.
+    pub fn attach_router(&self, router: DbRouter) -> bool {
+        self.shared.router.set(router).is_ok()
+    }
+
+    /// The attached router, if any.
+    pub(crate) fn router(&self) -> Option<&DbRouter> {
+        self.shared.router.get()
+    }
+
+    /// This service bound to the set of `tenant` (`''`: control).
+    pub(crate) async fn on_tenant(&self, tenant: &str) -> Result<Cow<'_, Self>> {
+        match self.router().filter(|r| r.is_sharded()) {
+            None => Ok(Cow::Borrowed(self)),
+            Some(r) => {
+                let set = r.for_tenant(TenantRef::new(Some(tenant))).await?;
+                Ok(Cow::Owned(Self {
+                    data: self.data.clone(),
+                    set: Some(set),
+                    shared: self.shared.clone(),
+                }))
+            }
+        }
+    }
+
+    /// This service bound to the set of the caller's tenant.
+    pub(crate) async fn on(&self, ctx: &AccessContext) -> Result<Cow<'_, Self>> {
+        self.on_tenant(ctx.tenant.as_deref().unwrap_or_default()).await
+    }
+
+    /// Whether the derived openCypher graph runs here (PostgreSQL with
+    /// Apache AGE in use, FB-163).
+    pub(crate) fn age_on(&self) -> bool {
+        self.backend().feature_active(Feature::Graph)
+    }
+
+    /// Keeps the derived graph in step with node `id`, in the write
+    /// transaction of its change (FB-163).
+    async fn sync_node(&self, tx: &mut dyn WriteTx, tenant: &str, id: &str) -> Result<()> {
+        if self.age_on() {
+            age::sync_node(tx, tenant, id).await?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::sync_node`] for an edge.
+    async fn sync_edge(&self, tx: &mut dyn WriteTx, tenant: &str, id: &str) -> Result<()> {
+        if self.age_on() {
+            age::sync_edge(tx, tenant, id).await?;
+        }
+        Ok(())
     }
 
     /// The reads of one §2.5 call site: through the replica router
@@ -61,8 +138,11 @@ impl GraphService {
         ReadVia::replica(self.backend(), what)
     }
 
-    fn backend(&self) -> &dyn Backend {
-        self.data.backend().as_ref()
+    pub(crate) fn backend(&self) -> &dyn Backend {
+        match &self.set {
+            Some(set) => set,
+            None => self.data.backend().as_ref(),
+        }
     }
 
     fn dialect(&self) -> &dyn forgebase_db::Dialect {
@@ -73,7 +153,7 @@ impl GraphService {
     /// callers without one. Anyone else without a tenant gets
     /// `tenant_required`, after the plain check so a denied caller learns
     /// nothing (FB-139).
-    fn tenant_of(&self, ctx: &AccessContext, action: Action) -> Result<String> {
+    pub(crate) fn tenant_of(&self, ctx: &AccessContext, action: Action) -> Result<String> {
         match &ctx.tenant {
             Some(t) => Ok(t.clone()),
             None if ctx.is_privileged() => Ok(String::new()),
@@ -87,7 +167,7 @@ impl GraphService {
         }
     }
 
-    fn denied(ctx: &AccessContext, msg: String) -> GraphError {
+    pub(crate) fn denied(ctx: &AccessContext, msg: String) -> GraphError {
         if ctx.principal == Principal::Anonymous {
             GraphError::Unauthenticated
         } else {
@@ -160,12 +240,12 @@ impl GraphService {
     /// into SQL. Public so engines that walk the graph with their own SQL
     /// (FB-147, FB-163) apply the same rules and can tell whether any rule
     /// applies ([`GraphAccess::is_unrestricted`]).
-    pub async fn access(&self, ctx: &AccessContext, action: Action, op: ResourceOp) -> Result<GraphAccess> {
+    pub(crate) async fn access_here(&self, ctx: &AccessContext, action: Action, op: ResourceOp) -> Result<GraphAccess> {
         let tenant = self.tenant_of(ctx, action)?;
         self.access_in(ctx, &tenant, action, op).await
     }
 
-    async fn access_in(
+    pub(crate) async fn access_in(
         &self,
         ctx: &AccessContext,
         tenant: &str,
@@ -274,7 +354,7 @@ impl GraphService {
     /// Creates a node.
     /// The label's `create` rule must allow it (a restricting rule must
     /// hold for the new node).
-    pub async fn create_node(&self, ctx: &AccessContext, new: NewNode) -> Result<Node> {
+    pub(crate) async fn create_node_here(&self, ctx: &AccessContext, new: NewNode) -> Result<Node> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let label = check_label(new.label.as_deref())?;
         let rule = self.rules_of(
@@ -324,6 +404,7 @@ impl GraphService {
                     format!("the node does not satisfy the create rule of {label:?}"),
                 ));
             }
+            self.sync_node(&mut *tx, &tenant, &id).await?;
             Ok(())
         }
         .await;
@@ -338,7 +419,7 @@ impl GraphService {
     }
 
     /// One node.
-    pub async fn get_node(&self, ctx: &AccessContext, id: &str) -> Result<Node> {
+    pub(crate) async fn get_node_here(&self, ctx: &AccessContext, id: &str) -> Result<Node> {
         let (tenant, acc) = self.read(ctx, ResourceOp::View).await?;
         self.node(&tenant, id, &acc)
             .await?
@@ -406,7 +487,7 @@ impl GraphService {
     /// Replaces (`merge = false`) or merge-patches (`merge = true`) a node.
     /// The stored node must pass its label's `update` rule, and the changed
     /// node the `update` rule of its (possibly new) label.
-    pub async fn change_node(&self, ctx: &AccessContext, id: &str, change: NodeChange, merge: bool) -> Result<Node> {
+    pub(crate) async fn change_node_here(&self, ctx: &AccessContext, id: &str, change: NodeChange, merge: bool) -> Result<Node> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let label = change.label.as_deref().map(|l| check_label(Some(l))).transpose()?;
         let props = change.properties.map(|p| check_props(Some(p))).transpose()?;
@@ -474,6 +555,7 @@ impl GraphService {
                     format!("the changed node does not satisfy the update rule of {new_label:?}"),
                 ));
             }
+            self.sync_node(&mut *tx, &tenant, id).await?;
             Ok(node)
         }
         .await;
@@ -484,7 +566,7 @@ impl GraphService {
     /// edges removed.
     /// Needs the label's `delete` rule, and the `delete` rule of every edge
     /// that touches the node.
-    pub async fn delete_node(&self, ctx: &AccessContext, id: &str) -> Result<u64> {
+    pub(crate) async fn delete_node_here(&self, ctx: &AccessContext, id: &str) -> Result<u64> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let edge_rules = self
             .edge_rules(ctx, &tenant, Action::GraphWrite, ResourceOp::Delete)
@@ -534,6 +616,8 @@ impl GraphService {
             if node.rows_affected == 0 {
                 return Err(GraphError::NodeNotFound(id.to_owned()));
             }
+            // The AGE edges at the node go with its vertex.
+            self.sync_node(&mut *tx, &tenant, id).await?;
             Ok(edges)
         }
         .await;
@@ -541,7 +625,7 @@ impl GraphService {
     }
 
     /// Lists nodes ordered by id, optionally of one label.
-    pub async fn list_nodes(
+    pub(crate) async fn list_nodes_here(
         &self,
         ctx: &AccessContext,
         label: Option<&str>,
@@ -574,7 +658,7 @@ impl GraphService {
     /// Creates an edge between two existing nodes of the caller's tenant.
     /// The type's `create` rule must allow it, and the caller must be able
     /// to view both nodes.
-    pub async fn create_edge(&self, ctx: &AccessContext, new: NewEdge) -> Result<Edge> {
+    pub(crate) async fn create_edge_here(&self, ctx: &AccessContext, new: NewEdge) -> Result<Edge> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let edge_type = check_type(&new.edge_type)?;
         let k = ResourceKind::GraphEdgeType;
@@ -662,6 +746,7 @@ impl GraphService {
                     format!("the edge does not satisfy the create rule of {edge_type:?}"),
                 ));
             }
+            self.sync_edge(&mut *tx, &tenant, &id).await?;
             Ok(())
         }
         .await;
@@ -679,7 +764,7 @@ impl GraphService {
     }
 
     /// One edge.
-    pub async fn get_edge(&self, ctx: &AccessContext, id: &str) -> Result<Edge> {
+    pub(crate) async fn get_edge_here(&self, ctx: &AccessContext, id: &str) -> Result<Edge> {
         let (tenant, acc) = self.read(ctx, ResourceOp::View).await?;
         let mut b = SqlBuilder::new(self.dialect());
         b.bind(tenant);
@@ -701,7 +786,7 @@ impl GraphService {
 
     /// Merge-patches an edge's properties.
     /// The stored and the changed edge must pass the type's `update` rule.
-    pub async fn change_edge(&self, ctx: &AccessContext, id: &str, change: EdgeChange) -> Result<Edge> {
+    pub(crate) async fn change_edge_here(&self, ctx: &AccessContext, id: &str, change: EdgeChange) -> Result<Edge> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let props = change.properties.map(|p| check_props(Some(p))).transpose()?;
         let mut tx = self.backend().begin(TxMode::Normal).await?;
@@ -756,6 +841,7 @@ impl GraphService {
                     format!("the changed edge does not satisfy the update rule of {edge_type:?}"),
                 ));
             }
+            self.sync_edge(&mut *tx, &tenant, id).await?;
             Ok(edge)
         }
         .await;
@@ -764,7 +850,7 @@ impl GraphService {
 
     /// Deletes an edge.
     /// Needs the type's `delete` rule.
-    pub async fn delete_edge(&self, ctx: &AccessContext, id: &str) -> Result<()> {
+    pub(crate) async fn delete_edge_here(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         let result = async {
@@ -787,6 +873,7 @@ impl GraphService {
             if done.rows_affected == 0 {
                 return Err(GraphError::EdgeNotFound(id.to_owned()));
             }
+            self.sync_edge(&mut *tx, &tenant, id).await?;
             Ok(())
         }
         .await;
@@ -794,7 +881,7 @@ impl GraphService {
     }
 
     /// Lists edges ordered by id; every filter is optional.
-    pub async fn list_edges(
+    pub(crate) async fn list_edges_here(
         &self,
         ctx: &AccessContext,
         edge_type: Option<&str>,
@@ -837,7 +924,7 @@ impl GraphService {
     /// Counts of nodes, edges and edges per type. Spans every label, so only
     /// the plain `engine:graph_read` grants it; the counts still leave out
     /// what the caller's rules hide.
-    pub async fn stats(&self, ctx: &AccessContext) -> Result<GraphStats> {
+    pub(crate) async fn stats_here(&self, ctx: &AccessContext) -> Result<GraphStats> {
         let tenant = self.tenant_of(ctx, Action::GraphRead)?;
         self.data.authorize_action(ctx, Action::GraphRead)?;
         let acc = self
@@ -854,7 +941,7 @@ impl GraphService {
             ))
             .await?;
         let mut b = SqlBuilder::new(self.dialect());
-        b.bind(tenant);
+        b.bind(tenant.clone());
         let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let types = self
             .reader("graph.stats")
@@ -879,11 +966,12 @@ impl GraphService {
             nodes: nodes.scalar().and_then(Value::as_i64).unwrap_or(0),
             edges: edge_types.iter().map(|t| t.count).sum(),
             edge_types,
+            cypher: self.cypher_status_in(&tenant).await?,
         })
     }
 
     /// Nodes one hop from `id`, with the connecting edge.
-    pub async fn neighbors(&self, ctx: &AccessContext, id: &str, q: NeighborQuery) -> Result<Page<Neighbor>> {
+    pub(crate) async fn neighbors_here(&self, ctx: &AccessContext, id: &str, q: NeighborQuery) -> Result<Page<Neighbor>> {
         let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let types = check_types(q.edge_types)?;
         let limit = check_limit(q.limit)?;
@@ -973,7 +1061,7 @@ impl GraphService {
     /// Multi-hop traversal with a recursive CTE: every node reachable from
     /// `start` within `max_depth` hops, with its fewest-hops depth. Cycles
     /// cannot loop (the walk is bounded by depth and deduplicated).
-    pub async fn traverse(&self, ctx: &AccessContext, q: TraverseQuery) -> Result<TraverseResult> {
+    pub(crate) async fn traverse_here(&self, ctx: &AccessContext, q: TraverseQuery) -> Result<TraverseResult> {
         let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let depth = check_depth(q.max_depth, DEFAULT_DEPTH)?;
         let limit = check_limit(q.limit)?;
@@ -1156,7 +1244,7 @@ impl GraphService {
 
     /// Fewest-hops path between two nodes (breadth-first, one indexed query
     /// per level, bounded by `max_depth` and [`MAX_VISITED`]).
-    pub async fn shortest_path(&self, ctx: &AccessContext, q: PathQuery) -> Result<PathResult> {
+    pub(crate) async fn shortest_path_here(&self, ctx: &AccessContext, q: PathQuery) -> Result<PathResult> {
         let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let max_depth = check_depth(q.max_depth, 6)?;
         let types = check_types(q.edge_types.into_vec())?;
