@@ -2,7 +2,14 @@ import { useState } from "react";
 import { analyzeIndexes, createIndex, dropIndex, indexRecommendations, indexStats, listIndexes, rebuildIndex } from "../../api";
 import type { IndexDefinition, IndexStats } from "../../api";
 import { useLoad } from "../../hooks";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Check } from "../../components/controls";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { FormField } from "../../components/FormField";
+import { HelpTip } from "../../components/HelpTip";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button, ErrorView, Panel } from "../../components/ui";
+import { notify } from "../../toaster";
 import { formatBytes } from "../../format";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
@@ -37,14 +44,16 @@ export default function IndexManager({ collection }: { collection?: string }) {
     <div className="space-y-4">
       <ErrorView error={error} />
       <ErrorView error={problem} />
-      {loading && !data && !error && <Loading what="Loading indexes" />}
-      {data && (
-        <Table className="w-full text-left text-sm">
+      {loading && !data && !error && <SkeletonTable rows={3} columns={7} label="Loading indexes" />}
+      {data && data.length === 0 && (
+        <EmptyState compact title="No indexes yet" why="An index is a sorted copy of one or more fields that makes filters and sorts on them fast. Create one below, or take a recommendation from the slow-query log." />
+      )}
+      {data && data.length > 0 && (
+        <Table aria-label="Indexes" className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-            <Table.Row><Table.Head className="py-1">Name</Table.Head><Table.Head>Collection</Table.Head><Table.Head>Origin</Table.Head><Table.Head>Columns</Table.Head><Table.Head>Rows</Table.Head><Table.Head>Size</Table.Head><Table.Head /></Table.Row>
+            <Table.Row><Table.Head className="py-1">Name</Table.Head><Table.Head>Collection</Table.Head><Table.Head>Origin</Table.Head><Table.Head>Columns</Table.Head><Table.Head>Rows</Table.Head><Table.Head>Size</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row>
           </Table.Header>
           <Table.Body>
-            {data.length === 0 && <Table.Row><Table.Cell colSpan={7} className="py-3 text-muted-foreground">No indexes.</Table.Cell></Table.Row>}
             {data.map((ix) => {
               const st = stats[ix.name] ?? ix.stats;
               return (
@@ -58,7 +67,15 @@ export default function IndexManager({ collection }: { collection?: string }) {
                   <Table.Cell className="space-x-2 whitespace-nowrap text-right">
                     <Button onClick={() => void act(async () => { const st = await indexStats(ix.name); setStats((m) => ({ ...m, [ix.name]: st })); })}>Stats</Button>
                     <Button onClick={() => void act(() => rebuildIndex(ix.name))}>Rebuild</Button>
-                    {(ix.origin === "manual" || ix.origin === "sql") && <ConfirmButton label="Drop" onConfirm={() => void act(() => dropIndex(ix.name))} />}
+                    {(ix.origin === "manual" || ix.origin === "sql") && (
+                      <ConfirmDialog
+                        trigger={<Button tone="danger" aria-label={`Drop ${ix.name}`}>Drop</Button>}
+                        title={`Drop index ${ix.name}?`}
+                        consequence="Queries that used it get slower. The records are not touched."
+                        confirmLabel="Drop index"
+                        onConfirm={async () => { await dropIndex(ix.name); notify.deleted(`Index ${ix.name}`); reload(); recs.reload(); }}
+                      />
+                    )}
                   </Table.Cell>
                 </Table.Row>
               );
@@ -69,6 +86,7 @@ export default function IndexManager({ collection }: { collection?: string }) {
       <Button onClick={() => void act(() => analyzeIndexes(collection))}>Analyze (refresh statistics)</Button>
 
       <Panel title="Create index">
+        <p className="mb-3 text-sm text-muted-foreground"><HelpTip term="index">An index</HelpTip> speeds up the filters and sorts that use its fields.</p>
         <form
           className="flex flex-wrap items-end gap-3 text-sm"
           onSubmit={(e) => {
@@ -76,17 +94,17 @@ export default function IndexManager({ collection }: { collection?: string }) {
             void create({ name: indexName || undefined, collection: coll, keys: parseKeys(keys), unique });
           }}
         >
-          {!collection && <label className="flex flex-col gap-1">Collection<Input size="sm" value={coll} onChange={(e) => setColl(e.target.value)} /></label>}
-          <label className="flex flex-col gap-1">Keys (comma separated, prefix - for descending)<Input size="sm" className="w-64" value={keys} onChange={(e) => setKeys(e.target.value)} placeholder="price, -created" /></label>
-          <label className="flex flex-col gap-1">Name (optional)<Input size="sm" value={indexName} onChange={(e) => setIndexName(e.target.value)} /></label>
-          <label className="flex items-center gap-2 pb-2"><input type="checkbox" checked={unique} onChange={(e) => setUnique(e.target.checked)} />Unique</label>
-          <Button type="submit" tone="primary">Create index</Button>
+          {!collection && <FormField label="Collection" required>{(p) => <Input {...p} size="sm" value={coll} onChange={(e) => setColl(e.target.value)} />}</FormField>}
+          <FormField label="Keys" required help="Comma separated; put - before a field to sort it descending.">{(p) => <Input {...p} size="sm" className="w-64" value={keys} onChange={(e) => setKeys(e.target.value)} placeholder="price, -created" />}</FormField>
+          <FormField label="Name" help="Optional.">{(p) => <Input {...p} size="sm" value={indexName} onChange={(e) => setIndexName(e.target.value)} />}</FormField>
+          <Check checked={unique} onChange={setUnique} label="Unique" description="Reject a second record with the same keys." />
+          <Button type="submit" tone="primary" disabled={!keys.trim() || !coll}>Create index</Button>
         </form>
       </Panel>
 
       <Panel title="Recommendations from the slow-query log">
         <ErrorView error={recs.error} />
-        {recs.data?.length === 0 && <p className="text-sm text-muted-foreground">No recommendations.</p>}
+        {recs.data?.length === 0 && <EmptyState compact title="No recommendations" why="When the slow-query log shows a query that an index would speed up, it is suggested here." />}
         <ul className="space-y-2 text-sm">
           {recs.data?.filter((r) => !collection || r.definition.collection === collection).map((r, i) => (
             <li key={i} className="flex items-center justify-between gap-3">

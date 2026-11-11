@@ -1,5 +1,8 @@
-import { Route, Routes } from "react-router-dom";
+import { Outlet, Route, Routes, useNavigate } from "react-router-dom";
 import { RouteTabs } from "../../components/controls";
+import { PageHeader } from "../../components/PageHeader";
+import { UseFromCodeButton } from "../../components/UseFromCode";
+import { Button } from "../../components/ui";
 import EdgeBrowser from "./EdgeBrowser";
 import GraphExplorer from "./GraphExplorer";
 import GraphOverview from "./GraphOverview";
@@ -14,21 +17,32 @@ const TABS = [
   { to: "/graph/query", label: "Query runner", end: false },
 ];
 
-export default function GraphPage() {
+function Section() {
+  const nav = useNavigate();
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Graph Studio</h1>
+      <PageHeader
+        studio="graph"
+        secondary={<UseFromCodeButton kind="graph" name="" />}
+        primary={<Button tone="primary" onClick={() => nav("/graph/nodes?new=1")}>New node</Button>}
+      />
       <RouteTabs label="Graph sections" tabs={TABS} className="mt-4" />
-      <div className="mt-6">
-        <Routes>
-          <Route index element={<GraphOverview />} />
-          <Route path="nodes" element={<NodeBrowser />} />
-          <Route path="edges" element={<EdgeBrowser />} />
-          <Route path="explorer" element={<GraphExplorer />} />
-          <Route path="query" element={<QueryRunner />} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in Graph Studio.</p>} />
-        </Routes>
-      </div>
+      <div className="mt-6"><Outlet /></div>
     </div>
+  );
+}
+
+export default function GraphPage() {
+  return (
+    <Routes>
+      <Route element={<Section />}>
+        <Route index element={<GraphOverview />} />
+        <Route path="nodes" element={<NodeBrowser />} />
+        <Route path="edges" element={<EdgeBrowser />} />
+        <Route path="explorer" element={<GraphExplorer />} />
+        <Route path="query" element={<QueryRunner />} />
+        <Route path="*" element={<p className="text-muted-foreground">No such page in the Graph studio.</p>} />
+      </Route>
+    </Routes>
   );
 }

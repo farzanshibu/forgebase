@@ -15,41 +15,39 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   const u = userEvent.setup();
 
   // Empty server, then design a collection.
-  expect(await screen.findByText(/No collections yet/)).toBeInTheDocument();
-  await u.click(screen.getByRole("link", { name: "New collection" }));
-  await u.type(await screen.findByLabelText("Name"), "notes");
+  expect(await screen.findByRole("region", { name: "No collections yet" })).toBeInTheDocument();
+  await u.click(screen.getAllByRole("button", { name: "New collection" })[0]!);
+  await u.type(await screen.findByLabelText(/^Name/), "notes");
   await u.click(screen.getByRole("button", { name: "Add field" }));
   await u.type(screen.getByLabelText("Field 1 name"), "body");
   await u.click(screen.getByLabelText("Field 1 required"));
   await u.click(screen.getByRole("button", { name: "Create collection" }));
   expect(await screen.findByRole("heading", { name: "notes" })).toBeInTheDocument();
 
-  // Add two records through the JSON editor.
+  // Add two records through the typed form (FB-100).
   for (const body of ["alpha", "beta"]) {
-    await u.click(await screen.findByRole("link", { name: "Add record" }));
-    const box = await screen.findByLabelText("Record JSON");
-    await u.clear(box);
-    await u.click(box);
-    await u.paste(JSON.stringify({ body }));
-    await u.click(screen.getByRole("button", { name: "Create record" }));
-    await screen.findByText(/^Record rec/);
-    await u.click(screen.getByRole("link", { name: "Back to data" }));
+    await u.click((await screen.findAllByRole("button", { name: "Add record" }))[0]!);
+    const form = await screen.findByRole("form", { name: "New record" });
+    await u.type(within(form).getByLabelText(/^body/), body);
+    await u.click(within(form).getByRole("button", { name: "Create record" }));
+    await waitFor(() => expect(screen.queryByRole("form", { name: "New record" })).not.toBeInTheDocument());
   }
   expect(await screen.findByText("alpha")).toBeInTheDocument();
   expect(screen.getByText("beta")).toBeInTheDocument();
 
-  // Filter, then edit a cell.
+  // Filter, then edit the record in its form.
   await u.type(screen.getByLabelText("Filter"), "body = beta");
   await u.click(screen.getByRole("button", { name: "Apply filter" }));
   await waitFor(() => expect(screen.queryByText("alpha")).not.toBeInTheDocument());
-  await u.dblClick(screen.getByText("beta"));
-  const input = screen.getByLabelText("Edit body");
+  await u.click(screen.getByText("beta"));
+  const edit = await screen.findByRole("form", { name: /^Edit record/ });
+  const input = within(edit).getByLabelText(/^body/);
   await u.clear(input);
-  await u.type(input, "gamma{Enter}");
+  await u.type(input, "gamma");
+  await u.click(within(edit).getByRole("button", { name: "Save record" }));
   // The edited row no longer matches the active filter; clearing it shows the new value.
   expect(await screen.findByText(/No records match this filter/)).toBeInTheDocument();
-  await u.clear(screen.getByLabelText("Filter"));
-  await u.click(screen.getByRole("button", { name: "Apply filter" }));
+  await u.click(screen.getAllByRole("button", { name: "Clear filter" })[0]!);
   expect(await screen.findByText("gamma")).toBeInTheDocument();
 
   // Index manager.
@@ -59,7 +57,9 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   expect(await screen.findByText("idx_notes_body")).toBeInTheDocument();
 
   // SQL editor + slow queries.
-  await u.click(screen.getByRole("tab", { name: "SQL editor" }));
+  // A collection has its own header; the studio's tabs are one click up (the breadcrumb or the nav rail).
+  await u.click(screen.getAllByRole("link", { name: "Database" })[0]!);
+  await u.click(await screen.findByRole("tab", { name: "SQL editor" }));
   await u.click(await screen.findByRole("button", { name: "Run" }));
   expect(await screen.findByRole("table", { name: "Result" })).toBeInTheDocument();
   await u.click(screen.getByRole("tab", { name: "Slow queries" }));
