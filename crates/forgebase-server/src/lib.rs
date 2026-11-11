@@ -1063,12 +1063,20 @@ impl RunningServer {
 
     /// Serves until SIGINT/SIGTERM (or until the server fails), then shuts
     /// down gracefully.
-    pub async fn run_until_signal(mut self) -> Result<(), ServerError> {
+    pub async fn run_until_signal(self) -> Result<(), ServerError> {
+        self.run_until_signals(ShutdownSignals::install()).await
+    }
+
+    /// Like [`run_until_signal`](Self::run_until_signal) with signal streams
+    /// installed earlier (see [`ShutdownSignals::install`]): a signal that
+    /// arrived during startup is delivered immediately and ends in a graceful
+    /// shutdown instead of the default action killing the process.
+    pub async fn run_until_signals(mut self, mut signals: ShutdownSignals) -> Result<(), ServerError> {
         let Some(mut task) = self.task.take() else {
             return self.shutdown().await;
         };
         tokio::select! {
-            () = shutdown_signal() => {
+            () = signals.recv() => {
                 tracing::info!("shutdown signal received");
                 self.task = Some(task);
                 self.shutdown().await
@@ -1155,28 +1163,61 @@ impl RunningServer {
     }
 }
 
+/// SIGINT and SIGTERM streams. Installing them registers the handlers, so
+/// create them before startup: a signal received while the server is still
+/// starting is remembered and delivered by [`recv`](Self::recv) instead of
+/// killing the process (exit 143, bundled PostgreSQL left running).
+pub struct ShutdownSignals {
+    #[cfg(unix)]
+    int: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    term: Option<tokio::signal::unix::Signal>,
+}
+
+impl ShutdownSignals {
+    /// Registers the handlers now. Must run inside a tokio runtime.
+    pub fn install() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Self {
+                int: signal(SignalKind::interrupt()).ok(),
+                term: signal(SignalKind::terminate()).ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        Self {}
+    }
+
+    /// Resolves on Ctrl-C, or SIGTERM on Unix.
+    pub async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            async fn one(s: &mut Option<tokio::signal::unix::Signal>) {
+                match s {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            }
+            tokio::select! {
+                () = one(&mut self.int) => {}
+                () = one(&mut self.term) => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+}
+
 /// Resolves on Ctrl-C, or SIGTERM on Unix.
 pub async fn shutdown_signal() {
-    let ctrl_c = async {
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    };
-    #[cfg(unix)]
-    let term = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut s) => {
-                s.recv().await;
-            }
-            Err(_) => std::future::pending::<()>().await,
-        }
-    };
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-    tokio::select! {
-        () = ctrl_c => {}
-        () = term => {}
-    }
+    ShutdownSignals::install().recv().await;
 }
 
 /// Server errors.
