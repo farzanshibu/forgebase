@@ -20,6 +20,7 @@
 //!   behind (the cached plans' result columns may have changed).
 
 pub(crate) mod error;
+pub(crate) mod extensions;
 pub(crate) mod placeholders;
 pub(crate) mod types;
 
@@ -27,7 +28,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use forgebase_migrations::postgres::{self as pg_migrations, PgMigrator};
@@ -83,6 +84,8 @@ struct PgInner {
     sql: Mutex<HashMap<String, Arc<Translated>>>,
     /// Parameters the server cannot infer, per translated SQL text.
     indeterminate: Mutex<HashMap<String, Arc<[usize]>>>,
+    /// The latest [`extensions`] setup of this handle.
+    extensions: RwLock<Option<Arc<extensions::ExtensionReport>>>,
 }
 
 /// A failure while running a statement: the driver's (the server may have
@@ -189,8 +192,18 @@ impl PgDatabase {
                 writer_gen: AtomicU64::new(0),
                 sql: Mutex::new(HashMap::new()),
                 indeterminate: Mutex::new(HashMap::new()),
+                extensions: RwLock::new(None),
             }),
         })
+    }
+
+    /// The report of the latest [`extensions`] setup, if it ran.
+    pub(crate) fn extension_report(&self) -> Option<Arc<extensions::ExtensionReport>> {
+        self.inner.extensions.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    fn store_extensions(&self, report: extensions::ExtensionReport) {
+        *self.inner.extensions.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(report));
     }
 
     pub(crate) fn location(&self) -> &str {
@@ -407,6 +420,7 @@ impl PgDatabase {
             sqlite_version: String::new(),
             server_version: row.get(2).and_then(Value::as_str).unwrap_or_default().to_owned(),
             connections: u32::try_from(int(3)).ok(),
+            features: self.extension_report().map(|r| r.features.clone()).unwrap_or_default(),
         })
     }
 

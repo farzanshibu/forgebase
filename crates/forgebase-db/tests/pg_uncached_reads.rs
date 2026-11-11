@@ -60,7 +60,10 @@ async fn first_uncached_read_of_a_user_type_succeeds_in_write_transactions_and_r
         .fetch_all(&Statement::raw("SELECT m, m::text AS t FROM public.fb161_t"))
         .await
         .expect("uncached enum read in a write transaction");
-    assert_eq!(rows.rows, vec![vec![Value::Text("busy".into()), Value::Text("busy".into())]]);
+    assert_eq!(
+        rows.rows,
+        vec![vec![Value::Text("busy".into()), Value::Text("busy".into())]]
+    );
     tx.execute(&Statement::raw("INSERT INTO public.fb161_t VALUES ('calm')"))
         .await
         .unwrap();
@@ -69,7 +72,10 @@ async fn first_uncached_read_of_a_user_type_succeeds_in_write_transactions_and_r
     // On a reader (fresh connections, each its own READ ONLY transaction).
     let read = Statement::raw("SELECT m FROM public.fb161_t ORDER BY m");
     let rows = db.fetch_all(&read).await.expect("uncached enum read");
-    assert_eq!(rows.rows, vec![vec![Value::Text("calm".into())], vec![Value::Text("busy".into())]]);
+    assert_eq!(
+        rows.rows,
+        vec![vec![Value::Text("calm".into())], vec![Value::Text("busy".into())]]
+    );
     let n = db
         .fetch_all(&Statement::raw("SELECT count(*) FROM public.fb161_t"))
         .await

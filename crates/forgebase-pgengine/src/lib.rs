@@ -39,6 +39,7 @@ mod conf;
 mod config;
 mod discover;
 mod error;
+mod extensions;
 mod fsutil;
 pub mod interp;
 mod layout;
@@ -52,6 +53,7 @@ pub use conf::{DENY as DENIED_SETTINGS, DENY_PREFIXES as DENIED_SETTING_PREFIXES
 pub use config::{ENGINE_DIR_ENV, EngineConfig, EngineSource, ExtensionMode, RestartPolicy};
 pub use discover::{EngineDir, EngineOrigin, HAS_EMBEDDED, MIN_MAJOR, PgVersion, embedded_archive};
 pub use error::{EngineError, Result};
+pub use extensions::AGE_PRELOAD;
 pub use layout::{CONF_FILE, Layout, NodeKind};
 pub use secret::{Role, RoleSecrets, Secret};
 
@@ -111,6 +113,8 @@ struct Ctx {
     stop_timeout: Duration,
     restart: RestartPolicy,
     preload: Vec<&'static str>,
+    /// The server and reader roles preload Apache AGE (`session_preload_libraries`).
+    age: bool,
     warnings: Vec<String>,
     stopping: AtomicBool,
     pid: AtomicU32,
@@ -142,7 +146,8 @@ impl Engine {
         fsutil::private_dir(layout.postgres_dir())?;
         fsutil::private_dir(&layout.node_dir())?;
 
-        let (preload, cron, warnings) = preloads(&engine, cfg)?;
+        let (preload, cron, mut warnings) = preloads(&engine, cfg)?;
+        let age = extensions::age_preload(&engine, cfg, &mut warnings)?;
         let pgdata = layout.pgdata();
         cluster::clean_partial(&pgdata);
         let has_cluster = cluster::exists(&pgdata);
@@ -199,6 +204,7 @@ impl Engine {
             stop_timeout: cfg.stop_timeout,
             restart: cfg.restart,
             preload,
+            age,
             warnings,
             stopping: AtomicBool::new(false),
             pid: AtomicU32::new(0),
@@ -206,7 +212,11 @@ impl Engine {
         });
         let mut pm = start_once(&ctx).await?;
         if layout.kind() == NodeKind::Primary
-            && let Err(e) = cluster::bootstrap(&ctx.endpoint, &ctx.secrets).await
+            && let Err(e) = async {
+                cluster::bootstrap(&ctx.endpoint, &ctx.secrets).await?;
+                extensions::apply_role_settings(&ctx.endpoint, &ctx.secrets, ctx.age).await
+            }
+            .await
         {
             pm.stop(&pgdata, &ctx.engine, ctx.stop_timeout, false).await;
             return Err(e);
@@ -616,6 +626,12 @@ impl EngineHandle {
     /// Whether pg_cron is preloaded.
     pub fn has_cron(&self) -> bool {
         self.ctx.preload.contains(&"pg_cron")
+    }
+
+    /// Whether the server and reader roles preload Apache AGE
+    /// ([`AGE_PRELOAD`] in their `session_preload_libraries`).
+    pub fn has_age(&self) -> bool {
+        self.ctx.age
     }
 
     /// Warnings from preparation (missing optional modules).

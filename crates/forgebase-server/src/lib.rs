@@ -259,6 +259,21 @@ async fn start_on(
             return Err(e.into());
         }
     };
+    // Extensions after the migrations (ADR-0029 §1.1): the bundled engine
+    // creates them as forgebase_super, an external server as its own role.
+    let extensions = forgebase_db::ExtensionSetup {
+        modes: config.database.postgres.extensions,
+        admin_url: engine
+            .as_ref()
+            .map(|e| forgebase_db::SecretString::new(e.url(forgebase_pgengine::Role::Super).expose())),
+        reader_role: engine
+            .as_ref()
+            .map(|_| forgebase_pgengine::Role::Reader.name().to_owned()),
+    };
+    if let Err(e) = db.setup_extensions(&extensions).await {
+        db.close().await;
+        return Err(e.into());
+    }
     let instance = db.ensure_instance().await?;
 
     let (auth, policy, job_access) = match open_auth(&db, layout, config).await {
@@ -1216,6 +1231,9 @@ pub enum ServerError {
     /// external server without a URL, an unknown marker).
     #[error("{0}")]
     Backend(String),
+    /// A PostgreSQL extension a feature needs cannot be used (ADR-0029 §1.1).
+    #[error(transparent)]
+    Extensions(#[from] forgebase_db::ExtensionError),
     /// The data directory holds no database (`forgebase init` creates it).
     #[error("no database in {} (run `forgebase init`)", .0.display())]
     NotInitialized(PathBuf),
@@ -1269,6 +1287,7 @@ impl ErrorCode for ServerError {
             ServerError::Engine(_) => "database_engine_failed",
             ServerError::BackendMismatch { .. } => "backend_mismatch",
             ServerError::Backend(_) => "backend_unavailable",
+            ServerError::Extensions(e) => e.code(),
             ServerError::NotInitialized(_) => "not_initialized",
         }
     }
@@ -1292,6 +1311,7 @@ impl ErrorCode for ServerError {
             | ServerError::Billing(_) => ErrorKind::Internal,
             ServerError::Realtime(e) => e.kind(),
             ServerError::Engine(_) | ServerError::Backend(_) => ErrorKind::Unavailable,
+            ServerError::Extensions(e) => e.kind(),
             ServerError::BackendMismatch { .. } => ErrorKind::Conflict,
             ServerError::NotInitialized(_) => ErrorKind::NotFound,
         }
