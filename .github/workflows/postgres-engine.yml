@@ -87,6 +87,16 @@ jobs:
           path: ${{ runner.temp }}/engine/src
           key: engine-src-${{ matrix.kind }}-${{ hashFiles('engine.lock') }}
 
+      - name: Apache AGE build tools (FB-160)
+        # AGE's Cypher grammar needs GNU Bison 3; macOS ships 2.3. Keg-only:
+        # deploy/postgres-engine/age/make-args finds it under $(brew --prefix).
+        # The Alpine build image installs bison 3.8 (build-linux.sh).
+        if: matrix.kind == 'macos'
+        run: |
+          set -euo pipefail
+          brew list bison >/dev/null 2>&1 || brew install bison
+          "$(brew --prefix bison)/bin/bison" --version | head -1
+
       - name: Build (Linux, in the Alpine image)
         if: matrix.kind == 'linux'
         run: deploy/postgres-engine/build-linux.sh "$TARGET" "$WORK" "$OUT"

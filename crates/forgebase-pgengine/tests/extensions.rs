@@ -2,7 +2,8 @@
 //! server creates the extensions as `forgebase_super` after the migrations,
 //! the server and reader roles can use them, AGE is preloaded per role only
 //! when the engine ships it. Skips unless `FORGEBASE_PG_ENGINE_DIR` names an
-//! engine; with FB-130's engine every extension but AGE is present.
+//! engine, and adapts to it: FB-130's engine has every extension but AGE,
+//! FB-160's has AGE too (`lib/plugins/age.*`).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
@@ -90,15 +91,17 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
     let probe = EngineDir::open(&engine, EngineOrigin::Dir).await.expect("engine");
     let has_vector = probe.has_module("vector");
     let has_pgmq = engine.join("share/extension/pgmq.control").is_file();
+    let has_age = probe.has_plugin("age");
     let tmp = tempdir();
     let layout = Layout::primary(tmp.path());
     let h = Engine::prepare(&layout, &config(&engine, 18_231))
         .await
         .expect("prepare");
     let has_cron = h.has_cron();
-    assert!(!h.has_age(), "no engine ships AGE before FB-160");
-    assert!(
+    assert_eq!(h.has_age(), has_age, "AGE is preloaded iff lib/plugins/age.* exists");
+    assert_eq!(
         h.warnings().iter().any(|w| w.contains("Apache AGE")),
+        !has_age,
         "{:?}",
         h.warnings()
     );
@@ -115,11 +118,16 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
     assert_eq!(state(Feature::Cron) == FeatureState::Active, has_cron, "{report:?}");
     assert_eq!(state(Feature::Trigram), FeatureState::Active);
     let graph = report.get(Feature::Graph).unwrap();
-    assert_eq!(graph.state, FeatureState::Portable);
-    assert!(
-        graph.reason.as_deref().unwrap().contains("no age extension"),
-        "{graph:?}"
-    );
+    if has_age {
+        assert_eq!(graph.state, FeatureState::Active, "{graph:?}");
+        assert!(graph.engine.contains("1.8"), "{graph:?}");
+    } else {
+        assert_eq!(graph.state, FeatureState::Portable);
+        assert!(
+            graph.reason.as_deref().unwrap().contains("no age extension"),
+            "{graph:?}"
+        );
+    }
 
     // Owners: superuser-only extensions belong to forgebase_super, the
     // others to the server role.
@@ -163,6 +171,16 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
         );
         write(&db, "SELECT cron.unschedule('fb161')").await;
     }
+    if has_age {
+        assert_eq!(scalar(&db, &owner("age")).await, Value::Text("forgebase_super".into()));
+        // The server role's sessions load AGE from $libdir/plugins (the
+        // setting exists only once the library is loaded); FB-160's
+        // patch 0002 (apache/age#2561) adds it, on by default.
+        assert_eq!(
+            scalar(&db, "SELECT current_setting('age.enforce_rls_in_traversal')").await,
+            Value::Text("on".into())
+        );
+    }
 
     // The reader role sees what it needs.
     let reader = open(&h, Role::Reader, true).await;
@@ -180,9 +198,16 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
             Value::Integer(1)
         );
     }
+    if has_age {
+        assert_eq!(
+            scalar(&reader, "SELECT current_setting('age.enforce_rls_in_traversal')").await,
+            Value::Text("on".into())
+        );
+    }
     reader.close().await;
 
-    // Without AGE, no role preloads it (a missing library would break logins).
+    // With AGE both roles preload it; without, neither does (a missing
+    // library would break logins).
     assert_eq!(
         scalar(
             &db,
@@ -191,7 +216,7 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
              AND array_to_string(s.setconfig, ',') LIKE '%session_preload_libraries%'"
         )
         .await,
-        Value::Integer(0)
+        Value::Integer(if has_age { 2 } else { 0 })
     );
 
     // Info shows it; a restart keeps the same setup.
@@ -210,9 +235,10 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
         .expect("setup again");
     assert_eq!(again, report);
 
-    // `on` for the missing one refuses; `off` everywhere is refused for the
-    // data already kept in extensions.
-    let err = db
+    // `on` for a missing extension refuses (works like auto when it is
+    // there); `off` everywhere is refused for the data already kept in
+    // extensions.
+    let graph_on = db
         .setup_extensions(&managed(
             &h,
             PostgresExtensions {
@@ -220,9 +246,13 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
                 ..PostgresExtensions::default()
             },
         ))
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("graph = \"on\""), "{err}");
+        .await;
+    if has_age {
+        assert!(graph_on.expect("graph on").is_active(Feature::Graph));
+    } else {
+        let err = graph_on.unwrap_err();
+        assert!(err.to_string().contains("graph = \"on\""), "{err}");
+    }
     if has_vector {
         let err = db
             .setup_extensions(&managed(
@@ -243,16 +273,28 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
 #[tokio::test]
 async fn graph_on_refuses_an_engine_without_age_before_initdb() {
     let Some(engine) = engine_dir() else { return };
+    let has_age = EngineDir::open(&engine, EngineOrigin::Dir)
+        .await
+        .expect("engine")
+        .has_plugin("age");
     let tmp = tempdir();
     let layout = Layout::primary(tmp.path());
     let cfg = EngineConfig {
         graph: ExtensionMode::On,
         ..config(&engine, 18_232)
     };
-    let err = Engine::prepare(&layout, &cfg).await.expect_err("AGE required");
-    assert!(matches!(err, EngineError::Config(_)), "{err}");
-    assert!(err.to_string().contains("Apache AGE"), "{err}");
-    assert!(!layout.pgdata().exists(), "refused before initdb");
+    if has_age {
+        // An engine that ships AGE (FB-160) starts with `on` and preloads it.
+        let h = Engine::prepare(&layout, &cfg).await.expect("graph on");
+        assert!(h.has_age());
+        assert!(h.warnings().iter().all(|w| !w.contains("Apache AGE")));
+        h.stop().await.expect("stop");
+    } else {
+        let err = Engine::prepare(&layout, &cfg).await.expect_err("AGE required");
+        assert!(matches!(err, EngineError::Config(_)), "{err}");
+        assert!(err.to_string().contains("Apache AGE"), "{err}");
+        assert!(!layout.pgdata().exists(), "refused before initdb");
+    }
 
     // `off`: no warning about AGE.
     let cfg = EngineConfig {
