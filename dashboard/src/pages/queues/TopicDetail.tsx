@@ -127,8 +127,8 @@ function PublishPanel({ topic, onDone }: { topic: string; onDone: () => void }) 
         <label className="block">Data (JSON)<Textarea size="sm" autoResize={false} className="mt-1 block h-24 w-full font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
         <label className="block">Attributes (one key=value per line)<Textarea size="sm" autoResize={false} className="mt-1 block h-16 w-full font-mono text-xs" value={attrs} onChange={(e) => setAttrs(e.target.value)} /></label>
         <div className="flex flex-wrap items-end gap-3">
-          <label className="inline-flex items-center gap-1">Ordering key <HelpTip term="ordering_key" /><Input size="sm" className="ml-1 w-40" value={key} onChange={(e) => setKey(e.target.value)} /></label>
-          <label className="inline-flex items-center gap-1">Dedup id <HelpTip term="dedup_id" /><Input size="sm" className="ml-1 w-40" value={dedup} onChange={(e) => setDedup(e.target.value)} /></label>
+          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Ordering key <Input size="sm" className="ml-1 w-40" value={key} onChange={(e) => setKey(e.target.value)} /></label><HelpTip term="ordering_key" /></span>
+          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Dedup id <Input size="sm" className="ml-1 w-40" value={dedup} onChange={(e) => setDedup(e.target.value)} /></label><HelpTip term="dedup_id" /></span>
           <Button type="submit" tone="primary">Publish message</Button>
         </div>
         {last && <p role="status" className="text-success">{last}</p>}

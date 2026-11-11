@@ -176,25 +176,25 @@ test.describe.serial("first journey", () => {
     await shot(page, info, "04-upload");
   });
 
-  // A-05: write the function in the browser from a template that reads a collection, then test it.
-  // Lands with FB-94 (branch agent/worker-fb94: New function, editor, Test panel).
-  test.fixme("5. write, deploy and test a function that reads the collection", async () => {
+  // A-05: write the function in the browser from a template that reads a collection, then test it (FB-101).
+  // The template starts on the newest collection; a deploy opens the Test tab.
+  test("5. write, deploy and test a function that reads the collection", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/functions");
-    await page.getByRole("link", { name: /new function/i }).click();
+    await page.getByRole("button", { name: /new function/i }).first().click();
     await page.getByRole("button", { name: /read a collection/i }).click();
     await page.getByRole("button", { name: /deploy/i }).click();
     await page.getByRole("tab", { name: "Test" }).click();
-    await page.getByRole("button", { name: /run/i }).click();
-    await expect(page.getByText(n.collection)).toBeVisible();
+    await page.getByRole("button", { name: /run test/i }).click();
+    await expect(page.getByLabel("Response body")).toContainText(n.collection);
   });
 
   test("5b. deploy a WebAssembly function and call it", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/functions");
-    await page.getByRole("button", { name: "Deploy function" }).click();
+    await page.getByRole("button", { name: "Upload .wasm" }).click();
     const form = page.getByRole("form", { name: "Deploy function" });
     await form.getByLabel("Name", { exact: true }).fill(n.fn);
     await form.getByLabel("WebAssembly module").setInputFiles({ name: "hello.wasm", mimeType: "application/wasm", buffer: helloWasm() });
@@ -221,7 +221,7 @@ test.describe.serial("first journey", () => {
 
   // A-04: an error shows plain words, the next step and a copyable request id, with raw JSON behind Details.
   // ErrorPanel (FB-98) does this; CollectionView still draws its own "No collection named …" line (FB-100).
-  test.fixme("6b. an error explains its fix and offers the request id", async () => {
+  test("6b. an error explains its fix and offers the request id", async () => {
     await page.goto("/admin/database/c/does_not_exist");
     const err = page.getByRole("alert");
     await expect(err).toContainText(/what to do/i);

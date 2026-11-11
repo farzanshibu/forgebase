@@ -6,6 +6,7 @@ import { renderStudio, signedIn } from "../../test/helpers";
 import { installQueues, message, received } from "../../test/queueMock";
 import { duration, parseAttrs, parseJson } from "./util";
 import { pick } from "../../test/pick";
+import { confirmDialog, sheet, toast } from "../../test/dataStudioMock";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -28,29 +29,66 @@ describe("Queues helpers", () => {
 });
 
 describe("Queues topics", () => {
-  it("lists topics and creates one, and says when the name is taken", async () => {
+  it("lists topics, creates one in a sheet and opens it, and says when the name is taken", async () => {
     const { mock } = setup();
     renderStudio("/queues");
     const table = await screen.findByRole("table", { name: "Topics" });
     expect(within(table).getByRole("link", { name: "orders" })).toBeInTheDocument();
     expect(within(table).getByText("records of users")).toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText("Name"), "invoices");
-    await userEvent.type(screen.getByLabelText(/Retention/), "2");
-    await userEvent.click(screen.getByRole("button", { name: "Create topic" }));
-    expect(await within(await screen.findByRole("table", { name: "Topics" })).findByRole("link", { name: "invoices" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "New topic" }));
+    const form = await sheet("New topic");
+    await userEvent.type(within(form).getByLabelText(/^Name/), "invoices");
+    await userEvent.type(within(form).getByLabelText(/^Retention/), "2");
+    await userEvent.click(within(form).getByRole("button", { name: "Create topic" }));
+    await toast("Topic invoices created");
     expect(mock.bodies["post /api/v1/queues/topics"]).toEqual([{ name: "invoices", retention_ms: 172_800_000 }]);
+    // The new topic opens.
+    expect(await screen.findByText("invoices", { selector: "h1" })).toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText("Name"), "orders");
-    await userEvent.click(screen.getByRole("button", { name: "Create topic" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("topic_exists");
+    renderStudio("/queues?new=1");
+    const again = await sheet("New topic");
+    await userEvent.type(within(again).getByLabelText(/^Name/), "orders");
+    await userEvent.click(within(again).getByRole("button", { name: "Create topic" }));
+    expect(await within(again).findByRole("alert")).toHaveTextContent("topic_exists");
+  });
+
+  it("checks the topic name as you type", async () => {
+    setup();
+    renderStudio("/queues?new=1");
+    const form = await sheet("New topic");
+    await userEvent.type(within(form).getByLabelText(/^Name/), "bad name!");
+    expect(await within(form).findByText(/Use letters, digits/)).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Create topic" })).toBeDisabled();
+  });
+
+  it("creates a topic for a tenant: sends the tenant header and shows the tenant on the list", async () => {
+    const { mock, st } = setup();
+    renderStudio("/queues?new=1");
+    const form = await sheet("New topic");
+    await userEvent.type(within(form).getByLabelText(/^Name/), "ledger");
+    await userEvent.type(within(form).getByLabelText("Tenant"), "acme");
+    await userEvent.click(within(form).getByRole("button", { name: "Create topic" }));
+    await toast("Topic acme/ledger created");
+    expect(st.tenants).toEqual(["acme"]);
+    expect(mock.headers.some((h) => h["X-ForgeBase-Tenant"] === "acme")).toBe(true);
+    expect(st.topics.at(-1)).toMatchObject({ name: "acme/ledger", tenant: "acme" });
+  });
+
+  it("shows each topic's tenant, or Instance when it has none", async () => {
+    const { st } = setup();
+    st.topics.push({ ...st.topics[0]!, name: "acme/ledger", tenant: "acme" });
+    renderStudio("/queues");
+    const table = await screen.findByRole("table", { name: "Topics" });
+    expect(within(within(table).getByRole("row", { name: /acme\/ledger/ })).getByText("acme", { selector: "span" })).toBeInTheDocument();
+    expect(within(within(table).getByRole("row", { name: /^orders/ })).getByText("Instance")).toBeInTheDocument();
   });
 
   it("explains an empty list", async () => {
     const { st } = setup();
     st.topics = [];
     renderStudio("/queues");
-    expect(await screen.findByText(/No topics yet/)).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No topics yet" })).toBeInTheDocument();
   });
 
   it("shows the server's refusal when the caller may not read queues", async () => {
@@ -98,8 +136,8 @@ describe("Queues topic detail", () => {
     await userEvent.click(data);
     await userEvent.paste('{"id":9}');
     await userEvent.type(screen.getByLabelText(/Attributes/), "kind=rush");
-    await userEvent.type(screen.getByLabelText("Ordering key"), "o9");
-    await userEvent.type(screen.getByLabelText("Dedup id"), "d9");
+    await userEvent.type(screen.getByLabelText(/^Ordering key/), "o9");
+    await userEvent.type(screen.getByLabelText(/^Dedup id/), "d9");
     await userEvent.click(screen.getByRole("button", { name: "Publish message" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Published msg_orders_4 (sequence 4).");
     expect(mock.bodies["post /api/v1/queues/topics/{topic}/publish"]).toEqual([{ messages: [{ data: { id: 9 }, attributes: { kind: "rush" }, ordering_key: "o9", dedup_id: "d9" }] }]);
@@ -128,33 +166,78 @@ describe("Queues topic detail", () => {
     expect(mock.calls.filter((c) => c.endsWith("/publish"))).toHaveLength(0);
   });
 
-  it("lists and creates subscriptions of the topic", async () => {
+  it("lists the subscriptions of the topic with their owner, and creates one in a sheet", async () => {
     const { mock } = setup();
     renderStudio("/queues/t/orders");
     const list = await screen.findByRole("list", { name: "Topic subscriptions" });
     expect(within(list).getByRole("link", { name: "order-workers" })).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Subscription name"), "billing");
-    await userEvent.clear(screen.getByLabelText("Ack deadline (s)"));
-    await userEvent.type(screen.getByLabelText("Ack deadline (s)"), "45");
-    await userEvent.type(screen.getByLabelText("Max attempts"), "5");
-    await userEvent.click(screen.getByLabelText("Ordered"));
-    await userEvent.click(screen.getByRole("button", { name: "Create subscription" }));
-    expect(await within(await screen.findByRole("list", { name: "Topic subscriptions" })).findByRole("link", { name: "billing" })).toBeInTheDocument();
+    expect(within(list).getAllByText(/owner admin/)).toHaveLength(2);
+    await userEvent.click(screen.getByRole("button", { name: "New subscription" }));
+    const form = await sheet("New subscription");
+    await userEvent.type(within(form).getByLabelText(/^Name/), "billing");
+    await userEvent.clear(within(form).getByLabelText(/^Ack deadline/));
+    await userEvent.type(within(form).getByLabelText(/^Ack deadline/), "45");
+    await userEvent.type(within(form).getByLabelText(/^Max attempts/), "5");
+    await userEvent.click(within(form).getByRole("checkbox", { name: /^Ordered/ }));
+    await userEvent.click(within(form).getByRole("button", { name: "Create subscription" }));
+    await toast("Subscription billing created");
     expect(mock.bodies["post /api/v1/queues/subscriptions"]).toEqual([{ name: "billing", topic: "orders", ack_deadline_ms: 45_000, ordering: true, start: "latest", max_delivery_attempts: 5 }]);
+    expect(await screen.findByLabelText("Subscription settings")).toBeInTheDocument();
   });
 
-  it("asks for force when a topic still has subscriptions, then deletes it", async () => {
+  it("creates a subscription in the topic's tenant and shows the tenant and owner", async () => {
+    const { st } = setup();
+    st.topics.push({ ...st.topics[0]!, name: "acme/ledger", tenant: "acme" });
+    st.messages["acme/ledger"] = [];
+    renderStudio("/queues/t/acme%2Fledger");
+    await screen.findByText("acme/ledger", { selector: "h1" });
+    await userEvent.click(await screen.findByRole("button", { name: "New subscription" }));
+    const form = await sheet("New subscription");
+    await userEvent.type(within(form).getByLabelText(/^Name/), "audit");
+    await userEvent.click(within(form).getByRole("button", { name: "Create subscription" }));
+    await toast("Subscription acme/audit created");
+    expect(st.tenants.at(-1)).toBe("acme");
+    expect(st.subs.at(-1)).toMatchObject({ name: "acme/audit", tenant: "acme", created_by: "admin" });
+    const settings = await screen.findByLabelText("Subscription settings");
+    expect(settings).toHaveTextContent("Owneradmin");
+    expect(settings).toHaveTextContent("Tenantacme");
+  });
+
+  it("asks for the topic's name, offers force when it still has subscriptions, then deletes it", async () => {
     const { mock, st } = setup();
     renderStudio("/queues/t/orders");
     await screen.findByRole("table", { name: "Messages" });
     await userEvent.click(screen.getByRole("button", { name: "Delete topic" }));
-    await userEvent.click(await screen.findByRole("button", { name: /confirm|yes/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("topic_has_subscriptions");
-    await userEvent.click(screen.getByRole("button", { name: "Delete topic and its subscriptions" }));
-    await userEvent.click(await screen.findByRole("button", { name: /confirm|yes/i }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete topic orders?" });
+    const confirm = within(dialog).getByRole("button", { name: "Delete topic" });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/), "orders");
+    await userEvent.click(confirm);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("topic_has_subscriptions");
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Delete topic and its subscriptions" }));
     await waitFor(() => expect(st.topics.map((t) => t.name)).toEqual(["audit"]));
     expect(mock.calls).toContain("delete /api/v1/queues/topics/orders");
     expect(await screen.findByRole("table", { name: "Topics" })).toBeInTheDocument();
+  });
+
+  it("explains that a record topic shows the owner's view and withholds what the owner may not see", async () => {
+    setup();
+    renderStudio("/queues/t/audit");
+    expect(await screen.findByRole("note")).toHaveTextContent(/as its subscription's owner may see it/);
+    expect(screen.getByRole("note")).toHaveTextContent(/withheld/);
+    expect(screen.getByRole("note")).toHaveTextContent("users");
+  });
+
+  it("offers topic rules that read @request only, and saves them", async () => {
+    const { mock, st } = setup();
+    renderStudio("/queues/t/orders");
+    const rules = await screen.findByLabelText("Rules for orders");
+    expect(mock.calls).toContain("get /api/v1/policies/resources/queue_topic");
+    expect(screen.getByText(/rules may use|can only test the caller with/i, { exact: false })).toBeInTheDocument();
+    await pick(within(rules).getByLabelText("List (scan or search) rule"), "Everyone");
+    await userEvent.click(screen.getByRole("button", { name: "Save rules" }));
+    await toast("Access rules saved");
+    expect(st.rules.queue_topic!.orders).toEqual({ list: "" });
   });
 
   it("reports a topic that does not exist", async () => {
@@ -171,6 +254,14 @@ describe("Queues subscriptions", () => {
     const table = await screen.findByRole("table", { name: "Subscriptions" });
     expect(within(table).getByRole("link", { name: "order-workers" })).toBeInTheDocument();
     expect(within(table).getByText("pull, ordered")).toBeInTheDocument();
+    expect(within(within(table).getByRole("row", { name: /order-workers/ })).getByText("admin")).toBeInTheDocument();
+  });
+
+  it("explains an empty subscription list", async () => {
+    const { st } = setup();
+    st.subs = [];
+    renderStudio("/queues/subscriptions");
+    expect(await screen.findByRole("region", { name: "No subscriptions yet" })).toBeInTheDocument();
   });
 
   it("shows settings, backlog metrics and dead letters with their history", async () => {
@@ -207,7 +298,7 @@ describe("Queues subscriptions", () => {
 
     await userEvent.type(screen.getByLabelText("New snapshot"), "nightly");
     await userEvent.click(screen.getByRole("button", { name: "Save snapshot" }));
-    expect(await screen.findByText("Snapshot nightly saved.")).toBeInTheDocument();
+    await toast("Snapshot nightly created");
     expect(st.snapshots.map((s) => s.name)).toEqual(["before-fix", "nightly"]);
     await userEvent.click(screen.getByLabelText("Snapshot"));
     expect(await screen.findByRole("option", { name: /nightly/ })).toBeInTheDocument();
@@ -224,7 +315,7 @@ describe("Queues subscriptions", () => {
     renderStudio("/queues/s/order-audit");
     await screen.findByLabelText("Subscription settings");
     await userEvent.click(screen.getByRole("button", { name: "Delete subscription" }));
-    await userEvent.click(await screen.findByRole("button", { name: /confirm|yes/i }));
+    await confirmDialog("Delete subscription order-audit?", "Delete subscription", "order-audit");
     await waitFor(() => expect(st.subs.map((s) => s.name)).toEqual(["order-workers"]));
     expect(await screen.findByRole("table", { name: "Subscriptions" })).toBeInTheDocument();
   });
@@ -275,7 +366,7 @@ describe("Pub/Sub inspector", () => {
     await userEvent.click(screen.getByRole("button", { name: "Stop listening" }));
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear" }));
-    expect(screen.getByText("No deliveries yet.")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "No deliveries yet" })).toBeInTheDocument();
   });
 
   it("sends the flow-control window with the stream request", async () => {

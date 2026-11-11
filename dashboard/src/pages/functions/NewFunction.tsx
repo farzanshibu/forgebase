@@ -93,11 +93,12 @@ export default function NewFunction() {
               name={nameError ? "" : name}
               language={lang}
               initialSource={t.source(collection || "your_collection")[lang]}
-              storageKey={`new:${name}`}
+              storageKey={`new:${tpl}:${lang}:${collection}`}
               capabilities={t.capabilities}
               config={{ hooks: hooksFor(t, collection) }}
               description={description}
               access={access}
+              label="New function source"
               onDeployed={(d) => {
                 notify.created(`Function ${d.function.name}`);
                 nav(`/functions/f/${encodeURIComponent(d.function.name)}/test`);

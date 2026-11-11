@@ -25,6 +25,7 @@ function setup() {
   return { mock, st };
 }
 
+const newEditor = () => screen.findByRole("textbox", { name: "New function source" });
 const editor = (name: string) => screen.findByRole("textbox", { name: `${name} source` });
 const wasm = () => new File([new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0])], "mod.wasm", { type: "application/wasm" });
 
@@ -47,7 +48,7 @@ describe("New function", () => {
     if (t.needsCollection) await userEvent.type(within(form).getByLabelText("Collection"), "orders");
     const collection = t.needsCollection ? "orders" : "";
     const source = t.source(collection || "your_collection");
-    const ta = await editor("fresh");
+    const ta = await newEditor();
     await waitFor(() => expect(ta).toHaveValue(source.typescript));
     expect(source.typescript).toContain('from "forgebase"');
     for (const c of t.capabilities) expect(screen.getByRole("switch", { name: c })).toBeChecked();
@@ -79,17 +80,17 @@ describe("New function", () => {
     const mock = signedIn(new MockApi({ collections: [makeCollection("alpha", []), makeCollection("zeta", [])] }).install());
     addJsFunction(installFunctions(mock));
     renderStudio("/functions/new");
-    const ta = await editor("read-zeta");
-    expect(ta).toHaveValue(expect.stringContaining('from("zeta")'));
+    const ta = await newEditor();
+    expect((ta as HTMLTextAreaElement).value).toContain('from("zeta")');
     expect(screen.getByLabelText("Collection")).toHaveTextContent("zeta");
     await pick(screen.getByLabelText("Collection"), "alpha");
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "read-alpha source" })).toHaveValue(expect.stringContaining('from("alpha")')));
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "New function source" }) as HTMLTextAreaElement).value).toContain('from("alpha")'));
   });
 
   it("offers JavaScript, which strips the type annotations", async () => {
     const { mock } = setup();
     await openNew("plain", "HTTP API", "JavaScript");
-    const ta = await editor("plain");
+    const ta = await newEditor();
     await waitFor(() => expect(ta).toHaveValue(template("http").source("").javascript));
     expect((ta as HTMLTextAreaElement).value).not.toContain(": Request");
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
@@ -101,7 +102,7 @@ describe("New function", () => {
     const { mock, st } = setup();
     st.admin = false;
     await openNew("power");
-    await editor("power");
+    await newEditor();
     expect(screen.getByText("admin only")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("switch", { name: "service_role" }));
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
@@ -151,7 +152,7 @@ describe("Editor", () => {
   it("gives the editor the server's forgebase types, or a bundled copy when the call fails", async () => {
     const { mock, st } = setup();
     await openNew("typed");
-    await editor("typed");
+    await newEditor();
     await waitFor(() => expect(monacoState.extraLib).toBe(st.types));
     expect(screen.getByText(/Types: from the server/)).toBeInTheDocument();
     expect(mock.calls).toContain("get /api/v1/functions/types");
@@ -161,7 +162,7 @@ describe("Editor", () => {
     const { st } = setup();
     st.types = null;
     await openNew("typed");
-    await editor("typed");
+    await newEditor();
     await waitFor(() => expect(monacoState.extraLib).toBe(FALLBACK_FORGEBASE_DTS));
     expect(FALLBACK_FORGEBASE_DTS).toContain("export function serve");
     expect(screen.getByText(/Types: bundled copy/)).toBeInTheDocument();
@@ -171,14 +172,14 @@ describe("Editor", () => {
     setup();
     localStorage.setItem("forgebase.admin.theme", "dark");
     await openNew("dusk");
-    await editor("dusk");
+    await newEditor();
     await waitFor(() => expect(monacoState.theme).toBe("vs-dark"));
   });
 
   it("maps a compile error to its line and column and keeps the editor open", async () => {
     const { mock, st } = setup();
     await openNew("broken");
-    const ta = await editor("broken");
+    const ta = await newEditor();
     act(() => setEditorCode(ta, `const a = 1;\nconst b = ${SYNTAX_ERROR};\n`));
     await userEvent.click(screen.getByRole("button", { name: "Deploy" }));
     const list = await screen.findByRole("alert", { name: "Compile errors" });
@@ -198,30 +199,30 @@ describe("Editor", () => {
     setup();
     const first = await openNew("drafty");
     void first;
-    const ta = await editor("drafty");
+    const ta = await newEditor();
     act(() => setEditorCode(ta, "// my work in progress\n"));
     await userEvent.click(ta);
     await userEvent.keyboard("{Control>}s{/Control}");
     expect(await screen.findByText("Draft saved in this browser")).toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem("forgebase.fn-draft.new:drafty")!).source).toBe("// my work in progress\n");
+    expect(JSON.parse(localStorage.getItem("forgebase.fn-draft.new:read:typescript:")!).source).toBe("// my work in progress\n");
 
     // "Reload": a fresh render of the same screen.
     cleanup();
     const again = await openNew("drafty");
     void again;
-    const ta2 = await editor("drafty");
+    const ta2 = await newEditor();
     expect(ta2).toHaveValue("// my work in progress\n");
     expect(screen.getByText(/Restored your unsaved draft/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Discard draft" }));
     await waitFor(() => expect(ta2).toHaveValue(TEMPLATES[0]!.source("your_collection").typescript));
-    expect(localStorage.getItem("forgebase.fn-draft.new:drafty")).toBeNull();
+    expect(localStorage.getItem("forgebase.fn-draft.new:read:typescript:")).toBeNull();
   });
 
   it("Cmd+S also saves, and a failing storage is reported instead of throwing", async () => {
     setup();
     await openNew("nostore");
-    const ta = await editor("nostore");
+    const ta = await newEditor();
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
     await userEvent.click(ta);
     await userEvent.keyboard("{Meta>}s{/Meta}");
@@ -275,6 +276,33 @@ describe("Test panel", () => {
     expect(mock.problems).toEqual([]);
   });
 
+  it("sends an x-request-id, shows it with a copy button and a link to that run's logs", async () => {
+    const { st } = setup();
+    renderStudio("/functions/f/echo/test");
+    const form = await screen.findByRole("form", { name: "Test run" });
+    await userEvent.click(within(form).getByRole("button", { name: "Run test" }));
+    const result = await screen.findByRole("group", { name: "Test result" });
+    expect(st.invokes[0]!.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(within(result).getByLabelText("Request id")).toHaveTextContent("req-echo");
+    expect(within(result).getByRole("button", { name: "Copy request id" })).toBeInTheDocument();
+    expect(within(result).getByRole("link", { name: "Find in logs" })).toHaveAttribute("href", "/functions/f/echo/logs?request=req-echo");
+    // Only this run's log lines are shown.
+    expect(await within(result).findByText("[info] echo ran")).toBeInTheDocument();
+  });
+
+  it("shows a failing run as an error with its message, what to do and the request id", async () => {
+    const { st } = setup();
+    st.invokeReply = { status: 500, headers: { "x-request-id": "req-echo" }, body: { error: { code: "function_error", message: "ReferenceError: nope is not defined" } } };
+    renderStudio("/functions/f/echo/test");
+    const form = await screen.findByRole("form", { name: "Test run" });
+    await userEvent.click(within(form).getByRole("button", { name: "Run test" }));
+    const result = await screen.findByRole("group", { name: "Test result" });
+    const alert = within(result).getByRole("alert");
+    expect(alert).toHaveTextContent("ReferenceError: nope is not defined");
+    expect(alert).toHaveTextContent("What to do");
+    expect(alert).toHaveTextContent("Request id req-echo");
+  });
+
   it("targets a chosen version, and shows non-200 answers as they are", async () => {
     const { st } = setup();
     st.invokeReply = { status: 502, headers: { "x-request-id": "none" }, body: { error: { code: "function_trap", message: "boom" } } };
@@ -283,6 +311,7 @@ describe("Test panel", () => {
     await pick(within(form).getByLabelText("Version"), "1");
     await userEvent.click(within(form).getByRole("button", { name: "Run test" }));
     expect(await screen.findByText("HTTP 502")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("boom");
     expect(new URLSearchParams(st.invokes[0]!.query).get("version")).toBe("1");
     expect(screen.getByLabelText("Response body")).toHaveTextContent("function_trap");
     expect(await screen.findByText(/No log lines for this run/)).toBeInTheDocument();

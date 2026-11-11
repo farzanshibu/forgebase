@@ -37,7 +37,7 @@ describe("Functions Studio list and deploy", () => {
     await userEvent.click(within(form).getByRole("button", { name: "Deploy" }));
 
     // Lands on the new function's page.
-    expect(await screen.findByText("greeter", { selector: "h2" })).toBeInTheDocument();
+    expect(await screen.findByText("greeter", { selector: "h1" })).toBeInTheDocument();
     const body = mock.bodies["post /api/v1/functions"]![0] as Record<string, unknown>;
     expect(body).toMatchObject({
       name: "greeter", wasm: "AGFzbQEAAAA=", access: "permission", capabilities: ["log"], limits: { timeout_ms: 2500 },
@@ -124,6 +124,37 @@ describe("Functions Studio logs", () => {
     await waitFor(() => expect(within(screen.getByRole("list", { name: "Executions" })).getAllByRole("listitem")).toHaveLength(60));
     expect(mock.calls).toContain("get /api/v1/functions/hello/logs");
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+  });
+
+  it("filters by request id from ?request=, with copy buttons, an ErrorPanel for a failed run and a fuel HelpTip", async () => {
+    const { st } = setup();
+    st.logs.hello = [
+      { id: 3, function: "hello", version: 2, trigger: "http", status: "ok", duration_ms: 2, fuel_used: 7, error: null, logs: [{ level: "info", message: "first" }], request_id: "req-aaa", created_at: "2026-11-09T10:00:00Z" },
+      { id: 2, function: "hello", version: 2, trigger: "http", status: "trap", duration_ms: 9, fuel_used: 5, error: "unreachable executed", logs: [], request_id: "req-bbb", created_at: "2026-11-09T10:00:00Z" },
+    ];
+    renderStudio("/functions/f/hello/logs?request=req-bbb");
+    const list = await screen.findByRole("list", { name: "Executions" });
+    await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
+    expect(within(list).getByText("req-bbb")).toBeInTheDocument();
+    expect(within(list).queryByText("[info] first")).not.toBeInTheDocument();
+    expect(within(list).getAllByRole("button", { name: "Copy request id" }).length).toBeGreaterThan(0);
+    // The error row is an ErrorPanel: the message, the next step and the request id.
+    expect(within(list).getByRole("alert")).toHaveTextContent("unreachable executed");
+    expect(within(list).getByRole("alert")).toHaveTextContent("What to do");
+    expect(screen.getByRole("button", { name: "What is Fuel?" })).toBeInTheDocument();
+
+    // Clearing the filter shows every run again; clicking a request id filters to it.
+    await userEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Executions" })).getAllByRole("listitem")).toHaveLength(2));
+    await userEvent.click(screen.getByRole("button", { name: "Show only request req-aaa" }));
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Executions" })).getAllByRole("listitem")).toHaveLength(1));
+    expect(screen.getByLabelText("Request id")).toHaveValue("req-aaa");
+  });
+
+  it("says when no execution has the request id", async () => {
+    setup();
+    renderStudio("/functions/f/hello/logs?request=nope");
+    expect(await screen.findByRole("region", { name: "No executions match" })).toBeInTheDocument();
   });
 
   it("polls while Live is on", async () => {

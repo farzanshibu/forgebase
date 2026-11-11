@@ -32,13 +32,12 @@ export default function SubscriptionDetail() {
   const [open, setOpen] = useState<number>();
 
   const refresh = () => { info.reload(); metrics.reload(); dead.reload(); snaps.reload(); };
-  async function run(fn: () => Promise<unknown>, done: string) {
+  async function run(fn: () => Promise<unknown>, announce: () => void) {
     setError(undefined);
     setNotice("");
     try {
       await fn();
-      if (done) notify.saved(done);
-      setNotice(done);
+      announce();
       refresh();
     } catch (e) {
       setError(e);
@@ -142,9 +141,9 @@ export default function SubscriptionDetail() {
             <Sel aria-label="Snapshot" className="ml-2" value={snapPick} onChange={setSnapPick} options={[{ value: "", label: "choose…" }, ...mine.map((x) => ({ value: x.name, label: `${x.name} (cursor ${x.cursor_seq}, ${x.unacked} unacked)` }))]} />
           </label>
           <Button type="submit" disabled={!snapPick}>Restore snapshot</Button>
-          {snapPick && <ConfirmDialog trigger={<Button tone="danger" type="button">Delete snapshot</Button>} title={`Delete snapshot ${snapPick}?`} consequence="You can no longer replay from it." confirmLabel="Delete snapshot" confirmText={snapPick} onConfirm={() => run(async () => { await deleteQueueSnapshot(snapPick); setSnapPick(""); }, "Snapshot deleted")} />}
+          {snapPick && <ConfirmDialog trigger={<Button tone="danger" type="button">Delete snapshot</Button>} title={`Delete snapshot ${snapPick}?`} consequence="You can no longer replay from it." confirmLabel="Delete snapshot" confirmText={snapPick} onConfirm={() => run(async () => { await deleteQueueSnapshot(snapPick); setSnapPick(""); }, () => notify.deleted(`Snapshot ${snapPick}`))} />}
         </form>
-        <form onSubmit={(e) => { e.preventDefault(); void run(() => createQueueSnapshot(snapName.trim(), sub), `Snapshot ${snapName.trim()}`).then(() => setSnapName("")); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
+        <form onSubmit={(e) => { e.preventDefault(); void run(() => createQueueSnapshot(snapName.trim(), sub, s?.tenant ?? undefined), () => notify.created(`Snapshot ${snapName.trim()}`)).then(() => setSnapName("")); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
           <label>New snapshot<Input size="sm" className="ml-2 w-40" value={snapName} onChange={(e) => setSnapName(e.target.value)} /></label>
           <Button type="submit" disabled={!snapName.trim()}>Save snapshot</Button>
         </form>

@@ -59,7 +59,7 @@ export default function Inspector() {
           <label>Subscription
             <Sel aria-label="Subscription" className="ml-2" value={sub} onChange={setSub} options={[{ value: "", label: "choose…" }, ...(subs.data ?? []).filter((s) => !s.push).map((s) => ({ value: s.name, label: `${s.name} (${s.topic})` }))]} />
           </label>
-          <label className="inline-flex items-center gap-1">Most in flight <HelpTip term="ack_deadline" /><Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label>
+          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Most in flight <Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label><HelpTip term="ack_deadline" /></span>
           {live ? <Button onClick={stop}>Stop listening</Button> : <Button type="submit" tone="primary" disabled={!sub}>Listen</Button>}
           {live && <span role="status" className="text-success">Listening on {live}</span>}
         </form>
