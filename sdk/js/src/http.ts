@@ -1,3 +1,4 @@
+import { COMMIT_HEADER, CONSISTENCY_HEADER, CommitTokens, READ_AFTER_HEADER, type Consistency } from "./consistency";
 import { errorFromResponse, InvalidResponseError, NetworkError, parseRetryAfter } from "./errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -59,6 +60,8 @@ export interface RequestOptions {
   anonymous?: boolean;
   /** Override the retry policy for this call. */
   retry?: RetryOptions | false;
+  /** `"strong"` reads this call from the primary; default: the client's `consistency`. */
+  consistency?: Consistency;
 }
 
 /** What the transport needs from the auth layer. */
@@ -79,12 +82,18 @@ export class Transport {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly random: () => number;
   private readonly defaultHeaders: Record<string, string>;
+  /** Commit tokens seen in responses, sent back as `X-ForgeBase-Read-After`. */
+  readonly commitTokens: CommitTokens;
+  /** Default consistency of every call. */
+  consistency: Consistency;
 
   constructor(opts: {
     baseUrl: string;
     fetch?: FetchLike;
     retry?: RetryOptions;
     headers?: Record<string, string>;
+    consistency?: Consistency;
+    commitTokens?: CommitTokens;
   }) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     if (!opts.fetch && typeof globalThis.fetch !== "function") {
@@ -95,6 +104,8 @@ export class Transport {
     this.sleep = opts.retry?.sleep ?? defaultSleep;
     this.random = opts.retry?.random ?? Math.random;
     this.defaultHeaders = opts.headers ?? {};
+    this.consistency = opts.consistency ?? "session";
+    this.commitTokens = opts.commitTokens ?? new CommitTokens();
   }
 
   url(path: string, query?: RequestOptions["query"]): string {
@@ -142,6 +153,9 @@ export class Transport {
         body = JSON.stringify(opts.body);
       }
       if (!opts.anonymous && this.credentials) Object.assign(headers, await this.credentials.headers(method));
+      const readAfter = this.commitTokens.header();
+      if (readAfter) headers[READ_AFTER_HEADER] = readAfter;
+      if ((opts.consistency ?? this.consistency) === "strong") headers[CONSISTENCY_HEADER] = "strong";
       Object.assign(headers, opts.headers);
       const credentialsMode = !opts.anonymous ? this.credentials?.fetchCredentials : undefined;
 
@@ -163,6 +177,8 @@ export class Transport {
         }
         throw new NetworkError(err instanceof Error ? err.message : "network request failed", err);
       }
+      // A failed request may still have committed (a batch, a partial import).
+      this.commitTokens.note(res.headers.get(COMMIT_HEADER));
       if (res.ok) return res;
 
       if (res.status === 401 && !opts.anonymous && !refreshed && this.credentials && (await this.credentials.onUnauthorized(headers))) {

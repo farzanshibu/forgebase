@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, DataService};
-use forgebase_db::{Backend, Database, DbOptions, Statement};
+use forgebase_db::{Backend, Database, Statement};
 use forgebase_entitlements::{
     AlertSink, EntitlementService, FeatureInput, FeatureKind, ManualClock, PlanFeature, PlanInput, QuotaPolicy,
     SubscriptionStatus, SubscriptionSync, UsageAlert, UsageRequest,
@@ -39,7 +39,7 @@ pub struct Env {
     pub jobs: JobService,
     pub clock: ManualClock,
     pub sink: Arc<Recorder>,
-    pub tmp: tempfile::TempDir,
+    pub tmp: forgebase_db::testing::TestDb,
 }
 
 pub fn admin() -> AccessContext {
@@ -84,14 +84,10 @@ impl Env {
     }
 
     pub async fn at(now: i64) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let layout = DataLayout::new(tmp.path().join("data"));
+        let tmp = forgebase_db::testing::test_backend().await;
+        let layout = DataLayout::new(tmp.data_dir().join("data"));
         layout.ensure().unwrap();
-        let cfg = forgebase_core::Config::defaults(tmp.path());
-        let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-            .await
-            .unwrap();
-        db.migrate(Some(&layout.backups_dir())).await.unwrap();
+        let db = tmp.database().clone();
         let backend: Arc<dyn Backend> = Arc::new(db.clone());
         let policy = PolicyService::open(backend.clone()).await.unwrap();
         let data = DataService::new(backend.clone(), policy.authorizer()).await.unwrap();

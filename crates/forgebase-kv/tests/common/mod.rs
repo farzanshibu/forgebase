@@ -14,7 +14,8 @@ use axum::middleware::{self, Next};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, Authorizer, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
+use forgebase_db::testing::{TestDb, test_backend};
 use forgebase_kv::{KvConfig, KvService};
 use serde_json::{Value as Json, json};
 use tower::ServiceExt;
@@ -25,6 +26,7 @@ pub struct Harness {
     pub db: Database,
     pub clock: Arc<AtomicU64>,
     pub tmp: tempfile::TempDir,
+    pub test: TestDb,
 }
 
 pub struct Resp {
@@ -49,15 +51,9 @@ impl Resp {
     }
 }
 
-pub async fn open_db(dir: &std::path::Path) -> Database {
-    let layout = DataLayout::new(dir.join("data"));
-    layout.ensure().unwrap();
-    let cfg = forgebase_core::Config::defaults(dir);
-    let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-        .await
-        .unwrap();
-    db.migrate(Some(&layout.backups_dir())).await.unwrap();
-    db
+/// A migrated database on the backend `FORGEBASE_TEST_BACKEND` selects.
+pub async fn test_db() -> TestDb {
+    test_backend().await
 }
 
 impl Harness {
@@ -67,8 +63,10 @@ impl Harness {
 
     pub async fn with(auth: Arc<dyn Authorizer>, cfg: KvConfig) -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let db = open_db(tmp.path()).await;
+        let test = test_db().await;
+        let db = test.database().clone();
         let layout = DataLayout::new(tmp.path().join("data"));
+        layout.ensure().unwrap();
         let state = AppState::with_authorizer(db.clone(), layout, Arc::clone(&auth))
             .await
             .unwrap();
@@ -116,6 +114,7 @@ impl Harness {
             db,
             clock,
             tmp,
+            test,
         }
     }
 

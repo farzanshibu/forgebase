@@ -1,47 +1,68 @@
 import { useState } from "react";
 import { Route, Routes, useSearchParams } from "react-router-dom";
-import { RouteTabs } from "../../components/controls";
+import { Input } from "panelui-web/input";
 import { kvNamespaces } from "../../api";
-import { useLoad } from "../../hooks";
+import type { KvNamespace } from "../../api";
+import { RouteTabs } from "../../components/controls";
+import { FormField } from "../../components/FormField";
+import { PageHeader } from "../../components/PageHeader";
+import { UseFromCodeButton } from "../../components/UseFromCode";
+import { Button } from "../../components/ui";
+import { useCreateParam, useLoad } from "../../hooks";
+import { validate } from "../../validate";
 import Console from "./Console";
 import KeyBrowser from "./KeyBrowser";
 import PubSub from "./PubSub";
+import Rules from "./Rules";
 import StatsPanel from "./StatsPanel";
-import { Input } from "panelui-web/input";
 
 export default function RedisPage() {
   const [params, setParams] = useSearchParams();
   const ns = params.get("ns") || "default";
   const names = useLoad((s) => kvNamespaces(s).catch(() => []), "kv-namespaces");
-  const [draft, setDraft] = useState(ns);
+  const [creating, setCreating] = useCreateParam();
+  /** The namespace lives in the URL (`?ns=`), so a link or a reload keeps it. */
   const setNs = (v: string) => {
     const p = new URLSearchParams(params);
     p.delete("key");
-    if (v && v !== "default") p.set("ns", v); else p.delete("ns");
+    p.delete("new");
+    if (v) p.set("ns", v); else p.delete("ns");
     setParams(p);
   };
-  const search = ns === "default" ? "" : `?ns=${encodeURIComponent(ns)}`;
+  const search = params.get("ns") ? `?ns=${encodeURIComponent(ns)}` : "";
   return (
     <div>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Redis Studio</h1>
-        <form className="flex items-center gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); setNs(draft.trim()); }}>
-          <label>Namespace
-            <Input size="sm" list="kv-namespaces" className="ml-2 w-40" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => draft.trim() && draft.trim() !== ns && setNs(draft.trim())} />
-          </label>
-          <datalist id="kv-namespaces">{(names.data ?? []).map((n) => <option key={n.name} value={n.name}>{`${n.keys} keys`}</option>)}</datalist>
-        </form>
-      </div>
-      <RouteTabs label="Redis sections" tabs={[{ to: `/redis${search}`, label: "Keys", end: true }, { to: `/redis/console${search}`, label: "Console" }, { to: `/redis/pubsub${search}`, label: "Pub/Sub" }, { to: `/redis/stats${search}`, label: "Memory and stats" }]} className="mt-4" />
+      <PageHeader
+        studio="redis"
+        secondary={<UseFromCodeButton kind="kvNamespace" name={ns} />}
+        primary={<Button tone="primary" onClick={() => setCreating(true)}>New key</Button>}
+      />
+      <NamespaceForm key={ns} ns={ns} names={names.data ?? []} onChange={setNs} />
+      <RouteTabs label="Key-value sections" tabs={[{ to: `/redis${search}`, label: "Keys", end: true }, { to: `/redis/console${search}`, label: "Console" }, { to: `/redis/pubsub${search}`, label: "Pub/Sub" }, { to: `/redis/stats${search}`, label: "Memory and stats" }, { to: `/redis/rules${search}`, label: "Rules" }]} className="mt-4" />
       <div className="mt-6">
         <Routes>
-          <Route index element={<KeyBrowser ns={ns} />} />
+          <Route index element={<KeyBrowser ns={ns} creating={creating} setCreating={setCreating} />} />
           <Route path="console" element={<Console ns={ns} />} />
           <Route path="pubsub" element={<PubSub key={ns} ns={ns} />} />
           <Route path="stats" element={<StatsPanel ns={ns} namespaces={names.data ?? []} />} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in Redis Studio.</p>} />
+          <Route path="rules" element={<Rules ns={ns} />} />
+          <Route path="*" element={<p className="text-muted-foreground">No such page in the Key-value studio.</p>} />
         </Routes>
       </div>
     </div>
+  );
+}
+
+/** The namespace box. Keyed by the namespace in the URL, so a link or a reload resets what is typed. */
+function NamespaceForm({ ns, names, onChange }: { ns: string; names: KvNamespace[]; onChange: (ns: string) => void }) {
+  const [draft, setDraft] = useState(ns);
+  const draftError = draft.trim() && draft.trim() !== ns ? validate.namespaceName(draft.trim()) : undefined;
+  return (
+      <form className="mt-4 flex flex-wrap items-start gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); if (!draftError && draft.trim()) onChange(draft.trim()); }}>
+        <FormField label="Namespace" term="namespace" error={draftError} help={<>Names starting with <code className="font-mono">shared.</code> are shared by every tenant of a realm.</>}>
+          {(p) => <Input {...p} size="sm" list="kv-namespaces" className="w-48" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => draft.trim() && draft.trim() !== ns && !draftError && onChange(draft.trim())} />}
+        </FormField>
+        <datalist id="kv-namespaces">{names.map((n) => <option key={n.name} value={n.name}>{`${n.keys} keys`}</option>)}</datalist>
+      </form>
   );
 }

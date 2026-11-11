@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { listObjects, uploadObject } from "../../api";
 import type { Bucket, ObjectInfo } from "../../api";
-import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { EmptyState } from "../../components/EmptyState";
+import { Pager } from "../../components/Pager";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { when } from "../functions/util";
 import ObjectPanel from "./ObjectPanel";
@@ -42,12 +45,14 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
     );
     return () => ctrl.abort();
   }, [bucket.name, prefix, id, scope]);
+  const [loadingMore, setLoadingMore] = useState(false);
   const more = async () => {
     if (!list?.cursor) return;
+    setLoadingMore(true);
     try {
       const p = await listObjects(bucket.name, { prefix, delimiter: "/", limit: PAGE, cursor: list.cursor });
       setRes({ id, scope, list: { objects: [...list.objects, ...p.objects], prefixes: [...new Set([...list.prefixes, ...p.prefixes])], cursor: p.next_cursor ?? null } });
-    } catch (e) { setRes({ id, scope, list, error: e }); }
+    } catch (e) { setRes({ id, scope, list, error: e }); } finally { setLoadingMore(false); }
   };
 
   // Uploads.
@@ -70,6 +75,7 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
   };
 
   const [folder, setFolder] = useState("");
+  const [over, setOver] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   return (
@@ -84,9 +90,9 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
               </span>
             ))}
           </nav>
-          <ErrorView error={error} />
-          {loading && !error && <Loading what="Loading objects" />}
-          {list && list.objects.length === 0 && list.prefixes.length === 0 && <p className="text-sm text-muted-foreground">This folder is empty.</p>}
+          <ErrorView error={error} onRetry={reload} />
+          {loading && !error && !list && <SkeletonTable rows={4} columns={4} label="Loading objects" />}
+          {list && list.objects.length === 0 && list.prefixes.length === 0 && <EmptyState compact title="This folder is empty" why="Drop files into the upload area below, or upload from your code." />}
           {list && (list.objects.length > 0 || list.prefixes.length > 0) && (
             <Table aria-label="Objects" className="w-full text-left text-sm">
               <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Name</Table.Head><Table.Head>Size</Table.Head><Table.Head>Type</Table.Head><Table.Head>Modified</Table.Head></Table.Row></Table.Header>
@@ -105,13 +111,24 @@ export default function ObjectBrowser({ bucket }: { bucket: Bucket }) {
               </Table.Body>
             </Table>
           )}
-          {list?.cursor && <div className="mt-3"><Button onClick={() => void more()}>Load more</Button></div>}
+          {list && (list.objects.length > 0 || list.prefixes.length > 0) && <Pager mode="more" shown={list.objects.length + list.prefixes.length} hasMore={!!list.cursor} loading={loadingMore} onMore={() => void more()} noun="items" label="More objects" />}
         </Panel>
 
         <Panel title="Upload">
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <Input size="sm" ref={fileInput} type="file" multiple aria-label="Choose files" onChange={(e) => { void upload(e.target.files); e.target.value = ""; }} />
-            <span className="text-muted-foreground">into {prefix || "the bucket root"}; files over 8 MiB upload in resumable chunks.</span>
+          <div
+            aria-label="Drop files here"
+            onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+            onDragLeave={() => setOver(false)}
+            onDrop={(e) => { e.preventDefault(); setOver(false); void upload(e.dataTransfer.files); }}
+            className={over ? "rounded-xl ring-2 ring-primary" : undefined}
+          >
+            <EmptyState
+              compact
+              title="Drop files here or choose files"
+              why={`They go into ${prefix || "the bucket root"}. Files over 8 MiB upload in resumable chunks, so a dropped connection resumes where it stopped.`}
+              action={<Button onClick={() => fileInput.current?.click()}>Choose files</Button>}
+            />
+            <Input size="sm" ref={fileInput} type="file" multiple aria-label="Choose files" className="sr-only" tabIndex={-1} onChange={(e) => { void upload(e.target.files); e.target.value = ""; }} />
           </div>
           <form className="mt-3 flex items-center gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); const f = folder.trim().replace(/^\/+|\/+$/g, ""); if (f) { nav({ prefix: `${prefix}${f}/` }); setFolder(""); } }}>
             <Input size="sm" className="w-44" aria-label="New folder name" placeholder="new folder" value={folder} onChange={(e) => setFolder(e.target.value)} />

@@ -11,7 +11,8 @@ use axum::http::{HeaderMap, Method, Request, StatusCode};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, DataService};
-use forgebase_db::{Backend, Database, DbOptions};
+use forgebase_db::testing::TestDb;
+use forgebase_db::{Backend, Database};
 use forgebase_entitlements::{
     EntitlementService, FeatureInput, FeatureKind, ManualClock, PlanFeature, PlanInput, SubscriptionStatus,
     SubscriptionSync,
@@ -31,6 +32,7 @@ pub struct Env {
     pub clock: ManualClock,
     pub app: Router,
     pub tmp: tempfile::TempDir,
+    pub test: TestDb,
 }
 
 pub fn admin() -> AccessContext {
@@ -61,11 +63,8 @@ impl Env {
         let tmp = tempfile::tempdir().unwrap();
         let layout = DataLayout::new(tmp.path().join("data"));
         layout.ensure().unwrap();
-        let cfg = forgebase_core::Config::defaults(tmp.path());
-        let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-            .await
-            .unwrap();
-        db.migrate(Some(&layout.backups_dir())).await.unwrap();
+        let test = forgebase_db::testing::test_backend().await;
+        let db = test.database().clone();
         let backend: Arc<dyn Backend> = Arc::new(db.clone());
         let policy = PolicyService::open(backend.clone()).await.unwrap();
         let data = DataService::new(backend.clone(), policy.authorizer()).await.unwrap();
@@ -117,6 +116,7 @@ impl Env {
             clock,
             app,
             tmp,
+            test,
         }
     }
 

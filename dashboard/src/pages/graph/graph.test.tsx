@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installGraph } from "../../test/vgMock";
+import { confirmDialog } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -28,6 +29,49 @@ describe("Graph Studio overview", () => {
   });
 });
 
+describe("Graph Studio overview, empty state and rules", () => {
+  it("teaches when the graph is empty and loads a sample of people who know each other", async () => {
+    const { mock, st } = setup();
+    st.nodes.length = 0;
+    st.edges.length = 0;
+    renderStudio("/graph");
+    const region = await screen.findByRole("region", { name: "Your graph is empty" });
+    await userEvent.click(within(region).getByRole("button", { name: "Load sample" }));
+    await waitFor(() => expect(st.nodes.map((n) => n.id)).toEqual(["alice", "bob", "carol", "dave"]));
+    expect(st.edges).toHaveLength(4);
+    expect(mock.bodies["post /api/v1/graph/nodes"]?.[0]).toMatchObject({ id: "alice", label: "person" });
+    expect(mock.bodies["post /api/v1/graph/edges"]?.[0]).toMatchObject({ type: "knows", source: "alice", target: "bob" });
+    expect(mock.problems).toEqual([]);
+  });
+
+  it("has Use from code and a header action in the studio header", async () => {
+    setup();
+    renderStudio("/graph");
+    expect(await screen.findByRole("heading", { level: 1, name: "Graph" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use from code" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "New node" }));
+    expect(await screen.findByRole("form", { name: "New node" })).toBeInTheDocument();
+  });
+
+  it("edits label and edge-type rules from the Graphs tab", async () => {
+    const { mock } = setup();
+    const kinds: string[] = [];
+    mock.on("GET", "/api/v1/policies/resources/{kind}", ({ params }) => { kinds.push(params.kind!); return { status: 200, body: { kind: params.kind, fields: [{ name: "properties", type: "json" }], operations: ["list", "view", "create", "update", "delete"], actions: [], items: [] } }; });
+    renderStudio("/graph");
+    await screen.findByText("4 nodes");
+    await userEvent.type(screen.getByLabelText(/^Label/), "person");
+    await userEvent.click(screen.getByRole("button", { name: "Show rules" }));
+    expect(await screen.findByLabelText("List (scan or search) rule")).toBeInTheDocument();
+    expect(kinds).toContain("graph_label");
+    await pick(screen.getByLabelText("Rules for"), "graph_edge_type");
+    expect(screen.queryByLabelText("List (scan or search) rule")).not.toBeInTheDocument();
+    await userEvent.type(within(screen.getByRole("region", { name: "Graph access rules" })).getByLabelText(/^Edge type/), "KNOWS");
+    await userEvent.click(screen.getByRole("button", { name: "Show rules" }));
+    await screen.findByLabelText("List (scan or search) rule");
+    expect(kinds).toContain("graph_edge_type");
+  });
+});
+
 describe("Graph Studio nodes", () => {
   it("filters by label, creates, edits and deletes a node", async () => {
     const { mock, st } = setup();
@@ -42,15 +86,17 @@ describe("Graph Studio nodes", () => {
     await screen.findByText("alice");
 
     await userEvent.click(screen.getByRole("button", { name: "New node" }));
-    let form = screen.getByRole("form", { name: "New node" });
+    let form = await screen.findByRole("form", { name: "New node" });
     await userEvent.type(within(form).getByLabelText(/^Id/), "dave");
-    await userEvent.type(within(form).getByLabelText("Label"), "Person");
+    await userEvent.type(within(form).getByLabelText(/^Label/), "Person");
+    // the form shows the body it sends, so a wrong field name cannot slip in
+    expect(JSON.parse(within(form).getByLabelText("Request body").textContent!)).toEqual({ id: "dave", label: "Person", properties: {} });
     await userEvent.click(within(form).getByRole("button", { name: "Save node" }));
     await screen.findByText("dave");
 
     await userEvent.click(screen.getByRole("button", { name: "Edit dave" }));
-    form = screen.getByRole("form", { name: "Edit node" });
-    const props = within(form).getByLabelText("Properties (JSON)");
+    form = await screen.findByRole("form", { name: "Edit node dave" });
+    const props = within(form).getByLabelText(/^Properties/);
     await userEvent.clear(props);
     await userEvent.click(props);
     await userEvent.paste('{"age": 41}');
@@ -58,7 +104,7 @@ describe("Graph Studio nodes", () => {
     await waitFor(() => expect(st.nodes.find((n) => n.id === "dave")?.properties).toEqual({ age: 41 }));
 
     await userEvent.click(screen.getByRole("button", { name: "Delete dave" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm delete dave" }));
+    await confirmDialog("Delete node dave?", "Delete node");
     await waitFor(() => expect(screen.queryByText("dave")).not.toBeInTheDocument());
     expect(mock.problems).toEqual([]);
   });
@@ -68,16 +114,15 @@ describe("Graph Studio nodes", () => {
     renderStudio("/graph/nodes");
     await screen.findByText("alice");
     await userEvent.click(screen.getByRole("button", { name: "New node" }));
-    const form = screen.getByRole("form", { name: "New node" });
+    const form = await screen.findByRole("form", { name: "New node" });
     await userEvent.type(within(form).getByLabelText(/^Id/), "alice");
     await userEvent.click(within(form).getByRole("button", { name: "Save node" }));
-    expect(await screen.findByText(/a node with this id exists/)).toBeInTheDocument();
-    const props = within(form).getByLabelText("Properties (JSON)");
-    await userEvent.clear(props);
+    expect(await within(form).findByText(/a node with this id exists/)).toBeInTheDocument();
+    const props = within(form).getByLabelText(/^Properties/);
     await userEvent.click(props);
     await userEvent.paste("{oops");
-    await userEvent.click(within(form).getByRole("button", { name: "Save node" }));
-    expect(await screen.findByText(/Properties is not valid JSON/)).toBeInTheDocument();
+    expect(await within(form).findByText(/Properties is not valid JSON/)).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Save node" })).toBeDisabled();
   });
 
   it("pages with next_after", async () => {
@@ -103,17 +148,17 @@ describe("Graph Studio edges", () => {
     await screen.findByText("e1");
 
     await userEvent.click(screen.getByRole("button", { name: "New edge" }));
-    const form = screen.getByRole("form", { name: "New edge" });
-    await userEvent.type(within(form).getByLabelText("Type"), "LIKES");
-    await userEvent.type(within(form).getByLabelText("Source node id"), "alice");
-    await userEvent.type(within(form).getByLabelText("Target node id"), "carol");
+    const form = await screen.findByRole("form", { name: "New edge" });
+    await userEvent.type(within(form).getByLabelText(/^Type/), "LIKES");
+    await userEvent.type(within(form).getByLabelText(/^Source node id/), "alice");
+    await userEvent.type(within(form).getByLabelText(/^Target node id/), "carol");
     await userEvent.click(within(form).getByRole("button", { name: "Save edge" }));
     await screen.findByText("LIKES");
     expect(mock.bodies["post /api/v1/graph/edges"]?.[0]).toMatchObject({ type: "LIKES", source: "alice", target: "carol", directed: true });
 
     await userEvent.click(screen.getByRole("button", { name: "Edit e4" }));
-    const edit = screen.getByRole("form", { name: "Edit edge" });
-    const props = within(edit).getByLabelText("Properties (JSON)");
+    const edit = await screen.findByRole("form", { name: "Edit edge e4" });
+    const props = within(edit).getByLabelText(/^Properties/);
     await userEvent.clear(props);
     await userEvent.click(props);
     await userEvent.paste('{"since": 2020}');
@@ -121,7 +166,7 @@ describe("Graph Studio edges", () => {
     await waitFor(() => expect(st.edges.find((e) => e.id === "e4")?.properties).toEqual({ since: 2020 }));
 
     await userEvent.click(screen.getByRole("button", { name: "Delete e4" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm delete e4" }));
+    await confirmDialog("Delete edge e4?", "Delete edge");
     await waitFor(() => expect(screen.queryByText("LIKES")).not.toBeInTheDocument());
     expect(mock.problems).toEqual([]);
   });
@@ -131,12 +176,12 @@ describe("Graph Studio edges", () => {
     renderStudio("/graph/edges");
     await screen.findByText("e1");
     await userEvent.click(screen.getByRole("button", { name: "New edge" }));
-    const form = screen.getByRole("form", { name: "New edge" });
-    await userEvent.type(within(form).getByLabelText("Type"), "X");
-    await userEvent.type(within(form).getByLabelText("Source node id"), "ghost");
-    await userEvent.type(within(form).getByLabelText("Target node id"), "alice");
+    const form = await screen.findByRole("form", { name: "New edge" });
+    await userEvent.type(within(form).getByLabelText(/^Type/), "X");
+    await userEvent.type(within(form).getByLabelText(/^Source node id/), "ghost");
+    await userEvent.type(within(form).getByLabelText(/^Target node id/), "alice");
     await userEvent.click(within(form).getByRole("button", { name: "Save edge" }));
-    expect(await screen.findByText(/edge endpoint does not exist/)).toBeInTheDocument();
+    expect(await within(form).findByText(/edge endpoint does not exist/)).toBeInTheDocument();
   });
 });
 

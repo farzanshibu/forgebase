@@ -33,3 +33,12 @@ export function parseCell(field: FieldDef | undefined, text: string): unknown {
 }
 
 export const READ_ONLY_KEYS = ["id", "created", "updated", "_version", "expand"];
+
+export const PER_PAGE = 25;
+
+/** The grid's state as it sits in the URL: `?filter=&sort=&page=&record=`. */
+export function readGridState(p: URLSearchParams) {
+  const page = Number.parseInt(p.get("page") ?? "1", 10);
+  return { filter: p.get("filter") ?? "", sort: p.get("sort") ?? "", page: Number.isFinite(page) && page > 0 ? page : 1, record: p.get("record") ?? "" };
+}
+

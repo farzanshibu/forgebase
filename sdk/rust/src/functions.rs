@@ -35,7 +35,7 @@ impl FunctionsApi {
 
     /// Deploys a WebAssembly module as a new version. `wasm` is the module bytes (the SDK base64-encodes them).
     pub async fn deploy(&self, mut request: DeployRequest, wasm: &[u8]) -> Result<Deployed> {
-        request.wasm = base64::engine::general_purpose::STANDARD.encode(wasm);
+        request.wasm = Some(base64::engine::general_purpose::STANDARD.encode(wasm));
         self.t.json(Req::post("/api/v1/functions").json(&request)?).await
     }
 

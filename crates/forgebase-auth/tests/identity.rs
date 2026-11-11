@@ -22,7 +22,7 @@ fn realm_h(r: &str) -> [(&'static str, &str); 1] {
 /// Creates realm `id` (as the policy API would) and gives it an identity.
 async fn realm(h: &H, admin: &str, id: &str, config: Value) -> Resp {
     h.sql(&format!(
-        "INSERT OR IGNORE INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0)"
+        "INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0) ON CONFLICT DO NOTHING"
     ))
     .await;
     put_realm(h, admin, id, json!({"config": config})).await
@@ -191,7 +191,7 @@ async fn realm_configuration_is_admin_only_and_secrets_are_write_only() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     assert_eq!(r.json["config"]["turnstile"]["secret"], "********");
     let stored = h
-        .count("SELECT COUNT(*) FROM _forgebase_realm_identity WHERE realm_id = 'acme' AND config LIKE '%ts-secret-value%'")
+        .count("SELECT COUNT(*) FROM _forgebase_realm_identity WHERE realm_id = 'acme' AND CAST(config AS TEXT) LIKE '%ts-secret-value%'")
         .await;
     assert_eq!(stored, 0, "secret stored sealed");
     // Sending the mask back keeps the secret.
@@ -882,7 +882,7 @@ async fn ldap_refuses_wrong_passwords_unknown_users_injection_and_empty_password
     );
     assert_eq!(ldap.log().len(), before);
     assert!(
-        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'login' AND detail LIKE '%\"ldap\"%'")
+        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'login' AND CAST(detail AS TEXT) LIKE '%\"ldap\"%'")
             .await
             >= 4
     );

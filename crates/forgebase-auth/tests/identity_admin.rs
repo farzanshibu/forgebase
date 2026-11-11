@@ -16,7 +16,7 @@ const MASK: &str = "********";
 
 async fn make_realm(h: &H, admin: &str, id: &str, config: Value) {
     h.sql(&format!(
-        "INSERT OR IGNORE INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0)"
+        "INSERT INTO _forgebase_realms (id, name, settings, created_at) VALUES ('{id}', '{id}', '{{}}', 0) ON CONFLICT DO NOTHING"
     ))
     .await;
     let r = h
@@ -192,12 +192,12 @@ async fn social_providers_crud_with_write_only_sealed_secrets() {
 
     // Sealed at rest, not plaintext.
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE config LIKE '%s3cret-value%'")
+        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE CAST(config AS TEXT) LIKE '%s3cret-value%'")
             .await,
         0
     );
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE config LIKE '%sealed:%'")
+        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE CAST(config AS TEXT) LIKE '%sealed:%'")
             .await,
         1
     );
@@ -323,7 +323,7 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
 
     // A file defines `gh` too.
-    let auth_dir = h.dir.path().join("auth");
+    let auth_dir = h.dir.data_dir().join("auth");
     std::fs::create_dir_all(&auth_dir).ok();
     std::fs::write(
         auth_dir.join("oauth-providers.json"),
@@ -331,12 +331,12 @@ async fn stored_providers_load_at_boot_and_the_file_wins_and_is_read_only() {
     )
     .unwrap();
 
-    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(h.dir.path());
+    let mut cfg = forgebase_auth::AuthConfig::for_data_dir(h.dir.data_dir());
     cfg.argon2 = forgebase_auth::Argon2Config::insecure_fast_for_tests();
     let again = forgebase_auth::AuthService::open_with_data(
         Arc::new(h.db.clone()),
         Arc::new(forgebase_data::DefaultAuthorizer),
-        h.dir.path(),
+        h.dir.data_dir(),
         cfg,
         None,
     )
@@ -387,7 +387,7 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     assert_eq!(r.json["config"]["bearer_token"], MASK);
     assert!(!r.json.to_string().contains("hook-token"));
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_sms_config WHERE config LIKE '%hook-token%'")
+        h.count("SELECT count(*) FROM _forgebase_sms_config WHERE CAST(config AS TEXT) LIKE '%hook-token%'")
             .await,
         0
     );

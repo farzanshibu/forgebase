@@ -573,8 +573,12 @@ async fn secrets_stay_out_of_debug_output_and_the_database() {
     let (code, state) = idp.authorize(s["authorization_url"].as_str().unwrap());
     assert_eq!(callback(&h, "a", &code, &state).await.status, StatusCode::OK);
     // The state and PKCE verifier are not stored in clear.
-    let bytes = std::fs::read(h.dir.path().join("forgebase.db")).unwrap();
-    let wal = std::fs::read(h.dir.path().join("forgebase.db-wal")).unwrap_or_default();
+    if h.db.kind() == forgebase_db::BackendKind::Postgres {
+        eprintln!("skipped on PostgreSQL: reads the SQLite file");
+        return;
+    }
+    let bytes = std::fs::read(h.dir.data_dir().join("forgebase.db")).unwrap();
+    let wal = std::fs::read(h.dir.data_dir().join("forgebase.db-wal")).unwrap_or_default();
     for blob in [&bytes, &wal] {
         let hay = String::from_utf8_lossy(blob);
         assert!(!hay.contains(&state), "state in database");
@@ -584,27 +588,21 @@ async fn secrets_stay_out_of_debug_output_and_the_database() {
 
 #[tokio::test]
 async fn providers_load_from_the_data_directory_file() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("auth")).unwrap();
+    let tdb = forgebase_db::testing::test_backend().await;
+    let dir = tdb.data_dir();
+    std::fs::create_dir_all(dir.join("auth")).unwrap();
     std::fs::write(
-        dir.path().join("auth/oauth-providers.json"),
+        dir.join("auth/oauth-providers.json"),
         json!({"providers": [{"id": "g", "kind": "google", "client_id": "x", "client_secret": "y"}]}).to_string(),
     )
     .unwrap();
-    let cfg = forgebase_core::Config::defaults(dir.path());
-    let db = forgebase_db::Database::open(forgebase_db::DbOptions::from_config(
-        &cfg.database,
-        dir.path().join("forgebase.db"),
-    ))
-    .await
-    .unwrap();
-    db.migrate(None).await.unwrap();
-    let mut acfg = forgebase_auth::AuthConfig::for_data_dir(dir.path());
+    let db = tdb.database().clone();
+    let mut acfg = forgebase_auth::AuthConfig::for_data_dir(dir);
     acfg.argon2 = forgebase_auth::Argon2Config::insecure_fast_for_tests();
     let auth = forgebase_auth::AuthService::open_with_data(
         std::sync::Arc::new(db),
         std::sync::Arc::new(forgebase_auth::data::DefaultAuthorizer),
-        dir.path(),
+        dir,
         acfg,
         None,
     )

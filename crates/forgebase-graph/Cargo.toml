@@ -22,6 +22,7 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+forgebase-db = { workspace = true, features = ["testing"] }
 futures-util.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

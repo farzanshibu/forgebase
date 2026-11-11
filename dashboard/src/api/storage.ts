@@ -15,6 +15,8 @@ export const PERMISSIONS: Permission[] = ["read", "write", "admin"];
 export interface Bucket {
   name: string; visibility: Visibility; versioning: boolean; max_object_bytes?: number | null;
   allowed_content_types?: string[] | null; owner: string; created_at: string; updated_at: string;
+  /** Set on a tenant bucket (FB-140): its name is `<tenant>/<name>`. Absent or null on an instance-wide bucket. */
+  tenant?: string | null;
 }
 export interface BucketInput { name: string; visibility?: Visibility; versioning?: boolean; max_object_bytes?: number | null; allowed_content_types?: string[] | null }
 export type BucketPatch = Partial<Omit<BucketInput, "name">>;
@@ -33,7 +35,11 @@ export interface UploadSession {
 export interface SignedUrl { url: string; method: "GET" | "PUT"; expires_at: string }
 export interface SignRequest { key: string; method?: "GET" | "PUT"; expires_in?: number; version_id?: string; download_as?: string; content_type?: string }
 export interface ReconcileReport { uploads_aborted: number; staging_deleted: number; orphan_blobs_deleted: number; unreferenced_blobs_deleted: number; missing_blobs: string[] }
-export interface StorageStats { buckets: number; objects: number; versions: number; logical_bytes: number; stored_bytes: number; open_uploads: number }
+export interface StorageStats {
+  buckets: number; objects: number; versions: number; logical_bytes: number; stored_bytes: number; open_uploads: number;
+  /** `instance` (the whole server) or `tenant` (the caller's tenant only), FB-140. */
+  scope?: "instance" | "tenant" | string; tenant?: string | null;
+}
 /** Space used by one bucket (`GET .../buckets/{bucket}/usage`): `objects`/`logical_bytes` count current objects, `versions`/`version_bytes` every version. */
 export interface BucketUsage { bucket: string; objects: number; versions: number; logical_bytes: number; version_bytes: number }
 export interface ObjectListOptions { prefix?: string; delimiter?: string; limit?: number; cursor?: string | null }
@@ -51,7 +57,10 @@ export const STORAGE_OPERATIONS = [
 export const storageStats = (signal?: AbortSignal) => request<StorageStats>(`${S}/stats`, { signal });
 export const reconcileStorage = () => send<ReconcileReport>("POST", `${S}/maintenance/reconcile`);
 export const listBuckets = async (signal?: AbortSignal) => (await request<{ items: Bucket[] }>(`${S}/buckets`, { signal })).items;
-export const createBucket = (b: BucketInput) => send<Bucket>("POST", `${S}/buckets`, b);
+/** `tenant` creates the bucket in that tenant (header `X-ForgeBase-Tenant`); without it the caller's own tenant, or an instance-wide bucket for an administrator. */
+export const createBucket = (b: BucketInput, tenant?: string) => send<Bucket>("POST", `${S}/buckets`, b, tenant ? { "X-ForgeBase-Tenant": tenant } : undefined);
+/** Revokes every signed URL issued so far (administrators, FB-140). */
+export const rotateSigningKey = () => send<void>("POST", `${S}/maintenance/rotate-signing-key`);
 export const getBucket = (name: string, signal?: AbortSignal) => request<Bucket>(`${S}/buckets/${enc(name)}`, { signal });
 export const updateBucket = (name: string, p: BucketPatch) => send<Bucket>("PATCH", `${S}/buckets/${enc(name)}`, p);
 export const deleteBucket = (name: string, force = false) => send<void>("DELETE", `${S}/buckets/${enc(name)}${force ? "?force=true" : ""}`);
@@ -146,9 +155,19 @@ export async function uploadObject(bucket: string, key: string, file: Blob, o: U
   }
 }
 
-/** Byte limit of the `storage.bytes` entitlement for the caller's subject (`null` = unlimited or not reported). */
-export async function storageQuotaBytes(signal?: AbortSignal): Promise<number | null> {
-  const e = await request<{ features?: Record<string, { enabled?: boolean; limit?: number | null }> }>("/api/v1/entitlements", { signal });
+/**
+ * Byte limit of the `storage.bytes` entitlement of a subject. Entitlements belong to a subject (an organization or a
+ * signed-in user), so with no `subject` nothing is asked: an administrator has none, and the server would answer
+ * `400 subject_required` (A-21). `"caller"` asks for the caller's own; anything else is `org:<id>` or a principal key.
+ * `null` means unlimited or not reported.
+ */
+export async function storageQuotaFor(subject: string | null | undefined, signal?: AbortSignal): Promise<number | null> {
+  if (!subject) return null;
+  const q = subject === "caller" ? "" : `?subject=${enc(subject)}`;
+  const e = await request<{ features?: Record<string, { enabled?: boolean; limit?: number | null }> }>(`/api/v1/entitlements${q}`, { signal });
   const g = e.features?.["storage.bytes"];
   return g && typeof g.limit === "number" ? g.limit : null;
 }
+
+/** The caller's own quota. Kept for Overview (FB-99); it asks the server even for an administrator, which answers 400: prefer `storageQuotaFor` with the session's subject. */
+export const storageQuotaBytes = (signal?: AbortSignal) => storageQuotaFor("caller", signal);

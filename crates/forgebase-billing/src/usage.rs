@@ -120,7 +120,7 @@ impl BillingService {
                 }
                 t.exec(
                     "INSERT INTO _forgebase_billing_cursors (name, seq, updated_at) VALUES (?1, ?2, ?3)
-                     ON CONFLICT (name) DO UPDATE SET seq = MAX(seq, excluded.seq), updated_at = excluded.updated_at",
+                     ON CONFLICT (name) DO UPDATE SET seq = CASE WHEN excluded.seq > _forgebase_billing_cursors.seq THEN excluded.seq ELSE _forgebase_billing_cursors.seq END, updated_at = excluded.updated_at",
                     vec![USAGE_CURSOR.into(), last.into(), now.into()],
                 )
                 .await?;

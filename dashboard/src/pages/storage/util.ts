@@ -1,3 +1,5 @@
+import type { Bucket } from "../../api";
+
 /** The part of a key after its folder prefix. */
 export function baseName(key: string, prefix = ""): string {
   const rest = key.startsWith(prefix) ? key.slice(prefix.length) : key;
@@ -45,3 +47,7 @@ export function saveBlob(blob: Blob, name: string): void {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
+
+/** Where a bucket lives: one tenant, or the whole instance (FB-140: a tenant's buckets are stored as `<tenant>/<name>`). */
+export const bucketScope = (b: Bucket) => (b.tenant ? { label: b.tenant, text: `Tenant ${b.tenant}` } : { label: "Instance", text: "Instance-wide: every tenant's rules apply to it" });
+

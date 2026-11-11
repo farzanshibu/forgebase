@@ -40,7 +40,7 @@ use sqlx::{Arguments, AssertSqlSafe, Column, Connection, Executor, Postgres, Row
 
 use crate::backend::{Backend, BoxFuture, ExecResult, PlanStep, Rows, SlowQuery, Statement, TxMode, Value, WriteTx};
 use crate::dialect::{Dialect, PgDialect};
-use crate::routing::{Lsn, PrimaryOnly, ReadRequest, ReadRouter, ReadTarget};
+use crate::routing::{Lsn, LsnWait, PrimaryOnly, ReadRequest, ReadRouter, ReadTarget};
 use crate::slow_log::SlowLog;
 use crate::sqlite_backend::changes_schema;
 use crate::{
@@ -59,6 +59,8 @@ const STATEMENT_CACHE: usize = 512;
 const SQL_CACHE: usize = 4096;
 /// Oldest server major version accepted (ADR-0028 decision 1).
 const MIN_SERVER_VERSION: u32 = 160_000;
+/// First server major version with `WAIT FOR LSN` (ADR-0029 §2.6).
+const WAIT_FOR_LSN_VERSION: u32 = 190_000;
 
 /// Handle to an open PostgreSQL database. Cheap to clone.
 #[derive(Debug, Clone)]
@@ -72,6 +74,10 @@ struct PgInner {
     reader: ReadPools,
     /// WAL position after the latest commit (0 = none yet).
     last_commit_lsn: AtomicU64,
+    /// `server_version_num` at open.
+    server_version: u32,
+    /// `WAIT FOR LSN` failed to parse once: the engine lacks it.
+    no_wait_for: std::sync::atomic::AtomicBool,
     /// URL without the password, for messages.
     location: String,
     managed: bool,
@@ -184,6 +190,8 @@ impl PgDatabase {
                     router: Arc::new(PrimaryOnly),
                 },
                 last_commit_lsn: AtomicU64::new(0),
+                server_version: version,
+                no_wait_for: std::sync::atomic::AtomicBool::new(false),
                 location,
                 managed,
                 read_only: opts.read_only,
@@ -717,6 +725,47 @@ impl PgDatabase {
             .await
             .map_err(|e| self.classify(e))?;
         text.parse().map_err(DbError::Statement)
+    }
+}
+
+impl PgDatabase {
+    /// `server_version_num` of the server (`180003`).
+    pub(crate) fn server_version_num(&self) -> u32 {
+        self.inner.server_version
+    }
+
+    /// Waits until this server (a standby) has replayed `lsn`, at most
+    /// `timeout`, with `WAIT FOR LSN` (PostgreSQL 19 and newer; outside a
+    /// transaction block, on a read connection). `Unsupported` on older
+    /// engines and once the command failed to parse.
+    pub(crate) async fn wait_for_lsn(&self, lsn: Lsn, timeout: Duration) -> Result<LsnWait, DbError> {
+        if self.inner.server_version < WAIT_FOR_LSN_VERSION || self.inner.no_wait_for.load(Ordering::Acquire) {
+            return Ok(LsnWait::Unsupported);
+        }
+        let mut conn = self
+            .inner
+            .reader
+            .primary
+            .acquire()
+            .await
+            .map_err(|e| self.classify(e))?;
+        let ms = timeout.as_millis().max(1);
+        // The LSN is formatted from an integer: no user text in the SQL.
+        let sql = format!("WAIT FOR LSN '{lsn}' WITH (TIMEOUT '{ms}ms', NO_THROW)");
+        match sqlx::raw_sql(AssertSqlSafe(sql)).fetch_optional(&mut *conn).await {
+            Ok(row) => {
+                let status = row.and_then(|r: PgRow| r.try_get::<String, _>(0).ok());
+                Ok(match status.as_deref() {
+                    None | Some("success") => LsnWait::Reached,
+                    Some(_) => LsnWait::TimedOut,
+                })
+            }
+            Err(e) if matches!(error::sqlstate(&e).as_deref(), Some("42601" | "42704" | "0A000")) => {
+                self.inner.no_wait_for.store(true, Ordering::Release);
+                Ok(LsnWait::Unsupported)
+            }
+            Err(e) => Err(self.classify(e)),
+        }
     }
 }
 

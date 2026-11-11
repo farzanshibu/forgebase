@@ -2848,6 +2848,94 @@ AND role <> 'admin')`; `revoke_key` keeps its `?6 OR …` boolean parameter
 (an integer on SQLite; FB-145 ports it with the rest of the file).
 Tests: `crates/forgebase-server/tests/security_fb137.rs`.
 
+## Addendum (FB-147): KV, graph, vector, storage and functions on PostgreSQL
+
+Written 2026-11-11 by FB-147. The five crates run on both backends: each
+`tests/common` helper uses `forgebase_db::testing::test_backend()`, and the
+suites of `forgebase-kv`, `-graph`, `-vector`, `-storage` and `-functions`
+pass with `FORGEBASE_TEST_BACKEND=sqlite` and `=postgres` (PostgreSQL 18.6
+with pgvector). No migration.
+
+**What was SQLite-only, and what it became.**
+- *Id lists*: every `IN (SELECT value FROM json_each(?))` goes through
+  `Dialect::in_json_list` (graph, vector ids). Vector item keys are integers,
+  so a local helper casts the elements to `bigint` on PostgreSQL
+  (`key = ANY (SELECT CAST(jsonb_array_elements_text(…) AS bigint))`): the key
+  stays a plain bigint comparison.
+- *Graph walk*: the PostgreSQL form has **one** reference to the recursive
+  term. The steps (forward, backward, undirected) are a `CROSS JOIN LATERAL
+  (… UNION …)` inside it; the row cap is a `LIMIT` on `SELECT … FROM walk`
+  **outside** the CTE (rows are produced on demand, so it stops the walk);
+  `UNION` (not `ALL`) with the `w.depth < ?3` bound is the cycle guard. The
+  per-step node join and the edge condition of FB-139 are unchanged, so label
+  rules stay pre-filters. The SQLite text is kept as it was (it is measured).
+  The anchor is `CAST(?2 AS text)`.
+- *Property filters*: `n.properties -> ?key = CAST(?json AS jsonb)` on
+  PostgreSQL, so `true` is not `1`; the SQLite `json_extract` form is kept.
+- *Merge patch*: `json_patch` has no PostgreSQL twin. Node and edge property
+  patches (RFC 7396) are applied in Rust inside the write transaction and the
+  result is written back, on both backends.
+- *Optional parameters*: `(CAST(?n AS text) IS NULL OR col = ?n)` in the node
+  and edge lists and the walk (FB-143's rule: PostgreSQL cannot type a bare
+  `?n IS NULL`).
+- *Vector hybrid search*: the keyword side reads `_forgebase_vector_fts`
+  (FB-133): `f.fts @@ websearch_to_tsquery('simple', _forgebase_unaccent(?))`,
+  ranked by `ts_rank` (higher is better; `bm25` is lower-is-better, so the sign
+  is handled per backend), joined to the items on `rowid`. The caller's rule and
+  filter stay ANDed into the keyword query as pre-filters (FB-139). The query
+  text for PostgreSQL is built by `match_query`: quoted words joined by `or` or
+  a space; FTS5 operators stay literal. Ranks differ from bm25 (documented in
+  §7.4). The vector index itself (USearch over canonical `bytea`) is the
+  portable path on both backends, as the plan says; pgvector as the PostgreSQL
+  engine is FB-162 (`VectorService::item_rule(…).compile(b, alias)` is the
+  pre-filter hook it needs).
+- *Storage*: `ON CONFLICT … DO UPDATE SET refcount = refcount + 1` was
+  ambiguous on PostgreSQL (the target table is named); `MAX(a, b)` (scalar)
+  became a `CASE`. The rest was already portable (`INSERT … ON CONFLICT`,
+  `substr`, FB-140's jsonb folders and `CAST(?n AS jsonb)` in the rule check).
+- *Functions*: the version-size query uses `octet_length` on PostgreSQL
+  (`CAST(source AS BLOB)` is SQLite-only). The rest of the SQL (cursors,
+  secrets, versions) was portable.
+- *KV*: no SQL change; the flush upsert already uses the scope key
+  `(tenant, namespace, key)` and ran unchanged.
+
+**Found by FB-142, fixed here.**
+1. *`scenario_18` (WASM `kv incr`, status 7)* was a host bug, not a test bug:
+   FB-138 refuses `fn.<name>` to non-privileged callers and says functions reach
+   it "as the system context in the caller's tenant", which the JavaScript host
+   already did. The WASM host called KV as the function's own non-privileged
+   identity. It now uses the system context with the caller's tenant; the test
+   is unchanged.
+2. *`run_after_hooks` double delivery*: the cursor was read, advanced and stored
+   with no lock, so a manual call racing the 250 ms task re-read the old cursor.
+   A `tokio::sync::Mutex` is held for the whole pass; a second caller waits and
+   starts from the stored cursor. Test
+   `concurrent_after_hook_passes_deliver_each_event_once` (three racing passes,
+   12 events: 36 deliveries before, 12 now). Delivery is still at-least-once
+   across a crash between the hook and the cursor write.
+
+**Deviations.**
+- `storage_quota_exceeded_is_429_and_deletes_give_it_back` returns early on
+  PostgreSQL: the usage counters are in `forgebase-entitlements` (error
+  `operator is not unique: unknown + unknown`), which FB-145 ports.
+- The index-name assertion of the 10 000-edge graph test is backend specific:
+  SQLite must use `_out`/`_in`; PostgreSQL chooses among the three edge indexes
+  by statistics, so the test asserts an index plan with no sequential scan.
+- Server suites use their own `security_common` harness, outside this
+  package's files; they were run unchanged.
+
+**For FB-152 (native RLS).** Graph and vector rules are SQL conditions over
+real columns (`GraphAccess::node_sql/edge_sql`, `ItemRule::compile`); a native
+policy can reuse them. The keyword query joins `_forgebase_vector_items`
+through the `ITEMS` subselect, so a policy on the items table applies to it.
+**For FB-160/FB-161 (AGE and the extension layer).** The canonical graph store
+stays `_forgebase_graph_*`; read a derived AGE graph through
+`GraphService::access` (FB-139). The lateral walk is the reference result an
+AGE traversal must match, including `UNION` de-duplication and the depth bound.
+**For FB-163 (openCypher).** Property filters compare typed jsonb, so Cypher
+`WHERE n.p = true` should compile the same way; merge patches are applied in
+Rust, not SQL.
+
 ## Addendum (FB-146): jobs, queues and realtime on PostgreSQL
 
 Written 2026-11-11 by FB-146. `forgebase-jobs`, `forgebase-queue` and
@@ -2996,3 +3084,17 @@ allowed by the census only while it runs `SELECT forgebase.fire_schedule(…)`
 alone; the command must be exactly that. **For FB-157 (concurrent
 writers).** The census and cursor tests fail by design once a second writer
 exists; they are the gate to replace with per-set fences.
+
+## Addendum: FB-145 — auth, policy, customize, credits, entitlements and billing on PostgreSQL
+
+No new migration. The six crates' SQL now runs unchanged in meaning on both backends.
+
+- **Upserts.** `INSERT OR IGNORE` became `INSERT ... ON CONFLICT DO NOTHING`; `INSERT OR REPLACE` (suspensions, account status) became `ON CONFLICT (pk) DO UPDATE SET` for every column. In `DO UPDATE` the target's own columns are qualified with the table name (`next`, `attempts`, `product_id`, ...): PostgreSQL calls an unqualified one ambiguous.
+- **Scalar `MAX(a, b)` / `MIN(a, b)`** exist only in SQLite. They are now `CASE WHEN ... END` (`updated_at` bumps, cursors, `synced_version`, pack `remaining`, lockout `locked_until`), with `CAST(?N AS BIGINT)` on the parameter.
+- **Typed parameters.** PostgreSQL cannot type a parameter that only appears in `?N IS NULL` or in arithmetic (`?5 + ?6`, `?4 - ?1`). Every `?N IS [NOT] NULL OR col = ?N` filter is `CAST(?N AS TEXT|BIGINT) IS NULL OR ...`. Integer booleans bound as parameters (`?6 OR`, `NOT ?3`) are `CAST(?N AS BIGINT) = 1|0`.
+- **`col IS ?N`** (a NULL-safe compare against a parameter) is `IS NOT DISTINCT FROM ?N`, which SQLite 3.39+ also accepts.
+- **JSON.** `json_each(scopes)` in the OIDC logout path goes through `Dialect::json_array_elements`. The backend already encodes text parameters into `jsonb` columns, so no write needed a cast.
+- **Credits ledger.** The entry `seq` comes from `INSERT ... RETURNING seq` instead of `last_insert_id`, which is `None` on PostgreSQL.
+- **Audit filter.** `substr(event, 1, length(?1))` casts `?1` to text.
+- **Test harnesses.** All six crates' `tests/common` open the database with `forgebase_db::testing::test_backend()`, so `FORGEBASE_TEST_BACKEND=sqlite|postgres` selects the backend (dev-dependency `forgebase-db` with feature `testing`). Auth tests that restart a service reopen the same database through `TestDb::options()`. Tests that peeked at SQL specifics now use the dialect: `introspect_tables()` for the plaintext-secret scan, `CAST(jsonb_column AS TEXT) LIKE`, `ON CONFLICT DO NOTHING`. The append-only ledger test rolls back after each refused statement (PostgreSQL aborts the transaction). The social-login test that reads the SQLite file skips on PostgreSQL.
+- **Not ported / depends on others.** Seven tests that run the job queue (customize email deliveries x4, credits maintenance expiry, entitlements alert delivery, and the auth secret-dump test that needed the `forgebase-db` statement fix) pass only with FB-146's `forgebase-jobs` and `forgebase-db` changes (`rowid` ordering, statement preparation). They were verified green on a throwaway merge of `agent/worker-fb146` and fail on this branch alone until FB-146 merges. The entitlements quota `UPDATE` in `usage.rs` is identical to FB-146's version (same text, to merge without a conflict).

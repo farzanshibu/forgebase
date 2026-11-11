@@ -305,8 +305,9 @@ impl CustomizeService {
                 ));
             }
             tx.exec(
-                "INSERT OR IGNORE INTO _forgebase_agreement_acceptances (id, realm, principal, kind, version, accepted_at, ip, user_agent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO _forgebase_agreement_acceptances (id, realm, principal, kind, version, accepted_at, ip, user_agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT DO NOTHING",
                 vec![
                     new_id("acc").into(),
                     realm.clone().into(),

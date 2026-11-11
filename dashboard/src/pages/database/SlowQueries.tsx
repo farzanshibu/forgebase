@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { clearSlowQueries, setSlowThreshold, slowQueries } from "../../api";
 import { useLoad } from "../../hooks";
-import { Button, ConfirmButton, ErrorView, Loading } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button, ErrorView } from "../../components/ui";
+import { notify } from "../../toaster";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
 
@@ -24,18 +28,24 @@ export default function SlowQueries() {
     <div className="space-y-4">
       <ErrorView error={error} />
       <ErrorView error={problem} />
-      {loading && !data && !error && <Loading what="Loading slow queries" />}
+      {loading && !data && !error && <SkeletonTable rows={3} columns={4} label="Loading slow queries" />}
       {data && (
         <>
           <div className="flex flex-wrap items-end gap-3 text-sm">
             <span className="text-muted-foreground">Statements slower than <strong className="text-foreground">{data.threshold_ms} ms</strong> are logged.</span>
             <Input size="sm" aria-label="Threshold ms" className="w-24" inputMode="numeric" value={threshold} onChange={(e) => setThreshold(e.target.value)} placeholder="ms" />
-            <Button disabled={!/^\d+$/.test(threshold)} onClick={() => void act(() => setSlowThreshold(Number(threshold)))}>Set threshold</Button>
+            <Button disabled={!/^\d+$/.test(threshold)} onClick={() => void act(async () => { await setSlowThreshold(Number(threshold)); notify.saved("Threshold"); })}>Set threshold</Button>
             <Button onClick={reload}>Refresh</Button>
-            <ConfirmButton label="Clear log" disabled={data.items.length === 0} onConfirm={() => void act(clearSlowQueries)} />
+            <ConfirmDialog
+              trigger={<Button tone="danger" disabled={data.items.length === 0}>Clear log</Button>}
+              title="Clear the slow-query log?"
+              consequence="The recorded statements and the index recommendations built from them are removed."
+              confirmLabel="Clear log"
+              onConfirm={async () => { await clearSlowQueries(); notify.deleted("Slow-query log"); reload(); }}
+            />
           </div>
           {data.items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No slow queries recorded.</p>
+            <EmptyState compact title="No slow queries recorded" why={`Statements that take longer than ${data.threshold_ms} ms are logged here, so you can see what to index.`} />
           ) : (
             <Table className="w-full text-left text-sm">
               <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">SQL</Table.Head><Table.Head>Duration</Table.Head><Table.Head>Rows</Table.Head><Table.Head>When</Table.Head></Table.Row></Table.Header>

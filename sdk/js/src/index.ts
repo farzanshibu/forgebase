@@ -24,6 +24,8 @@ export type {
   ChannelMessage, PresenceEvent, PresenceMember, RealtimeConfig, RealtimeEvent, RealtimeHandler, RealtimeState, RealtimeTransport,
   RecordEvent, ResetEvent, SubscribeOptions, Subscription, TokenSource, WebSocketCtor, WebSocketLike,
 } from "./realtime";
+export { COMMIT_HEADER, CONSISTENCY_HEADER, CommitTokens, READ_AFTER_HEADER } from "./consistency";
+export type { Consistency } from "./consistency";
 export { Transport, DEFAULT_RETRY } from "./http";
 export type { FetchLike, RequestOptions, RetryOptions } from "./http";
 export {

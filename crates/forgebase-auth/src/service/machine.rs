@@ -375,7 +375,7 @@ impl AuthService {
         let scope = self.admin_scope(caller)?;
         let r = read(
             self.data().backend(),
-            "SELECT * FROM _forgebase_service_accounts WHERE id = ?1 AND (?2 IS NULL OR (realm = ?2 AND role <> 'admin'))",
+            "SELECT * FROM _forgebase_service_accounts WHERE id = ?1 AND (CAST(?2 AS TEXT) IS NULL OR (realm = ?2 AND role <> 'admin'))",
             vec![t(id), ot(scope.realm().map(str::to_owned))],
         )
         .await?;
@@ -390,7 +390,7 @@ impl AuthService {
         let scope = self.admin_scope(caller)?;
         let r = read(
             self.data().backend(),
-            "SELECT * FROM _forgebase_service_accounts WHERE (?1 IS NULL OR (realm = ?1 AND role <> 'admin'))
+            "SELECT * FROM _forgebase_service_accounts WHERE (CAST(?1 AS TEXT) IS NULL OR (realm = ?1 AND role <> 'admin'))
              ORDER BY created_at, id",
             vec![ot(scope.realm().map(str::to_owned))],
         )
@@ -607,8 +607,8 @@ impl AuthService {
         let r = read(
             self.data().backend(),
             &format!(
-                "SELECT {KEY_COLS} FROM _forgebase_auth_api_keys WHERE kind = 'api_key' AND (?1 IS NULL OR owner_id = ?1)
-                   AND (?2 IS NULL OR owner_id IN
+                "SELECT {KEY_COLS} FROM _forgebase_auth_api_keys WHERE kind = 'api_key' AND (CAST(?1 AS TEXT) IS NULL OR owner_id = ?1)
+                   AND (CAST(?2 AS TEXT) IS NULL OR owner_id IN
                         (SELECT id FROM _forgebase_service_accounts WHERE realm = ?2 AND role <> 'admin'))
                  ORDER BY created_at DESC, id"
             ),
@@ -640,7 +640,7 @@ impl AuthService {
                 &format!(
                     "UPDATE _forgebase_auth_api_keys SET revoked_at = ?2
                      WHERE id = ?1 AND revoked_at IS NULL
-                       AND (?6 OR (kind = 'pat' AND owner_type = ?3 AND collection IS ?4 AND owner_id = ?5) OR {realm_sql})
+                       AND (CAST(?6 AS BIGINT) = 1 OR (kind = 'pat' AND owner_type = ?3 AND collection IS NOT DISTINCT FROM ?4 AND owner_id = ?5) OR {realm_sql})
                      RETURNING kind"
                 ),
                 params,
@@ -706,7 +706,7 @@ impl AuthService {
             self.data().backend(),
             &format!(
                 "SELECT {KEY_COLS} FROM _forgebase_auth_api_keys
-                 WHERE kind = 'pat' AND owner_type = ?1 AND collection IS ?2 AND owner_id = ?3
+                 WHERE kind = 'pat' AND owner_type = ?1 AND collection IS NOT DISTINCT FROM ?2 AND owner_id = ?3
                  ORDER BY created_at DESC, id"
             ),
             vec![t(st), ot(coll), t(id)],

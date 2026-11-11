@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi, envelope } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installKv } from "../../test/kvMock";
+import { confirmDialog } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -51,10 +52,10 @@ describe("Redis key browser", () => {
     renderStudio("/redis");
     await screen.findByRole("list", { name: "Keys" });
     expect(names()).toHaveLength(50);
-    expect(screen.getByText(/50 keys shown \(more available\)/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Load more keys" }));
+    expect(screen.getByText("50 keys shown")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(names()).toHaveLength(67));
-    expect(screen.queryByRole("button", { name: "Load more keys" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
   it("says when nothing matches", async () => {
@@ -63,23 +64,50 @@ describe("Redis key browser", () => {
     await screen.findByRole("list", { name: "Keys" });
     await userEvent.type(screen.getByLabelText("Pattern"), "zzz*");
     await userEvent.click(screen.getByRole("button", { name: "Apply filter" }));
-    expect(await screen.findByText("No keys match in namespace default.")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No keys match" })).toBeInTheDocument();
   });
 
-  it("creates a string key and opens it; flushes a namespace after confirmation", async () => {
+  it("creates a string key from the header, opens it, and flushes the namespace only after its name is typed", async () => {
     const { st } = setup();
     renderStudio("/redis?ns=other");
     await screen.findByRole("list", { name: "Keys" });
-    await userEvent.type(screen.getByLabelText("New key name"), "fresh");
-    await userEvent.type(screen.getByLabelText("New key value"), "v1");
-    await userEvent.click(screen.getByRole("button", { name: "Create key" }));
+    await userEvent.click(screen.getByRole("button", { name: "New key" }));
+    const form = await screen.findByRole("form", { name: "New key" });
+    await userEvent.type(within(form).getByLabelText(/^Key/), "fresh");
+    await userEvent.type(within(form).getByLabelText("Value"), "v1");
+    await userEvent.type(within(form).getByLabelText(/^Expire after/), "30");
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
     expect(await screen.findByLabelText("String value")).toHaveValue("v1");
-    expect(st.ns.other!.fresh).toMatchObject({ type: "string", value: "v1" });
+    expect(st.ns.other!.fresh).toMatchObject({ type: "string", value: "v1", ttl_ms: 30_000 });
 
     await userEvent.click(screen.getByRole("button", { name: "Flush namespace other" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm flush namespace other" }));
-    expect(await screen.findByText("No keys match in namespace other.")).toBeInTheDocument();
+    const dialog = await screen.findByRole("alertdialog", { name: "Flush namespace other?" });
+    expect(within(dialog).getByRole("button", { name: "Flush namespace" })).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/to confirm/), "other");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Flush namespace" }));
+    expect(await screen.findByRole("region", { name: "No keys in other yet" })).toBeInTheDocument();
     expect(st.ns.other).toEqual({});
+  });
+
+  it("keeps the namespace in the URL and validates the name as you type", async () => {
+    setup();
+    renderStudio("/redis?ns=other");
+    await screen.findByRole("list", { name: "Keys" });
+    expect(screen.getByLabelText("Namespace")).toHaveValue("other");
+    expect(screen.getByRole("tab", { name: "Console" })).toHaveAttribute("href", "/redis/console?ns=other");
+    const ns = screen.getByLabelText("Namespace");
+    await userEvent.clear(ns);
+    await userEvent.type(ns, "bad name");
+    expect(await screen.findByText(/Use letters, digits, dots, colons, dashes or underscores/)).toBeInTheDocument();
+  });
+
+  it("is called Key-value, says it is Redis compatible, and offers Use from code for the namespace", async () => {
+    setup();
+    renderStudio("/redis");
+    expect(await screen.findByRole("heading", { level: 1, name: "Key-value" })).toBeInTheDocument();
+    expect(screen.getByText(/Redis compatible/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Use from code" }));
+    expect(await screen.findByText(/api\/v1\/kv\/default/)).toBeInTheDocument();
   });
 });
 
@@ -220,8 +248,8 @@ describe("Redis key viewers and editors", () => {
     renderStudio("/redis?key=greeting");
     await screen.findByLabelText("String value");
     await userEvent.click(screen.getByRole("button", { name: "Delete key" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm delete key" }));
-    expect(await screen.findByText("Select a key to view and edit it.")).toBeInTheDocument();
+    await confirmDialog("Delete key greeting?", "Delete key");
+    expect(await screen.findByRole("region", { name: "Select a key" })).toBeInTheDocument();
     expect(st.ns.default!.greeting).toBeUndefined();
     await waitFor(() => expect(names()).not.toContain("greeting"));
   });
@@ -229,7 +257,7 @@ describe("Redis key viewers and editors", () => {
   it("reports a key that does not exist and a wrong-type conflict", async () => {
     const { mock } = setup();
     renderStudio("/redis?key=nope");
-    expect(await screen.findByText(/no longer exists/)).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Key nope is gone" })).toBeInTheDocument();
     mock.custom = mock.custom.filter((c) => !c.template.endsWith("/hashes/{key}/set"));
     mock.on("POST", "/api/v1/kv/{ns}/hashes/{key}/set", () => envelope(409, "kv_wrong_type", "wrong type"));
   });
@@ -314,7 +342,7 @@ describe("Redis Pub/Sub inspector", () => {
     await userEvent.click(screen.getByRole("button", { name: "Stop listening" }));
     expect(await screen.findByRole("button", { name: "Listen" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear" }));
-    expect(screen.getByText("No messages yet.")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "No messages yet" })).toBeInTheDocument();
   });
 
   it("lists channels with live subscribers and fills the channel field from one", async () => {
@@ -371,5 +399,23 @@ describe("Redis memory and stats", () => {
     mock.on("GET", "/api/v1/kv/_info", () => envelope(403, "forbidden", "administrators only"));
     renderStudio("/redis/stats");
     expect(await screen.findByText("You do not have permission to do this")).toBeInTheDocument();
+  });
+});
+
+describe("Redis tenant scope and rules (FB-138)", () => {
+  it("says when the figures are one tenant's", async () => {
+    const { mock } = setup();
+    mock.custom = mock.custom.filter((c) => !c.template.endsWith("/kv/_info"));
+    mock.on("GET", "/api/v1/kv/_info", () => ({ status: 200, body: { keys: 3, used_memory_bytes: 10, max_memory_bytes: 100, eviction_policy: "allkeys-lru", hits: 1, misses: 1, expired_keys: 0, evicted_keys: 0, channels: 0, unsaved_keys: 0, persistent: false, scope: "tenant", tenant: "t:acme" } }));
+    renderStudio("/redis/stats");
+    expect(await screen.findByText(/Figures for tenant t:acme only/)).toBeInTheDocument();
+  });
+
+  it("has a Rules tab that explains shared namespaces", async () => {
+    const { mock } = setup();
+    mock.on("GET", "/api/v1/policies/resources/{kind}", () => ({ status: 200, body: { kind: "kv_namespace", fields: [], operations: ["list", "view", "create", "update", "delete"], actions: [], items: [] } }));
+    renderStudio("/redis/rules?ns=shared.config");
+    expect(await screen.findByText(/is shared: every tenant of a realm/)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Rules" })).toBeInTheDocument();
   });
 });

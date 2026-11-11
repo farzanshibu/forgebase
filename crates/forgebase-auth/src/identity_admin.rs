@@ -187,7 +187,7 @@ impl AuthService {
             self.data().backend(),
             "SELECT c.id, c.client_id, c.realm, c.collection, c.user_id, c.scopes, c.created_at, c.updated_at, k.name
              FROM _forgebase_oauth_consents c JOIN _forgebase_oauth_clients k ON k.id = c.client_id
-             WHERE c.realm = ?1 AND (?2 IS NULL OR c.client_id = ?2)
+             WHERE c.realm = ?1 AND (CAST(?2 AS TEXT) IS NULL OR c.client_id = ?2)
              ORDER BY c.created_at DESC, c.id LIMIT ?3 OFFSET ?4",
             vec![
                 t(realm),
