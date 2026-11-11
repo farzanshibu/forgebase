@@ -186,6 +186,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/system/0031_queue_rls.sql"),
     ),
     Migration::new(
+        33,
+        "db_topology",
+        include_str!("../../../migrations/system/0033_db_topology.sql"),
+    ),
+    Migration::new(
         35,
         "job_queue_tenant",
         include_str!("../../../migrations/system/0035_job_queue_tenant.sql"),
