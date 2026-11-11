@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use forgebase_data::query::SqlBuilder;
 use forgebase_data::{AccessContext, Action, DataError, DataService, Principal, ResourceKind, ResourceOp, ResourceRef};
-use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, ReadVia, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::{Map, Value as Json};
 
 use crate::access::{GraphAccess, One, Rules, and};
@@ -52,6 +52,13 @@ impl GraphService {
     /// A graph service on the data core's database and authorizer.
     pub fn new(data: DataService) -> Self {
         Self { data }
+    }
+
+    /// The reads of one §2.5 call site: through the replica router
+    /// (ADR-0029, FB-169). Rule names, access checks and every write path keep
+    /// [`Self::backend`]: a stale replica must never decide a rule.
+    fn reader(&self, what: &'static str) -> ReadVia<'_> {
+        ReadVia::replica(self.backend(), what)
     }
 
     fn backend(&self) -> &dyn Backend {
@@ -345,7 +352,7 @@ impl GraphService {
         let i = b.bind(id);
         let vis = acc.node_sql(&mut b, "n")?;
         let rows = self
-            .backend()
+            .reader("graph.get")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = {t} AND n.id = {i}{}",
@@ -550,7 +557,7 @@ impl GraphService {
         );
         let vis = and(acc.node_sql(&mut b, "n")?.as_deref());
         let rows = self
-            .backend()
+            .reader("graph.list")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND (CAST(?2 AS text) IS NULL OR n.label = ?2) \
@@ -679,7 +686,7 @@ impl GraphService {
         b.bind(id);
         let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let rows = self
-            .backend()
+            .reader("graph.get")
             .fetch_all(&Statement::new(
                 format!("SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND e.id = ?2{vis}"),
                 b.into_params(),
@@ -812,7 +819,7 @@ impl GraphService {
         );
         let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let rows = self
-            .backend()
+            .reader("graph.list")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND (CAST(?2 AS text) IS NULL OR e.type = ?2) \
@@ -840,7 +847,7 @@ impl GraphService {
         b.bind(tenant.clone());
         let vis = and(acc.node_sql(&mut b, "n")?.as_deref());
         let nodes = self
-            .backend()
+            .reader("graph.stats")
             .fetch_all(&Statement::new(
                 format!("SELECT count(*) FROM {NODES} n WHERE n.tenant = ?1{vis}"),
                 b.into_params(),
@@ -850,7 +857,7 @@ impl GraphService {
         b.bind(tenant);
         let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let types = self
-            .backend()
+            .reader("graph.stats")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT e.type, count(*) FROM {EDGES} e WHERE e.tenant = ?1{vis} GROUP BY e.type ORDER BY e.type"
@@ -936,7 +943,7 @@ impl GraphService {
             ),
         };
         let sql = format!("SELECT * FROM ({union}) ORDER BY 10, 2 LIMIT ?4 OFFSET ?5");
-        let rows = self.backend().fetch_all(&Statement::new(sql, b.into_params())).await?;
+        let rows = self.reader("graph.neighbors").fetch_all(&Statement::new(sql, b.into_params())).await?;
         let has_more = rows.len() > limit as usize;
         let items = rows
             .rows
@@ -1075,7 +1082,7 @@ impl GraphService {
                  ORDER BY m.depth, n.id LIMIT ?7"
             )
         };
-        let rows = self.backend().fetch_all(&Statement::new(sql, params)).await?;
+        let rows = self.reader("graph.traverse").fetch_all(&Statement::new(sql, params)).await?;
         let mut truncated = rows.len() > limit as usize;
         let nodes = rows
             .rows
@@ -1115,7 +1122,7 @@ impl GraphService {
             let src_in = self.dialect().in_json_list("e.source", "?2");
             let tgt_in = self.dialect().in_json_list("e.target", "?2");
             let rows = self
-                .backend()
+                .reader("graph.traverse")
                 .fetch_all(&Statement::new(
                     format!(
                         "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 \
@@ -1211,7 +1218,7 @@ impl GraphService {
                 (row_cap + 1).into(),
             ];
             params.extend(rule_params.iter().cloned());
-            let rows = self.backend().fetch_all(&Statement::new(sql.clone(), params)).await?;
+            let rows = self.reader("graph.shortest_path").fetch_all(&Statement::new(sql.clone(), params)).await?;
             if rows.len() as i64 > row_cap {
                 return Err(search_limit());
             }
@@ -1256,7 +1263,7 @@ impl GraphService {
 
     async fn nodes_by_ids(&self, tenant: &str, ids: &[String]) -> Result<Vec<Node>> {
         let rows = self
-            .backend()
+            .reader("graph.shortest_path")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND {}",
@@ -1282,7 +1289,7 @@ impl GraphService {
 
     async fn edges_by_ids(&self, tenant: &str, ids: &[String]) -> Result<Vec<Edge>> {
         let rows = self
-            .backend()
+            .reader("graph.shortest_path")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND {}",

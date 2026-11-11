@@ -198,6 +198,18 @@ impl Backend for SetHandle {
         }
     }
 
+    fn sample_commit_token(&self) -> BoxFuture<'_, Result<Option<crate::routing::CommitToken>, DbError>> {
+        Box::pin(async move {
+            if self.replicas.is_none() {
+                return Ok(None);
+            }
+            Ok(self.db.current_wal_lsn().await?.map(|lsn| crate::routing::CommitToken {
+                set: self.set.id.clone(),
+                lsn,
+            }))
+        })
+    }
+
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
         match &self.replicas {
             None => self.db.begin(mode),

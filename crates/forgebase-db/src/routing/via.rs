@@ -54,6 +54,10 @@ impl Backend for ReadVia<'_> {
         self.inner.fetch_routed(stmt, intent)
     }
 
+    fn sample_commit_token(&self) -> BoxFuture<'_, Result<Option<super::CommitToken>, DbError>> {
+        self.inner.sample_commit_token()
+    }
+
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
         self.inner.begin(mode)
     }
