@@ -3098,3 +3098,91 @@ No new migration. The six crates' SQL now runs unchanged in meaning on both back
 - **Audit filter.** `substr(event, 1, length(?1))` casts `?1` to text.
 - **Test harnesses.** All six crates' `tests/common` open the database with `forgebase_db::testing::test_backend()`, so `FORGEBASE_TEST_BACKEND=sqlite|postgres` selects the backend (dev-dependency `forgebase-db` with feature `testing`). Auth tests that restart a service reopen the same database through `TestDb::options()`. Tests that peeked at SQL specifics now use the dialect: `introspect_tables()` for the plaintext-secret scan, `CAST(jsonb_column AS TEXT) LIKE`, `ON CONFLICT DO NOTHING`. The append-only ledger test rolls back after each refused statement (PostgreSQL aborts the transaction). The social-login test that reads the SQLite file skips on PostgreSQL.
 - **Not ported / depends on others.** Seven tests that run the job queue (customize email deliveries x4, credits maintenance expiry, entitlements alert delivery, and the auth secret-dump test that needed the `forgebase-db` statement fix) pass only with FB-146's `forgebase-jobs` and `forgebase-db` changes (`rowid` ordering, statement preparation). They were verified green on a throwaway merge of `agent/worker-fb146` and fail on this branch alone until FB-146 merges. The entitlements quota `UPDATE` in `usage.rs` is identical to FB-146's version (same text, to merge without a conflict).
+
+## Addendum: FB-150 — backups, restore and snapshots on PostgreSQL
+
+Built as §5 describes. Single data set only: a data directory with
+`postgres/nodes/<name>/` (replicas, shard sets) is refused by backup and
+restore with a message naming FB-179 and its future `forgebase backup
+--cluster`.
+
+**Backup.**
+- Managed: `pg_basebackup -D <backup>/postgres -Fp -X stream --checkpoint=fast
+  --manifest-checksums=SHA256` as `forgebase_super` over the Unix socket
+  (`--checkpoint=fast` makes the extra `CHECKPOINT` unnecessary). Online, no
+  lock. Every file under `postgres/` is hashed into `MANIFEST.json` (kind
+  `postgres`), next to PostgreSQL's own `backup_manifest`.
+- `roles.secret` is copied into the backup (path `roles.secret`): the
+  restored cluster holds the scram hashes of those passwords, so without the
+  file the bundled engine could not log in. Treat a backup as secret as the
+  data directory. The master key rule is unchanged.
+- External server: `pg_dump -Fc --no-owner -n forgebase -n public` into
+  `postgres.dump` (kind `dump`). Collection tables live in `public`.
+  Needs `pg_dump` from `engine_dir`/`FORGEBASE_PG_ENGINE_DIR` or `PATH`.
+- Manifest: format 2 for PostgreSQL (format 1 stays for SQLite, so older
+  builds refuse a PostgreSQL backup with "unsupported manifest format 2"),
+  new `engine {kind, mode, version, major, method}` (also written for SQLite;
+  absent = SQLite), `database_only`, `note`. `FileKind` gains `postgres` and
+  `dump`.
+- `BackupOptions.pg: Option<PgSource>` (tools directory, socket, port,
+  `forgebase_super` password, or an external URL) is required on PostgreSQL;
+  `BackupService::with_pg`. Passwords reach the tools only through a private
+  `PGPASSFILE` (removed afterwards), never argv or the environment.
+  `forgebase-backup` does not depend on the engine crate or the server.
+
+**Verify.** Hashes and the file list as before, then `pg_verifybackup
+--exit-on-error postgres/` and a `PG_VERSION` vs manifest major check (dump:
+`pg_restore --list`). `verify_with(dir, VerifyOptions{pg, tmp})` passes the
+tools; plain `verify(dir)` without them passes hashes only and warns that
+`pg_verifybackup` did not run. The CLI, `restore` and `doctor --deep` always
+pass them when an engine directory is found.
+
+**Restore.** Offline and journalled as before; the items are `postgres/data`
+and `postgres/roles.secret` (plus storage, indexes, key) instead of
+`forgebase.db*`; the old cluster goes to `backups/pre-restore-*/postgres/`.
+Refused: a different PostgreSQL major than the running engine, a live
+postmaster on the target, a SQLite target for a PostgreSQL backup and the
+reverse (message points at `db convert`, FB-151), a marker that contradicts
+the backup, several data sets (FB-179). WAL replay happens on the first
+start. The CLI writes the backend marker after the swap. A logical backup is
+loaded with `pg_restore --clean --if-exists --single-transaction` first
+(needs `--force`), then files are swapped.
+
+**Pre-migration snapshots.** `forgebase-db` gets the trait
+`PreMigrationSnapshot` and `Database::set_pre_migration`; PostgreSQL
+`migrate` calls it before applying anything to a database with applied
+migrations, and fails the migration if the snapshot fails. The server
+(`database::open_owned/open_attached`) installs
+`forgebase_backup::pre_migration::PgPreMigration` on managed databases, so
+the server start and `forgebase migrate` both snapshot into
+`backups/pre-migrate-v<N>-<time>/`: a database-only physical backup
+(`database_only`, kind `pre-migration`). `forgebase restore <dir> --force`
+puts the database back and leaves storage, indexes and keys alone. External
+servers get a warning, as before. The hook does not touch `Database`
+(migrate holds the only writer connection): `backup::create_physical`.
+
+**Other.** `GRANT pg_checkpoint TO forgebase_server` in the FB-132 bootstrap;
+`database::checkpoint` now runs on PostgreSQL (no-op on external). `forgebase
+db dump [FILE] [--plain] [--schema-only]`: `pg_dump` of the whole database
+without owners and privileges, 0600, works while the server runs. `doctor`:
+newest snapshot's engine against the project's backend and PostgreSQL major,
+`--deep` verifies with `pg_verifybackup`, pre-migration snapshot count,
+leftover `.pgpass-*`/`*.partial` files in `backups/`. `backup list` shows the
+engine. The server's `/system/backups` snapshots work on PostgreSQL
+(`BackupService::with_pg`).
+
+**For FB-151 (`db convert`).** Convert should take a fresh snapshot with
+`BackupOptions{pg}` first; restore refuses cross-backend and names
+`db convert`. Write the marker after the data (`database::write_marker`).
+**For FB-179.** Plug in at `pg.rs::ensure_single_set` (the refusal),
+`backup.rs::copy_database` (one `basebackup` per set into
+`postgres/` → `sets/<name>/`) and `restore.rs::items_of/target_path`;
+the manifest `engine` and format 2 can grow a `sets` list; `basebackup`
+takes any `PgSource` endpoint, so a replica source is another `Managed`
+endpoint; replicas need `needs_rebuild` after a restore.
+
+**Tests.** `forgebase-backup/tests/postgres.rs` (6, real clusters: round
+trip, damage vs hashes and `pg_verifybackup`, swap/crash/rollback, refusals
+incl. FB-179, snapshots and the migrate hook, external logical round trip),
+`forgebase-cli/tests/backup_e2e.rs` (3, both backends), unit tests in
+`pg.rs`.
