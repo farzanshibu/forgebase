@@ -81,9 +81,17 @@ impl Env {
             ..StorageSettings::default()
         };
         tune(&mut settings);
-        let storage = StorageService::open(backend, data.clone(), driver.clone(), Arc::new(clock.clone()), settings)
-            .await
-            .unwrap();
+        let keyring = forgebase_auth::crypto::Keyring::from_master(&[9u8; 32]);
+        let storage = StorageService::open(
+            backend,
+            data.clone(),
+            driver.clone(),
+            Arc::new(clock.clone()),
+            settings,
+            keyring,
+        )
+        .await
+        .unwrap();
         storage.attach_entitlements(ent.clone());
         data.create_collection(
             &AccessContext::system(),

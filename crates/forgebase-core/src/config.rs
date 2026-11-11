@@ -24,6 +24,8 @@ use crate::error::{ErrorCode, ErrorKind};
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
 pub const ENV_CONFIG_FILE: &str = "FORGEBASE_CONFIG";
+/// Environment variable holding an external PostgreSQL server's URL (a secret).
+pub const ENV_DATABASE_URL: &str = "FORGEBASE_DATABASE_URL";
 /// Config file looked up in the working directory when none is given.
 pub const DEFAULT_CONFIG_FILE: &str = "forgebase.toml";
 /// Default data directory name.
@@ -39,7 +41,7 @@ pub const DEFAULT_RESP_PORT: u16 = 6380;
 pub const CONFIG_TEMPLATE: &str = r#"# ForgeBase configuration.
 # Precedence: command-line flags > FORGEBASE_* environment variables > this file > defaults.
 
-# Data directory (primary database, storage/, indexes/, backups/, tmp/).
+# Data directory (database, storage/, indexes/, backups/, tmp/).
 # Relative paths are resolved against the directory of this file.
 data_dir = "forgebase-data"
 
@@ -58,11 +60,23 @@ shutdown_timeout_secs = 30  # FORGEBASE_SHUTDOWN_TIMEOUT_SECS
 ops_access = "loopback"     # FORGEBASE_OPS_ACCESS
 
 [database]
+# Engine: "postgres" (PostgreSQL) or "sqlite" (one file). `forgebase init`
+# writes the one it set up; changing it later needs `forgebase db convert`.
+# backend = "postgres"      # FORGEBASE_DATABASE_BACKEND
+# The three keys below are for SQLite.
 # "full" fsyncs the WAL on every commit (durable across power loss).
 # "normal" is faster but a power cut can drop the last committed transactions.
 synchronous = "full"        # FORGEBASE_DB_SYNCHRONOUS
 busy_timeout_ms = 5000      # FORGEBASE_DB_BUSY_TIMEOUT_MS
 read_pool_size = 8          # FORGEBASE_DB_READ_POOL_SIZE
+
+# PostgreSQL. "managed" runs the bundled server inside the data directory,
+# reachable through a Unix socket only; "external" uses the server named by
+# FORGEBASE_DATABASE_URL (a secret: keep it in .env or the environment).
+# [database.postgres]
+# mode = "managed"          # FORGEBASE_DATABASE_POSTGRES_MODE
+# pool_size = 16            # FORGEBASE_DATABASE_POSTGRES_POOL_SIZE
+# listen = ""               # "127.0.0.1:5433" also accepts TCP logins (loopback only)
 
 [log]
 level = "info"              # FORGEBASE_LOG_LEVEL (tracing filter syntax)
@@ -227,6 +241,231 @@ impl FromStr for OpsAccess {
             "admin" => Ok(OpsAccess::Admin),
             "public" => Ok(OpsAccess::Public),
             other => Err(format!("expected \"loopback\", \"admin\" or \"public\", got {other:?}")),
+        }
+    }
+}
+
+/// Implements `as_str`, `Display` and `FromStr` (case-insensitive) for a
+/// unit enum whose config values are its lowercase names.
+macro_rules! config_choice {
+    ($ty:ident { $($variant:ident => $name:literal),+ $(,)? }) => {
+        impl $ty {
+            /// Lowercase name as used in config files.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $($ty::$variant => $name,)+
+                }
+            }
+        }
+
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl FromStr for $ty {
+            type Err = String;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s.trim().to_ascii_lowercase().as_str() {
+                    $($name => Ok($ty::$variant),)+
+                    other => Err(format!(
+                        "expected {}, got {other:?}",
+                        [$(concat!("\"", $name, "\"")),+].join(" or ")
+                    )),
+                }
+            }
+        }
+    };
+}
+
+/// Whether this build embeds the PostgreSQL engine (the `bundled-postgres`
+/// feature, ADR-0028 §3.1). Builds without it are the `-lite` release.
+pub const BUNDLED_POSTGRES: bool = cfg!(feature = "bundled-postgres");
+
+/// The engine of the primary database, `[database] backend` (ADR-0028 §6.1,
+/// ADR-0029 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DatabaseBackend {
+    /// PostgreSQL: the bundled engine (`[database.postgres] mode =
+    /// "managed"`) or an external server.
+    Postgres,
+    /// Embedded SQLite, one file (`<data dir>/forgebase.db`).
+    Sqlite,
+}
+
+config_choice!(DatabaseBackend { Postgres => "postgres", Sqlite => "sqlite" });
+
+/// The default backend: PostgreSQL in builds with the bundled engine, SQLite
+/// in `-lite` builds (a compile-time default, ADR-0029 §6).
+pub const DEFAULT_BACKEND: DatabaseBackend = if BUNDLED_POSTGRES {
+    DatabaseBackend::Postgres
+} else {
+    DatabaseBackend::Sqlite
+};
+
+/// How ForgeBase reaches PostgreSQL, `[database.postgres] mode`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PostgresMode {
+    /// ForgeBase runs the bundled engine inside the data directory.
+    #[default]
+    Managed,
+    /// An existing server named by `FORGEBASE_DATABASE_URL`.
+    External,
+}
+
+config_choice!(PostgresMode { Managed => "managed", External => "external" });
+
+/// Native row-level security mode, `[database.postgres] native_rls`
+/// (rls-coverage §3.1; FB-152 builds `enforce`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeRls {
+    /// No PostgreSQL policies.
+    Off,
+    /// Policies for direct database logins only (the default).
+    #[default]
+    Logins,
+    /// Policies also enforced on the server's own connections.
+    Enforce,
+}
+
+config_choice!(NativeRls { Off => "off", Logins => "logins", Enforce => "enforce" });
+
+/// Whether a feature uses its PostgreSQL extension, `[database.postgres.extensions]`
+/// (ADR-0029 §1.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtensionMode {
+    /// Use the extension when it is installed or installable, else the
+    /// portable path.
+    #[default]
+    Auto,
+    /// Refuse to start without it.
+    On,
+    /// Always the portable path.
+    Off,
+}
+
+config_choice!(ExtensionMode { Auto => "auto", On => "on", Off => "off" });
+
+/// `[database.postgres.extensions]`: one switch per accelerated feature.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PostgresExtensions {
+    /// pgvector for vector search.
+    pub vector: ExtensionMode,
+    /// Apache AGE for the graph's openCypher endpoint.
+    pub graph: ExtensionMode,
+    /// pgmq for subscription deliveries.
+    pub queue: ExtensionMode,
+    /// pg_cron for schedules.
+    pub cron: ExtensionMode,
+    /// pg_trgm for trigram indexes and fuzzy search.
+    pub trigram: ExtensionMode,
+}
+
+impl PostgresExtensions {
+    /// `(feature, PostgreSQL extension, mode)` for every feature, in a stable order.
+    pub fn list(&self) -> [(&'static str, &'static str, ExtensionMode); 5] {
+        [
+            ("vector", "vector", self.vector),
+            ("graph", "age", self.graph),
+            ("queue", "pgmq", self.queue),
+            ("cron", "pg_cron", self.cron),
+            ("trigram", "pg_trgm", self.trigram),
+        ]
+    }
+}
+
+/// A database URL that may hold a password: `Debug` never shows it, and it
+/// is never serialised (the feature registry treats it as a secret).
+#[derive(Clone, PartialEq, Eq)]
+pub struct DatabaseUrl(String);
+
+impl DatabaseUrl {
+    /// Wraps a URL.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self(url.into())
+    }
+
+    /// The URL itself, password included.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// The URL with the password replaced by `***` (for messages).
+    pub fn redacted(&self) -> String {
+        redact_url(&self.0)
+    }
+}
+
+impl fmt::Debug for DatabaseUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DatabaseUrl({})", self.redacted())
+    }
+}
+
+/// `scheme://user:password@host/...` with the password replaced by `***`.
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let (authority, tail) = match rest.find(['/', '?']) {
+        Some(i) => rest.split_at(i),
+        None => (rest, ""),
+    };
+    match authority.rsplit_once('@') {
+        Some((user_info, host)) => {
+            let user = user_info.split_once(':').map_or(user_info, |(u, _)| u);
+            let pw = if user_info.contains(':') { ":***" } else { "" };
+            format!("{scheme}://{user}{pw}@{host}{tail}")
+        }
+        None => url.to_owned(),
+    }
+}
+
+/// Default size of the PostgreSQL read pool.
+pub const DEFAULT_PG_POOL_SIZE: u32 = 16;
+
+/// `[database.postgres]` (ADR-0028 §6.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PostgresConfig {
+    /// `managed` (the bundled engine) or `external`.
+    pub mode: PostgresMode,
+    /// External server URL. Prefer `FORGEBASE_DATABASE_URL`; never listed
+    /// with a value.
+    #[serde(skip)]
+    pub url: Option<DatabaseUrl>,
+    /// Connections of the read pool; the writer stays one connection.
+    pub pool_size: u32,
+    /// Managed only: `""` (Unix socket only, the default) or a loopback
+    /// `host:port` that also accepts TCP logins.
+    pub listen: String,
+    /// Managed only: an installed engine directory used instead of the
+    /// embedded one (absolute once loaded; `""` = the embedded engine).
+    pub engine_dir: String,
+    /// Native row-level security mode.
+    pub native_rls: NativeRls,
+    /// Extra `postgresql.conf` parameters (the engine refuses the ones
+    /// ForgeBase owns).
+    pub settings: std::collections::BTreeMap<String, String>,
+    /// Extension switches.
+    pub extensions: PostgresExtensions,
+}
+
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        Self {
+            mode: PostgresMode::Managed,
+            url: None,
+            pool_size: DEFAULT_PG_POOL_SIZE,
+            listen: String::new(),
+            engine_dir: String::new(),
+            native_rls: NativeRls::Logins,
+            settings: std::collections::BTreeMap::new(),
+            extensions: PostgresExtensions::default(),
         }
     }
 }
@@ -430,6 +669,10 @@ pub struct ServerConfig {
 /// Primary database settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DatabaseConfig {
+    /// Engine: `postgres` or `sqlite` (ADR-0028 §6.1).
+    pub backend: DatabaseBackend,
+    /// `[database.postgres]`.
+    pub postgres: PostgresConfig,
     /// SQLite `synchronous` mode.
     pub synchronous: Synchronous,
     /// SQLite `busy_timeout` in milliseconds.
@@ -461,6 +704,8 @@ impl Config {
                 public_url: None,
             },
             database: DatabaseConfig {
+                backend: DEFAULT_BACKEND,
+                postgres: PostgresConfig::default(),
                 synchronous: Synchronous::Full,
                 busy_timeout_ms: 5_000,
                 read_pool_size: 8,
@@ -572,6 +817,39 @@ impl Config {
             invalid(
                 "database.busy_timeout_ms",
                 whole(0, 600_000, "milliseconds", d.database.busy_timeout_ms),
+            );
+        }
+        let pg = &self.database.postgres;
+        if !(1..=64).contains(&pg.pool_size) {
+            invalid(
+                "database.postgres.pool_size",
+                whole(1, 64, "", u64::from(d.database.postgres.pool_size)),
+            );
+        }
+        if !pg.listen.trim().is_empty() && !is_loopback_listen(&pg.listen) {
+            invalid(
+                "database.postgres.listen",
+                "must be empty (Unix socket only) or a loopback address with a port, such as 127.0.0.1:5433".into(),
+            );
+        }
+        if let Some(url) = &pg.url
+            && !is_postgres_url(url.expose())
+        {
+            invalid(
+                "database.postgres.url",
+                "must be a PostgreSQL address that starts with postgres://, such as postgres://forgebase:secret@db.example.com/forgebase".into(),
+            );
+        }
+        if let Some((key, _)) = pg
+            .settings
+            .iter()
+            .find(|(k, v)| !is_pg_parameter_name(k) || v.contains(['\n', '\r', '\0']))
+        {
+            invalid(
+                "database.postgres.settings",
+                format!(
+                    "must hold PostgreSQL parameter names with one-line values, such as shared_buffers = \"256MB\" ({key:?} is not one)"
+                ),
             );
         }
         if self.log.level.trim().is_empty() {
@@ -731,6 +1009,52 @@ impl Config {
         if let Some(v) = o.auth_allow_private_outbound {
             self.auth.allow_private_outbound = v;
         }
+        if let Some(v) = o.database_backend {
+            self.database.backend = v;
+        }
+        if let Some(pg) = &o.postgres {
+            let c = &mut self.database.postgres;
+            if let Some(v) = pg.mode {
+                c.mode = v;
+            }
+            if let Some(v) = &pg.url {
+                let v = v.trim();
+                c.url = (!v.is_empty()).then(|| DatabaseUrl::new(v));
+            }
+            if let Some(v) = pg.pool_size {
+                c.pool_size = v;
+            }
+            if let Some(v) = &pg.listen {
+                v.trim().clone_into(&mut c.listen);
+            }
+            if let Some(v) = &pg.engine_dir {
+                let v = v.trim();
+                c.engine_dir = if v.is_empty() {
+                    String::new()
+                } else {
+                    normalize(&base_dir.join(v)).display().to_string()
+                };
+            }
+            if let Some(v) = pg.native_rls {
+                c.native_rls = v;
+            }
+            if let Some(v) = &pg.settings {
+                c.settings.extend(v.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            if let Some(x) = &pg.extensions {
+                for (slot, value) in [
+                    (&mut c.extensions.vector, x.vector),
+                    (&mut c.extensions.graph, x.graph),
+                    (&mut c.extensions.queue, x.queue),
+                    (&mut c.extensions.cron, x.cron),
+                    (&mut c.extensions.trigram, x.trigram),
+                ] {
+                    if let Some(v) = value {
+                        *slot = v;
+                    }
+                }
+            }
+        }
         if let Some(v) = o.synchronous {
             self.database.synchronous = v;
         }
@@ -881,6 +1205,10 @@ pub struct ConfigOverrides {
     pub auth_trust_forwarded_for: Option<bool>,
     /// `[auth] allow_private_outbound`.
     pub auth_allow_private_outbound: Option<bool>,
+    /// `[database] backend`.
+    pub database_backend: Option<DatabaseBackend>,
+    /// `[database.postgres]` (and its environment variables).
+    pub postgres: Option<PostgresOverrides>,
     /// SQLite `synchronous` mode.
     pub synchronous: Option<Synchronous>,
     /// SQLite busy timeout in milliseconds.
@@ -960,6 +1288,27 @@ impl ConfigOverrides {
                 "AUTH_ALLOW_PRIVATE_OUTBOUND" => {
                     o.auth_allow_private_outbound = Some(parse_bool(&value).map_err(bad)?);
                 }
+                "DATABASE_BACKEND" => o.database_backend = Some(value.parse().map_err(bad)?),
+                "DATABASE_URL" => {
+                    if !value.trim().is_empty() {
+                        o.secrets_set.push(name.clone());
+                    }
+                    o.pg().url = Some(value);
+                }
+                "DATABASE_POSTGRES_MODE" => o.pg().mode = Some(value.parse().map_err(bad)?),
+                "DATABASE_POSTGRES_POOL_SIZE" => o.pg().pool_size = Some(parse_num(&value).map_err(bad)?),
+                "DATABASE_POSTGRES_LISTEN" => o.pg().listen = Some(value),
+                "DATABASE_POSTGRES_ENGINE_DIR" => o.pg().engine_dir = Some(value),
+                "DATABASE_POSTGRES_NATIVE_RLS" => o.pg().native_rls = Some(value.parse().map_err(bad)?),
+                "DATABASE_POSTGRES_EXTENSIONS_VECTOR" => o.ext().vector = Some(value.parse().map_err(bad)?),
+                "DATABASE_POSTGRES_EXTENSIONS_GRAPH" => o.ext().graph = Some(value.parse().map_err(bad)?),
+                "DATABASE_POSTGRES_EXTENSIONS_QUEUE" => o.ext().queue = Some(value.parse().map_err(bad)?),
+                "DATABASE_POSTGRES_EXTENSIONS_CRON" => o.ext().cron = Some(value.parse().map_err(bad)?),
+                "DATABASE_POSTGRES_EXTENSIONS_TRIGRAM" => o.ext().trigram = Some(value.parse().map_err(bad)?),
+                // Read by the engine (forgebase-pgengine) and its build, and by
+                // the test helpers; never configuration.
+                "PG_ENGINE_DIR" | "PG_ENGINE_ARCHIVE" | "PG_ENGINE_LOCK" => {}
+                k if k.starts_with("TEST_") => {}
                 "DB_SYNCHRONOUS" => o.synchronous = Some(value.parse().map_err(bad)?),
                 "DB_BUSY_TIMEOUT_MS" => o.busy_timeout_ms = Some(parse_num(&value).map_err(bad)?),
                 "DB_READ_POOL_SIZE" => o.read_pool_size = Some(parse_num(&value).map_err(bad)?),
@@ -1025,6 +1374,22 @@ impl ConfigOverrides {
             self.auth_allow_private_outbound.is_some(),
             "auth.allow_private_outbound",
         );
+        put(self.database_backend.is_some(), "database.backend");
+        if let Some(pg) = &self.postgres {
+            put(pg.mode.is_some(), "database.postgres.mode");
+            put(pg.pool_size.is_some(), "database.postgres.pool_size");
+            put(pg.listen.is_some(), "database.postgres.listen");
+            put(pg.engine_dir.is_some(), "database.postgres.engine_dir");
+            put(pg.native_rls.is_some(), "database.postgres.native_rls");
+            put(pg.settings.is_some(), "database.postgres.settings");
+            if let Some(x) = &pg.extensions {
+                put(x.vector.is_some(), "database.postgres.extensions.vector");
+                put(x.graph.is_some(), "database.postgres.extensions.graph");
+                put(x.queue.is_some(), "database.postgres.extensions.queue");
+                put(x.cron.is_some(), "database.postgres.extensions.cron");
+                put(x.trigram.is_some(), "database.postgres.extensions.trigram");
+            }
+        }
         put(self.synchronous.is_some(), "database.synchronous");
         put(self.busy_timeout_ms.is_some(), "database.busy_timeout_ms");
         put(self.read_pool_size.is_some(), "database.read_pool_size");
@@ -1285,6 +1650,104 @@ where
     value.trim().parse::<T>().map_err(|e| format!("{value:?}: {e}"))
 }
 
+impl ConfigOverrides {
+    fn pg(&mut self) -> &mut PostgresOverrides {
+        self.postgres.get_or_insert_with(PostgresOverrides::default)
+    }
+
+    fn ext(&mut self) -> &mut ExtensionOverrides {
+        self.pg().extensions.get_or_insert_with(ExtensionOverrides::default)
+    }
+}
+
+/// `[database.postgres]` settings from a config file or the environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresOverrides {
+    /// `managed` or `external`.
+    pub mode: Option<PostgresMode>,
+    /// External server URL (`FORGEBASE_DATABASE_URL`); empty unsets it.
+    pub url: Option<String>,
+    /// Read pool size.
+    pub pool_size: Option<u32>,
+    /// TCP listen address of the bundled engine (`""` = socket only).
+    pub listen: Option<String>,
+    /// Shared engine directory (relative to the config file's directory).
+    pub engine_dir: Option<String>,
+    /// Native row-level security mode.
+    pub native_rls: Option<NativeRls>,
+    /// Extra `postgresql.conf` parameters; numbers and booleans become text.
+    #[serde(default, deserialize_with = "settings_map")]
+    pub settings: Option<std::collections::BTreeMap<String, String>>,
+    /// `[database.postgres.extensions]`.
+    pub extensions: Option<ExtensionOverrides>,
+}
+
+/// `[database.postgres.extensions]` from a config file or the environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionOverrides {
+    /// pgvector.
+    pub vector: Option<ExtensionMode>,
+    /// Apache AGE.
+    pub graph: Option<ExtensionMode>,
+    /// pgmq.
+    pub queue: Option<ExtensionMode>,
+    /// pg_cron.
+    pub cron: Option<ExtensionMode>,
+    /// pg_trgm.
+    pub trigram: Option<ExtensionMode>,
+}
+
+/// A `[database.postgres.settings]` table: text, numbers and booleans, all
+/// kept as text (`max_connections = 100` and `"100"` mean the same).
+fn settings_map<'de, D>(d: D) -> Result<Option<std::collections::BTreeMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum V {
+        S(String),
+        I(i64),
+        F(f64),
+        B(bool),
+    }
+    let raw: std::collections::BTreeMap<String, V> = Deserialize::deserialize(d)?;
+    Ok(Some(
+        raw.into_iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    V::S(s) => s,
+                    V::I(i) => i.to_string(),
+                    V::F(f) => f.to_string(),
+                    V::B(b) => if b { "on" } else { "off" }.to_owned(),
+                };
+                (k, v)
+            })
+            .collect(),
+    ))
+}
+
+fn is_loopback_listen(value: &str) -> bool {
+    value
+        .trim()
+        .parse::<std::net::SocketAddr>()
+        .is_ok_and(|a| a.ip().is_loopback() && a.port() != 0)
+}
+
+fn is_postgres_url(url: &str) -> bool {
+    url.starts_with("postgres://") || url.starts_with("postgresql://")
+}
+
+/// A PostgreSQL parameter name (`shared_buffers`, `auto_explain.log_min_duration`).
+fn is_pg_parameter_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
 /// `[storage]` settings from a config file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1431,6 +1894,8 @@ struct FileServer {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileDatabase {
+    backend: Option<DatabaseBackend>,
+    postgres: Option<PostgresOverrides>,
     synchronous: Option<Synchronous>,
     busy_timeout_ms: Option<u64>,
     read_pool_size: Option<u32>,
@@ -1456,6 +1921,14 @@ impl From<FileConfig> for ConfigOverrides {
             public_url: f.server.public_url,
             auth_trust_forwarded_for: f.auth.trust_forwarded_for,
             auth_allow_private_outbound: f.auth.allow_private_outbound,
+            database_backend: f.database.backend,
+            secrets_set: if f.database.postgres.as_ref().is_some_and(|p| p.url.is_some()) {
+                // The secret's source is the file (the registry reports it by variable name).
+                vec![ENV_DATABASE_URL.to_owned()]
+            } else {
+                Vec::new()
+            },
+            postgres: f.database.postgres,
             synchronous: f.database.synchronous,
             busy_timeout_ms: f.database.busy_timeout_ms,
             read_pool_size: f.database.read_pool_size,
@@ -1478,7 +1951,6 @@ impl From<FileConfig> for ConfigOverrides {
             graph_enabled: f.graph.enabled,
             identity_enabled: f.identity.enabled,
             access_enabled: f.access.enabled,
-            secrets_set: Vec::new(),
         }
     }
 }

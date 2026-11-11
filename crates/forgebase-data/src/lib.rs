@@ -48,7 +48,9 @@ pub use access::{
 pub use changes::{ChangeHook, ChangeOp, GuardRejection, PendingWrite, RecordChange, RowSnapshot, WriteGuard};
 pub use collections::SchemaChange;
 pub use error::DataError;
-pub use indexes::{IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexRecommendation, QueryPlan};
+pub use indexes::{
+    IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexOrigin, IndexRecommendation, IndexStats, QueryPlan,
+};
 pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, ListResult};
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
 pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};
@@ -118,6 +120,12 @@ impl DataService {
     /// The storage backend.
     pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.inner.backend
+    }
+
+    /// The authorizer, for engines that ask about their own resources
+    /// (`Authorizer::authorize_resource`, FB-134; object storage, FB-140).
+    pub fn authorizer(&self) -> &Arc<dyn Authorizer> {
+        &self.inner.authorizer
     }
 
     /// Re-reads collection definitions (after another process changed them).

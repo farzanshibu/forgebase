@@ -35,6 +35,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 forgebase-core.workspace = true
+# Test databases on both backends (FB-148: system info and readiness on PostgreSQL).
+forgebase-db = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tower.workspace = true
 

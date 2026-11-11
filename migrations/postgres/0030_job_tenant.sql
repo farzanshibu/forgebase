@@ -1,4 +1,4 @@
--- PostgreSQL twin of migrations/system/0029_job_tenant.sql (FB-142,
+-- PostgreSQL twin of migrations/system/0030_job_tenant.sql (FB-142,
 -- rls-coverage G3, G4, G5): the enqueuer's tenant on jobs, schedules and
 -- workflows (NULL = none), and the recorded invocation context of jobs and
 -- schedules as jsonb (NULL = the system).

@@ -246,7 +246,12 @@ stops startup with an error.
 | `FORGEBASE_OPS_ACCESS` | Who may read `/metrics` and `/api/system/*`: `loopback`, `admin` or `public` (§7). |
 | `FORGEBASE_AUTH_TRUST_FORWARDED_FOR` | Take the client address from `X-Forwarded-For` (behind your own proxy only). |
 | `FORGEBASE_AUTH_ALLOW_PRIVATE_OUTBOUND` | Let OAuth/OIDC, SMS and Turnstile requests reach private addresses. |
-| `FORGEBASE_DB_SYNCHRONOUS` | `full` or `normal`. |
+| `FORGEBASE_DATABASE_BACKEND` | `postgres` or `sqlite` (§3.5). |
+| `FORGEBASE_DATABASE_URL` | External PostgreSQL server, with its password (a secret: environment or `.env` only). |
+| `FORGEBASE_DATABASE_POSTGRES_MODE`, `FORGEBASE_DATABASE_POSTGRES_POOL_SIZE`, `FORGEBASE_DATABASE_POSTGRES_LISTEN`, `FORGEBASE_DATABASE_POSTGRES_ENGINE_DIR`, `FORGEBASE_DATABASE_POSTGRES_NATIVE_RLS` | `[database.postgres]` keys (§7). |
+| `FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_VECTOR`, `_GRAPH`, `_QUEUE`, `_CRON`, `_TRIGRAM` | `auto`, `on` or `off` per accelerator (§7). |
+| `FORGEBASE_PG_ENGINE_DIR` | Development builds without the embedded engine: an installed PostgreSQL 17+ to run as the bundled engine. Not configuration; ignored by the config loader. |
+| `FORGEBASE_DB_SYNCHRONOUS` | `full` or `normal` (SQLite). |
 | `FORGEBASE_DB_BUSY_TIMEOUT_MS` | Lock wait for other processes. |
 | `FORGEBASE_DB_READ_POOL_SIZE` | Read connections. |
 | `FORGEBASE_LOG_LEVEL`, `FORGEBASE_LOG_FORMAT` | Logging. |
@@ -257,8 +262,9 @@ stops startup with an error.
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
 | `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, read from the environment only (the storage driver reads them; the config loader only notes that they are set). |
 
-`FORGEBASE_TEST_REDIS_URL` is used by the test suite. The same parser rejects
-it, so do not set it on a host that runs ForgeBase.
+`FORGEBASE_TEST_*` variables (`FORGEBASE_TEST_BACKEND`, `FORGEBASE_TEST_REDIS_URL`,
+`FORGEBASE_TEST_PG_*`) belong to the test suite; the parser ignores them. Do not
+set them on a host that runs ForgeBase.
 
 Storage settings other than the S3 credentials and `enabled` (driver, limits,
 endpoint) are set in the TOML file only. The S3 credential names were rejected
@@ -271,11 +277,75 @@ Variables already in the process environment are never overridden. Use this for
 development. Do not ship a `.env` with secrets; `.dockerignore` excludes it from
 the image.
 
+### 3.5 Database: PostgreSQL or SQLite
+
+ForgeBase keeps its data in PostgreSQL or in SQLite (ADR-0028, ADR-0029 §6).
+
+| | PostgreSQL, bundled (`managed`) | PostgreSQL, your server (`external`) | SQLite |
+|---|---|---|---|
+| Choose it with | `forgebase init --database postgres` | `forgebase init --database-url postgres://…` | `forgebase init --database sqlite` |
+| Default | standard release | | `-lite` release (`forgebase --version` says `lite`) |
+| Where the data lives | `<data_dir>/postgres/data` | your server | `<data_dir>/forgebase.db` |
+| Who runs the engine | `forgebase serve` starts it before opening the database and stops it (fast shutdown) when it stops | you | in-process |
+
+**Choosing.** On a terminal, `forgebase init` asks
+`Database: [1] PostgreSQL (default, bundled server) [2] SQLite (one file)`;
+scripts pass `--database` or `--database-url`. `init` writes
+`[database] backend` into the new `forgebase.toml` and the backend marker
+`<data_dir>/forgebase.backend` (`postgres-managed`, `postgres-external` or
+`sqlite`). `--database-url` writes the URL to the project's `.env` as
+`FORGEBASE_DATABASE_URL` (mode 0600), never to `forgebase.toml`; run
+`forgebase` from the project directory so `.env` is read. A `-lite` build
+answers `--database postgres` with `this build has no bundled PostgreSQL; use
+--database-url, --database sqlite or the standard release`.
+
+**The marker wins.** At every start the server compares the configuration
+with the marker. A data directory keeps its engine when the configuration
+only has the default, so an existing SQLite project (with `forgebase.db` and no
+marker) stays SQLite after an upgrade. A setting that contradicts it stops
+startup: `database.backend is postgres, but the data directory … holds a
+sqlite database; run forgebase db convert --to postgres, or set [database]
+backend = "sqlite"`. An empty data directory takes the configuration.
+`forgebase status` and `forgebase doctor` show a one-line notice on SQLite
+projects while PostgreSQL is the default.
+
+**The bundled engine.** The first start extracts the engine embedded in the
+binary into `<data_dir>/postgres/engine/` (about 30 MB, a few seconds), runs
+`initdb` (builtin C.UTF-8 locale, SCRAM passwords, data checksums), creates
+the ForgeBase roles with random passwords in `postgres/roles.secret` (0600),
+and listens on a Unix socket in `postgres/run/` only. TCP logins are off;
+`[database.postgres] listen = "127.0.0.1:5433"` turns on loopback TCP (other
+hosts need TLS, which this version does not set up). PostgreSQL refuses to run
+as root: run ForgeBase as an unprivileged user (the Docker image does). If the
+postmaster dies, ForgeBase restarts it with backoff; while it is down requests
+get `503 database_unavailable` and `/health/ready` fails the `database` check.
+Engine log lines go to the server's log with target `forgebase::postgres`.
+
+**Commands on a PostgreSQL project.** `status`, `doctor`, `migrate --status`,
+`admin`, `export` and `db` log in to the running server's engine through its
+socket; with no server running they start the engine under the data-directory
+lock for the command and stop it afterwards (one to three seconds).
+
+| Command | What it does |
+|---|---|
+| `forgebase db status [--json]` | Backend, cluster directory, engine directory, whether the engine runs (pid, socket, port), TCP logins, and with a running engine the database size, connections, schema version and the extensions (available, installed). Never starts the engine. |
+| `forgebase db psql [--read-only \| --superuser] [PSQL_ARGS…]` | The engine's `psql` through the Unix socket, as `forgebase_server` (reads and writes every ForgeBase table, bypasses row-level security, not a superuser), `forgebase_reader` or `forgebase_super`. Example: `forgebase db psql -c 'select 1'`. The password goes through a temporary 0600 passfile, never the command line. External servers: use `psql "$FORGEBASE_DATABASE_URL"`. |
+| `forgebase doctor` | Adds the engine (files against the archive manifest, `postgres --version`), the cluster (`PG_VERSION` against the engine, mode 0700), `roles.secret`, a postmaster left behind, and `amcheck` (`bt_index_check` on every B-tree index) plus the foreign-key check as the superuser. |
+
+`/api/system/info` reports `database.backend`, `mode`, `server_version`,
+`connections`, the bundled `engine` (`state`, `version`, `pid`, `restarts`,
+`socket_dir`) and `features` (per accelerator: `engine` (`portable` until its
+package switches it over), `mode`, `extension`, `available`, `installed`,
+`state`). `/health/ready` keeps its shape and fails the `database` check while the
+bundled engine is restarting or has failed.
+
 ## 4. Data directory
 
 ```text
 <data_dir>/                       created 0700
-├── forgebase.db (+ -wal, -shm)   all structured data; created 0600
+├── forgebase.backend             "postgres-managed", "postgres-external" or "sqlite" (§3.5)
+├── forgebase.db (+ -wal, -shm)   SQLite only: all structured data; created 0600
+├── postgres/                     bundled PostgreSQL only: engine/, data/ (0700), run/ (socket), roles.secret (0600)
 ├── storage/                      object blobs (when storage is used)
 ├── auth/master.key               root key for auth secrets; created on first start
 ├── indexes/                      derived indexes; safe to delete, rebuilt later
@@ -409,9 +479,18 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `server.shutdown_timeout_secs` | `30` | `1`–`3600` |
 | `server.public_url` | unset | Absolute `http://` or `https://` URL with no path, such as `https://forgebase.example.com`; one trailing `/` is dropped. Links the server hands out (the setup link) start with it; unset means the bound address. |
 | `server.ops_access` | `"loopback"` | `loopback` (administrators, plus direct same-host callers without forwarding headers), `admin`, `public`. Applies to `/metrics` and `/api/system/*`; `/health` and `/health/ready` stay open. |
-| `database.synchronous` | `"full"` | `full`, `normal` |
-| `database.busy_timeout_ms` | `5000` | up to `600000` |
-| `database.read_pool_size` | `8` | `1`–`64` |
+| `database.backend` | `"postgres"` (`"sqlite"` in `-lite` builds) | `postgres`, `sqlite`. Set by `init`; the data directory's marker wins over the default (§3.5). Not editable in the dashboard. |
+| `database.postgres.mode` | `"managed"` | `managed` (bundled engine), `external` (`FORGEBASE_DATABASE_URL`). Not editable in the dashboard. |
+| `database.postgres.url` | unset | External only; a secret: set `FORGEBASE_DATABASE_URL`. |
+| `database.postgres.pool_size` | `16` | `1`–`64` read connections; one writer. |
+| `database.postgres.listen` | `""` | `""` (Unix socket only) or a loopback `host:port`. |
+| `database.postgres.engine_dir` | `""` | An installed PostgreSQL 17+ instead of the bundled engine. |
+| `database.postgres.native_rls` | `"logins"` | `off`, `logins`, `enforce` (FB-152). |
+| `database.postgres.settings` | `{}` | Extra `postgresql.conf` parameters; ForgeBase's own (listening, preload libraries, replication, anything that runs a program) are refused at start. File only. |
+| `database.postgres.extensions.vector`, `graph`, `queue`, `cron`, `trigram` | `"auto"` | `auto`, `on`, `off` (ADR-0029 §1.1). `cron = "off"` keeps pg_cron out of `shared_preload_libraries`. |
+| `database.synchronous` | `"full"` | `full`, `normal` (SQLite) |
+| `database.busy_timeout_ms` | `5000` | up to `600000` (SQLite) |
+| `database.read_pool_size` | `8` | `1`–`64` (SQLite) |
 | `log.level` | `"info"` | filter such as `info` or `forgebase=debug`; not empty |
 | `log.format` | `"pretty"` | `pretty`, `json` |
 | `resp.enabled` | `false` | Redis protocol listener. |

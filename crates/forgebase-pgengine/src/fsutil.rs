@@ -95,6 +95,69 @@ pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Whether extraction must sync each file as it writes it. Only platforms
+/// without the single barrier of [`sync_tree`] do (Windows: `FlushFileBuffers`
+/// needs a writable handle, and the files are read-only once finished).
+pub(crate) const SYNC_EACH_FILE: bool = !cfg!(any(target_os = "linux", target_os = "android", target_vendor = "apple"));
+
+/// Makes a freshly written tree durable before the caller renames it into
+/// place (FB-148): `files` are its regular files, relative to `root`.
+///
+/// One barrier for the whole tree instead of `sync_all` per file, which on
+/// macOS is `F_FULLFSYNC` (a full flush of the drive's cache) and took about
+/// 4 minutes for the 938 files of an engine on an external SSD:
+/// - Linux: one `syncfs` of the file system holding `root`;
+/// - macOS: a plain `fsync` of every file and directory (data reaches the
+///   drive), then one `F_FULLFSYNC` (the drive's cache reaches the medium);
+/// - elsewhere: nothing here, the files were synced as they were written
+///   ([`SYNC_EACH_FILE`]).
+pub(crate) fn sync_tree(root: &Path, files: &[&str]) -> Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let _ = files;
+        let dir = File::open(root).map_err(|e| EngineError::io("open", root, e))?;
+        rustix::fs::syncfs(&dir).map_err(|e| EngineError::io("sync", root, e.into()))?;
+    }
+    #[cfg(target_vendor = "apple")]
+    {
+        let fsync = |path: &Path| -> Result<()> {
+            let f = File::open(path).map_err(|e| EngineError::io("open", path, e))?;
+            rustix::fs::fsync(&f).map_err(|e| EngineError::io("sync", path, e.into()))
+        };
+        let mut dirs = std::collections::BTreeSet::new();
+        for rel in files {
+            let path = root.join(rel);
+            fsync(&path)?;
+            let mut parent = path.parent();
+            while let Some(p) = parent.filter(|p| p.starts_with(root)) {
+                if !dirs.insert(p.to_path_buf()) {
+                    break;
+                }
+                parent = p.parent();
+            }
+        }
+        for d in dirs.iter().rev() {
+            fsync(d)?;
+        }
+        let f = File::open(root).map_err(|e| EngineError::io("open", root, e))?;
+        rustix::fs::fcntl_fullfsync(&f).map_err(|e| EngineError::io("sync", root, e.into()))?;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    let _ = (root, files);
+    Ok(())
+}
+
+/// Syncs a directory's entries (after a rename into it). Best effort where
+/// directories cannot be opened (Windows).
+pub(crate) fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    if let Ok(d) = File::open(dir) {
+        let _ = d.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 /// Removes a directory tree, clearing read-only flags first where the
 /// platform needs it (Windows refuses to delete read-only files).
 pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
