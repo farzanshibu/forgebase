@@ -121,10 +121,10 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
     let data = server.realtime().data().clone();
     let sys = AccessContext::system();
     for def in [
-        json!({"id": "users_c", "name": "users", "fields": [{"name": "name", "type": "text"}]}),
+        json!({"id": "people_c", "name": "people", "fields": [{"name": "name", "type": "text"}]}),
         json!({"name": "posts", "options": {"tenant_scoped": true}, "fields": [
             {"name": "title", "type": "text"},
-            {"name": "author", "type": "relation", "collection_id": "users_c"}]}),
+            {"name": "author", "type": "relation", "collection_id": "people_c"}]}),
     ] {
         data.create_collection(&sys, serde_json::from_value(def).unwrap())
             .await
@@ -133,7 +133,7 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
     router.place("t1", &set.id, PlacementState::Active).await.unwrap();
     let admin = AccessContext::admin("root");
     let u = data
-        .create_record(&admin, "users", json!({"name": "ann"}))
+        .create_record(&admin, "people", json!({"name": "ann"}))
         .await
         .unwrap();
     let uid = u["id"].as_str().unwrap().to_owned();
@@ -160,7 +160,7 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
     );
 
     // Deleting the shared user runs ON DELETE on s1 through the job.
-    data.delete_record(&admin, "users", &uid, None).await.unwrap();
+    data.delete_record(&admin, "people", &uid, None).await.unwrap();
     let mut cleared = false;
     for _ in 0..200 {
         if scalar(&shard, "SELECT count(*) FROM posts WHERE author IS NULL").await == 1 {
