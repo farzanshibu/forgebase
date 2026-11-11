@@ -98,7 +98,7 @@ async fn connect(env: &Env, secret: &LoginSecret) -> PgConnection {
     PgConnection::connect(url.as_str()).await.unwrap()
 }
 
-async fn ids(conn: &mut PgConnection, sql: &str) -> Result<Vec<String>, String> {
+async fn ids(conn: &mut PgConnection, sql: &'static str) -> Result<Vec<String>, String> {
     sqlx::query(sql)
         .fetch_all(&mut *conn)
         .await

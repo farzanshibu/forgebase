@@ -442,7 +442,9 @@ impl DataService {
         if kind == StatementKind::Read {
             // The engine has the final word: e.g. `WITH ... DELETE` writes.
             let probe = Statement::new(sql.clone(), params.clone()).uncached();
-            if self.inner.backend.statement_writes(&probe).await? {
+            // A view the editor's role owns is checked with that role's
+            // rights even here (the plan needs them).
+            if self.inner.backend.statement_writes(&probe).await.map_err(role_refusal)? {
                 kind = StatementKind::Write;
             }
         }

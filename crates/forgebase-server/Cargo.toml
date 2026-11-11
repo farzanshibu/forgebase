@@ -45,6 +45,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+# FB-153: direct logins over the engine's socket.
+sqlx.workspace = true
 wat.workspace = true
 redis = { workspace = true, features = ["tokio-comp"] }
 tempfile.workspace = true

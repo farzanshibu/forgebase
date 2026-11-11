@@ -3361,3 +3361,151 @@ trip, damage vs hashes and `pg_verifybackup`, swap/crash/rollback, refusals
 incl. FB-179, snapshots and the migrate hook, external logical round trip),
 `forgebase-cli/tests/backup_e2e.rs` (3, both backends), unit tests in
 `pg.rs`.
+
+## Addendum (FB-153): direct logins, the SQL editor's role, TCP with TLS, extensions
+
+Written 2026-11-11 by FB-153 (rls-coverage §3.5–§3.6, G11). Human decision
+(2026-11-11), kept: direct logins use the Unix socket and `forgebase db
+psql`; TCP stays **off** by default and only an operator's explicit
+`[database.postgres] listen` turns it on, with TLS required on every TCP
+login.
+
+**What exists.**
+- *Migration pair 0042 `db_logins`* (the SQLite twin is a no-op). Table
+  `_forgebase_db_logins` (name, role, principal, tenant, readonly, admin,
+  limits, `valid_until`, `claims` jsonb, audit columns; row-level security on,
+  no policies). `forgebase.claims()` gains the login branch: a session whose
+  login role is neither superuser nor `BYPASSRLS` gets the `claims` of its row
+  (`role_name = session_user`), anything else `NULL`.
+  `forgebase.is_secret_column(table, column)` and
+  `forgebase.fb_editor_grants()` (re-grants `forgebase_sql_admin` `SELECT` on
+  every non-secret column of every `forgebase` table; the server reruns it at
+  each start, so tables of later migrations are covered). On a superuser
+  cluster it also creates `forgebase_sql_admin` and `forgebase_login_write`.
+- *Roles* (bootstrap, every start): `forgebase_login_write` (member of
+  `forgebase_login`); `forgebase_sql_admin` granted to `forgebase_owner` (so the
+  server owns what the editor creates) and to the reader `WITH INHERIT FALSE,
+  SET TRUE`; both login groups granted to the server and the reader the same
+  way ("run as"); `USAGE` on `forgebase` and `USAGE, CREATE` on `public` for
+  the editor's role; `CONNECT` on the database for `forgebase_login`.
+- *Generated per collection* (`native::generate`, every mode): `REVOKE ALL`
+  then `SELECT`/`UPDATE` of every column except `password`, `token_key` and
+  password fields, plus `INSERT`, `DELETE`, for `forgebase_sql_admin` (built from
+  the table's real columns); views get `SELECT`. `api` views: `SELECT` to
+  `forgebase_login`, writes to `forgebase_login_write` only.
+- *Logins* (`forgebase_policy::logins`): `create_db_login`, `list`, `get`,
+  `rotate` (new password, optional expiry; sessions stay), `delete` (row
+  first, then `NOLOGIN`, terminate sessions, `REASSIGN/DROP OWNED`, `DROP
+  ROLE`). Role `fbu_<name>`, `CONNECTION LIMIT` 10, `statement_timeout`
+  30 s, `idle_in_transaction_session_timeout` 60 s, `search_path = api`;
+  `--admin` logins: member of `forgebase_sql_admin`, `role` and
+  `search_path = public, forgebase` set on the role, platform administrators
+  only. The password (24 random bytes, base64url) is returned once; ForgeBase
+  computes the SCRAM-SHA-256 verifier itself (RFC 7677 vector in the unit
+  test), so the password never reaches PostgreSQL or its log. Every change is
+  audited (`db.login.create|rotate|delete` in `_forgebase_auth_audit`).
+- *Claims refresh*: `PolicyService::reload` (every snapshot reload: policy
+  writes, auth changes, suspensions) rewrites every login's claims, serialised
+  by a mutex and always from the newest snapshot; the native-policy hook does
+  it inside each collection change's schema transaction; startup does it after
+  `enable_native_rls`. A login whose principal or tenant is gone gets `NULL`.
+- *Login claims* (`logins::login_claims`): the FB-152 claims for every
+  collection with policies and the actions list, create, update, delete,
+  merged; no `action` (so `read_action()` is `list`); `login: true`.
+- *SQL editor* (`forgebase-data` `sql.rs`): after `enable_sql_editor_role`
+  (called by `enable_native_rls`, PostgreSQL, when both pools may `SET ROLE`
+  to it) every statement runs as `forgebase_sql_admin` through
+  `fetch_all_as`/`execute_as`. Exceptions: `CREATE|ALTER|DROP POLICY` (needs
+  the owner) and calls with `show_secrets` run as the pools' own roles.
+  Refused: policies named `fb_*`, writes naming `api.` objects. Privilege and
+  policy refusals (also from the read/write probe, which plans views with
+  their owner's rights) are 403.
+- *Run as*: `POST /api/v1/sql` and `/sql/batch` take `"run_as": {"principal",
+  "tenant"}`; `PolicyService::run_as_claims` (administrators, native RLS on)
+  computes the login claims; statements run as `forgebase_login` (reads) or
+  `forgebase_login_write` (writes) with `search_path = api, forgebase`
+  (`RunAs::with_search_path`, new), so they see exactly what a direct login
+  bound to that user sees. DDL is refused (`run_as_ddl`); each call is audited
+  (`sql.run_as`).
+- *Network* (`forgebase-pgengine::hba`): `pg_hba.conf` is rewritten every
+  start: `local all all scram-sha-256` (+ replication); without `listen` no
+  `host` line at all and `listen_addresses = ''`. With `listen` (any address
+  now): `ssl = on`, `hostnossl … reject`, ForgeBase's own roles `hostssl` on
+  loopback only, `+forgebase_login` `hostssl` to database `forgebase` from
+  loopback (loopback listen) or anywhere (other addresses), a final reject.
+  Windows (no socket) keeps loopback `host` lines. Certificate:
+  `[database.postgres] tls_cert`/`tls_key` (both or neither, read-only
+  settings, `FORGEBASE_DATABASE_POSTGRES_TLS_CERT|KEY`) or a self-signed ECDSA
+  P-256 certificate generated once under `<node>/tls/` (key 0600, SAN
+  `localhost` and the listen IP; built with `ring` and a small DER writer, no
+  new crate). `ssl`, `ssl_cert_file`, `ssl_key_file` joined the deny list.
+- *Extensions* (`/api/v1/system/extensions`): `GET` lists the allow list of
+  §1 plus the FB-161 feature extensions with available/installed versions and
+  `managed_by` (`api`, `schema` for `citext`/`unaccent`, `feature:<name>`);
+  `POST {name}` creates an allowed one in `public` as the administrator
+  (`Backend::admin_batch`); `DELETE` drops with `RESTRICT`. Feature extensions
+  (vector, age, pgmq, pg_cron, pg_trgm) are 409 `extension_managed`;
+  anything else 400 `extension_not_allowed`. Audited
+  (`db.extension.create|drop`).
+- *Administrator statements*: `Backend::admin_batch(&[String])` runs
+  statements in one transaction on a fresh connection as the URL given to
+  `Database::set_admin_url` (the bundled engine's `forgebase_super`; logging
+  silenced for superusers), else on the writer.
+- *CLI*: `forgebase db login create <name> [--as <principal>] [--tenant]
+  [--readonly] [--admin] [--connection-limit] [--statement-timeout-ms]
+  [--valid-until] [--json]`, `list`, `rotate`, `delete`; `forgebase db psql
+  --as <login>` (psql asks for the password, or `PGPASSWORD`/`~/.pgpass`). The
+  default `db psql` session is now `forgebase_sql_admin` (`PGOPTIONS -c role`).
+
+**Deviations from rls-coverage §3.5 and the text above.**
+1. *`show_secrets` on PostgreSQL* is the audited way to see secrets and runs
+   as the pools' own roles; the editor's role is the boundary for everything
+   else (it closes the name guard's gaps: `SELECT *`, views, built names).
+   Consequence: `SELECT *` of a table with secret columns is 403 on
+   PostgreSQL without `show_secrets` (FB-135's server test now expects that).
+2. *Run as* uses the direct-login groups through the `api` views rather than
+   `forgebase_rls` on the tables: `forgebase_rls` has every column, secrets
+   included (FB-152 deviation 1), and "what a login sees" is the point.
+3. *Tenant gate of logins* counts memberships only, not environment ACL
+   entries shared with non-members for one permission key: a login may see
+   less than the API, never more.
+4. *Logins are writable unless `--readonly`*, as the spec says. Writes go
+   through the `api` triggers, so they skip validation, change events and
+   versions (FB-152 deviation 7).
+5. *MFA*: the endpoints need an administrator session, which passed MFA at
+   sign-in when MFA is on; there is no extra step-up.
+6. *Entitlement*: creating a non-admin login asks the entitlement hook with
+   permission `db:direct_access` for the bound principal's subject.
+7. *Collection DDL in the editor*: the editor's role does not own collection
+   tables, so `ALTER`/`DROP` of a collection table or a new index on it is
+   refused on PostgreSQL (use the collections and indexes APIs).
+
+**Tests.** `forgebase-policy/tests/db_logins.rs` (driver logins see only their
+rows; spoofing; writes under the rules; claims follow a rule change and a
+suspension; read-only logins; a deleted principal sees nothing; delete ends
+sessions; validation, conflicts, rotation, audit; run as reads and writes,
+DDL refused, audit; editor role vs secret columns, `*` and views); unit tests
+in `logins.rs` (SCRAM vector, names, times, principals), `hba.rs` (no TCP
+line by default, TLS-only rules, Windows, DER time, certificate shape);
+`forgebase-data/tests/sql_roles.rs` (editor role on both pools, system secret
+columns, `show_secrets`, `fb_*` and `api` guards, hand-written policies);
+`forgebase-pgengine/tests/network.rs` (the default opens no TCP port; listen
++ TLS: encrypted loopback login, plain TCP refused, a named login over TLS,
+the generated certificate survives a restart, a configured one replaces it, a
+missing one refuses the start); `forgebase-server/tests/security_fb153.rs`
+(HTTP + SCRAM logins over the socket, editor and run as, extensions, gates);
+`forgebase-cli/tests/database_e2e.rs` (db login and `db psql --as`).
+
+**For FB-155 (Database Studio).**
+- "Run as" selector: send `run_as: {principal, tenant}` with `/sql` and
+  `/sql/batch`; list candidates from the auth users and service accounts;
+  show that DDL is refused with it (`run_as_ddl`) and that it is audited.
+- `SELECT *` on auth collections and secret-holding system tables is 403 on
+  PostgreSQL: offer "show secrets" (audited) or expand the column list.
+- Logins page over `/api/v1/system/db-logins`: show the password once, the
+  `psql` hint, `has_claims` (false = sees nothing), rotate and delete.
+- Extensions page over `/api/v1/system/extensions` with `managed_by`.
+
+**For FB-173 (shards).** Logins are cluster-wide roles: create them on every
+node with the same verifier; `_forgebase_db_logins` lives on the primary, so a
+shard's `forgebase.claims()` needs the table (or its claims) on that node.
