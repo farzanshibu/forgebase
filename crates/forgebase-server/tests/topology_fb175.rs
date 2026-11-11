@@ -85,6 +85,12 @@ async fn adopt(server: forgebase_server::RunningServer, dir: tempfile::TempDir, 
     }
 }
 
+async fn sql(env: &Env, stmt: &str) {
+    let mut tx = env.server.database().begin(forgebase_db::TxMode::Normal).await.unwrap();
+    tx.execute(&Statement::raw(stmt)).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
 async fn meta(db: &forgebase_db::Database, key: &str) -> Option<String> {
     db.meta_get(key).await.unwrap()
 }
@@ -399,25 +405,39 @@ async fn removing_and_promoting_need_a_recent_second_factor() {
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
 
-    // The session from before MFA, and API keys, cannot remove or promote.
-    for token in [admin.as_str()] {
-        for (m, p, b) in [
-            ("DELETE", format!("{BASE}/nodes/n-nope?confirm=x"), None),
-            (
-                "POST",
-                format!("{BASE}/nodes/n-nope/promote"),
-                Some(json!({"confirm": "x"})),
-            ),
-            ("DELETE", format!("{BASE}/shards/s-nope?confirm=x"), None),
-        ] {
-            let r = env.as_(token, m, &p, &[], b).await;
-            assert_eq!(
-                (r.status, r.code()),
-                (403, "mfa_step_up_required".to_owned()),
-                "{m} {p}: {}",
-                r.text()
-            );
-        }
+    // Confirming proves the factor: this recent session may run them now.
+    let r = env
+        .as_(&admin, "DELETE", &format!("{BASE}/nodes/n-nope?confirm=x"), &[], None)
+        .await;
+    assert_eq!((r.status, r.code()), (404, "node_not_found".to_owned()), "{}", r.text());
+    // A session that did not pass the second factor cannot remove or promote.
+    sql(&env, "UPDATE _forgebase_auth_sessions SET mfa = 0").await;
+    for (m, p, b) in [
+        ("DELETE", format!("{BASE}/nodes/n-nope?confirm=x"), None),
+        (
+            "POST",
+            format!("{BASE}/nodes/n-nope/promote"),
+            Some(json!({"confirm": "x"})),
+        ),
+        ("DELETE", format!("{BASE}/shards/s-nope?confirm=x"), None),
+        (
+            "POST",
+            format!("{BASE}/placements/t1/move"),
+            Some(json!({"to": "s2", "confirm": "t1"})),
+        ),
+        (
+            "POST",
+            format!("{BASE}/rebalance"),
+            Some(json!({"plan_id": "p", "confirm": "p"})),
+        ),
+    ] {
+        let r = env.as_(&admin, m, &p, &[], b).await;
+        assert_eq!(
+            (r.status, r.code()),
+            (403, "mfa_step_up_required".to_owned()),
+            "{m} {p}: {}",
+            r.text()
+        );
     }
     // A sign-in that passed the second factor can.
     let r = env
@@ -445,13 +465,11 @@ async fn removing_and_promoting_need_a_recent_second_factor() {
         .await;
     assert_eq!((r.status, r.code()), (404, "node_not_found".to_owned()), "{}", r.text());
     // Ten minutes later it has to step up again.
-    let mut tx = env.server.database().begin(forgebase_db::TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw(
+    sql(
+        &env,
         "UPDATE _forgebase_auth_sessions SET created_at = created_at - 3600",
-    ))
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    )
+    .await;
     let r = env
         .as_(&fresh, "DELETE", &format!("{BASE}/nodes/n-nope?confirm=x"), &[], None)
         .await;

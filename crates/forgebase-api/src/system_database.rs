@@ -1314,6 +1314,8 @@ fn not_yet(what: &str) -> ApiError {
     )
 }
 
+// FB-174 HAND-OVER: replace the `not_yet(..)` answer below with a
+// `TopologyOps` call (admin check, step-up and audit stay as they are).
 /// Moves a tenant to another set (`{to, confirm}`, job
 /// `database.tenant.move`). MFA step-up. `501` until FB-174.
 #[utoipa::path(
@@ -1340,6 +1342,8 @@ pub async fn move_tenant(
     Ok(StatusCode::NOT_IMPLEMENTED.into_response())
 }
 
+// FB-174 HAND-OVER: replace the `not_yet(..)` answer below with a
+// `TopologyOps` call (admin check, step-up and audit stay as they are).
 /// A rebalance plan (moves, sizes, freeze estimates). `501` until FB-174.
 #[utoipa::path(
     post, path = "/api/system/database/rebalance/plan", operation_id = "database_rebalance_plan", tag = "system",
@@ -1355,6 +1359,8 @@ pub async fn rebalance_plan(
     Err(not_yet("Planning a rebalance"))
 }
 
+// FB-174 HAND-OVER: replace the `not_yet(..)` answer below with a
+// `TopologyOps` call (admin check, step-up and audit stay as they are).
 /// Runs a rebalance plan (`{plan_id, confirm}`, job `database.rebalance`).
 /// MFA step-up. `501` until FB-174.
 #[utoipa::path(
