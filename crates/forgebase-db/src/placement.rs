@@ -394,8 +394,20 @@ pub static TABLES: &[TablePlacement] = &[
     // --- Queues (G16: `tenant` on topics and subscriptions, FB-141) ---
     tenant("_forgebase_queue_topics", "tenant", COPY),
     tenant("_forgebase_queue_subscriptions", "tenant", REMAP),
-    child("_forgebase_queue_messages", "topic", "_forgebase_queue_topics", "name", RENUMBER),
-    child("_forgebase_queue_dedup", "topic", "_forgebase_queue_topics", "name", COPY),
+    child(
+        "_forgebase_queue_messages",
+        "topic",
+        "_forgebase_queue_topics",
+        "name",
+        RENUMBER,
+    ),
+    child(
+        "_forgebase_queue_dedup",
+        "topic",
+        "_forgebase_queue_topics",
+        "name",
+        COPY,
+    ),
     child(
         "_forgebase_queue_deliveries",
         "subscription",
@@ -430,7 +442,13 @@ pub static TABLES: &[TablePlacement] = &[
     per_set("_forgebase_queue_state", MoveStrategy::Stay),
     // --- Storage (G14: `tenant` on buckets since 0029_storage_rls) ---
     tenant("_forgebase_storage_buckets", "tenant", COPY),
-    child("_forgebase_storage_acl", "bucket", "_forgebase_storage_buckets", "name", COPY),
+    child(
+        "_forgebase_storage_acl",
+        "bucket",
+        "_forgebase_storage_buckets",
+        "name",
+        COPY,
+    ),
     child(
         "_forgebase_storage_objects",
         "bucket",
@@ -445,7 +463,13 @@ pub static TABLES: &[TablePlacement] = &[
         "name",
         COPY,
     ),
-    child("_forgebase_storage_parts", "upload_id", "_forgebase_storage_uploads", "id", COPY),
+    child(
+        "_forgebase_storage_parts",
+        "upload_id",
+        "_forgebase_storage_uploads",
+        "id",
+        COPY,
+    ),
     // Content-addressed blob reference counts across every bucket of the set:
     // recounted on the target from the moved objects.
     per_set("_forgebase_storage_blobs", REBUILD),
@@ -469,9 +493,31 @@ pub const TENANT_COLUMN_NAMES: &[&str] = &["tenant", "_tenant"];
 /// Tables with a tenant column that is deliberately **not** their placement
 /// key, with the reason.
 pub const TENANT_COLUMNS_NOT_KEYS: &[(&str, &str, &str)] = &[
-    ("_forgebase_auth_api_keys", "tenant", "the tenant a key is bound to; keys are control rows"),
-    ("_forgebase_authz_audit", "tenant", "the request's tenant; the audit log is control's"),
-    ("_forgebase_realtime_outbox", "tenant", "whose change it was; each set keeps its own outbox"),
+    (
+        "_forgebase_auth_api_keys",
+        "tenant",
+        "the tenant a key is bound to; keys are control rows",
+    ),
+    (
+        "_forgebase_authz_audit",
+        "tenant",
+        "the request's tenant; the audit log is control's",
+    ),
+    (
+        "_forgebase_realtime_outbox",
+        "tenant",
+        "whose change it was; each set keeps its own outbox",
+    ),
+    (
+        "_forgebase_tenant_placements",
+        "tenant",
+        "the topology row about a tenant, on control",
+    ),
+    (
+        "_forgebase_db_moves",
+        "tenant",
+        "the topology row about a tenant's move, on control",
+    ),
 ];
 
 /// Tenant columns that the registry already uses as placement keys but that
@@ -525,8 +571,12 @@ pub async fn system_tables(db: &Database) -> Result<SchemaTables, DbError> {
              WHERE n.nspname = 'forgebase' AND c.relkind IN ('r', 'p') ORDER BY 1, a.attnum",
         ),
         BackendKind::Sqlite => Statement::raw(
+            // A virtual table (FTS5) keys its rows by its hidden rowid.
             "SELECT m.name, p.name FROM sqlite_schema m, pragma_table_info(m.name) p \
-             WHERE m.type = 'table' AND m.name LIKE '\\_forgebase\\_%' ESCAPE '\\' ORDER BY 1, p.cid",
+             WHERE m.type = 'table' AND m.name LIKE '\\_forgebase\\_%' ESCAPE '\\' \
+             UNION ALL SELECT name, 'rowid' FROM sqlite_schema \
+             WHERE type = 'table' AND name LIKE '\\_forgebase\\_%' ESCAPE '\\' AND sql LIKE 'CREATE VIRTUAL TABLE%' \
+             ORDER BY 1",
         ),
     };
     let rows = db.fetch_all(&stmt).await?;
@@ -593,11 +643,7 @@ pub fn problems(schema: &SchemaTables) -> Vec<String> {
             }
             (PlacementClass::Tenant, _) => {}
             (_, TenantKey::None) => {}
-            (class, _) => out.push(format!(
-                "{} is a {} table with a tenant key",
-                t.table,
-                class.as_str()
-            )),
+            (class, _) => out.push(format!("{} is a {} table with a tenant key", t.table, class.as_str())),
         }
         match t.tenant_key {
             TenantKey::None => {}
@@ -619,7 +665,10 @@ pub fn problems(schema: &SchemaTables) -> Vec<String> {
                     _ => out.push(format!("{}: parent {parent} is not a tenant table", t.table)),
                 }
                 if !has(parent, parent_column) {
-                    out.push(format!("{}: parent column {parent}.{parent_column} does not exist", t.table));
+                    out.push(format!(
+                        "{}: parent column {parent}.{parent_column} does not exist",
+                        t.table
+                    ));
                 }
             }
             TenantKey::Record {
@@ -677,7 +726,11 @@ mod tests {
                 }
                 _ => {
                     assert_eq!(t.tenant_key, TenantKey::None, "{}", t.table);
-                    assert!(matches!(t.moves, MoveStrategy::Stay | MoveStrategy::Rebuild), "{}", t.table);
+                    assert!(
+                        matches!(t.moves, MoveStrategy::Stay | MoveStrategy::Rebuild),
+                        "{}",
+                        t.table
+                    );
                 }
             }
             if let TenantKey::Parent { table: parent, .. } = t.tenant_key {
@@ -755,9 +808,24 @@ mod tests {
         bad.get_mut("_forgebase_kv_entries").unwrap().remove("tenant");
         let found = problems(&bad);
         assert_eq!(found.len(), 4, "{found:#?}");
-        assert!(found[0].contains("_forgebase_new_thing has no placement class"), "{found:#?}");
-        assert!(found.iter().any(|p| p.contains("lists _forgebase_admins, which is not in the schema")));
-        assert!(found.iter().any(|p| p.contains("_forgebase_functions has a tenant column")));
-        assert!(found.iter().any(|p| p.contains("_forgebase_kv_entries: tenant column tenant does not exist")));
+        assert!(
+            found[0].contains("_forgebase_new_thing has no placement class"),
+            "{found:#?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("lists _forgebase_admins, which is not in the schema"))
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("_forgebase_functions has a tenant column"))
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("_forgebase_kv_entries: tenant column tenant does not exist"))
+        );
     }
 }

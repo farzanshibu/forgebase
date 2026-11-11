@@ -703,12 +703,10 @@ impl DbRouter {
         }
         let target = match requested {
             Some(id) => {
-                let set = self
-                    .set(id)
-                    .ok_or_else(|| match self.read().topology.set(id) {
-                        None => RouterError::UnknownSet(id.to_owned()),
-                        Some(_) => RouterError::SetUnavailable(id.to_owned()),
-                    })?;
+                let set = self.set(id).ok_or_else(|| match self.read().topology.set(id) {
+                    None => RouterError::UnknownSet(id.to_owned()),
+                    Some(_) => RouterError::SetUnavailable(id.to_owned()),
+                })?;
                 if set.set().state != SetState::Active {
                     return Err(RouterError::SetClosed(id.to_owned()));
                 }
@@ -796,7 +794,11 @@ mod tests {
         let loads = [load("control", 0, 1, 100, 1), load("a", 1, 2, 150, 1)];
         assert_eq!(least_loaded(&loads).unwrap().set_id, "a");
         // Equal bytes: fewer tenants per weight.
-        let loads = [load("control", 0, 1, 0, 3), load("a", 1, 1, 0, 1), load("b", 2, 1, 0, 2)];
+        let loads = [
+            load("control", 0, 1, 0, 3),
+            load("a", 1, 1, 0, 1),
+            load("b", 2, 1, 0, 2),
+        ];
         assert_eq!(least_loaded(&loads).unwrap().set_id, "a");
         // Full tie: lowest number.
         let loads = [load("b", 2, 1, 0, 0), load("a", 1, 1, 0, 0)];

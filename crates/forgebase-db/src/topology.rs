@@ -414,7 +414,10 @@ impl SequenceRange {
 /// # Panics
 /// When `number` is above [`MAX_SET_NUMBER`].
 pub fn sequence_range(number: u16) -> SequenceRange {
-    assert!(number <= MAX_SET_NUMBER, "set number {number} is above {MAX_SET_NUMBER}");
+    assert!(
+        number <= MAX_SET_NUMBER,
+        "set number {number} is above {MAX_SET_NUMBER}"
+    );
     let base = i64::from(number) << RANGE_BITS;
     SequenceRange {
         min: base + 1,
@@ -476,7 +479,11 @@ pub async fn apply_sequence_range(db: &Database, number: u16) -> Result<Vec<Stri
         if min == Some(range.min) && max == Some(range.max) && start == Some(range.min) {
             continue;
         }
-        let ident = format!("{}.{}", db.dialect().quote_ident(&schema), db.dialect().quote_ident(&name));
+        let ident = format!(
+            "{}.{}",
+            db.dialect().quote_ident(&schema),
+            db.dialect().quote_ident(&name)
+        );
         let restart = match last {
             Some(v) if range.contains(v) => String::new(),
             _ => format!(" RESTART WITH {}", range.min),
@@ -579,16 +586,20 @@ const PLACEMENT_COLUMNS: &str = "tenant, set_id, epoch, state, moved_at, est_row
 /// Reads sets, nodes and the topology epoch from control.
 pub async fn load(control: &dyn Backend) -> Result<Topology, DbError> {
     let sets = control
-        .fetch_all(&Statement::raw(format!(
-            "SELECT {SET_COLUMNS} FROM _forgebase_db_sets ORDER BY number"
-        )))
+        .fetch_all(&Statement::new(
+            format!("SELECT {SET_COLUMNS} FROM _forgebase_db_sets ORDER BY number"),
+            vec![],
+        ))
         .await?;
     let nodes = control
-        .fetch_all(&Statement::raw(format!(
-            "SELECT n.{} FROM _forgebase_db_nodes n JOIN _forgebase_db_sets s ON s.id = n.set_id \
-             ORDER BY s.number, n.name",
-            NODE_COLUMNS.replace(", ", ", n.")
-        )))
+        .fetch_all(&Statement::new(
+            format!(
+                "SELECT n.{} FROM _forgebase_db_nodes n JOIN _forgebase_db_sets s ON s.id = n.set_id \
+                 ORDER BY s.number, n.name",
+                NODE_COLUMNS.replace(", ", ", n.")
+            ),
+            vec![],
+        ))
         .await?;
     let epoch = control
         .fetch_all(&Statement::new(
@@ -610,9 +621,10 @@ pub async fn load(control: &dyn Backend) -> Result<Topology, DbError> {
 /// Reads every placement row from control.
 pub async fn load_placements(control: &dyn Backend) -> Result<Vec<Placement>, DbError> {
     let rows = control
-        .fetch_all(&Statement::raw(format!(
-            "SELECT {PLACEMENT_COLUMNS} FROM _forgebase_tenant_placements ORDER BY tenant"
-        )))
+        .fetch_all(&Statement::new(
+            format!("SELECT {PLACEMENT_COLUMNS} FROM _forgebase_tenant_placements ORDER BY tenant"),
+            vec![],
+        ))
         .await?;
     rows.rows.iter().map(|r| placement_from_row(r)).collect()
 }
@@ -667,7 +679,9 @@ pub async fn insert_set(control: &Database, new: &NewSet) -> Result<DbSet, DbErr
     }
     let mut tx = control.begin(TxMode::Normal).await?;
     let next = tx
-        .fetch_all(&Statement::raw("SELECT coalesce(max(number), 0) + 1 FROM _forgebase_db_sets"))
+        .fetch_all(&Statement::raw(
+            "SELECT coalesce(max(number), 0) + 1 FROM _forgebase_db_sets",
+        ))
         .await?
         .scalar()
         .and_then(Value::as_i64)
@@ -800,7 +814,9 @@ pub async fn update_node_state(control: &dyn Backend, id: &str, state: NodeState
     let mut tx = control.begin(TxMode::Normal).await?;
     let rows = tx
         .fetch_all(&Statement::new(
-            format!("UPDATE _forgebase_db_nodes SET state = ?2, updated_at = ?3 WHERE id = ?1 RETURNING {NODE_COLUMNS}"),
+            format!(
+                "UPDATE _forgebase_db_nodes SET state = ?2, updated_at = ?3 WHERE id = ?1 RETURNING {NODE_COLUMNS}"
+            ),
             vec![id.into(), state.as_str().into(), forgebase_core::now_rfc3339().into()],
         ))
         .await?;
@@ -958,7 +974,13 @@ mod tests {
 
     #[test]
     fn ranges_are_disjoint_and_below_2_pow_53() {
-        assert_eq!(sequence_range(0), SequenceRange { min: 1, max: (1 << 40) - 1 });
+        assert_eq!(
+            sequence_range(0),
+            SequenceRange {
+                min: 1,
+                max: (1 << 40) - 1
+            }
+        );
         assert_eq!(sequence_range(1).min, (1 << 40) + 1);
         assert_eq!(sequence_range(0).max + 2, sequence_range(1).min);
         let last = sequence_range(MAX_SET_NUMBER);
@@ -1069,7 +1091,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
-        std::fs::write(&path, br#"{"version": 9, "written_at": "", "epoch": 0, "sets": [], "nodes": []}"#).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"version": 9, "written_at": "", "epoch": 0, "sets": [], "nodes": []}"#,
+        )
+        .unwrap();
         assert!(matches!(read_topology_file(&path), Err(DbError::Unsupported(_))));
     }
 }
