@@ -438,6 +438,14 @@ impl DataService {
         };
         let info = analyze_statement_for(sql, flavor)?;
         let params = bind_params(&s.params)?;
+        // Before the engine sees it: a statement naming a secret column is
+        // refused whether or not it compiles (no oracle, same answer on both
+        // backends).
+        if guard_secrets && let Some(col) = names_secret(sql, &secret_columns(&self.catalog())) {
+            return Err(DataError::Forbidden(format!(
+                "the statement names the secret column {col}: set show_secrets to run it (the use is audited)"
+            )));
+        }
         let mut kind = info.kind;
         if kind == StatementKind::Read {
             // The engine has the final word: e.g. `WITH ... DELETE` writes.
@@ -464,11 +472,6 @@ impl DataService {
             return Err(DataError::Forbidden(
                 "ForgeBase system tables are read-only here".into(),
             ));
-        }
-        if guard_secrets && let Some(col) = names_secret(sql, &secret_columns(&self.catalog())) {
-            return Err(DataError::Forbidden(format!(
-                "the statement names the secret column {col}: set show_secrets to run it (the use is audited)"
-            )));
         }
         let mut policy = false;
         if SqlFlavor::of(self.inner.backend.dialect()) == SqlFlavor::Postgres {
