@@ -300,7 +300,10 @@ mod tests {
         std::fs::write(node.join(SHARD_MARKER), "set1").unwrap();
         std::fs::write(node.join("data/x"), b"12345").unwrap();
         assert_eq!(shards.on_disk(), vec![("s-1".to_owned(), "set1".to_owned())]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let r = rt.block_on(shards.retire("s-1")).unwrap();
         assert!(r.id.starts_with("s-1-"));
         assert_eq!(r.set_id.as_deref(), Some("set1"));

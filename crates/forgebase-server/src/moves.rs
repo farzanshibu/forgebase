@@ -24,7 +24,9 @@ use forgebase_core::config::DatabaseConfig;
 use forgebase_data::AccessContext;
 use forgebase_db::moves::{self, MoveControl, MoveError, MoveHooks, MoveOptions, MoveRecord, RebalancePlan};
 use forgebase_db::topology::{CONTROL_SET_ID, DbSet, NodeKind, NodeRole};
-use forgebase_db::{Backend, BoxFuture, Database, DbOptions, DbRouter, DbTarget, SecretString, SetHandle, Statement, Value};
+use forgebase_db::{
+    Backend, BoxFuture, Database, DbOptions, DbRouter, DbTarget, SecretString, SetHandle, Statement, Value,
+};
 use forgebase_jobs::{HandlerError, Job, JobContext, JobRegistry, JobService, NewJob, ProgressReport};
 use forgebase_kv::KvService;
 use forgebase_pgengine::shard::LocalShards;
@@ -90,7 +92,12 @@ struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        if let Some(t) = self.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(t) = self
+            .stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             t.abort();
         }
     }
@@ -177,7 +184,9 @@ impl Moves {
                 Ok(Some(h.url(role).expose().to_owned()))
             }
             NodeKind::Remote | NodeKind::External => match node.url_sealed.as_deref() {
-                Some(sealed) => Ok(Some(open_node_url(&self.inner.cfg.keyring, &node.id, sealed).map_err(hook)?)),
+                Some(sealed) => Ok(Some(
+                    open_node_url(&self.inner.cfg.keyring, &node.id, sealed).map_err(hook)?,
+                )),
                 None if admin => Ok(None),
                 None => Err(MoveError::Hook(format!("node {} has no connection URL", node.name))),
             },
@@ -235,7 +244,12 @@ impl Moves {
     ///
     /// # Errors
     /// The move is not switched, or the engine's refusals.
-    pub async fn undo_move(&self, ctx: &AccessContext, id: &str, created_by: Option<String>) -> Result<(MoveRecord, Job), MoveError> {
+    pub async fn undo_move(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        created_by: Option<String>,
+    ) -> Result<(MoveRecord, Job), MoveError> {
         let rec = moves::undo(self.router(), self, self.options(), id, created_by).await?;
         let job = self.enqueue_move(ctx, &rec).await?;
         Ok((rec, job))
@@ -252,7 +266,14 @@ impl Moves {
         let (job, _) = match self.inner.cfg.jobs.enqueue(ctx, job).await {
             Ok(j) => j,
             Err(e) => {
-                let _ = moves::abort(self.router(), self, self.options(), &rec.id, "its job could not be queued").await;
+                let _ = moves::abort(
+                    self.router(),
+                    self,
+                    self.options(),
+                    &rec.id,
+                    "its job could not be queued",
+                )
+                .await;
                 return Err(hook(e));
             }
         };
@@ -280,7 +301,10 @@ impl Moves {
     /// Unknown or expired plan, job errors.
     pub async fn start_rebalance(&self, ctx: &AccessContext, plan_id: &str) -> Result<Job, MoveError> {
         let plan = moves::rebalance::load_plan(&self.router().control(), plan_id).await?;
-        let mut job = NewJob::new(kinds::REBALANCE, json!({ "plan_id": plan.id, "moves": plan.moves.len() }));
+        let mut job = NewJob::new(
+            kinds::REBALANCE,
+            json!({ "plan_id": plan.id, "moves": plan.moves.len() }),
+        );
         job.queue = Some(OPERATIONS_QUEUE.to_owned());
         job.max_attempts = Some(3);
         let (job, _) = self.inner.cfg.jobs.enqueue(ctx, job).await.map_err(hook)?;
@@ -340,12 +364,17 @@ impl Moves {
         match moves::run(self.router(), self, &control, self.options(), id).await {
             Ok(rec) => {
                 if rec.is_switched() {
-                    self.schedule_cleanup(&rec).await.map_err(|e| HandlerError::retry(e.to_string()))?;
+                    self.schedule_cleanup(&rec)
+                        .await
+                        .map_err(|e| HandlerError::retry(e.to_string()))?;
                 }
                 Ok(move_result(&rec))
             }
             Err(e) if e.is_transient() => Err(HandlerError::retry(e.to_string())),
-            Err(e) => Err(HandlerError::fatal(format!("{e} ({})", forgebase_core::ErrorCode::code(&e)))),
+            Err(e) => Err(HandlerError::fatal(format!(
+                "{e} ({})",
+                forgebase_core::ErrorCode::code(&e)
+            ))),
         }
     }
 
@@ -376,7 +405,9 @@ impl Moves {
             "failed": out.failed.as_ref().map(|(t, e)| json!({ "tenant": t, "error": e })),
         });
         match &out.failed {
-            Some((t, e)) => Err(HandlerError::fatal(format!("the move of {t} failed: {e}; later moves did not run"))),
+            Some((t, e)) => Err(HandlerError::fatal(format!(
+                "the move of {t} failed: {e}; later moves did not run"
+            ))),
             None if ctx.is_cancelled() => Err(HandlerError::fatal("cancelled between moves".to_owned())),
             None => Ok(result),
         }
@@ -509,7 +540,9 @@ impl MoveHooks for Moves {
                 ))
                 .await?;
             for r in &rows.rows {
-                let Some(role) = r.first().and_then(Value::as_str) else { continue };
+                let Some(role) = r.first().and_then(Value::as_str) else {
+                    continue;
+                };
                 forgebase_policy::native::copy_login_role(source.database(), target.database(), role, None)
                     .await
                     .map_err(hook)?;

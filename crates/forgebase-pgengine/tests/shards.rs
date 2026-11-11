@@ -119,10 +119,10 @@ async fn a_local_shard_starts_with_the_primarys_roles_and_is_retired_with_its_da
 async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clusters_roles() {
     use forgebase_db::topology::{self, NewSet, NodeKind as TopoKind, NodeRole, NodeState};
     use forgebase_db::{Database, DbOptions, DbTarget};
-    use forgebase_pgengine::replication::service::{self, JoinRequest, JoinTokenRequest, ReplicationSource};
-    use forgebase_pgengine::replication::EngineIdentity;
-    use forgebase_pgengine::standby::SslMode;
     use forgebase_pgengine::NodeKind;
+    use forgebase_pgengine::replication::EngineIdentity;
+    use forgebase_pgengine::replication::service::{self, JoinRequest, JoinTokenRequest, ReplicationSource};
+    use forgebase_pgengine::standby::SslMode;
 
     let Some(engine) = engine_dir() else { return };
     let tmp = tempdir();
@@ -131,7 +131,10 @@ async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clus
     cfg.listen = Some("127.0.0.1:18436".parse().unwrap());
     let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg).await.unwrap();
     let control = Database::open(DbOptions {
-        target: DbTarget::postgres(forgebase_db::SecretString::new(primary.url(Role::Server).expose()), true),
+        target: DbTarget::postgres(
+            forgebase_db::SecretString::new(primary.url(Role::Server).expose()),
+            true,
+        ),
         synchronous: forgebase_core::Synchronous::Full,
         busy_timeout: Duration::from_secs(5),
         read_pool_size: 2,
@@ -198,7 +201,10 @@ async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clus
         .into_iter()
         .find(|n| n.id == grant.node_id)
         .unwrap();
-    assert_eq!((node.kind, node.role, node.state), (TopoKind::Remote, NodeRole::Primary, NodeState::Provisioning));
+    assert_eq!(
+        (node.kind, node.role, node.state),
+        (TopoKind::Remote, NodeRole::Primary, NodeState::Provisioning)
+    );
     assert_eq!(node.set_id, set.id);
     // The server adds the cluster's role passwords; the agent bootstraps with them.
     grant.secrets = Some(std::fs::read_to_string(primary.layout().secrets_file()).unwrap());
@@ -218,12 +224,22 @@ async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clus
     let mut agent_cfg = config(&engine);
     agent_cfg.socket_port = 18_437;
     let far = Engine::prepare(&layout, &agent_cfg).await.unwrap();
-    assert_eq!(far.url(Role::Server).expose().split('@').next(), primary.url(Role::Server).expose().split('@').next(),
-        "same server role and password");
+    assert_eq!(
+        far.url(Role::Server).expose().split('@').next(),
+        primary.url(Role::Server).expose().split('@').next(),
+        "same server role and password"
+    );
     let url = far.url(Role::Server).expose().to_owned();
     assert_eq!(setting(&url, "max_prepared_transactions").await, "16");
-    let shown = service::server_url("10.0.0.7:5432", &forgebase_pgengine::Secret::new("pw"), SslMode::Require);
-    assert_eq!(shown.expose(), "postgres://forgebase_server:pw@10.0.0.7:5432/forgebase?sslmode=require");
+    let shown = service::server_url(
+        "10.0.0.7:5432",
+        &forgebase_pgengine::Secret::new("pw"),
+        SslMode::Require,
+    );
+    assert_eq!(
+        shown.expose(),
+        "postgres://forgebase_server:pw@10.0.0.7:5432/forgebase?sslmode=require"
+    );
     far.stop().await.unwrap();
     control.close().await;
     primary.stop().await.unwrap();

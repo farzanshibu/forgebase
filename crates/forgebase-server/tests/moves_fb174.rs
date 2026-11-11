@@ -44,6 +44,8 @@ async fn scalar(db: &Database, sql: &str) -> i64 {
 fn options() -> MoveOptions {
     MoveOptions {
         poll: Duration::from_millis(50),
+        // The shared test machine can be slow; the freeze is printed.
+        freeze_timeout: Duration::from_secs(60),
         ..MoveOptions::default()
     }
 }
@@ -110,9 +112,12 @@ mod sharded {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-                .await
-                .unwrap();
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
         addr
     }
@@ -130,7 +135,9 @@ mod sharded {
         req.headers_mut().insert("x-test-tenant", "t1".parse().unwrap());
         let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
         ws.send(WsMessage::Text(
-            json!({"type": "subscribe", "id": "p", "collection": "posts"}).to_string().into(),
+            json!({"type": "subscribe", "id": "p", "collection": "posts"})
+                .to_string()
+                .into(),
         ))
         .await
         .unwrap();
@@ -150,13 +157,19 @@ mod sharded {
                     }
                 }
                 if ty == "record.created" {
-                    let id = j["data"]["id"].as_str().or_else(|| j["record_id"].as_str()).unwrap_or("");
+                    let id = j["data"]["id"]
+                        .as_str()
+                        .or_else(|| j["record_id"].as_str())
+                        .unwrap_or("");
                     c.lock().unwrap().push(id.to_owned());
                 }
                 *f.lock().unwrap().entry(ty).or_insert(0) += 1;
             }
         });
-        tokio::time::timeout(Duration::from_secs(10), rx).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(10), rx)
+            .await
+            .unwrap()
+            .unwrap();
         Subscriber { created, frames, task }
     }
 
@@ -247,12 +260,16 @@ mod sharded {
         let errors = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut tasks = Vec::new();
         {
-            let (stop, records, errors, data, t1) = (stop.clone(), records.clone(), errors.clone(), data.clone(), t1.clone());
+            let (stop, records, errors, data, t1) =
+                (stop.clone(), records.clone(), errors.clone(), data.clone(), t1.clone());
             tasks.push(tokio::spawn(async move {
                 let mut i = 0;
                 while !stop.load(Ordering::SeqCst) {
                     i += 1;
-                    match data.create_record(&t1, "posts", json!({"title": format!("live {i}")})).await {
+                    match data
+                        .create_record(&t1, "posts", json!({"title": format!("live {i}")}))
+                        .await
+                    {
                         Ok(r) => records.lock().unwrap().push(r["id"].as_str().unwrap().to_owned()),
                         Err(e) => errors.lock().unwrap().push(format!("record: {e}")),
                     }
@@ -261,7 +278,13 @@ mod sharded {
             }));
         }
         {
-            let (stop, published, errors, queue, t1) = (stop.clone(), published.clone(), errors.clone(), queue.clone(), t1.clone());
+            let (stop, published, errors, queue, t1) = (
+                stop.clone(),
+                published.clone(),
+                errors.clone(),
+                queue.clone(),
+                t1.clone(),
+            );
             tasks.push(tokio::spawn(async move {
                 let mut i = 0;
                 while !stop.load(Ordering::SeqCst) {
@@ -277,7 +300,13 @@ mod sharded {
         }
         let consumer_stop = Arc::new(AtomicBool::new(false));
         {
-            let (stop, acked, errors, queue, t1) = (consumer_stop.clone(), acked.clone(), errors.clone(), queue.clone(), t1.clone());
+            let (stop, acked, errors, queue, t1) = (
+                consumer_stop.clone(),
+                acked.clone(),
+                errors.clone(),
+                queue.clone(),
+                t1.clone(),
+            );
             tasks.push(tokio::spawn(async move {
                 while !stop.load(Ordering::SeqCst) {
                     let req = serde_json::from_value(json!({"max_messages": 50, "wait_ms": 100})).unwrap();
@@ -375,7 +404,14 @@ mod sharded {
             .await
             .unwrap();
         assert_eq!(
-            scalar(&shard, &format!("SELECT count(*) FROM posts WHERE id = '{}'", after["id"].as_str().unwrap())).await,
+            scalar(
+                &shard,
+                &format!(
+                    "SELECT count(*) FROM posts WHERE id = '{}'",
+                    after["id"].as_str().unwrap()
+                )
+            )
+            .await,
             1
         );
 
@@ -389,22 +425,40 @@ mod sharded {
         let after_id = after["id"].as_str().unwrap().to_owned();
         let want: BTreeSet<&String> = records.iter().chain(std::iter::once(&after_id)).collect();
         let missing: Vec<&&String> = want.iter().filter(|r| !distinct.contains(**r)).collect();
-        assert!(missing.is_empty(), "{} events missing (frames {frames:?}): {missing:?}", missing.len());
+        assert!(
+            missing.is_empty(),
+            "{} events missing (frames {frames:?}): {missing:?}",
+            missing.len()
+        );
 
         // Queue: every published message delivered and acknowledged once.
         let acked = acked.lock().unwrap().clone();
         let acked_set: BTreeSet<&String> = acked.iter().collect();
         assert_eq!(acked_set.len(), acked.len(), "a message was delivered twice");
         let want_set: BTreeSet<&String> = want_published.iter().collect();
-        assert_eq!(acked_set, want_set, "published {} acked {}", want_published.len(), acked.len());
+        assert_eq!(
+            acked_set,
+            want_set,
+            "published {} acked {}",
+            want_published.len(),
+            acked.len()
+        );
         assert!(
-            scalar(&shard, "SELECT count(*) FROM _forgebase_queue_messages WHERE topic LIKE '%t1-orders'").await > 0
+            scalar(
+                &shard,
+                "SELECT count(*) FROM _forgebase_queue_messages WHERE topic LIKE '%t1-orders'"
+            )
+            .await
+                > 0
         );
 
         // Cleanup through the server's hooks.
         let cleaned = moves::cleanup(&router, &m, m.options(), &rec.id).await.unwrap();
         assert_eq!(cleaned.state, MoveState::Done);
-        assert_eq!(scalar(&s.control, "SELECT count(*) FROM posts WHERE _tenant = 't1'").await, 0);
+        assert_eq!(
+            scalar(&s.control, "SELECT count(*) FROM posts WHERE _tenant = 't1'").await,
+            0
+        );
         assert_eq!(router.placement("t1").unwrap().state, PlacementState::Active);
         server.shutdown().await.unwrap();
     }

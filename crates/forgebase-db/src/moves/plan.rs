@@ -163,7 +163,10 @@ impl MovePlan {
                 let cols = if t.missing.is_empty() {
                     String::new()
                 } else {
-                    format!(" ({})", t.columns.iter().map(|c| ident(c)).collect::<Vec<_>>().join(", "))
+                    format!(
+                        " ({})",
+                        t.columns.iter().map(|c| ident(c)).collect::<Vec<_>>().join(", ")
+                    )
                 };
                 match &t.filter {
                     Some(f) => format!("{}{cols} WHERE ({f})", t.qualified()),
@@ -360,9 +363,10 @@ impl Builder<'_> {
             }
             TenantKey::None | TenantKey::Record { .. } => return Ok(true),
         };
-        self.predicates
-            .insert(t.table.to_owned(), (predicate.clone(), depth));
-        let mut plan = self.table_plan(SYSTEM_SCHEMA, t.table, feed, filter, predicate, depth).await?;
+        self.predicates.insert(t.table.to_owned(), (predicate.clone(), depth));
+        let mut plan = self
+            .table_plan(SYSTEM_SCHEMA, t.table, feed, filter, predicate, depth)
+            .await?;
         plan.container = container;
         if let Some(col) = filter_column {
             plan.identity_full = !self.identity_covers(SYSTEM_SCHEMA, t.table, &col).await?;
@@ -395,14 +399,16 @@ impl Builder<'_> {
     }
 
     async fn identity_covers(&self, schema: &str, table: &str, column: &str) -> Result<bool, DbError> {
-        Ok(match pgsql::replica_identity(self.source, schema, table).await?.as_str() {
-            "f" => true,
-            "d" => pgsql::primary_key(self.source, schema, table)
-                .await?
-                .iter()
-                .any(|c| c == column),
-            _ => false,
-        })
+        Ok(
+            match pgsql::replica_identity(self.source, schema, table).await?.as_str() {
+                "f" => true,
+                "d" => pgsql::primary_key(self.source, schema, table)
+                    .await?
+                    .iter()
+                    .any(|c| c == column),
+                _ => false,
+            },
+        )
     }
 
     async fn table_plan(
@@ -483,7 +489,8 @@ impl Builder<'_> {
             .await?;
         let mut out = Vec::new();
         for r in &rows.rows {
-            let (Some(schema), Some(table)) = (r.first().and_then(Value::as_str), r.get(1).and_then(Value::as_str)) else {
+            let (Some(schema), Some(table)) = (r.first().and_then(Value::as_str), r.get(1).and_then(Value::as_str))
+            else {
                 continue;
             };
             if schema == SYSTEM_SCHEMA && placement::table(table).is_some() {
@@ -511,7 +518,11 @@ impl Builder<'_> {
     /// `_forgebase_record_versions`: versions of the tenant's records in
     /// tenant-scoped collections (deleted records: by an earlier version's
     /// `_tenant`).
-    async fn record_versions(&mut self, control: &dyn Backend, collections: &[(String, String)]) -> Result<(), DbError> {
+    async fn record_versions(
+        &mut self,
+        control: &dyn Backend,
+        collections: &[(String, String)],
+    ) -> Result<(), DbError> {
         let table = "_forgebase_record_versions";
         if !self.both_have(SYSTEM_SCHEMA, table).await? || collections.is_empty() {
             return Ok(());
@@ -649,11 +660,18 @@ mod tests {
         assert_eq!(tenant_value("_forgebase_jobs", "e1"), "e1");
         assert!(matches!(
             key_of("_forgebase_queue_subscriptions", TenantKey::None),
-            TenantKey::Parent { table: "_forgebase_queue_topics", .. }
+            TenantKey::Parent {
+                table: "_forgebase_queue_topics",
+                ..
+            }
         ));
         // Every container and renumbered table is a tenant table of the registry.
         for t in CONTAINERS.iter().chain(RENUMBERED.iter().map(|(t, _)| t)) {
-            assert_eq!(placement::table(t).map(|p| p.class), Some(PlacementClass::Tenant), "{t}");
+            assert_eq!(
+                placement::table(t).map(|p| p.class),
+                Some(PlacementClass::Tenant),
+                "{t}"
+            );
         }
         for (t, _) in REMAPPED {
             assert!(placement::table(t).is_some(), "{t}");

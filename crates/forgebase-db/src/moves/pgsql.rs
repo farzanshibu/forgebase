@@ -182,7 +182,10 @@ pub(crate) async fn create_slot(db: &Database, name: &str, failover: bool) -> Re
             lit(name)
         )
     } else {
-        format!("SELECT pg_catalog.pg_create_logical_replication_slot({}, 'pgoutput')", lit(name))
+        format!(
+            "SELECT pg_catalog.pg_create_logical_replication_slot({}, 'pgoutput')",
+            lit(name)
+        )
     };
     db.run_autocommit(&[sql]).await
 }

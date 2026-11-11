@@ -53,10 +53,12 @@ pub async fn begin(
     if tenant.is_empty() {
         return Err(MoveError::Invalid("a move needs a tenant".into()));
     }
-    let target = router.set(&req.to).ok_or_else(|| match router.topology().set(&req.to) {
-        None => MoveError::Router(RouterError::UnknownSet(req.to.clone())),
-        Some(_) => MoveError::Router(RouterError::SetUnavailable(req.to.clone())),
-    })?;
+    let target = router
+        .set(&req.to)
+        .ok_or_else(|| match router.topology().set(&req.to) {
+            None => MoveError::Router(RouterError::UnknownSet(req.to.clone())),
+            Some(_) => MoveError::Router(RouterError::SetUnavailable(req.to.clone())),
+        })?;
     need_postgres(target.database())?;
     if target.set().state != SetState::Active || !target.set().hosts_tenants {
         return Err(MoveError::Router(RouterError::SetClosed(req.to.clone())));
@@ -79,7 +81,10 @@ pub async fn begin(
     )
     .await?;
     // A previous move still keeping its source rows: clean them up now.
-    if let Some(prev) = open.iter().find(|m| m.tenant == tenant && m.state == MoveState::Cleanup) {
+    if let Some(prev) = open
+        .iter()
+        .find(|m| m.tenant == tenant && m.state == MoveState::Cleanup)
+    {
         cleanup(router, hooks, options, &prev.id).await?;
     } else if open.iter().any(|m| m.tenant == tenant) {
         return Err(MoveError::TenantMoving(tenant.to_owned()));
@@ -93,7 +98,10 @@ pub async fn begin(
         Some(_) => return Err(MoveError::TenantMoving(tenant.to_owned())),
     }
     if from == req.to {
-        return Err(MoveError::Invalid(format!("tenant {tenant:?} is already on {}", req.to)));
+        return Err(MoveError::Invalid(format!(
+            "tenant {tenant:?} is already on {}",
+            req.to
+        )));
     }
     if let Some(busy) = open
         .iter()
@@ -174,7 +182,11 @@ pub async fn undo(
 
 /// When a switched move's cleanup may run (RFC 3339), if switched.
 pub fn cleanup_due(rec: &MoveRecord, options: &MoveOptions) -> Option<String> {
-    let at = time::OffsetDateTime::parse(rec.switched_at.as_deref()?, &time::format_description::well_known::Rfc3339).ok()?;
+    let at = time::OffsetDateTime::parse(
+        rec.switched_at.as_deref()?,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .ok()?;
     let due = at + options.source_retention;
     due.format(&time::format_description::well_known::Rfc3339).ok()
 }
@@ -271,7 +283,13 @@ pub async fn run(
 
 /// Aborts move `id` before its switch: the subscription, publication, slot
 /// and copied rows go and the tenant is `active` on the source again.
-pub async fn abort(router: &DbRouter, hooks: &dyn MoveHooks, options: &MoveOptions, id: &str, reason: &str) -> Result<MoveRecord, MoveError> {
+pub async fn abort(
+    router: &DbRouter,
+    hooks: &dyn MoveHooks,
+    options: &MoveOptions,
+    id: &str,
+    reason: &str,
+) -> Result<MoveRecord, MoveError> {
     let quiet = super::Quiet;
     let ctx = Ctx {
         router,
@@ -352,14 +370,19 @@ async fn drop_replication(source: &Database, name: &str) -> Result<(), MoveError
     pgsql::wait_slot_inactive(source, name, Duration::from_secs(10)).await?;
     pgsql::drop_slot(source, name).await?;
     if pgsql::publication_exists(source, name).await? {
-        source.run_autocommit(&[format!("DROP PUBLICATION IF EXISTS {name}")]).await?;
+        source
+            .run_autocommit(&[format!("DROP PUBLICATION IF EXISTS {name}")])
+            .await?;
     }
     Ok(())
 }
 
 async fn drop_indexes(db: &Database, indexes: &[String]) {
     for i in indexes {
-        if let Err(e) = db.run_autocommit(&[format!("DROP INDEX CONCURRENTLY IF EXISTS {i}")]).await {
+        if let Err(e) = db
+            .run_autocommit(&[format!("DROP INDEX CONCURRENTLY IF EXISTS {i}")])
+            .await
+        {
             tracing::warn!(index = %i, error = %e, "move: index not dropped");
         }
     }
@@ -367,7 +390,12 @@ async fn drop_indexes(db: &Database, indexes: &[String]) {
 
 /// Restores replica identities set for this move, unless another open
 /// move from the same source still needs them.
-async fn restore_identity(ctx: &Ctx<'_>, rec: &MoveRecord, source: &Database, detail: &MoveDetail) -> Result<(), MoveError> {
+async fn restore_identity(
+    ctx: &Ctx<'_>,
+    rec: &MoveRecord,
+    source: &Database,
+    detail: &MoveDetail,
+) -> Result<(), MoveError> {
     if detail.replica_identity.is_empty() {
         return Ok(());
     }
@@ -403,8 +431,12 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     let (source, target) = ctx.sets(rec).await?;
     need_postgres(source.database())?;
     need_postgres(target.database())?;
-    ctx.report("preparing", 1.0, format!("preparing the move of {} to {}", rec.tenant, target.name()))
-        .await;
+    ctx.report(
+        "preparing",
+        1.0,
+        format!("preparing the move of {} to {}", rec.tenant, target.name()),
+    )
+    .await;
     if target.schema_version().await? < source.schema_version().await? {
         return Err(MoveError::State(format!(
             "{} is below the schema head of {}; wait for its migration",
@@ -423,7 +455,14 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     }
     pgsql::ensure_move_schema(source.database()).await?;
     pgsql::ensure_move_schema(target.database()).await?;
-    let plan = plan::build(&ctx.control_set, source.database(), target.database(), &rec.tenant, &rec.id).await?;
+    let plan = plan::build(
+        &ctx.control_set,
+        source.database(),
+        target.database(),
+        &rec.tenant,
+        &rec.id,
+    )
+    .await?;
     let mut detail = rec.detail.clone();
     if detail.plan.is_none() {
         let mut busy = Vec::new();
@@ -461,7 +500,14 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     }
     // The queue tables exist on the target now: plan them with their columns.
     let plan = if created {
-        plan::build(&ctx.control_set, source.database(), target.database(), &rec.tenant, &rec.id).await?
+        plan::build(
+            &ctx.control_set,
+            source.database(),
+            target.database(),
+            &rec.tenant,
+            &rec.id,
+        )
+        .await?
     } else {
         plan
     };
@@ -493,9 +539,7 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
         let q = t.qualified();
         let old = pgsql::replica_identity(source.database(), &t.schema, &t.table).await?;
         if old != "f" {
-            source
-                .run_autocommit(&[pgsql::replica_identity_sql(&q, "f")])
-                .await?;
+            source.run_autocommit(&[pgsql::replica_identity_sql(&q, "f")]).await?;
             if !detail.replica_identity.iter().any(|(n, _)| *n == q) {
                 detail.replica_identity.push((q, old));
             }
@@ -550,10 +594,7 @@ async fn check_missing_columns(source: &SetHandle, plan: &MovePlan, target: &str
 }
 
 fn has_replicas(ctx: &Ctx<'_>, set: &str) -> bool {
-    ctx.router
-        .topology()
-        .nodes_of(set)
-        .any(|n| n.role == NodeRole::Replica)
+    ctx.router.topology().nodes_of(set).any(|n| n.role == NodeRole::Replica)
 }
 
 /// `CREATE [UNIQUE] INDEX CONCURRENTLY IF NOT EXISTS …` from an
@@ -578,7 +619,9 @@ fn plan_of(rec: &MoveRecord) -> Result<&MovePlan, MoveError> {
 async fn check_subscription(target: &Database, name: &str) -> Result<pgsql::SubState, MoveError> {
     let st = pgsql::subscription_state(target, name).await?;
     if !st.exists {
-        return Err(MoveError::Replication(format!("subscription {name} is missing on the target")));
+        return Err(MoveError::Replication(format!(
+            "subscription {name} is missing on the target"
+        )));
     }
     if !st.enabled {
         let (apply, sync) = pgsql::subscription_errors(target, name).await.unwrap_or((0, 0));
@@ -628,7 +671,12 @@ async fn copy(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
         ctx.report(
             "copying",
             5.0 + 55.0 * frac,
-            format!("{} of {} tables copied ({} MiB in flight)", st.ready, st.tables, bytes >> 20),
+            format!(
+                "{} of {} tables copied ({} MiB in flight)",
+                st.ready,
+                st.tables,
+                bytes >> 20
+            ),
         )
         .await;
         tokio::time::sleep(ctx.options.poll).await;
@@ -736,7 +784,11 @@ async fn switch(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     ctx.report(
         "switching",
         88.0,
-        format!("freezing {} for at most {} ms", rec.tenant, ctx.options.freeze_timeout.as_millis()),
+        format!(
+            "freezing {} for at most {} ms",
+            rec.tenant,
+            ctx.options.freeze_timeout.as_millis()
+        ),
     )
     .await;
     let mut f = Freeze::new(ctx.options.freeze_timeout);
@@ -798,7 +850,9 @@ async fn frozen_switch(
         }
         let st = pgsql::subscription_state(target, &name).await?;
         if !st.enabled {
-            return Err(MoveError::Replication(format!("subscription {name} stopped before the barrier")));
+            return Err(MoveError::Replication(format!(
+                "subscription {name} stopped before the barrier"
+            )));
         }
         f.remaining()?;
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -914,9 +968,7 @@ async fn frozen_switch(
     tx.commit().await?;
     // The flip: one control transaction, epoch + 1; waiting requests go to
     // the target now.
-    ctx.router
-        .place(tenant, &rec.to_set, PlacementState::Cleanup)
-        .await?;
+    ctx.router.place(tenant, &rec.to_set, PlacementState::Cleanup).await?;
     let ms = u64::try_from(f.mark.elapsed().as_millis()).unwrap_or(0);
     *f.parts.entry("flip".into()).or_insert(0) += ms;
     Ok(())
@@ -924,7 +976,12 @@ async fn frozen_switch(
 
 /// After the flip: hooks, then the replication objects go (the source rows
 /// stay until the cleanup).
-async fn after_switch(ctx: &Ctx<'_>, rec: &MoveRecord, source: &SetHandle, target: &SetHandle) -> Result<(), MoveError> {
+async fn after_switch(
+    ctx: &Ctx<'_>,
+    rec: &MoveRecord,
+    source: &SetHandle,
+    target: &SetHandle,
+) -> Result<(), MoveError> {
     if let Err(e) = ctx.hooks.switched(&rec.tenant, source, target).await {
         tracing::warn!(tenant = %rec.tenant, error = %e, "move: a service did not take the switch");
     }
@@ -962,7 +1019,12 @@ async fn after_switch(ctx: &Ctx<'_>, rec: &MoveRecord, source: &SetHandle, targe
 /// batches), drops the indexes copied for it there, and makes the
 /// placement `active` on the target. The caller runs it after the
 /// retention ([`cleanup_due`]); [`begin`] runs it early for a move back.
-pub async fn cleanup(router: &DbRouter, hooks: &dyn MoveHooks, options: &MoveOptions, id: &str) -> Result<MoveRecord, MoveError> {
+pub async fn cleanup(
+    router: &DbRouter,
+    hooks: &dyn MoveHooks,
+    options: &MoveOptions,
+    id: &str,
+) -> Result<MoveRecord, MoveError> {
     let control = router.control();
     let rec = get(&control, id).await?;
     match rec.state {
@@ -989,9 +1051,7 @@ pub async fn cleanup(router: &DbRouter, hooks: &dyn MoveHooks, options: &MoveOpt
         .placement(&rec.tenant)
         .is_some_and(|p| p.set_id == rec.to_set && p.state == PlacementState::Cleanup)
     {
-        router
-            .place(&rec.tenant, &rec.to_set, PlacementState::Active)
-            .await?;
+        router.place(&rec.tenant, &rec.to_set, PlacementState::Active).await?;
     }
     let rec = store(&control, &rec.id, MoveState::Done, &detail, None).await?;
     tracing::info!(move_id = %rec.id, tenant = %rec.tenant, rows = rec.detail.cleaned_rows.unwrap_or(0), "move cleaned up");

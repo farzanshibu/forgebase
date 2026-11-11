@@ -777,7 +777,10 @@ pub fn router(app: AppState, ops: Option<Arc<dyn TopologyOps>>) -> Router {
         .route("/api/system/database/rebalance/plan", post(rebalance_plan))
         .route("/api/system/database/rebalance", post(rebalance))
         .route("/api/system/database/retired", get(retired))
-        .route("/api/system/database/retired/{id}", axum::routing::delete(delete_retired))
+        .route(
+            "/api/system/database/retired/{id}",
+            axum::routing::delete(delete_retired),
+        )
         .route("/api/system/database/operations", get(operations))
         .route("/api/system/database/operations/{id}", get(operation))
         .route("/api/system/database/operations/{id}/cancel", post(cancel_operation))
@@ -1268,7 +1271,10 @@ pub async fn add_shard(
     let r = async {
         let name = body.name.trim();
         if name.is_empty() || name.len() > 64 {
-            return Err(ApiError::bad_request("invalid_request", "a shard needs a name of 1 to 64 characters, such as shard-2"));
+            return Err(ApiError::bad_request(
+                "invalid_request",
+                "a shard needs a name of 1 to 64 characters, such as shard-2",
+            ));
         }
         check_name(&body.node.name)?;
         match body.node.kind.as_str() {
@@ -1293,7 +1299,10 @@ pub async fn add_shard(
             }
         }
         if body.weight.is_some_and(|w| !(1..=1_000).contains(&w)) {
-            return Err(ApiError::bad_request("invalid_request", "weight must be from 1 to 1000"));
+            return Err(ApiError::bad_request(
+                "invalid_request",
+                "weight must be from 1 to 1000",
+            ));
         }
         Ok(ops.add_shard(&ctx, body.clone()).await?)
     }
@@ -1408,7 +1417,6 @@ pub async fn placements(State(s): State<DbApi>, Access(ctx): Access, RawQuery(q)
     Ok(Json(page).into_response())
 }
 
-
 fn confirm(given: &str, want: &str, what: &str) -> ApiResult<()> {
     if given.trim() == want {
         Ok(())
@@ -1469,7 +1477,10 @@ pub async fn rebalance_plan(
 ) -> ApiResult<Response> {
     let ops = s.ops(&ctx)?;
     if body.max_moves.is_some_and(|m| !(1..=500).contains(&m)) {
-        return Err(ApiError::bad_request("invalid_request", "max_moves must be from 1 to 500"));
+        return Err(ApiError::bad_request(
+            "invalid_request",
+            "max_moves must be from 1 to 500",
+        ));
     }
     let detail = json!({ "sets": body.sets, "max_moves": body.max_moves });
     let r = async { Ok(ops.rebalance_plan(body.clone()).await?) }.await;
@@ -1535,7 +1546,8 @@ pub async fn delete_retired(
     let confirm = query_value(q.as_deref(), "confirm").unwrap_or_default();
     let detail = json!({ "id": id });
     let r = async {
-        s.step_up(&ctx, caller(auth.as_ref()), "Deleting a removed shard's data").await?;
+        s.step_up(&ctx, caller(auth.as_ref()), "Deleting a removed shard's data")
+            .await?;
         Ok(ops.delete_retired(&id, &confirm).await?)
     }
     .await;
@@ -1949,7 +1961,12 @@ mod tests {
                 },
             )
         }
-        fn move_tenant<'a>(&'a self, _ctx: &'a AccessContext, tenant: &'a str, req: MoveBody) -> OpsFuture<'a, Operation> {
+        fn move_tenant<'a>(
+            &'a self,
+            _ctx: &'a AccessContext,
+            tenant: &'a str,
+            req: MoveBody,
+        ) -> OpsFuture<'a, Operation> {
             self.hit(format!("move {tenant} {}", req.to), op(kinds::TENANT_MOVE))
         }
         fn rebalance_plan(&self, req: RebalancePlanBody) -> OpsFuture<'_, RebalancePlanView> {
@@ -2386,7 +2403,11 @@ mod tests {
                 json!({"to": "s2", "confirm": "t1"}),
                 StatusCode::ACCEPTED,
             ),
-            (format!("{base}/rebalance/plan"), json!({"max_moves": 3}), StatusCode::OK),
+            (
+                format!("{base}/rebalance/plan"),
+                json!({"max_moves": 3}),
+                StatusCode::OK,
+            ),
             (
                 format!("{base}/rebalance"),
                 json!({"plan_id": "p", "confirm": "p"}),
@@ -2396,7 +2417,15 @@ mod tests {
             let (s, _, j) = call(&f, a(), Method::POST, &p, Some(b), &[]).await;
             assert_eq!(s, want, "{p}: {j}");
         }
-        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/rebalance/plan"), Some(json!({"max_moves": 0})), &[]).await;
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/rebalance/plan"),
+            Some(json!({"max_moves": 0})),
+            &[],
+        )
+        .await;
         assert_eq!((s, code(&j)), (StatusCode::BAD_REQUEST, "invalid_request"));
         let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/retired"), None, &[]).await;
         assert_eq!(s, StatusCode::OK);

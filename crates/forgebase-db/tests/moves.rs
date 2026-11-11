@@ -76,7 +76,12 @@ impl Hooks {
     }
 
     fn called(&self, what: &str) -> usize {
-        self.calls.lock().unwrap().iter().filter(|c| c.starts_with(what)).count()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.starts_with(what))
+            .count()
     }
 }
 
@@ -106,7 +111,10 @@ impl MoveHooks for Hooks {
 
     fn drain<'a>(&'a self, tenant: &'a str, source: &'a SetHandle) -> BoxFuture<'a, Result<(), MoveError>> {
         Box::pin(async move {
-            self.calls.lock().unwrap().push(format!("drain {tenant} {}", source.id()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("drain {tenant} {}", source.id()));
             Ok(())
         })
     }
@@ -241,7 +249,12 @@ async fn seed(db: &Database, tenant: &str, n: usize) {
     for (i, e) in ["enqueued", "claimed", "released", "claimed"].iter().enumerate() {
         tx.execute(&Statement::new(
             "INSERT INTO _forgebase_job_events (job_id, at, event, attempt) VALUES (?1, ?2, ?3, ?4)",
-            vec![job.clone().into(), i64::try_from(i).unwrap().into(), (*e).into(), 1.into()],
+            vec![
+                job.clone().into(),
+                i64::try_from(i).unwrap().into(),
+                (*e).into(),
+                1.into(),
+            ],
         ))
         .await
         .unwrap();
@@ -373,7 +386,11 @@ impl Writer {
 async fn publication_and_slot(db: &Database) -> (i64, i64) {
     (
         int(db, "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'fb_move_%'").await,
-        int(db, "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fb_move_%'").await,
+        int(
+            db,
+            "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fb_move_%'",
+        )
+        .await,
     )
 }
 
@@ -420,7 +437,9 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
     assert_eq!(again.code(), "tenant_moving");
 
     let ctl = Ctl::new(None);
-    let done = moves::run(&s.router, hooks.as_ref(), &ctl, &options(), &rec.id).await.unwrap();
+    let done = moves::run(&s.router, hooks.as_ref(), &ctl, &options(), &rec.id)
+        .await
+        .unwrap();
     assert_eq!(done.state, MoveState::Cleanup, "{:?}", done.error);
     let freeze = done.detail.freeze_ms.unwrap();
     eprintln!(
@@ -437,7 +456,10 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
     let (acked, failed) = writer.stop().await;
     assert_eq!(failed, 0, "no write failed during the move");
     assert!(acked.iter().any(|(_, set_id)| set_id == "control"));
-    assert!(acked.iter().any(|(_, set_id)| *set_id == set.id), "writes reached the target after the switch");
+    assert!(
+        acked.iter().any(|(_, set_id)| *set_id == set.id),
+        "writes reached the target after the switch"
+    );
 
     // Routing: the tenant is on the shard, B stays on control.
     let p = s.router.placement(A).unwrap();
@@ -456,15 +478,30 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
         .chain(acked.iter().map(|(id, _)| id.clone()))
         .collect();
     assert_eq!(on_shard, want);
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{B}'")).await, 0);
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{B}'")
+        )
+        .await,
+        0
+    );
     // Columns survive (jsonb, bytea).
     assert_eq!(
-        texts(&shard, &format!("SELECT doc->>'i' || encode(blob, 'hex') FROM public.posts WHERE id = '{A}-p7'")).await,
+        texts(
+            &shard,
+            &format!("SELECT doc->>'i' || encode(blob, 'hex') FROM public.posts WHERE id = '{A}-p7'")
+        )
+        .await,
         vec!["700ff10".to_owned()]
     );
     // KV under the tenant's scope.
     assert_eq!(
-        int(&shard, &format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:{A}'")).await,
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:{A}'")
+        )
+        .await,
         300
     );
     // Job events and attempts: staged, renumbered into the shard's range, in source order.
@@ -474,16 +511,28 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
     )
     .await;
     assert_eq!(events, ["enqueued", "claimed", "released", "claimed"]);
-    let min_id = int(&shard, &format!("SELECT min(id) FROM _forgebase_job_events WHERE job_id = 'job-{A}'")).await;
+    let min_id = int(
+        &shard,
+        &format!("SELECT min(id) FROM _forgebase_job_events WHERE job_id = 'job-{A}'"),
+    )
+    .await;
     assert_eq!(topology::set_number_of(min_id), set.number);
     assert_eq!(
-        int(&shard, &format!("SELECT count(*) FROM _forgebase_job_attempts WHERE job_id = 'job-{A}'")).await,
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM _forgebase_job_attempts WHERE job_id = 'job-{A}'")
+        )
+        .await,
         1
     );
     // Queue: one message and one delivery per publish (seeded + acknowledged),
     // messages renumbered into the shard's range in order, deliveries remapped,
     // the cursor at the last message.
-    let msgs = int(&shard, &format!("SELECT count(*) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")).await;
+    let msgs = int(
+        &shard,
+        &format!("SELECT count(*) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'"),
+    )
+    .await;
     assert_eq!(usize::try_from(msgs).unwrap(), 300 + acked.len());
     let ids = texts(
         &shard,
@@ -495,7 +544,11 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
     let seeded: Vec<String> = ids.iter().filter(|i| i.contains(":seed-")).cloned().collect();
     assert_eq!(seeded.first().unwrap(), &format!("{A}:seed-0"));
     assert_eq!(seeded.last().unwrap(), &format!("{A}:seed-299"));
-    let min_seq = int(&shard, &format!("SELECT min(seq) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")).await;
+    let min_seq = int(
+        &shard,
+        &format!("SELECT min(seq) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'"),
+    )
+    .await;
     assert_eq!(topology::set_number_of(min_seq), set.number);
     assert_eq!(
         int(
@@ -510,8 +563,16 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
         "every delivery points at its renumbered message"
     );
     assert_eq!(
-        int(&shard, &format!("SELECT cursor_seq FROM _forgebase_queue_subscriptions WHERE name = '{A}/orders/worker'")).await,
-        int(&shard, &format!("SELECT max(seq) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")).await
+        int(
+            &shard,
+            &format!("SELECT cursor_seq FROM _forgebase_queue_subscriptions WHERE name = '{A}/orders/worker'")
+        )
+        .await,
+        int(
+            &shard,
+            &format!("SELECT max(seq) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")
+        )
+        .await
     );
     // New messages on the shard come after the moved ones.
     publish(&shard, A, "after").await;
@@ -525,11 +586,21 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
     );
     // Replication objects are gone; the source keeps the rows until the cleanup.
     assert_eq!(publication_and_slot(&s.control).await, (0, 0));
-    assert_eq!(int(&s.control, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await > 0, true);
+    assert_eq!(
+        int(
+            &s.control,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
+        )
+        .await
+            > 0,
+        true
+    );
     assert!(moves::cleanup_due(&done, &options()).is_some());
 
     // Cleanup: the source rows go, B's stay; the placement is active.
-    let cleaned = moves::cleanup(&s.router, hooks.as_ref(), &options(), &rec.id).await.unwrap();
+    let cleaned = moves::cleanup(&s.router, hooks.as_ref(), &options(), &rec.id)
+        .await
+        .unwrap();
     assert_eq!(cleaned.state, MoveState::Done);
     assert!(cleaned.detail.cleaned_rows.unwrap() > 600);
     for (table, col, t) in [
@@ -538,30 +609,89 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
         ("_forgebase_jobs", "tenant", A.to_owned()),
         ("_forgebase_queue_topics", "tenant", A.to_owned()),
     ] {
-        assert_eq!(int(&s.control, &format!("SELECT count(*) FROM {table} WHERE {col} = '{t}'")).await, 0, "{table}");
+        assert_eq!(
+            int(&s.control, &format!("SELECT count(*) FROM {table} WHERE {col} = '{t}'")).await,
+            0,
+            "{table}"
+        );
     }
-    assert_eq!(int(&s.control, &format!("SELECT count(*) FROM _forgebase_job_events WHERE job_id = 'job-{A}'")).await, 0);
-    assert_eq!(int(&s.control, &format!("SELECT count(*) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")).await, 0);
-    assert_eq!(int(&s.control, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{B}'")).await, 20);
-    assert_eq!(int(&s.control, &format!("SELECT count(*) FROM _forgebase_queue_messages WHERE topic = '{B}/orders'")).await, 20);
+    assert_eq!(
+        int(
+            &s.control,
+            &format!("SELECT count(*) FROM _forgebase_job_events WHERE job_id = 'job-{A}'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        int(
+            &s.control,
+            &format!("SELECT count(*) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        int(
+            &s.control,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{B}'")
+        )
+        .await,
+        20
+    );
+    assert_eq!(
+        int(
+            &s.control,
+            &format!("SELECT count(*) FROM _forgebase_queue_messages WHERE topic = '{B}/orders'")
+        )
+        .await,
+        20
+    );
     assert_eq!(s.router.placement(A).unwrap().state, PlacementState::Active);
 
     // Undo: a move back to control.
-    let back = moves::undo(&s.router, hooks.as_ref(), &options(), &rec.id, Some("admin".into())).await.unwrap();
-    assert_eq!(back.to_set, "control");
-    assert_eq!(back.detail.undo_of.as_deref(), Some(rec.id.as_str()));
-    let back = moves::run(&s.router, hooks.as_ref(), &Quiet, &options(), &back.id).await.unwrap();
-    assert_eq!(back.state, MoveState::Cleanup, "{:?}", back.error);
-    assert_eq!(moves::routed_set(&s.router, A).await.unwrap(), "control");
-    let back_posts = int(&s.control, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await;
-    assert_eq!(usize::try_from(back_posts).unwrap(), want.len());
-    let seq = int(&s.control, &format!("SELECT min(seq) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'")).await;
-    assert_eq!(topology::set_number_of(seq), 0, "renumbered into control's range");
-    moves::cleanup(&s.router, hooks.as_ref(), &options(), &back.id).await.unwrap();
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await, 0);
-    let all = moves::list(&s.control, &moves::MoveQuery { tenant: Some(A.into()), ..Default::default() })
+    let back = moves::undo(&s.router, hooks.as_ref(), &options(), &rec.id, Some("admin".into()))
         .await
         .unwrap();
+    assert_eq!(back.to_set, "control");
+    assert_eq!(back.detail.undo_of.as_deref(), Some(rec.id.as_str()));
+    let back = moves::run(&s.router, hooks.as_ref(), &Quiet, &options(), &back.id)
+        .await
+        .unwrap();
+    assert_eq!(back.state, MoveState::Cleanup, "{:?}", back.error);
+    assert_eq!(moves::routed_set(&s.router, A).await.unwrap(), "control");
+    let back_posts = int(
+        &s.control,
+        &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'"),
+    )
+    .await;
+    assert_eq!(usize::try_from(back_posts).unwrap(), want.len());
+    let seq = int(
+        &s.control,
+        &format!("SELECT min(seq) FROM _forgebase_queue_messages WHERE topic = '{A}/orders'"),
+    )
+    .await;
+    assert_eq!(topology::set_number_of(seq), 0, "renumbered into control's range");
+    moves::cleanup(&s.router, hooks.as_ref(), &options(), &back.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
+        )
+        .await,
+        0
+    );
+    let all = moves::list(
+        &s.control,
+        &moves::MoveQuery {
+            tenant: Some(A.into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(all.len(), 2);
     assert!(all.iter().all(|m| m.state == MoveState::Done));
 }
@@ -577,38 +707,108 @@ async fn cancel_and_freeze_timeout_abort_with_nothing_changed_and_refusals() {
     let opts = options();
 
     // Refusals.
-    let same = moves::begin(&s.router, hooks.as_ref(), &opts, BeginMove { tenant: A.into(), to: "control".into(), ..Default::default() })
-        .await
-        .unwrap_err();
+    let same = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &opts,
+        BeginMove {
+            tenant: A.into(),
+            to: "control".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
     assert_eq!(same.code(), "invalid_request");
-    let unknown = moves::begin(&s.router, hooks.as_ref(), &opts, BeginMove { tenant: "nobody".into(), to: set.id.clone(), ..Default::default() })
-        .await
-        .unwrap_err();
+    let unknown = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &opts,
+        BeginMove {
+            tenant: "nobody".into(),
+            to: set.id.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
     assert_eq!(unknown.code(), "invalid_request");
-    let nowhere = moves::begin(&s.router, hooks.as_ref(), &opts, BeginMove { tenant: A.into(), to: "no-such-set".into(), ..Default::default() })
-        .await
-        .unwrap_err();
+    let nowhere = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &opts,
+        BeginMove {
+            tenant: A.into(),
+            to: "no-such-set".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
     assert_eq!(nowhere.code(), "shard_not_found");
 
     // Cancel while copying: aborted, nothing on the target, A active on control.
-    let rec = moves::begin(&s.router, hooks.as_ref(), &opts, BeginMove { tenant: A.into(), to: set.id.clone(), ..Default::default() })
-        .await
-        .unwrap();
+    let rec = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &opts,
+        BeginMove {
+            tenant: A.into(),
+            to: set.id.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let ctl = Ctl::new(Some("copying"));
-    let err = moves::run(&s.router, hooks.as_ref(), &ctl, &opts, &rec.id).await.unwrap_err();
+    let err = moves::run(&s.router, hooks.as_ref(), &ctl, &opts, &rec.id)
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "cancelled");
     let aborted = moves::get(&s.control, &rec.id).await.unwrap();
     assert_eq!(aborted.state, MoveState::Aborted);
     assert!(aborted.error.unwrap().contains("cancelled"));
     assert_eq!(s.router.placement(A).unwrap().state, PlacementState::Active);
     assert_eq!(s.router.placement(A).unwrap().set_id, "control");
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await, 0);
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:{A}'")).await, 0);
-    assert_eq!(int(&shard, "SELECT count(*) FROM pg_subscription WHERE subname LIKE 'fb_move_%'").await, 0);
-    assert_eq!(int(&shard, "SELECT count(*) FROM pg_tables WHERE schemaname = 'fb_move' AND tablename <> 'barrier'").await, 0);
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:{A}'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        int(
+            &shard,
+            "SELECT count(*) FROM pg_subscription WHERE subname LIKE 'fb_move_%'"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        int(
+            &shard,
+            "SELECT count(*) FROM pg_tables WHERE schemaname = 'fb_move' AND tablename <> 'barrier'"
+        )
+        .await,
+        0
+    );
     assert_eq!(publication_and_slot(&s.control).await, (0, 0));
     assert_eq!(
-        texts(&s.control, "SELECT CAST(relreplident AS text) FROM pg_class WHERE oid = 'forgebase._forgebase_jobs'::regclass").await,
+        texts(
+            &s.control,
+            "SELECT CAST(relreplident AS text) FROM pg_class WHERE oid = 'forgebase._forgebase_jobs'::regclass"
+        )
+        .await,
         vec!["d".to_owned()],
         "replica identity restored"
     );
@@ -620,33 +820,91 @@ async fn cancel_and_freeze_timeout_abort_with_nothing_changed_and_refusals() {
         freeze_timeout: Duration::from_millis(200),
         ..opts
     };
-    let rec = moves::begin(&s.router, hooks.as_ref(), &short, BeginMove { tenant: A.into(), to: set.id.clone(), ..Default::default() })
+    let rec = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &short,
+        BeginMove {
+            tenant: A.into(),
+            to: set.id.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let err = moves::run(&s.router, hooks.as_ref(), &Quiet, &short, &rec.id)
         .await
-        .unwrap();
-    let err = moves::run(&s.router, hooks.as_ref(), &Quiet, &short, &rec.id).await.unwrap_err();
+        .unwrap_err();
     assert_eq!(err.code(), "move_freeze_timeout");
     let aborted = moves::get(&s.control, &rec.id).await.unwrap();
     assert_eq!(aborted.state, MoveState::Aborted);
     assert!(aborted.detail.freeze_ms.unwrap() >= 200);
     assert_eq!(moves::routed_set(&s.router, A).await.unwrap(), "control");
-    assert_eq!(int(&s.control, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await, 50);
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await, 0);
+    assert_eq!(
+        int(
+            &s.control,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
+        )
+        .await,
+        50
+    );
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
+        )
+        .await,
+        0
+    );
     assert_eq!(publication_and_slot(&s.control).await, (0, 0));
 
     // A switched move cannot be aborted, an unswitched one cannot be undone or cleaned up.
     *hooks.freeze_pause.lock().unwrap() = None;
-    let rec = moves::begin(&s.router, hooks.as_ref(), &opts, BeginMove { tenant: A.into(), to: set.id.clone(), ..Default::default() })
-        .await
-        .unwrap();
-    assert_eq!(moves::undo(&s.router, hooks.as_ref(), &opts, &rec.id, None).await.unwrap_err().code(), "move_state");
-    assert_eq!(moves::cleanup(&s.router, hooks.as_ref(), &opts, &rec.id).await.unwrap_err().code(), "move_state");
-    let done = moves::run(&s.router, hooks.as_ref(), &Quiet, &opts, &rec.id).await.unwrap();
-    assert_eq!(done.state, MoveState::Cleanup, "{:?}", done.error);
+    let rec = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &opts,
+        BeginMove {
+            tenant: A.into(),
+            to: set.id.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        moves::abort(&s.router, hooks.as_ref(), &opts, &rec.id, "no").await.unwrap_err().code(),
+        moves::undo(&s.router, hooks.as_ref(), &opts, &rec.id, None)
+            .await
+            .unwrap_err()
+            .code(),
         "move_state"
     );
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")).await, 50);
+    assert_eq!(
+        moves::cleanup(&s.router, hooks.as_ref(), &opts, &rec.id)
+            .await
+            .unwrap_err()
+            .code(),
+        "move_state"
+    );
+    let done = moves::run(&s.router, hooks.as_ref(), &Quiet, &opts, &rec.id)
+        .await
+        .unwrap();
+    assert_eq!(done.state, MoveState::Cleanup, "{:?}", done.error);
+    assert_eq!(
+        moves::abort(&s.router, hooks.as_ref(), &opts, &rec.id, "no")
+            .await
+            .unwrap_err()
+            .code(),
+        "move_state"
+    );
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
+        )
+        .await,
+        50
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -657,9 +915,18 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
     };
     seed(&s.control, A, 5).await;
     let hooks = Hooks::new(&s, &[&set]);
-    let rec = moves::begin(&s.router, hooks.as_ref(), &options(), BeginMove { tenant: A.into(), to: set.id.clone(), ..Default::default() })
-        .await
-        .unwrap();
+    let rec = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &options(),
+        BeginMove {
+            tenant: A.into(),
+            to: set.id.clone(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     // Run the prepare step only, by cancelling the copy … no: start the move,
     // and create a topic while it copies (a hook-free stand-in for an API call).
     struct AtCopy<'a> {
@@ -699,11 +966,17 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
         db: &s.control,
         done: AtomicBool::new(false),
     };
-    let done = moves::run(&s.router, hooks.as_ref(), &ctl, &options(), &rec.id).await.unwrap();
+    let done = moves::run(&s.router, hooks.as_ref(), &ctl, &options(), &rec.id)
+        .await
+        .unwrap();
     assert_eq!(done.state, MoveState::Cleanup, "{:?}", done.error);
     assert!(ctl.done.load(Ordering::SeqCst), "the topic was created during the copy");
     assert_eq!(
-        texts(&shard, &format!("SELECT id FROM _forgebase_queue_messages WHERE topic = '{A}/late' ORDER BY seq")).await,
+        texts(
+            &shard,
+            &format!("SELECT id FROM _forgebase_queue_messages WHERE topic = '{A}/late' ORDER BY seq")
+        )
+        .await,
         vec![format!("{A}:late-0"), format!("{A}:late-1"), format!("{A}:late-2")]
     );
 
@@ -712,15 +985,31 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
     // so the move is refused before anything changes; pgvector's `vec` on
     // `_forgebase_vector_values` (key-covered filter) moves without it while
     // empty (the server test covers it).
-    moves::cleanup(&s.router, hooks.as_ref(), &options(), &rec.id).await.unwrap();
-    exec(&shard, "ALTER TABLE public.posts ADD COLUMN extra text").await;
-    let back = moves::begin(&s.router, hooks.as_ref(), &options(), BeginMove { tenant: A.into(), to: "control".into(), ..Default::default() })
+    moves::cleanup(&s.router, hooks.as_ref(), &options(), &rec.id)
         .await
         .unwrap();
-    let err = moves::run(&s.router, hooks.as_ref(), &Quiet, &options(), &back.id).await.unwrap_err();
+    exec(&shard, "ALTER TABLE public.posts ADD COLUMN extra text").await;
+    let back = moves::begin(
+        &s.router,
+        hooks.as_ref(),
+        &options(),
+        BeginMove {
+            tenant: A.into(),
+            to: "control".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let err = moves::run(&s.router, hooks.as_ref(), &Quiet, &options(), &back.id)
+        .await
+        .unwrap_err();
     assert_eq!(err.code(), "move_state", "{err}");
     assert!(err.to_string().contains("extra"), "{err}");
-    assert_eq!(moves::get(&s.control, &back.id).await.unwrap().state, MoveState::Aborted);
+    assert_eq!(
+        moves::get(&s.control, &back.id).await.unwrap().state,
+        MoveState::Aborted
+    );
     assert_eq!(moves::routed_set(&s.router, A).await.unwrap(), set.id);
 }
 
@@ -745,35 +1034,73 @@ async fn rebalance_plans_run_one_move_at_a_time_and_a_drain_empties_a_shard() {
     moves::rebalance::save_plan(&s.control, &plan).await.unwrap();
     let stored = moves::rebalance::load_plan(&s.control, &plan.id).await.unwrap();
     assert_eq!(stored, plan);
-    let out = moves::run_plan(&s.router, hooks.as_ref(), &Quiet, &options(), &stored, Some("admin".into()))
-        .await
-        .unwrap();
+    let out = moves::run_plan(
+        &s.router,
+        hooks.as_ref(),
+        &Quiet,
+        &options(),
+        &stored,
+        Some("admin".into()),
+    )
+    .await
+    .unwrap();
     assert!(out.failed.is_none(), "{out:?}");
     assert_eq!(out.moves.len(), 1);
     assert_eq!(out.moves[0].rebalance_id.as_deref(), Some(plan.id.as_str()));
     assert_eq!(moves::routed_set(&s.router, B).await.unwrap(), set.id);
     // The plan again: B is on the shard now, so it is skipped.
-    let again = moves::run_plan(&s.router, hooks.as_ref(), &Quiet, &options(), &stored, None).await.unwrap();
+    let again = moves::run_plan(&s.router, hooks.as_ref(), &Quiet, &options(), &stored, None)
+        .await
+        .unwrap();
     assert_eq!(again.skipped, vec![B.to_owned()]);
 
     // Removing the shard is refused while it holds B; draining moves B back.
-    assert_eq!(moves::check_removable(&s.router, &set.id).await.unwrap_err().code(), "move_state");
+    assert_eq!(
+        moves::check_removable(&s.router, &set.id).await.unwrap_err().code(),
+        "move_state"
+    );
     let drain = moves::drain_set(&s.router, &set.id).await.unwrap();
     assert_eq!(s.router.topology().set(&set.id).unwrap().state, SetState::Draining);
     assert_eq!(drain.moves.len(), 1);
     assert_eq!(drain.moves[0].to, "control");
-    let out = moves::run_plan(&s.router, hooks.as_ref(), &Quiet, &options(), &drain, None).await.unwrap();
+    let out = moves::run_plan(&s.router, hooks.as_ref(), &Quiet, &options(), &drain, None)
+        .await
+        .unwrap();
     assert!(out.failed.is_none(), "{out:?}");
     assert_eq!(moves::routed_set(&s.router, B).await.unwrap(), "control");
     // The moves are switched but keep their source rows: still not removable.
-    assert_eq!(moves::check_removable(&s.router, &set.id).await.unwrap_err().code(), "operation_in_progress");
-    for m in moves::list(&s.control, &moves::MoveQuery { open: true, ..Default::default() }).await.unwrap() {
-        moves::cleanup(&s.router, hooks.as_ref(), &options(), &m.id).await.unwrap();
+    assert_eq!(
+        moves::check_removable(&s.router, &set.id).await.unwrap_err().code(),
+        "operation_in_progress"
+    );
+    for m in moves::list(
+        &s.control,
+        &moves::MoveQuery {
+            open: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    {
+        moves::cleanup(&s.router, hooks.as_ref(), &options(), &m.id)
+            .await
+            .unwrap();
     }
     moves::check_removable(&s.router, &set.id).await.unwrap();
-    assert_eq!(int(&shard, &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{B}'")).await, 0);
+    assert_eq!(
+        int(
+            &shard,
+            &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{B}'")
+        )
+        .await,
+        0
+    );
     // Draining control is refused.
-    assert_eq!(moves::drain_set(&s.router, "control").await.unwrap_err().code(), "invalid_request");
+    assert_eq!(
+        moves::drain_set(&s.router, "control").await.unwrap_err().code(),
+        "invalid_request"
+    );
 }
 
 /// SQLite (and one-set PostgreSQL): moves are refused before anything
@@ -783,12 +1110,26 @@ async fn moves_need_postgresql_and_shards() {
     let db = forgebase_db::testing::test_backend().await;
     let router = DbRouter::single(db.database().clone());
     let hooks = Hooks::default();
-    let err = moves::begin(&router, &hooks, &options(), BeginMove { tenant: A.into(), to: "s1".into(), ..Default::default() })
-        .await
-        .unwrap_err();
+    let err = moves::begin(
+        &router,
+        &hooks,
+        &options(),
+        BeginMove {
+            tenant: A.into(),
+            to: "s1".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
     match db.kind() {
         forgebase_db::BackendKind::Sqlite => assert_eq!(err.code(), "postgres_required"),
         forgebase_db::BackendKind::Postgres => assert_eq!(err.code(), "shard_not_found"),
     }
-    assert!(moves::list(db.database(), &moves::MoveQuery::default()).await.unwrap().is_empty());
+    assert!(
+        moves::list(db.database(), &moves::MoveQuery::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -16,11 +16,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::DbError;
 use crate::backend::{Backend, Statement, TxMode, Value};
 use crate::placement::{self, PlacementClass, TenantKey};
 use crate::router::DbRouter;
 use crate::topology::{self, CONTROL_SET_ID, DbSet, SetState};
-use crate::DbError;
 
 use super::MoveError;
 use super::pgsql::{ident, int, qualified};
@@ -301,12 +301,10 @@ pub fn plan_drain(sets: &[DbSet], tenants: &[TenantLoad], drain: &str) -> Rebala
     let mut units = units(tenants, drain);
     units.reverse();
     for (bytes, unit) in units {
-        let Some(lo) = (0..bins.len())
-            .filter(|&i| bins[i].target)
-            .min_by(|&a, &b| {
-                score(bins[a].bytes + bytes, bins[a].set.weight).total_cmp(&score(bins[b].bytes + bytes, bins[b].set.weight))
-            })
-        else {
+        let Some(lo) = (0..bins.len()).filter(|&i| bins[i].target).min_by(|&a, &b| {
+            score(bins[a].bytes + bytes, bins[a].set.weight)
+                .total_cmp(&score(bins[b].bytes + bytes, bins[b].set.weight))
+        }) else {
             break;
         };
         let to = bins[lo].set.id.clone();
@@ -450,7 +448,9 @@ pub async fn refresh_stats(router: &DbRouter) -> Result<usize, MoveError> {
                 )))
                 .await?;
             for r in &rows.rows {
-                let Some(tenant) = r.first().and_then(Value::as_str) else { continue };
+                let Some(tenant) = r.first().and_then(Value::as_str) else {
+                    continue;
+                };
                 if !mine.contains(&tenant) {
                     continue;
                 }
@@ -481,7 +481,11 @@ pub async fn save_plan(control: &dyn Backend, plan: &RebalancePlan) -> Result<()
     tx.execute(&Statement::new(
         "INSERT INTO _forgebase_meta (key, value, updated_at) VALUES (?1, ?2, ?3) \
          ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        vec![plan_key(&plan.id).into(), json.into(), forgebase_core::now_rfc3339().into()],
+        vec![
+            plan_key(&plan.id).into(),
+            json.into(),
+            forgebase_core::now_rfc3339().into(),
+        ],
     ))
     .await?;
     // Old plans go.
@@ -504,7 +508,11 @@ fn rfc3339_ago(d: std::time::Duration) -> String {
 pub fn expires_at(plan: &RebalancePlan) -> String {
     time::OffsetDateTime::parse(&plan.created_at, &time::format_description::well_known::Rfc3339)
         .ok()
-        .and_then(|t| (t + PLAN_TTL).format(&time::format_description::well_known::Rfc3339).ok())
+        .and_then(|t| {
+            (t + PLAN_TTL)
+                .format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
         .unwrap_or_default()
 }
 
@@ -591,7 +599,11 @@ pub async fn check_removable(router: &DbRouter, set_id: &str) -> Result<(), Move
 pub async fn count_tenant_rows(db: &dyn Backend, table: &str, column: &str, tenant: &str) -> Result<i64, DbError> {
     Ok(int(&db
         .fetch_all(&Statement::new(
-            format!("SELECT count(*) FROM {} WHERE {} = ?1", qualified(SYSTEM_SCHEMA, table), ident(column)),
+            format!(
+                "SELECT count(*) FROM {} WHERE {} = ?1",
+                qualified(SYSTEM_SCHEMA, table),
+                ident(column)
+            ),
             vec![tenant.into()],
         ))
         .await?))
@@ -649,7 +661,9 @@ mod tests {
     #[test]
     fn plans_respect_weights_max_moves_and_balanced_sets() {
         let sets = [set("control", 0, 1), set("s1", 1, 3)];
-        let tenants: Vec<TenantLoad> = (0..8).map(|i| t(&format!("t{i}"), &format!("p{i}"), "control", 100)).collect();
+        let tenants: Vec<TenantLoad> = (0..8)
+            .map(|i| t(&format!("t{i}"), &format!("p{i}"), "control", 100))
+            .collect();
         let plan = plan_rebalance(&sets, &tenants, &PlanOptions::default());
         // Weight 3 takes three times the bytes: 6 of 8 move (200 / 600 → equal scores).
         assert_eq!(plan.moves.len(), 6);
@@ -663,7 +677,11 @@ mod tests {
         );
         assert_eq!(capped.moves.len(), 2);
         let balanced = [t("x", "x", "control", 100), t("y", "y", "s1", 300)];
-        assert!(plan_rebalance(&sets, &balanced, &PlanOptions::default()).moves.is_empty());
+        assert!(
+            plan_rebalance(&sets, &balanced, &PlanOptions::default())
+                .moves
+                .is_empty()
+        );
         // Out of scope: nothing.
         let none = plan_rebalance(
             &sets,
@@ -693,7 +711,12 @@ mod tests {
         assert!(plan.moves.iter().all(|m| m.from == "s2" && m.to != "s2"));
         // The largest unit (a, 500) goes to the empty s1, project b to control.
         assert!(plan.moves.iter().any(|m| m.tenant == "a" && m.to == "s1"));
-        assert!(plan.moves.iter().filter(|m| m.project.as_deref() == Some("b")).all(|m| m.to == "control"));
+        assert!(
+            plan.moves
+                .iter()
+                .filter(|m| m.project.as_deref() == Some("b"))
+                .all(|m| m.to == "control")
+        );
         assert_eq!(plan.after.iter().find(|s| s.set_id == "s2").unwrap().tenants, 0);
     }
 

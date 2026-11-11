@@ -53,7 +53,8 @@ use crate::{Database, DbError, SecretString};
 pub use engine::{BeginMove, RebalanceOutcome, abort, begin, cleanup, cleanup_due, routed_set, run, run_plan, undo};
 pub use plan::{Feed, MovePlan, TablePlan};
 pub use rebalance::{
-    PlanOptions, PlannedMove, RebalancePlan, SetScore, TenantLoad, check_removable, drain_set, plan_drain, plan_rebalance,
+    PlanOptions, PlannedMove, RebalancePlan, SetScore, TenantLoad, check_removable, drain_set, plan_drain,
+    plan_rebalance,
 };
 
 /// Schema of the move's own objects (barrier and staging tables) on both

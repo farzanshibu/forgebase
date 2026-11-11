@@ -201,7 +201,9 @@ impl Replicas {
             for (name, set, r) in shards.start_existing().await {
                 match r {
                     Ok(()) => tracing::info!(node = %name, set = %set, "local shard primary started"),
-                    Err(e) => tracing::error!(node = %name, set = %set, error = %e, "local shard primary did not start"),
+                    Err(e) => {
+                        tracing::error!(node = %name, set = %set, error = %e, "local shard primary did not start")
+                    }
                 }
             }
             for (name, r) in local.start_existing().await {
@@ -983,7 +985,10 @@ impl SetConnector for ReplicaConnector {
             }
             // FB-174: a shard primary on this server, over its socket.
             let h = self.replicas.shards.get(&primary.name).await.ok_or_else(|| {
-                DbError::Unavailable(format!("local shard primary {} is not running on this server", primary.name))
+                DbError::Unavailable(format!(
+                    "local shard primary {} is not running on this server",
+                    primary.name
+                ))
             })?;
             let cfg = &self.replicas.config.database;
             let mut opts = DbOptions::from_config_target(cfg, DbTarget::postgres(h.url(Role::Server).expose(), true));
@@ -1450,8 +1455,12 @@ impl TopologyOps for Replicas {
             match kind {
                 "local" => {
                     self.need_primary()?;
-                    forgebase_pgengine::Layout::node(&self.data_dir, &req.node.name, forgebase_pgengine::NodeKind::Primary)
-                        .map_err(|e| TopologyError::invalid(e.to_string()))?;
+                    forgebase_pgengine::Layout::node(
+                        &self.data_dir,
+                        &req.node.name,
+                        forgebase_pgengine::NodeKind::Primary,
+                    )
+                    .map_err(|e| TopologyError::invalid(e.to_string()))?;
                 }
                 "remote" => {
                     self.need_primary()?;
@@ -1471,13 +1480,7 @@ impl TopologyOps for Replicas {
                 // The node row comes with `forgebase node join`
                 // (POST join-tokens {set, role: primary}); the job waits for it.
                 return self
-                    .enqueue(
-                        ctx,
-                        kinds::SHARD_ADD,
-                        &set.id,
-                        None,
-                        json!({ "remote": req.node.name }),
-                    )
+                    .enqueue(ctx, kinds::SHARD_ADD, &set.id, None, json!({ "remote": req.node.name }))
                     .await;
             }
             let node = topology::insert_node(
@@ -1485,10 +1488,18 @@ impl TopologyOps for Replicas {
                 &topology::NewNode {
                     set_id: set.id.clone(),
                     name: req.node.name.clone(),
-                    kind: if kind == "local" { NodeKind::Local } else { NodeKind::External },
+                    kind: if kind == "local" {
+                        NodeKind::Local
+                    } else {
+                        NodeKind::External
+                    },
                     role: NodeRole::Primary,
                     url_sealed: None,
-                    state: if kind == "local" { NodeState::Provisioning } else { NodeState::Ready },
+                    state: if kind == "local" {
+                        NodeState::Provisioning
+                    } else {
+                        NodeState::Ready
+                    },
                     weight: 1,
                     origin: NodeOrigin::Api,
                 },
@@ -1693,7 +1704,12 @@ impl TopologyOps for Replicas {
         })
     }
 
-    fn move_tenant<'a>(&'a self, ctx: &'a AccessContext, tenant: &'a str, req: api::MoveBody) -> OpsFuture<'a, api::Operation> {
+    fn move_tenant<'a>(
+        &'a self,
+        ctx: &'a AccessContext,
+        tenant: &'a str,
+        req: api::MoveBody,
+    ) -> OpsFuture<'a, api::Operation> {
         Box::pin(async move {
             let router = self.router()?;
             let moves = self.moves()?;
@@ -1703,16 +1719,20 @@ impl TopologyOps for Replicas {
             // One topology change per set: neither set may be busy.
             let _one = self.changes.lock().await;
             if let Some(busy) = self.active_ops().await?.into_iter().find(|j| {
-                [j.payload.get("set"), j.payload.get("to")]
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Json::as_str)
-                    .any(|s| s == from || s == req.to)
+                j.kind != crate::moves::kinds::TENANT_CLEANUP
+                    && [j.payload.get("set"), j.payload.get("to")]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Json::as_str)
+                        .any(|s| s == from || s == req.to)
             }) {
                 return Err(TopologyError::new(
                     409,
                     api::codes::OPERATION_IN_PROGRESS,
-                    format!("operation {} ({}) is changing one of the two sets; wait for it or cancel it", busy.id, busy.kind),
+                    format!(
+                        "operation {} ({}) is changing one of the two sets; wait for it or cancel it",
+                        busy.id, busy.kind
+                    ),
                 ));
             }
             let (_, job) = moves
@@ -1741,11 +1761,19 @@ impl TopologyOps for Replicas {
         Box::pin(async move {
             let moves = self.moves()?;
             let _one = self.changes.lock().await;
-            if let Some(busy) = self.active_ops().await?.into_iter().next() {
+            if let Some(busy) = self
+                .active_ops()
+                .await?
+                .into_iter()
+                .find(|j| j.kind != crate::moves::kinds::TENANT_CLEANUP)
+            {
                 return Err(TopologyError::new(
                     409,
                     api::codes::OPERATION_IN_PROGRESS,
-                    format!("operation {} ({}) is running; a rebalance waits for every other change", busy.id, busy.kind),
+                    format!(
+                        "operation {} ({}) is running; a rebalance waits for every other change",
+                        busy.id, busy.kind
+                    ),
                 ));
             }
             let job = moves.start_rebalance(ctx, &req.plan_id).await.map_err(move_err)?;
@@ -1773,12 +1801,10 @@ impl TopologyOps for Replicas {
 
     fn delete_retired<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, api::Removed> {
         Box::pin(async move {
-            let found = self
-                .shards
-                .retired()
-                .into_iter()
-                .find(|r| r.id == id)
-                .ok_or_else(|| TopologyError::new(404, "retired_not_found", format!("no retired shard data {id}")))?;
+            let found =
+                self.shards.retired().into_iter().find(|r| r.id == id).ok_or_else(|| {
+                    TopologyError::new(404, "retired_not_found", format!("no retired shard data {id}"))
+                })?;
             check_confirm(confirm, &found.name)?;
             let shards = self.shards.clone();
             let id_owned = id.to_owned();
@@ -1866,9 +1892,16 @@ impl TopologyOps for Replicas {
                 // FB-174: a shard primary on another host. Same roles as every
                 // node (the secrets go once over HTTPS); the server writes to it
                 // as forgebase_server at its listen address.
-                let listen = req.listen.as_deref().map(str::trim).filter(|l| !l.is_empty()).ok_or_else(|| {
-                    TopologyError::invalid("a shard primary must listen on TCP: run forgebase node join with --listen")
-                })?;
+                let listen = req
+                    .listen
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .ok_or_else(|| {
+                        TopologyError::invalid(
+                            "a shard primary must listen on TCP: run forgebase node join with --listen",
+                        )
+                    })?;
                 let file = Layout::primary(&self.data_dir).secrets_file();
                 let text = std::fs::read_to_string(&file).map_err(|e| TopologyError::internal(e.to_string()))?;
                 let pw = RoleSecrets::load(&file)
@@ -2261,7 +2294,12 @@ impl Replicas {
 
     /// FB-174: waits for a remote shard's primary to join and run
     /// (`forgebase node join` with a primary token), cancellable.
-    async fn wait_remote_primary(&self, ctx: &JobContext, control: &Database, set_id: &str) -> Result<String, HandlerError> {
+    async fn wait_remote_primary(
+        &self,
+        ctx: &JobContext,
+        control: &Database,
+        set_id: &str,
+    ) -> Result<String, HandlerError> {
         let started = std::time::Instant::now();
         loop {
             if ctx.is_cancelled() {
@@ -2324,9 +2362,14 @@ impl Replicas {
         };
         let r = async {
             forgebase_db::shards::ensure_control_publication(&control).await?;
-            forgebase_db::shards::subscribe_to_control(shard.as_ref().unwrap_or(shard_db), &control, set.number, conninfo)
-                .await
-                .map(|_| ())
+            forgebase_db::shards::subscribe_to_control(
+                shard.as_ref().unwrap_or(shard_db),
+                &control,
+                set.number,
+                conninfo,
+            )
+            .await
+            .map(|_| ())
         }
         .await;
         control.close().await;
@@ -2353,7 +2396,12 @@ impl Replicas {
                 },
                 _ => None,
             };
-            let r = forgebase_db::shards::unsubscribe_from_control(shard.as_ref().unwrap_or(shard_db), &control, set.number).await;
+            let r = forgebase_db::shards::unsubscribe_from_control(
+                shard.as_ref().unwrap_or(shard_db),
+                &control,
+                set.number,
+            )
+            .await;
             control.close().await;
             if let Some(s) = shard {
                 s.close().await;
@@ -2402,7 +2450,11 @@ impl Replicas {
         if node.kind == NodeKind::Local && self.shards.get(&node.name).await.is_none() {
             report(
                 ctx,
-                stage("provisioning", 5.0, format!("creating the cluster of {} on this server", node.name)),
+                stage(
+                    "provisioning",
+                    5.0,
+                    format!("creating the cluster of {} on this server", node.name),
+                ),
             )
             .await;
             self.shards
@@ -2472,7 +2524,11 @@ impl Replicas {
         if activated.is_ok()
             && let Some(conninfo) = &conninfo
         {
-            report(ctx, stage("subscribing", 90.0, "replicating control's ACL tables to the shard")).await;
+            report(
+                ctx,
+                stage("subscribing", 90.0, "replicating control's ACL tables to the shard"),
+            )
+            .await;
             if let Err(e) = self.subscribe_shard(&set, &node, &db, conninfo).await {
                 tracing::warn!(shard = %set.name, error = %e, "fb_control subscription not made");
             }

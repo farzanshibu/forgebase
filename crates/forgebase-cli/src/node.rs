@@ -160,7 +160,11 @@ impl NodeFile {
     }
 
     fn layout_kind(&self) -> NodeKind {
-        if self.is_primary() { NodeKind::Primary } else { NodeKind::Standby }
+        if self.is_primary() {
+            NodeKind::Primary
+        } else {
+            NodeKind::Standby
+        }
     }
 
     fn path(data_dir: &Path) -> PathBuf {
@@ -545,7 +549,11 @@ impl Agent {
         self.state = AgentState::Starting;
         match Engine::prepare(&self.layout, &self.cfg).await {
             Ok(h) => {
-                let what = if self.file.is_primary() { "a shard primary" } else { "a standby" };
+                let what = if self.file.is_primary() {
+                    "a shard primary"
+                } else {
+                    "a standby"
+                };
                 eprintln!("PostgreSQL {} is running as {what}", h.version().text);
                 self.engine = Some(Arc::new(h));
                 self.state = if self.file.is_primary() {
@@ -647,7 +655,10 @@ impl Agent {
         if self.file.is_primary() && cmd.kind != CommandKind::Stop {
             self.answer(
                 &cmd.id,
-                Err(anyhow::anyhow!("{} is a shard primary; only stop applies", self.file.name)),
+                Err(anyhow::anyhow!(
+                    "{} is a shard primary; only stop applies",
+                    self.file.name
+                )),
             );
             return Next::Continue;
         }

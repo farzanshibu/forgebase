@@ -6,8 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::backend::{Statement, WriteTx};
 use crate::DbError;
+use crate::backend::{Statement, WriteTx};
 
 use super::pgsql::{ident, lit, qualified};
 use super::plan::{Feed, MovePlan, SYSTEM_SCHEMA, TablePlan};
@@ -98,15 +98,11 @@ async fn renumber_messages(
     exec(tx, format!("CREATE UNIQUE INDEX ON {SEQ_MAP} (old)")).await?;
     let disorder = tx_int(
         tx,
-        format!(
-            "SELECT count(*) FROM (SELECT new < lag(new) OVER (ORDER BY old) AS bad FROM {SEQ_MAP}) x WHERE bad"
-        ),
+        format!("SELECT count(*) FROM (SELECT new < lag(new) OVER (ORDER BY old) AS bad FROM {SEQ_MAP}) x WHERE bad"),
     )
     .await?;
     if disorder > 0 {
-        return Err(DbError::Statement(
-            "renumbering queue messages lost their order".into(),
-        ));
+        return Err(DbError::Statement("renumbering queue messages lost their order".into()));
     }
     let n = exec(
         tx,
@@ -223,7 +219,10 @@ async fn set_queue_sequence(tx: &mut dyn WriteTx, queue: &str) -> Result<(), DbE
     let a = qualified("pgmq", &format!("a_{queue}"));
     let has_archive = tx_int(
         tx,
-        format!("SELECT count(*) FROM pg_catalog.pg_class WHERE oid = to_regclass({})", lit(&a)),
+        format!(
+            "SELECT count(*) FROM pg_catalog.pg_class WHERE oid = to_regclass({})",
+            lit(&a)
+        ),
     )
     .await?
         > 0;

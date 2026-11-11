@@ -189,9 +189,13 @@ pub async fn sync_staged(source: &dyn Backend, target: &Database, t: &TablePlan)
         tx.execute(&Statement::raw(format!("DELETE FROM {staging} WHERE {cond}")))
             .await?;
         tx.commit().await?;
-        stats.copied += copy_rows(source, &src_table, &format!("({}) AND {cond}", t.predicate), t, |json| {
-            insert_json(target, &staging, t, json)
-        })
+        stats.copied += copy_rows(
+            source,
+            &src_table,
+            &format!("({}) AND {cond}", t.predicate),
+            t,
+            |json| insert_json(target, &staging, t, json),
+        )
         .await?;
     }
     Ok(stats)
@@ -199,7 +203,13 @@ pub async fn sync_staged(source: &dyn Backend, target: &Database, t: &TablePlan)
 
 /// Copies the rows of `table WHERE pred` page by page in key order,
 /// handing each page (a JSON array) to `sink`. Returns the rows copied.
-async fn copy_rows<F, Fut>(source: &dyn Backend, table: &str, pred: &str, t: &TablePlan, mut sink: F) -> Result<u64, DbError>
+async fn copy_rows<F, Fut>(
+    source: &dyn Backend,
+    table: &str,
+    pred: &str,
+    t: &TablePlan,
+    mut sink: F,
+) -> Result<u64, DbError>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), DbError>>,
@@ -295,7 +305,12 @@ async fn insert_json(target: &Database, dst: &str, t: &TablePlan, json: String) 
 /// Copies the rows of `t` matching `pred` on the source straight into the
 /// target's table (rows of containers created during the move, copied in
 /// the freeze). Returns the rows copied.
-pub(crate) async fn copy_direct(source: &dyn Backend, target: &Database, t: &TablePlan, pred: &str) -> Result<u64, DbError> {
+pub(crate) async fn copy_direct(
+    source: &dyn Backend,
+    target: &Database,
+    t: &TablePlan,
+    pred: &str,
+) -> Result<u64, DbError> {
     let dst = t.qualified();
     copy_rows(source, &dst, pred, t, |json| insert_json(target, &dst, t, json)).await
 }
@@ -387,7 +402,10 @@ mod tests {
         assert!(sql.contains("json_populate_recordset(CAST(NULL AS \"fb_move\".\"0123_7\")"));
         let d = digest_sql(&t, "t", "true", true);
         assert!(d.contains("% 100 = 0"));
-        assert!(!d.contains("\"id\", \"job_id\""), "the renumbered id is not verified: {d}");
+        assert!(
+            !d.contains("\"id\", \"job_id\""),
+            "the renumbered id is not verified: {d}"
+        );
     }
 
     #[test]

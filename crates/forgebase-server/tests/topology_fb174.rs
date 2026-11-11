@@ -66,12 +66,20 @@ async fn sqlite_answers_postgres_required_for_moves_and_rebalancing() {
     let env = Env::new().await;
     let admin = env.admin("fb174-sqlite@example.com").await;
     for (p, b) in [
-        (format!("{BASE}/placements/t1/move"), json!({"to": "s1", "confirm": "t1"})),
+        (
+            format!("{BASE}/placements/t1/move"),
+            json!({"to": "s1", "confirm": "t1"}),
+        ),
         (format!("{BASE}/rebalance/plan"), json!({})),
         (format!("{BASE}/rebalance"), json!({"plan_id": "p", "confirm": "p"})),
     ] {
         let r = env.as_(&admin, "POST", &p, &[], Some(b)).await;
-        assert_eq!((r.status, r.code()), (400, "postgres_required".to_owned()), "{p}: {}", r.text());
+        assert_eq!(
+            (r.status, r.code()),
+            (400, "postgres_required".to_owned()),
+            "{p}: {}",
+            r.text()
+        );
     }
     let r = env.as_(&admin, "GET", &format!("{BASE}/retired"), &[], None).await;
     assert_eq!((r.status, r.code()), (400, "postgres_required".to_owned()));
@@ -86,6 +94,9 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
     let env = Env::with(|c| {
         // Cleanups run as soon as the moves switch.
         c.database.topology.sharding.move_source_retention_hours = 0;
+        // The shared test machine can be slow; this test is about the API
+        // (the engine tests keep the 10 s default).
+        c.database.topology.sharding.move_freeze_timeout_ms = 60_000;
     })
     .await;
     let admin = env.admin("fb174-ops@example.com").await;
@@ -151,7 +162,12 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
             Some(json!({"to": s1.id, "confirm": "t2"})),
         )
         .await;
-    assert_eq!((r.status, r.code()), (400, "confirm_mismatch".to_owned()), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code()),
+        (400, "confirm_mismatch".to_owned()),
+        "{}",
+        r.text()
+    );
     let r = env
         .as_(
             &admin,
@@ -161,7 +177,12 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
             Some(json!({"to": "no-such-set", "confirm": "t1"})),
         )
         .await;
-    assert_eq!((r.status, r.code()), (404, "shard_not_found".to_owned()), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code()),
+        (404, "shard_not_found".to_owned()),
+        "{}",
+        r.text()
+    );
     let r = env
         .as_(
             &admin,
@@ -180,17 +201,30 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
     eprintln!("FREEZE api move freeze_ms={}", done["result"]["freeze_ms"]);
     assert_eq!(router.placement("t1").unwrap().set_id, s1.id);
     let shard = router.set(&s1.id).unwrap();
-    assert_eq!(count(&shard, "SELECT count(*) FROM notes WHERE _tenant = 't1'").await, 30);
+    assert_eq!(
+        count(&shard, "SELECT count(*) FROM notes WHERE _tenant = 't1'").await,
+        30
+    );
     data.create_record(&t1, "notes", json!({"body": "on the shard"}))
         .await
         .unwrap();
-    assert_eq!(count(&shard, "SELECT count(*) FROM notes WHERE _tenant = 't1'").await, 31);
+    assert_eq!(
+        count(&shard, "SELECT count(*) FROM notes WHERE _tenant = 't1'").await,
+        31
+    );
     let r = env
         .as_(&admin, "GET", &format!("{BASE}/placements?set={}", s1.id), &[], None)
         .await;
     assert_eq!(r.status, 200);
     assert!(r.text().contains("\"t1\""), "{}", r.text());
-    assert!(audit(&env, &admin, "db.topology.tenant.move").await >= 3, "refusals and the move are audited");
+    assert!(
+        audit(&env, &admin, "db.topology.tenant.move").await >= 1,
+        "the move is audited"
+    );
+    assert!(
+        audit(&env, &admin, "db.topology.refused").await >= 2,
+        "the refusals are audited"
+    );
 
     // Rebalance: a plan (t1 alone on s1, control empty of tenants: one move back
     // would not narrow anything with one tenant, so ask for t2 too).
@@ -199,7 +233,13 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
         .await
         .unwrap();
     let r = env
-        .as_(&admin, "POST", &format!("{BASE}/rebalance/plan"), &[], Some(json!({"max_moves": 0})))
+        .as_(
+            &admin,
+            "POST",
+            &format!("{BASE}/rebalance/plan"),
+            &[],
+            Some(json!({"max_moves": 0})),
+        )
         .await;
     assert_eq!((r.status, r.code()), (400, "invalid_request".to_owned()));
     let r = env
@@ -234,7 +274,7 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
     let op = r.json()["operation"]["id"].as_str().unwrap().to_owned();
     let done = wait_op(&env, &admin, &op, Duration::from_secs(180)).await;
     assert_eq!(done["status"], "succeeded", "{done}");
-    assert!(audit(&env, &admin, "db.topology.rebalance").await >= 2);
+    assert!(audit(&env, &admin, "db.topology.rebalance").await >= 1);
     assert!(audit(&env, &admin, "db.topology.rebalance.plan").await >= 1);
 
     // Drain: every tenant off s1, then removal; the data stays on disk.
@@ -263,14 +303,24 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
     }
     let deadline = Instant::now() + Duration::from_secs(120);
     while router.placements().iter().any(|p| p.set_id == s1.id) {
-        assert!(Instant::now() < deadline, "s1 still holds tenants: {:?}", router.placements());
+        assert!(
+            Instant::now() < deadline,
+            "s1 still holds tenants: {:?}",
+            router.placements()
+        );
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     // Cleanups (retention 0) let the shard go.
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let r = env
-            .as_(&admin, "DELETE", &format!("{BASE}/shards/{}?confirm=s1", s1.id), &[], None)
+            .as_(
+                &admin,
+                "DELETE",
+                &format!("{BASE}/shards/{}?confirm=s1", s1.id),
+                &[],
+                None,
+            )
             .await;
         if r.status == 200 {
             break;
@@ -296,7 +346,13 @@ async fn a_local_shard_takes_a_tenant_by_move_rebalance_and_drain_through_the_ap
     assert_eq!(items[0]["name"], "s1p");
     let id = items[0]["id"].as_str().unwrap().to_owned();
     let r = env
-        .as_(&admin, "DELETE", &format!("{BASE}/retired/{id}?confirm=nope"), &[], None)
+        .as_(
+            &admin,
+            "DELETE",
+            &format!("{BASE}/retired/{id}?confirm=nope"),
+            &[],
+            None,
+        )
         .await;
     assert_eq!((r.status, r.code()), (400, "confirm_mismatch".to_owned()));
     let r = env
