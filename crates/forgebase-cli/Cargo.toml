@@ -43,6 +43,10 @@ toml_edit.workspace = true
 tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
 
+# `init` refuses the bundled PostgreSQL as root before it writes anything.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
+
 [dev-dependencies]
 futures-util = { workspace = true, features = ["sink"] }
 sha2.workspace = true
@@ -107,6 +111,11 @@ path = "tests/backup_pg_e2e.rs"
 [[test]]
 name = "database_e2e"
 path = "tests/database_e2e.rs"
+
+# FB-177: the default backend of the build; an existing SQLite project stays.
+[[test]]
+name = "default_backend_e2e"
+path = "tests/default_backend_e2e.rs"
 
 # FB-151: db convert --to postgres|sqlite.
 [[test]]

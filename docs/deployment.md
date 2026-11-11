@@ -98,6 +98,15 @@ docker build -t forgebase .
 docker run --rm -p 127.0.0.1:8090:8090 -v forgebase-data:/data forgebase
 ```
 
+The standard image initialises PostgreSQL by default: the first start unpacks
+the bundled engine under `/data/postgres/` (the container already runs as the
+unprivileged user PostgreSQL needs) and the data volume holds the engine, the
+cluster and its Unix socket. PostgreSQL uses POSIX shared memory and Docker's
+default `/dev/shm` is 64 MB, so the compose file sets `shm_size` (see its
+comment). To keep SQLite in a container, use the `-lite` image or set
+`FORGEBASE_DATABASE_BACKEND=sqlite`; a volume that already holds a SQLite
+project keeps it either way (§3.5).
+
 Set configuration with environment variables (§3.3) or mount a `forgebase.toml`
 and point `FORGEBASE_CONFIG` at it.
 
@@ -297,7 +306,10 @@ scripts pass `--database` or `--database-url`. `init` writes
 `FORGEBASE_DATABASE_URL` (mode 0600), never to `forgebase.toml`; run
 `forgebase` from the project directory so `.env` is read. A `-lite` build
 answers `--database postgres` with `this build has no bundled PostgreSQL; use
---database-url, --database sqlite or the standard release`.
+--database-url, --database sqlite or the standard release`. As root, `init`
+stops before it writes anything: `PostgreSQL cannot run as root: run as an
+unprivileged user, or use --database sqlite`; it never falls back to SQLite on
+its own.
 
 **The marker wins.** At every start the server compares the configuration
 with the marker. A data directory keeps its engine when the configuration
@@ -443,7 +455,10 @@ Notes:
 
 Migrations run automatically on `serve`. Before you upgrade:
 
-1. Read the release notes for the new version.
+1. Read the release notes for the new version. Moving from 0.2 to 0.3: read
+   [Upgrading to 0.3](release-notes/0.3.md#upgrading-to-03). PostgreSQL is the
+   default for new projects; an existing SQLite project stays SQLite until you
+   run `forgebase db convert --to postgres`.
 2. Check the current migration state with the **old** binary:
    `forgebase migrate --status`.
 3. Stop the server (SIGTERM, or `systemctl stop forgebase`).

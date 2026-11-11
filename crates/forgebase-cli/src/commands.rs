@@ -117,7 +117,30 @@ impl Choice {
     }
 }
 
-/// The terminal question of `init` (ADR-0029 §6). `None` = the default.
+/// The refusal for the bundled engine as root (ADR-0028 §4.2, ADR-0029 §6):
+/// said before `init` writes a file, and never turned into a SQLite project.
+pub(crate) const ROOT_REFUSAL: &str =
+    "PostgreSQL cannot run as root: run as an unprivileged user, or use --database sqlite";
+
+fn refuse_managed_as_root(choice: &Choice, root: bool) -> anyhow::Result<()> {
+    if root && *choice == Choice::Managed {
+        bail!("{ROOT_REFUSAL}");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    false
+}
+
+/// The terminal question of `init` (ADR-0029 §6): the default is `[1]`, and
+/// an empty line (or the end of input) takes it.
 pub fn prompt_database(input: &mut dyn BufRead, out: &mut dyn Write) -> anyhow::Result<DatabaseBackend> {
     let (first, second) = if DEFAULT_BACKEND == DatabaseBackend::Postgres {
         (
@@ -292,6 +315,7 @@ pub async fn init(
             found.as_str()
         );
     }
+    refuse_managed_as_root(&choice, running_as_root())?;
     if choice == Choice::Managed && !BUNDLED_POSTGRES {
         // A development build may still run an engine from FORGEBASE_PG_ENGINE_DIR.
         let probe = existing_config.as_ref().map_or_else(
@@ -334,7 +358,7 @@ pub async fn init(
     let primary = match database::open_owned(&config, true, &layout, Create::Yes).await {
         Ok(p) => p,
         Err(ServerError::Engine(forgebase_pgengine::EngineError::Root)) => {
-            bail!("PostgreSQL cannot run as root: run as an unprivileged user, or use --database sqlite")
+            bail!("{ROOT_REFUSAL}")
         }
         Err(e) => return Err(e.into()),
     };
@@ -816,6 +840,29 @@ mod tests {
             DatabaseBackend::Sqlite
         );
         assert!(prompt_database(&mut "x\ny\nz\n".as_bytes(), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn root_is_refused_for_the_bundled_engine_only() {
+        let err = refuse_managed_as_root(&Choice::Managed, true).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "PostgreSQL cannot run as root: run as an unprivileged user, or use --database sqlite"
+        );
+        assert!(refuse_managed_as_root(&Choice::Sqlite, true).is_ok());
+        assert!(refuse_managed_as_root(&Choice::External("postgres://h/db".into()), true).is_ok());
+        assert!(refuse_managed_as_root(&Choice::Managed, false).is_ok());
+    }
+
+    #[test]
+    fn sqlite_notice_only_where_postgres_is_the_default() {
+        let n = sqlite_notice(Some(BackendMarker::Sqlite));
+        assert_eq!(n.is_some(), DEFAULT_BACKEND == DatabaseBackend::Postgres);
+        if let Some(n) = n {
+            assert!(n.contains("forgebase db convert --to postgres"), "{n}");
+        }
+        assert!(sqlite_notice(Some(BackendMarker::PostgresManaged)).is_none());
+        assert!(sqlite_notice(None).is_none());
     }
 
     #[test]
