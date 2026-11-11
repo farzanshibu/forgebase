@@ -29,6 +29,8 @@ utoipa.workspace = true
 
 [dev-dependencies]
 forgebase-db = { workspace = true, features = ["testing"] }
+# FB-153: connecting as a direct login.
+sqlx.workspace = true
 tempfile.workspace = true
 tower.workspace = true
 

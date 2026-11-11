@@ -217,9 +217,14 @@ pub fn engine_config(config: &DatabaseConfig) -> Result<EngineConfig, ServerErro
         ExtensionMode::On => forgebase_pgengine::ExtensionMode::On,
         ExtensionMode::Off => forgebase_pgengine::ExtensionMode::Off,
     };
+    let tls = (!pg.tls_cert.is_empty() && !pg.tls_key.is_empty()).then(|| forgebase_pgengine::TlsFiles {
+        cert: PathBuf::from(&pg.tls_cert),
+        key: PathBuf::from(&pg.tls_key),
+    });
     Ok(EngineConfig {
         source,
         listen: EngineConfig::parse_listen(&pg.listen)?,
+        tls,
         settings: pg.settings.clone(),
         cron: mode(pg.extensions.cron),
         graph: mode(pg.extensions.graph),
@@ -912,7 +917,15 @@ mod tests {
         assert_eq!(e.source, EngineSource::Dir("/opt/pg".into()));
         assert_eq!(e.cron, forgebase_pgengine::ExtensionMode::Off);
         assert_eq!(e.settings.get("work_mem").map(String::as_str), Some("16MB"));
+        assert_eq!(e.tls, None, "no certificate configured: generated");
+        // FB-153: other hosts are allowed (TLS is always on with listen).
         c.postgres.listen = "0.0.0.0:5433".into();
+        c.postgres.tls_cert = "/etc/pg.crt".into();
+        c.postgres.tls_key = "/etc/pg.key".into();
+        let e = engine_config(&c).unwrap();
+        assert_eq!(e.listen, Some("0.0.0.0:5433".parse().unwrap()));
+        assert_eq!(e.tls.unwrap().cert, PathBuf::from("/etc/pg.crt"));
+        c.postgres.listen = "0.0.0.0:0".into();
         assert!(engine_config(&c).is_err());
     }
 

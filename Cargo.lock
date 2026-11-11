@@ -1317,6 +1317,7 @@ dependencies = [
  "forgebase-db",
  "forgebase-observability",
  "forgebase-pgengine",
+ "forgebase-policy",
  "forgebase-server",
  "fs4",
  "futures-util",

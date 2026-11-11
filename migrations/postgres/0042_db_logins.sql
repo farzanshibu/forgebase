@@ -77,8 +77,8 @@ $$;
 -- with their password hashes (record versions, the realtime outbox).
 CREATE OR REPLACE FUNCTION forgebase.is_secret_column(tbl text, col text) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path = forgebase, pg_catalog AS $$
-  SELECT (tbl, col) IN (('_forgebase_storage_settings', 'value'), ('_forgebase_record_versions', 'data'),
-                        ('_forgebase_realtime_outbox', 'snapshot'), ('_forgebase_db_logins', 'claims'))
+  SELECT (tbl, col) IN (('_forgebase_record_versions', 'data'), ('_forgebase_realtime_outbox', 'snapshot'),
+                        ('_forgebase_db_logins', 'claims'))
       OR (col ~ '(^|_)(password|secret|token|sealed)(_|$)' AND col !~ '_(at|ttl)$')
       OR col ~ '_(hash|enc)$'
       OR col ~ '^private_'

@@ -35,7 +35,9 @@
 //!   as `forgebase_sql_admin` (`BYPASSRLS`, no `SELECT` on secret columns,
 //!   not a superuser), on the read pool and on the writer alike, except
 //!   `CREATE|ALTER|DROP POLICY`, which needs the table owner and runs as the
-//!   server. Policies named `fb_*` (generated) and objects in the `api`
+//!   server, and calls with `show_secrets` (the audited way to see secrets),
+//!   which run as the pools' own roles. So `SELECT *` of a table with secret
+//!   columns is refused there unless the call sets `show_secrets`. Policies named `fb_*` (generated) and objects in the `api`
 //!   schema cannot be changed here. **Run as** ([`SqlRunAs`]): the statements
 //!   run as the direct-login groups with a chosen user's claims and names
 //!   resolve to the `api` views, so the editor shows exactly what a direct
@@ -242,6 +244,25 @@ fn words(sql: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// A refusal by PostgreSQL's privileges or policies while a statement runs
+/// as the editor's role or "run as" (FB-153) is 403, not a bad statement.
+fn role_refusal(e: forgebase_db::DbError) -> DataError {
+    match e {
+        forgebase_db::DbError::Statement(m)
+            if m.starts_with("permission denied")
+                || m.contains("row-level security")
+                || m.contains("read-only for this login")
+                || m.starts_with("must be owner") =>
+        {
+            DataError::Forbidden(format!(
+                "{m} (the SQL editor runs as {SQL_ADMIN_ROLE}: no secret columns, only objects it owns; \
+                 \"run as\" sees what a direct login would)"
+            ))
+        }
+        other => other.into(),
+    }
 }
 
 /// `Some(policy name)` for `CREATE|ALTER|DROP POLICY [IF EXISTS] <name>`.
@@ -491,13 +512,15 @@ impl DataService {
         self.inner.sql_role.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    /// Who one checked statement runs as.
-    fn statement_role(&self, c: &Checked, run_as: Option<&SqlRunAs>) -> Option<forgebase_db::RunAs> {
-        if c.policy {
-            return None;
-        }
+    /// Who one checked statement runs as: "run as" its login group; policy
+    /// DDL and `show_secrets` (the audited way to see secrets) the pools'
+    /// own roles; everything else the editor's role.
+    fn statement_role(&self, c: &Checked, run_as: Option<&SqlRunAs>, show_secrets: bool) -> Option<forgebase_db::RunAs> {
         if let Some(r) = run_as {
             return Some(r.role(c.kind != StatementKind::Read));
+        }
+        if c.policy || show_secrets {
+            return None;
         }
         self.sql_editor_role().map(|role| forgebase_db::RunAs::new(role, ""))
     }
@@ -597,8 +620,13 @@ impl DataService {
                 c.sql.clone()
             };
             let stmt = Statement::new(sql, c.params.clone()).uncached();
-            let rows = match self.statement_role(&c, run_as) {
-                Some(role) => self.inner.backend.fetch_all_as(&stmt, &role).await?,
+            let rows = match self.statement_role(&c, run_as, opts.show_secrets) {
+                Some(role) => self
+                    .inner
+                    .backend
+                    .fetch_all_as(&stmt, &role)
+                    .await
+                    .map_err(role_refusal)?,
                 None => self.inner.backend.fetch_all(&stmt).await?,
             };
             let mut r = result_from(c.kind, rows, started);
@@ -698,16 +726,16 @@ impl DataService {
                 let started = Instant::now();
                 let stmt = Statement::new(c.sql.clone(), c.params.clone()).uncached();
                 let returns_rows = c.kind == StatementKind::Read || c.info.identifiers.iter().any(|w| w == "returning");
-                let role = self.statement_role(c, run_as);
+                let role = self.statement_role(c, run_as, opts.show_secrets);
                 if returns_rows {
                     let rows = match &role {
-                        Some(r) => tx.fetch_all_as(&stmt, r).await?,
+                        Some(r) => tx.fetch_all_as(&stmt, r).await.map_err(role_refusal)?,
                         None => tx.fetch_all(&stmt).await?,
                     };
                     out.push(result_from(c.kind, rows, started));
                 } else {
                     let done = match &role {
-                        Some(r) => tx.execute_as(&stmt, r).await?,
+                        Some(r) => tx.execute_as(&stmt, r).await.map_err(role_refusal)?,
                         None => tx.execute(&stmt).await?,
                     };
                     out.push(SqlResult {

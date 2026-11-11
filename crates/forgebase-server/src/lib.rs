@@ -259,6 +259,13 @@ async fn start_on(
             return Err(e.into());
         }
     };
+    // FB-153: role and login management and the extensions API run as the
+    // bundled engine's superuser; an external server's own role otherwise.
+    db.set_admin_url(
+        engine
+            .as_ref()
+            .map(|e| forgebase_db::SecretString::new(e.url(forgebase_pgengine::Role::Super).expose())),
+    );
     // Extensions after the migrations (ADR-0029 §1.1): the bundled engine
     // creates them as forgebase_super, an external server as its own role.
     let extensions = forgebase_db::ExtensionSetup {
