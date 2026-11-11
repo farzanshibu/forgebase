@@ -279,7 +279,7 @@ impl GraphService {
         .with_setting("statement_timeout", format!("{timeout}ms"));
         let ncols = i64::try_from(checked.columns.len()).unwrap_or(i64::MAX);
         let stmt = Statement::new(
-            "SELECT r FROM forgebase.graph_cypher(?1::text, ?2::text, ?3::text, ?4::text, ?5::integer, ?6::integer) AS r",
+            "SELECT r FROM forgebase.graph_cypher(?1::text, ?2::text, ?3::text, ?4::text, ?5::bigint::integer, ?6::bigint::integer) AS r",
             vec![
                 graph.into(),
                 query.into(),

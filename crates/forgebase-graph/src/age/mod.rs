@@ -217,27 +217,37 @@ async fn synced_graph(tx: &mut dyn WriteTx, tenant: &str) -> Result<Option<Strin
 
 // ---- graph and label DDL ------------------------------------------------------
 
-/// Runs AGE's DDL functions with `ag_catalog` first on the `search_path`
-/// (they name `graphid_ops` and friends unqualified), then puts the
-/// transaction's own path back.
-async fn with_ag_path(tx: &mut dyn WriteTx, statements: Vec<Statement>) -> Result<()> {
-    let saved = tx
+/// Puts `ag_catalog` first on the transaction's `search_path` and returns
+/// the path to restore: AGE's DDL functions name `graphid_ops` and friends
+/// unqualified, and `graphid` comparisons (`=` in statements and in the
+/// policies, which store the resolved operator) live in `ag_catalog`.
+async fn push_path(tx: &mut dyn WriteTx) -> Result<String> {
+    let rows = tx
         .fetch_all(&Statement::raw(
             "SELECT current_setting('search_path'), \
              set_config('search_path', 'ag_catalog, ' || current_setting('search_path'), true)",
         ))
         .await?;
-    let saved = text(saved.rows.first().and_then(|r| r.first())).unwrap_or_default();
-    let result = async {
-        for s in &statements {
-            tx.fetch_all(s).await?;
-        }
-        Ok::<_, GraphError>(())
-    }
-    .await;
+    Ok(text(rows.rows.first().and_then(|r| r.first())).unwrap_or_default())
+}
+
+async fn pop_path(tx: &mut dyn WriteTx, saved: String) -> Result<()> {
     tx.fetch_all(&stmt("SELECT set_config('search_path', ?1, true)", vec![saved.into()]))
         .await?;
-    result
+    Ok(())
+}
+
+/// Runs `f` with `ag_catalog` first on the path (see [`push_path`]).
+macro_rules! with_ag_path {
+    ($tx:expr, $body:expr) => {{
+        let saved = push_path(&mut *$tx).await?;
+        let r = $body;
+        // After an error the transaction is aborted: report that error.
+        if r.is_ok() {
+            pop_path(&mut *$tx, saved).await?;
+        }
+        r
+    }};
 }
 
 async fn graph_exists(tx: &mut dyn WriteTx, graph: &str) -> Result<bool> {
@@ -290,13 +300,10 @@ async fn protect(tx: &mut dyn WriteTx, graph: &str, table: &str, kind: Kind) -> 
 /// Creates `graph` (if missing) with its grants and the parents' policies.
 async fn create_graph(tx: &mut dyn WriteTx, graph: &str) -> Result<()> {
     if !graph_exists(tx, graph).await? {
-        with_ag_path(
-            tx,
-            vec![stmt(
-                "SELECT ag_catalog.create_graph(?1::text::name)::text",
-                vec![graph.into()],
-            )],
-        )
+        tx.fetch_all(&stmt(
+            "SELECT ag_catalog.create_graph(?1::text::name)::text",
+            vec![graph.into()],
+        ))
         .await?;
     }
     let g = q(graph);
@@ -354,7 +361,7 @@ async fn ensure_label(tx: &mut dyn WriteTx, graph: &str, fb_name: &str, kind: Ki
         Kind::Node => "SELECT ag_catalog.create_vlabel(?1::text::cstring, ?2::text::cstring)::text",
         Kind::Edge => "SELECT ag_catalog.create_elabel(?1::text::cstring, ?2::text::cstring)::text",
     };
-    with_ag_path(tx, vec![stmt(create, vec![graph.into(), name.into()])]).await?;
+    tx.fetch_all(&stmt(create, vec![graph.into(), name.into()])).await?;
     protect(tx, graph, name, kind).await?;
     find_label(tx, graph, name, kind)
         .await?
@@ -422,7 +429,7 @@ async fn copy_nodes(
     let l = ensure_label(tx, graph, fb_label, Kind::Node).await?;
     let sql = format!(
         "WITH b AS MATERIALIZED (SELECT n.id, n.label, n.properties, \
-           ag_catalog._graphid(?5::integer, nextval(?6::regclass)) AS gid FROM {NODES} n \
+           ag_catalog._graphid(?5::bigint::integer, nextval(?6::text::regclass)) AS gid FROM {NODES} n \
            WHERE n.tenant = ?1 AND n.label = ?2 AND {range} AND NOT EXISTS \
            (SELECT 1 FROM {MAP} m WHERE m.tenant = n.tenant AND m.kind = 'n' AND m.id = n.id)), \
          ins AS (INSERT INTO {g}.{t} (id, properties) SELECT b.gid, {props} FROM b) \
@@ -445,7 +452,7 @@ async fn copy_edges(tx: &mut dyn WriteTx, graph: &str, tenant: &str, fb_type: &s
     let l = ensure_label(tx, graph, fb_type, Kind::Edge).await?;
     let sql = format!(
         "WITH b AS MATERIALIZED (SELECT e.id, e.type, e.source, e.target, e.directed, e.properties, \
-           ms.age_id AS s, mt.age_id AS t, ag_catalog._graphid(?5::integer, nextval(?6::regclass)) AS gid \
+           ms.age_id AS s, mt.age_id AS t, ag_catalog._graphid(?5::bigint::integer, nextval(?6::text::regclass)) AS gid \
            FROM {EDGES} e \
            JOIN {MAP} ms ON ms.tenant = e.tenant AND ms.kind = 'n' AND ms.id = e.source \
            JOIN {MAP} mt ON mt.tenant = e.tenant AND mt.kind = 'n' AND mt.id = e.target \
@@ -471,15 +478,15 @@ async fn delete_vertex(tx: &mut dyn WriteTx, graph: &str, tenant: &str, id: &str
     let g = q(graph);
     tx.execute(&stmt(
         format!(
-            "WITH d AS (DELETE FROM {g}._ag_label_edge WHERE start_id = ?2::ag_catalog.graphid \
-             OR end_id = ?2::ag_catalog.graphid RETURNING id) \
+            "WITH d AS (DELETE FROM {g}._ag_label_edge WHERE start_id = ?2::text::ag_catalog.graphid \
+             OR end_id = ?2::text::ag_catalog.graphid RETURNING id) \
              DELETE FROM {MAP} m USING d WHERE m.tenant = ?1 AND m.kind = 'e' AND m.age_id = d.id"
         ),
         vec![tenant.into(), gid.into()],
     ))
     .await?;
     tx.execute(&stmt(
-        format!("DELETE FROM {g}._ag_label_vertex WHERE id = ?1::ag_catalog.graphid"),
+        format!("DELETE FROM {g}._ag_label_vertex WHERE id = ?1::text::ag_catalog.graphid"),
         vec![gid.into()],
     ))
     .await?;
@@ -500,10 +507,16 @@ pub(crate) async fn sync_node(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
     let Some(graph) = synced_graph(tx, tenant).await? else {
         return Ok(());
     };
+    with_ag_path!(tx, sync_node_in(tx, &graph, tenant, id).await)
+}
+
+async fn sync_node_in(tx: &mut dyn WriteTx, graph: &str, tenant: &str, id: &str) -> Result<()> {
+    let graph = graph.to_owned();
     let rows = tx
         .fetch_all(&stmt(
             format!(
-                "SELECT n.label, m.age_id::text, ag_catalog._extract_label_id(m.age_id)::bigint \
+                "SELECT n.label, m.age_id::text, CASE WHEN m.age_id IS NOT NULL \
+                 THEN ag_catalog._extract_label_id(m.age_id)::bigint END \
                  FROM (SELECT 1) AS x \
                  LEFT JOIN {NODES} n ON n.tenant = ?1 AND n.id = ?2 \
                  LEFT JOIN {MAP} m ON m.tenant = ?1 AND m.kind = 'n' AND m.id = ?2"
@@ -526,7 +539,7 @@ pub(crate) async fn sync_node(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
                 tx.execute(&stmt(
                     format!(
                         "UPDATE {g}._ag_label_vertex v SET properties = {props} FROM {NODES} n \
-                         WHERE n.tenant = ?1 AND n.id = ?2 AND v.id = ?3::ag_catalog.graphid",
+                         WHERE n.tenant = ?1 AND n.id = ?2 AND v.id = ?3::text::ag_catalog.graphid",
                         props = node_props("n", l.catch_all),
                     ),
                     vec![tenant.into(), id.into(), gid.as_str().into()],
@@ -545,14 +558,14 @@ pub(crate) async fn sync_node(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
                     tx.execute(&stmt(
                         format!(
                             "UPDATE {g}._ag_label_edge SET {end} = m.age_id FROM {MAP} m \
-                             WHERE m.tenant = ?1 AND m.kind = 'n' AND m.id = ?2 AND {end} = ?3::ag_catalog.graphid"
+                             WHERE m.tenant = ?1 AND m.kind = 'n' AND m.id = ?2 AND {end} = ?3::text::ag_catalog.graphid"
                         ),
                         vec![tenant.into(), id.into(), gid.as_str().into()],
                     ))
                     .await?;
                 }
                 tx.execute(&stmt(
-                    format!("DELETE FROM {g}._ag_label_vertex WHERE id = ?1::ag_catalog.graphid"),
+                    format!("DELETE FROM {g}._ag_label_vertex WHERE id = ?1::text::ag_catalog.graphid"),
                     vec![gid.as_str().into()],
                 ))
                 .await?;
@@ -567,10 +580,15 @@ pub(crate) async fn sync_edge(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
     let Some(graph) = synced_graph(tx, tenant).await? else {
         return Ok(());
     };
+    with_ag_path!(tx, sync_edge_in(tx, &graph, tenant, id).await)
+}
+
+async fn sync_edge_in(tx: &mut dyn WriteTx, graph: &str, tenant: &str, id: &str) -> Result<()> {
+    let graph = graph.to_owned();
     let rows = tx
         .fetch_all(&stmt(
             format!(
-                "SELECT e.type, m.age_id::text, ag_catalog._extract_label_id(m.age_id)::bigint \
+                "SELECT e.type, m.age_id::text \
                  FROM (SELECT 1) AS x \
                  LEFT JOIN {EDGES} e ON e.tenant = ?1 AND e.id = ?2 \
                  LEFT JOIN {MAP} m ON m.tenant = ?1 AND m.kind = 'e' AND m.id = ?2"
@@ -584,7 +602,7 @@ pub(crate) async fn sync_edge(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
         (None, None) => {}
         (None, Some(gid)) => {
             tx.execute(&stmt(
-                format!("DELETE FROM {g}._ag_label_edge WHERE id = ?1::ag_catalog.graphid"),
+                format!("DELETE FROM {g}._ag_label_edge WHERE id = ?1::text::ag_catalog.graphid"),
                 vec![gid.as_str().into()],
             ))
             .await?;
@@ -602,7 +620,7 @@ pub(crate) async fn sync_edge(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
             tx.execute(&stmt(
                 format!(
                     "UPDATE {g}._ag_label_edge v SET properties = {props} FROM {EDGES} e \
-                     WHERE e.tenant = ?1 AND e.id = ?2 AND v.id = ?3::ag_catalog.graphid",
+                     WHERE e.tenant = ?1 AND e.id = ?2 AND v.id = ?3::text::ag_catalog.graphid",
                     props = edge_props("e", catch_all),
                 ),
                 vec![tenant.into(), id.into(), gid.as_str().into()],
@@ -621,7 +639,7 @@ pub(crate) async fn sync_edge(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> R
 pub(crate) async fn start(tx: &mut dyn WriteTx, tenant: &str, epoch: i64, job_id: Option<&str>) -> Result<()> {
     drop_in(tx, tenant).await?;
     let graph = graph_name(tenant);
-    create_graph(tx, &graph).await?;
+    with_ag_path!(tx, create_graph(tx, &graph).await)?;
     let now = forgebase_core::now_rfc3339();
     tx.execute(&stmt(
         format!(
@@ -660,6 +678,10 @@ pub(crate) enum Step {
 /// One batch of the materialisation of `tenant`, in the caller's write
 /// transaction.
 pub(crate) async fn step(tx: &mut dyn WriteTx, tenant: &str) -> Result<Step> {
+    with_ag_path!(tx, step_in(tx, tenant).await)
+}
+
+async fn step_in(tx: &mut dyn WriteTx, tenant: &str) -> Result<Step> {
     let rows = tx
         .fetch_all(&stmt(
             format!("SELECT graph, phase, cursor_id FROM {STATE} WHERE tenant = ?1 AND state = 'materialising'"),
@@ -747,14 +769,8 @@ pub(crate) async fn drop_in(tx: &mut dyn WriteTx, tenant: &str) -> Result<bool> 
     let graph = graph_name(tenant);
     let mut existed = false;
     if graph_exists(tx, &graph).await? {
-        with_ag_path(
-            tx,
-            vec![stmt(
-                "SELECT ag_catalog.drop_graph(?1::text::name, true)::text",
-                vec![graph.into()],
-            )],
-        )
-        .await?;
+        let drop = stmt("SELECT ag_catalog.drop_graph(?1::text::name, true)::text", vec![graph.into()]);
+        with_ag_path!(tx, tx.fetch_all(&drop).await)?;
         existed = true;
     }
     tx.execute(&stmt(format!("DELETE FROM {MAP} WHERE tenant = ?1"), vec![tenant.into()]))
