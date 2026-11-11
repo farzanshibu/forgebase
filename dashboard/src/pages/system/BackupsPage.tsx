@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { backupSize, createBackup, deleteBackup, listBackups, pruneBackups, verifyBackup } from "../../api";
 import type { BackupSnapshot, Retention, VerifyReport } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Check } from "../../components/controls";
+import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button, ConfirmButton, ErrorView, Panel } from "../../components/ui";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
@@ -111,10 +115,11 @@ export default function BackupsPage() {
 
   return (
     <div className="max-w-5xl space-y-4">
+      <PageHeader title="Backups" description="Snapshots of the data directory you can verify now and restore later." docs="docs/adr/0024-backup-restore.md" />
       <Panel title="Take a snapshot">
         <form onSubmit={create} className="flex flex-wrap items-end gap-3 text-sm">
           <label>Label (optional)<Input size="sm" className="ml-2 w-48" value={label} onChange={(e) => setLabel(e.target.value)} /></label>
-          <label className="flex items-center gap-2"><input type="checkbox" checked={indexes} onChange={(e) => setIndexes(e.target.checked)} />Include indexes</label>
+          <Check checked={indexes} onChange={setIndexes} label="Include indexes" />
           <Button type="submit" tone="primary" disabled={busy || invalid}>Create snapshot</Button>
         </form>
       </Panel>
@@ -136,8 +141,10 @@ export default function BackupsPage() {
 
       <Panel title="Snapshots" actions={<Button onClick={list.reload}>Refresh</Button>}>
         <ErrorView error={list.error} />
-        {list.loading && !list.error && !list.data && <Loading what="Loading snapshots" />}
-        {list.data && list.data.length === 0 && <p className="text-sm text-muted-foreground">No snapshots yet. Take one above, or run <span className="font-mono">forgebase backup</span>.</p>}
+        {list.loading && !list.error && !list.data && <SkeletonTable rows={2} columns={6} label="Loading snapshots" />}
+        {list.data && list.data.length === 0 && (
+          <EmptyState compact title="No snapshots yet" why={<>A snapshot is a copy of your data you can restore. Take one above, or run <code>forgebase backup</code>.</>} />
+        )}
         {list.data && list.data.length > 0 && (
           <Table aria-label="Snapshots" className="w-full text-left text-sm">
             <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">

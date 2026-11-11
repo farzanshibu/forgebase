@@ -12,20 +12,16 @@ use axum::middleware::{self, Next};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
 use forgebase_realtime::{RealtimeConfig, RealtimeService};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-async fn app(with_realtime: bool) -> (Router, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().unwrap();
-    let layout = DataLayout::new(tmp.path().join("data"));
+async fn app(with_realtime: bool) -> (Router, forgebase_db::testing::TestDb) {
+    // FORGEBASE_TEST_BACKEND picks SQLite (default) or PostgreSQL (FB-149).
+    let tmp = forgebase_db::testing::test_backend().await;
+    let layout = DataLayout::new(tmp.data_dir().join("data"));
     layout.ensure().unwrap();
-    let cfg = forgebase_core::Config::defaults(tmp.path());
-    let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-        .await
-        .unwrap();
-    db.migrate(None).await.unwrap();
+    let db = tmp.database().clone();
     let mut state = AppState::with_authorizer(db, layout, Arc::new(DefaultAuthorizer))
         .await
         .unwrap();

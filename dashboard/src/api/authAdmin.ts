@@ -66,6 +66,8 @@ export interface ApiKeyView {
   collection: string | null;
   owner_id: string;
   scopes: string[];
+  /** The tenant the key is bound to (FB-138); absent or null for an unbound key. */
+  tenant?: string | null;
   created_at: string;
   expires_at: string | null;
   last_used_at: string | null;
@@ -140,11 +142,11 @@ export const createServiceAccount = (b: { name: string; description?: string; ro
 export const deleteServiceAccount = (id: string) => send<void>("DELETE", `${AUTH}/service-accounts/${enc(id)}`);
 export const serviceAccountKeys = (id: string, signal?: AbortSignal) =>
   items(request<{ items: ApiKeyView[] }>(`${AUTH}/service-accounts/${enc(id)}/keys`, { signal }));
-export const createServiceAccountKey = (id: string, b: { name: string; scopes: string[]; expires_in_days?: number }) =>
+export const createServiceAccountKey = (id: string, b: { name: string; scopes: string[]; expires_in_days?: number; tenant?: string }) =>
   send<CreatedKey>("POST", `${AUTH}/service-accounts/${enc(id)}/keys`, b);
 
 export const listApiKeys = (signal?: AbortSignal) => items(request<{ items: ApiKeyView[] }>(`${AUTH}/api-keys`, { signal }));
-export const createPat = (b: { name: string; scopes: string[]; expires_in_days?: number }) =>
+export const createPat = (b: { name: string; scopes: string[]; expires_in_days?: number; tenant?: string }) =>
   send<CreatedKey>("POST", `${AUTH}/tokens`, b);
 export const revokeKey = (id: string) => send<void>("DELETE", `${AUTH}/api-keys/${enc(id)}`);
 

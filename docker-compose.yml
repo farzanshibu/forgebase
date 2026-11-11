@@ -1,17 +1,41 @@
 # Local single-node ForgeBase. Run: docker compose up --build
+#
+# The standard image runs the bundled PostgreSQL engine inside the container
+# (the default database); build it with the engine archive of the engine release
+# (see the Dockerfile header) and set ENGINE_ARCHIVE below, or leave it empty for
+# the -lite image (SQLite only; set FORGEBASE_DATABASE_BACKEND=sqlite).
+#
+#   ENGINE_ARCHIVE=engine-dl/forgebase-pg18.6-r1-x86_64-unknown-linux-musl.tar.zst docker compose up --build
+#
 # The port is published on loopback only: admin endpoints have no login yet.
 services:
   forgebase:
-    build: .
+    build:
+      context: .
+      args:
+        ENGINE_ARCHIVE: ${ENGINE_ARCHIVE:-}
     image: forgebase:0.2.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:8090:8090"
     volumes:
+      # Everything lives here: forgebase.db (SQLite) or postgres/ (engine, data
+      # directory, Unix socket), backups, storage.
       - forgebase-data:/data
+    # PostgreSQL uses POSIX shared memory (/dev/shm); Docker's default is 64 MB,
+    # which parallel queries and a larger shared_buffers outgrow ("could not
+    # resize shared memory segment"). 256 MB is enough for the defaults; raise
+    # it with [database.postgres.settings] shared_buffers.
+    shm_size: 256mb
     environment:
       FORGEBASE_LOG_LEVEL: info
-      # Uncomment to tune the database (defaults shown in forgebase.example.toml):
+      # SQLite instead of the bundled PostgreSQL (required for the -lite image):
+      # FORGEBASE_DATABASE_BACKEND: sqlite
+      # Your own PostgreSQL server instead of the bundled engine (put the URL in a
+      # secret or an .env file, not here):
+      # FORGEBASE_DATABASE_POSTGRES_MODE: external
+      # FORGEBASE_DATABASE_URL: postgres://user:password@db:5432/forgebase
+      # Uncomment to tune SQLite (defaults shown in forgebase.example.toml):
       # FORGEBASE_DB_SYNCHRONOUS: full
     read_only: true
     tmpfs:
@@ -20,6 +44,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # PostgreSQL refuses to run as root; the image already runs as uid 10001.
+    stop_grace_period: 30s
 
 volumes:
   forgebase-data:

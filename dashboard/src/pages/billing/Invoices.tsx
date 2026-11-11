@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { Link, Route, Routes, useParams } from "react-router-dom";
 import { INVOICE_STATUSES, creditInvoice, getInvoice, listCreditNotes, listInvoices, markInvoicePaid, payInvoice, voidInvoice } from "../../api";
 import type { Invoice, InvoiceStatus } from "../../api";
@@ -6,7 +7,7 @@ import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../componen
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatBp, minorToInput, parseMinor } from "./money";
-import { Badge, BillingError, Empty, Field, Money, Th, SubjectLink } from "./shared";
+import { Badge, BillingError, Field, Money, Th, SubjectLink } from "./shared";
 import { ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -100,7 +101,7 @@ function InvoiceDetail() {
           )}
           {i.status === "paid" && <Panel title="Refund or credit"><CreditNoteForm inv={i} onDone={() => { inv.reload(); notes.reload(); }} /></Panel>}
           <Panel title="Credit notes and refunds">
-            {mine.length === 0 ? <Empty>No credit notes on this invoice.</Empty> : (
+            {mine.length === 0 ? <EmptyState compact title="No credit notes on this invoice." why="A credit note reduces what the customer owes." /> : (
               <Table aria-label="Invoice credit notes" className={TABLE}>
                 <Table.Header className={THEAD}><Table.Row><Th>Number</Th><Th>Amount</Th><Th>Refunded</Th><Th>To balance</Th><Th>Refund status</Th><Th>Reason</Th></Table.Row></Table.Header>
                 <Table.Body>{mine.map((n) => <Table.Row key={n.id} className={ROW}><Table.Cell className="py-1.5 pr-3">{n.number}</Table.Cell><Table.Cell><Money amount={n.amount} currency={n.currency} /></Table.Cell><Table.Cell><Money amount={n.refund_amount} currency={n.currency} /></Table.Cell><Table.Cell><Money amount={n.balance_amount} currency={n.currency} /></Table.Cell><Table.Cell>{n.refund ? <Badge status={n.refund.status} /> : "-"}</Table.Cell><Table.Cell>{n.reason ?? "-"}</Table.Cell></Table.Row>)}</Table.Body>
@@ -126,7 +127,7 @@ function InvoiceList() {
       </div>
       <BillingError error={invoices.error} />
       {invoices.loading && !invoices.error && <Loading what="Loading invoices" />}
-      {invoices.data && invoices.data.length === 0 && <Empty>No invoices match.</Empty>}
+      {invoices.data && invoices.data.length === 0 && <EmptyState compact title="No invoices match." why="Change the filters to see more." />}
       {invoices.data && invoices.data.length > 0 && (
         <Table aria-label="Invoices" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Invoice</Th><Th>Subject</Th><Th>Status</Th><Th>Total</Th><Th>Due</Th><Th>Refunded</Th><Th>Created</Th></Table.Row></Table.Header>
@@ -143,7 +144,7 @@ function InvoiceList() {
         </Table>
       )}
       <Panel title="Credit notes">
-        {notes.data && notes.data.length === 0 && <Empty>No credit notes.</Empty>}
+        {notes.data && notes.data.length === 0 && <EmptyState compact title="No credit notes." why="A credit note reduces what the customer owes." />}
         {notes.data && notes.data.length > 0 && (
           <Table aria-label="Credit notes" className={TABLE}>
             <Table.Header className={THEAD}><Table.Row><Th>Number</Th><Th>Invoice</Th><Th>Amount</Th><Th>Refunded</Th><Th>To balance</Th><Th>Reason</Th></Table.Row></Table.Header>

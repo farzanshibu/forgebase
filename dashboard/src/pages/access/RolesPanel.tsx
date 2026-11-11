@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { authzMe, deleteRole, listCollections, listRoles, putRole, type Role } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import PermissionMatrix from "./PermissionMatrix";
-import { ActionError, Empty, TextField } from "./shared";
+import { ActionError, TextField } from "./shared";
 import { useRun } from "./util";
 import { Table } from "panelui-web/table";
 
@@ -24,7 +25,7 @@ export default function RolesPanel({ org }: { org?: string }) {
     <div className="space-y-4">
       <ErrorView error={roles.error} />
       {roles.loading && !roles.error && <Loading what="Loading roles" />}
-      {roles.data && roles.data.length === 0 && <Empty>No roles.</Empty>}
+      {roles.data && roles.data.length === 0 && <EmptyState compact title="No roles." why="A role is a named set of permissions you give to members. Add one below." />}
       {roles.data && roles.data.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">

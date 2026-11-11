@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { ENTRY_KINDS, creditAudit, creditBalance, creditConsumption, creditGrant, creditLedger, creditLots, creditSummary, creditTopUp, listCreditRates } from "../../api";
 import type { EntryKind } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatCount } from "./money";
-import { BillingError, Empty, Field, Th } from "./shared";
+import { BillingError, Field, Th } from "./shared";
 import { ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -32,7 +33,7 @@ function Platform() {
         </Panel>
       )}
       <Panel title="Credit consumption by feature">
-        {consumption.data && consumption.data.rows.length === 0 && <Empty>No consumption in this window.</Empty>}
+        {consumption.data && consumption.data.rows.length === 0 && <EmptyState compact title="No consumption in this window." why="Pick a longer window to see earlier use." />}
         {consumption.data && consumption.data.rows.length > 0 && (
           <Table aria-label="Credit consumption" className={TABLE}>
             <Table.Header className={THEAD}><Table.Row><Th>Period</Th><Th>Feature</Th><Th>Units</Th><Th>Debited</Th><Th>Refunded</Th><Th>Net</Th></Table.Row></Table.Header>
@@ -42,7 +43,7 @@ function Platform() {
         )}
       </Panel>
       <Panel title="Credit prices of metered features">
-        {rates.data && rates.data.length === 0 && <Empty>No feature is priced in credits.</Empty>}
+        {rates.data && rates.data.length === 0 && <EmptyState compact title="No feature is priced in credits." why="Give a feature a credit price in the catalog to meter it." />}
         {rates.data && rates.data.length > 0 && <ul aria-label="Credit rates" className="text-sm">{rates.data.map((r) => <li key={r.feature}>{r.feature}: {n(r.credits_per_unit)} credits per {n(r.per_units)} units ({r.basis})</li>)}</ul>}
       </Panel>
     </div>
@@ -90,7 +91,7 @@ function Ledger({ subject }: { subject: string }) {
       <div className="mt-4 text-sm">
         <label>Entry kind<Sel value={kind} onChange={(v) => setKind(v as EntryKind | "")} options={[{ value: "", label: "all" }, ...ENTRY_KINDS]} className="ml-2" /></label>
       </div>
-      {ledger.data && ledger.data.items.length === 0 && <Empty>No ledger entries.</Empty>}
+      {ledger.data && ledger.data.items.length === 0 && <EmptyState compact title="No ledger entries." why="Every credit grant and use is listed here." />}
       {ledger.data && ledger.data.items.length > 0 && (
         <Table aria-label="Credit ledger" className={`mt-2 ${TABLE}`}>
           <Table.Header className={THEAD}><Table.Row><Th>#</Th><Th>When</Th><Th>Kind</Th><Th>Amount</Th><Th>Balance after</Th><Th>Feature</Th><Th>Reason</Th></Table.Row></Table.Header>

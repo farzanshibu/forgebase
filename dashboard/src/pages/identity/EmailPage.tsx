@@ -1,10 +1,11 @@
 import { Textarea } from "panelui-web/textarea";
+import { EmptyState } from "../../components/EmptyState";
 import { useState } from "react";
 import { DELIVERY_STATUSES, listDeliveries, listTemplates, previewEmail, putTemplate, resetTemplate, retryDelivery, sendTestEmail, type DeliveryStatus, type EmailTemplate, type Preview } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, Field, TextField } from "../access/shared";
+import { ActionError, Field, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { fmtTime, useRealm, nest } from "./util";
@@ -21,7 +22,7 @@ export default function EmailPage() {
       <Panel title={`Email templates of ${realm}`}>
         <ErrorView error={l.error} />
         {l.loading && !l.error && <Loading what="Loading templates" />}
-        {l.data?.length === 0 && <Empty>No templates.</Empty>}
+        {l.data?.length === 0 && <EmptyState compact title="No templates." why="Email templates control the messages the server sends." />}
         <ul className="text-sm">
           {l.data?.map((t) => (
             <li key={t.key} className="flex items-center justify-between border-t border-border py-1.5">
@@ -97,7 +98,7 @@ function DeliveryLog({ realm }: { realm: string }) {
       <Sel aria-label="Delivery status" value={status} onChange={(v) => setStatus(v as DeliveryStatus | "")} options={[{ value: "", label: "all statuses" }, ...DELIVERY_STATUSES.map((s) => ({ value: s, label: s }))]} />}>
       <ErrorView error={l.error} />
       {l.loading && !l.error && <Loading what="Loading deliveries" />}
-      {l.data?.length === 0 && <Empty>No deliveries.</Empty>}
+      {l.data?.length === 0 && <EmptyState compact title="No deliveries." why="Sent emails and their results appear here." />}
       {l.data && l.data.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">To</Table.Head><Table.Head>Subject</Table.Head><Table.Head>Status</Table.Head><Table.Head>Tries</Table.Head><Table.Head>Created</Table.Head><Table.Head /></Table.Row></Table.Header>

@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { deleteStoreProduct, listPrices, listStoreProducts, listStorePurchases, putStoreProduct, STORE_PROVIDERS } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Field, SubjectLink, Th } from "./shared";
+import { Badge, BillingError, Field, SubjectLink, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -32,7 +33,7 @@ function StoreProducts() {
     <Panel title="Store products" actions={<label className="text-sm">Store<Sel aria-label="Filter store" value={filter} onChange={setFilter} options={[{ value: "", label: "all" }, ...STORE_PROVIDERS]} className="ml-2" /></label>}>
       <BillingError error={products.error} />
       {products.loading && !products.error && <Loading what="Loading store products" />}
-      {products.data && rows.length === 0 && <Empty>No store products mapped. A store product id maps to one price: recurring for a store subscription, one-time otherwise.</Empty>}
+      {products.data && rows.length === 0 && <EmptyState compact title="No store products mapped." why="A store product id maps to one price: recurring for a store subscription, one-time otherwise." />}
       {rows.length > 0 && (
         <Table aria-label="Store products" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Store</Th><Th>Store product id</Th><Th>Price</Th><Th>Kind</Th><Th>Changed</Th><Th /></Table.Row></Table.Header>
@@ -80,7 +81,7 @@ function StorePurchases() {
       </div>
       <BillingError error={purchases.error} />
       {purchases.loading && !purchases.error && <Loading what="Loading store purchases" />}
-      {purchases.data && rows.length === 0 && <Empty>No store purchases match.</Empty>}
+      {purchases.data && rows.length === 0 && <EmptyState compact title="No store purchases match." why="Change the filters to see more." />}
       {rows.length > 0 && (
         <Table aria-label="Store purchases" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Purchase</Th><Th>Store</Th><Th>Subject</Th><Th>Status</Th><Th>Product</Th><Th>Price</Th><Th>Renews</Th><Th>Expires</Th><Th>Mode</Th></Table.Row></Table.Header>

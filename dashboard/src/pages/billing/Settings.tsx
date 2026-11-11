@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { archiveTaxRate, deleteProvider, getBillingSettings, listProviders, listTaxRates, listWebhookEvents, putBillingSettings, putProvider, putTaxRate } from "../../api";
 import type { BillingSettings, FinalAction, ProviderAccount } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
@@ -6,7 +7,7 @@ import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
 import StoreProviders from "./StoreProviders";
-import { Badge, BillingError, Empty, Field, Th } from "./shared";
+import { Badge, BillingError, Field, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -102,7 +103,7 @@ function TaxRates() {
   };
   return (
     <Panel title="Tax rates">
-      {rates.data && rates.data.length === 0 && <Empty>No tax rates.</Empty>}
+      {rates.data && rates.data.length === 0 && <EmptyState compact title="No tax rates." why="Add a rate to charge tax on invoices." />}
       {rates.data && rates.data.length > 0 && <ul aria-label="Tax rates" className="mb-3 text-sm">{rates.data.map((r) => <li key={r.region}><span className="font-mono text-xs">{r.region}</span> {r.name} {formatBp(r.rate_bp)}{r.active ? <span className="ml-2"><ConfirmButton label={`Archive tax rate ${r.region}`} disabled={act.busy} onConfirm={() => void act.run(() => archiveTaxRate(r.region), "Tax rate archived")} /></span> : <span className="ml-2"><Badge status="canceled" /></span>}</li>)}</ul>}
       <form onSubmit={save} aria-label="New tax rate" className="flex flex-wrap items-end gap-2 text-sm">
         <Field label="Tax region"><Input size="sm" className="w-28" value={region} onChange={(e) => setRegion(e.target.value)} required /></Field>
@@ -137,7 +138,7 @@ export default function Settings() {
       <TaxRates />
       <Panel title="Webhook events" actions={<Button onClick={events.reload}>Refresh</Button>}>
         <ErrorView error={events.error} />
-        {events.data && events.data.length === 0 && <Empty>No webhook deliveries yet.</Empty>}
+        {events.data && events.data.length === 0 && <EmptyState compact title="No webhook deliveries yet." why="Messages the server sends to your payment provider's webhook appear here." />}
         {events.data && events.data.length > 0 && (
           <Table aria-label="Webhook events" className={TABLE}>
             <Table.Header className={THEAD}><Table.Row><Th>Received</Th><Th>Provider</Th><Th>Event</Th><Th>Status</Th><Th>Result</Th><Th>Attempts</Th></Table.Row></Table.Header>

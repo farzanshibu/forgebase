@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Button, ErrorView } from "../../components/ui";
 import { Dialog } from "panelui-web/dialog";
 import { Table } from "panelui-web/table";
-import { toaster } from "../../toaster";
+import { notify } from "../../toaster";
 
 export const fmtTime = (v: string | number | null | undefined): string => {
   if (v === null || v === undefined || v === "") return "—";
@@ -34,7 +34,7 @@ export function Modal({ title, onClose, footer, children }: { title: string; onC
 }
 
 /** Shows a secret exactly once; the parent drops it when the dialog closes. */
-export function SecretModal({ secret, label, onClose }: { secret: string; label: string; onClose: () => void }) {
+export function SecretModal({ secret, label, onClose, children }: { secret: string; label: string; onClose: () => void; children?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   return (
     <Modal
@@ -45,7 +45,7 @@ export function SecretModal({ secret, label, onClose }: { secret: string; label:
             onClick={() => {
               void navigator.clipboard?.writeText(secret);
               setCopied(true);
-              toaster.add({ title: "Secret copied", description: "It is on your clipboard. Store it somewhere safe.", type: "success" });
+              notify.copied("Secret");
             }}
           >
             {copied ? "Copied" : "Copy"}
@@ -62,6 +62,7 @@ export function SecretModal({ secret, label, onClose }: { secret: string; label:
       <code aria-label="Secret" className="block break-all rounded bg-background p-2 font-mono text-xs">
         {secret}
       </code>
+      {children}
     </Modal>
   );
 }

@@ -64,7 +64,7 @@ describe("System Studio backups", () => {
     await screen.findByRole("table", { name: "Snapshots" });
     await userEvent.type(screen.getByLabelText(/Label/), "nightly");
     await userEvent.type(screen.getByLabelText("Keep last"), "5");
-    await userEvent.click(screen.getByLabelText("Include indexes"));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Include indexes" }));
     await userEvent.click(screen.getByRole("button", { name: "Create snapshot" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Created snapshot 2026-11-10T01-00-00Z");
     expect(st.created).toEqual([{ label: "nightly", include_indexes: false, retention: { keep_last: 5 } }]);

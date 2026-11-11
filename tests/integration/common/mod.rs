@@ -65,3 +65,53 @@ pub fn wait_healthy(addr: &str, timeout: Duration) -> bool {
 pub fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
+
+/// True when the suite runs against PostgreSQL (`FORGEBASE_TEST_BACKEND=postgres`,
+/// FB-149). The black-box suites drive the real binary, so the backend is
+/// chosen the way a user chooses it: `FORGEBASE_DATABASE_BACKEND`.
+pub fn postgres() -> bool {
+    matches!(
+        std::env::var("FORGEBASE_TEST_BACKEND").ok().as_deref().map(str::trim),
+        Some("postgres" | "postgresql" | "pg")
+    )
+}
+
+/// Applies the backend selection to a `forgebase` command whose `FORGEBASE_*`
+/// variables were just cleared. SQLite (the default) needs nothing: a
+/// `bundled-postgres` build would default to PostgreSQL, so SQLite is stated
+/// explicitly. On PostgreSQL the engine comes from `FORGEBASE_PG_ENGINE_DIR`
+/// (an extracted engine or a local install) or the embedded archive;
+/// `FORGEBASE_TEST_PG_ACCELERATORS=off` turns every extension accelerator off.
+pub fn backend_env(cmd: &mut std::process::Command) {
+    if postgres() {
+        cmd.env("FORGEBASE_DATABASE_BACKEND", "postgres");
+        if let Some(dir) = std::env::var_os("FORGEBASE_PG_ENGINE_DIR").filter(|v| !v.is_empty()) {
+            cmd.env("FORGEBASE_PG_ENGINE_DIR", dir);
+        }
+        // Nightly "portable" run: every accelerator off (FB-158 addendum).
+        if std::env::var("FORGEBASE_TEST_PG_ACCELERATORS").as_deref() == Ok("off") {
+            for f in ["VECTOR", "GRAPH", "QUEUE", "CRON", "TRIGRAM"] {
+                cmd.env(format!("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_{f}"), "off");
+            }
+        }
+    } else {
+        cmd.env("FORGEBASE_DATABASE_BACKEND", "sqlite");
+    }
+}
+
+/// The arguments of a `forgebase` call. On PostgreSQL, `init` of a new project
+/// gets `--database postgres` (the way a user picks the engine: a build
+/// without the embedded engine would otherwise create a SQLite project); a
+/// project that already has a `forgebase.toml` is left alone.
+pub fn backend_args(cwd: &Path, args: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    if postgres() && args.first() == Some(&"init") && !args.contains(&"--database") && !args.contains(&"--database-url")
+    {
+        let dir = args.get(1).filter(|a| !a.starts_with('-')).copied().unwrap_or(".");
+        if !cwd.join(dir).join("forgebase.toml").exists() {
+            out.push("--database".into());
+            out.push("postgres".into());
+        }
+    }
+    out
+}
