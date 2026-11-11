@@ -17,9 +17,10 @@ use serde_json::{Value as Json, json};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{MissedTickBehavior, interval_at, timeout};
 
+use crate::channel::{self, Channel};
 use crate::outbox::{self, Event};
 use crate::presence::{Ephemeral, EphemeralKind, Member};
-use crate::protocol::{ClientMsg, SubscribeSpec, close, valid_channel, valid_subscription_id};
+use crate::protocol::{ClientMsg, SubscribeSpec, close, valid_subscription_id};
 use crate::{RealtimeError, RealtimeService};
 
 /// A credential kept to re-validate the connection.
@@ -41,13 +42,29 @@ pub(crate) struct Identity {
     pub(crate) scopes: Option<Vec<Scope>>,
 }
 
-/// Verifies a credential with the auth service.
-pub(crate) async fn authenticate(auth: &AuthService, cred: &Credential) -> Result<Authenticated, AuthError> {
+/// Verifies a credential with the auth service: who it is, and the tenant
+/// an API key or PAT is bound to (FB-138; validated for the key's owner by
+/// the auth service, at every call).
+pub(crate) async fn authenticate(
+    auth: &AuthService,
+    cred: &Credential,
+) -> Result<(Authenticated, Option<String>), AuthError> {
+    let bound = |b: forgebase_auth::BoundKey| (b.auth, b.tenant);
     match cred {
-        Credential::Bearer(t) if AuthService::is_api_key(t) => auth.authenticate_key(t).await,
-        Credential::Bearer(t) => auth.authenticate_access_token(t).await,
-        Credential::ApiKey(k) => auth.authenticate_key(k).await,
-        Credential::Cookie(c) => auth.authenticate_cookie(c).await,
+        Credential::Bearer(t) if AuthService::is_api_key(t) => auth.authenticate_key_bound(t).await.map(bound),
+        Credential::Bearer(t) => auth.authenticate_access_token(t).await.map(|a| (a, None)),
+        Credential::ApiKey(k) => auth.authenticate_key_bound(k).await.map(bound),
+        Credential::Cookie(c) => auth.authenticate_cookie(c).await.map(|a| (a, None)),
+    }
+}
+
+/// A key bound to `bound` may only serve a connection in that tenant.
+pub(crate) fn check_binding(ctx: &AccessContext, bound: Option<&str>) -> Result<(), RealtimeError> {
+    match bound {
+        Some(t) if ctx.tenant.as_deref() != Some(t) => Err(RealtimeError::Forbidden(format!(
+            "tenant_mismatch: this key is bound to tenant {t}"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -160,7 +177,7 @@ enum Target {
         filter: Option<(String, Expr, HashMap<String, Json>)>,
         action: Action,
     },
-    Channel(String),
+    Channel(Channel),
 }
 
 #[derive(Debug)]
@@ -362,18 +379,13 @@ impl Conn {
                         "channel subscriptions take no record or filter",
                     ));
                 }
-                if !valid_channel(channel) {
-                    return Err(RealtimeError::invalid(
-                        "invalid_channel",
-                        "channel names are 1-128 characters of [A-Za-z0-9_.:-]",
-                    ));
-                }
+                let ch = channel::resolve(ctx, channel)?;
                 self.svc
                     .inner
                     .data
-                    .authorize_channel(ctx, Action::ChannelSubscribe, channel)
+                    .authorize_channel(ctx, Action::ChannelSubscribe, &ch.rule_name)
                     .map_err(|e| RealtimeError::from_data(e, ctx))?;
-                Target::Channel(channel.clone())
+                Target::Channel(ch)
             }
             _ => {
                 return Err(RealtimeError::invalid(
@@ -620,20 +632,21 @@ impl Conn {
             ..
         } = self;
         for s in subs.iter() {
-            let Target::Channel(ch) = &s.target else { continue };
-            if *ch != e.channel {
+            let Target::Channel(c) = &s.target else { continue };
+            if c.routed != e.channel {
                 continue;
             }
             // Re-check: channel rules can change while subscribed.
             if svc
                 .inner
                 .data
-                .authorize_channel(&ident.ctx, Action::ChannelSubscribe, ch)
+                .authorize_channel(&ident.ctx, Action::ChannelSubscribe, &c.rule_name)
                 .is_err()
             {
                 svc.inner.counters.events_withheld.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
+            let ch = &c.name;
             let v = match &e.kind {
                 EphemeralKind::Message { from, data, timestamp } => json!({
                     "type": "message", "id": s.id, "channel": ch, "from": from, "data": data, "timestamp": timestamp,
@@ -710,9 +723,9 @@ impl Conn {
                     && !self
                         .subs
                         .iter()
-                        .any(|s| matches!(&s.target, Target::Channel(c) if c == ch))
+                        .any(|s| matches!(&s.target, Target::Channel(c) if c.routed == ch.routed))
                 {
-                    self.leave(ch);
+                    self.leave(&ch.routed);
                 }
                 self.reply(&reference, json!({"type": "unsubscribed", "id": id})).await
             }
@@ -753,7 +766,11 @@ impl Conn {
                 }
             }
             ClientMsg::PresenceLeave { channel, reference } => {
-                if self.leave(&channel) {
+                let routed = match channel::resolve(&self.ident.ctx, &channel) {
+                    Ok(c) => c.routed,
+                    Err(e) => return self.fail(&reference, None, &e).await,
+                };
+                if self.leave(&routed) {
                     self.reply(&reference, json!({"type": "presence.left", "channel": channel}))
                         .await
                 } else {
@@ -777,21 +794,24 @@ impl Conn {
 
     fn join(&mut self, channel: &str, meta: Json) -> Result<Vec<Member>, RealtimeError> {
         let ctx = &self.ident.ctx;
+        let ch = channel::resolve(ctx, channel)?;
         if !self
             .subs
             .iter()
-            .any(|s| matches!(&s.target, Target::Channel(c) if c == channel))
+            .any(|s| matches!(&s.target, Target::Channel(c) if c.routed == ch.routed))
         {
             return Err(RealtimeError::invalid(
                 "not_subscribed",
                 "subscribe to the channel before joining its presence",
             ));
         }
+        channel::check_publish(ctx, &ch)?;
         self.svc
             .inner
             .data
-            .authorize_channel(ctx, Action::ChannelPublish, channel)
+            .authorize_channel(ctx, Action::ChannelPublish, &ch.rule_name)
             .map_err(|e| RealtimeError::from_data(e, ctx))?;
+        let channel = ch.routed.as_str();
         if !scopes_grant(self.ident.scopes.as_deref(), "realtime", Access::Write, None) {
             return Err(RealtimeError::Forbidden(
                 "insufficient_scope: presence needs scope realtime:write".into(),
@@ -838,7 +858,7 @@ impl Conn {
             return Err(RealtimeError::Unavailable("authentication is not configured".into()));
         };
         let cred = Credential::Bearer(token);
-        let a = authenticate(&auth, &cred)
+        let (a, bound) = authenticate(&auth, &cred)
             .await
             .map_err(|e| RealtimeError::Unauthenticated(e.to_string()))?;
         if a.subject.access_context().principal != self.ident.ctx.principal {
@@ -846,6 +866,8 @@ impl Conn {
                 "principal_mismatch: open a new connection to change identity".into(),
             ));
         }
+        // The connection's tenant (and its channel namespace) is fixed.
+        check_binding(&self.ident.ctx, bound.as_deref())?;
         self.ident.credential = Some(cred);
         self.ident.scopes = a.scopes;
         Ok(())
@@ -857,7 +879,12 @@ impl Conn {
             return Ok(());
         };
         match authenticate(auth, cred).await {
-            Ok(a) if a.subject.access_context().principal == self.ident.ctx.principal => Ok(()),
+            Ok((a, bound))
+                if a.subject.access_context().principal == self.ident.ctx.principal
+                    && check_binding(&self.ident.ctx, bound.as_deref()).is_ok() =>
+            {
+                Ok(())
+            }
             Ok(_) => self.revoked("identity changed".into()),
             Err(e @ (AuthError::InvalidToken(_) | AuthError::Unauthenticated | AuthError::InvalidCredentials)) => {
                 self.revoked(e.to_string())

@@ -371,6 +371,19 @@ impl Authorizer for PolicyAuthorizer {
         self.svc.authorize_resource(ctx, action, resource)
     }
 
+    /// Channels are `realtime_channel` resources (FB-136): the permission
+    /// `engine:channel_<subscribe|publish>[:<name>]`, else the channel's
+    /// rule (`view` for subscribe, `create` for publish), which may use
+    /// `@request.tenant`. `channel` is the name without its tenant prefix.
+    fn authorize_channel(&self, ctx: &AccessContext, action: Action, channel: &str) -> Decision {
+        let op = match action {
+            Action::ChannelPublish => forgebase_data::ResourceOp::Create,
+            _ => forgebase_data::ResourceOp::View,
+        };
+        let r = EngineResource::new(forgebase_data::ResourceKind::Channel, channel, op);
+        self.svc.authorize_resource(ctx, action, &r)
+    }
+
     fn register_resource_schema(&self, schema: ResourceSchema) {
         self.svc.register_resource_schema(schema);
     }

@@ -19,7 +19,9 @@ use crate::model::{
 };
 use crate::money::{allocate, mul_div, price_amount, tax};
 use crate::provider::{ChargeRequest, ChargeResult, HostedPaymentRequest, RefundRequest};
-use crate::service::{BillingService, DAY, Tx, check_idem, check_text, int, json_col, new_id, opt_int, opt_text, text};
+use crate::service::{
+    BillingService, DAY, Tx, check_idem, check_text, int, json_col, new_id, opt_int, opt_text, realm_clause, text,
+};
 
 // ---------------------------------------------------------------------------
 // Rows
@@ -1265,14 +1267,18 @@ impl BillingService {
     // Reads
     // -----------------------------------------------------------------------
 
-    /// `None` with instance-wide read access lists everything.
-    fn list_subject(&self, ctx: &AccessContext, subject: Option<&str>) -> Result<Option<String>> {
-        if subject.is_none() && self.can_read_all(ctx).is_ok() {
-            return Ok(None);
+    /// The subject a list reads (`None` with instance-wide read access:
+    /// everything) and the realm such a list is limited to (G18; `None` for
+    /// privileged readers).
+    fn list_subject(&self, ctx: &AccessContext, subject: Option<&str>) -> Result<(Option<String>, Option<String>)> {
+        if subject.is_none()
+            && let Ok(realm) = self.can_read_all(ctx)
+        {
+            return Ok((None, realm));
         }
         let s = self.subject_for(ctx, subject)?;
         self.can_read(ctx, &s)?;
-        Ok(Some(s))
+        Ok((Some(s), None))
     }
 
     /// Invoices of a subject (newest first), optionally of one status.
@@ -1283,16 +1289,18 @@ impl BillingService {
         status: Option<InvoiceStatus>,
         limit: Option<u32>,
     ) -> Result<Vec<Invoice>> {
-        let subject = self.list_subject(ctx, subject)?;
+        let (subject, realm) = self.list_subject(ctx, subject)?;
         let limit = i64::from(limit.unwrap_or(50).clamp(1, 500));
+        let mut params = vec![subject.into(), status.map(InvoiceStatus::as_str).into(), limit.into()];
+        let only = realm_clause(realm.as_deref(), "i.subject", &mut params);
         let rows = self
             .fetch(
                 &format!(
                     "SELECT {INVOICE_COLUMNS} FROM {INVOICE_FROM}
-                     WHERE (?1 IS NULL OR i.subject = ?1) AND (?2 IS NULL OR i.status = ?2) AND i.status <> 'draft'
+                     WHERE (?1 IS NULL OR i.subject = ?1) AND (?2 IS NULL OR i.status = ?2) AND i.status <> 'draft'{only}
                      ORDER BY i.created_at DESC, i.id DESC LIMIT ?3"
                 ),
-                vec![subject.into(), status.map(InvoiceStatus::as_str).into(), limit.into()],
+                params,
             )
             .await?;
         let mut out = Vec::new();
@@ -1317,15 +1325,17 @@ impl BillingService {
         subject: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Vec<Payment>> {
-        let subject = self.list_subject(ctx, subject)?;
+        let (subject, realm) = self.list_subject(ctx, subject)?;
         let limit = i64::from(limit.unwrap_or(50).clamp(1, 500));
+        let mut params = vec![subject.into(), limit.into()];
+        let only = realm_clause(realm.as_deref(), "subject", &mut params);
         let rows = self
             .fetch(
                 &format!(
-                    "SELECT {PAYMENT_COLUMNS} FROM _forgebase_billing_payments WHERE (?1 IS NULL OR subject = ?1)
+                    "SELECT {PAYMENT_COLUMNS} FROM _forgebase_billing_payments WHERE (?1 IS NULL OR subject = ?1){only}
                      ORDER BY created_at DESC, id DESC LIMIT ?2"
                 ),
-                vec![subject.into(), limit.into()],
+                params,
             )
             .await?;
         Ok(rows.rows.iter().map(|r| payment_row(r)).collect())
@@ -1333,15 +1343,19 @@ impl BillingService {
 
     /// Refunds of a subject (newest first).
     pub async fn refunds(&self, ctx: &AccessContext, subject: Option<&str>, limit: Option<u32>) -> Result<Vec<Refund>> {
-        let subject = self.list_subject(ctx, subject)?;
+        let (subject, realm) = self.list_subject(ctx, subject)?;
         let limit = i64::from(limit.unwrap_or(50).clamp(1, 500));
+        let mut params = vec![subject.into(), limit.into()];
+        let only = realm_clause(realm.as_deref(), "i.subject", &mut params);
         let rows = self
             .fetch(
-                "SELECT r.id, r.payment_id, r.invoice_id, r.credit_note_id, r.provider, r.provider_ref, r.status, r.amount,
-                        r.currency, r.reason, r.created_at
-                 FROM _forgebase_billing_refunds r JOIN _forgebase_billing_invoices i ON i.id = r.invoice_id
-                 WHERE (?1 IS NULL OR i.subject = ?1) ORDER BY r.created_at DESC, r.id DESC LIMIT ?2",
-                vec![subject.into(), limit.into()],
+                &format!(
+                    "SELECT r.id, r.payment_id, r.invoice_id, r.credit_note_id, r.provider, r.provider_ref, r.status, r.amount,
+                            r.currency, r.reason, r.created_at
+                     FROM _forgebase_billing_refunds r JOIN _forgebase_billing_invoices i ON i.id = r.invoice_id
+                     WHERE (?1 IS NULL OR i.subject = ?1){only} ORDER BY r.created_at DESC, r.id DESC LIMIT ?2"
+                ),
+                params,
             )
             .await?;
         Ok(rows.rows.iter().map(|r| refund_row(r)).collect())
@@ -1354,15 +1368,17 @@ impl BillingService {
         subject: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Vec<CreditNote>> {
-        let subject = self.list_subject(ctx, subject)?;
+        let (subject, realm) = self.list_subject(ctx, subject)?;
         let limit = i64::from(limit.unwrap_or(50).clamp(1, 500));
+        let mut params = vec![subject.into(), limit.into()];
+        let only = realm_clause(realm.as_deref(), "subject", &mut params);
         let rows = self
             .fetch(
                 &format!(
-                    "SELECT {NOTE_COLUMNS} FROM _forgebase_billing_credit_notes WHERE (?1 IS NULL OR subject = ?1)
+                    "SELECT {NOTE_COLUMNS} FROM _forgebase_billing_credit_notes WHERE (?1 IS NULL OR subject = ?1){only}
                      ORDER BY created_at DESC, id DESC LIMIT ?2"
                 ),
-                vec![subject.into(), limit.into()],
+                params,
             )
             .await?;
         let mut out = Vec::new();
@@ -1426,9 +1442,30 @@ impl BillingService {
         self.collect(id, url.as_deref(), false).await
     }
 
+    /// May operate on invoice `id` (mark paid, void, credit): realm-level
+    /// `billing:write` (else `403`), and the invoice's subject in the
+    /// operator's realm (G18; else `404`, as for an unknown invoice).
+    async fn can_operate_invoice(&self, ctx: &AccessContext, id: &str) -> Result<()> {
+        if ctx.is_privileged() {
+            return Ok(());
+        }
+        self.require_caller(ctx)?;
+        self.check(ctx, "billing:write", None)?;
+        let rows = self
+            .fetch(
+                "SELECT subject FROM _forgebase_billing_invoices WHERE id = ?1",
+                vec![id.into()],
+            )
+            .await?;
+        match rows.rows.first() {
+            Some(r) if self.in_caller_realm(ctx, &text(r, 0)) => Ok(()),
+            _ => Err(BillingError::NotFound("invoice".into())),
+        }
+    }
+
     /// Records an out-of-band payment (operators; manual billing).
     pub async fn mark_paid(&self, ctx: &AccessContext, id: &str, input: MarkPaidInput) -> Result<Invoice> {
-        self.can_operate(ctx)?;
+        self.can_operate_invoice(ctx, id).await?;
         let reference = check_text(input.reference, "reference", 200)?;
         let now = self.now();
         let mut tx = self.begin().await?;
@@ -1478,7 +1515,7 @@ impl BillingService {
     /// Voids an open invoice (operators). The `incomplete` subscription of a
     /// voided first invoice is cancelled.
     pub async fn void_invoice(&self, ctx: &AccessContext, id: &str) -> Result<Invoice> {
-        self.can_operate(ctx)?;
+        self.can_operate_invoice(ctx, id).await?;
         let now = self.now();
         let mut sub = None;
         let mut tx = self.begin().await?;
@@ -1538,7 +1575,7 @@ impl BillingService {
     /// bought on the invoice are taken back in proportion (FB-73
     /// `reverse_purchase`). Idempotent by key.
     pub async fn credit_invoice(&self, ctx: &AccessContext, id: &str, input: CreditNoteInput) -> Result<CreditNote> {
-        self.can_operate(ctx)?;
+        self.can_operate_invoice(ctx, id).await?;
         self.issue_credit_note(&ctx.principal_key(), id, input, None).await
     }
 
