@@ -30,7 +30,7 @@ async fn world(shards: usize) -> World {
     }
     t.tenant_collection("notes").await;
     let tenant = t.new_tenant().await;
-    t.place(&tenant, &ids[0]).await;
+    // Placed by the policy: control takes none, ties go to the lower number.
     for i in 0..200 {
         let r = t
             .write(&tenant, "notes", json!({"body": format!("seed-{i}"), "n": i}))
@@ -224,13 +224,16 @@ async fn a_rebalance_spreads_tenants_over_the_shards() {
     }
     let mut t = Topo::bare().await;
     let s1 = t.add_shard("s1").await;
-    t.add_shard("s2").await;
-    t.add_shard("s3").await;
+    let s2 = t.add_shard("s2").await;
+    let s3 = t.add_shard("s3").await;
+    // Only s1 takes new tenants while they are created, so all six land
+    // there through the placement policy; then the others open up.
+    t.takes_tenants(&s2, false).await;
+    t.takes_tenants(&s3, false).await;
     t.tenant_collection("notes").await;
     let mut tenants = Vec::new();
     for _ in 0..6 {
         let tenant = t.new_tenant().await;
-        t.place(&tenant, &s1).await;
         for i in 0..40 {
             let r = t
                 .write(&tenant, "notes", json!({"body": format!("r-{i}"), "n": i}))
@@ -239,6 +242,13 @@ async fn a_rebalance_spreads_tenants_over_the_shards() {
         }
         tenants.push(tenant);
     }
+    for tenant in &tenants {
+        let r = t.adm("GET", &format!("{BASE}/placements?q={tenant}"), None).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.json()["items"][0]["set"], s1.as_str(), "placed on s1: {}", r.text());
+    }
+    t.takes_tenants(&s2, true).await;
+    t.takes_tenants(&s3, true).await;
     let r = t
         .adm("POST", &format!("{BASE}/rebalance/plan"), Some(json!({"max_moves": 6})))
         .await;

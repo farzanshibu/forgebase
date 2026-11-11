@@ -87,9 +87,8 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
         v
     };
     let mut tenants = Vec::new();
-    for i in 0..6 {
+    for _ in 0..6 {
         let tenant = t.new_tenant().await;
-        t.place(&tenant, &set_ids[i % 3]).await;
         tenants.push(tenant);
     }
     for (i, tenant) in tenants.iter().enumerate() {
