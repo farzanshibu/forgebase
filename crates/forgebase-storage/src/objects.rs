@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use forgebase_data::AccessContext;
+use forgebase_data::{AccessContext, Decision, Predicate, ResourceOp};
 use forgebase_db::{Value, WriteTx};
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
@@ -24,7 +24,10 @@ use sha2::{Digest, Sha256};
 use crate::driver::ByteStream;
 use crate::error::{Result, StorageError};
 use crate::model::{DeleteResult, ObjectInfo, ObjectPage};
-use crate::service::{BucketRow, Need, StorageService, blob_key, id, int, iv, opt_text, st, text, type_allowed, uint};
+use crate::rules::{self, NewRow, WriteCheck};
+use crate::service::{
+    BucketRow, Need, StorageService, blob_key, id, int, iv, opt_text, public_bucket, st, text, type_allowed, uint,
+};
 use crate::util::{from_extension, hex, rfc3339, sniff, validate_key};
 
 const OBJECT_COLS: &str = "id, bucket, key, blob_sha, size, content_type, metadata, is_latest, delete_marker, created_by, created_at, quota_subject";
@@ -140,7 +143,7 @@ impl ObjectRow {
 
     pub(crate) fn info(&self) -> ObjectInfo {
         ObjectInfo {
-            bucket: self.bucket.clone(),
+            bucket: public_bucket(&self.bucket),
             key: self.key.clone(),
             version_id: self.id.clone(),
             size: self.size,
@@ -161,6 +164,8 @@ pub(crate) struct CommitMeta {
     pub actor: String,
     pub content_type: String,
     pub metadata_json: String,
+    /// Bucket rules the new version must satisfy (FB-140).
+    pub check: WriteCheck,
 }
 
 /// A version to install as the latest of a key.
@@ -297,10 +302,40 @@ impl StorageService {
     /// Uploads one object from a stream.
     pub async fn put_object(&self, ctx: &AccessContext, req: PutRequest) -> Result<ObjectInfo> {
         validate_key(&req.key)?;
-        let bucket = self.bucket_row(&req.bucket).await?;
-        self.authorize(ctx, &bucket, Some(&req.key), Need::Write).await?;
-        self.put_inner(&Self::subject_of(ctx), &ctx.principal_key(), &bucket, req)
+        let bucket = self.bucket_row(ctx, &req.bucket).await?;
+        let check = self.authorize_write(ctx, &bucket, &req.key).await?;
+        self.precheck_write(&bucket, &req.key, &check).await?;
+        self.put_inner(&Self::subject_of(ctx), &ctx.principal_key(), &bucket, req, check)
             .await
+    }
+
+    /// Refuses a write early (before any byte is received) when the rule
+    /// for the key's current state denies it or the version it would
+    /// replace is not the caller's to update. The rule is applied again,
+    /// with the written version, when the version is installed.
+    pub(crate) async fn precheck_write(&self, bucket: &BucketRow, key: &str, check: &WriteCheck) -> Result<()> {
+        if check.rules.is_none() {
+            return Ok(());
+        }
+        let live = self
+            .find_row(&bucket.id, key, None, None)
+            .await
+            .ok()
+            .filter(|r| !r.delete_marker);
+        match check.decision(live.is_some()) {
+            Some(Decision::Deny) => Err(rule_refusal()),
+            Some(Decision::Filter(p)) => match &live {
+                Some(row) if !self.stored_matches(&row.id, p).await? => Err(rule_refusal()),
+                _ => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether stored version `id` satisfies `p`.
+    pub(crate) async fn stored_matches(&self, id: &str, p: &Predicate) -> Result<bool> {
+        let stmt = rules::stored_row_check(self.inner.db.dialect(), id, p)?;
+        Ok(!self.inner.db.fetch_all(&stmt).await?.is_empty())
     }
 
     /// The upload after authorisation (signed URLs authorise by signature).
@@ -310,6 +345,7 @@ impl StorageService {
         actor: &str,
         bucket: &BucketRow,
         req: PutRequest,
+        check: WriteCheck,
     ) -> Result<ObjectInfo> {
         validate_key(&req.key)?;
         let limit = self.object_limit(bucket);
@@ -345,6 +381,7 @@ impl StorageService {
             actor: actor.to_owned(),
             content_type,
             metadata_json: metadata,
+            check,
         };
         self.commit_staged(bucket, &req.key, staged, meta).await
     }
@@ -362,6 +399,7 @@ impl StorageService {
             actor,
             content_type,
             metadata_json,
+            check,
         } = meta;
         let version_id = id();
         let size = staged.size;
@@ -382,7 +420,7 @@ impl StorageService {
                     subject: subject.clone(),
                     actor: actor.clone(),
                 };
-                self.install(bucket, key, &nv).await
+                self.install(bucket, key, &nv, &check).await
             }
             Err(e) => Err(e),
         };
@@ -416,10 +454,11 @@ impl StorageService {
         bucket: &BucketRow,
         key: &str,
         nv: &NewVersion,
+        check: &WriteCheck,
     ) -> Result<(ObjectRow, Vec<Removed>)> {
         let now = self.now();
         let mut tx = self.begin().await?;
-        match self.install_in(tx.as_mut(), bucket, key, nv, now).await {
+        match self.install_in(tx.as_mut(), bucket, key, nv, check, now).await {
             Ok(out) => {
                 tx.commit().await?;
                 Ok(out)
@@ -437,6 +476,7 @@ impl StorageService {
         bucket: &BucketRow,
         key: &str,
         nv: &NewVersion,
+        check: &WriteCheck,
         now: i64,
     ) -> Result<(ObjectRow, Vec<Removed>)> {
         if let Some((sha, size)) = &nv.blob {
@@ -451,12 +491,14 @@ impl StorageService {
         let prev = tx
             .fetch_all(&st(
                 &format!("SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? AND is_latest = 1"),
-                vec![bucket.name.as_str().into(), key.into()],
+                vec![bucket.id.as_str().into(), key.into()],
             ))
             .await?;
+        let prev_row = prev.rows.first().map(|r| ObjectRow::decode(r));
+        self.check_in(tx, check, prev_row.as_ref().filter(|p| !p.delete_marker), key, nv)
+            .await?;
         let mut removed = Vec::new();
-        if let Some(p) = prev.rows.first() {
-            let p = ObjectRow::decode(p);
+        if let Some(p) = prev_row {
             if bucket.versioning {
                 tx.execute(&st(
                     "UPDATE _forgebase_storage_objects SET is_latest = 0 WHERE id = ?",
@@ -481,13 +523,15 @@ impl StorageService {
         }
         let marker = nv.blob.is_none();
         let size = nv.blob.as_ref().map_or(0, |(_, s)| *s);
+        let (owner, owner_collection) = rules::owner_of(&nv.actor);
         tx.execute(&st(
             "INSERT INTO _forgebase_storage_objects \
-             (id, bucket, key, blob_sha, size, content_type, metadata, is_latest, delete_marker, quota_subject, created_by, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+             (id, bucket, key, blob_sha, size, content_type, metadata, is_latest, delete_marker, quota_subject, created_by, created_at, \
+              owner, owner_collection, folders) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
             vec![
                 nv.id.as_str().into(),
-                bucket.name.as_str().into(),
+                bucket.id.as_str().into(),
                 key.into(),
                 nv.blob.as_ref().map_or(Value::Null, |(s, _)| Value::Text(s.clone())),
                 iv(size),
@@ -497,12 +541,15 @@ impl StorageService {
                 nv.subject.as_str().into(),
                 nv.actor.as_str().into(),
                 now.into(),
+                owner.map_or(Value::Null, Value::Text),
+                owner_collection.map_or(Value::Null, Value::Text),
+                rules::folders_json(key).into(),
             ],
         ))
         .await?;
         let row = ObjectRow {
             id: nv.id.clone(),
-            bucket: bucket.name.clone(),
+            bucket: bucket.id.clone(),
             key: key.to_owned(),
             blob_sha: nv.blob.as_ref().map(|(s, _)| s.clone()),
             size,
@@ -517,6 +564,41 @@ impl StorageService {
         Ok((row, removed))
     }
 
+    /// Applies the bucket rules of a write inside the transaction that
+    /// installs `nv` (FB-140): the `update` decision when `live` (the
+    /// version `nv` replaces) exists, else `create`. A filter must hold on
+    /// `live` and on the new version.
+    async fn check_in(
+        &self,
+        tx: &mut dyn WriteTx,
+        check: &WriteCheck,
+        live: Option<&ObjectRow>,
+        key: &str,
+        nv: &NewVersion,
+    ) -> Result<()> {
+        let p = match check.decision(live.is_some()) {
+            None | Some(Decision::Allow) => return Ok(()),
+            Some(Decision::Filter(p)) => p,
+            Some(_) => return Err(rule_refusal()),
+        };
+        let d = self.inner.db.dialect();
+        if let Some(row) = live
+            && tx.fetch_all(&rules::stored_row_check(d, &row.id, p)?).await?.is_empty()
+        {
+            return Err(rule_refusal());
+        }
+        let new = NewRow {
+            key,
+            created_by: &nv.actor,
+            size: Some(nv.blob.as_ref().map_or(0, |(_, s)| *s)),
+            content_type: Some(&nv.content_type),
+        };
+        if tx.fetch_all(&rules::new_row_check(d, &new, p)?).await?.is_empty() {
+            return Err(rule_refusal());
+        }
+        Ok(())
+    }
+
     /// Gives back the quota of versions that left the store.
     pub(crate) async fn release(&self, removed: Vec<Removed>) {
         for r in removed {
@@ -527,23 +609,35 @@ impl StorageService {
         }
     }
 
-    async fn find_row(&self, bucket: &str, key: &str, version: Option<&str>) -> Result<ObjectRow> {
-        let rows = match version {
-            Some(v) => {
-                self.read(
-                    &format!("SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? AND id = ?"),
-                    vec![bucket.into(), key.into(), v.into()],
-                )
-                .await?
-            }
-            None => {
-                self.read(
-                    &format!("SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? AND is_latest = 1"),
-                    vec![bucket.into(), key.into()],
-                )
-                .await?
-            }
+    /// A version of `key` in the stored bucket `bucket_id` (the latest by
+    /// default), among those `filter` lets the caller see.
+    pub(crate) async fn find_row(
+        &self,
+        bucket_id: &str,
+        key: &str,
+        version: Option<&str>,
+        filter: Option<&Predicate>,
+    ) -> Result<ObjectRow> {
+        let d = self.inner.db.dialect();
+        let stmt = match version {
+            Some(v) => rules::statement(
+                d,
+                &format!(
+                    "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o WHERE o.bucket = ?1 AND o.key = ?2 AND o.id = ?3 AND {{rule}}"
+                ),
+                vec![bucket_id.into(), key.into(), v.into()],
+                filter,
+            )?,
+            None => rules::statement(
+                d,
+                &format!(
+                    "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o WHERE o.bucket = ?1 AND o.key = ?2 AND o.is_latest = 1 AND {{rule}}"
+                ),
+                vec![bucket_id.into(), key.into()],
+                filter,
+            )?,
         };
+        let rows = self.inner.db.fetch_all(&stmt).await?;
         rows.rows
             .first()
             .map(|r| ObjectRow::decode(r))
@@ -558,9 +652,9 @@ impl StorageService {
         key: &str,
         version: Option<&str>,
     ) -> Result<ObjectInfo> {
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(key), Need::Read).await?;
-        let row = self.find_row(bucket, key, version).await?;
+        let b = self.bucket_row(ctx, bucket).await?;
+        let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
+        let row = self.find_row(&b.id, key, version, access.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -576,21 +670,22 @@ impl StorageService {
         version: Option<&str>,
         range: Option<RangeSpec>,
     ) -> Result<ObjectRead> {
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(key), Need::Read).await?;
-        self.read_row(bucket, key, version, range).await
+        let b = self.bucket_row(ctx, bucket).await?;
+        let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
+        self.read_row(&b.id, key, version, range, access.filter()).await
     }
 
     /// The read itself, after the caller has been authorised (signed URLs
     /// authorise by signature).
     pub(crate) async fn read_row(
         &self,
-        bucket: &str,
+        bucket_id: &str,
         key: &str,
         version: Option<&str>,
         range: Option<RangeSpec>,
+        filter: Option<&Predicate>,
     ) -> Result<ObjectRead> {
-        let row = self.find_row(bucket, key, version).await?;
+        let row = self.find_row(bucket_id, key, version, filter).await?;
         let Some(sha) = row.blob_sha.clone().filter(|_| !row.delete_marker) else {
             return Err(StorageError::NotFound(format!("object {key}")));
         };
@@ -607,7 +702,8 @@ impl StorageService {
     }
 
     /// Lists current objects under `prefix`. With a `delimiter`, keys that
-    /// contain it after the prefix collapse into `prefixes`.
+    /// contain it after the prefix collapse into `prefixes`. A bucket rule
+    /// for `list` limits both to the objects it matches.
     pub async fn list_objects(
         &self,
         ctx: &AccessContext,
@@ -617,8 +713,8 @@ impl StorageService {
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<ObjectPage> {
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(prefix), Need::Read).await?;
+        let b = self.bucket_row(ctx, bucket).await?;
+        let access = self.authorize(ctx, &b, Some(prefix), Need::Read, ResourceOp::List).await?;
         let limit = usize::try_from(limit.clamp(1, 1000)).unwrap_or(1000);
         let delimiter = delimiter.filter(|d| !d.is_empty());
         let plen = i64::try_from(prefix.chars().count()).unwrap_or(0);
@@ -633,16 +729,17 @@ impl StorageService {
         let mut order: Vec<String> = Vec::new();
         let mut next_cursor = None;
         'outer: loop {
-            let rows = self
-                .read(
-                    &format!(
-                        "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects \
-                         WHERE bucket = ? AND is_latest = 1 AND delete_marker = 0 AND substr(key, 1, ?) = ? AND key > ? \
-                         ORDER BY key LIMIT 1000"
-                    ),
-                    vec![bucket.into(), plen.into(), prefix.into(), lower.as_str().into()],
-                )
-                .await?;
+            let stmt = rules::statement(
+                self.inner.db.dialect(),
+                &format!(
+                    "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o \
+                     WHERE o.bucket = ?1 AND o.is_latest = 1 AND o.delete_marker = 0 AND substr(o.key, 1, ?2) = ?3 \
+                     AND o.key > ?4 AND {{rule}} ORDER BY o.key LIMIT 1000"
+                ),
+                vec![b.id.as_str().into(), plen.into(), prefix.into(), lower.as_str().into()],
+                access.filter(),
+            )?;
+            let rows = self.inner.db.fetch_all(&stmt).await?;
             if rows.is_empty() {
                 break;
             }
@@ -680,23 +777,28 @@ impl StorageService {
         })
     }
 
-    /// Every version of a key, newest first (needs read access).
+    /// Every version of a key, newest first (needs read access; a bucket
+    /// rule for `list` keeps the versions it matches).
     pub async fn list_versions(&self, ctx: &AccessContext, bucket: &str, key: &str) -> Result<Vec<ObjectInfo>> {
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(key), Need::Read).await?;
-        let rows = self
-            .read(
-                &format!("SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? ORDER BY seq DESC"),
-                vec![bucket.into(), key.into()],
-            )
-            .await?;
+        let b = self.bucket_row(ctx, bucket).await?;
+        let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::List).await?;
+        let stmt = rules::statement(
+            self.inner.db.dialect(),
+            &format!(
+                "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o WHERE o.bucket = ?1 AND o.key = ?2 AND {{rule}} ORDER BY o.seq DESC"
+            ),
+            vec![b.id.as_str().into(), key.into()],
+            access.filter(),
+        )?;
+        let rows = self.inner.db.fetch_all(&stmt).await?;
         Ok(rows.rows.iter().map(|r| ObjectRow::decode(r).info()).collect())
     }
 
     /// Deletes an object. Without `version`, a bucket with versioning adds a
     /// delete marker and any other bucket removes the object; with `version`
     /// that one version is removed for good (the newest remaining version
-    /// becomes the current one).
+    /// becomes the current one). A bucket rule for `delete` must match the
+    /// version removed (or the latest one), else the object is not found.
     pub async fn delete_object(
         &self,
         ctx: &AccessContext,
@@ -704,19 +806,22 @@ impl StorageService {
         key: &str,
         version: Option<&str>,
     ) -> Result<DeleteResult> {
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(key), Need::Write).await?;
+        let b = self.bucket_row(ctx, bucket).await?;
+        let access = self.authorize(ctx, &b, Some(key), Need::Write, ResourceOp::Delete).await?;
+        let bucket = b.id.as_str();
         let now = self.now();
         let _gate = self.inner.gate.read().await;
         if let Some(v) = version {
             let mut tx = self.begin().await?;
             let found = tx
-                .fetch_all(&st(
+                .fetch_all(&rules::statement(
+                    self.inner.db.dialect(),
                     &format!(
-                        "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects WHERE bucket = ? AND key = ? AND id = ?"
+                        "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o WHERE o.bucket = ?1 AND o.key = ?2 AND o.id = ?3 AND {{rule}}"
                     ),
                     vec![bucket.into(), key.into(), v.into()],
-                ))
+                    access.filter(),
+                )?)
                 .await?;
             let Some(row) = found.rows.first().map(|r| ObjectRow::decode(r)) else {
                 let _ = tx.rollback().await;
@@ -752,7 +857,7 @@ impl StorageService {
                 delete_marker: false,
             });
         }
-        let row = self.find_row(bucket, key, None).await?;
+        let row = self.find_row(bucket, key, None, access.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -766,7 +871,7 @@ impl StorageService {
             actor: ctx.principal_key(),
         };
         if b.versioning {
-            self.install(&b, key, &nv).await?;
+            self.install(&b, key, &nv, &WriteCheck::open()).await?;
             return Ok(DeleteResult {
                 version_id: marker_id,
                 delete_marker: true,
@@ -796,7 +901,9 @@ impl StorageService {
 
     /// Copies an object (the latest version, or `version`) to another key,
     /// possibly in another bucket. No bytes move: the copy references the
-    /// same blob. The copy counts against the quota of the caller.
+    /// same blob. The copy counts against the quota of the caller. Needs
+    /// `view` on the source and a write of the target (bucket rules apply to
+    /// both).
     pub async fn copy_object(
         &self,
         ctx: &AccessContext,
@@ -807,11 +914,11 @@ impl StorageService {
         dest_key: &str,
     ) -> Result<ObjectInfo> {
         validate_key(dest_key)?;
-        let src = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &src, Some(key), Need::Read).await?;
-        let dst = self.bucket_row(dest_bucket).await?;
-        self.authorize(ctx, &dst, Some(dest_key), Need::Write).await?;
-        let row = self.find_row(bucket, key, version).await?;
+        let src = self.bucket_row(ctx, bucket).await?;
+        let read = self.authorize(ctx, &src, Some(key), Need::Read, ResourceOp::View).await?;
+        let dst = self.bucket_row(ctx, dest_bucket).await?;
+        let check = self.authorize_write(ctx, &dst, dest_key).await?;
+        let row = self.find_row(&src.id, key, version, read.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -826,7 +933,8 @@ impl StorageService {
                 limit: self.object_limit(&dst),
             });
         }
-        self.clone_version(ctx, &row, &dst, dest_key).await
+        self.precheck_write(&dst, dest_key, &check).await?;
+        self.clone_version(ctx, &row, &dst, dest_key, &check).await
     }
 
     /// Moves an object: a copy of its latest version followed by a delete of
@@ -842,14 +950,20 @@ impl StorageService {
         if bucket == dest_bucket && key == dest_key {
             return self.head_object(ctx, bucket, key, None).await;
         }
-        let src = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &src, Some(key), Need::Write).await?;
+        let src = self.bucket_row(ctx, bucket).await?;
+        let del = self.authorize(ctx, &src, Some(key), Need::Write, ResourceOp::Delete).await?;
+        // The source must be the caller's to delete before anything is copied.
+        let live = self.find_row(&src.id, key, None, del.filter()).await?;
+        if live.delete_marker {
+            return Err(StorageError::NotFound(format!("object {key}")));
+        }
         let copied = self.copy_object(ctx, bucket, key, None, dest_bucket, dest_key).await?;
         self.delete_object(ctx, bucket, key, None).await?;
         Ok(copied)
     }
 
     /// Makes an earlier version the current one again (as a new version).
+    /// Needs `view` on that version and a write of the key.
     pub async fn restore_version(
         &self,
         ctx: &AccessContext,
@@ -857,16 +971,18 @@ impl StorageService {
         key: &str,
         version: &str,
     ) -> Result<ObjectInfo> {
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(key), Need::Write).await?;
-        let row = self.find_row(bucket, key, Some(version)).await?;
+        let b = self.bucket_row(ctx, bucket).await?;
+        let read = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
+        let check = self.authorize_write(ctx, &b, key).await?;
+        let row = self.find_row(&b.id, key, Some(version), read.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::invalid(
                 "cannot_restore_marker",
                 "a delete marker has no content to restore",
             ));
         }
-        self.clone_version(ctx, &row, &b, key).await
+        self.precheck_write(&b, key, &check).await?;
+        self.clone_version(ctx, &row, &b, key, &check).await
     }
 
     async fn clone_version(
@@ -875,6 +991,7 @@ impl StorageService {
         row: &ObjectRow,
         dst: &BucketRow,
         key: &str,
+        check: &WriteCheck,
     ) -> Result<ObjectInfo> {
         let (Some(sha), subject) = (row.blob_sha.clone(), Self::subject_of(ctx)) else {
             return Err(StorageError::NotFound(format!("object {}", row.key)));
@@ -892,7 +1009,7 @@ impl StorageService {
             subject: subject.clone(),
             actor: ctx.principal_key(),
         };
-        let out = self.install(dst, key, &nv).await;
+        let out = self.install(dst, key, &nv, check).await;
         drop(gate);
         match out {
             Ok((new, removed)) => {
@@ -907,6 +1024,11 @@ impl StorageService {
             }
         }
     }
+}
+
+/// A write the bucket's rules do not allow.
+pub(crate) fn rule_refusal() -> StorageError {
+    StorageError::Forbidden("the bucket's rules do not allow this write".into())
 }
 
 /// Lowers a blob's reference count; at zero the reconciler may collect it.

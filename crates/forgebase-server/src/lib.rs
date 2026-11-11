@@ -306,6 +306,7 @@ async fn start_full(
     };
     let resp_auth = forgebase_resp::KeyAuthenticator::new(auth.clone());
     let (fn_auth, fn_policy) = (auth.clone(), policy.clone());
+    let master_key_path = auth.config().master_key_path.clone();
     let state = AppState::from_data(db.clone(), layout.clone(), auth.data().clone())
         .with_auth(auth)
         .with_policy(policy);
@@ -331,7 +332,7 @@ async fn start_full(
     // Object storage (FB-30): local directory or S3-compatible driver, unless
     // `[storage] enabled = false`.
     let storage = if config.storage.enabled {
-        match open_storage(&db, &layout, config, state.data().clone(), &entitlements).await {
+        match open_storage(&db, &layout, config, state.data().clone(), &entitlements, master_key_path).await {
             Ok(s) => Some(s),
             Err(e) => {
                 db.close().await;
@@ -1104,6 +1105,7 @@ async fn open_storage(
     config: &Config,
     data: forgebase_data::DataService,
     entitlements: &EntitlementService,
+    master_key_path: std::path::PathBuf,
 ) -> Result<forgebase_storage::StorageService, ServerError> {
     use forgebase_storage::{LocalDriver, S3Config, S3Driver, StorageDriver, StorageService, StorageSettings};
     let sc = &config.storage;
@@ -1138,7 +1140,13 @@ async fn open_storage(
         reconcile_grace_secs: sc.reconcile_grace_secs,
         ..StorageSettings::default()
     };
-    let svc = StorageService::open(Arc::new(db.clone()), data, driver, Arc::new(SystemClock), settings)
+    // The URL signing key is sealed with the data directory's master key
+    // (FB-140, rls-coverage G11).
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&master_key_path))
+        .await
+        .map_err(|e| ServerError::Storage(e.to_string()))?
+        .map_err(|e| ServerError::Storage(e.to_string()))?;
+    let svc = StorageService::open(Arc::new(db.clone()), data, driver, Arc::new(SystemClock), settings, keyring)
         .await
         .map_err(|e| ServerError::Storage(e.to_string()))?;
     svc.attach_entitlements(entitlements.clone());

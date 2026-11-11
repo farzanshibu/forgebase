@@ -21,7 +21,10 @@ use crate::driver::ByteStream;
 use crate::error::{Result, StorageError};
 use crate::model::{CompleteInput, ObjectInfo, PartInfo, Upload, UploadInput};
 use crate::objects::{CommitMeta, metadata_json};
-use crate::service::{BucketRow, Need, StorageService, id, int, iv, opt_int, opt_text, st, text, type_allowed, uint};
+use crate::rules::WriteCheck;
+use crate::service::{
+    BucketRow, StorageService, id, int, iv, opt_int, opt_text, public_bucket, st, text, type_allowed, uint,
+};
 use crate::util::{parse_sha256, rfc3339, validate_key};
 
 const MAX_PARTS: u32 = 10_000;
@@ -86,20 +89,28 @@ impl StorageService {
 
     /// Loads a session and checks the caller may use it: write access to the
     /// target key, and being the creator (administrators may use any).
-    async fn session(&self, ctx: &AccessContext, id: &str) -> Result<(UploadRow, BucketRow)> {
+    async fn session(&self, ctx: &AccessContext, id: &str) -> Result<(UploadRow, BucketRow, WriteCheck)> {
         let row = self.upload_row(id).await?;
-        let bucket = self.bucket_row(&row.bucket).await?;
-        self.authorize(ctx, &bucket, Some(&row.key), Need::Write).await?;
+        let bucket = self
+            .stored_bucket(&row.bucket)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(format!("upload {id}")))?;
+        // A tenant bucket's sessions are reached from that tenant only.
+        if !ctx.is_privileged() && bucket.tenant.is_some() && bucket.tenant != ctx.tenant {
+            return Err(StorageError::NotFound(format!("upload {id}")));
+        }
         if !ctx.is_privileged() && ctx.principal_key() != row.created_by {
             return Err(StorageError::NotFound(format!("upload {id}")));
         }
+        let check = self.authorize_write(ctx, &bucket, &row.key).await?;
+        self.precheck_write(&bucket, &row.key, &check).await?;
         if row.expires_at <= self.now() {
             return Err(StorageError::conflict(
                 "upload_expired",
                 "the upload session has expired",
             ));
         }
-        Ok((row, bucket))
+        Ok((row, bucket, check))
     }
 
     async fn parts_of(&self, id: &str) -> Result<Vec<(PartInfo, String)>> {
@@ -129,7 +140,7 @@ impl StorageService {
     async fn wire_upload(&self, row: &UploadRow) -> Result<Upload> {
         Ok(Upload {
             id: row.id.clone(),
-            bucket: row.bucket.clone(),
+            bucket: public_bucket(&row.bucket),
             key: row.key.clone(),
             kind: row.kind.clone(),
             content_type: row.content_type.clone(),
@@ -144,8 +155,9 @@ impl StorageService {
     /// Opens an upload session.
     pub async fn create_upload(&self, ctx: &AccessContext, bucket: &str, input: UploadInput) -> Result<Upload> {
         validate_key(&input.key)?;
-        let b = self.bucket_row(bucket).await?;
-        self.authorize(ctx, &b, Some(&input.key), Need::Write).await?;
+        let b = self.bucket_row(ctx, bucket).await?;
+        let check = self.authorize_write(ctx, &b, &input.key).await?;
+        self.precheck_write(&b, &input.key, &check).await?;
         let kind = match input.kind.as_deref() {
             None | Some("multipart") => "multipart",
             Some("resumable") => "resumable",
@@ -186,7 +198,7 @@ impl StorageService {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?)",
             vec![
                 upload_id.as_str().into(),
-                bucket.into(),
+                b.id.as_str().into(),
                 input.key.as_str().into(),
                 kind.into(),
                 content_type.as_str().into(),
@@ -208,7 +220,7 @@ impl StorageService {
     /// The state of a session: bytes received and the parts held. A client
     /// that lost its connection reads `received_bytes` and resumes there.
     pub async fn get_upload(&self, ctx: &AccessContext, id: &str) -> Result<Upload> {
-        let (row, _) = self.session(ctx, id).await?;
+        let (row, _, _) = self.session(ctx, id).await?;
         self.wire_upload(&row).await
     }
 
@@ -222,7 +234,7 @@ impl StorageService {
         expected_sha256: Option<&str>,
         body: ByteStream,
     ) -> Result<PartInfo> {
-        let (row, bucket) = self.session(ctx, id).await?;
+        let (row, bucket, _check) = self.session(ctx, id).await?;
         if row.kind != "multipart" {
             return Err(StorageError::conflict(
                 "wrong_upload_kind",
@@ -337,7 +349,7 @@ impl StorageService {
         expected_sha256: Option<&str>,
         body: ByteStream,
     ) -> Result<AppendOutcome> {
-        let (row, bucket) = self.session(ctx, id).await?;
+        let (row, bucket, check) = self.session(ctx, id).await?;
         if row.kind != "resumable" {
             return Err(StorageError::conflict(
                 "wrong_upload_kind",
@@ -372,7 +384,7 @@ impl StorageService {
             .await?;
         let fresh = self.upload_row(id).await?;
         if fresh.declared_size == Some(fresh.received) {
-            let object = self.finish(&fresh, &bucket, &CompleteInput::default()).await?;
+            let object = self.finish(&fresh, &bucket, &CompleteInput::default(), check).await?;
             return Ok(AppendOutcome {
                 upload: Upload {
                     parts: Vec::new(),
@@ -390,7 +402,7 @@ impl StorageService {
     fn wire_upload_done(&self, row: &UploadRow) -> Upload {
         Upload {
             id: row.id.clone(),
-            bucket: row.bucket.clone(),
+            bucket: public_bucket(&row.bucket),
             key: row.key.clone(),
             kind: row.kind.clone(),
             content_type: row.content_type.clone(),
@@ -404,11 +416,17 @@ impl StorageService {
 
     /// Assembles the parts into the object.
     pub async fn complete_upload(&self, ctx: &AccessContext, id: &str, input: CompleteInput) -> Result<ObjectInfo> {
-        let (row, bucket) = self.session(ctx, id).await?;
-        self.finish(&row, &bucket, &input).await
+        let (row, bucket, check) = self.session(ctx, id).await?;
+        self.finish(&row, &bucket, &input, check).await
     }
 
-    async fn finish(&self, row: &UploadRow, bucket: &BucketRow, input: &CompleteInput) -> Result<ObjectInfo> {
+    async fn finish(
+        &self,
+        row: &UploadRow,
+        bucket: &BucketRow,
+        input: &CompleteInput,
+        check: WriteCheck,
+    ) -> Result<ObjectInfo> {
         let held = self.parts_of(&row.id).await?;
         let chosen: Vec<(PartInfo, String)> = match &input.parts {
             None => held,
@@ -508,6 +526,7 @@ impl StorageService {
                     actor: row.created_by.clone(),
                     content_type,
                     metadata_json: row.metadata.clone(),
+                    check,
                 },
             )
             .await?;
@@ -534,7 +553,7 @@ impl StorageService {
 
     /// Cancels a session and discards what it received.
     pub async fn abort_upload(&self, ctx: &AccessContext, id: &str) -> Result<()> {
-        let (row, _) = self.session(ctx, id).await?;
+        let (row, _, _) = self.session(ctx, id).await?;
         self.drop_session(&row.id).await?;
         Ok(())
     }

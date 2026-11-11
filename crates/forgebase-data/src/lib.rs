@@ -120,6 +120,12 @@ impl DataService {
         &self.inner.backend
     }
 
+    /// The authorizer, for engines that ask about their own resources
+    /// (`Authorizer::authorize_resource`, FB-134; object storage, FB-140).
+    pub fn authorizer(&self) -> &Arc<dyn Authorizer> {
+        &self.inner.authorizer
+    }
+
     /// Re-reads collection definitions (after another process changed them).
     pub async fn reload_catalog(&self) -> Result<(), DataError> {
         let _guard = self.inner.schema_lock.lock().await;

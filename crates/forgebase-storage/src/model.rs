@@ -86,6 +86,8 @@ impl Permission {
 pub struct Bucket {
     /// Name.
     pub name: String,
+    /// Owning tenant (FB-140); `null` for an instance-wide bucket.
+    pub tenant: Option<String>,
     /// Default read access.
     pub visibility: Visibility,
     /// Whether overwrites and deletes keep earlier versions.
@@ -373,6 +375,11 @@ pub struct StorageStats {
     pub stored_bytes: u64,
     /// Open upload sessions.
     pub open_uploads: u64,
+    /// What the figures cover (FB-140): `tenant`, `instance` (buckets
+    /// without a tenant) or `engine` (everything; privileged callers).
+    pub scope: String,
+    /// The tenant of `scope: tenant`.
+    pub tenant: Option<String>,
 }
 
 /// Space used by one bucket.
