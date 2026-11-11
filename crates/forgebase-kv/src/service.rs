@@ -96,7 +96,8 @@ enum Persistence {
     /// One database (SQLite, one PostgreSQL set).
     Single(Arc<dyn Backend>),
     /// Every set of a sharded cluster (ADR-0029 §3.5, FB-172): a key is
-    /// written on its tenant's set; instance-wide keys (tenant `""`) on control.
+    /// written on its tenant's set (scope `t:<env>`); instance-wide keys
+    /// (`default`, `shared:<realm>`) on control.
     Routed(DbRouter),
 }
 
@@ -547,16 +548,16 @@ impl KvService {
         }
     }
 
-    /// Writes one tenant's dirty keys now, on the set the tenant's placement
-    /// names, even while the tenant is frozen (ADR-0029 §3.8 step 4.1: the
-    /// switch of a move flushes the tenant's keys on the source before the
-    /// barrier). Returns how many rows were written.
+    /// Writes one tenant's (environment id) dirty keys now, on the set the
+    /// tenant's placement names, even while the tenant is frozen (ADR-0029
+    /// §3.8 step 4.1: the switch of a move flushes the tenant's keys on the
+    /// source before the barrier). Returns how many rows were written.
     pub async fn flush_tenant(&self, tenant: &str) -> KvResult<usize> {
         let Some(backend) = &self.inner.backend else {
             return Ok(0);
         };
         let _guard = self.inner.flush_lock.lock().await;
-        let changes = lock(&self.inner.store).take_dirty_of(tenant);
+        let changes = lock(&self.inner.store).take_dirty_of(&format!("t:{tenant}"));
         match backend {
             Persistence::Single(b) => self.write_group(&**b, changes).await,
             Persistence::Routed(router) => {
@@ -580,7 +581,7 @@ impl KvService {
             std::collections::BTreeMap::new();
         let mut held: Vec<KeyId> = Vec::new();
         for change in changes {
-            match router.try_for_tenant(TenantRef::new(Some(change.0.scope.tenant.as_str()))) {
+            match router.try_for_tenant(TenantRef::new(placed_tenant(&change.0.scope.tenant))) {
                 Ok(set) => groups
                     .entry(set.id().to_owned())
                     .or_insert_with(|| (set, Vec::new()))
@@ -694,6 +695,12 @@ impl Drop for Redirty<'_> {
     }
 }
 
+/// The environment a stored scope tenant belongs to: `t:<env>` is a
+/// tenant's; `default` and `shared:<realm>` are instance-wide (control).
+fn placed_tenant(stored: &str) -> Option<&str> {
+    stored.strip_prefix("t:").filter(|t| !t.is_empty())
+}
+
 /// Every persisted key of every set, oldest write first. A tenant's keys are
 /// taken only from the set that owns it (its placement's set, else control):
 /// a move leaves the tenant's rows on the source until cleanup, and a target
@@ -704,9 +711,9 @@ async fn load_sets(router: &DbRouter) -> KvResult<Vec<persist::Loaded>> {
     for set in router.sets() {
         let rows = persist::read_all(&set).await?;
         let owned = rows.into_iter().filter(|l| {
-            let owner = match router.placement(&l.id.scope.tenant) {
-                Some(p) if !l.id.scope.tenant.is_empty() => p.set_id,
-                _ => control.clone(),
+            let owner = match placed_tenant(&l.id.scope.tenant).and_then(|t| router.placement(t)) {
+                Some(p) => p.set_id,
+                None => control.clone(),
             };
             owner == set.id()
         });

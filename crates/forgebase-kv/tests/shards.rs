@@ -45,8 +45,10 @@ async fn exec(db: &Database, sql: &str) {
     tx.commit().await.unwrap();
 }
 
+/// Rows of environment `t` (stored as `t:<env>`); `""`: the instance-wide `default`.
 fn rows_of(t: &str) -> String {
-    format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = '{t}'")
+    let stored = if t.is_empty() { "default".to_owned() } else { format!("t:{t}") };
+    format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = '{stored}'")
 }
 
 #[tokio::test]
@@ -125,7 +127,7 @@ async fn keys_are_written_on_their_tenant_set_and_loaded_from_every_set() {
     exec(
         &control,
         "INSERT INTO _forgebase_kv_entries (tenant, namespace, key, type, data, expires_at, updated_at) \
-         VALUES ('tb', 'app', 'k', 'string', '{\"t\":\"Str\",\"v\":\"c3RhbGU=\"}', NULL, 1)",
+         VALUES ('t:tb', 'app', 'k', 'string', '{\"t\":\"Str\",\"v\":\"c3RhbGU=\"}', NULL, 1)",
     )
     .await;
     let back = open().await.unwrap();
@@ -147,7 +149,7 @@ async fn keys_are_written_on_their_tenant_set_and_loaded_from_every_set() {
     assert_eq!(
         count(
             &s1,
-            "SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 'tb' AND key = 'k' AND data LIKE '%YjI=%'"
+            "SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:tb' AND key = 'k' AND data LIKE '%YjI=%'"
         )
         .await,
         1
@@ -160,7 +162,7 @@ async fn keys_are_written_on_their_tenant_set_and_loaded_from_every_set() {
     assert_eq!(
         count(
             &control,
-            "SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 'tb' AND key = 'moved'"
+            "SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:tb' AND key = 'moved'"
         )
         .await,
         1

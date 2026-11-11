@@ -310,7 +310,11 @@ async fn jobs_live_on_the_tenant_set() {
     }
     assert!(svc.get(&system(), &pb.id).await.unwrap().worker_id.is_some());
     pool.shutdown().await;
-    assert_eq!(svc.get(&system(), &c1.id).await.unwrap().status, JobStatus::Queued);
+    assert_eq!(
+        count(&s1, &format!("SELECT count(*) FROM _forgebase_jobs WHERE id = '{}' AND status = 'queued'", c1.id)).await,
+        1,
+        "the moving tenant's copy was not claimed"
+    );
 
     // Workflows: on the tenant's set, found by id.
     let wf = svc
