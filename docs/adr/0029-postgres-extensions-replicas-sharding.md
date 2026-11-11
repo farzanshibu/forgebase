@@ -1462,6 +1462,12 @@ parameters) run under a savepoint and are retried after rolling back to it.
 Tests fail before the fix: `tests/pg_uncached_reads.rs` (citext on fresh
 readers, an enum in a write transaction and on readers).
 
+**Checked end to end.** FB-148's `#[ignore]`d
+`the_server_runs_on_the_bundled_engine` (`forgebase-server/tests/database_fb148.rs`)
+passes on this branch with FB-130's engine: the server starts the engine,
+migrates, sets up the extensions and reports five features. It can be
+un-ignored (FB-148's file, not changed here).
+
 **Deviations.**
 - §1.1 says "`on` (refuse to start without it)"; for the stateful features
   the stored engine also refuses `off` and `on`-against-portable, so a
