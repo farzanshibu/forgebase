@@ -3507,5 +3507,6 @@ missing one refuses the start); `forgebase-server/tests/security_fb153.rs`
 - Extensions page over `/api/v1/system/extensions` with `managed_by`.
 
 **For FB-173 (shards).** Logins are cluster-wide roles: create them on every
-node with the same verifier; `_forgebase_db_logins` lives on the primary, so a
-shard's `forgebase.claims()` needs the table (or its claims) on that node.
+node with the same verifier. `_forgebase_db_logins` is placed
+`control_replicated` (as `_forgebase_resource_permissions`), because a
+shard's `forgebase.claims()` reads it there.

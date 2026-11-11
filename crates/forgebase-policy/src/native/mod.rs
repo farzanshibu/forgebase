@@ -204,7 +204,9 @@ impl PolicyService {
         if let Err(e) = self.enable_sql_editor_role().await {
             tracing::warn!(error = %e, "the SQL editor's role is not available");
         }
-        self.refresh_db_logins().await?;
+        if let Err(e) = self.refresh_db_logins().await {
+            tracing::warn!(error = %e, "direct login claims were not refreshed at startup");
+        }
         Ok(())
     }
 
