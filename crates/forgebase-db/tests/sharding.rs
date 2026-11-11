@@ -6,6 +6,8 @@
 //! an engine is configured; multi-set tests use two PostgreSQL test
 //! databases (one per set) and skip without an engine.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
