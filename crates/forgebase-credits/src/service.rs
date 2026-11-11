@@ -16,7 +16,7 @@ use forgebase_db::backend::BoxFuture;
 use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use forgebase_entitlements::{Clock, EntitlementService, parse_subject, subject_key};
 use forgebase_jobs::JobService;
-use forgebase_policy::{Check, PolicyService};
+use forgebase_policy::{Check, Denial, PolicyError, PolicyService, Step};
 use serde_json::{Value as Json, json};
 
 use crate::error::{CreditError, Result};
@@ -947,13 +947,34 @@ impl CreditService {
         Ok(())
     }
 
-    /// `permission` in the subject's organization, else at realm level.
+    /// `permission` at realm level, for a subject of the caller's realm only
+    /// (G18): an organization of that realm or an identity whose home realm
+    /// it is. A realm-level grant never reaches another realm's subjects.
+    fn check_realm_level(&self, ctx: &AccessContext, subject: &str, permission: &str) -> Result<()> {
+        let in_realm = self
+            .inner
+            .policy
+            .snapshot()
+            .realm_of_subject(subject)
+            .is_some_and(|r| r == ctx.realm_id);
+        if !in_realm {
+            return Err(PolicyError::Denied(Denial::at(
+                Step::Tenant,
+                format!("{permission}: the subject is not in realm {}", ctx.realm_id),
+            ))
+            .into());
+        }
+        self.check(ctx, permission, None)
+    }
+
+    /// `permission` in the subject's organization, else at realm level when
+    /// the subject is in the caller's realm.
     fn check_for(&self, ctx: &AccessContext, subject: &str, permission: &str) -> Result<()> {
         match org_of(subject) {
             Some(org) => self
                 .check(ctx, permission, Some(org))
-                .or_else(|e| self.check(ctx, permission, None).map_err(|_| e)),
-            None => self.check(ctx, permission, None),
+                .or_else(|e| self.check_realm_level(ctx, subject, permission).map_err(|_| e)),
+            None => self.check_realm_level(ctx, subject, permission),
         }
     }
 
@@ -971,17 +992,17 @@ impl CreditService {
         self.check_for(ctx, subject, "billing:read")
     }
 
-    /// May add credits (top-ups, grants, refunds of usage charges) or take
-    /// them back (reversals): `billing:write` at realm level (operators) or
-    /// privileged callers. An organization's own owner or billing manager
-    /// must not mint credits for it, so the org-level permission is not
-    /// enough.
-    pub(crate) fn can_mint(&self, ctx: &AccessContext) -> Result<()> {
+    /// May add credits to `subject` (top-ups, grants, refunds of usage
+    /// charges) or take them back (reversals): `billing:write` at realm level
+    /// (operators of the subject's realm, G18) or privileged callers. An
+    /// organization's own owner or billing manager must not mint credits for
+    /// it, so the org-level permission is not enough.
+    pub(crate) fn can_mint(&self, ctx: &AccessContext, subject: &str) -> Result<()> {
         if ctx.is_privileged() {
             return Ok(());
         }
         self.require_caller(ctx)?;
-        self.check(ctx, "billing:write", None)
+        self.check_realm_level(ctx, subject, "billing:write")
     }
 
     /// May debit the subject (spend, and refund its own spends):
@@ -1198,8 +1219,11 @@ impl CreditService {
     }
 
     async fn credit(&self, ctx: &AccessContext, kind: EntryKind, input: CreditInput) -> Result<Posted> {
-        self.can_mint(ctx)?;
+        if !ctx.is_privileged() {
+            self.require_caller(ctx)?;
+        }
         let subject = check_subject(&input.subject)?;
+        self.can_mint(ctx, &subject)?;
         let idem = check_idem(&input.idempotency_key)?;
         check_amount(input.amount)?;
         let now = self.now();
@@ -1305,7 +1329,7 @@ impl CreditService {
         let orig = self.amend_target(ctx, &input.entry_id).await?;
         match orig.kind {
             EntryKind::Spend => self.can_spend(ctx, &orig.subject)?,
-            EntryKind::Consumption => self.can_mint(ctx)?,
+            EntryKind::Consumption => self.can_mint(ctx, &orig.subject)?,
             _ => {
                 return Err(CreditError::invalid(
                     "not_refundable",
@@ -1349,7 +1373,7 @@ impl CreditService {
     pub async fn reverse(&self, ctx: &AccessContext, input: AmendInput) -> Result<Reversal> {
         self.require_caller(ctx)?;
         let orig = self.amend_target(ctx, &input.entry_id).await?;
-        self.can_mint(ctx)?;
+        self.can_mint(ctx, &orig.subject)?;
         if !matches!(orig.kind, EntryKind::TopUp | EntryKind::Grant) {
             return Err(CreditError::invalid(
                 "not_reversible",

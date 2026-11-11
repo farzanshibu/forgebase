@@ -12,15 +12,18 @@
 use forgebase_data::{AccessContext, Action};
 use forgebase_db::{Backend, Statement, Value, WriteTx};
 
+use crate::access::{Owner, Scope};
 use crate::error::JobError;
 use crate::model::{JobStatus, iso};
-use crate::service::{Fx, JOB_COLS, JobService, Result, Row, cancel_tx, event, fetch_job_tx, insert_job, job_from};
+use crate::service::{
+    Fx, JOB_COLS, JobService, Origin, Result, Row, cancel_tx, event, fetch_job_tx, insert_job, job_from,
+};
 use crate::tasks::{
     Compensation, FailurePolicy, NewWorkflow, Workflow, WorkflowDetail, WorkflowPage, WorkflowStatus, WorkflowStep,
 };
 
 const WORKFLOW_COLS: &str =
-    "id, name, status, on_failure, failed_job_id, error, created_by, created_at, updated_at, finished_at";
+    "id, name, status, on_failure, failed_job_id, error, created_by, created_at, updated_at, finished_at, tenant";
 
 fn workflow_from(r: &Row<'_>) -> Result<Workflow> {
     let status = r.text("status");
@@ -33,6 +36,7 @@ fn workflow_from(r: &Row<'_>) -> Result<Workflow> {
         failed_job_id: r.opt_text("failed_job_id"),
         error: r.opt_text("error"),
         created_by: r.text("created_by"),
+        tenant: r.opt_text("tenant"),
         created_at: iso(r.int("created_at")),
         updated_at: iso(r.int("updated_at")),
         finished_at: r.opt_int("finished_at").map(iso),
@@ -61,12 +65,19 @@ impl JobService {
         self.allow(ctx, Action::EnqueueJob)?;
         let order = new.order()?;
         let now = self.now();
+        let access = self.access();
         let mut resolved = Vec::with_capacity(new.steps.len());
         for (i, step) in new.steps.iter().enumerate() {
-            let mut r = step
-                .job()
+            let job = step.job();
+            let mut r = job
                 .resolve(now)
                 .map_err(|e| JobError::invalid("invalid_workflow", format!("step {:?}: {e}", step.name)))?;
+            // FB-142: every step and compensation kind must be one the
+            // caller may enqueue.
+            access.admit(ctx, &job.kind, &job.payload)?;
+            if let Some(c) = &step.compensate {
+                access.admit(ctx, &c.kind, &c.payload)?;
+            }
             r.step = Some(step.name.clone());
             if let Some(c) = &step.compensate {
                 crate::model::check_name("compensate.kind", &c.kind, 128)?;
@@ -80,19 +91,20 @@ impl JobService {
         }
         let id = format!("wf-{}", uuid::Uuid::new_v4().simple());
         let policy = new.on_failure.unwrap_or_default();
-        let actor = ctx.actor();
+        let origin = Origin::of(ctx);
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
         let r = async {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_job_workflows (id, name, status, on_failure, created_by, created_at, \
-                 updated_at) VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?5)",
+                 updated_at, tenant) VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?5, ?6)",
                 vec![
                     id.as_str().into(),
                     new.name.as_str().into(),
                     policy.as_str().into(),
-                    actor.as_str().into(),
+                    origin.actor.as_str().into(),
                     now.into(),
+                    origin.tenant.clone().into(),
                 ],
             ))
             .await?;
@@ -108,7 +120,7 @@ impl JobService {
                     .filter_map(|p| job_ids[p].clone())
                     .collect();
                 r.depends_on.dedup();
-                let (job, _) = insert_job(&mut *tx, &r, None, &actor, now, &mut fx).await?;
+                let (job, _) = insert_job(&mut *tx, &r, None, &origin, now, &mut fx).await?;
                 job_ids[i] = Some(job.id);
             }
             fx.workflows.insert(id.clone());
@@ -123,7 +135,9 @@ impl JobService {
         self.allow(ctx, Action::ReadJobs)?;
         let workflow = fetch_workflow(self.backend(), id)
             .await?
+            .filter(|w| self.access().scope(ctx).sees(&workflow_owner(w), None))
             .ok_or_else(|| JobError::WorkflowNotFound(id.to_owned()))?;
+        self.access().remember(id, workflow_owner(&workflow));
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -151,9 +165,14 @@ impl JobService {
         offset: Option<i64>,
     ) -> Result<WorkflowPage> {
         self.allow(ctx, Action::ReadJobs)?;
-        let (where_sql, params): (&str, Vec<Value>) = match status {
-            Some(s) => ("WHERE status = ?1", vec![s.as_str().into()]),
-            None => ("", Vec::new()),
+        let mut params: Vec<Value> = Vec::new();
+        let scope = self.access().scope(ctx).sql("", false, &mut params);
+        let where_sql = match status {
+            Some(s) => {
+                params.push(s.as_str().into());
+                format!("WHERE {scope} AND status = ?{}", params.len())
+            }
+            None => format!("WHERE {scope}"),
         };
         let total = self
             .backend()
@@ -165,7 +184,6 @@ impl JobService {
             .scalar()
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        let mut params = params;
         let n = params.len();
         params.push(limit.unwrap_or(50).clamp(1, crate::model::MAX_PAGE).into());
         params.push(offset.unwrap_or(0).max(0).into());
@@ -181,9 +199,12 @@ impl JobService {
                 params,
             ))
             .await?;
-        let items = (0..rows.len())
+        let items: Vec<Workflow> = (0..rows.len())
             .map(|i| workflow_from(&Row::new(&rows, i)))
             .collect::<Result<_>>()?;
+        for w in &items {
+            self.access().remember(&w.id, workflow_owner(w));
+        }
         Ok(WorkflowPage { items, total })
     }
 
@@ -191,11 +212,15 @@ impl JobService {
     /// running ones cooperatively. No compensations run.
     pub async fn cancel_workflow(&self, ctx: &AccessContext, id: &str) -> Result<WorkflowDetail> {
         self.allow(ctx, Action::ManageJobs)?;
+        let scope = self.access().scope(ctx);
         let now = self.now();
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
         let r = async {
             let wf = workflow_tx(&mut *tx, id).await?;
+            if scope != Scope::All && !scope.sees(&workflow_owner(&wf), None) {
+                return Err(JobError::WorkflowNotFound(id.to_owned()));
+            }
             if wf.status.is_terminal() {
                 return Err(JobError::state(
                     "workflow_finished",
@@ -217,6 +242,14 @@ impl JobService {
         }
         .await;
         self.commit(tx, r, fx).await
+    }
+}
+
+/// The tenant and creator of a workflow.
+fn workflow_owner(w: &Workflow) -> Owner {
+    Owner {
+        tenant: w.tenant.clone(),
+        created_by: w.created_by.clone(),
     }
 }
 
@@ -473,7 +506,7 @@ async fn step_finished(tx: &mut dyn WriteTx, job_id: &str, status: JobStatus, no
 async fn start_compensations(tx: &mut dyn WriteTx, wf: &str, actor: &str, now: i64, fx: &mut Fx) -> Result<usize> {
     let rows = tx
         .fetch_all(&Statement::new(
-            "SELECT id, queue, step, compensate FROM _forgebase_jobs WHERE workflow_id = ?1 \
+            "SELECT id, queue, step, compensate, tenant, context FROM _forgebase_jobs WHERE workflow_id = ?1 \
              AND compensates IS NULL AND status = 'succeeded' AND compensate IS NOT NULL \
              ORDER BY finished_at DESC, rowid DESC",
             vec![wf.into()],
@@ -495,7 +528,13 @@ async fn start_compensations(tx: &mut dyn WriteTx, wf: &str, actor: &str, now: i
         resolved.compensates = Some(r.text("id"));
         resolved.step = Some(format!("compensate:{}", r.text("step")).chars().take(128).collect());
         resolved.depends_on = previous.iter().cloned().collect();
-        let (job, _) = insert_job(tx, &resolved, None, actor, now, fx).await?;
+        // FB-142: a compensation acts like the step it undoes.
+        let origin = Origin {
+            actor: actor.to_owned(),
+            tenant: r.opt_text("tenant"),
+            context: r.opt_text("context"),
+        };
+        let (job, _) = insert_job(tx, &resolved, None, &origin, now, fx).await?;
         previous = Some(job.id);
     }
     Ok(rows.len())

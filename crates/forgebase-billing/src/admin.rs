@@ -15,7 +15,7 @@ use utoipa::ToSchema;
 
 use crate::error::{BillingError, Result};
 use crate::model::*;
-use crate::service::{BillingService, Tx, int, opt_int, opt_text, text};
+use crate::service::{BillingService, Tx, int, opt_int, opt_text, realm_clause, text};
 
 /// One line of a plan-change preview (the same lines the change would invoice).
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -254,18 +254,22 @@ impl BillingService {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<OrderPage> {
-        self.can_read_all(ctx)?;
+        let realm = self.can_read_all(ctx)?;
         if let Some(st) = status
             && OrderStatus::parse(st).is_none()
         {
             return Err(BillingError::invalid("invalid_parameter", "unknown order status"));
         }
         let (limit, offset) = paging(limit, offset);
-        let params = vec![subject.map(str::to_owned).into(), status.map(str::to_owned).into()];
+        let mut params = vec![subject.map(str::to_owned).into(), status.map(str::to_owned).into()];
+        let only = realm_clause(realm.as_deref(), "subject", &mut params);
+        let n = params.len();
         let total = self
             .fetch(
-                "SELECT COUNT(*) FROM _forgebase_billing_orders
-                 WHERE (?1 IS NULL OR subject = ?1) AND (?2 IS NULL OR status = ?2)",
+                &format!(
+                    "SELECT COUNT(*) FROM _forgebase_billing_orders
+                     WHERE (?1 IS NULL OR subject = ?1) AND (?2 IS NULL OR status = ?2){only}"
+                ),
                 params.clone(),
             )
             .await?
@@ -278,9 +282,13 @@ impl BillingService {
         p.push(offset.into());
         let rows = self
             .fetch(
-                "SELECT id, customer_id, subject, status, currency, invoice_id, created_at FROM _forgebase_billing_orders
-                 WHERE (?1 IS NULL OR subject = ?1) AND (?2 IS NULL OR status = ?2)
-                 ORDER BY created_at DESC, id DESC LIMIT ?3 OFFSET ?4",
+                &format!(
+                    "SELECT id, customer_id, subject, status, currency, invoice_id, created_at FROM _forgebase_billing_orders
+                     WHERE (?1 IS NULL OR subject = ?1) AND (?2 IS NULL OR status = ?2){only}
+                     ORDER BY created_at DESC, id DESC LIMIT ?{} OFFSET ?{}",
+                    n + 1,
+                    n + 2
+                ),
                 p,
             )
             .await?;
@@ -303,18 +311,22 @@ impl BillingService {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<UsageMeterPage> {
-        self.can_read_all(ctx)?;
+        let realm = self.can_read_all(ctx)?;
         let (limit, offset) = paging(limit, offset);
         let now = self.now();
         let min = min_percent.unwrap_or(0.0);
-        let filter = "window_end > ?1 AND window_start <= ?1 AND (?2 IS NULL OR subject = ?2) AND (?3 IS NULL OR feature_key = ?3)
-             AND (?4 <= 0 OR (limit_value IS NOT NULL AND limit_value > 0 AND used * 100.0 >= ?4 * limit_value))";
-        let params = vec![
+        let mut params = vec![
             now.into(),
             subject.map(str::to_owned).into(),
             feature.map(str::to_owned).into(),
             min.into(),
         ];
+        let only = realm_clause(realm.as_deref(), "subject", &mut params);
+        let n = params.len();
+        let filter = format!(
+            "window_end > ?1 AND window_start <= ?1 AND (?2 IS NULL OR subject = ?2) AND (?3 IS NULL OR feature_key = ?3)
+             AND (?4 <= 0 OR (limit_value IS NOT NULL AND limit_value > 0 AND used * 100.0 >= ?4 * limit_value)){only}"
+        );
         let total = self
             .fetch(
                 &format!("SELECT COUNT(*) FROM _forgebase_usage_counters WHERE {filter}"),
@@ -335,7 +347,9 @@ impl BillingService {
                             window_end, updated_at
                      FROM _forgebase_usage_counters WHERE {filter}
                      ORDER BY CASE WHEN limit_value > 0 THEN used * 1.0 / limit_value ELSE 0 END DESC,
-                              subject, feature_key, scope_key LIMIT ?5 OFFSET ?6"
+                              subject, feature_key, scope_key LIMIT ?{} OFFSET ?{}",
+                    n + 1,
+                    n + 2
                 ),
                 p,
             )
@@ -381,12 +395,14 @@ impl BillingService {
     /// Open invoices dunning is working on: at least one failed attempt or a
     /// retry scheduled. Most overdue first.
     pub async fn dunning_queue(&self, ctx: &AccessContext, limit: Option<u32>) -> Result<Vec<DunningEntry>> {
-        self.can_read_all(ctx)?;
+        let realm = self.can_read_all(ctx)?;
         let settings = self.settings().await?;
         let limit = i64::from(limit.unwrap_or(200).clamp(1, 500));
+        let mut params = vec![limit.into()];
+        let only = realm_clause(realm.as_deref(), "i.subject", &mut params);
         let rows = self
             .fetch(
-                "SELECT i.id, i.number, i.subject, i.customer_id, i.subscription_id, s.status, i.currency, i.amount_due,
+                &format!("SELECT i.id, i.number, i.subject, i.customer_id, i.subscription_id, s.status, i.currency, i.amount_due,
                         i.attempt_count, i.next_attempt_at, i.created_at,
                         (SELECT p.failure_code FROM _forgebase_billing_payments p
                           WHERE p.invoice_id = i.id AND p.status = 'failed' ORDER BY p.created_at DESC, p.attempt DESC LIMIT 1),
@@ -394,10 +410,10 @@ impl BillingService {
                           WHERE p.invoice_id = i.id AND p.status = 'failed' ORDER BY p.created_at DESC, p.attempt DESC LIMIT 1)
                  FROM _forgebase_billing_invoices i
                  LEFT JOIN _forgebase_billing_subscriptions s ON s.id = i.subscription_id
-                 WHERE i.status = 'open' AND (i.attempt_count > 0 OR i.next_attempt_at IS NOT NULL)
+                 WHERE i.status = 'open' AND (i.attempt_count > 0 OR i.next_attempt_at IS NOT NULL){only}
                  ORDER BY CASE WHEN i.next_attempt_at IS NULL THEN 1 ELSE 0 END, i.next_attempt_at, i.created_at
-                 LIMIT ?1",
-                vec![limit.into()],
+                 LIMIT ?1"),
+                params,
             )
             .await?;
         let total_retries = i64::try_from(settings.retry_days.len()).unwrap_or(i64::MAX);

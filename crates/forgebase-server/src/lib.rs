@@ -261,7 +261,7 @@ async fn start_on(
     };
     let instance = db.ensure_instance().await?;
 
-    let (auth, policy) = match open_auth(&db, layout, config).await {
+    let (auth, policy, job_access) = match open_auth(&db, layout, config).await {
         Ok(a) => a,
         Err(e) => {
             db.close().await;
@@ -420,6 +420,10 @@ async fn start_on(
         state
     };
     let jobs = JobService::new(state.data().clone());
+    // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
+    jobs.attach_access(job_access);
+    let jp = fn_policy.clone();
+    jobs.attach_permissions(Arc::new(move |ctx, key| jp.has(ctx, key, ctx.org_id.as_deref())));
     // FB-64: live progress and state on the realtime channels `jobs:<id>`.
     if config.realtime.enabled {
         jobs.attach_realtime(realtime.clone());
@@ -864,7 +868,14 @@ async fn open_auth(
     db: &Database,
     layout: &DataLayout,
     config: &Config,
-) -> Result<(forgebase_auth::AuthService, forgebase_policy::PolicyService), ServerError> {
+) -> Result<
+    (
+        forgebase_auth::AuthService,
+        forgebase_policy::PolicyService,
+        forgebase_jobs::JobAccess,
+    ),
+    ServerError,
+> {
     let mut cfg = forgebase_auth::AuthConfig::for_data_dir(layout.root());
     cfg.public_url = format!("http://{}:{}", config.server.host, config.server.port);
     // FB-80: `[auth]` deployment settings.
@@ -877,7 +888,9 @@ async fn open_auth(
         .map_err(|e| ServerError::Policy(e.to_string()))?;
     // FB-64: subscribing to the job channels (`jobs:<id>`) needs permission
     // to read jobs, and only the system publishes there.
-    let authorizer: Arc<dyn Authorizer> = Arc::new(forgebase_jobs::JobChannelAuthorizer::new(policy.authorizer()));
+    let channels = forgebase_jobs::JobChannelAuthorizer::new(policy.authorizer());
+    let job_access = channels.access();
+    let authorizer: Arc<dyn Authorizer> = Arc::new(channels);
     let auth = forgebase_auth::AuthService::open_with_data(backend, authorizer, layout.root(), cfg, None).await?;
     policy.attach_data(auth.data().clone());
     policy.attach_mailer(auth.mailer().clone(), public_url);
@@ -896,7 +909,7 @@ async fn open_auth(
             }
         });
     }));
-    Ok((auth, policy))
+    Ok((auth, policy, job_access))
 }
 
 impl RunningServer {

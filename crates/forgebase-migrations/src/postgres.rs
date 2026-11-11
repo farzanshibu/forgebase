@@ -96,6 +96,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/postgres/0029_storage_rls.sql"),
     ),
     Migration::new(
+        30,
+        "job_tenant",
+        include_str!("../../../migrations/postgres/0030_job_tenant.sql"),
+    ),
+    Migration::new(
         33,
         "db_topology",
         include_str!("../../../migrations/postgres/0033_db_topology.sql"),
