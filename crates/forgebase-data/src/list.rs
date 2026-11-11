@@ -712,7 +712,11 @@ impl DataService {
 
     /// The trigram indexes of a collection, when the query is fuzzy; refuses
     /// the query (`400 fuzzy_unsupported`) where `pg_trgm` is not in use.
-    pub(crate) async fn trigram_indexes(&self, coll: &Collection, q: &ListQuery) -> Result<Vec<IndexDefinition>, DataError> {
+    pub(crate) async fn trigram_indexes(
+        &self,
+        coll: &Collection,
+        q: &ListQuery,
+    ) -> Result<Vec<IndexDefinition>, DataError> {
         if q.fuzzy.as_deref().is_none_or(|s| s.trim().is_empty()) {
             return Ok(Vec::new());
         }

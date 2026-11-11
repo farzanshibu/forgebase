@@ -14,7 +14,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
-use forgebase_db::{Dialect, EXTENSION_SCHEMA, Feature, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{
+    Dialect, EXTENSION_SCHEMA, Feature, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx,
+};
 use forgebase_query::{CompileOptions, Compiler, FieldPath, SqlBuilder, parse_filter};
 use forgebase_schema::{Collection, FieldKind};
 use serde::{Deserialize, Serialize};
@@ -988,9 +990,7 @@ impl DataService {
             } else {
                 IndexOrigin::Sql
             }),
-            kind: definition
-                .as_ref()
-                .map_or(IndexKind::Btree, |def| def.kind),
+            kind: definition.as_ref().map_or(IndexKind::Btree, |def| def.kind),
             unique: flag("uniq"),
             partial: flag("partial"),
             columns,

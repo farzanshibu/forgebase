@@ -77,10 +77,7 @@ async fn products(svc: &DataService) {
 }
 
 fn names(r: &forgebase_data::ListResult) -> Vec<String> {
-    r.items
-        .iter()
-        .map(|i| i["name"].as_str().unwrap().to_owned())
-        .collect()
+    r.items.iter().map(|i| i["name"].as_str().unwrap().to_owned()).collect()
 }
 
 fn fuzzy(text: &str) -> ListQuery {
@@ -196,9 +193,13 @@ async fn fuzzy_search_ranks_by_similarity_and_uses_the_trigram_index() {
         info.sql.as_deref().unwrap_or_default().contains("gin_trgm_ops"),
         "{info:?}"
     );
-    assert!(svc.list_indexes(&ctx, Some("products")).await.unwrap().iter().any(|i| {
-        i.name == "products_name_trgm" && i.kind == IndexKind::Trigram
-    }));
+    assert!(
+        svc.list_indexes(&ctx, Some("products"))
+            .await
+            .unwrap()
+            .iter()
+            .any(|i| { i.name == "products_name_trgm" && i.kind == IndexKind::Trigram })
+    );
     // Trigram indexes are neither unique nor partial.
     let mut bad = trigram("products_bad", "products", &["name"]);
     bad.unique = true;
@@ -254,7 +255,12 @@ async fn fuzzy_search_ranks_by_similarity_and_uses_the_trigram_index() {
         )
         .await
         .unwrap();
-    assert!(loose.items.len() > r.items.len(), "{:?} vs {:?}", names(&loose), names(&r));
+    assert!(
+        loose.items.len() > r.items.len(),
+        "{:?} vs {:?}",
+        names(&loose),
+        names(&r)
+    );
     let err = svc
         .list_records(
             &ctx,
@@ -295,7 +301,11 @@ async fn fuzzy_search_ranks_by_similarity_and_uses_the_trigram_index() {
         )
         .await
         .unwrap();
-    assert!(names(&by_brand).contains(&"Keyboard".to_owned()), "{:?}", names(&by_brand));
+    assert!(
+        names(&by_brand).contains(&"Keyboard".to_owned()),
+        "{:?}",
+        names(&by_brand)
+    );
     // Both fields: the better of the two decides.
     let both = svc.list_records(&ctx, "products", &fuzzy("acme")).await.unwrap();
     assert!(names(&both).contains(&"Laptop".to_owned()));
@@ -362,12 +372,9 @@ async fn contains_and_fuzzy_use_the_trigram_index() {
     }
     let svc = service(&db).await;
     let ctx = admin();
-    svc.create_collection(
-        &ctx,
-        Collection::base("docs").with_field(Field::new("title", text())),
-    )
-    .await
-    .unwrap();
+    svc.create_collection(&ctx, Collection::base("docs").with_field(Field::new("title", text())))
+        .await
+        .unwrap();
     // Enough varied rows that an index scan beats a table scan.
     for i in 0..3000 {
         svc.create_record(
@@ -418,7 +425,11 @@ async fn contains_and_fuzzy_use_the_trigram_index() {
         .await
         .unwrap();
     assert_eq!(hit.total_items, Some(1));
-    let value = scalar(&db, "SELECT count(*) FROM pg_indexes WHERE indexname = 'docs_title_trgm'").await;
+    let value = scalar(
+        &db,
+        "SELECT count(*) FROM pg_indexes WHERE indexname = 'docs_title_trgm'",
+    )
+    .await;
     assert_eq!(value, Value::Integer(1));
 }
 
