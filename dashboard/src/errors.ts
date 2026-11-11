@@ -71,6 +71,20 @@ export const ERROR_WORDS = {
   no_trigram_index: { title: "No trigram index covers that field", next: "Create an index of kind trigram on the field in Indexes, then search again." },
   index_kind_unsupported: { title: "This database cannot build that kind of index", next: "Pick btree or fulltext, or move the project to PostgreSQL for trigram." },
   invalid_fuzzy_threshold: { title: "The fuzzy threshold must be between 0 and 1", next: "Use a number such as 0.3." },
+  operation_in_progress: { title: "Another change to this set of servers is already running", next: "Wait for it to finish in Operations below (or cancel it), then try again." },
+  tenant_moving: { title: "That tenant is being moved right now", next: "Wait for the move to finish, then try again." },
+  shard_not_empty: { title: "That shard still holds tenants", next: "Move its tenants to another shard first, or drain it, then remove it." },
+  node_mismatch: { title: "That server is not a copy of this set's primary", next: "Pick a server that follows this set's primary, or add the replica from this screen." },
+  sharding_unsupported: { title: "That server cannot hold shards", next: "Set max_prepared_transactions above 0 on it (PostgreSQL setting), restart it and try again." },
+  node_unreachable: { title: "ForgeBase cannot reach that server", next: "Check its address, that PostgreSQL is running and that the network and firewall let this server connect." },
+  postgres_required: { title: "Replicas and shards need PostgreSQL", next: "Move this project with `forgebase db convert --to postgres`." },
+  mfa_step_up_required: { title: "Sign in again with your second factor", next: "This change needs a sign-in with your authenticator code from the last 10 minutes. Sign in again below, then retry." },
+  operation_not_found: { title: "That operation no longer exists", next: "Reload the page to see the current operations." },
+  operation_not_cancellable: { title: "This operation can no longer be cancelled", next: "It has passed its last safe stopping point. Let it finish." },
+  node_from_config: { title: "forgebase.toml declares this server", next: "Change or remove it in the config file and restart the server." },
+  shard_exists: { title: "A shard with that name already exists", next: "Pick another shard name." },
+  topology_unavailable: { title: "This server cannot manage replicas and shards right now", next: "Wait a moment and reload. If it keeps happening, check System." },
+  not_implemented: { title: "Coming in this release", next: "Tenant moves and rebalancing are not switched on in this build yet." },
   internal: { title: "Something went wrong on the server", next: "Copy the request id and look it up in the server log." },
   network_error: { title: "Cannot reach the server", next: "Check that the server is running and the network is up, then try again." },
   invalid_response: { title: "The server sent an answer the dashboard could not read", next: "The dashboard and the server may be different versions. Check the version in System." },
@@ -104,6 +118,7 @@ export function explain(error: unknown): ExplainedError {
     // A failed sign-in is a 401 too: its own code (invalid_credentials) has better words than "session ended".
     if (error.status === 401 && error.code === "invalid_credentials") return { ...base, kind: "invalid", ...ERROR_WORDS.invalid_credentials };
     if (error.status === 401) return { ...base, kind: "session", title: "Your session ended", next: "Sign in again to carry on." };
+    if (error.status === 403 && error.code === "mfa_step_up_required") return { ...base, kind: "forbidden", ...ERROR_WORDS.mfa_step_up_required };
     if (error.status === 403) {
       const perm = missingPermission(error);
       return {
