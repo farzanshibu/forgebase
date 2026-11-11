@@ -3,6 +3,8 @@
  * `run_as` (FB-153, PostgreSQL): run as a user or service account, so row and field rules apply; DDL is refused with it
  * (`run_as_ddl`) and each run is audited (`sql.run_as`). `read_from_replica` (FB-169): a read may go to a replica that
  * has replayed your own writes; the server ignores it without replicas, for writes and with `show_secrets`.
+ * `set` (FB-171, sharded servers): the set of servers that runs the statement (`control` or a shard's id); without it
+ * the statement runs on control. It is a top-level field of the body (SqlOptions is flattened).
  */
 import { send } from "../../api/client";
 import type { SqlResult } from "../../api";
@@ -22,6 +24,8 @@ export interface SqlRunOptions {
   showSecrets?: boolean;
   runAs?: RunAs;
   readFromReplica?: boolean;
+  /** `control` or a shard's set id; empty runs on control. */
+  set?: string;
 }
 
 /** The request body: flags go in only when set, so a plain run sends just `{ sql }`. */
@@ -31,6 +35,7 @@ export function sqlBody(sql: string, o: SqlRunOptions = {}): Record<string, unkn
     ...(o.showSecrets ? { show_secrets: true } : {}),
     ...(o.runAs ? { run_as: { principal: o.runAs.principal, ...(o.runAs.tenant ? { tenant: o.runAs.tenant } : {}) } } : {}),
     ...(o.readFromReplica ? { read_from_replica: true } : {}),
+    ...(o.set ? { set: o.set } : {}),
   };
 }
 

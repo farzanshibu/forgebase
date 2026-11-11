@@ -274,6 +274,6 @@ describe("Graph query runner", () => {
     await userEvent.paste("{nope");
     await userEvent.click(screen.getByRole("button", { name: "Run query" }));
     expect(await screen.findByText(/Invalid JSON/)).toBeInTheDocument();
-    expect(mock.calls.filter((c) => c.includes("/graph/"))).toEqual([]);
+    expect(mock.calls.filter((c) => c.includes("/graph/") && !c.endsWith("/graph/stats"))).toEqual([]);
   });
 });

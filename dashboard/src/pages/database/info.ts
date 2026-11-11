@@ -36,7 +36,7 @@ export const getDatabaseInfo = async (signal?: AbortSignal): Promise<DatabaseInf
 
 export const BACKEND_NAME: Record<string, string> = { sqlite: "SQLite", postgres: "PostgreSQL" };
 
-/** Where the topology screen lives (FB-176 builds it; until then the link leads to the System studio's own not-found line). */
+/** Where the topology screen lives: System studio, tab "Database topology" (FB-176). */
 export const TOPOLOGY_PATH = "/system/topology";
 
 /** What the CLI prints for an SQLite project in a build where PostgreSQL is the default (same words as `sqlite_notice`). */

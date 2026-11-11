@@ -47,6 +47,7 @@ const SEGMENTS: Record<string, string> = {
   overrides: "Overrides",
   projects: "Projects",
   features: "Features and settings",
+  topology: "Database topology",
 };
 
 const decode = (s: string) => {

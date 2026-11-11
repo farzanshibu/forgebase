@@ -1,5 +1,5 @@
 /** In-memory fakes of the vector (ADR-0012) and graph (ADR-0006) REST APIs for component tests. Every request and response is checked against the real OpenAPI document. */
-import type { GraphEdge, GraphNode, VectorCollection, VectorItem } from "../api";
+import type { CypherStatus, GraphEdge, GraphNode, VectorCollection, VectorItem } from "../api";
 import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
 import { hasResponse, matchRoute, responseSchemaName, validateBody } from "./contract";
 
@@ -8,7 +8,7 @@ const NOW = "2026-11-09T10:00:00Z";
 type Handler = (r: MockRequest) => MockReply;
 
 /** Register `method template` on `mock`, checking it exists in openapi.json and that the answer fits the documented schema. */
-function route(mock: MockApi, method: string, template: string, h: Handler) {
+export function route(mock: MockApi, method: string, template: string, h: Handler) {
   mock.on(method, template, (req) => {
     const spec = matchRoute(method, req.path);
     if (!spec) mock.problems.push(`not in openapi.json: ${method} ${req.path}`);
@@ -128,7 +128,8 @@ export function installVector(mock: MockApi): VectorState {
   return st;
 }
 
-export interface GraphState { nodes: GraphNode[]; edges: GraphEdge[] }
+/** `cypher` is the derived-graph status the stats report; leave it undefined for a server without Apache AGE. */
+export interface GraphState { nodes: GraphNode[]; edges: GraphEdge[]; cypher?: CypherStatus }
 
 export function installGraph(mock: MockApi): GraphState {
   const node = (id: string, label: string, properties: Record<string, unknown> = {}): GraphNode => ({ id, label, properties, created_at: NOW, updated_at: NOW });
@@ -142,7 +143,7 @@ export function installGraph(mock: MockApi): GraphState {
   const nodeNf = () => envelope(404, "node_not_found", "no such node");
   route(mock, "GET", `${G}/stats`, () => {
     const types = [...new Set(st.edges.map((e) => e.type))];
-    return { status: 200, body: { nodes: st.nodes.length, edges: st.edges.length, edge_types: types.map((t) => ({ type: t, count: st.edges.filter((e) => e.type === t).length })) } };
+    return { status: 200, body: { nodes: st.nodes.length, edges: st.edges.length, edge_types: types.map((t) => ({ type: t, count: st.edges.filter((e) => e.type === t).length })), ...(st.cypher ? { cypher: st.cypher } : {}) } };
   });
   route(mock, "GET", `${G}/nodes`, ({ query }) => {
     const label = query.get("label"), after = query.get("after"), limit = Number(query.get("limit") ?? 100);

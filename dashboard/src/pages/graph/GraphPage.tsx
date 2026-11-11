@@ -3,6 +3,9 @@ import { RouteTabs } from "../../components/controls";
 import { PageHeader } from "../../components/PageHeader";
 import { UseFromCodeButton } from "../../components/UseFromCode";
 import { Button } from "../../components/ui";
+import { graphStats } from "../../api";
+import { useLoad } from "../../hooks";
+import CypherTab from "./CypherTab";
 import EdgeBrowser from "./EdgeBrowser";
 import GraphExplorer from "./GraphExplorer";
 import GraphOverview from "./GraphOverview";
@@ -17,8 +20,12 @@ const TABS = [
   { to: "/graph/query", label: "Query runner", end: false },
 ];
 
+/** The openCypher tab exists only where the server reports a derived graph (PostgreSQL with Apache AGE). */
+const CYPHER_TAB = { to: "/graph/cypher", label: "openCypher", end: false };
+
 function Section() {
   const nav = useNavigate();
+  const stats = useLoad(graphStats, "graph-stats-tabs");
   return (
     <div>
       <PageHeader
@@ -26,7 +33,7 @@ function Section() {
         secondary={<UseFromCodeButton kind="graph" name="" />}
         primary={<Button tone="primary" onClick={() => nav("/graph/nodes?new=1")}>New node</Button>}
       />
-      <RouteTabs label="Graph sections" tabs={TABS} className="mt-4" />
+      <RouteTabs label="Graph sections" tabs={stats.data?.cypher ? [...TABS, CYPHER_TAB] : TABS} className="mt-4" />
       <div className="mt-6"><Outlet /></div>
     </div>
   );
@@ -41,6 +48,7 @@ export default function GraphPage() {
         <Route path="edges" element={<EdgeBrowser />} />
         <Route path="explorer" element={<GraphExplorer />} />
         <Route path="query" element={<QueryRunner />} />
+        <Route path="cypher" element={<CypherTab />} />
         <Route path="*" element={<p className="text-muted-foreground">No such page in the Graph studio.</p>} />
       </Route>
     </Routes>

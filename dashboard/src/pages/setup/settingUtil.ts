@@ -26,9 +26,13 @@ export const enabledSetting = (f: ServerFeature): FeatureSetting | undefined => 
 const GROUP_TITLES: Record<string, string> = {
   postgres: "PostgreSQL",
   "postgres.extensions": "PostgreSQL extensions",
+  replicas: "Read replicas",
+  sharding: "Sharding",
+  nodes: "Servers declared in the config file",
 };
 
-const groupRank = (g: string) => (g === "" ? 0 : g === "postgres" ? 1 : g === "postgres.extensions" ? 2 : 3);
+const GROUP_RANK = ["", "postgres", "postgres.extensions", "replicas", "sharding", "nodes"];
+const groupRank = (g: string) => { const i = GROUP_RANK.indexOf(g); return i < 0 ? GROUP_RANK.length : i; };
 
 /**
  * A feature's settings in groups. `database.postgres.pool_size` and `database.postgres.extensions.vector` sit in "PostgreSQL" and
@@ -39,7 +43,8 @@ export function groupSettings(f: ServerFeature): { title: string | null; rows: F
   for (const s of f.settings) {
     if (s.key === enabledKey(f)) continue;
     const rest = s.key.startsWith(`${f.id}.`) ? s.key.slice(f.id.length + 1).split(".") : [s.key];
-    const g = rest.slice(0, -1).join(".");
+    // `database.nodes` (a list of tables, FB-175) sits under the feature but is its own group: it belongs with replicas and shards.
+    const g = s.key === "database.nodes" ? "nodes" : rest.slice(0, -1).join(".");
     groups.set(g, [...(groups.get(g) ?? []), s]);
   }
   return [...groups.entries()]

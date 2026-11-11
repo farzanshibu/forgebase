@@ -16,8 +16,13 @@ export const STATIC_RESOURCES: ResourceRow[] = [
   { resource: "analytics", actions: ["export"] },
   { resource: "ai", actions: ["generate"] },
   { resource: "schema", actions: ["read"] },
-  { resource: "engine", actions: ["kv_read", "kv_write", "graph_read", "graph_write"] },
+  { resource: "engine", actions: ["kv_read", "kv_write", "graph_read", "graph_write", "graph_cypher"] },
 ];
+
+/** One plain line per permission that needs it, shown under the matrix (keyed `resource:action`). */
+export const ACTION_HELP: Record<string, string> = {
+  "engine:graph_cypher": "openCypher queries; graph label rules apply",
+};
 
 export const DATA_ACTIONS = ["list", "view", "create", "update", "delete"];
 
