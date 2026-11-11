@@ -432,7 +432,12 @@ pub fn pg_source(
                     let major = std::fs::read_to_string(el.pgdata().join("PG_VERSION"))
                         .map(|t| t.trim().to_owned())
                         .unwrap_or_default();
-                    (engine_root(&config.database, layout), major, a.socket_dir.clone(), a.port)
+                    (
+                        engine_root(&config.database, layout),
+                        major,
+                        a.socket_dir.clone(),
+                        a.port,
+                    )
                 }
                 (None, None) => return None,
             };
@@ -463,7 +468,10 @@ fn with_pre_migration(
     if marker == BackendMarker::PostgresManaged
         && let Some(src) = pg_source(config, layout, marker, engine, attached)
     {
-        db.set_pre_migration(forgebase_backup::pre_migration::PgPreMigration::new(layout.clone(), src));
+        db.set_pre_migration(forgebase_backup::pre_migration::PgPreMigration::shared(
+            layout.clone(),
+            src,
+        ));
     }
     db
 }

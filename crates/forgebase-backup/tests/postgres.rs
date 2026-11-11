@@ -70,9 +70,16 @@ async fn physical_backup_verifies_and_restores_into_an_empty_directory() {
     // Manifest: engine, format, files.
     assert_eq!(m.format, 2);
     let e = m.engine_info();
-    assert_eq!((e.kind.as_str(), e.mode.as_deref(), e.method), ("postgres", Some("managed"), Method::Basebackup));
+    assert_eq!(
+        (e.kind.as_str(), e.mode.as_deref(), e.method),
+        ("postgres", Some("managed"), Method::Basebackup)
+    );
     assert_eq!(e.major, src.src.major());
-    assert!(m.files.iter().any(|f| f.path == "postgres/PG_VERSION" && f.kind == FileKind::Postgres));
+    assert!(
+        m.files
+            .iter()
+            .any(|f| f.path == "postgres/PG_VERSION" && f.kind == FileKind::Postgres)
+    );
     assert!(m.files.iter().any(|f| f.path == "postgres/backup_manifest"));
     assert!(m.files.iter().any(|f| f.path == "roles.secret"));
     assert!(m.files.iter().any(|f| f.path == "storage/blobs/ab/abcdef"));
@@ -82,8 +89,13 @@ async fn physical_backup_verifies_and_restores_into_an_empty_directory() {
     );
     assert!(m.schema_version > 0);
     assert!(!dest.with_file_name("bk.partial").exists());
-    assert!(!src.inst.layout.tmp_dir().read_dir().map_or(false, |mut d| d
-        .any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".pgpass"))));
+    assert!(
+        !src.inst
+            .layout
+            .tmp_dir()
+            .read_dir()
+            .is_ok_and(|mut d| { d.any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".pgpass")) })
+    );
 
     // Verify: with the engine's tools pg_verifybackup runs; without, it says so.
     let r = forgebase_backup::verify_with(&dest, &verify_opts(&src.src, &src.inst.layout)).await;
@@ -91,7 +103,11 @@ async fn physical_backup_verifies_and_restores_into_an_empty_directory() {
     assert!(!r.warnings.iter().any(|w| w.contains("pg_verifybackup was not run")));
     let r = forgebase_backup::verify(&dest).await;
     assert!(r.ok);
-    assert!(r.warnings.iter().any(|w| w.contains("pg_verifybackup was not run")), "{:?}", r.warnings);
+    assert!(
+        r.warnings.iter().any(|w| w.contains("pg_verifybackup was not run")),
+        "{:?}",
+        r.warnings
+    );
 
     // The source keeps working while and after it was backed up.
     add_books(&src.inst, 25, 27).await;
@@ -113,15 +129,26 @@ async fn physical_backup_verifies_and_restores_into_an_empty_directory() {
     assert!(rep.previous_data.is_none());
     assert_eq!(rep.engine, format!("postgres {} (managed)", src.src.version));
     assert_eq!(read(layout.storage_dir().join("blobs/ab/abcdef")), b"blob one");
-    assert_eq!(read(forgebase_backup::backup::master_key_path(&layout)), b"0123456789abcdef0123456789abcdef");
+    assert_eq!(
+        read(forgebase_backup::backup::master_key_path(&layout)),
+        b"0123456789abcdef0123456789abcdef"
+    );
     for dir in ["pg_wal/archive_status", "pg_tblspc", "pg_replslot"] {
         assert!(target.join("postgres/data").join(dir).is_dir(), "{dir} is restored");
     }
     // roles.secret of the backup unlocks the restored cluster.
-    assert!(RoleSecrets::load(&target.join("postgres/roles.secret")).unwrap().is_some());
+    assert!(
+        RoleSecrets::load(&target.join("postgres/roles.secret"))
+            .unwrap()
+            .is_some()
+    );
 
     let restored = open_pg(&engine, &target).await;
-    assert_eq!(restored.inst.count("books").await, 25, "the backup holds the state at backup time");
+    assert_eq!(
+        restored.inst.count("books").await,
+        25,
+        "the backup holds the state at backup time"
+    );
     let rec = restored
         .inst
         .data
@@ -139,7 +166,9 @@ async fn damage_is_caught_by_the_hashes_and_by_pg_verifybackup() {
     let tmp = short_tempdir();
     let src = seeded(&engine, &tmp.path().join("src")).await;
     let dest = tmp.path().join("bk");
-    let m = backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts()).await.unwrap();
+    let m = backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts())
+        .await
+        .unwrap();
     let opts = verify_opts(&src.src, &src.inst.layout);
 
     // The biggest relation file of the copy.
@@ -157,13 +186,22 @@ async fn damage_is_caught_by_the_hashes_and_by_pg_verifybackup() {
     std::fs::write(&path, &bad).unwrap();
     let r = forgebase_backup::verify_with(&dest, &opts).await;
     assert!(!r.ok);
-    assert!(r.problems.iter().any(|p| p.contains("corrupt") && p.contains(&victim.path)), "{:?}", r.problems);
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| p.contains("corrupt") && p.contains(&victim.path)),
+        "{:?}",
+        r.problems
+    );
 
     // Hide the damage from our own manifest: pg_verifybackup still sees it.
     let (sha, size) = {
         use sha2::{Digest, Sha256};
         let d = Sha256::digest(&bad);
-        (d.iter().map(|b| format!("{b:02x}")).collect::<String>(), bad.len() as u64)
+        (
+            d.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            bad.len() as u64,
+        )
     };
     let mpath = dest.join("MANIFEST.json");
     let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&mpath).unwrap()).unwrap();
@@ -176,7 +214,11 @@ async fn damage_is_caught_by_the_hashes_and_by_pg_verifybackup() {
     std::fs::write(&mpath, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
     let r = forgebase_backup::verify_with(&dest, &opts).await;
     assert!(!r.ok);
-    assert!(r.problems.iter().any(|p| p.contains("pg_verifybackup failed")), "{:?}", r.problems);
+    assert!(
+        r.problems.iter().any(|p| p.contains("pg_verifybackup failed")),
+        "{:?}",
+        r.problems
+    );
     // Without the tools the same backup passes: that is why `restore` and `doctor` pass them.
     assert!(forgebase_backup::verify(&dest).await.ok);
 
@@ -204,7 +246,9 @@ async fn restore_swaps_the_cluster_and_an_interrupted_restore_rolls_back() {
     let root = tmp.path().join("src");
     let src = seeded(&engine, &root).await;
     let dest = tmp.path().join("bk");
-    backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts()).await.unwrap();
+    backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts())
+        .await
+        .unwrap();
     add_books(&src.inst, 25, 30).await;
     let (layout, pg) = (src.inst.layout.clone(), tools(&src.src));
     let live_secret = std::fs::read(root.join("postgres/roles.secret")).unwrap();
@@ -246,7 +290,9 @@ async fn restore_refuses_what_it_cannot_take() {
     let tmp = short_tempdir();
     let src = seeded(&engine, &tmp.path().join("src")).await;
     let dest = tmp.path().join("bk");
-    backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts()).await.unwrap();
+    backup::create(&src.inst.db, &src.inst.layout, &dest, src.opts())
+        .await
+        .unwrap();
 
     // The cluster still runs: a restore over it is refused.
     let err = restore::restore(
@@ -307,7 +353,10 @@ async fn restore_refuses_what_it_cannot_take() {
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("FB-179") && err.to_string().contains("backup --cluster"), "{err}");
+    assert!(
+        err.to_string().contains("FB-179") && err.to_string().contains("backup --cluster"),
+        "{err}"
+    );
     std::fs::create_dir_all(src.root.join("postgres/nodes/shard1")).unwrap();
     let err = backup::create(&src.inst.db, &src.inst.layout, &tmp.path().join("bk2"), src.opts())
         .await
@@ -316,9 +365,14 @@ async fn restore_refuses_what_it_cannot_take() {
     std::fs::remove_dir_all(src.root.join("postgres/nodes")).unwrap();
 
     // A PostgreSQL database without the engine's tools cannot be backed up.
-    let err = backup::create(&src.inst.db, &src.inst.layout, &tmp.path().join("bk3"), BackupOptions::default())
-        .await
-        .unwrap_err();
+    let err = backup::create(
+        &src.inst.db,
+        &src.inst.layout,
+        &tmp.path().join("bk3"),
+        BackupOptions::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("PgSource"), "{err}");
     src.close().await;
 }
@@ -330,9 +384,20 @@ async fn snapshots_and_pre_migration_snapshots() {
     let src = seeded(&engine, &tmp.path().join("src")).await;
     let store = SnapshotStore::new(&src.inst.layout);
 
-    let a = store.create(&src.inst.db, &src.inst.layout, src.opts(), None).await.unwrap();
+    let a = store
+        .create(&src.inst.db, &src.inst.layout, src.opts(), None)
+        .await
+        .unwrap();
     let b = store
-        .create(&src.inst.db, &src.inst.layout, src.opts(), Some(Retention { keep_last: Some(1), max_age_days: None }))
+        .create(
+            &src.inst.db,
+            &src.inst.layout,
+            src.opts(),
+            Some(Retention {
+                keep_last: Some(1),
+                max_age_days: None,
+            }),
+        )
         .await
         .unwrap();
     assert_eq!(a.kind, "snapshot");
@@ -340,7 +405,11 @@ async fn snapshots_and_pre_migration_snapshots() {
     assert_eq!(all.len(), 1, "retention keeps the newest");
     assert_eq!(all[0].id, b.id);
     assert_eq!(store.resolve("latest").unwrap().id, b.id);
-    assert!(forgebase_backup::verify_with(&all[0].path, &verify_opts(&src.src, &src.inst.layout)).await.ok);
+    assert!(
+        forgebase_backup::verify_with(&all[0].path, &verify_opts(&src.src, &src.inst.layout))
+            .await
+            .ok
+    );
 
     // The pre-migration hook: make the newest migration pending again, so
     // `migrate` has work on a database that holds data. The snapshot is taken
@@ -356,7 +425,12 @@ async fn snapshots_and_pre_migration_snapshots() {
         .unwrap()
         .flatten()
         .map(|e| e.path())
-        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("pre-migrate-v{}-", latest - 1)));
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&format!("pre-migrate-v{}-", latest - 1))
+        });
     // The previous version number depends on numbering gaps; accept any pre-migrate dir.
     let dir = dir.or_else(|| {
         std::fs::read_dir(src.inst.layout.backups_dir())
@@ -371,7 +445,11 @@ async fn snapshots_and_pre_migration_snapshots() {
     assert_eq!(m.kind, "pre-migration");
     assert!(m.is_physical_postgres());
     assert!(!m.files.iter().any(|f| f.path.starts_with("storage/")));
-    assert!(forgebase_backup::verify_with(&dir, &verify_opts(&src.src, &src.inst.layout)).await.ok);
+    assert!(
+        forgebase_backup::verify_with(&dir, &verify_opts(&src.src, &src.inst.layout))
+            .await
+            .ok
+    );
 
     // Restoring it replaces the database and leaves storage and the key alone.
     add_books(&src.inst, 25, 28).await;
@@ -390,9 +468,15 @@ async fn snapshots_and_pre_migration_snapshots() {
     .await
     .unwrap();
     assert!(rep.master_key.contains("database-only"));
-    assert_eq!(read(layout.storage_dir().join("blobs/new/after")), b"written after the snapshot");
+    assert_eq!(
+        read(layout.storage_dir().join("blobs/new/after")),
+        b"written after the snapshot"
+    );
     assert_eq!(read(layout.storage_dir().join("blobs/ab/abcdef")), b"blob one");
-    assert_eq!(read(forgebase_backup::backup::master_key_path(&layout)), b"0123456789abcdef0123456789abcdef");
+    assert_eq!(
+        read(forgebase_backup::backup::master_key_path(&layout)),
+        b"0123456789abcdef0123456789abcdef"
+    );
     // (The snapshot was taken mid-hack: its migration row is missing, so do not migrate.)
     let back = open_pg_with(&engine, &root, false).await;
     assert_eq!(back.inst.count("books").await, 25);
@@ -401,8 +485,13 @@ async fn snapshots_and_pre_migration_snapshots() {
 
 async fn sqlx_exec(pg: &common::PgInstance, sql: &str) {
     use sqlx::Connection;
-    let mut conn = sqlx::PgConnection::connect(pg.engine.url(Role::Super).expose()).await.unwrap();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned())).execute(&mut conn).await.unwrap();
+    let mut conn = sqlx::PgConnection::connect(pg.engine.url(Role::Super).expose())
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
+        .execute(&mut conn)
+        .await
+        .unwrap();
     conn.close().await.unwrap();
 }
 
@@ -427,9 +516,12 @@ async fn an_external_server_gets_a_logical_backup_that_restores_in_place() {
     .await
     .unwrap();
     db.migrate(Some(&layout.backups_dir())).await.unwrap();
-    let data = forgebase_data::DataService::new(std::sync::Arc::new(db.clone()), std::sync::Arc::new(forgebase_data::DefaultAuthorizer))
-        .await
-        .unwrap();
+    let data = forgebase_data::DataService::new(
+        std::sync::Arc::new(db.clone()),
+        std::sync::Arc::new(forgebase_data::DefaultAuthorizer),
+    )
+    .await
+    .unwrap();
     let inst = common::Instance {
         layout: layout.clone(),
         db: db.clone(),
@@ -452,7 +544,11 @@ async fn an_external_server_gets_a_logical_backup_that_restores_in_place() {
     .unwrap();
     let e = m.engine_info();
     assert_eq!((e.mode.as_deref(), e.method), (Some("external"), Method::Dump));
-    assert!(m.files.iter().any(|f| f.path == "postgres.dump" && f.kind == FileKind::Dump));
+    assert!(
+        m.files
+            .iter()
+            .any(|f| f.path == "postgres.dump" && f.kind == FileKind::Dump)
+    );
     assert!(m.files.iter().any(|f| f.path == "storage/blobs/ab/abcdef"));
     let r = forgebase_backup::verify_with(&dest, &verify_opts(&src, &layout)).await;
     assert!(r.ok, "{:?}", r.problems);
@@ -477,10 +573,17 @@ async fn an_external_server_gets_a_logical_backup_that_restores_in_place() {
     ))
     .await
     .unwrap();
-    let data = forgebase_data::DataService::new(std::sync::Arc::new(db.clone()), std::sync::Arc::new(forgebase_data::DefaultAuthorizer))
-        .await
-        .unwrap();
-    let back = common::Instance { layout, db: db.clone(), data };
+    let data = forgebase_data::DataService::new(
+        std::sync::Arc::new(db.clone()),
+        std::sync::Arc::new(forgebase_data::DefaultAuthorizer),
+    )
+    .await
+    .unwrap();
+    let back = common::Instance {
+        layout,
+        db: db.clone(),
+        data,
+    };
     assert_eq!(back.count("books").await, 10);
     db.close().await;
     host.close().await;

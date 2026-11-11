@@ -325,7 +325,12 @@ impl PgDatabase {
             Vec::new()
         } else {
             if let (Some(dir), true) = (backups_dir, status.current_version > 0) {
-                let hook = self.inner.pre_migration.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                let hook = self
+                    .inner
+                    .pre_migration
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 match hook {
                     Some(h) => {
                         let target = h.take(dir, status.current_version).await?;

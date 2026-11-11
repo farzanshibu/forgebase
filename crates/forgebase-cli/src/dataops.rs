@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use forgebase_backup::manifest::Manifest;
 use forgebase_backup::restore::{self, RestoreOptions};
 use forgebase_backup::transfer::{self, ExportOptions, Format, ImportOptions, OnConflict};
-use forgebase_backup::manifest::Manifest;
 use forgebase_backup::{BackupOptions, DumpPlan, PgSource, Retention, SnapshotStore, backup};
 use forgebase_core::{Config, DataLayout};
 use forgebase_data::{DataService, DefaultAuthorizer};
@@ -70,8 +70,14 @@ async fn data_service(db: &Database) -> anyhow::Result<DataService> {
 /// own `postgres --version`.
 async fn pg_tools(config: &Config, layout: &DataLayout) -> Option<PgSource> {
     let root = database::engine_root(&config.database, layout)?;
-    let bin = root.join("bin").join(format!("postgres{}", std::env::consts::EXE_SUFFIX));
-    let out = tokio::process::Command::new(&bin).arg("--version").output().await.ok()?;
+    let bin = root
+        .join("bin")
+        .join(format!("postgres{}", std::env::consts::EXE_SUFFIX));
+    let out = tokio::process::Command::new(&bin)
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let version = forgebase_pgengine::PgVersion::parse(&text).map(|v| v.text);
     Some(PgSource::tools_only(Some(root), version.unwrap_or_default()))
@@ -79,7 +85,13 @@ async fn pg_tools(config: &Config, layout: &DataLayout) -> Option<PgSource> {
 
 /// The tools and the way in for the database `primary` (None on SQLite).
 fn pg_source(config: &Config, layout: &DataLayout, primary: &PrimaryDatabase) -> Option<PgSource> {
-    database::pg_source(config, layout, primary.marker(), primary.engine().map(|e| &**e), primary.attached())
+    database::pg_source(
+        config,
+        layout,
+        primary.marker(),
+        primary.engine().map(|e| &**e),
+        primary.attached(),
+    )
 }
 
 fn print_json(v: &serde_json::Value) -> anyhow::Result<()> {
@@ -815,7 +827,11 @@ pub async fn run_db_dump(g: &GlobalArgs, cli: DumpCli) -> anyhow::Result<ExitCod
             "dump written to {} ({})\n  load it with {}",
             path.display(),
             human_bytes(size),
-            if cli.plain { "psql -f" } else { "pg_restore -d <database>" }
+            if cli.plain {
+                "psql -f"
+            } else {
+                "pg_restore -d <database>"
+            }
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -837,10 +853,10 @@ async fn dump(
         Some(d) => std::path::absolute(d)?,
         None => {
             let stamp = forgebase_core::now_rfc3339().replace([':', '-'], "");
-            layout.backups_dir().join("dumps").join(format!(
-                "forgebase-{stamp}.{}",
-                if cli.plain { "sql" } else { "dump" }
-            ))
+            layout
+                .backups_dir()
+                .join("dumps")
+                .join(format!("forgebase-{stamp}.{}", if cli.plain { "sql" } else { "dump" }))
         }
     };
     if dest.exists() {

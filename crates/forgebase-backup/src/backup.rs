@@ -141,7 +141,11 @@ async fn create_with(
     let schema_version = match (known_version, db) {
         (Some(v), _) => v,
         (None, Some(db)) => db.schema_version().await?,
-        (None, None) => return Err(BackupError::Internal("no database to read the schema version from".into())),
+        (None, None) => {
+            return Err(BackupError::Internal(
+                "no database to read the schema version from".into(),
+            ));
+        }
     };
     let format = if engine.is_postgres() { FORMAT_PG } else { FORMAT };
 

@@ -537,7 +537,11 @@ fn check_pre_migration(r: &mut Report, layout: &DataLayout) {
 
 fn check_staging(r: &mut Report, layout: &DataLayout) {
     let mut leftovers = Vec::new();
-    for dir in [layout.tmp_dir(), layout.backups_dir().join("snapshots"), layout.backups_dir()] {
+    for dir in [
+        layout.tmp_dir(),
+        layout.backups_dir().join("snapshots"),
+        layout.backups_dir(),
+    ] {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();

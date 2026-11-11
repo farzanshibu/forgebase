@@ -96,7 +96,10 @@ fn backup_verify_and_restore_round_trip() {
         assert_eq!(engine["method"], "basebackup");
         assert_eq!(made["manifest"]["format"], 2);
     }
-    assert!(data.join("tmp").read_dir().unwrap().next().is_none(), "no passfile or staging is left");
+    assert!(
+        data.join("tmp").read_dir().unwrap().next().is_none(),
+        "no passfile or staging is left"
+    );
     let dest = tmp.path().join("bk");
     ok(&run(&app, e, &["backup", dest.to_str().unwrap()]));
     assert!(dest.join("MANIFEST.json").is_file());
@@ -114,7 +117,12 @@ fn backup_verify_and_restore_round_trip() {
         );
     }
     let d = json(&run(&app, e, &["doctor", "--json", "--deep"]));
-    let snap = d["checks"].as_array().unwrap().iter().find(|c| c["name"] == "snapshots").unwrap();
+    let snap = d["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "snapshots")
+        .unwrap();
     assert_eq!(snap["status"], "ok", "{d}");
     assert!(snap["detail"].as_str().unwrap().contains("verified"), "{d}");
 
@@ -127,12 +135,15 @@ fn backup_verify_and_restore_round_trip() {
     let text = ok(&run(&app, e, &["restore", dest.to_str().unwrap(), "--force"]));
     assert!(text.contains("restored"), "{text}");
     let list = ok(&run(&app, e, &["admin", "list"]));
-    assert!(list.contains("first@example.com") && !list.contains("second@example.com"), "{list}");
     assert!(
-        std::fs::read_dir(data.join("backups")).unwrap().flatten().any(|e| e
-            .file_name()
-            .to_string_lossy()
-            .starts_with("pre-restore-")),
+        list.contains("first@example.com") && !list.contains("second@example.com"),
+        "{list}"
+    );
+    assert!(
+        std::fs::read_dir(data.join("backups"))
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("pre-restore-")),
         "the replaced data is kept"
     );
     assert_eq!(
@@ -161,9 +172,16 @@ fn a_physical_backup_restores_into_an_empty_project_and_db_dump_writes_a_portabl
     assert_eq!(&std::fs::read(&path).unwrap()[..5], b"PGDMP");
     assert!(dump["bytes"].as_u64().unwrap() > 10_000);
     let sql = tmp.path().join("dump.sql");
-    ok(&run(&app, e, &["db", "dump", sql.to_str().unwrap(), "--plain", "--schema-only"]));
+    ok(&run(
+        &app,
+        e,
+        &["db", "dump", sql.to_str().unwrap(), "--plain", "--schema-only"],
+    ));
     let text = std::fs::read_to_string(&sql).unwrap();
-    assert!(text.contains("CREATE TABLE") && !text.contains("OWNER TO") && !text.contains("GRANT "), "portable");
+    assert!(
+        text.contains("CREATE TABLE") && !text.contains("OWNER TO") && !text.contains("GRANT "),
+        "portable"
+    );
     assert!(!run(&app, e, &["db", "dump", sql.to_str().unwrap()]).status.success());
 
     // A second, empty project takes the backup: engine, marker and rows come along.

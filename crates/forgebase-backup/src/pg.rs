@@ -136,9 +136,7 @@ impl PgSource {
 
     fn tool(&self, name: &str) -> PathBuf {
         match &self.engine_root {
-            Some(root) => root
-                .join("bin")
-                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+            Some(root) => root.join("bin").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
             None => PathBuf::from(name),
         }
     }
@@ -333,9 +331,14 @@ impl PgSource {
     /// # Errors
     /// The tool is missing or the file is not a dump.
     pub async fn list_dump(&self, file: &Path, tmp: &Path) -> Result<()> {
-        self.run("pg_restore", vec!["--list".to_owned(), file.display().to_string()], tmp, false)
-            .await
-            .map(|_| ())
+        self.run(
+            "pg_restore",
+            vec!["--list".to_owned(), file.display().to_string()],
+            tmp,
+            false,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// `pg_restore` of a custom-format dump of the ForgeBase schemas into the
@@ -495,8 +498,14 @@ mod tests {
     fn external_urls_become_flags() {
         let s = PgSource::external(None, "18.3", "postgres://fb:p%40ss@db.example.com:6432/app");
         let c = s.connection().unwrap();
-        assert_eq!((c.user.as_str(), c.password.as_str(), c.database.as_str()), ("fb", "p@ss", "app"));
-        assert_eq!(c.args, ["-h", "db.example.com", "-p", "6432", "-U", "fb"].map(str::to_owned));
+        assert_eq!(
+            (c.user.as_str(), c.password.as_str(), c.database.as_str()),
+            ("fb", "p@ss", "app")
+        );
+        assert_eq!(
+            c.args,
+            ["-h", "db.example.com", "-p", "6432", "-U", "fb"].map(str::to_owned)
+        );
         assert!(!format!("{s:?}").contains("p%40ss"));
     }
 

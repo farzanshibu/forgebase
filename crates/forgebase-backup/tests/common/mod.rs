@@ -210,7 +210,7 @@ pub async fn open_pg_with(engine_dir: &Path, root: &Path, migrate: bool) -> PgIn
     );
     let db = Database::open(opts).await.unwrap();
     let src = pg_source_of(&engine, root);
-    db.set_pre_migration(PgPreMigration::new(layout.clone(), src.clone()));
+    db.set_pre_migration(PgPreMigration::shared(layout.clone(), src.clone()));
     if migrate {
         db.migrate(Some(&layout.backups_dir())).await.unwrap();
     }

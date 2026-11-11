@@ -118,7 +118,9 @@ async fn check_postgres(dir: &Path, m: &Manifest, method: Method, opts: &VerifyO
             let pgdir = dir.join(PG_DIR);
             for must in ["PG_VERSION", "backup_manifest", "global/pg_control"] {
                 if !m.files.iter().any(|f| f.path == format!("{PG_DIR}/{must}")) {
-                    report.problems.push(format!("{PG_DIR}/{must} is not part of the backup"));
+                    report
+                        .problems
+                        .push(format!("{PG_DIR}/{must} is not part of the backup"));
                 }
             }
             let major = std::fs::read_to_string(pgdir.join("PG_VERSION"))
@@ -127,9 +129,9 @@ async fn check_postgres(dir: &Path, m: &Manifest, method: Method, opts: &VerifyO
             if let (Some(want), Some(got)) = (engine.major, major)
                 && want != got
             {
-                report.problems.push(format!(
-                    "the cluster is PostgreSQL {got} but the manifest says {want}"
-                ));
+                report
+                    .problems
+                    .push(format!("the cluster is PostgreSQL {got} but the manifest says {want}"));
             }
             if !report.problems.is_empty() {
                 return;

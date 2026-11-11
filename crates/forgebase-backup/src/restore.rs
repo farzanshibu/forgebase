@@ -284,12 +284,7 @@ fn pg_cluster_exists(layout: &DataLayout) -> bool {
 
 /// Refuses a backup the target cannot take: another engine, another
 /// PostgreSQL major, a running cluster, more than one data set.
-fn check_target(
-    layout: &DataLayout,
-    m: &Manifest,
-    opts: &RestoreOptions,
-    warnings: &mut Vec<String>,
-) -> Result<()> {
+fn check_target(layout: &DataLayout, m: &Manifest, opts: &RestoreOptions, warnings: &mut Vec<String>) -> Result<()> {
     let engine = m.engine_info();
     let sqlite_here = layout.database_path().exists();
     let pg_here = pg_cluster_exists(layout);

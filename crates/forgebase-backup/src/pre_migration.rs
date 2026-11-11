@@ -29,7 +29,7 @@ pub struct PgPreMigration {
 impl PgPreMigration {
     /// A provider for the data directory `layout`, reaching the cluster
     /// through `source` (the bundled engine; external servers have none).
-    pub fn new(layout: DataLayout, source: PgSource) -> Arc<dyn PreMigrationSnapshot> {
+    pub fn shared(layout: DataLayout, source: PgSource) -> Arc<dyn PreMigrationSnapshot> {
         Arc::new(Self { layout, source })
     }
 }
