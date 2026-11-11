@@ -301,25 +301,16 @@ impl Topo {
             .signup(&ClientInfo::default(), None, &email, USER_PASSWORD, None)
             .await
             .unwrap();
-        // FINDING (FB-178): an anonymous login right after a signup can read a replica
-        // that has not replayed the user yet (404 record_not_found); no token covers
-        // anonymous callers. The harness retries, as a client would.
-        let mut r;
-        let start = Instant::now();
-        loop {
-            r = self
-                .req(
-                    "POST",
-                    "/api/auth/login",
-                    &[],
-                    Some(json!({"email": email, "password": USER_PASSWORD})),
-                )
-                .await;
-            if r.status == 200 || start.elapsed() > Duration::from_secs(10) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        // FIX-15 (found by FB-178): identity reads run on the primary, so an
+        // anonymous login right after a signup finds the user on a lagging replica.
+        let r = self
+            .req(
+                "POST",
+                "/api/auth/login",
+                &[],
+                Some(json!({"email": email, "password": USER_PASSWORD})),
+            )
+            .await;
         assert_eq!(r.status, 200, "login: {}", r.text());
         r.json()["access_token"].as_str().unwrap().to_owned()
     }

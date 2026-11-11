@@ -23,13 +23,9 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     }
     let t0 = std::time::Instant::now();
     let mut t = Topo::start(2, 3).await;
-    // Replicas added while the server runs are used by the data core after the
-    // next start (its handle on control is taken when the server opens).
-    t.restart().await;
-    for r in ["r1", "r2"] {
-        t.wait_in_rotation(r, Duration::from_secs(120)).await;
-    }
-    eprintln!("[{:?}] topology up and restarted", t0.elapsed());
+    // Replicas added while the server runs are used by the data core at once
+    // (FIX-15: it follows control's handle live); no restart needed.
+    eprintln!("[{:?}] topology up", t0.elapsed());
 
     // --- The topology through the API -------------------------------------
     let topo = t.topology().await;
@@ -172,11 +168,11 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
             )
             .await;
         assert_eq!(r.status, 201);
-        // FINDING (FB-178): with shards present, a control-set record write returns no
-        // X-ForgeBase-Commit even after a restart with two replicas (see the report).
-        if r.header("x-forgebase-commit").is_none() {
-            eprintln!("FINDING: no X-ForgeBase-Commit on a record write with shards present");
-        }
+        // FIX-15 (found by FB-178): a control-set write on a sharded server answers its token.
+        let token = r
+            .header("x-forgebase-commit")
+            .expect("X-ForgeBase-Commit with shards present");
+        assert!(token.starts_with("control/"), "{token}");
         let l = t
             .adm("GET", "/api/v1/collections/settings/records?perPage=500", None)
             .await;

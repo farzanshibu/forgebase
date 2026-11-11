@@ -149,10 +149,17 @@ impl AuthService {
     /// The client view of a user record.
     pub async fn user_view(&self, collection: &str, id: &str) -> Result<UserView, AuthError> {
         let coll = self.auth_collection(Some(collection)).await?;
-        let mut rec = self
-            .data()
-            .get_record(&AccessContext::system(), &coll.name, id, &Default::default())
-            .await?;
+        // FIX-15: on the primary. Sign-in, refresh, verification and reset
+        // read the user another request may have written moments ago (a
+        // signup), and an anonymous caller carries no commit token, so a
+        // lagging replica would answer 404.
+        let mut rec = forgebase_data::db::routing::scope::on_primary(self.data().get_record(
+            &AccessContext::system(),
+            &coll.name,
+            id,
+            &Default::default(),
+        ))
+        .await?;
         for f in &coll.fields {
             if f.hidden || f.name == "password" || f.name == "token_key" {
                 rec.remove(&f.name);

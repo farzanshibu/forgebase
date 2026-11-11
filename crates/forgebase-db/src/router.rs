@@ -281,8 +281,16 @@ impl Backend for SetHandle {
         }
     }
 
+    /// Like [`Backend::begin`], the commit records a read-your-writes token
+    /// when the set has replicas (FIX-15: writes as a native-RLS role too).
     fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
-        self.db.begin_as(mode, run_as)
+        match &self.replicas {
+            None => self.db.begin_as(mode, run_as),
+            Some(replicas) => Box::pin(async move {
+                let tx = self.db.begin_as(mode, run_as).await?;
+                Ok(replicas.wrap_tx(tx))
+            }),
+        }
     }
 
     fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
@@ -332,6 +340,107 @@ impl Backend for SetHandle {
     /// On the set's primary.
     fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
         self.db.maintenance(statements)
+    }
+}
+
+/// [`Backend`] over the router's *current* control handle (FIX-15): every
+/// call takes [`DbRouter::control`] again, so replicas added to or removed
+/// from control while the server runs are used (or dropped) at once, and
+/// commits record read-your-writes tokens as soon as control has a replica.
+/// Services that live as long as the server (auth, policy, the data core)
+/// hold this instead of a [`SetHandle`] taken at open time. Cheap to clone.
+#[derive(Debug, Clone)]
+pub struct ControlBackend {
+    router: DbRouter,
+}
+
+impl ControlBackend {
+    fn now(&self) -> SetHandle {
+        self.router.control()
+    }
+}
+
+impl Backend for ControlBackend {
+    fn dialect(&self) -> &dyn Dialect {
+        // Control's primary never changes while the router lives (a
+        // promote restarts the server), so its dialect is fixed.
+        self.router.inner.control_db.dialect()
+    }
+
+    fn feature_active(&self, feature: crate::Feature) -> bool {
+        self.router.inner.control_db.feature_active(feature)
+    }
+
+    fn fetch_all<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.fetch_all(stmt).await })
+    }
+
+    fn fetch_routed<'a>(&'a self, stmt: &'a Statement, intent: &'a ReadIntent) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.fetch_routed(stmt, intent).await })
+    }
+
+    fn sample_commit_token(&self) -> BoxFuture<'_, Result<Option<crate::routing::CommitToken>, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.sample_commit_token().await })
+    }
+
+    fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.begin(mode).await })
+    }
+
+    fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.begin_as(mode, run_as).await })
+    }
+
+    fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.fetch_all_as(stmt, run_as).await })
+    }
+
+    fn admin_batch<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.router.inner.control_db.admin_batch(statements)
+    }
+
+    fn fetch_routed_as<'a>(
+        &'a self,
+        stmt: &'a Statement,
+        intent: &'a ReadIntent,
+        run_as: &'a RunAs,
+    ) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let h = self.now();
+        Box::pin(async move { h.fetch_routed_as(stmt, intent, run_as).await })
+    }
+
+    fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {
+        self.router.inner.control_db.explain(stmt)
+    }
+
+    fn statement_writes<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<bool, DbError>> {
+        self.router.inner.control_db.statement_writes(stmt)
+    }
+
+    fn slow_queries(&self) -> Vec<SlowQuery> {
+        self.router.inner.control_db.slow_queries()
+    }
+
+    fn clear_slow_queries(&self) {
+        self.router.inner.control_db.clear_slow_queries();
+    }
+
+    fn slow_query_threshold(&self) -> Duration {
+        self.router.inner.control_db.slow_query_threshold()
+    }
+
+    fn set_slow_query_threshold(&self, threshold: Duration) {
+        self.router.inner.control_db.set_slow_query_threshold(threshold);
+    }
+
+    fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.router.inner.control_db.maintenance(statements)
     }
 }
 
@@ -632,6 +741,12 @@ impl DbRouter {
     /// The control set.
     pub fn control(&self) -> SetHandle {
         self.read().control()
+    }
+
+    /// A [`Backend`] that follows the control set as the topology changes
+    /// ([`ControlBackend`]): for services that live as long as the router.
+    pub fn control_backend(&self) -> ControlBackend {
+        ControlBackend { router: self.clone() }
     }
 
     /// Every routable, open set, control first, then by number.
@@ -1050,10 +1165,10 @@ impl DbRouter {
                 .iter()
                 .filter_map(|r| r.first().and_then(Value::as_str))
                 .find_map(|sibling| self.placement(sibling));
-            if let Some(p) = sibling_set {
-                if self.set(&p.set_id).is_some_and(|h| h.set().takes_new_tenants()) {
-                    return Ok(p.set_id);
-                }
+            if let Some(p) = sibling_set
+                && self.set(&p.set_id).is_some_and(|h| h.set().takes_new_tenants())
+            {
+                return Ok(p.set_id);
             }
         }
         let loads = self.set_loads();

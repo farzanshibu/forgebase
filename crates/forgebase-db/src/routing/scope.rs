@@ -84,6 +84,28 @@ pub fn record_commit(set: &str, lsn: Lsn) {
     let _ = SCOPE.try_with(|s| s.record_commit(set, lsn));
 }
 
+/// Runs `f` with every routed read on the primary (`Strong`), for reads
+/// that must see a row another request committed moments ago and that no
+/// token covers: identity lookups right after a signup, a password reset,
+/// a verification (FIX-15). Commits made inside are still recorded in the
+/// enclosing scope, so the response keeps its `X-ForgeBase-Commit`.
+pub async fn on_primary<F: Future>(f: F) -> F::Output {
+    let outer = current();
+    let read_after = outer.as_ref().map(|s| s.read_after()).unwrap_or_default();
+    let inner = RequestScope::new(Consistency::Strong, read_after);
+    let out = scoped(Arc::clone(&inner), f).await;
+    if let Some(outer) = outer {
+        let commits = inner.commits();
+        outer.commits.lock().unwrap_or_else(|p| p.into_inner()).merge(&commits);
+        outer
+            .read_after
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .merge(&commits);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +124,26 @@ mod tests {
         assert_eq!(seen, Some((Consistency::Strong, Some(Lsn(9)))));
         assert_eq!(scope.commits().to_header().as_deref(), Some("control/0/9, s1/0/2"));
         assert!(current().is_none());
+    }
+
+    #[tokio::test]
+    async fn on_primary_reads_strong_and_keeps_the_commits() {
+        let scope = RequestScope::new(Consistency::Session, ReadAfter::parse_header("control/0/3"));
+        let seen = scoped(scope.clone(), async {
+            on_primary(async {
+                record_commit("control", Lsn(7));
+                current().map(|s| (s.consistency(), s.read_after_of("control")))
+            })
+            .await
+        })
+        .await;
+        assert_eq!(seen, Some((Consistency::Strong, Some(Lsn(7)))));
+        assert_eq!(scope.commits().to_header().as_deref(), Some("control/0/7"));
+        assert_eq!(scope.read_after_of("control"), Some(Lsn(7)));
+        // Outside any scope it still runs (no commits to keep).
+        assert_eq!(
+            on_primary(async { current().map(|s| s.consistency()) }).await,
+            Some(Consistency::Strong)
+        );
     }
 }
