@@ -1,1 +1,2 @@
 BISON=$(or $(firstword $(foreach b,/opt/homebrew/opt/bison/bin/bison /usr/local/opt/bison/bin/bison $(shell command -v bison),$(if $(filter 3.%,$(lastword $(shell $(b) --version 2>/dev/null | head -1))),$(b)))),$(error Apache AGE needs GNU Bison 3 (its grammar is GLR with -Wno-error=conflicts-*): brew install bison on macOS, apk add bison on Alpine))
+YFLAGS=-Wno-deprecated

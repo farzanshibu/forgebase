@@ -9,7 +9,7 @@ say so with `features.graph_cypher = false` in their manifest.
 | File | What it does |
 |---|---|
 | `patches/*.patch` | unreleased upstream fixes, applied in name order with `patch -p1` (ADR-0029 §9a, decision 1 B) |
-| `make-args` | `BISON=` the first GNU Bison 3 found (Homebrew on macOS, `bison` on Alpine); the build stops with a message when there is none |
+| `make-args` | `BISON=` the first GNU Bison 3 found (Homebrew on macOS, `bison` on Alpine; the build stops with a message when there is none) and `YFLAGS=-Wno-deprecated` |
 | `post-install.sh` | checks every patch against `[[sources.age.patches]]` in `engine.lock` (same files, same order, same SHA-256), checks the licence and NOTICE against upstream, ships the NOTICE, and links `lib/plugins/age.<so\|dylib>` to `../age.<so\|dylib>` |
 
 ## Patches
@@ -32,8 +32,13 @@ ADR-0029 addendum what changed and that the diff was reviewed.
 AGE's Cypher grammar is a GLR grammar built with `-Wno-error=conflicts-sr`,
 which needs GNU Bison 3. macOS ships Bison 2.3: `brew install bison` (keg-only;
 `make-args` finds it under `/opt/homebrew/opt/bison` or `/usr/local/opt/bison`).
-The Alpine build image installs `bison` 3.8 (`build-linux.sh`). Flex and Perl
-are the ones PostgreSQL's own build uses.
+The Alpine build image installs `bison` 3.8 (`build-linux.sh`). AGE builds
+its grammar with `-Werror`, and Bison 3 reports AGE's `%name-prefix` and
+`%pure-parser` as deprecated: PostgreSQL's configure adds `-Wno-deprecated`
+to `BISONFLAGS` only when it found Bison 3 itself (on macOS it finds 2.3), so
+`make-args` passes `YFLAGS=-Wno-deprecated`, which PGXS puts into
+`BISONFLAGS` and AGE's own flags are appended to. Flex and Perl are the ones
+PostgreSQL's own build uses.
 
 ## How ForgeBase loads it
 
