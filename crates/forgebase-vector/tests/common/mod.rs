@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, Authorizer, DataService, DefaultAuthorizer};
-use forgebase_db::testing::{TestDb, test_backend};
 use forgebase_db::Database;
+use forgebase_db::testing::{TestDb, test_backend};
 use forgebase_vector::model::*;
 use forgebase_vector::{VectorConfig, VectorService};
 

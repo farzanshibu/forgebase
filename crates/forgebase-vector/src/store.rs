@@ -486,7 +486,10 @@ pub(crate) async fn vectors_by_keys(
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
-    vectors_rows(db.fetch_all(&vectors_by_keys_stmt(db.dialect(), cid, field, keys)).await?)
+    vectors_rows(
+        db.fetch_all(&vectors_by_keys_stmt(db.dialect(), cid, field, keys))
+            .await?,
+    )
 }
 
 /// One page of a field's vectors in key order, after `after`, optionally only

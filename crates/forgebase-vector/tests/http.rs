@@ -62,7 +62,11 @@ impl Api {
                 }
             }));
         }
-        Self { app, _dir: dir, _test: test }
+        Self {
+            app,
+            _dir: dir,
+            _test: test,
+        }
     }
 
     async fn admin() -> Self {
