@@ -18,7 +18,7 @@ use crate::model::{
 use crate::money::prorate;
 use crate::service::{
     BillingService, DAY, Tx, add_months, check_idem, check_metadata, check_url, int, new_id, next_boundary, opt_text,
-    period_months, text,
+    period_months, realm_clause, text,
 };
 
 const MAX_QUANTITY: i64 = 1_000_000;
@@ -381,8 +381,12 @@ impl BillingService {
     /// Subscriptions of a subject (newest first; instance-wide readers may
     /// omit the subject).
     pub async fn subscriptions(&self, ctx: &AccessContext, subject: Option<&str>) -> Result<Vec<Subscription>> {
-        let subs = if subject.is_none() && self.can_read_all(ctx).is_ok() {
-            self.subs_where("1 = 1 ORDER BY s.created_at DESC LIMIT 500", Vec::new())
+        let subs = if subject.is_none()
+            && let Ok(realm) = self.can_read_all(ctx)
+        {
+            let mut params = Vec::new();
+            let only = realm_clause(realm.as_deref(), "s.subject", &mut params);
+            self.subs_where(&format!("1 = 1{only} ORDER BY s.created_at DESC LIMIT 500"), params)
                 .await?
         } else {
             let s = self.subject_for(ctx, subject)?;

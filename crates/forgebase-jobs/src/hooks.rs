@@ -11,6 +11,8 @@ use forgebase_data::{AccessContext, Action, Authorizer, Decision, FieldAccess, R
 use forgebase_db::BoxFuture;
 use serde_json::Value as Json;
 
+use crate::access::{JobAccess, Scope};
+
 /// Prefix of the realtime channels the job queue publishes on:
 /// `jobs:<job id>` and `jobs:<workflow id>`.
 pub const CHANNEL_PREFIX: &str = "jobs:";
@@ -83,17 +85,48 @@ impl JobEventSink for MemorySink {
 
 /// Wraps the process's authorizer so the job channels are filtered: a
 /// subscription to `jobs:<id>` needs [`Action::ReadJobs`] (not just
-/// `ChannelSubscribe`), and nobody but the system publishes there, so updates
-/// cannot be forged. Every other question goes to the inner authorizer.
+/// `ChannelSubscribe`) and, for non-privileged callers, the job or workflow
+/// must be visible to them (FB-142: their tenant, and created by them unless
+/// they hold [`crate::READ_ALL_KEY`]). Nobody but the system publishes
+/// there, so updates cannot be forged. Every other question goes to the
+/// inner authorizer.
+///
+/// The check is synchronous, so it reads the owners the [`JobAccess`] state
+/// remembers: jobs and workflows enqueued, published, read or listed since
+/// the process started (up to 100 000). A non-privileged subscriber to a job
+/// not seen since a restart is refused until it reads the job
+/// (`GET /api/v1/jobs/{id}`) or lists it; the server shares the state with
+/// its [`crate::JobService`] ([`crate::JobService::attach_access`]).
 #[derive(Debug, Clone)]
 pub struct JobChannelAuthorizer {
     inner: Arc<dyn Authorizer>,
+    access: JobAccess,
 }
 
 impl JobChannelAuthorizer {
-    /// Wraps `inner`.
+    /// Wraps `inner` with fresh [`JobAccess`] state.
     pub fn new(inner: Arc<dyn Authorizer>) -> Self {
-        Self { inner }
+        Self::with_access(inner, JobAccess::new())
+    }
+
+    /// Wraps `inner`, checking visibility with `access`.
+    pub fn with_access(inner: Arc<dyn Authorizer>, access: JobAccess) -> Self {
+        Self { inner, access }
+    }
+
+    /// The shared state: hand it to the [`crate::JobService`].
+    pub fn access(&self) -> JobAccess {
+        self.access.clone()
+    }
+
+    /// Whether `ctx` may see the job or workflow of `channel`.
+    fn visible(&self, ctx: &AccessContext, channel: &str) -> bool {
+        let scope = self.access.scope(ctx);
+        if scope == Scope::All {
+            return true;
+        }
+        let id = &channel[CHANNEL_PREFIX.len()..];
+        self.access.owner(id).is_some_and(|o| scope.sees(&o, None))
     }
 }
 
@@ -116,7 +149,7 @@ impl Authorizer for JobChannelAuthorizer {
                     return Decision::Deny;
                 }
                 match self.inner.authorize(ctx, Action::ReadJobs, None) {
-                    Decision::Allow => Decision::Allow,
+                    Decision::Allow if self.visible(ctx, channel) => Decision::Allow,
                     _ => Decision::Deny,
                 }
             }
