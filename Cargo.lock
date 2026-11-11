@@ -1881,6 +1881,7 @@ dependencies = [
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-pgengine",
  "forgebase-server",
  "serde_json",
  "sqlx",
