@@ -29,7 +29,8 @@ fn serve(dir: &std::path::Path) -> Child {
     if postgres() {
         cmd.env("FORGEBASE_DATABASE_BACKEND", "postgres");
     } else {
-        cmd.env("FORGEBASE_DATABASE_BACKEND", "sqlite").env_remove("FORGEBASE_PG_ENGINE_DIR");
+        cmd.env("FORGEBASE_DATABASE_BACKEND", "sqlite")
+            .env_remove("FORGEBASE_PG_ENGINE_DIR");
     }
     cmd.args(["serve", "--port", "0"])
         .stdin(Stdio::null())
@@ -45,7 +46,10 @@ fn listening(child: &mut Child) -> String {
     let mut line = String::new();
     loop {
         line.clear();
-        assert!(lines.read_line(&mut line).unwrap() > 0, "server exited before listening");
+        assert!(
+            lines.read_line(&mut line).unwrap() > 0,
+            "server exited before listening"
+        );
         if let Some(rest) = line.split("listening on http://").nth(1) {
             let addr = rest.split_whitespace().next().unwrap().to_owned();
             // Keep draining so the child never blocks on a full pipe.
@@ -59,7 +63,9 @@ fn listening(child: &mut Child) -> String {
 }
 
 fn healthy(addr: &str) -> bool {
-    let Ok(mut s) = TcpStream::connect(addr) else { return false };
+    let Ok(mut s) = TcpStream::connect(addr) else {
+        return false;
+    };
     s.set_read_timeout(Some(Duration::from_secs(2))).ok();
     let _ = s.write_all(format!("GET /health HTTP/1.0\r\nHost: {addr}\r\n\r\n").as_bytes());
     let mut buf = String::new();
@@ -101,7 +107,11 @@ fn check(signal: &str, rounds: usize) {
         let status = child.wait().unwrap();
         assert!(status.success(), "round {round}: SIG{signal} exit {status:?}");
         std::thread::sleep(Duration::from_millis(300));
-        assert!(!leftover(tmp.path()), "round {round}: a process still uses {}", tmp.path().display());
+        assert!(
+            !leftover(tmp.path()),
+            "round {round}: a process still uses {}",
+            tmp.path().display()
+        );
     }
 }
 
