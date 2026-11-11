@@ -228,6 +228,18 @@ impl Backend for SetHandle {
         self.db.fetch_all_as(stmt, run_as)
     }
 
+    fn fetch_routed_as<'a>(
+        &'a self,
+        stmt: &'a Statement,
+        intent: &'a ReadIntent,
+        run_as: &'a RunAs,
+    ) -> BoxFuture<'a, Result<Rows, DbError>> {
+        match &self.replicas {
+            None => self.db.fetch_all_as(stmt, run_as),
+            Some(replicas) => Box::pin(replicas.fetch_as(stmt, intent, Some(run_as))),
+        }
+    }
+
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {
         self.db.explain(stmt)
     }

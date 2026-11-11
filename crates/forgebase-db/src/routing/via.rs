@@ -70,6 +70,15 @@ impl Backend for ReadVia<'_> {
         self.inner.fetch_all_as(stmt, run_as)
     }
 
+    fn fetch_routed_as<'a>(
+        &'a self,
+        stmt: &'a Statement,
+        intent: &'a ReadIntent,
+        run_as: &'a RunAs,
+    ) -> BoxFuture<'a, Result<Rows, DbError>> {
+        self.inner.fetch_routed_as(stmt, intent, run_as)
+    }
+
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {
         self.inner.explain(stmt)
     }

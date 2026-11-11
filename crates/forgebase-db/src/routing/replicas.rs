@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::health::{Health, LsnHistory, Sample};
 use super::{Consistency, LsnWait, ReadIntent, ReadRouting, ReplicaOptions, scope};
-use crate::backend::{Backend, BoxFuture, ExecResult, Rows, Statement, Value, WriteTx};
+use crate::backend::{Backend, BoxFuture, ExecResult, Rows, RunAs, Statement, Value, WriteTx};
 use crate::routing::Lsn;
 use crate::topology::{self, DbNode, NodeState};
 use crate::{Database, DbError};
@@ -336,15 +336,22 @@ impl ReplicaSet {
     /// Runs a read: on a replica when `intent` allows it and one is
     /// eligible, otherwise (and after a replica failure) on the primary.
     pub async fn fetch(&self, stmt: &Statement, intent: &ReadIntent) -> Result<Rows, DbError> {
+        self.fetch_as(stmt, intent, None).await
+    }
+
+    /// [`ReplicaSet::fetch`] as `run_as` when given (FB-171): the replica's
+    /// (or the primary's) read-only transaction switches role and sets the
+    /// claims first ([`Backend::fetch_all_as`]).
+    pub async fn fetch_as(&self, stmt: &Statement, intent: &ReadIntent, run_as: Option<&RunAs>) -> Result<Rows, DbError> {
         let inner = &self.inner;
         if !intent.replica || inner.options.read_routing == ReadRouting::Primary {
-            return inner.primary.fetch_all(stmt).await;
+            return read_on(&inner.primary, stmt, run_as).await;
         }
         let scope = scope::current();
         let strong = intent.consistency == Consistency::Strong
             || scope.as_ref().is_some_and(|s| s.consistency() == Consistency::Strong);
         if strong {
-            return self.on_primary(stmt, FallbackReason::Strong).await;
+            return self.on_primary(stmt, run_as, FallbackReason::Strong).await;
         }
         let min = if inner.options.read_your_writes {
             let from_scope = scope.as_ref().and_then(|s| s.read_after_of(&inner.set_id));
@@ -356,14 +363,14 @@ impl ReplicaSet {
             Choice::Ready(i) => i,
             Choice::Behind(i) => match min {
                 Some(lsn) if self.wait_for(i, lsn).await => i,
-                _ => return self.on_primary(stmt, FallbackReason::Behind).await,
+                _ => return self.on_primary(stmt, run_as, FallbackReason::Behind).await,
             },
-            Choice::None => return self.on_primary(stmt, FallbackReason::NoReplica).await,
+            Choice::None => return self.on_primary(stmt, run_as, FallbackReason::NoReplica).await,
         };
         let replica = &inner.replicas[index];
         let result = {
             let _guard = InFlight::new(&replica.in_flight);
-            replica.db.fetch_all(stmt).await
+            read_on(&replica.db, stmt, run_as).await
         };
         match result {
             Ok(rows) => {
@@ -384,18 +391,18 @@ impl ReplicaSet {
                             transition(inner, replica, state);
                         }
                     }
-                    self.on_primary(stmt, reason).await
+                    self.on_primary(stmt, run_as, reason).await
                 }
                 None => Err(e),
             },
         }
     }
 
-    async fn on_primary(&self, stmt: &Statement, reason: FallbackReason) -> Result<Rows, DbError> {
+    async fn on_primary(&self, stmt: &Statement, run_as: Option<&RunAs>, reason: FallbackReason) -> Result<Rows, DbError> {
         let set = self.inner.set_id.clone();
         metrics::counter!(FALLBACKS_METRIC, "set" => set.clone(), "reason" => reason.as_str()).increment(1);
         metrics::counter!(READS_METRIC, "set" => set, "target" => "primary").increment(1);
-        self.inner.primary.fetch_all(stmt).await
+        read_on(&self.inner.primary, stmt, run_as).await
     }
 
     /// The replica for a read needing `min`: among those in rotation that
@@ -614,4 +621,12 @@ fn transition(inner: &Inner, r: &Replica, state: NodeState) {
         }
     };
     tokio::spawn(persist);
+}
+
+/// A read on `db`, as `run_as` when given.
+async fn read_on(db: &Database, stmt: &Statement, run_as: Option<&RunAs>) -> Result<Rows, DbError> {
+    match run_as {
+        Some(r) => db.fetch_all_as(stmt, r).await,
+        None => db.fetch_all(stmt).await,
+    }
 }
