@@ -197,6 +197,33 @@ impl DataService {
         }
     }
 
+    /// Asks the authorizer about one engine resource (FB-134; used by the
+    /// vector and graph engines, FB-139). The system is always allowed;
+    /// `Ok(Some(p))` restricts the resource's items to predicate `p` over the
+    /// fields of the kind's [`ResourceSchema`](access::ResourceSchema).
+    pub fn authorize_resource(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        resource: &access::ResourceRef,
+    ) -> Result<Option<Predicate>, DataError> {
+        if ctx.is_system() {
+            return Ok(None);
+        }
+        match self.inner.authorizer.authorize_resource(ctx, action, resource) {
+            Decision::Allow => Ok(None),
+            Decision::Filter(p) => Ok(Some(p)),
+            _ if ctx.principal == Principal::Anonymous => Err(DataError::Unauthenticated),
+            _ => Err(DataError::Forbidden(format!("{action:?} on {resource} is not allowed"))),
+        }
+    }
+
+    /// Tells the authorizer which item fields resource rules of
+    /// `schema.kind` may read (FB-134).
+    pub fn register_resource_schema(&self, schema: access::ResourceSchema) {
+        self.inner.authorizer.register_resource_schema(schema);
+    }
+
     pub(crate) fn compile_options(&self, ctx: &AccessContext) -> CompileOptions {
         CompileOptions {
             allow_hidden: ctx.is_privileged(),

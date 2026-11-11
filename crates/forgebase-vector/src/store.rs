@@ -5,6 +5,8 @@
 //! which the service resolved from the caller's tenant; user filters are
 //! compiled into the same statement and ANDed in parentheses.
 //! SQLite-specific SQL (FTS5, `json_each`, `RETURNING`) stays in this module.
+//! Statements that apply a [`Filter`] read the items through [`ITEMS`], so a
+//! collection rule over `metadata` compiles (FB-139).
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,6 +19,12 @@ use crate::filter::Filter;
 use crate::model::{Metric, Quantization, VectorField};
 
 type Result<T> = std::result::Result<T, VectorError>;
+
+/// The items table as rules and filters see it: every column, plus `_data`
+/// again as `metadata` (the field name of [`crate::filter::item_schema`]).
+/// Both engines flatten the derived table, so indexes still apply.
+pub(crate) const ITEMS: &str = "(SELECT key, collection_id, id, _data, _data AS metadata, content, _version, \
+     created, updated FROM _forgebase_vector_items)";
 
 /// A collection row.
 #[derive(Debug, Clone)]
@@ -304,19 +312,68 @@ pub(crate) async fn replace_vectors(tx: &mut dyn WriteTx, cid: i64, k: u64, vect
     Ok(())
 }
 
-/// Deletes items by id; returns the keys removed.
-pub(crate) async fn delete_items(tx: &mut dyn WriteTx, cid: i64, ids: &[String]) -> Result<Vec<u64>> {
+/// Deletes items by id, only those matching `filter` (the caller's delete
+/// rule) when given; returns the keys removed.
+pub(crate) async fn delete_items(
+    tx: &mut dyn WriteTx,
+    dialect: &dyn forgebase_db::Dialect,
+    cid: i64,
+    ids: &[String],
+    filter: Option<&Filter>,
+) -> Result<Vec<u64>> {
+    let mut b = SqlBuilder::new(dialect);
+    let p_cid = b.bind(cid);
+    let p_ids = b.bind(Value::Text(serde_json::to_string(ids).unwrap_or_else(|_| "[]".into())));
+    let cond = match filter {
+        Some(f) => format!(
+            " AND key IN (SELECT i.key FROM {ITEMS} i WHERE i.collection_id = {p_cid} AND ({}))",
+            f.compile(&mut b, "i")?
+        ),
+        None => String::new(),
+    };
     let rows = tx
         .fetch_all(&Statement::new(
-            "DELETE FROM _forgebase_vector_items WHERE collection_id = ?1 \
-             AND id IN (SELECT value FROM json_each(?2)) RETURNING key",
-            vec![
-                cid.into(),
-                Value::Text(serde_json::to_string(ids).unwrap_or_else(|_| "[]".into())),
-            ],
+            format!(
+                "DELETE FROM _forgebase_vector_items WHERE collection_id = {p_cid} \
+                 AND id IN (SELECT value FROM json_each({p_ids})){cond} RETURNING key"
+            ),
+            b.into_params(),
         ))
         .await?;
     rows.rows.iter().map(|r| key(&r[0])).collect()
+}
+
+/// The key of item `id`, inside a write transaction.
+pub(crate) async fn item_key_tx(tx: &mut dyn WriteTx, cid: i64, id: &str) -> Result<Option<u64>> {
+    let rows = tx
+        .fetch_all(&Statement::new(
+            "SELECT key FROM _forgebase_vector_items WHERE collection_id = ?1 AND id = ?2",
+            vec![cid.into(), id.into()],
+        ))
+        .await?;
+    rows.rows.first().map(|r| key(&r[0])).transpose()
+}
+
+/// Whether item `k` matches `filter`, inside a write transaction (rule
+/// checks of the stored and the written row).
+pub(crate) async fn matches_tx(
+    tx: &mut dyn WriteTx,
+    dialect: &dyn forgebase_db::Dialect,
+    cid: i64,
+    k: u64,
+    filter: &Filter,
+) -> Result<bool> {
+    let mut b = SqlBuilder::new(dialect);
+    let p_cid = b.bind(cid);
+    let p_key = b.bind(int_of(k));
+    let cond = filter.compile(&mut b, "i")?;
+    let rows = tx
+        .fetch_all(&Statement::new(
+            format!("SELECT 1 FROM {ITEMS} i WHERE i.collection_id = {p_cid} AND i.key = {p_key} AND ({cond})"),
+            b.into_params(),
+        ))
+        .await?;
+    Ok(!rows.rows.is_empty())
 }
 
 const ITEM_COLS: &str = "i.key, i.id, i._data, i.content, i._version, i.created, i.updated";
@@ -333,12 +390,19 @@ fn item_row(r: &[Value]) -> Result<ItemRow> {
     })
 }
 
-/// One item by id.
-pub(crate) async fn get_item(db: &dyn Backend, cid: i64, id: &str) -> Result<Option<ItemRow>> {
+/// One item by id, when it matches `filter` (the caller's view rule).
+pub(crate) async fn get_item(db: &dyn Backend, cid: i64, id: &str, filter: Option<&Filter>) -> Result<Option<ItemRow>> {
+    let mut b = SqlBuilder::new(db.dialect());
+    let p_cid = b.bind(cid);
+    let p_id = b.bind(id);
+    let cond = match filter {
+        Some(f) => format!(" AND ({})", f.compile(&mut b, "i")?),
+        None => String::new(),
+    };
     let rows = db
         .fetch_all(&Statement::new(
-            format!("SELECT {ITEM_COLS} FROM _forgebase_vector_items i WHERE i.collection_id = ?1 AND i.id = ?2"),
-            vec![cid.into(), id.into()],
+            format!("SELECT {ITEM_COLS} FROM {ITEMS} i WHERE i.collection_id = {p_cid} AND i.id = {p_id}{cond}"),
+            b.into_params(),
         ))
         .await?;
     rows.rows.first().map(|r| item_row(r)).transpose()
@@ -434,7 +498,7 @@ pub(crate) async fn scan(
             let cond = f.compile(&mut b, "i")?;
             format!(
                 "SELECT v.key, v.vector FROM _forgebase_vector_values v \
-                 JOIN _forgebase_vector_items i ON i.collection_id = v.collection_id AND i.key = v.key \
+                 JOIN {ITEMS} i ON i.collection_id = v.collection_id AND i.key = v.key \
                  WHERE v.collection_id = {p_cid} AND v.field = {p_field} AND v.key > {p_after} AND ({cond}) \
                  ORDER BY v.key LIMIT {p_limit}"
             )
@@ -466,7 +530,7 @@ pub(crate) async fn matching_keys(
     let p_limit = b.bind(int_of(limit as u64));
     let sql = format!(
         "SELECT v.key FROM _forgebase_vector_values v \
-         JOIN _forgebase_vector_items i ON i.collection_id = v.collection_id AND i.key = v.key \
+         JOIN {ITEMS} i ON i.collection_id = v.collection_id AND i.key = v.key \
          WHERE v.collection_id = {p_cid} AND v.field = {p_field} AND ({cond}) LIMIT {p_limit}"
     );
     let rows = db.fetch_all(&Statement::new(sql, b.into_params())).await?;
@@ -483,7 +547,7 @@ pub(crate) async fn verify(db: &dyn Backend, cid: i64, keys: &[u64], filter: &Fi
     let p_keys = b.bind(keys_json(keys));
     let cond = filter.compile(&mut b, "i")?;
     let sql = format!(
-        "SELECT i.key FROM _forgebase_vector_items i WHERE i.collection_id = {p_cid} \
+        "SELECT i.key FROM {ITEMS} i WHERE i.collection_id = {p_cid} \
          AND i.key IN (SELECT value FROM json_each({p_keys})) AND ({cond})"
     );
     let rows = db.fetch_all(&Statement::new(sql, b.into_params())).await?;
@@ -508,7 +572,7 @@ pub(crate) async fn keyword(
     let p_limit = b.bind(int_of(limit as u64));
     let sql = format!(
         "SELECT i.key, bm25(_forgebase_vector_fts) AS rank FROM _forgebase_vector_fts \
-         JOIN _forgebase_vector_items i ON i.key = _forgebase_vector_fts.rowid \
+         JOIN {ITEMS} i ON i.key = _forgebase_vector_fts.rowid \
          WHERE _forgebase_vector_fts MATCH {p_match} AND i.collection_id = {p_cid}{cond} \
          ORDER BY rank, i.key LIMIT {p_limit}"
     );
@@ -527,12 +591,19 @@ pub(crate) async fn keyword(
         .collect()
 }
 
-/// Items and items with text.
-pub(crate) async fn count_items(db: &dyn Backend, cid: i64) -> Result<(u64, u64)> {
+/// Items and items with text (only those matching `filter`, the caller's
+/// list rule, when given).
+pub(crate) async fn count_items(db: &dyn Backend, cid: i64, filter: Option<&Filter>) -> Result<(u64, u64)> {
+    let mut b = SqlBuilder::new(db.dialect());
+    let p_cid = b.bind(cid);
+    let cond = match filter {
+        Some(f) => format!(" AND ({})", f.compile(&mut b, "i")?),
+        None => String::new(),
+    };
     let rows = db
         .fetch_all(&Statement::new(
-            "SELECT count(*), count(content) FROM _forgebase_vector_items WHERE collection_id = ?1",
-            vec![cid.into()],
+            format!("SELECT count(*), count(i.content) FROM {ITEMS} i WHERE i.collection_id = {p_cid}{cond}"),
+            b.into_params(),
         ))
         .await?;
     let r = rows.rows.first().ok_or_else(|| bad("count"))?;

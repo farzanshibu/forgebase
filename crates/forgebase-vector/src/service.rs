@@ -13,27 +13,50 @@
 //! Every public method takes an [`AccessContext`], asks the data core's
 //! authorizer ([`Action::VectorRead`], [`Action::VectorWrite`],
 //! [`Action::VectorAdmin`]) and works inside the caller's tenant only.
+//!
+//! Access (FB-139, rls-coverage G9). Calls on one collection ask
+//! `authorize_resource` for the `vector_collection` resource with the
+//! operation of the call (searches `list`, item and definition reads `view`,
+//! upserts `create` for a new item and `update` for an existing one,
+//! deletions `delete`; administration only by permission). A rule that comes
+//! back as a predicate over the item fields (`id`, `metadata`) is compiled
+//! into every statement that reads the items, so searches are pre-filtered;
+//! writes check the stored row (update, delete) and the written row (create,
+//! update) before they commit. Callers without a tenant work in the shared
+//! `''` scope only when privileged; anyone else gets `tenant_required`
+//! (after authorisation, so a denied caller learns nothing). A collection
+//! with a `source_collection` (items keyed by record id) re-checks every hit
+//! against that collection's View rule as the caller, drops the metadata keys
+//! the caller may not read there and refuses filters on them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, RwLock};
 use std::time::{Duration, Instant};
 
-use forgebase_data::{AccessContext, Action, DataService};
+use forgebase_data::query::QueryError;
+use forgebase_data::{
+    AccessContext, Action, DataError, DataService, GetOptions, Predicate, Principal, ResourceKind, ResourceOp,
+    ResourceRef,
+};
 use forgebase_db::{Backend, TxMode, WriteTx};
 use serde_json::Map;
 use tokio::task::JoinHandle;
 
 use crate::engine::{AnnEngine, AnnIndex, Usearch};
 use crate::error::VectorError;
-use crate::filter::Filter;
+use crate::filter::{Filter, ItemRule, item_schema};
 use crate::index::FieldIndex;
 use crate::metric::{self, Scored, TopK};
 use crate::model::*;
 use crate::store::{self, CollectionRow};
 
 type Result<T> = std::result::Result<T, VectorError>;
+
+/// Collection option naming the data collection the items were copied from
+/// (item id = record id), FB-139.
+pub const SOURCE_COLLECTION_OPTION: &str = "source_collection";
 
 /// Default HNSW links per node.
 pub const DEFAULT_CONNECTIVITY: u32 = 16;
@@ -150,9 +173,44 @@ impl Coll {
             description: self.row.description.clone(),
             fields: self.fields().iter().map(|f| f.def.clone()).collect(),
             exact_threshold: self.exact_threshold,
+            source_collection: self.source().map(str::to_owned),
             items,
             created: self.row.created.clone(),
             updated,
+        }
+    }
+
+    fn source(&self) -> Option<&str> {
+        self.row
+            .options
+            .get(SOURCE_COLLECTION_OPTION)
+            .and_then(serde_json::Value::as_str)
+    }
+}
+
+/// The record re-check of a collection with a `source_collection` (FB-139).
+#[derive(Debug)]
+struct SourceCheck {
+    collection: String,
+    /// Lower-case record fields the caller may not read.
+    unreadable: BTreeSet<String>,
+    /// Item id -> whether the caller may view the record.
+    seen: HashMap<String, bool>,
+}
+
+impl SourceCheck {
+    /// Refuses a filter on metadata keys the caller may not read in the
+    /// source collection (the same error as for an unknown field).
+    fn check_filter(&self, filter: Option<&Filter>) -> Result<()> {
+        if let Some(k) = filter.and_then(|f| f.user_keys().into_iter().find(|k| self.unreadable.contains(k))) {
+            return Err(VectorError::Filter(QueryError::UnknownField(k)));
+        }
+        Ok(())
+    }
+
+    fn strip(&self, metadata: &mut Map<String, serde_json::Value>) {
+        if !self.unreadable.is_empty() {
+            metadata.retain(|k, _| !self.unreadable.contains(&k.to_ascii_lowercase()));
         }
     }
 }
@@ -263,6 +321,14 @@ pub(crate) fn rrf(vector: &[u64], text: &[u64], rrf_k: f64, w: HybridWeights) ->
     out
 }
 
+/// The caller's decision for one write operation.
+#[derive(Debug)]
+enum Gate {
+    Allow,
+    Filter(Filter),
+    Deny,
+}
+
 struct Knn {
     hits: Vec<Scored>,
     strategy: Strategy,
@@ -275,6 +341,7 @@ impl VectorService {
     /// Indexes are loaded lazily (first use) or by [`Self::start_background`].
     pub async fn open(data: DataService, indexes_dir: PathBuf, config: VectorConfig) -> Result<Self> {
         describe_metrics();
+        data.register_resource_schema(item_schema());
         let root = indexes_dir.join("vector");
         std::fs::create_dir_all(&root)?;
         let rows = store::load_all(data.backend().as_ref()).await?;
@@ -324,24 +391,136 @@ impl VectorService {
         Arc::clone(&self.inner.engine)
     }
 
-    /// Asks the authorizer without doing anything (the HTTP layer calls it
-    /// before reading a body).
+    /// Asks the authorizer for an action over every collection (listing,
+    /// tenant statistics): only the plain `engine:vector_<action>` key
+    /// grants those.
     pub fn authorize(&self, ctx: &AccessContext, action: Action) -> Result<()> {
         Ok(self.inner.data.authorize_action(ctx, action)?)
     }
 
-    fn tenant(ctx: &AccessContext) -> String {
-        ctx.tenant.clone().unwrap_or_default()
+    /// Asks the authorizer about one collection without doing anything (the
+    /// HTTP layer calls it before reading a body): refused only when the
+    /// caller may do nothing of `op` there (a rule that restricts items
+    /// passes).
+    pub fn authorize_collection(&self, ctx: &AccessContext, action: Action, name: &str, op: ResourceOp) -> Result<()> {
+        self.rule(ctx, action, name, op).map(|_| ())
+    }
+
+    /// The caller's collection rule for `op` (FB-139): `predicate: None` for
+    /// every item, else only items matching it (fields of
+    /// [`item_schema`]). Denied callers get the error. For engines that read
+    /// items with their own SQL (FB-162, pgvector); compile with
+    /// [`ItemRule::compile`].
+    pub fn item_rule(&self, ctx: &AccessContext, action: Action, name: &str, op: ResourceOp) -> Result<ItemRule> {
+        Ok(ItemRule {
+            predicate: self.rule(ctx, action, name, op)?,
+        })
+    }
+
+    fn rule(&self, ctx: &AccessContext, action: Action, name: &str, op: ResourceOp) -> Result<Option<Predicate>> {
+        let r = ResourceRef::new(ResourceKind::VectorCollection, name, op);
+        Ok(self.inner.data.authorize_resource(ctx, action, &r)?)
+    }
+
+    /// A rule as a filter of the items table (`None`: every item).
+    fn rule_filter(&self, rule: Option<Predicate>) -> Result<Option<Filter>> {
+        Filter::restrict(self.db().dialect(), None, rule)
+    }
+
+    /// Calls that are not about single items (administration, index
+    /// statistics) need the permission or an unconditional rule: a rule that
+    /// restricts items cannot apply to them.
+    fn allow(&self, ctx: &AccessContext, action: Action, name: &str, op: ResourceOp) -> Result<()> {
+        match self.rule(ctx, action, name, op)? {
+            None => Ok(()),
+            Some(_) => Err(Self::denied(ctx, format!("{action:?} on {name} needs unrestricted access"))),
+        }
+    }
+
+    /// A write rule as a gate: an error becomes `Deny` (raised only for the
+    /// items that need it), a predicate a filter of the items table.
+    fn gate(&self, rule: Result<Option<Predicate>>) -> Result<Gate> {
+        Ok(match rule {
+            Ok(None) => Gate::Allow,
+            Ok(Some(p)) => match self.rule_filter(Some(p))? {
+                Some(f) => Gate::Filter(f),
+                None => Gate::Allow,
+            },
+            Err(VectorError::Forbidden(_) | VectorError::Unauthenticated) => Gate::Deny,
+            Err(e) => return Err(e),
+        })
+    }
+
+    fn denied(ctx: &AccessContext, msg: String) -> VectorError {
+        if ctx.principal == Principal::Anonymous {
+            VectorError::Unauthenticated
+        } else {
+            VectorError::Forbidden(msg)
+        }
+    }
+
+    /// The caller's tenant scope: its tenant, or the shared `''` scope for
+    /// privileged callers without one; anyone else `tenant_required`
+    /// (FB-139). Asked after authorisation.
+    fn scope(ctx: &AccessContext) -> Result<String> {
+        match &ctx.tenant {
+            Some(t) => Ok(t.clone()),
+            None if ctx.is_privileged() => Ok(String::new()),
+            None => Err(VectorError::invalid(
+                "tenant_required",
+                "select a tenant (X-ForgeBase-Tenant header, or a tenant-bound key)",
+            )),
+        }
     }
 
     fn coll(&self, ctx: &AccessContext, name: &str) -> Result<Arc<Coll>> {
+        let tenant = Self::scope(ctx)?;
         self.inner
             .collections
             .read()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&(Self::tenant(ctx), name.to_owned()))
+            .get(&(tenant, name.to_owned()))
             .cloned()
             .ok_or_else(|| VectorError::CollectionNotFound(name.to_owned()))
+    }
+
+    /// The record re-check for `coll`, unless the caller is the system or
+    /// the collection has no `source_collection`.
+    fn source_check(&self, ctx: &AccessContext, coll: &Coll) -> Result<Option<SourceCheck>> {
+        let Some(src) = coll.source().filter(|_| !ctx.is_system()) else {
+            return Ok(None);
+        };
+        let unreadable = match self.inner.data.unreadable_fields(ctx, src) {
+            Ok(u) => u,
+            // A dropped source collection hides every item (`visible` fails).
+            Err(DataError::CollectionNotFound(_)) => BTreeSet::new(),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(SourceCheck {
+            collection: src.to_owned(),
+            unreadable,
+            seen: HashMap::new(),
+        }))
+    }
+
+    /// Whether the caller may view record `id` of the source collection
+    /// (View rule, tenant), fail closed.
+    async fn visible(&self, ctx: &AccessContext, sc: &mut SourceCheck, id: &str) -> Result<bool> {
+        if let Some(v) = sc.seen.get(id) {
+            return Ok(*v);
+        }
+        let v = match self
+            .inner
+            .data
+            .get_record(ctx, &sc.collection, id, &GetOptions::default())
+            .await
+        {
+            Ok(_) => true,
+            Err(DataError::Db(e)) => return Err(VectorError::Db(e)),
+            Err(_) => false,
+        };
+        sc.seen.insert(id.to_owned(), v);
+        Ok(v)
     }
 
     fn all_collections(&self) -> Vec<Arc<Coll>> {
@@ -646,10 +825,12 @@ impl VectorService {
 
     // ------------------------------------------------------------ collections
 
-    /// Collections of the caller's tenant.
+    /// Collections of the caller's tenant (the plain `engine:vector_read`
+    /// grants the listing). Collections the caller may not read at all are
+    /// left out; `items` counts what the caller's list rule shows.
     pub async fn list_collections(&self, ctx: &AccessContext) -> Result<Vec<VectorCollection>> {
         self.authorize(ctx, Action::VectorRead)?;
-        let tenant = Self::tenant(ctx);
+        let tenant = Self::scope(ctx)?;
         let mut colls: Vec<Arc<Coll>> = self
             .all_collections()
             .into_iter()
@@ -658,22 +839,29 @@ impl VectorService {
         colls.sort_by(|a, b| a.row.name.cmp(&b.row.name));
         let mut out = Vec::with_capacity(colls.len());
         for c in colls {
-            out.push(self.describe(&c).await?);
+            let rule = match self.rule(ctx, Action::VectorRead, &c.row.name, ResourceOp::List) {
+                Ok(r) => r,
+                Err(VectorError::Forbidden(_) | VectorError::Unauthenticated) => continue,
+                Err(e) => return Err(e),
+            };
+            let filter = self.rule_filter(rule)?;
+            out.push(self.describe(&c, filter.as_ref()).await?);
         }
         Ok(out)
     }
 
-    async fn describe(&self, c: &Coll) -> Result<VectorCollection> {
-        let (items, _) = store::count_items(self.db(), c.row.id).await?;
+    async fn describe(&self, c: &Coll, filter: Option<&Filter>) -> Result<VectorCollection> {
+        let (items, _) = store::count_items(self.db(), c.row.id, filter).await?;
         let (_, updated) = store::change_seq(self.db(), c.row.id).await?;
         Ok(c.definition(items, updated))
     }
 
-    /// One collection.
+    /// One collection (`items`: what the caller's view rule shows).
     pub async fn get_collection(&self, ctx: &AccessContext, name: &str) -> Result<VectorCollection> {
-        self.authorize(ctx, Action::VectorRead)?;
+        let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
         let c = self.coll(ctx, name)?;
-        self.describe(&c).await
+        let filter = self.rule_filter(rule)?;
+        self.describe(&c, filter.as_ref()).await
     }
 
     fn field_def(&self, spec: &FieldSpec) -> Result<VectorField> {
@@ -715,8 +903,22 @@ impl VectorService {
 
     /// Creates a collection in the caller's tenant.
     pub async fn create_collection(&self, ctx: &AccessContext, new: NewCollection) -> Result<VectorCollection> {
-        self.authorize(ctx, Action::VectorAdmin)?;
+        self.allow(ctx, Action::VectorAdmin, &new.name, ResourceOp::Create)?;
+        let tenant = Self::scope(ctx)?;
         check_name("collection", &new.name)?;
+        if let Some(src) = &new.source_collection
+            && self
+                .inner
+                .data
+                .get_collection(&AccessContext::system(), src)
+                .await
+                .is_err()
+        {
+            return Err(VectorError::invalid(
+                "unknown_source_collection",
+                format!("source_collection {src:?} is not a collection"),
+            ));
+        }
         if new.description.len() > 1024 {
             return Err(VectorError::invalid(
                 "invalid_request",
@@ -739,7 +941,6 @@ impl VectorService {
             defs.push(d);
         }
         let exact_threshold = new.exact_threshold.unwrap_or(self.inner.config.exact_threshold);
-        let tenant = Self::tenant(ctx);
         let _cat = self.inner.catalog.lock().await;
         if self.coll(ctx, &new.name).is_ok() {
             return Err(VectorError::CollectionExists(new.name));
@@ -747,6 +948,9 @@ impl VectorService {
         let ts = now();
         let mut options = Map::new();
         options.insert("exact_threshold".into(), exact_threshold.into());
+        if let Some(src) = &new.source_collection {
+            options.insert(SOURCE_COLLECTION_OPTION.into(), src.clone().into());
+        }
         let mut tx = self.db().begin(TxMode::Normal).await?;
         let r = async {
             let id = store::insert_collection(&mut *tx, &tenant, &new.name, &new.description, &options, &ts).await?;
@@ -789,7 +993,7 @@ impl VectorService {
 
     /// Drops a collection, its items, vectors and index files.
     pub async fn delete_collection(&self, ctx: &AccessContext, name: &str) -> Result<()> {
-        self.authorize(ctx, Action::VectorAdmin)?;
+        self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Delete)?;
         let _cat = self.inner.catalog.lock().await;
         let coll = self.coll(ctx, name)?;
         let _w = coll.write.lock().await;
@@ -817,13 +1021,13 @@ impl VectorService {
 
     /// Vector fields of a collection.
     pub async fn list_fields(&self, ctx: &AccessContext, name: &str) -> Result<Vec<VectorField>> {
-        self.authorize(ctx, Action::VectorRead)?;
+        self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
         Ok(self.coll(ctx, name)?.fields().iter().map(|f| f.def.clone()).collect())
     }
 
     /// Adds a vector field (existing items have no vector for it).
     pub async fn add_field(&self, ctx: &AccessContext, name: &str, spec: FieldSpec) -> Result<VectorField> {
-        self.authorize(ctx, Action::VectorAdmin)?;
+        self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
         let coll = self.coll(ctx, name)?;
         let def = self.field_def(&spec)?;
         let _w = coll.write.lock().await;
@@ -858,7 +1062,7 @@ impl VectorService {
 
     /// Drops a vector field, its vectors and its index files.
     pub async fn delete_field(&self, ctx: &AccessContext, name: &str, field: &str) -> Result<()> {
-        self.authorize(ctx, Action::VectorAdmin)?;
+        self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
         let coll = self.coll(ctx, name)?;
         let _w = coll.write.lock().await;
         let f = coll.field(field)?;
@@ -886,9 +1090,16 @@ impl VectorService {
 
     // ------------------------------------------------------------------ items
 
-    /// Inserts or replaces items in one transaction.
+    /// Inserts or replaces items in one transaction. A new item needs the
+    /// `create` rule, an existing one the `update` rule: a restricting rule
+    /// must hold for the stored item (update) and for the written one.
     pub async fn upsert(&self, ctx: &AccessContext, name: &str, items: Vec<UpsertItem>) -> Result<UpsertResult> {
-        self.authorize(ctx, Action::VectorWrite)?;
+        let create = self.rule(ctx, Action::VectorWrite, name, ResourceOp::Create);
+        let update = self.rule(ctx, Action::VectorWrite, name, ResourceOp::Update);
+        let (create, update) = match (create, update) {
+            (Err(e), Err(_)) => return Err(e),
+            (c, u) => (self.gate(c)?, self.gate(u)?),
+        };
         let coll = self.coll(ctx, name)?;
         if items.is_empty() || items.len() > MAX_BATCH {
             return Err(VectorError::invalid(
@@ -956,13 +1167,44 @@ impl VectorService {
         self.ensure_loaded(&coll).await?;
         let ts = now();
         let cid = coll.row.id;
+        let dialect = self.db().dialect();
+        let unrestricted = matches!((&create, &update), (Gate::Allow, Gate::Allow));
         let mut tx = self.db().begin(TxMode::Normal).await?;
         let r = async {
             let mut keys = Vec::with_capacity(prepared.len());
             let mut created = 0u64;
             for p in &prepared {
+                let existing = if unrestricted {
+                    None
+                } else {
+                    store::item_key_tx(&mut *tx, cid, &p.id).await?
+                };
+                let (gate, op) = match existing {
+                    Some(_) => (&update, ResourceOp::Update),
+                    None => (&create, ResourceOp::Create),
+                };
+                let check = match gate {
+                    Gate::Deny => {
+                        return Err(Self::denied(ctx, format!("{op} of items in {name} is not allowed")));
+                    }
+                    Gate::Allow => None,
+                    Gate::Filter(f) => Some(f),
+                };
+                if let (Some(f), Some(k)) = (check, existing)
+                    && !store::matches_tx(&mut *tx, dialect, cid, k, f).await?
+                {
+                    return Err(Self::denied(ctx, format!("item {:?} may not be updated", p.id)));
+                }
                 let (k, version) =
                     store::upsert_item(&mut *tx, cid, &p.id, &p.metadata, p.text.as_deref(), &ts).await?;
+                if let Some(f) = check
+                    && !store::matches_tx(&mut *tx, dialect, cid, k, f).await?
+                {
+                    return Err(Self::denied(
+                        ctx,
+                        format!("item {:?} does not satisfy the {op} rule of {name}", p.id),
+                    ));
+                }
                 if version == 1 {
                     created += 1;
                 }
@@ -990,12 +1232,19 @@ impl VectorService {
 
     /// One item with its vectors.
     pub async fn get_item(&self, ctx: &AccessContext, name: &str, id: &str) -> Result<Item> {
-        self.authorize(ctx, Action::VectorRead)?;
+        let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
         let coll = self.coll(ctx, name)?;
         check_id(id).map_err(|_| VectorError::ItemNotFound(id.to_owned()))?;
-        let row = store::get_item(self.db(), coll.row.id, id)
+        let filter = self.rule_filter(rule)?;
+        let mut row = store::get_item(self.db(), coll.row.id, id, filter.as_ref())
             .await?
             .ok_or_else(|| VectorError::ItemNotFound(id.to_owned()))?;
+        if let Some(mut sc) = self.source_check(ctx, &coll)? {
+            if !self.visible(ctx, &mut sc, id).await? {
+                return Err(VectorError::ItemNotFound(id.to_owned()));
+            }
+            sc.strip(&mut row.metadata);
+        }
         let mut vectors = BTreeMap::new();
         for (field, bytes) in store::item_vectors(self.db(), coll.row.id, row.key).await? {
             if let Ok(f) = coll.field(&field) {
@@ -1014,9 +1263,12 @@ impl VectorService {
     }
 
     /// Deletes items; unknown ids are ignored. Returns how many were removed.
+    /// Items the caller's `delete` rule does not allow are left alone like
+    /// unknown ids.
     pub async fn delete_items(&self, ctx: &AccessContext, name: &str, ids: Vec<String>) -> Result<u64> {
-        self.authorize(ctx, Action::VectorWrite)?;
+        let rule = self.rule(ctx, Action::VectorWrite, name, ResourceOp::Delete)?;
         let coll = self.coll(ctx, name)?;
+        let filter = self.rule_filter(rule)?;
         if ids.is_empty() || ids.len() > MAX_BATCH {
             return Err(VectorError::invalid(
                 "invalid_batch",
@@ -1029,9 +1281,10 @@ impl VectorService {
         let _w = coll.write.lock().await;
         self.ensure_loaded(&coll).await?;
         let cid = coll.row.id;
+        let dialect = self.db().dialect();
         let mut tx = self.db().begin(TxMode::Normal).await?;
         let r = async {
-            let keys = store::delete_items(&mut *tx, cid, &ids).await?;
+            let keys = store::delete_items(&mut *tx, dialect, cid, &ids, filter.as_ref()).await?;
             if !keys.is_empty() {
                 store::bump(&mut *tx, cid, &now()).await?;
             }
@@ -1283,33 +1536,68 @@ impl VectorService {
         Ok(k as usize)
     }
 
-    /// Similarity search (SPEC §27 #13).
+    /// Similarity search (SPEC §27 #13). The caller's list rule is a
+    /// pre-filter; with a `source_collection`, hits whose record the caller
+    /// may not view are dropped and more candidates are searched to refill
+    /// `k` (up to [`MAX_K`]).
     pub async fn search(&self, ctx: &AccessContext, name: &str, req: SearchRequest) -> Result<SearchResponse> {
-        self.authorize(ctx, Action::VectorRead)?;
+        let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::List)?;
         let started = Instant::now();
         let coll = self.coll(ctx, name)?;
         let f = coll.pick(req.field.as_deref())?;
         let k = Self::check_k(req.k)?;
         let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, &req.vector)?;
-        let filter = Filter::parse(self.db().dialect(), req.filter.as_deref(), &req.params)?;
-        let knn = self
-            .knn(&coll, &f, &q, k, filter.as_ref(), req.filter_mode, req.exact)
-            .await?;
-        let keys: Vec<u64> = knn.hits.iter().map(|s| s.key).collect();
-        let (items, vectors) = self.hydrate(&coll, &f, &keys, req.include_vectors).await?;
-        let mut vectors = vectors;
+        let dialect = self.db().dialect();
+        let filter = Filter::parse(dialect, req.filter.as_deref(), &req.params)?;
+        let mut source = self.source_check(ctx, &coll)?;
+        if let Some(sc) = &source {
+            sc.check_filter(filter.as_ref())?;
+        }
+        let filter = Filter::restrict(dialect, filter, rule)?;
+        let mut want = k;
+        let (knn, mut items, mut vectors, kept) = loop {
+            let knn = self
+                .knn(&coll, &f, &q, want, filter.as_ref(), req.filter_mode, req.exact)
+                .await?;
+            let keys: Vec<u64> = knn.hits.iter().map(|s| s.key).collect();
+            let (items, vectors) = self.hydrate(&coll, &f, &keys, req.include_vectors).await?;
+            let Some(sc) = source.as_mut() else {
+                break (knn, items, vectors, keys);
+            };
+            let mut kept = Vec::with_capacity(k);
+            for key in &keys {
+                if kept.len() == k {
+                    break;
+                }
+                if let Some(item) = items.get(key)
+                    && self.visible(ctx, sc, &item.id).await?
+                {
+                    kept.push(*key);
+                }
+            }
+            if kept.len() >= k || knn.hits.len() < want || want >= MAX_K as usize {
+                break (knn, items, vectors, kept);
+            }
+            want = (want * 4).min(MAX_K as usize);
+        };
+        let kept: HashSet<u64> = kept.into_iter().collect();
         let hits = knn
             .hits
             .iter()
+            .filter(|s| kept.contains(&s.key))
             .filter_map(|s| {
-                let item = items.get(&s.key)?;
+                let item = items.remove(&s.key)?;
                 let distance = metric::public_distance(f.def.metric, s.dist);
+                let mut metadata = item.metadata;
+                if let Some(sc) = &source {
+                    sc.strip(&mut metadata);
+                }
                 Some(SearchHit {
-                    id: item.id.clone(),
+                    id: item.id,
                     distance,
                     score: metric::score(f.def.metric, distance),
-                    metadata: req.include_metadata.then(|| item.metadata.clone()),
-                    text: if req.include_text { item.text.clone() } else { None },
+                    metadata: req.include_metadata.then_some(metadata),
+                    text: if req.include_text { item.text } else { None },
                     vector: vectors.remove(&s.key),
                 })
             })
@@ -1342,8 +1630,11 @@ impl VectorService {
     }
 
     /// Hybrid search: FTS5 keyword ranking and vector ranking fused with RRF.
+    /// The caller's list rule filters both rankings; with a
+    /// `source_collection`, fused hits whose record the caller may not view
+    /// are skipped (within the `candidates` pool).
     pub async fn hybrid(&self, ctx: &AccessContext, name: &str, req: HybridRequest) -> Result<HybridResponse> {
-        self.authorize(ctx, Action::VectorRead)?;
+        let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::List)?;
         let started = Instant::now();
         let coll = self.coll(ctx, name)?;
         let k = Self::check_k(req.k)?;
@@ -1373,7 +1664,13 @@ impl VectorService {
                 "send a vector, a text, or both",
             ));
         }
-        let filter = Filter::parse(self.db().dialect(), req.filter.as_deref(), &req.params)?;
+        let dialect = self.db().dialect();
+        let filter = Filter::parse(dialect, req.filter.as_deref(), &req.params)?;
+        let mut source = self.source_check(ctx, &coll)?;
+        if let Some(sc) = &source {
+            sc.check_filter(filter.as_ref())?;
+        }
+        let filter = Filter::restrict(dialect, filter, rule)?;
         let field = match (&req.vector, req.include_vectors) {
             (Some(_), _) | (None, true) => Some(coll.pick(req.field.as_deref())?),
             (None, false) => req.field.as_deref().map(|n| coll.field(n)).transpose()?,
@@ -1402,7 +1699,10 @@ impl VectorService {
 
         let vk: Vec<u64> = by_vector.iter().map(|(k, _)| *k).collect();
         let tk: Vec<u64> = by_text.iter().map(|(k, _)| *k).collect();
-        let fused: Vec<(u64, f64)> = rrf(&vk, &tk, rrf_k, weights).into_iter().take(k).collect();
+        let mut fused: Vec<(u64, f64)> = rrf(&vk, &tk, rrf_k, weights);
+        if source.is_none() {
+            fused.truncate(k);
+        }
         let vrank: HashMap<u64, (u32, f32)> = by_vector
             .iter()
             .enumerate()
@@ -1414,13 +1714,31 @@ impl VectorService {
             .map(|(i, (key, s))| (*key, (u32::try_from(i + 1).unwrap_or(u32::MAX), *s)))
             .collect();
         let keys: Vec<u64> = fused.iter().map(|(k, _)| *k).collect();
-        let (items, mut vectors) = match &field {
+        let (mut items, mut vectors) = match &field {
             Some(f) => self.hydrate(&coll, f, &keys, req.include_vectors).await?,
             None => (
                 store::items_by_keys(self.db(), coll.row.id, &keys).await?,
                 HashMap::new(),
             ),
         };
+        if let Some(sc) = source.as_mut() {
+            let mut kept = Vec::with_capacity(k);
+            for (key, score) in fused {
+                if kept.len() == k {
+                    break;
+                }
+                let Some(id) = items.get(&key).map(|i| i.id.clone()) else {
+                    continue;
+                };
+                if self.visible(ctx, sc, &id).await? {
+                    if let Some(item) = items.get_mut(&key) {
+                        sc.strip(&mut item.metadata);
+                    }
+                    kept.push((key, score));
+                }
+            }
+            fused = kept;
+        }
         let hits = fused
             .iter()
             .filter_map(|(key, score)| {
@@ -1452,7 +1770,7 @@ impl VectorService {
     /// Starts background rebuilds (one field or all) and returns their status.
     /// A field that is already rebuilding is left alone.
     pub async fn rebuild(&self, ctx: &AccessContext, name: &str, field: Option<&str>) -> Result<Vec<IndexStatus>> {
-        self.authorize(ctx, Action::VectorAdmin)?;
+        self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
         let coll = self.coll(ctx, name)?;
         let targets = match field {
             Some(n) => vec![coll.field(n)?],
@@ -1513,11 +1831,12 @@ impl VectorService {
         })
     }
 
-    /// Statistics and index state of a collection.
+    /// Statistics and index state of a collection. They count every item,
+    /// so a caller whose view rule restricts items is refused.
     pub async fn stats(&self, ctx: &AccessContext, name: &str) -> Result<CollectionStats> {
-        self.authorize(ctx, Action::VectorRead)?;
+        self.allow(ctx, Action::VectorRead, name, ResourceOp::View)?;
         let coll = self.coll(ctx, name)?;
-        let (items, with_text) = store::count_items(self.db(), coll.row.id).await?;
+        let (items, with_text) = store::count_items(self.db(), coll.row.id, None).await?;
         let (seq, _) = store::change_seq(self.db(), coll.row.id).await?;
         let mut indexes = Vec::new();
         for f in coll.fields() {
@@ -1535,7 +1854,7 @@ impl VectorService {
     /// Totals over the caller's tenant.
     pub async fn tenant_stats(&self, ctx: &AccessContext) -> Result<VectorStats> {
         self.authorize(ctx, Action::VectorRead)?;
-        let tenant = Self::tenant(ctx);
+        let tenant = Self::scope(ctx)?;
         Ok(Self::sum_stats(
             self.all_collections().into_iter().filter(|c| c.row.tenant == tenant),
         ))
@@ -1575,7 +1894,7 @@ impl VectorService {
     /// Waits until every index of the collection serves from an ANN index
     /// (loaded or rebuilt), or `timeout` passes. Returns whether it is ready.
     pub async fn wait_ready(&self, ctx: &AccessContext, name: &str, timeout: Duration) -> Result<bool> {
-        self.authorize(ctx, Action::VectorRead)?;
+        self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
         let coll = self.coll(ctx, name)?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -1597,7 +1916,7 @@ impl VectorService {
     /// Recall check: stored vectors as queries, ANN results compared with
     /// exact results.
     pub async fn recall(&self, ctx: &AccessContext, name: &str, req: RecallRequest) -> Result<RecallReport> {
-        self.authorize(ctx, Action::VectorAdmin)?;
+        self.allow(ctx, Action::VectorAdmin, name, ResourceOp::View)?;
         let coll = self.coll(ctx, name)?;
         let f = coll.pick(req.field.as_deref())?;
         let samples = req.samples.unwrap_or(100);
