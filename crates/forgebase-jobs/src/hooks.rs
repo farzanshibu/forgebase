@@ -168,6 +168,15 @@ impl Authorizer for JobChannelAuthorizer {
     fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {
         self.inner.field_access(ctx, collection)
     }
+
+    fn native_session(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        collection: &Collection,
+    ) -> Option<forgebase_data::db::RunAs> {
+        self.inner.native_session(ctx, action, collection)
+    }
 }
 
 /// An error of a [`ResultStore`].

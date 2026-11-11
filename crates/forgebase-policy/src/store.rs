@@ -162,6 +162,17 @@ fn check_resource_name(name: &str) -> Result<(), PolicyError> {
 
 impl PolicyService {
     async fn write(&self, stmts: Vec<Statement>) -> Result<(), PolicyError> {
+        self.write_native(stmts, None).await
+    }
+
+    /// [`PolicyService::write`]; with `native`, the collection's native
+    /// policies are regenerated from its new rules in the same transaction
+    /// (FB-152).
+    async fn write_native(
+        &self,
+        stmts: Vec<Statement>,
+        native: Option<(&forgebase_schema::Collection, Option<crate::snapshot::CollectionPolicy>)>,
+    ) -> Result<(), PolicyError> {
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         for s in &stmts {
             if let Err(e) = tx.execute(s).await {
@@ -174,6 +185,12 @@ impl PolicyService {
                     other => other.into(),
                 });
             }
+        }
+        if let Some((coll, policy)) = native
+            && let Err(e) = self.regenerate_in(&mut *tx, coll, policy.as_ref()).await
+        {
+            let _ = tx.rollback().await;
+            return Err(e);
         }
         tx.commit().await?;
         self.reload().await
@@ -1170,7 +1187,17 @@ impl PolicyService {
                 }
             }
         }
-        self.write(vec![
+        let native_policy = crate::snapshot::policy_from_text(
+            [
+                input.list_rule.as_deref(),
+                input.view_rule.as_deref(),
+                input.create_rule.as_deref(),
+                input.update_rule.as_deref(),
+                input.delete_rule.as_deref(),
+            ],
+            &serde_json::to_string(&input.fields)?,
+        );
+        self.write_native(vec![
             Statement::new(
                 "DELETE FROM _forgebase_collection_policies WHERE collection_id = ?1",
                 vec![coll.id.clone().into()],
@@ -1190,7 +1217,7 @@ impl PolicyService {
                     now().into(),
                 ],
             ),
-        ])
+        ], Some((&coll, Some(native_policy))))
         .await?;
         self.get_policy(ctx, collection).await
     }
@@ -1227,10 +1254,13 @@ impl PolicyService {
             .data()?
             .get_collection(&AccessContext::system(), collection)
             .await?;
-        self.write(vec![Statement::new(
-            "DELETE FROM _forgebase_collection_policies WHERE collection_id = ?1",
-            vec![coll.id.into()],
-        )])
+        self.write_native(
+            vec![Statement::new(
+                "DELETE FROM _forgebase_collection_policies WHERE collection_id = ?1",
+                vec![coll.id.clone().into()],
+            )],
+            Some((&coll, None)),
+        )
         .await
     }
 

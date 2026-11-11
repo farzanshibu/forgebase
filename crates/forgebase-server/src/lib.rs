@@ -920,6 +920,23 @@ async fn open_auth(
         .attach_realms(auth.realms().clone())
         .await
         .map_err(|e| ServerError::Policy(e.to_string()))?;
+    // FB-152: ForgeBase rules also become native PostgreSQL policies. Only
+    // an explicit `enforce` refuses to start without them.
+    if db.kind() == forgebase_db::BackendKind::Postgres {
+        use forgebase_core::config::NativeRls;
+        use forgebase_policy::native::NativeMode;
+        let mode = match config.database.postgres.native_rls {
+            NativeRls::Off => NativeMode::Off,
+            NativeRls::Logins => NativeMode::Logins,
+            NativeRls::Enforce => NativeMode::Enforce,
+        };
+        if let Err(e) = policy.enable_native_rls(mode).await {
+            if mode == NativeMode::Enforce {
+                return Err(ServerError::Policy(e.to_string()));
+            }
+            tracing::warn!(error = %e, "native row-level security is not available");
+        }
+    }
     let p = policy.clone();
     auth.set_change_hook(Arc::new(move || {
         let p = p.clone();

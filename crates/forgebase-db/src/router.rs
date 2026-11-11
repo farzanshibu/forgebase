@@ -43,7 +43,7 @@ use forgebase_core::{ErrorCode, ErrorKind};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::backend::{Backend, BoxFuture, PlanStep, Rows, SlowQuery, Statement, TxMode, Value, WriteTx};
+use crate::backend::{Backend, BoxFuture, PlanStep, Rows, RunAs, SlowQuery, Statement, TxMode, Value, WriteTx};
 use crate::dialect::Dialect;
 use crate::routing::{ReadIntent, ReadRouting, ReplicaNode, ReplicaOptions, ReplicaSet, check_replica};
 use crate::topology::{
@@ -202,6 +202,14 @@ impl Backend for SetHandle {
                 Ok(replicas.wrap_tx(tx))
             }),
         }
+    }
+
+    fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
+        self.db.begin_as(mode, run_as)
+    }
+
+    fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        self.db.fetch_all_as(stmt, run_as)
     }
 
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {

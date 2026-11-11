@@ -31,12 +31,13 @@ mod error;
 mod guard;
 pub mod indexes;
 pub mod list;
+pub mod native;
 pub mod records;
 pub mod sql;
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use forgebase_db::{Backend, TxMode, WriteTx};
+use forgebase_db::{Backend, DbError, ExecResult, Rows, RunAs, Statement, TxMode, WriteTx};
 use forgebase_query::CompileOptions;
 use forgebase_schema::Collection;
 
@@ -52,6 +53,7 @@ pub use indexes::{
     IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexOrigin, IndexRecommendation, IndexStats, QueryPlan,
 };
 pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, ListResult};
+pub use native::NativePolicies;
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
 pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};
 
@@ -89,6 +91,9 @@ struct Inner {
     change_hook: OnceLock<Arc<dyn changes::ChangeHook>>,
     /// Before-write hook (server functions, FB-60), installed once at startup.
     write_guard: OnceLock<Arc<dyn changes::WriteGuard>>,
+    /// Native row-level security generator (FB-152, PostgreSQL), installed
+    /// once at startup.
+    native: OnceLock<Arc<dyn native::NativePolicies>>,
 }
 
 impl DataService {
@@ -113,6 +118,7 @@ impl DataService {
                 schema_lock: tokio::sync::Mutex::new(()),
                 change_hook: OnceLock::new(),
                 write_guard: OnceLock::new(),
+                native: OnceLock::new(),
             }),
         })
     }
@@ -242,6 +248,78 @@ impl DataService {
     pub(crate) async fn begin(&self, mode: TxMode) -> Result<Box<dyn WriteTx>, DataError> {
         Ok(self.inner.backend.begin(mode).await?)
     }
+
+    /// Installs the native row-level security generator (FB-152), called
+    /// in every schema transaction from then on. Once; `false` if one was
+    /// installed already.
+    pub fn set_native_policies(&self, hook: Arc<dyn native::NativePolicies>) -> bool {
+        self.inner.native.set(hook).is_ok()
+    }
+
+    pub(crate) fn native_policies(&self) -> Option<&Arc<dyn native::NativePolicies>> {
+        self.inner.native.get()
+    }
+
+    /// Who `ctx`'s statements for `action` on `coll` run as (`enforce` mode,
+    /// FB-152); `None`: as the server. Privileged callers and views never
+    /// run under the RLS role.
+    pub(crate) fn run_as(&self, ctx: &AccessContext, action: Action, coll: &Collection) -> Option<RunAs> {
+        if ctx.is_system() || ctx.is_privileged() || coll.is_view() {
+            return None;
+        }
+        self.inner.authorizer.native_session(ctx, action, coll)
+    }
+
+    /// Reads rows of `coll` for `ctx`: as the RLS role in `enforce` mode,
+    /// unless the statement follows relation paths (the lookups would see
+    /// the target table's policies; the data core reads targets with full
+    /// visibility, rls-coverage §3.4).
+    pub(crate) async fn read_rows(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        coll: &Collection,
+        stmt: &Statement,
+        follows_relations: bool,
+    ) -> Result<Rows, DataError> {
+        let run_as = if follows_relations {
+            None
+        } else {
+            self.run_as(ctx, action, coll)
+        };
+        Ok(match run_as {
+            Some(r) => self.inner.backend.fetch_all_as(stmt, &r).await?,
+            None => self.inner.backend.fetch_all(stmt).await?,
+        })
+    }
+}
+
+/// Runs a record write, as `run_as` when given. Under native row-level
+/// security a refused row is an error, never a silent no-op: a policy
+/// violation (SQLSTATE 42501) and an update or delete that reaches no row
+/// the data core had found are [`DataError::Forbidden`].
+pub(crate) async fn execute_maybe_as(
+    tx: &mut dyn WriteTx,
+    stmt: &Statement,
+    run_as: Option<&RunAs>,
+    expect_row: bool,
+    on_err: impl FnOnce(DbError) -> DataError,
+) -> Result<ExecResult, DataError> {
+    let Some(r) = run_as else {
+        return tx.execute(stmt).await.map_err(on_err);
+    };
+    let done = tx.execute_as(stmt, r).await.map_err(|e| match e {
+        DbError::Statement(m) if m.contains("row-level security") => {
+            DataError::Forbidden(format!("native row-level security refused the write: {m}"))
+        }
+        other => on_err(other),
+    })?;
+    if expect_row && done.rows_affected == 0 {
+        return Err(DataError::Forbidden(
+            "native row-level security refused the write".into(),
+        ));
+    }
+    Ok(done)
 }
 
 /// Commits on success, rolls back on error.

@@ -228,6 +228,12 @@ impl Rule {
         &self.expr
     }
 
+    /// The request references, by parameter index (`{:__rq_N}` is the
+    /// `N`th); native policies render them from the claims (FB-152).
+    pub fn refs(&self) -> &[RequestRef] {
+        &self.refs
+    }
+
     fn check_multi(&self, e: &Expr) -> Result<(), RuleError> {
         match e {
             Expr::And(v) | Expr::Or(v) => v.iter().try_for_each(|x| self.check_multi(x)),

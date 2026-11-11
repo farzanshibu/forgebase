@@ -436,6 +436,21 @@ pub trait Authorizer: Send + Sync + fmt::Debug {
         let _ = channel;
         self.authorize(ctx, action, None)
     }
+
+    /// Who the data core's statements for `action` on `collection` run as
+    /// under native PostgreSQL row-level security (`enforce` mode, FB-152):
+    /// the RLS role with this caller's claims. `None` (the default): as the
+    /// server, with only the data core's own checks.
+    fn native_session(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        collection: &Collection,
+    ) -> Option<forgebase_db::RunAs> {
+        let _ = (ctx, action, collection);
+        None
+    }
+
     /// Field-level rules for `collection` (FB-21). Only asked for
     /// non-privileged callers. Default: no restriction beyond `hidden`.
     fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {

@@ -209,6 +209,11 @@ impl DataService {
             for ix in auto_indexes(d, &def) {
                 insert_index_row(&mut log, &def, &ix, "auto").await?;
             }
+            if let Some(native) = self.native_policies() {
+                let mut all: Vec<Collection> = cat.all().into_iter().cloned().collect();
+                all.push(def.clone());
+                native.after_change(&mut *log.tx, &def, &all).await?;
+            }
             let statements = std::mem::take(&mut log.statements);
             record_history(&mut *tx, Some(&def), "create", &statements, None, Some(&def), &ctx.actor()).await?;
             cat.insert(def.clone());
@@ -313,6 +318,9 @@ impl DataService {
                 return Err(DataError::AlreadyExists(format!("collection or table {}", def.name)));
             }
             let mut log = DdlLog::new(&mut *tx);
+            if let Some(native) = self.native_policies() {
+                native.before_change(&mut *log.tx, &old).await?;
+            }
             if let Some(q) = &view_sql {
                 // PostgreSQL refuses to drop a view other views read: take
                 // them down and put them back (they must still compile).
@@ -340,6 +348,10 @@ impl DataService {
             let mut after = cat.clone();
             after.insert(def.clone());
             verify_collections(d, &mut *tx, &after).await?;
+            if let Some(native) = self.native_policies() {
+                let all: Vec<Collection> = after.all().into_iter().cloned().collect();
+                native.after_change(&mut *tx, &def, &all).await?;
+            }
             Ok(def.clone())
         }
         .await;
@@ -694,6 +706,9 @@ impl DataService {
                 }
             }
             let mut log = DdlLog::new(&mut *tx);
+            if let Some(native) = self.native_policies() {
+                native.before_change(&mut *log.tx, &coll).await?;
+            }
             if is_pg(d) {
                 // PostgreSQL refuses to drop what a view reads; SQLite drops
                 // it and the verification below finds the broken view.

@@ -17,6 +17,7 @@
 
 pub mod engine;
 pub mod http;
+pub mod native;
 pub mod perm;
 pub mod pipeline;
 pub mod rules;
@@ -148,6 +149,8 @@ struct Inner {
     realms: OnceLock<forgebase_auth::realm::RealmDirectory>,
     /// Item fields of engine resources, as the engines registered them (FB-134).
     schemas: RwLock<HashMap<ResourceKind, ResourceSchema>>,
+    /// Native PostgreSQL row-level security (FB-152).
+    native: native::NativeState,
 }
 
 impl PolicyService {
@@ -164,6 +167,7 @@ impl PolicyService {
                 mailer: OnceLock::new(),
                 realms: OnceLock::new(),
                 schemas: RwLock::new(HashMap::new()),
+                native: native::NativeState::default(),
             }),
         })
     }
@@ -390,5 +394,14 @@ impl Authorizer for PolicyAuthorizer {
 
     fn field_access(&self, ctx: &AccessContext, collection: &Collection) -> FieldAccess {
         engine::field_access(&self.svc.snapshot(), ctx, collection)
+    }
+
+    fn native_session(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        collection: &Collection,
+    ) -> Option<forgebase_db::RunAs> {
+        self.svc.native_session(ctx, action, collection)
     }
 }

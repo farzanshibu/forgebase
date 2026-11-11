@@ -33,6 +33,7 @@ pub struct SqlBuilder<'d> {
     dialect: &'d dyn Dialect,
     params: Vec<Value>,
     aliases: u32,
+    lookups: bool,
 }
 
 impl<'d> SqlBuilder<'d> {
@@ -42,7 +43,16 @@ impl<'d> SqlBuilder<'d> {
             dialect,
             params: Vec::new(),
             aliases: 0,
+            lookups: false,
         }
+    }
+
+    /// Whether the statement reads another collection's table (a relation
+    /// path in a filter, sort key or rule). Native row-level security would
+    /// apply that table's policies to the lookup, so such reads stay on the
+    /// server's session (FB-152).
+    pub fn follows_relations(&self) -> bool {
+        self.lookups
     }
 
     /// The dialect.
@@ -116,6 +126,10 @@ pub struct CompileOptions {
     pub params: HashMap<String, Json>,
     /// Value of `@now`.
     pub now: String,
+    /// Native render mode (FB-152): request references and `@now` render
+    /// through this, literals are inlined and relation paths read through
+    /// `SECURITY DEFINER` functions ([`crate::native`]).
+    pub native: Option<Arc<dyn crate::native::NativeRender>>,
 }
 
 impl Default for CompileOptions {
@@ -127,6 +141,7 @@ impl Default for CompileOptions {
             inline_literals: false,
             params: HashMap::new(),
             now: forgebase_schema::now_timestamp(),
+            native: None,
         }
     }
 }
@@ -247,7 +262,7 @@ fn coerce_pair(d: &dyn Dialect, a: (String, ScalarType), z: (String, ScalarType)
 /// How a row is reached: directly through an alias, or by id lookup in a
 /// related table (a correlated scalar subquery).
 #[derive(Debug, Clone)]
-enum RowRef {
+pub(crate) enum RowRef {
     Alias(String),
     Lookup {
         table: String,
@@ -289,6 +304,14 @@ impl<'a> Compiler<'a> {
     /// A compiler.
     pub fn new(catalog: &'a dyn Catalog, opts: &'a CompileOptions) -> Self {
         Self { catalog, opts }
+    }
+
+    pub(crate) fn catalog(&self) -> &'a dyn Catalog {
+        self.catalog
+    }
+
+    pub(crate) fn opts(&self) -> &'a CompileOptions {
+        self.opts
     }
 
     /// Compiles `expr` against `root`, whose row is available as `alias`.
@@ -405,6 +428,11 @@ impl<'a> Compiler<'a> {
                 if self.opts.inline_literals {
                     return Err(QueryError::InvalidOperation("parameters are not allowed here".into()));
                 }
+                // Native mode: a request reference is rendered by
+                // `render_against`; here it only must not look like NULL.
+                if self.opts.native.as_ref().is_some_and(|n| n.request(name).is_some()) {
+                    return Ok(Json::String(String::new()));
+                }
                 match self.opts.params.get(name) {
                     None => return Err(QueryError::MissingParam(name.clone())),
                     Some(v @ (Json::Null | Json::Bool(_) | Json::Number(_) | Json::String(_))) => v.clone(),
@@ -428,7 +456,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn render(&self, b: &mut SqlBuilder<'_>, v: &Value) -> Result<String, QueryError> {
-        if !self.opts.inline_literals {
+        if !self.opts.inline_literals && self.opts.native.is_none() {
             return Ok(b.bind(v.clone()));
         }
         Ok(match v {
@@ -451,10 +479,18 @@ impl<'a> Compiler<'a> {
     /// against an integer column is cast to `double precision`; anything else
     /// is a parameter the server types from the other side.
     fn render_against(&self, b: &mut SqlBuilder<'_>, o: &Operand, ty: ScalarType) -> Result<String, QueryError> {
+        if let Some(sql) = self
+            .opts
+            .native
+            .as_ref()
+            .and_then(|n| crate::native::render_against(n.as_ref(), o, ty))
+        {
+            return Ok(sql);
+        }
         let d = b.dialect();
         if is_pg(d) && ty == ScalarType::Json {
             let text = self.constant_json(o)?.to_string();
-            return Ok(if self.opts.inline_literals {
+            return Ok(if self.opts.inline_literals || self.opts.native.is_some() {
                 format!("{}::jsonb", self.render(b, &Value::Text(text))?)
             } else {
                 format!("CAST({} AS jsonb)", b.bind(text))
@@ -496,6 +532,20 @@ impl<'a> Compiler<'a> {
         row: &RowRef,
         c: &Compare,
     ) -> Result<String, QueryError> {
+        match &self.opts.native {
+            Some(n) => self.native_compare(n, b, root, row, c),
+            None => self.compare_plain(b, root, row, c),
+        }
+    }
+
+    /// The comparison without native dispatch.
+    pub(crate) fn compare_plain(
+        &self,
+        b: &mut SqlBuilder<'_>,
+        root: &Collection,
+        row: &RowRef,
+        c: &Compare,
+    ) -> Result<String, QueryError> {
         let d = b.dialect();
         // Normalise so a path is on the left when only one side is a path.
         let (left, op, right) = match (&c.left, &c.right) {
@@ -509,6 +559,26 @@ impl<'a> Compiler<'a> {
         };
         let l = self.operand(b, root, row, left)?;
 
+        if matches!(op, Op::Like | Op::NotLike)
+            && let Some(pattern) = self
+                .opts
+                .native
+                .as_ref()
+                .and_then(|n| crate::native::like_pattern(n.as_ref(), right))
+        {
+            let ty = l.ty();
+            let test = |v: &str| {
+                let v = as_text(d, v, ty);
+                match op {
+                    Op::Like => d.like_ci(&v, &pattern),
+                    _ => format!("NOT ({})", d.like_ci(&format!("coalesce({v}, '')"), &pattern)),
+                }
+            };
+            return Ok(match l {
+                Res::Scalar { sql, .. } => test(&sql),
+                Res::Multi { from, value, .. } => self.quantified(c.any, &from, &test(&value)),
+            });
+        }
         if matches!(op, Op::Like | Op::NotLike) {
             let text = match right {
                 Operand::Literal(Literal::Text(s)) => s.clone(),
@@ -773,6 +843,33 @@ impl<'a> Compiler<'a> {
                     .catalog
                     .collection_by_id(collection_id)
                     .ok_or_else(|| QueryError::UnknownField(format!("{name} (target collection missing)")))?;
+                if let Some(n) = &self.opts.native {
+                    // Native policies read the target with full visibility
+                    // through a SECURITY DEFINER function (rls-coverage §3.4).
+                    let mut inner_b = SqlBuilder::new(d);
+                    let inner = self.segments(&mut inner_b, target, &RowRef::Alias("r".into()), rest, depth + 1)?;
+                    let Res::Scalar { sql, json, ty } = inner else {
+                        return Err(QueryError::InvalidOperation(format!(
+                            "{name}: a native policy cannot follow a relation to several values"
+                        )));
+                    };
+                    if !inner_b.params().is_empty() {
+                        return Err(QueryError::InvalidOperation(format!(
+                            "{name}: values in relation paths cannot be used in a native policy"
+                        )));
+                    }
+                    let call = format!("{}({elem})", n.relation(&target.name, "r", &sql, ty)?);
+                    return Ok(match from {
+                        None => Res::Scalar { sql: call, json, ty },
+                        Some(f) => Res::Multi {
+                            from: vec![f],
+                            value: call,
+                            array: None,
+                            ty,
+                        },
+                    });
+                }
+                b.lookups = true;
                 let next = RowRef::Lookup {
                     table: d.quote_ident(&target.name),
                     alias: b.alias("r"),

@@ -111,6 +111,8 @@ pub(crate) struct BuiltList {
     pub(crate) page: Option<u32>,
     pub(crate) sort_keys: usize,
     pub(crate) sort_sig: String,
+    /// The statements read relation targets ([`SqlBuilder::follows_relations`]).
+    pub(crate) follows_relations: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -307,6 +309,7 @@ impl DataService {
             .collect();
         let limit = b.bind(i64::from(per_page) + 1);
         let offset = b.bind(i64::from(page.map_or(0, |p| (p - 1) * per_page)));
+        let follows_relations = b.follows_relations();
         let select = Statement::new(
             format!(
                 "SELECT t.*, {} FROM {table} AS t{where_sel} ORDER BY {} LIMIT {limit} OFFSET {offset}",
@@ -323,6 +326,7 @@ impl DataService {
             page,
             sort_keys: exprs.len(),
             sort_sig,
+            follows_relations,
         })
     }
 
@@ -360,7 +364,9 @@ impl DataService {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
-        let rows = self.inner.backend.fetch_all(&built.select).await?;
+        let rows = self
+            .read_rows(ctx, Action::List, &coll, &built.select, built.follows_relations)
+            .await?;
         let more = rows.rows.len() > built.per_page as usize;
         let mut items: Vec<Record> = Vec::with_capacity(rows.rows.len().min(built.per_page as usize));
         let mut last_keys: Option<Vec<Json>> = None;
@@ -389,9 +395,7 @@ impl DataService {
             (None, None)
         } else {
             let n = self
-                .inner
-                .backend
-                .fetch_all(&built.count)
+                .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
                 .await?
                 .scalar()
                 .and_then(Value::as_i64)
@@ -430,7 +434,9 @@ impl DataService {
             ..ListQuery::default()
         };
         let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None)?;
-        let rows = self.inner.backend.fetch_all(&built.count).await?;
+        let rows = self
+            .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
+            .await?;
         Ok(rows.scalar().and_then(Value::as_i64).unwrap_or(0).max(0) as u64)
     }
 
@@ -562,10 +568,9 @@ impl DataService {
         }
         let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
         sql.push_str(&format!(" LIMIT {}", b.bind(i64::from(limit))));
+        let follows = b.follows_relations();
         let rows = self
-            .inner
-            .backend
-            .fetch_all(&Statement::new(sql, b.into_params()))
+            .read_rows(ctx, Action::List, &coll, &Statement::new(sql, b.into_params()), follows)
             .await?;
         Ok(rows
             .rows

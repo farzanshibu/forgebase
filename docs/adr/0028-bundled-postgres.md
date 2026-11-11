@@ -3098,3 +3098,178 @@ No new migration. The six crates' SQL now runs unchanged in meaning on both back
 - **Audit filter.** `substr(event, 1, length(?1))` casts `?1` to text.
 - **Test harnesses.** All six crates' `tests/common` open the database with `forgebase_db::testing::test_backend()`, so `FORGEBASE_TEST_BACKEND=sqlite|postgres` selects the backend (dev-dependency `forgebase-db` with feature `testing`). Auth tests that restart a service reopen the same database through `TestDb::options()`. Tests that peeked at SQL specifics now use the dialect: `introspect_tables()` for the plaintext-secret scan, `CAST(jsonb_column AS TEXT) LIKE`, `ON CONFLICT DO NOTHING`. The append-only ledger test rolls back after each refused statement (PostgreSQL aborts the transaction). The social-login test that reads the SQLite file skips on PostgreSQL.
 - **Not ported / depends on others.** Seven tests that run the job queue (customize email deliveries x4, credits maintenance expiry, entitlements alert delivery, and the auth secret-dump test that needed the `forgebase-db` statement fix) pass only with FB-146's `forgebase-jobs` and `forgebase-db` changes (`rowid` ordering, statement preparation). They were verified green on a throwaway merge of `agent/worker-fb146` and fail on this branch alone until FB-146 merges. The entitlements quota `UPDATE` in `usage.rs` is identical to FB-146's version (same text, to merge without a conflict).
+
+## Addendum (FB-152): native row-level security, roles and `enforce` mode
+
+Written 2026-11-11 by FB-152 (rls-coverage §3.1–3.4, §3.7; decision 12).
+ForgeBase rules stay the only source of truth. On PostgreSQL they are also
+compiled to policies on every collection table. The default stays
+`native_rls = "logins"` (FB-148); `enforce` is opt-in. SQLite is unchanged:
+`Backend::begin_as` and `fetch_all_as` are default methods that ignore the
+role.
+
+**What exists.**
+- *Migration pair 0040 `native_rls`* (the SQLite twin is a no-op). It creates
+  `forgebase_rls` and `forgebase_login` (both `NOLOGIN NOBYPASSRLS`) when the
+  migrating role may create roles; the bundled engine's bootstrap creates
+  them too and grants `forgebase_rls` to the reader `WITH INHERIT FALSE, SET
+  TRUE`. It creates the schema `api` and the helpers in `forgebase`:
+  `claims()`, `req(path, scoped)`, `auth_id()`, `tenant()`, `read_action()`,
+  `now_text()`, `perm()`, `has_permission()`, `gate()`, `acl()`, `jtext()`,
+  `jnum()`, `like_escape()`, `static_cmp()` and `rule_cmp()`. EXECUTE goes
+  to the two roles only. Row-level security is enabled, with no policies,
+  on the `forgebase` tables the migrating role owns.
+- *Claims* (`forgebase_policy::native::claims`, version 1) are computed in
+  Rust from the policy snapshot with the steps of `engine::decide`:
+  principal, auth record, realm, org, tenant, scopes, attributes, action,
+  suspension, the gate (realm and tenant membership), the effective allow,
+  deny and role sets (shared and tenant), and for this collection and action
+  the collection ACL folded with API-key scopes (`grant`) and the record ACL
+  ids. `forgebase.claims()` trusts `forgebase.claims` only when
+  `session_user` is a superuser or `BYPASSRLS` (the server, the reader, the
+  test harness). Any other session gets `NULL`, so every policy fails.
+  FB-153 adds the `_forgebase_db_logins` branch.
+- *Native render mode* (`forgebase_query::native`, `CompileOptions.native`):
+  - Request references become `(SELECT forgebase.req('<path>', <scoped>))`
+    and are cast inside their own sub-select (`(SELECT
+    forgebase.jtext(…))`), so they are computed once per statement as an
+    `InitPlan`.
+  - A comparison with no record field becomes `forgebase.rule_cmp(…)`, a SQL
+    port of `static_compare` that keeps its presence semantics. A missing
+    value or an array compared with a field is `NULL`, and `?op` over a
+    request array is a three-valued `bool_or`.
+  - Literals are inlined.
+  - Relation paths become `forgebase.fb_rel_<hash>(fk)`: generated
+    `SECURITY DEFINER` functions with a fixed `search_path` that answer
+    only sessions that have claims.
+- *Policies per table* (`native::generate`). Every mode sets `ENABLE` and
+  `FORCE ROW LEVEL SECURITY` and drops the old `fb_*` policies. `off` stops
+  there.
+  - `logins` and `enforce` grant table DML to `forgebase_rls`.
+  - Restrictive policies: `fb_tenant` (tenant-scoped collections), then
+    `fb_gate_{select,insert,update,delete}` and
+    `fb_acl_deny_{select,update,delete}`.
+  - Permissive policies: `fb_write_select` (lets an UPDATE or DELETE read
+    its rows), `fb_perm_*`, `fb_rule_*` and `fb_acl_{select,update,delete}`.
+  - Each collection also gets the view `api."C"` (`security_barrier`, owner
+    `forgebase_rls`, granted to `forgebase_login`). It leaves out password,
+    hidden and token columns, and turns field read rules into `CASE WHEN …
+    THEN col END`. Its `INSTEAD OF` trigger `api."fb_w_<hash>"` writes to
+    the table as `forgebase_rls`, refuses fields the caller may not write,
+    and sets the system fields itself.
+- *Regeneration*:
+  - The data core calls `NativePolicies::before_change` / `after_change`
+    inside the schema transaction of create, update and delete collection.
+    `after_change` regenerates the collection and every collection whose
+    relations point at it.
+  - `put_policy` and `delete_policy` regenerate in their own transaction
+    (`PolicyStore::write_native`).
+  - At startup, `enable_native_rls` regenerates everything in one
+    transaction, unless the fingerprint of the generated statements
+    (`_forgebase_meta` key `native_rls.fingerprint`, which includes the
+    mode) is unchanged.
+  - `generate` returns statements and `apply(tx, …)` runs them in the given
+    transaction: the node to write to (the FB-158 row).
+- *`enforce`*:
+  - `Authorizer::native_session` (the policy service implements it) returns
+    `RunAs { role: forgebase_rls, claims }` for non-privileged callers on
+    collections whose rules all compiled.
+  - Reads (list, count, aggregate, get) use `Backend::fetch_all_as` on the
+    read pool (`BEGIN`; one `SELECT set_config('forgebase.claims', $1, true),
+    set_config('role', $2, true)`; the query).
+  - The main INSERT, UPDATE and DELETE use `WriteTx::execute_as`. The
+    transaction switches role for that statement and back after it, because
+    the same transaction also writes versions and the outbox.
+  - A policy refusal (SQLSTATE 42501), or an UPDATE or DELETE that reaches
+    no row, is `Forbidden`.
+- *Server*: `open_auth` maps `[database.postgres] native_rls` and calls
+  `enable_native_rls` after `attach_realms`. A failure is fatal only in
+  `enforce`; in the other modes it is logged.
+
+**Deviations from rls-coverage §3.**
+1. *Column grants.* `forgebase_rls` gets table-level DML, secret columns
+   included, because the data core reads `t.*`. Direct logins never touch
+   the tables: they see only `api` views, which leave the secret columns
+   out.
+2. *Trusted sessions.* Trust is "superuser or `BYPASSRLS`", not
+   `session_user = 'forgebase_server'`. That also covers the reader and the
+   test harness.
+3. *Gate policies.* The gate is split per command, so each command checks
+   its own deny key. `fb_write_select` was added because PostgreSQL also
+   applies the SELECT policies to the rows an UPDATE or DELETE reads.
+4. *Function grants to logins.* PostgreSQL checks EXECUTE on the functions
+   that a view, and the policies under it, call against the *caller*, not
+   the view owner. `forgebase_login` therefore has EXECUTE on the helpers
+   and on the `fb_rel_*` functions. They read only the caller's own claims,
+   and `fb_rel_*` returns `NULL` without claims, so forged arguments give
+   nothing (spoofing test).
+5. *Reads that follow relation paths stay on the server's session in
+   `enforce`* (`SqlBuilder::follows_relations`). The data core's own lookup
+   subqueries would see the target table's policies and return fewer rows;
+   the data core reads targets with full visibility. Writes always run under
+   the policies, because their statements have no lookups.
+6. *Not enforced natively.* A rule that does not compile is a `false`
+   policy and gets a warning. Its collection is marked incomplete, so
+   `enforce` leaves it on the server's session, and direct logins are
+   closed out. Native compilation is refused for:
+   - `{:param}`;
+   - relation paths to several values or with bound values;
+   - views (no policies, `security_invoker`);
+   - expands and delete cascades: they run as the server, matching
+     PostgreSQL's foreign-key actions.
+7. *Direct writes* through `api` triggers skip data-core validation, change
+   events and record versions.
+8. *`forgebase_login`* is a new `NOLOGIN` group. Views are dropped and
+   recreated with the collection, so grants go to the group rather than to
+   each login.
+
+**Overhead.** Test `native_rls::overhead` (`--ignored`): 10 000 rows, the
+rule `owner = @request.auth.id` with 1 000 rows owned by the caller, debug
+build, PostgreSQL 18 on one machine, 300 calls each. Two runs:
+
+| mode | list (50, with total) | get | update |
+|---|---|---|---|
+| `logins` (server session) | 1.55 / 2.10 ms | 0.10 / 0.30 ms | 2.72 / 1.40 ms |
+| `enforce` | 2.79 ms (second run) | 0.39 / 0.38 ms | 2.13 / 0.85 ms |
+
+- `enforce` adds about 0.1 ms to a get: the read transaction and the
+  `set_config` round trip.
+- It adds about 0.7 ms (+33 %) to a list: two statements, and the policy
+  filter on every scanned row of the count.
+- Updates are within noise.
+- Before the casts moved into their own sub-select, `jtext()` ran once per
+  row and a list cost 5.4 ms. The test prints the count's plan: every claim
+  is an `InitPlan`, and the per-row filter is plain comparisons.
+
+**For FB-153 (direct logins).**
+- Fill `forgebase.claims()` from `_forgebase_db_logins`, in the `ELSE`
+  branch.
+- Once logins have real claims, `fb_rel_<hash>(id)` returns one rule field
+  of any target row for any id. If that matters, narrow it: pass the source
+  row id and the field, and check the source row against the claims.
+- Refuse user DDL on `fb_*` in the SQL editor.
+- Direct `api` writes need validation, change events and versions, or the
+  writes should stay off for logins.
+- System tables created by migrations after 0040 do not get RLS enabled:
+  add it to the migration that creates them, or re-run the 0040 loop.
+- The bundled bootstrap grants the reader `SET` on `forgebase_rls`. An
+  external server must have it created and granted by hand
+  (`enable_native_rls` refuses without it).
+
+**For FB-155 (Database Studio).**
+- Generated policies are exactly those named `fb_*` on `public` tables;
+  everything else is hand-written.
+- A hand-written **permissive** policy widens what direct logins see, which
+  is the widening warning. A restrictive one narrows the API path too in
+  `enforce` (test `enforce_mode_gives_the_same_rows_and_runs_under_the_policies`).
+- Generated views are `api.*`; trigger functions are `api.fb_w_*`.
+- `native_rls.fingerprint` in `_forgebase_meta` changes whenever startup
+  regenerates different statements.
+
+**For FB-173 (shards).** Call `native::generate(coll, policy, catalog,
+mode)` once and `native::apply(tx, &statements)` in each shard's
+transaction. `NativePolicies::after_change` is the per-node hook. The roles
+are cluster-wide, so create them on every node. Relation functions are
+named by a hash of target, field and type, so they are the same on every
+shard. `fb_rel_*` reads the target table on the same node; a relation whose
+target lives on another shard needs a cross-shard path.

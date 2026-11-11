@@ -38,7 +38,9 @@ use sqlx::postgres::types::Oid;
 use sqlx::postgres::{PgArguments, PgConnectOptions, PgPool, PgPoolOptions, PgRow, PgTypeInfo};
 use sqlx::{Arguments, AssertSqlSafe, Column, Connection, Executor, Postgres, Row, SqlSafeStr, Statement as _};
 
-use crate::backend::{Backend, BoxFuture, ExecResult, PlanStep, Rows, SlowQuery, Statement, TxMode, Value, WriteTx};
+use crate::backend::{
+    Backend, BoxFuture, ExecResult, PlanStep, Rows, RunAs, SlowQuery, Statement, TxMode, Value, WriteTx,
+};
 use crate::dialect::{Dialect, PgDialect};
 use crate::routing::{Lsn, LsnWait, PrimaryOnly, ReadRequest, ReadRouter, ReadTarget};
 use crate::slow_log::SlowLog;
@@ -249,18 +251,28 @@ impl PgDatabase {
 
     /// Runs one statement inside a `READ ONLY` transaction on a reader.
     async fn read(&self, stmt: &Statement) -> Result<Rows, DbError> {
+        self.read_with(stmt, None).await
+    }
+
+    /// [`PgDatabase::read`], optionally as `run_as` (FB-152): the read-only
+    /// transaction switches role and sets the claims before the statement;
+    /// the `ROLLBACK` that ends it undoes both.
+    async fn read_with(&self, stmt: &Statement, run_as: Option<&RunAs>) -> Result<Rows, DbError> {
+        if let Some(r) = run_as {
+            r.check()?;
+        }
         let started = Instant::now();
         let pool = self.inner.reader.pick(stmt);
         let mut conn = pool.acquire().await.map_err(|e| self.classify(e))?;
         let gen_now = self.inner.schema_gen.load(Ordering::Acquire);
-        let mut result = self.read_once(&mut conn, stmt, gen_now).await;
+        let mut result = self.read_once(&mut conn, stmt, gen_now, run_as).await;
         // The rollback in read_once ended the aborted transaction.
         if matches!(&result, Err(RunError::Driver(e)) if error::is_stale_plan(e)) {
             if conn.clear_cached_statements().await.is_ok() {
-                result = self.read_once(&mut conn, stmt, gen_now).await;
+                result = self.read_once(&mut conn, stmt, gen_now, run_as).await;
             }
         } else if matches!(&result, Err(RunError::Driver(e)) if error::is_lost_unnamed_statement(e)) {
-            result = self.read_once(&mut conn, stmt, gen_now).await;
+            result = self.read_once(&mut conn, stmt, gen_now, run_as).await;
         }
         let rows = result.map_err(|e| self.run_error(e))?;
         self.inner
@@ -274,6 +286,7 @@ impl PgDatabase {
         conn: &mut PoolConnection<Postgres>,
         stmt: &Statement,
         gen_now: u64,
+        run_as: Option<&RunAs>,
     ) -> Result<Rows, RunError> {
         let seen: Option<String> =
             sqlx::raw_sql("BEGIN READ ONLY; SELECT current_setting('forgebase.schema_gen', true)")
@@ -284,6 +297,9 @@ impl PgDatabase {
         let result = async {
             if behind {
                 conn.clear_cached_statements().await?;
+            }
+            if let Some(r) = run_as {
+                set_run_as(conn, r).await?;
             }
             fetch(self, conn, stmt).await
         }
@@ -646,7 +662,45 @@ impl PgDatabase {
             mode,
             ddl: false,
             failed: false,
+            run_as: None,
         })
+    }
+
+    /// [`PgDatabase::begin_tx`] with every statement run as `run_as`.
+    async fn begin_tx_as(&self, mode: TxMode, run_as: &RunAs) -> Result<PgTx, DbError> {
+        run_as.check()?;
+        let mut tx = self.begin_tx(mode).await?;
+        let conn = tx.conn()?;
+        if let Err(e) = set_run_as(conn, run_as).await {
+            tx.failed = true;
+            return Err(self.classify(e));
+        }
+        tx.run_as = Some(run_as.clone());
+        Ok(tx)
+    }
+}
+
+/// Switches the transaction to `run_as`: `SET LOCAL ROLE` and the claims,
+/// in one round trip (`set_config(.., true)` is transaction-local). Both
+/// values are bound parameters, never SQL text.
+async fn set_run_as(conn: &mut sqlx::PgConnection, run_as: &RunAs) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true)")
+        .bind(run_as.claims.as_str())
+        .bind(run_as.role.as_str())
+        .execute(conn)
+        .await
+        .map(|_| ())
+}
+
+/// Back to the transaction's own identity after one statement ran as
+/// another: its `run_as` (from [`Backend::begin_as`]) or the session user.
+async fn restore_run_as(conn: &mut sqlx::PgConnection, tx_level: Option<&RunAs>) -> Result<(), sqlx::Error> {
+    match tx_level {
+        Some(r) => set_run_as(conn, r).await,
+        None => sqlx::query("SELECT set_config('role', 'none', true)")
+            .execute(conn)
+            .await
+            .map(|_| ()),
     }
 }
 
@@ -1112,6 +1166,14 @@ impl Backend for PgDatabase {
         Box::pin(self.read(stmt))
     }
 
+    fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
+        Box::pin(async move { Ok(Box::new(self.begin_tx_as(mode, run_as).await?) as Box<dyn WriteTx>) })
+    }
+
+    fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        Box::pin(self.read_with(stmt, Some(run_as)))
+    }
+
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
         Box::pin(async move { Ok(Box::new(self.begin_tx(mode).await?) as Box<dyn WriteTx>) })
     }
@@ -1168,6 +1230,8 @@ struct PgTx {
     /// A statement failed on the server, which aborts a PostgreSQL
     /// transaction; `commit` then rolls back and reports it.
     failed: bool,
+    /// Identity of the whole transaction ([`Backend::begin_as`]).
+    run_as: Option<RunAs>,
 }
 
 impl PgTx {
@@ -1247,7 +1311,57 @@ impl Drop for PgTx {
     }
 }
 
+impl PgTx {
+    /// Switches role and claims to `run_as` for the next statement.
+    async fn switch_to(&mut self, run_as: &RunAs) -> Result<(), DbError> {
+        run_as.check()?;
+        let db = self.db.clone();
+        let r = set_run_as(self.conn()?, run_as).await;
+        r.map_err(|e| {
+            self.failed = true;
+            db.classify(e)
+        })
+    }
+
+    /// Back to the transaction's own identity (skipped once a statement
+    /// failed: the transaction is aborted and only rolls back).
+    async fn switch_back(&mut self) -> Result<(), DbError> {
+        if self.failed {
+            return Ok(());
+        }
+        let db = self.db.clone();
+        let tx_level = self.run_as.clone();
+        let r = restore_run_as(self.conn()?, tx_level.as_ref()).await;
+        r.map_err(|e| {
+            self.failed = true;
+            db.classify(e)
+        })
+    }
+}
+
 impl WriteTx for PgTx {
+    fn execute_as<'a>(
+        &'a mut self,
+        stmt: &'a Statement,
+        run_as: &'a RunAs,
+    ) -> BoxFuture<'a, Result<ExecResult, DbError>> {
+        Box::pin(async move {
+            self.switch_to(run_as).await?;
+            let out = self.execute(stmt).await;
+            self.switch_back().await?;
+            out
+        })
+    }
+
+    fn fetch_all_as<'a>(&'a mut self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        Box::pin(async move {
+            self.switch_to(run_as).await?;
+            let out = self.fetch_all(stmt).await;
+            self.switch_back().await?;
+            out
+        })
+    }
+
     fn execute<'a>(&'a mut self, stmt: &'a Statement) -> BoxFuture<'a, Result<ExecResult, DbError>> {
         Box::pin(async move {
             let started = Instant::now();

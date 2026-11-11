@@ -195,6 +195,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "job_queue_tenant",
         include_str!("../../../migrations/system/0035_job_queue_tenant.sql"),
     ),
+    Migration::new(
+        40,
+        "native_rls",
+        include_str!("../../../migrations/system/0040_native_rls.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

@@ -332,6 +332,17 @@ impl DataService {
         id: &str,
         pred: Option<&Predicate>,
     ) -> Result<Statement, DataError> {
+        Ok(self.select_by_id_flagged(ctx, coll, id, pred)?.0)
+    }
+
+    /// [`Self::select_by_id`] and whether it follows relation paths.
+    pub(crate) fn select_by_id_flagged(
+        &self,
+        ctx: &AccessContext,
+        coll: &Collection,
+        id: &str,
+        pred: Option<&Predicate>,
+    ) -> Result<(Statement, bool), DataError> {
         let d = self.inner.backend.dialect();
         let mut b = SqlBuilder::new(d);
         let mut sql = format!(
@@ -346,7 +357,8 @@ impl DataService {
         if let Some(p) = pred {
             sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, coll, p)?));
         }
-        Ok(Statement::new(sql, b.into_params()))
+        let follows = b.follows_relations();
+        Ok((Statement::new(sql, b.into_params()), follows))
     }
 
     pub(crate) fn compile_predicate(
@@ -419,9 +431,11 @@ impl DataService {
             cols.join(", "),
             vals.join(", ")
         );
-        tx.execute(&Statement::new(sql, b.into_params()))
-            .await
-            .map_err(|e| self.write_error(coll, e))?;
+        let run_as = self.run_as(ctx, Action::Create, coll);
+        crate::execute_maybe_as(tx, &Statement::new(sql, b.into_params()), run_as.as_ref(), true, |e| {
+            self.write_error(coll, e)
+        })
+        .await?;
         self.load_after_write(ctx, tx, coll, &id, pred, "create").await
     }
 
@@ -573,11 +587,8 @@ impl DataService {
         opts: &GetOptions,
     ) -> Result<Record, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
-        let rows = self
-            .inner
-            .backend
-            .fetch_all(&self.select_by_id(ctx, &coll, id, pred.as_ref())?)
-            .await?;
+        let (stmt, follows) = self.select_by_id_flagged(ctx, &coll, id, pred.as_ref())?;
+        let rows = self.read_rows(ctx, Action::View, &coll, &stmt, follows).await?;
         let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
             collection: coll.name.clone(),
             id: id.to_owned(),
@@ -664,9 +675,15 @@ impl DataService {
                 d.quote_ident("id"),
                 b.bind(id.to_owned())
             );
-            tx.execute(&Statement::new(sql, b.into_params()))
-                .await
-                .map_err(|e| self.write_error(&coll, e))?;
+            let run_as = self.run_as(ctx, Action::Update, &coll);
+            crate::execute_maybe_as(
+                &mut *tx,
+                &Statement::new(sql, b.into_params()),
+                run_as.as_ref(),
+                true,
+                |e| self.write_error(&coll, e),
+            )
+            .await?;
             self.load_after_write(ctx, &mut *tx, &coll, id, pred.as_ref(), "update")
                 .await
         }
@@ -814,27 +831,37 @@ impl DataService {
             } else {
                 None
             };
-            let done = tx
-                .execute(&Statement::new(
-                    format!(
-                        "DELETE FROM {} WHERE {} = ?1",
-                        d.quote_ident(&coll.name),
-                        d.quote_ident("id")
-                    ),
-                    vec![id.into()],
-                ))
-                .await
-                .map_err(|e| match e {
-                    DbError::Constraint {
-                        kind: ConstraintKind::ForeignKey,
-                        ..
-                    } => DataError::conflict(
-                        "record_referenced",
-                        "the record is still referenced by a required relation",
-                    ),
-                    other => other.into(),
-                })?;
+            // Cascades bypass row-level security, as foreign-key actions do.
+            let run_as = if depth == 0 {
+                self.run_as(ctx, Action::Delete, coll)
+            } else {
+                None
+            };
+            let delete = Statement::new(
+                format!(
+                    "DELETE FROM {} WHERE {} = ?1",
+                    d.quote_ident(&coll.name),
+                    d.quote_ident("id")
+                ),
+                vec![id.into()],
+            );
+            let done = crate::execute_maybe_as(&mut *tx, &delete, run_as.as_ref(), false, |e| match e {
+                DbError::Constraint {
+                    kind: ConstraintKind::ForeignKey,
+                    ..
+                } => DataError::conflict(
+                    "record_referenced",
+                    "the record is still referenced by a required relation",
+                ),
+                other => other.into(),
+            })
+            .await?;
             if done.rows_affected == 0 {
+                if run_as.is_some() && !tx.fetch_all(&self.select_by_id(ctx, coll, id, None)?).await?.is_empty() {
+                    return Err(DataError::Forbidden(
+                        "native row-level security refused the write".into(),
+                    ));
+                }
                 return Ok(()); // already removed by an engine cascade
             }
             if let Some(before) = &before
