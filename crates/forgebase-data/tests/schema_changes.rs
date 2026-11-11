@@ -1,5 +1,9 @@
 //! Collection schema changes: alter as transactional DDL with history, and
-//! rollback when a change fails part-way. Also auth/system/view collections.
+//! rollback when a change fails part-way. Also auth/system/view collections,
+//! the index manager and full text. Every test runs on the backend
+//! `FORGEBASE_TEST_BACKEND` selects (`sqlite`, the default, or `postgres`;
+//! ADR-0028 §7.7): SQLite rebuilds tables, PostgreSQL alters them in place,
+//! and the observable behaviour is the same.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -7,8 +11,10 @@ mod common;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use common::{TestHasher, admin, open_db, service, service_with};
+use common::{TestHasher, admin, service, service_with};
 use forgebase_core::ErrorCode;
+use forgebase_data::db::testing::{TestDb, test_backend};
+use forgebase_data::db::{Backend, BackendKind, Database, Statement, Value};
 use forgebase_data::schema::{Collection, CollectionType, Field, FieldKind};
 use forgebase_data::{
     AccessContext, DataError, DefaultAuthorizer, IndexDefinition, IndexKind, ListQuery, SqlStatement, UpdateOptions,
@@ -22,20 +28,51 @@ fn text() -> FieldKind {
     }
 }
 
+/// A fresh, migrated database on the selected backend.
+async fn test_db() -> TestDb {
+    test_backend().await
+}
+
+fn is_pg(db: &Database) -> bool {
+    db.kind() == BackendKind::Postgres
+}
+
+/// Opens the test's database again (a restart).
+async fn reopen(db: &TestDb) -> Database {
+    let reopened = Database::open(db.options()).await.unwrap();
+    reopened.migrate(Some(&db.data_dir().join("backups"))).await.unwrap();
+    reopened
+}
+
+/// Columns of `table` and their declared types, from the engine's catalog.
 async fn columns(svc: &forgebase_data::DataService, table: &str) -> Vec<(String, String)> {
-    svc.describe_table(&admin(), table)
+    let b = svc.backend();
+    let rows = b.fetch_all(&b.dialect().introspect_columns(table)).await.unwrap();
+    let (n, t) = (rows.column("name").unwrap(), rows.column("type").unwrap());
+    rows.rows
+        .iter()
+        .map(|r| {
+            (
+                r[n].as_str().unwrap_or_default().to_owned(),
+                r[t].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// One value from the database, as the system sees it.
+async fn scalar(db: &Database, sql: &str, params: Vec<Value>) -> Value {
+    db.fetch_all(&Statement::new(sql, params))
         .await
         .unwrap()
-        .columns
-        .into_iter()
-        .map(|c| (c.name, c.declared_type))
-        .collect()
+        .scalar()
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 #[tokio::test]
 async fn alter_adds_renames_changes_and_drops_fields_keeping_data() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = open_db(tmp.path()).await;
+    let db = test_db().await;
     let svc = service(&db).await;
     let ctx = admin();
     let c = svc
@@ -126,7 +163,8 @@ async fn alter_adds_renames_changes_and_drops_fields_keeping_data() {
     let v3 = svc.update_collection(&ctx, "items", def).await.unwrap();
     assert_eq!(v3.version, 3);
     let cols = columns(&svc, "items").await;
-    assert!(cols.contains(&("qty".into(), "INTEGER".into())));
+    let int_type = if is_pg(&db) { "bigint" } else { "INTEGER" };
+    assert!(cols.contains(&("qty".into(), int_type.into())), "{cols:?}");
     assert!(!cols.iter().any(|(n, _)| n == "note"));
     let big = svc
         .count_records(&ctx, "items", Some("qty >= 10"), HashMap::new())
@@ -229,12 +267,23 @@ async fn alter_adds_renames_changes_and_drops_fields_keeping_data() {
         vec!["create", "index_create", "index_create", "alter", "alter", "alter"]
     );
     assert!(history[3].statements.iter().any(|s| s.contains("RENAME COLUMN")));
-    assert!(
-        history[4]
-            .statements
-            .iter()
-            .any(|s| s.starts_with("CREATE TABLE \"_forgebase_tmp_"))
-    );
+    if is_pg(&db) {
+        // PostgreSQL changes the column in place: no rebuild, no row copy.
+        let alter = &history[4].statements;
+        assert!(
+            alter.iter().any(|s| s.contains("ALTER COLUMN \"qty\" TYPE bigint")),
+            "{alter:?}"
+        );
+        assert!(alter.iter().any(|s| s.contains("DROP COLUMN \"note\"")), "{alter:?}");
+        assert!(!alter.iter().any(|s| s.contains("_forgebase_tmp_")), "{alter:?}");
+    } else {
+        assert!(
+            history[4]
+                .statements
+                .iter()
+                .any(|s| s.starts_with("CREATE TABLE \"_forgebase_tmp_"))
+        );
+    }
     assert_eq!(history[5].before.as_ref().unwrap()["name"], json!("items"));
     assert_eq!(history[5].after.as_ref().unwrap()["name"], json!("products"));
     assert!(db.integrity_check().await.unwrap().is_empty());
@@ -244,8 +293,7 @@ async fn alter_adds_renames_changes_and_drops_fields_keeping_data() {
 
 #[tokio::test]
 async fn failed_schema_changes_roll_back_completely() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = open_db(tmp.path()).await;
+    let db = test_db().await;
     let svc = service(&db).await;
     let ctx = admin();
     let c = svc
@@ -353,7 +401,9 @@ async fn failed_schema_changes_roll_back_completely() {
     check_unchanged(svc.clone()).await;
 
     // The writer is healthy afterwards: foreign keys back on, writes work.
-    assert_eq!(db.effective_pragmas(false).await.unwrap().foreign_keys, 1);
+    if !is_pg(&db) {
+        assert_eq!(db.effective_pragmas(false).await.unwrap().foreign_keys, 1);
+    }
     svc.create_record(&ctx, "things", json!({"code": "3"})).await.unwrap();
     // A valid change still applies after the failures.
     let mut def = c.clone();
@@ -365,8 +415,7 @@ async fn failed_schema_changes_roll_back_completely() {
 
 #[tokio::test]
 async fn auth_view_and_system_collections() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = open_db(tmp.path()).await;
+    let db = test_db().await;
     let svc = service(&db).await;
     let ctx = admin();
 
@@ -543,8 +592,8 @@ async fn auth_view_and_system_collections() {
 
     // Definitions survive a restart.
     db.close().await;
-    let db = open_db(tmp.path()).await;
-    let svc = service(&db).await;
+    let db2 = reopen(&db).await;
+    let svc = service(&db2).await;
     let all: Vec<String> = svc
         .list_collections(&ctx)
         .await
@@ -553,5 +602,552 @@ async fn auth_view_and_system_collections() {
         .map(|c| c.name)
         .collect();
     assert_eq!(all, vec!["users", "verified_users"]);
+    db2.close().await;
+}
+
+fn int() -> FieldKind {
+    FieldKind::Number {
+        min: None,
+        max: None,
+        integer: true,
+    }
+}
+
+fn real() -> FieldKind {
+    FieldKind::Number {
+        min: None,
+        max: None,
+        integer: false,
+    }
+}
+
+fn json_kind() -> FieldKind {
+    FieldKind::Json { max_size: None }
+}
+
+/// Records of `coll` sorted by `sort`.
+async fn sorted(svc: &forgebase_data::DataService, coll: &str, sort: &str) -> Vec<serde_json::Value> {
+    svc.list_records(
+        &admin(),
+        coll,
+        &ListQuery {
+            sort: Some(sort.into()),
+            ..ListQuery::default()
+        },
+    )
+    .await
+    .unwrap()
+    .items
+    .into_iter()
+    .map(serde_json::Value::Object)
+    .collect()
+}
+
+#[tokio::test]
+async fn type_changes_convert_values_or_refuse_them() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    let c = svc
+        .create_collection(
+            &ctx,
+            Collection::base("vals")
+                .with_field(Field::new("a", int()))
+                .with_field(Field::new("b", real()))
+                .with_field(Field::new("flag", FieldKind::Bool))
+                .with_field(Field::new("doc", text()))
+                .with_field(Field::new("j", json_kind())),
+        )
+        .await
+        .unwrap();
+    svc.create_records(
+        &ctx,
+        "vals",
+        vec![
+            json!({"a": 3, "b": 2.5, "flag": true, "doc": "{\"k\": 1}", "j": {"x": [1, 2]}}),
+            json!({"a": 4, "b": 3.0, "flag": false, "doc": "[1]", "j": "s"}),
+        ],
+    )
+    .await
+    .unwrap();
+
+    // int -> real, real -> text, bool -> int, text -> json, json -> text.
+    let mut def = c.clone();
+    for f in &mut def.fields {
+        f.kind = match f.name.as_str() {
+            "a" => real(),
+            "b" | "j" => text(),
+            "flag" => int(),
+            "doc" => json_kind(),
+            other => unreachable!("{other}"),
+        };
+    }
+    let v2 = svc.update_collection(&ctx, "vals", def).await.unwrap();
+    let rows = sorted(&svc, "vals", "a").await;
+    assert_eq!(rows[0]["a"], json!(3.0));
+    assert_eq!(rows[0]["b"], json!("2.5"));
+    assert_eq!(rows[1]["b"], json!("3.0"), "integral reals keep SQLite's text form");
+    assert_eq!((rows[0]["flag"].clone(), rows[1]["flag"].clone()), (json!(1), json!(0)));
+    assert_eq!(rows[0]["doc"], json!({"k": 1}));
+    assert_eq!(rows[1]["doc"], json!([1]));
+    // JSON as text: the same document (PostgreSQL's jsonb text adds spaces).
+    let j: serde_json::Value = serde_json::from_str(rows[0]["j"].as_str().unwrap()).unwrap();
+    assert_eq!(j, json!({"x": [1, 2]}));
+    assert_eq!(rows[1]["j"], json!("\"s\""));
+
+    // A fraction does not fit an integer: refused, nothing changes.
+    let mut def = v2.clone();
+    def.fields.iter_mut().find(|f| f.name == "b").unwrap().kind = int();
+    let err = svc.update_collection(&ctx, "vals", def).await.unwrap_err();
+    assert_eq!(err.code(), "incompatible_data", "{err:?}");
+    assert_eq!(svc.get_collection(&ctx, "vals").await.unwrap().version, 2);
+    assert_eq!(sorted(&svc, "vals", "a").await, rows);
+
+    // Integral reals do: real -> int keeps the values.
+    let mut def = v2.clone();
+    def.fields.iter_mut().find(|f| f.name == "a").unwrap().kind = int();
+    svc.update_collection(&ctx, "vals", def).await.unwrap();
+    let rows = sorted(&svc, "vals", "a").await;
+    assert_eq!((rows[0]["a"].clone(), rows[1]["a"].clone()), (json!(3), json!(4)));
+    let int_type = if is_pg(&db) { "bigint" } else { "INTEGER" };
+    assert!(columns(&svc, "vals").await.contains(&("a".into(), int_type.into())));
+    assert!(db.integrity_check().await.unwrap().is_empty());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn views_survive_column_changes_and_run_as_the_caller() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    let src = svc
+        .create_collection(
+            &ctx,
+            Collection::base("src")
+                .with_field(Field::new("n", text()))
+                .with_field(Field::new("label", text())),
+        )
+        .await
+        .unwrap();
+    svc.create_record(&ctx, "src", json!({"n": "5", "label": "five"}))
+        .await
+        .unwrap();
+    for (name, query) in [
+        ("src_view", "SELECT id, n, label FROM src"),
+        ("src_view2", "SELECT id, label FROM src_view"),
+    ] {
+        svc.create_collection(
+            &ctx,
+            Collection {
+                kind: CollectionType::View,
+                view_query: Some(query.into()),
+                ..Collection::base(name)
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let invoker = "SELECT array_to_string(reloptions, ',') FROM pg_catalog.pg_class WHERE relname = ?1";
+    if is_pg(&db) {
+        assert_eq!(
+            scalar(&db, invoker, vec!["src_view".into()]).await,
+            Value::Text("security_invoker=true".into())
+        );
+    }
+
+    // A type change under two layers of views: they are rebuilt on
+    // PostgreSQL (which refuses to change a column a view reads).
+    let mut def = src.clone();
+    def.fields[0].kind = int();
+    let v2 = svc.update_collection(&ctx, "src", def).await.unwrap();
+    let rows = sorted(&svc, "src_view", "n").await;
+    assert_eq!(rows[0]["n"], json!(5));
+    assert_eq!(
+        svc.count_records(&ctx, "src_view2", Some("label = 'five'"), HashMap::new())
+            .await
+            .unwrap(),
+        1
+    );
+    if is_pg(&db) {
+        for v in ["src_view", "src_view2"] {
+            assert_eq!(
+                scalar(&db, invoker, vec![v.into()]).await,
+                Value::Text("security_invoker=true".into()),
+                "{v} keeps security_invoker"
+            );
+        }
+    }
+
+    // Dropping a column the views read is refused, and so is dropping the
+    // table or a view another view reads; nothing changes.
+    let mut def = v2.clone();
+    def.fields.retain(|f| f.name != "label");
+    let err = svc.update_collection(&ctx, "src", def).await.unwrap_err();
+    assert_eq!(err.code(), "schema_conflict", "{err:?}");
+    let err = svc.delete_collection(&ctx, "src").await.unwrap_err();
+    assert_eq!(err.code(), "schema_conflict", "{err:?}");
+    let err = svc.delete_collection(&ctx, "src_view").await.unwrap_err();
+    assert_eq!(err.code(), "schema_conflict", "{err:?}");
+    assert_eq!(svc.get_collection(&ctx, "src").await.unwrap().version, 2);
+    assert_eq!(
+        svc.count_records(&ctx, "src_view2", None, HashMap::new())
+            .await
+            .unwrap(),
+        1
+    );
+
+    // Changing a view's query rebuilds the views reading it.
+    let view = svc.get_collection(&ctx, "src_view").await.unwrap();
+    let changed = Collection {
+        view_query: Some("SELECT id, n, label, label AS again FROM src".into()),
+        ..view
+    };
+    let changed = svc.update_collection(&ctx, "src_view", changed).await.unwrap();
+    assert!(changed.fields.iter().any(|f| f.name == "again"));
+    assert_eq!(
+        svc.count_records(&ctx, "src_view2", None, HashMap::new())
+            .await
+            .unwrap(),
+        1
+    );
+    svc.delete_collection(&ctx, "src_view2").await.unwrap();
+    svc.delete_collection(&ctx, "src_view").await.unwrap();
+    svc.delete_collection(&ctx, "src").await.unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn long_derived_names_are_fitted_to_the_identifier_limit() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    let max = if is_pg(&db) { 63 } else { 1000 };
+    let coll = svc
+        .create_collection(
+            &ctx,
+            Collection {
+                id: "c".repeat(64),
+                ..Collection::base("longnames")
+                    .with_field(Field::new("code", text()).unique())
+                    .with_field(Field::new("body", text()))
+            },
+        )
+        .await
+        .unwrap();
+    let fts_name = format!("fts_{}", "x".repeat(59));
+    assert_eq!(fts_name.len(), 63);
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: fts_name.clone(),
+            kind: IndexKind::Fulltext,
+            ..IndexDefinition::btree("longnames", &["code", "body"])
+        },
+    )
+    .await
+    .unwrap();
+    svc.create_record(&ctx, "longnames", json!({"code": "a1", "body": "Crème brûlée recipe"}))
+        .await
+        .unwrap();
+    assert!(
+        svc.create_record(&ctx, "longnames", json!({"code": "a1"}))
+            .await
+            .is_err(),
+        "the auto unique index works under its fitted name"
+    );
+    let infos = svc.list_indexes(&ctx, Some("longnames")).await.unwrap();
+    let auto = infos
+        .iter()
+        .find(|i| i.name.starts_with("auto_") && i.unique)
+        .unwrap_or_else(|| panic!("{infos:?}"));
+    assert!(auto.name.len() <= max, "{}", auto.name);
+    if is_pg(&db) {
+        assert_eq!(auto.name.len(), 63, "hashed, not cut short: {}", auto.name);
+        assert!(infos.iter().all(|i| !i.name.starts_with("_forgebase_")), "{infos:?}");
+    }
+    let fts = infos.iter().find(|i| i.name == fts_name).unwrap();
+    assert_eq!(fts.kind, IndexKind::Fulltext);
+    assert!(fts.stats.size_bytes.unwrap_or_default() > 0, "{fts:?}");
+    // Full text ignores case and accents on both engines.
+    for (q, n) in [("creme", 1), ("BRULEE recipe", 1), ("a1", 1), ("pudding", 0)] {
+        let found = svc
+            .list_records(
+                &ctx,
+                "longnames",
+                &ListQuery {
+                    search: Some(q.into()),
+                    ..ListQuery::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(found.total_items, Some(n), "{q}");
+    }
+    svc.drop_index(&ctx, &fts_name).await.unwrap();
+    let err = svc
+        .list_records(
+            &ctx,
+            "longnames",
+            &ListQuery {
+                search: Some("creme".into()),
+                ..ListQuery::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "no_fulltext_index");
+    // Dropping the unique flag drops the fitted automatic index.
+    let mut def = coll.clone();
+    def.fields[0].unique = false;
+    svc.update_collection(&ctx, "longnames", def).await.unwrap();
+    svc.create_record(&ctx, "longnames", json!({"code": "a1"}))
+        .await
+        .unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn names_postgres_refuses_are_refused_for_new_definitions() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    let err = svc
+        .create_collection(&ctx, Collection::base("pg_stats").with_field(Field::new("x", text())))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "reserved_name", "{err:?}");
+    let err = svc
+        .create_collection(&ctx, Collection::base("notes").with_field(Field::new("xmin", text())))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "reserved_name", "{err:?}");
+    let notes = svc
+        .create_collection(&ctx, Collection::base("notes").with_field(Field::new("body", text())))
+        .await
+        .unwrap();
+    let mut def = notes.clone();
+    def.fields[0].name = "ctid".into();
+    let err = svc.update_collection(&ctx, "notes", def).await.unwrap_err();
+    assert_eq!(err.code(), "reserved_name", "{err:?}");
+    let err = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "pg_body".into(),
+                ..IndexDefinition::btree("notes", &["body"])
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "invalid_index_name", "{err:?}");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn index_manager_reports_kinds_statistics_and_plans() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    svc.create_collection(
+        &ctx,
+        Collection::base("events")
+            .with_field(Field::new("code", text()))
+            .with_field(Field::new("n", int()))
+            .with_field(Field::new("other", int()))
+            .with_field(Field::new("meta", json_kind())),
+    )
+    .await
+    .unwrap();
+    let batch: Vec<serde_json::Value> = (0..1000)
+        .map(|i| json!({"code": format!("c{i}"), "n": i, "other": i % 7, "meta": {"brand": format!("b{i}")}}))
+        .collect();
+    svc.create_records(&ctx, "events", batch).await.unwrap();
+    let defs = [
+        IndexDefinition {
+            name: "idx_events_code".into(),
+            ..IndexDefinition::btree("events", &["code"])
+        },
+        IndexDefinition {
+            name: "idx_events_n".into(),
+            unique: true,
+            ..IndexDefinition::btree("events", &["n"])
+        },
+        IndexDefinition {
+            name: "idx_events_low".into(),
+            partial: Some("n < 100".into()),
+            ..IndexDefinition::btree("events", &["code:lower"])
+        },
+        IndexDefinition {
+            name: "idx_events_brand".into(),
+            ..IndexDefinition::btree("events", &["meta.brand"])
+        },
+    ];
+    for def in defs {
+        svc.create_index(&ctx, def).await.unwrap();
+    }
+    svc.analyze(&ctx, Some("events")).await.unwrap();
+
+    let code = svc.get_index(&ctx, "idx_events_code").await.unwrap();
+    assert_eq!(code.columns, vec!["code"]);
+    assert_eq!(code.table, "events");
+    assert_eq!(code.stats.rows_estimate, Some(1000), "{code:?}");
+    assert!(code.stats.size_bytes.unwrap_or_default() > 0, "{code:?}");
+    let n = svc.get_index(&ctx, "idx_events_n").await.unwrap();
+    assert!(n.unique && !n.partial);
+    let low = svc.get_index(&ctx, "idx_events_low").await.unwrap();
+    assert!(low.partial && !low.unique);
+    assert_eq!(low.columns, vec!["<expr>"]);
+    let brand = svc.get_index(&ctx, "idx_events_brand").await.unwrap();
+    assert_eq!(brand.columns, vec!["<expr>"]);
+    let all = svc.list_indexes(&ctx, Some("events")).await.unwrap();
+    assert!(
+        all.iter()
+            .any(|i| i.origin == forgebase_data::indexes::IndexOrigin::Engine),
+        "the primary key index is listed: {all:?}"
+    );
+
+    // Plans: equality on an indexed column, a JSON path, and a full scan.
+    for (filter, index) in [
+        ("code = 'c7'", Some("idx_events_code")),
+        ("meta.brand = 'b42'", Some("idx_events_brand")),
+        ("other = 3", None),
+    ] {
+        let plan = svc
+            .explain_list(
+                &ctx,
+                "events",
+                &ListQuery {
+                    filter: Some(filter.into()),
+                    ..ListQuery::default()
+                },
+            )
+            .await
+            .unwrap();
+        match index {
+            Some(i) => assert!(plan.indexes_used.iter().any(|u| u == i), "{filter}: {plan:?}"),
+            None => assert_eq!(plan.full_scans, vec!["t".to_string()], "{filter}: {plan:?}"),
+        }
+    }
+    // A slow listing that scans the whole table gets a recommendation.
+    svc.set_slow_query_threshold(&ctx, std::time::Duration::ZERO).unwrap();
+    svc.list_records(
+        &ctx,
+        "events",
+        &ListQuery {
+            filter: Some("other = 3".into()),
+            ..ListQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    let recs = svc.recommend_indexes(&ctx).await.unwrap();
+    assert!(
+        recs.iter()
+            .any(|r| r.definition.collection == "events" && r.definition.keys[0].path == "other"),
+        "{recs:?}"
+    );
+
+    let rebuilt = svc.rebuild_index(&ctx, "idx_events_code").await.unwrap();
+    assert_eq!(rebuilt.stats.rows_estimate, Some(1000));
+    svc.drop_index(&ctx, "idx_events_low").await.unwrap();
+    assert!(svc.get_index(&ctx, "idx_events_low").await.is_err());
+    // A unique index over duplicates is refused and leaves nothing behind.
+    let err = svc
+        .create_index(
+            &ctx,
+            IndexDefinition {
+                name: "idx_events_other".into(),
+                unique: true,
+                ..IndexDefinition::btree("events", &["other"])
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "duplicate_values", "{err:?}");
+    assert!(svc.get_index(&ctx, "idx_events_other").await.is_err());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn relation_changes_add_change_and_drop_foreign_keys() {
+    let db = test_db().await;
+    let svc = service(&db).await;
+    let ctx = admin();
+    let authors = svc
+        .create_collection(&ctx, Collection::base("authors").with_field(Field::new("name", text())))
+        .await
+        .unwrap();
+    let a = svc
+        .create_record(&ctx, "authors", json!({"name": "ann"}))
+        .await
+        .unwrap();
+    let b = svc
+        .create_record(&ctx, "authors", json!({"name": "bob"}))
+        .await
+        .unwrap();
+    let posts = svc
+        .create_collection(&ctx, Collection::base("posts").with_field(Field::new("author", text())))
+        .await
+        .unwrap();
+    for author in [&a, &b] {
+        svc.create_record(&ctx, "posts", json!({"author": author["id"]}))
+            .await
+            .unwrap();
+    }
+    let relation = |cascade_delete| FieldKind::Relation {
+        collection_id: authors.id.clone(),
+        max_select: 1,
+        cascade_delete,
+    };
+    let count = |svc: forgebase_data::DataService| async move {
+        svc.count_records(&admin(), "posts", None, HashMap::new())
+            .await
+            .unwrap()
+    };
+
+    // Text -> relation with cascade: the key is added over existing rows.
+    let mut def = posts.clone();
+    def.fields[0].kind = relation(true);
+    let v2 = svc.update_collection(&ctx, "posts", def).await.unwrap();
+    svc.delete_record(&ctx, "authors", a["id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(count(svc.clone()).await, 1, "cascade");
+    let n = svc
+        .count_records(&ctx, "posts", Some("author.name = 'bob'"), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+
+    // Cascade -> set null: the key's action changes.
+    let mut def = v2.clone();
+    def.fields[0].kind = relation(false);
+    let v3 = svc.update_collection(&ctx, "posts", def).await.unwrap();
+    svc.delete_record(&ctx, "authors", b["id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(count(svc.clone()).await, 1, "set null keeps the post");
+    let orphans = svc
+        .count_records(&ctx, "posts", Some("author = null"), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(orphans, 1);
+
+    // Relation -> text: the key is gone, any value fits.
+    let mut def = v3.clone();
+    def.fields[0].kind = text();
+    let v4 = svc.update_collection(&ctx, "posts", def).await.unwrap();
+    svc.create_record(&ctx, "posts", json!({"author": "nobody"}))
+        .await
+        .unwrap();
+
+    // Text -> relation over a value with no target: refused, nothing changes.
+    let mut def = v4.clone();
+    def.fields[0].kind = relation(false);
+    let err = svc.update_collection(&ctx, "posts", def).await.unwrap_err();
+    assert_eq!(err.code(), "foreign_key_violation", "{err:?}");
+    assert_eq!(svc.get_collection(&ctx, "posts").await.unwrap().version, 4);
+    assert_eq!(count(svc.clone()).await, 2);
+    assert_eq!(db.foreign_key_violations().await.unwrap(), 0);
     db.close().await;
 }

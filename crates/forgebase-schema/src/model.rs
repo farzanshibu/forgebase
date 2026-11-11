@@ -431,6 +431,30 @@ impl Collection {
         }
     }
 
+    /// Checks the names PostgreSQL refuses ([`validate_postgres_collection_name`],
+    /// [`validate_postgres_field_name`]) that are new relative to `previous`
+    /// (every name when `previous` is `None`).
+    ///
+    /// The data service runs it with `None` on PostgreSQL, and against the
+    /// stored definition on SQLite, so a SQLite project cannot pick a new
+    /// name that would block `forgebase db convert` while names it already
+    /// has keep working. A field counts as new when its id is new or its name
+    /// changed.
+    pub fn validate_postgres_names(&self, previous: Option<&Collection>) -> Result<(), SchemaError> {
+        if previous.is_none_or(|p| !p.name.eq_ignore_ascii_case(&self.name)) {
+            validate_postgres_collection_name(&self.name)?;
+        }
+        for f in &self.fields {
+            let known = previous
+                .and_then(|p| p.field_by_id(&f.id))
+                .is_some_and(|old| old.name.eq_ignore_ascii_case(&f.name));
+            if !known {
+                validate_postgres_field_name(&f.name)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Checks the definition on its own (names, options, defaults). Relation
     /// targets are checked by the data service, which knows the catalog.
     pub fn validate(&self) -> Result<(), SchemaError> {
@@ -505,6 +529,38 @@ pub fn validate_field_name(name: &str) -> Result<(), SchemaError> {
     }
     if !is_name(name) || name.len() > 63 {
         return Err(SchemaError::InvalidName(name.to_owned()));
+    }
+    Ok(())
+}
+
+/// Longest identifier PostgreSQL keeps, in bytes (`NAMEDATALEN - 1`).
+/// Collection and field names already fit (63 ASCII characters).
+pub const POSTGRES_MAX_IDENT: usize = 63;
+
+/// Column names PostgreSQL gives every table (`oid` is already reserved by
+/// [`is_reserved_field_name`]). A field with one of these names cannot be
+/// created on PostgreSQL ("column name conflicts with a system column name").
+pub const POSTGRES_SYSTEM_COLUMNS: &[&str] = &["tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"];
+
+/// PostgreSQL's extra rule for collection names: `pg_` is reserved.
+///
+/// `pg_catalog` is searched before every schema on the search path, so a
+/// collection named like a catalog relation (`pg_class`, `pg_stats`) would be
+/// shadowed by it in every unqualified statement; PostgreSQL also reserves the
+/// prefix for system schemas and roles. The prefix is refused whole rather than
+/// per catalog relation, because new releases add relations.
+pub fn validate_postgres_collection_name(name: &str) -> Result<(), SchemaError> {
+    if name.to_ascii_lowercase().starts_with("pg_") || name.len() > POSTGRES_MAX_IDENT {
+        return Err(SchemaError::ReservedName(name.to_owned()));
+    }
+    Ok(())
+}
+
+/// PostgreSQL's extra rule for field names: its system column names.
+pub fn validate_postgres_field_name(name: &str) -> Result<(), SchemaError> {
+    let lower = name.to_ascii_lowercase();
+    if POSTGRES_SYSTEM_COLUMNS.contains(&lower.as_str()) || name.len() > POSTGRES_MAX_IDENT {
+        return Err(SchemaError::ReservedName(name.to_owned()));
     }
     Ok(())
 }
@@ -744,5 +800,44 @@ mod tests {
         assert!(c.fields.iter().all(|f| f.system));
         assert!(c.field("email").unwrap().unique);
         c.validate().unwrap();
+    }
+    #[test]
+    fn postgres_name_rules() {
+        assert!(validate_postgres_collection_name("posts").is_ok());
+        for bad in ["pg_class", "PG_stats", "pg_"] {
+            assert_eq!(
+                validate_postgres_collection_name(bad),
+                Err(SchemaError::ReservedName(bad.into())),
+                "{bad}"
+            );
+        }
+        assert!(validate_postgres_field_name("title").is_ok());
+        assert!(validate_postgres_field_name("xmin_total").is_ok());
+        for bad in ["ctid", "XMIN", "tableoid", "cmax"] {
+            assert!(validate_postgres_field_name(bad).is_err(), "{bad}");
+        }
+        assert!(validate_postgres_field_name(&"a".repeat(64)).is_err());
+
+        // Only new names are checked against a stored definition, so an
+        // existing SQLite collection keeps its names.
+        let mut old = Collection::base("pg_notes").with_field(Field::new(
+            "ctid",
+            FieldKind::Text {
+                min_length: None,
+                max_length: None,
+            },
+        ));
+        old.fields[0].id = "f1".into();
+        assert!(old.validate_postgres_names(None).is_err());
+        assert!(old.validate_postgres_names(Some(&old)).is_ok());
+        let mut renamed = old.clone();
+        renamed.fields[0].name = "xmax".into();
+        assert!(renamed.validate_postgres_names(Some(&old)).is_err());
+        let mut added = old.clone();
+        added.fields.push(Field::new("cmin", FieldKind::Bool));
+        assert!(added.validate_postgres_names(Some(&old)).is_err());
+        let mut moved = old.clone();
+        moved.name = "pg_other".into();
+        assert!(moved.validate_postgres_names(Some(&old)).is_err());
     }
 }

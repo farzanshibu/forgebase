@@ -48,7 +48,9 @@ pub use access::{
 pub use changes::{ChangeHook, ChangeOp, GuardRejection, PendingWrite, RecordChange, RowSnapshot, WriteGuard};
 pub use collections::SchemaChange;
 pub use error::DataError;
-pub use indexes::{IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexRecommendation, QueryPlan};
+pub use indexes::{
+    IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexOrigin, IndexRecommendation, IndexStats, QueryPlan,
+};
 pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, ListResult};
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
 pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};

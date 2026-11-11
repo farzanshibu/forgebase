@@ -2,23 +2,31 @@
 //! statistics, query plans, slow queries and recommendations.
 //!
 //! Indexes use the engine's native structures (SPEC §4.5): B-tree indexes
-//! (single, composite, unique, partial, expression, JSON-path) and FTS5
-//! full-text tables kept in sync by triggers.
+//! (single, composite, unique, partial, expression, JSON-path) and full-text
+//! indexes. On SQLite a full-text index is an FTS5 table kept in sync by
+//! triggers; on PostgreSQL it is a GIN index over
+//! `to_tsvector('simple', _forgebase_unaccent(…))` of the indexed fields
+//! (an expression index, so no column is added to the table and nothing
+//! needs syncing), queried with `websearch_to_tsquery` (ADR-0028 §7.4, FB-144
+//! addendum). Statistics come from `sqlite_stat1` / `pg_class` and
+//! `pg_stat_user_indexes`, sizes from `dbstat` / `pg_relation_size`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
-use forgebase_db::{Dialect, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Dialect, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx};
 use forgebase_query::{CompileOptions, Compiler, FieldPath, SqlBuilder, parse_filter};
 use forgebase_schema::{Collection, FieldKind};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
 use crate::access::{TENANT_COLUMN, is_tenant_scoped};
 use crate::catalog::CatalogSnapshot;
-use crate::ddl::{DdlLog, record_history};
+use crate::ddl::{DdlLog, is_pg, pg_regclass, record_history, rel};
 use crate::{AccessContext, Action, DataError, DataService, ListQuery, finish};
 
-/// Prefix of FTS5 tables and their triggers.
+/// Prefix of FTS5 tables and their triggers (SQLite) and of full-text GIN
+/// indexes (PostgreSQL).
 pub(crate) const FTS_PREFIX: &str = "_forgebase_fts_";
 
 /// Index kind.
@@ -28,7 +36,7 @@ pub enum IndexKind {
     /// B-tree index (single, composite, unique, partial, expression, JSON path).
     #[default]
     Btree,
-    /// FTS5 full-text index.
+    /// Full-text index (FTS5 on SQLite, GIN over a `tsvector` on PostgreSQL).
     Fulltext,
 }
 
@@ -121,6 +129,10 @@ pub struct IndexStats {
     pub rows_estimate: Option<i64>,
     /// Size on disk in bytes.
     pub size_bytes: Option<i64>,
+    /// Index scans since the statistics were last reset
+    /// (`pg_stat_user_indexes.idx_scan`; PostgreSQL only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scans: Option<i64>,
 }
 
 /// An index as found in the database.
@@ -164,6 +176,8 @@ pub struct QueryPlan {
 }
 
 impl QueryPlan {
+    /// Reads SQLite's `EXPLAIN QUERY PLAN` details (`SEARCH t USING INDEX i`,
+    /// `SCAN t`).
     pub(crate) fn from_steps(sql: String, steps: Vec<PlanStep>) -> Self {
         let mut indexes_used = Vec::new();
         let mut full_scans = Vec::new();
@@ -196,6 +210,62 @@ impl QueryPlan {
             full_scans,
         }
     }
+
+    /// Reads a PostgreSQL `EXPLAIN (FORMAT JSON)` plan (its `Plan` node).
+    ///
+    /// A full scan is a `Seq Scan`, or an `Index Scan` / `Index Only Scan`
+    /// with no `Index Cond`: a walk of the whole table in index order (what
+    /// SQLite calls `SCAN t USING INDEX i`). Steps keep `forgebase-db`'s
+    /// wording, with the filter shown apart from the index condition.
+    pub(crate) fn from_pg_json(sql: String, plan: Option<&Json>) -> Self {
+        fn walk(node: &Json, parent: i64, steps: &mut Vec<PlanStep>, used: &mut Vec<String>, scans: &mut Vec<String>) {
+            let id = i64::try_from(steps.len()).unwrap_or(i64::MAX) + 1;
+            let field = |k: &str| node.get(k).and_then(Json::as_str);
+            let kind = field("Node Type").unwrap_or("?");
+            let mut detail = kind.to_owned();
+            if let Some(op) = field("Operation") {
+                detail.push_str(&format!(" ({op})"));
+            }
+            if let Some(index) = field("Index Name") {
+                detail.push_str(&format!(" using {index}"));
+                if !used.iter().any(|u| u == index) {
+                    used.push(index.to_owned());
+                }
+            }
+            if let Some(rel) = field("Relation Name") {
+                detail.push_str(&format!(" on {rel}"));
+                let alias = field("Alias").unwrap_or(rel);
+                if alias != rel {
+                    detail.push_str(&format!(" {alias}"));
+                }
+                let whole = kind == "Seq Scan"
+                    || (matches!(kind, "Index Scan" | "Index Only Scan") && field("Index Cond").is_none());
+                if whole && !scans.iter().any(|s| s == alias) {
+                    scans.push(alias.to_owned());
+                }
+            }
+            if let Some(cond) = field("Index Cond") {
+                detail.push_str(&format!(" ({cond})"));
+            }
+            if let Some(filter) = field("Filter") {
+                detail.push_str(&format!(" filter {filter}"));
+            }
+            steps.push(PlanStep { id, parent, detail });
+            for child in node.get("Plans").and_then(Json::as_array).into_iter().flatten() {
+                walk(child, id, steps, used, scans);
+            }
+        }
+        let (mut steps, mut indexes_used, mut full_scans) = (Vec::new(), Vec::new(), Vec::new());
+        if let Some(p) = plan {
+            walk(p, 0, &mut steps, &mut indexes_used, &mut full_scans);
+        }
+        Self {
+            sql,
+            steps,
+            indexes_used,
+            full_scans,
+        }
+    }
 }
 
 /// A suggested index derived from slow queries.
@@ -212,22 +282,30 @@ pub struct IndexRecommendation {
 }
 
 fn validate_index_name(name: &str) -> Result<(), DataError> {
-    let ok = name.len() <= 63
+    let ok = name.len() <= forgebase_schema::POSTGRES_MAX_IDENT
         && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     let lower = name.to_ascii_lowercase();
-    if !ok || lower.starts_with("auto_") || lower.starts_with("sqlite_") {
+    if !ok || ["auto_", "sqlite_", "pg_"].iter().any(|p| lower.starts_with(p)) {
         return Err(DataError::invalid(
             "invalid_index_name",
-            "index names use letters, digits and underscores, start with a letter, and may not start with auto_ or sqlite_",
+            "index names use letters, digits and underscores (at most 63), start with a letter, and may not start with auto_, sqlite_ or pg_",
         ));
     }
     Ok(())
 }
 
+/// Name of a collection's `_tenant` index. Derived names are fitted to the
+/// engine's identifier limit (63 bytes on PostgreSQL: a longer name gets a
+/// stable hash suffix, see [`Dialect::fit_ident`]).
+pub(crate) fn tenant_index_name(d: &dyn Dialect, coll: &Collection) -> String {
+    d.fit_ident(&format!("auto_{}_tenant", coll.id))
+}
+
 /// The automatic indexes of a collection: a unique index per unique field and
-/// an index per single relation field (fast joins and cascades).
-pub(crate) fn auto_indexes(coll: &Collection) -> Vec<IndexDefinition> {
+/// an index per single relation field (fast joins and cascades). Names are
+/// fitted to the identifier limit.
+pub(crate) fn auto_indexes(d: &dyn Dialect, coll: &Collection) -> Vec<IndexDefinition> {
     let mut out = Vec::new();
     if coll.is_view() {
         return out;
@@ -236,7 +314,12 @@ pub(crate) fn auto_indexes(coll: &Collection) -> Vec<IndexDefinition> {
         let single_relation = matches!(f.kind, FieldKind::Relation { max_select: 1, .. });
         if f.unique || single_relation {
             out.push(IndexDefinition {
-                name: format!("auto_{}_{}_{}", coll.id, f.id, if f.unique { "u" } else { "r" }),
+                name: d.fit_ident(&format!(
+                    "auto_{}_{}_{}",
+                    coll.id,
+                    f.id,
+                    if f.unique { "u" } else { "r" }
+                )),
                 collection: coll.name.clone(),
                 keys: vec![IndexKey::asc(f.name.clone())],
                 unique: f.unique,
@@ -276,8 +359,52 @@ fn key_exprs(
         .collect()
 }
 
-fn fts_table(name: &str) -> String {
-    format!("{FTS_PREFIX}{name}")
+/// Engine object of full-text index `name`: the FTS5 table on SQLite, the
+/// GIN index on PostgreSQL (fitted to 63 bytes: index names may use all 63).
+pub(crate) fn fts_table(d: &dyn Dialect, name: &str) -> String {
+    d.fit_ident(&format!("{FTS_PREFIX}{name}"))
+}
+
+/// PostgreSQL full-text document of a definition over row `alias`:
+/// `to_tsvector('simple', _forgebase_unaccent(coalesce(k1::text, '') || ' ' || …))`.
+/// The index and the query render it the same way, so the planner matches
+/// the expression index.
+fn pg_fts_document(
+    d: &dyn Dialect,
+    cat: &CatalogSnapshot,
+    coll: &Collection,
+    def: &IndexDefinition,
+    alias: &str,
+) -> Result<String, DataError> {
+    let parts: Vec<String> = key_exprs(d, cat, coll, def, alias)?
+        .iter()
+        .map(|e| format!("coalesce(({e})::text, '')"))
+        .collect();
+    Ok(format!(
+        "to_tsvector('simple', {PG_UNACCENT_FN}({}))",
+        parts.join(" || ' ' || ")
+    ))
+}
+
+/// Condition: row `alias` of `coll` matches the full-text query bound to
+/// `param`, through index `def` (FTS5 `MATCH` on SQLite, `@@` on the
+/// indexed `tsvector` expression on PostgreSQL).
+pub(crate) fn fulltext_match(
+    d: &dyn Dialect,
+    cat: &CatalogSnapshot,
+    coll: &Collection,
+    def: &IndexDefinition,
+    alias: &str,
+    param: &str,
+) -> Result<String, DataError> {
+    if is_pg(d) {
+        Ok(format!(
+            "{} @@ websearch_to_tsquery('simple', {PG_UNACCENT_FN}({param}))",
+            pg_fts_document(d, cat, coll, def, alias)?
+        ))
+    } else {
+        Ok(d.fulltext_match(alias, &fts_table(d, &def.name), param))
+    }
 }
 
 /// DDL creating an index (and, for full-text, its triggers and initial
@@ -289,14 +416,20 @@ pub(crate) fn create_index_sql(
     def: &IndexDefinition,
 ) -> Result<Vec<String>, DataError> {
     let q = |s: &str| d.quote_ident(s);
-    let table = q(&coll.name);
+    let table = rel(d, &coll.name);
+    let pg = is_pg(d);
     match def.kind {
         IndexKind::Btree => {
             let exprs = key_exprs(d, cat, coll, def, "")?;
             let keys: Vec<String> = exprs
                 .iter()
                 .zip(&def.keys)
-                .map(|(e, k)| format!("{e}{}", if k.desc { " DESC" } else { "" }))
+                .map(|(e, k)| {
+                    // PostgreSQL takes an expression key in parentheses (a
+                    // parenthesised column is still a plain column key).
+                    let e = if pg { format!("({e})") } else { e.clone() };
+                    format!("{e}{}", if k.desc { " DESC" } else { "" })
+                })
                 .collect();
             let mut keys = keys;
             if def.unique && is_tenant_scoped(coll) {
@@ -331,7 +464,14 @@ pub(crate) fn create_index_sql(
                     "full-text indexes cannot be unique or partial",
                 ));
             }
-            let fts = q(&fts_table(&def.name));
+            if pg {
+                return Ok(vec![format!(
+                    "CREATE INDEX {} ON {table} USING gin (({}))",
+                    q(&fts_table(d, &def.name)),
+                    pg_fts_document(d, cat, coll, def, "")?
+                )]);
+            }
+            let fts = q(&fts_table(d, &def.name));
             let cols: Vec<String> = (0..def.keys.len()).map(|i| format!("c{i}")).collect();
             let plain = key_exprs(d, cat, coll, def, "")?;
             let mut out = vec![format!(
@@ -349,16 +489,20 @@ pub(crate) fn create_index_sql(
     }
 }
 
-/// Triggers that keep a full-text index in sync with its table.
+/// Triggers that keep a full-text index in sync with its table (SQLite;
+/// none on PostgreSQL, where the index is an expression index).
 pub(crate) fn fts_trigger_sql(
     d: &dyn Dialect,
     cat: &CatalogSnapshot,
     coll: &Collection,
     def: &IndexDefinition,
 ) -> Result<Vec<String>, DataError> {
+    if is_pg(d) {
+        return Ok(Vec::new());
+    }
     let q = |s: &str| d.quote_ident(s);
     let table = q(&coll.name);
-    let fts_name = fts_table(&def.name);
+    let fts_name = fts_table(d, &def.name);
     let fts = q(&fts_name);
     let cols: Vec<String> = (0..def.keys.len()).map(|i| format!("c{i}")).collect();
     let new_vals = key_exprs(d, cat, coll, def, "new")?;
@@ -384,13 +528,18 @@ pub(crate) fn fts_trigger_sql(
     ])
 }
 
-/// DDL dropping an index (and its full-text table).
+/// DDL dropping an index (and its full-text table). On PostgreSQL the index
+/// is named in schema `public`, so a system index of the same name in schema
+/// `forgebase` (first on the search path) is never touched.
 pub(crate) fn drop_index_sql(d: &dyn Dialect, def: &IndexDefinition) -> Vec<String> {
     let q = |s: &str| d.quote_ident(s);
     match def.kind {
-        IndexKind::Btree => vec![format!("DROP INDEX IF EXISTS {}", q(&def.name))],
+        IndexKind::Btree => vec![format!("DROP INDEX IF EXISTS {}", rel(d, &def.name))],
+        IndexKind::Fulltext if is_pg(d) => {
+            vec![format!("DROP INDEX IF EXISTS {}", rel(d, &fts_table(d, &def.name)))]
+        }
         IndexKind::Fulltext => {
-            let fts = fts_table(&def.name);
+            let fts = fts_table(d, &def.name);
             vec![
                 format!("DROP TRIGGER IF EXISTS {}", q(&format!("{fts}_ai"))),
                 format!("DROP TRIGGER IF EXISTS {}", q(&format!("{fts}_ad"))),
@@ -508,7 +657,7 @@ impl DataService {
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
             if crate::ddl::object_exists(d, &mut *tx, &def.name).await?
-                || crate::ddl::object_exists(d, &mut *tx, &fts_table(&def.name)).await?
+                || crate::ddl::object_exists(d, &mut *tx, &fts_table(d, &def.name)).await?
             {
                 return Err(DataError::AlreadyExists(format!("index {}", def.name)));
             }
@@ -597,23 +746,33 @@ impl DataService {
         self.authorize(ctx, Action::ReadSchema, coll.as_ref())?;
         let b = self.inner.backend.as_ref();
         let mut names = Vec::new();
-        let rows = b
-            .fetch_all(&Statement::new(
+        let engine = if is_pg(b.dialect()) {
+            crate::catalog::pg::index_names(coll.as_ref().map(|c| c.name.as_str()))
+        } else {
+            Statement::new(
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND (?1 IS NULL OR lower(tbl_name) = lower(?1))
-                   AND tbl_name NOT LIKE '\\_forgebase\\_%' ESCAPE '\\'
-                 UNION SELECT name FROM _forgebase_indexes WHERE ?2 IS NULL OR collection_id = ?2
-                 ORDER BY 1",
-                vec![
-                    coll.as_ref().map(|c| c.name.clone()).into(),
-                    coll.as_ref().map(|c| c.id.clone()).into(),
-                ],
-            ))
-            .await?;
-        for r in rows.rows {
+                   AND tbl_name NOT LIKE '\\_forgebase\\_%' ESCAPE '\\'",
+                vec![coll.as_ref().map(|c| c.name.clone()).into()],
+            )
+        };
+        for r in b.fetch_all(&engine).await?.rows {
             if let Some(n) = r[0].as_str() {
                 names.push(n.to_owned());
             }
         }
+        let managed = b
+            .fetch_all(&Statement::new(
+                "SELECT name FROM _forgebase_indexes WHERE CAST(?1 AS TEXT) IS NULL OR collection_id = ?1",
+                vec![coll.as_ref().map(|c| c.id.clone()).into()],
+            ))
+            .await?;
+        for r in managed.rows {
+            if let Some(n) = r[0].as_str() {
+                names.push(n.to_owned());
+            }
+        }
+        names.sort();
+        names.dedup();
         let mut out = Vec::new();
         for n in names {
             out.push(self.index_info(&n).await?);
@@ -658,7 +817,7 @@ impl DataService {
             def
         });
         if let Some(def) = definition.as_ref().filter(|d| d.kind == IndexKind::Fulltext) {
-            let fts = fts_table(&def.name);
+            let fts = fts_table(d, &def.name);
             let size = self.object_size(&fts).await;
             return Ok(IndexInfo {
                 name: name.to_owned(),
@@ -675,8 +834,12 @@ impl DataService {
                     stat: None,
                     rows_estimate: None,
                     size_bytes: size,
+                    scans: None,
                 },
             });
+        }
+        if is_pg(d) {
+            return self.pg_index_info(name, definition, origin, collection).await;
         }
         let master = b
             .fetch_all(&Statement::new(
@@ -739,40 +902,83 @@ impl DataService {
                 rows_estimate: stat.as_deref().and_then(|s| s.split(' ').next()?.parse().ok()),
                 stat,
                 size_bytes: self.object_size(name).await,
+                scans: None,
+            },
+        })
+    }
+
+    /// [`Self::index_info`] on PostgreSQL, from `pg_index`, `pg_class` and
+    /// `pg_stat_user_indexes` (indexes of tables in schema `public`).
+    async fn pg_index_info(
+        &self,
+        name: &str,
+        definition: Option<IndexDefinition>,
+        origin: Option<IndexOrigin>,
+        collection: Option<String>,
+    ) -> Result<IndexInfo, DataError> {
+        let rows = self
+            .inner
+            .backend
+            .fetch_all(&crate::catalog::pg::index_row(name))
+            .await?;
+        let Some(r) = rows.rows.first() else {
+            return Err(DataError::IndexNotFound(name.to_owned()));
+        };
+        let col = |c: &str| rows.column(c).and_then(|i| r.get(i));
+        let flag = |c: &str| col(c).and_then(Value::as_i64) == Some(1);
+        let table = col("tbl").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let columns: Vec<String> = col("cols")
+            .and_then(Value::as_str)
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let est = col("est").and_then(Value::as_i64);
+        let collection = collection.or_else(|| self.catalog().get(&table).map(|c| c.name.clone()));
+        Ok(IndexInfo {
+            name: name.to_owned(),
+            table,
+            collection,
+            origin: origin.unwrap_or(if flag("engine") {
+                IndexOrigin::Engine
+            } else {
+                IndexOrigin::Sql
+            }),
+            kind: IndexKind::Btree,
+            unique: flag("uniq"),
+            partial: flag("partial"),
+            columns,
+            definition,
+            sql: col("sql").and_then(Value::as_str).map(str::to_owned),
+            stats: IndexStats {
+                stat: est.map(|n| n.to_string()),
+                rows_estimate: est,
+                size_bytes: col("size").and_then(Value::as_i64),
+                scans: col("scans").and_then(Value::as_i64),
             },
         })
     }
 
     async fn stat1(&self, index: &str) -> Option<String> {
         let b = self.inner.backend.as_ref();
-        let rows = b
-            .fetch_all(&Statement::new(
-                "SELECT stat FROM sqlite_stat1 WHERE idx = ?1",
-                vec![index.into()],
-            ))
-            .await
-            .ok()?; // sqlite_stat1 exists only after the first ANALYZE
+        let rows = b.fetch_all(&b.dialect().index_stats(index)).await.ok()?; // sqlite_stat1 exists only after the first ANALYZE
         rows.scalar().and_then(Value::as_str).map(str::to_owned)
     }
 
     async fn object_size(&self, name: &str) -> Option<i64> {
-        let rows = self
-            .inner
-            .backend
-            .fetch_all(&Statement::new(
-                "SELECT sum(pgsize) FROM dbstat WHERE name = ?1 OR name LIKE ?2 ESCAPE '\\'",
-                vec![
-                    name.into(),
-                    format!("{}\\_%", self.inner.backend.dialect().escape_like(name)).into(),
-                ],
-            ))
-            .await
-            .ok()?;
+        let d = self.inner.backend.dialect();
+        let stmt = if is_pg(d) {
+            crate::catalog::pg::relation_size(&pg_regclass(d, name))
+        } else {
+            // The FTS5 shadow tables (`<name>_data`, …) count too.
+            d.object_size(name)
+        };
+        let rows = self.inner.backend.fetch_all(&stmt).await.ok()?;
         rows.scalar().and_then(Value::as_i64)
     }
 
     /// Rebuilds an index from its table (`REINDEX`, or a full-text rebuild)
-    /// and refreshes its statistics.
+    /// and refreshes its statistics. On PostgreSQL this is a plain `REINDEX
+    /// INDEX` (the concurrent form cannot run in a transaction), which blocks
+    /// writes to the table while it runs, then `ANALYZE` of the table.
     pub async fn rebuild_index(&self, ctx: &AccessContext, name: &str) -> Result<IndexInfo, DataError> {
         let _guard = self.inner.schema_lock.lock().await;
         self.authorize(ctx, Action::ManageIndexes, None)?;
@@ -780,11 +986,22 @@ impl DataService {
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
+            if is_pg(d) {
+                let engine_name = match info.definition.as_ref().filter(|d| d.kind == IndexKind::Fulltext) {
+                    Some(def) => fts_table(d, &def.name),
+                    None => name.to_owned(),
+                };
+                tx.execute(&Statement::raw(format!("REINDEX INDEX {}", rel(d, &engine_name))))
+                    .await?;
+                tx.execute(&Statement::raw(format!("ANALYZE {}", rel(d, &info.table))))
+                    .await?;
+                return Ok(());
+            }
             match info.definition.as_ref().filter(|d| d.kind == IndexKind::Fulltext) {
                 Some(def) => {
                     let coll = self.collection(&def.collection)?;
                     let cat = self.catalog();
-                    let fts = d.quote_ident(&fts_table(&def.name));
+                    let fts = d.quote_ident(&fts_table(d, &def.name));
                     let cols: Vec<String> = (0..def.keys.len()).map(|i| format!("c{i}")).collect();
                     let exprs = key_exprs(d, &cat, &coll, def, "")?;
                     tx.execute(&Statement::raw(format!("DELETE FROM {fts}"))).await?;
@@ -819,7 +1036,7 @@ impl DataService {
         self.authorize(ctx, Action::ManageIndexes, coll.as_ref())?;
         let d = self.inner.backend.dialect();
         let sql = match &coll {
-            Some(c) => format!("ANALYZE {}", d.quote_ident(&c.name)),
+            Some(c) => format!("ANALYZE {}", rel(d, &c.name)),
             None => "ANALYZE".to_owned(),
         };
         let mut tx = self.begin(TxMode::Normal).await?;
@@ -841,8 +1058,30 @@ impl DataService {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
-        let steps = self.inner.backend.explain(&built.select).await?;
-        Ok(QueryPlan::from_steps(built.select.sql.clone(), steps))
+        self.plan(&built.select).await
+    }
+
+    /// The plan of `stmt`. PostgreSQL's plan is read here from `EXPLAIN
+    /// (FORMAT JSON)` ([`QueryPlan::from_pg_json`]): telling a full index walk
+    /// from a lookup needs the index condition apart from the filter.
+    async fn plan(&self, stmt: &Statement) -> Result<QueryPlan, DataError> {
+        let b = self.inner.backend.as_ref();
+        let d = b.dialect();
+        if !is_pg(d) {
+            return Ok(QueryPlan::from_steps(stmt.sql.clone(), b.explain(stmt).await?));
+        }
+        let mut explain = stmt.clone();
+        explain.sql = format!("{}{}", d.explain_prefix(), stmt.sql);
+        explain.cache = false;
+        explain.label = None; // never a slow query to recommend for
+        let rows = b.fetch_all(&explain).await?;
+        let text = rows.scalar().and_then(Value::as_str).unwrap_or("[]");
+        let json: Json =
+            serde_json::from_str(text).map_err(|e| DataError::Internal(format!("unreadable query plan: {e}")))?;
+        Ok(QueryPlan::from_pg_json(
+            stmt.sql.clone(),
+            json.get(0).and_then(|p| p.get("Plan")),
+        ))
     }
 
     /// Recent slow statements.
@@ -884,12 +1123,17 @@ impl DataService {
                 continue;
             };
             if planned.insert(sq.sql.clone()) {
-                let probe = Statement::new(sq.sql.clone(), vec![Value::Null; sq.param_count]);
-                if let Ok(steps) = self.inner.backend.explain(&probe).await
-                    && QueryPlan::from_steps(sq.sql.clone(), steps)
-                        .full_scans
-                        .iter()
-                        .any(|t| t == "t")
+                // The log keeps no values. PostgreSQL folds `x = NULL` to
+                // a constant (no scan in the plan), so it gets a neutral
+                // value that converts to every parameter type ForgeBase binds.
+                let filler = if is_pg(self.inner.backend.dialect()) {
+                    Value::Text("0".into())
+                } else {
+                    Value::Null
+                };
+                let probe = Statement::new(sq.sql.clone(), vec![filler; sq.param_count]);
+                if let Ok(plan) = self.plan(&probe).await
+                    && plan.full_scans.iter().any(|t| t == "t")
                 {
                     scans.insert(sq.sql.clone());
                 }
@@ -1007,9 +1251,46 @@ mod tests {
     }
 
     #[test]
+    fn postgres_plan_parsing() {
+        let plan = serde_json::json!({
+            "Node Type": "Limit",
+            "Plans": [{
+                "Node Type": "Nested Loop",
+                "Plans": [
+                    {"Node Type": "Index Scan", "Index Name": "items_pkey", "Relation Name": "items",
+                     "Alias": "t", "Filter": "(other = '3'::bigint)"},
+                    {"Node Type": "Index Scan", "Index Name": "idx_a", "Relation Name": "orders",
+                     "Alias": "r1", "Index Cond": "(a = t.id)"},
+                    {"Node Type": "Bitmap Heap Scan", "Relation Name": "tags", "Alias": "g",
+                     "Plans": [{"Node Type": "Bitmap Index Scan", "Index Name": "idx_g", "Index Cond": "(x = 1)"}]},
+                    {"Node Type": "Seq Scan", "Relation Name": "events", "Alias": "events"}
+                ]
+            }]
+        });
+        let p = QueryPlan::from_pg_json(String::new(), Some(&plan));
+        assert_eq!(p.indexes_used, vec!["items_pkey", "idx_a", "idx_g"]);
+        assert_eq!(
+            p.full_scans,
+            vec!["t", "events"],
+            "an index walk with only a filter reads everything"
+        );
+        assert_eq!(p.steps.len(), 7);
+        assert_eq!(
+            p.steps[2].detail,
+            "Index Scan using items_pkey on items t filter (other = '3'::bigint)"
+        );
+        assert_eq!(p.steps[3].detail, "Index Scan using idx_a on orders r1 ((a = t.id))");
+        assert_eq!(p.steps[5].parent, p.steps[4].id);
+        assert!(QueryPlan::from_pg_json(String::new(), None).steps.is_empty());
+    }
+
+    #[test]
     fn index_names() {
         assert!(validate_index_name("idx_products_price").is_ok());
         assert!(validate_index_name("auto_x").is_err());
+        assert!(validate_index_name("pg_x").is_err());
+        assert!(validate_index_name(&"a".repeat(63)).is_ok());
+        assert!(validate_index_name(&"a".repeat(64)).is_err());
         assert!(validate_index_name("x\"; DROP").is_err());
     }
 }
