@@ -1624,3 +1624,40 @@ reason when it is missing (as the first start did), and the
 "`<feature>.convert` moves it" reason only when the extension is usable:
 a restart reports the same status as the first start on engines without
 pgvector/pgmq.
+
+**Tests.** `tests/pgmq.rs`: one queue per subscription (created, entries
+leased/acked, dropped with the subscription and with a forced topic
+delete); `queue.convert` both ways with a lease handed out before each
+conversion still acked, attempts and history carried (redelivery is
+attempt 2), an ordering subscription converted, the stored engine
+followed after a restart, `pgmq_unavailable` where pgmq is missing; a
+renamed `vt` column falls back to portable and refuses conversion; the
+convert job kind is reserved. The rest of the suite (ADR-0022:
+fan-out, competing consumers, redelivery, dead letters, ordering, dedup,
+replay, restart survival, streaming flow control, push, record views)
+runs on whichever engine the database offers: SQLite (portable),
+PostgreSQL without pgmq (portable), the bundled engine (pgmq), and the
+bundled engine with `FORGEBASE_TEST_PGMQ=off` (portable, and convert
+portable → pgmq → portable).
+
+**For the next packages.**
+- **FB-169 (replica reads):** claims, acks, nacks, deadline changes,
+  releases, seeks and snapshots write pgmq queue tables: primary only.
+  `subscription_metrics` and `backlog` read the queue tables
+  (`pgmq.q_fbs_…`, `SELECT` granted to `forgebase_reader` by default
+  privileges) and may go to a replica; the queue name of a subscription
+  is `crate::pgmq::queue_name(stored name)`.
+- **FB-172 (shard routing):** the engine is resolved per `QueueService`,
+  i.e. per backend: with one service per set, each set's database keeps
+  its own `ext.queue.engine` pin, pgmq install and queues, and resolves
+  on its own. A tenant move must move its subscriptions' pgmq queue
+  tables (whole tables outside the placement registry; `msg_id` is per
+  queue, so `apply_sequence_range` need not touch it) — or convert the
+  moving tenant's deliveries to portable rows first and let the target's
+  reconcile adopt them (reconcile moves portable rows of any subscription
+  into its queue). Maintenance (`run_maintenance`, retention pruning of
+  queue entries) is per set.
+- **Server wiring (not done here, outside Owns):** register the job kind
+  in `forgebase-server/src/lib.rs` next to the other `register_jobs`
+  calls: `let registry = match &queue { Some(q) =>
+  forgebase_queue::register_jobs(registry, q.clone()), None => registry };`.
