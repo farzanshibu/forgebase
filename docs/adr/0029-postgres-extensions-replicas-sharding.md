@@ -1513,3 +1513,151 @@ un-ignored (FB-148's file, not changed here).
   DDL.
 - **FB-153 (SQL editor allow list):** refuse `CREATE/ALTER/DROP EXTENSION`
   for vector, age, pgmq, pg_cron and pg_trgm (§1.1), and `cron.*` (§1.7).
+
+## Addendum: FB-167, replica routing and read-your-writes (2026-11-11)
+
+Built as §2.1 and §2.4–§2.7 describe, inside `forgebase-db` (`routing/`),
+`forgebase-api` (`consistency.rs`) and both SDKs. Nothing in the server
+opens replicas yet: FB-171 builds the router, FB-168 provisions managed
+replicas, FB-169 passes intents at the §2.5 call sites. Without replicas
+every read is on the primary and responses are unchanged, on both backends.
+
+**Files.** `crates/forgebase-db/src/routing/` (`routing.rs` moved to
+`routing/mod.rs`; new `token.rs`, `scope.rs`, `health.rs`, `check.rs`,
+`replicas.rs`, and `testing.rs` behind the `testing` feature); the default
+method in `backend.rs`; `SetHandle` replicas, `SetConnector::connect_replica`,
+`RouterOptions::replicas` and the reload step in `router.rs`; re-exports in
+`lib.rs`; `crates/forgebase-api/src/consistency.rs`; the test files
+`crates/forgebase-db/tests/replicas.rs`, `sdk/js/test/consistency.test.ts`;
+`sdk/js/src/consistency.ts`, `sdk/rust/src/consistency.rs`. No migration.
+
+**Model.**
+- `Backend::fetch_routed(stmt, &ReadIntent)`: a default method that runs
+  `fetch_all`. Only `SetHandle` overrides it, and only when the set has a
+  `ReplicaSet`. `ReadIntent { what, replica, consistency, read_after }`:
+  `ReadIntent::primary(what)` (the default) or `ReadIntent::replica(what)`,
+  plus `.with_consistency(Strong)`, `.after(&token)`, `.after_all(&read_after)`.
+- `ReplicaSet` (one per set, control included): the replicas as read-only
+  `Database`s on each standby, a monitor task, and the choice. Built by
+  `DbRouter::reload` from `Topology::nodes_of(set)` with role `replica` and
+  state `ready | catching_up | streaming | lagging | unreachable`, opened
+  with `SetConnector::connect_replica` (default: refuse, so a connector that
+  cannot open replicas leaves every read on the primary) and checked with
+  `check_replica`. A node that cannot be opened or fails the check is left
+  out with a log line; routing never fails because a replica is missing. A
+  reload with the same nodes keeps the set; with other nodes it keeps the
+  health, counters and connection of every node it already had.
+  `read_routing = "primary"` and SQLite open no replicas.
+- `ReplicaOptions` carries `[database.replicas]` (§4.1) with its defaults:
+  `read_routing`, `read_your_writes`, `lsn_wait` 50 ms, `lsn_poll` 5 ms,
+  `max_lag` 2 s, `max_lag_bytes` 64 MiB, `health_interval` 500 ms,
+  `return_after` 3. `health_interval = 0` runs no monitor (tests call
+  `refresh`).
+
+**Health (§2.7).** Every sample reads the primary's
+`pg_current_wal_insert_lsn()` and, on every replica in parallel,
+`pg_is_in_recovery()` and `pg_last_wal_replay_lsn()`. Lag in bytes is the
+difference; lag in time is the age of the oldest primary sample the replica
+has not replayed (a ring of 256 samples). Deviation: `pg_stat_replication`
+is not read; it needs `pg_monitor` for other roles' rows, cannot see
+external replicas, and the replica-side position works for every node kind.
+States: a new node enters rotation on its first sample within the limits
+(`catching_up` → `streaming`); above either limit it is `lagging`; it comes
+back after 3 consecutive samples under half of both limits; no answer is
+`unreachable` (also set at once when a read finds the replica gone); a node
+no longer in recovery is `needs_rebuild`. Only transitions are written, with
+`topology::update_node_state` on control (bumps the epoch), in the
+background. `ReplicaSet::status()` gives the live view (state, rotation,
+replay LSN, lag, in-flight, reads, fallbacks, last error) for FB-175/176.
+
+**Choice and fallback.** Among replicas in rotation (weight > 0, read pool
+not saturated by our reads) that have replayed the read's LSN: the lowest
+(in-flight + 1) ÷ weight, ties rotating. None has: the most advanced one is
+waited on up to `lsn_wait` (`WAIT FOR LSN '<lsn>' WITH (TIMEOUT '<n>ms',
+NO_THROW)` on PostgreSQL ≥ 19, outside a transaction on a read connection;
+on a parse error it is marked unsupported; otherwise polling every 5 ms),
+then the primary. A replica read that fails with `Busy` (SQLSTATE `40001` /
+`40P01`: a recovery conflict on a standby; also pool timeouts) or
+`Unavailable` / `Closed` / a driver error is retried once on the primary;
+statement errors are returned as they are. Metrics:
+`forgebase_db_routed_reads_total{set,target}`,
+`forgebase_db_replica_fallbacks_total{set,reason}` (`strong`,
+`no_replica`, `behind`, `unavailable`, `recovery_conflict`).
+
+**Read-your-writes (§2.6).**
+- Commit LSN: the PostgreSQL backend already read
+  `pg_current_wal_insert_lsn()` in the `COMMIT` round trip (FB-158 seam);
+  kept as is. A `SetHandle` with replicas wraps its write transactions: after
+  `COMMIT` it records `<set id>/<Database::last_commit_lsn()>` in the
+  request scope. The value is at or after the transaction's own commit (the
+  writer is single; a concurrent later commit can only raise it).
+- `RequestScope` (a Tokio task-local, `routing::scope`): consistency, the
+  positions reads must see, and the commits made. Commits also raise the
+  scope's own minimum, so a request reads its own writes. Work spawned onto
+  other tasks does not see the scope.
+- Tokens: `CommitToken` `<set>/<lsn>` (set ids `[A-Za-z0-9_.-]{1,64}`),
+  `ReadAfter` (highest LSN per set; a header lists tokens separated by
+  commas, at most 64; malformed ones are ignored, never an error).
+- `forgebase-api` `consistency::track`, mounted innermost (inside
+  authentication, so the principal is known): reads
+  `X-ForgeBase-Consistency` (`strong` | `session`, anything else ignored)
+  and every `X-ForgeBase-Read-After` value, adds the principal's recent
+  commits (`RecentCommits`: per realm and principal, 10 s, at most 10 000
+  principals, least recently written dropped; anonymous and system callers
+  are not remembered), runs the request in the scope, and answers
+  `X-ForgeBase-Commit` when it committed on a set with replicas. CORS allows
+  the two request headers and exposes the response header (shared edit in
+  `lib.rs`).
+- SDKs: JavaScript `CommitTokens` (`fb.commitTokens`), client option
+  `consistency: "session" | "strong"`, per call `{ consistency }` on
+  `request`, `collection().list/get`; Rust `CommitTokens`
+  (`fb.commit_tokens()`), `ClientBuilder::consistency`,
+  `ForgeBase::with_consistency` (shares credentials, tokens and realtime).
+  Both read `X-ForgeBase-Commit` from every response (a failed request may
+  have committed) and send `X-ForgeBase-Read-After` only once they hold a
+  token.
+
+**External checks (§2.4).** `check_replica(primary, replica, name)`: in
+recovery, equal `system_identifier` (`pg_control_system()`), version ≥ 16,
+and the role has `USAGE` on schema `forgebase` and `SELECT` on
+`forgebase._forgebase_migrations`. A mismatch is
+`ReplicaCheckError::Mismatch` (`node_mismatch`, 400); a server that cannot be
+asked keeps its `DbError` code. `primary_facts(db)` returns the facts
+(version, identifier, timeline) for the admin API to store.
+
+**Tests.** `crates/forgebase-db/tests/replicas.rs` builds real standbys
+(`routing::testing::ReplicaCluster`: `initdb`, `pg_basebackup -R -X stream`,
+each server on its own socket directory, a watchdog per server; gated on
+`FORGEBASE_TEST_PG_ENGINE` / `FORGEBASE_PG_ENGINE_DIR`): lag out of rotation
+and back after three samples; read-after tokens (wait, then primary; served
+by the replica once replayed; strong; `read_your_writes = false`); a
+recovery conflict (`max_standby_streaming_delay = 0`, `ALTER TABLE` on the
+primary) retried on the primary; another cluster's standby and a primary
+refused; the router opening only checked replicas, recording the health
+transition and keeping state across a reload. One test runs on the selected
+backend without replicas (unchanged behaviour). `forgebase-api`
+`consistency` tests: headers, the principal map, and the whole path over
+HTTP against a real standby.
+
+**For the next packages.**
+- **FB-168 (managed replicas):** insert the node row (`role = replica`,
+  state `provisioning`, then `catching_up` once started) and `reload()`; the
+  router opens nodes in `ready | catching_up | streaming | lagging |
+  unreachable`. `connect_replica` must open the standby with
+  `DbOptions::read_only()` (for a local node, its socket directory).
+  `NodeState::NeedsRebuild` from the monitor means "not in recovery".
+- **FB-169 (call sites, realtime):** pass `ReadIntent::replica("<area>")`
+  at the §2.5 call sites through `fetch_routed`; everything else keeps
+  `fetch_all`. `AccessContext.read_after` can become `ReadIntent::after_all`;
+  the request scope already carries the headers, so a call site inside an
+  HTTP request needs nothing more. Realtime pages: sample
+  `Database::current_wal_lsn()` and send `<set>/<lsn>`; the SDKs take it
+  with `commitTokens.note(...)` / `commit_tokens().note(...)`.
+- **FB-171 (server):** pass `RouterOptions { replicas: <from
+  [database.replicas]>, .. }`; implement `SetConnector::connect_replica`
+  (unseal `url_sealed`). The `[database.replicas]` keys are not in the FB-91
+  registry yet (outside this package): add them with `ReplicaOptions`'
+  defaults.
+- **FB-175 (admin API):** adding an external node runs `check_replica`
+  (400 `node_mismatch`) and stores `primary_facts` (version, identifier,
+  timeline); show `SetHandle::replicas().status()` for live health.

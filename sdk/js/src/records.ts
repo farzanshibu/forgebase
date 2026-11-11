@@ -1,3 +1,4 @@
+import type { Consistency } from "./consistency";
 import type { RequestOptions, Transport } from "./http";
 import type { Schemas } from "./types";
 
@@ -27,6 +28,8 @@ export interface ListOptions {
   cursor?: string;
   /** Skip the total count (cheaper on large collections). */
   skipTotal?: boolean;
+  /** `"strong"` reads from the primary even when replicas serve reads. */
+  consistency?: Consistency;
   signal?: AbortSignal;
 }
 
@@ -97,6 +100,7 @@ export class RecordsApi<T extends Row = Row> {
         await this.t.request<WireList<T>>(`${this.base}/records/query`, {
           method: "POST",
           signal: o.signal,
+          consistency: o.consistency,
           body: { ...common, params: o.params, expand: o.expand, fields: o.fields },
         }),
       );
@@ -104,6 +108,7 @@ export class RecordsApi<T extends Row = Row> {
     return fromWire(
       await this.t.request<WireList<T>>(`${this.base}/records`, {
         signal: o.signal,
+        consistency: o.consistency,
         query: { ...common, expand: o.expand?.join(","), fields: o.fields?.join(",") },
       }),
     );
@@ -139,9 +144,10 @@ export class RecordsApi<T extends Row = Row> {
     return (await this.list({ ...o, filter, perPage: 1, skipTotal: true })).items[0];
   }
 
-  get(id: string, o: { expand?: string[]; fields?: string[]; signal?: AbortSignal } = {}): Promise<T> {
+  get(id: string, o: { expand?: string[]; fields?: string[]; consistency?: Consistency; signal?: AbortSignal } = {}): Promise<T> {
     return this.t.request<T>(`${this.base}/records/${enc(id)}`, {
       signal: o.signal,
+      consistency: o.consistency,
       query: { expand: o.expand?.join(","), fields: o.fields?.join(",") },
     });
   }

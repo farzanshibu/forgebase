@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::auth::{AuthApi, AuthState, MemoryStore, SessionStore};
 use crate::billing::BillingApi;
+use crate::consistency::{CommitTokens, Consistency};
 use crate::entitlements::EntitlementsApi;
 use crate::error::{Error, Result};
 use crate::functions::FunctionsApi;
@@ -42,9 +43,19 @@ pub struct ClientBuilder {
     headers: Vec<(String, String)>,
     realtime: RealtimeConfig,
     http: Option<reqwest::Client>,
+    consistency: Consistency,
 }
 
 impl ClientBuilder {
+    /// Read replicas: [`Consistency::Session`] (default) reads your own writes through the commit
+    /// tokens the client tracks; [`Consistency::Strong`] reads every call from the primary. For
+    /// some calls only, use [`ForgeBase::with_consistency`].
+    #[must_use]
+    pub fn consistency(mut self, consistency: Consistency) -> Self {
+        self.consistency = consistency;
+        self
+    }
+
     /// Authenticates every request with an API key, service-account key or personal access token.
     #[must_use]
     pub fn api_key(mut self, key: impl Into<String>) -> Self {
@@ -165,6 +176,8 @@ impl ClientBuilder {
             retry: self.retry,
             auth,
             extra_headers: self.headers,
+            tokens: Arc::new(CommitTokens::default()),
+            consistency: self.consistency,
         });
         Ok(ForgeBase {
             realtime: Realtime::new(t.clone(), self.realtime),
@@ -203,7 +216,34 @@ impl ForgeBase {
             headers: Vec::new(),
             realtime: RealtimeConfig::default(),
             http: None,
+            consistency: Consistency::Session,
         }
+    }
+
+    /// A client sharing this one's credentials, commit tokens and realtime connection, whose
+    /// calls use `consistency`: `fb.with_consistency(Consistency::Strong).collection("posts")`.
+    #[must_use]
+    pub fn with_consistency(&self, consistency: Consistency) -> Self {
+        let t = &self.t;
+        Self {
+            t: Arc::new(Transport {
+                base: t.base.clone(),
+                http: t.http.clone(),
+                retry: t.retry.clone(),
+                auth: t.auth.clone(),
+                extra_headers: t.extra_headers.clone(),
+                tokens: t.tokens.clone(),
+                consistency,
+            }),
+            realtime: self.realtime.clone(),
+        }
+    }
+
+    /// Commit tokens of this client's writes, sent as `X-ForgeBase-Read-After`. Realtime events
+    /// that carry a position can feed it ([`CommitTokens::note`]).
+    #[must_use]
+    pub fn commit_tokens(&self) -> Arc<CommitTokens> {
+        self.t.tokens.clone()
     }
 
     /// Sign-up, sign-in, MFA, tokens and sessions.
