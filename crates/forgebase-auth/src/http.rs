@@ -237,11 +237,21 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
         Err(e) => return HttpError::new(e, &rid).into_response(),
     };
     let mut clear_cookie = false;
+    // FB-138: the tenant an API key or PAT is bound to.
+    let mut bound: Option<String> = None;
+    let mut keyed = |r: Result<crate::BoundKey, AuthError>| {
+        r.map(|b| {
+            bound = b.tenant;
+            b.auth
+        })
+    };
     let resolved = match cred {
         None => None,
-        Some(Credential::Bearer(tok)) if AuthService::is_api_key(&tok) => Some(auth.authenticate_key(&tok).await),
+        Some(Credential::Bearer(tok)) if AuthService::is_api_key(&tok) => {
+            Some(keyed(auth.authenticate_key_bound(&tok).await))
+        }
         Some(Credential::Bearer(tok)) => Some(auth.authenticate_access_token(&tok).await),
-        Some(Credential::ApiKey(k)) => Some(auth.authenticate_key(&k).await),
+        Some(Credential::ApiKey(k)) => Some(keyed(auth.authenticate_key_bound(&k).await)),
         Some(Credential::Cookie(c)) => match auth.authenticate_cookie(&c).await {
             Ok(a) => Some(Ok(a)),
             Err(AuthError::InvalidToken(_)) => {
@@ -280,6 +290,26 @@ pub async fn authenticate(State(auth): State<AuthService>, mut req: Request, nex
                         &rid,
                     )
                     .into_response();
+                }
+            }
+            // A tenant-bound key acts in its tenant only: the request selects
+            // it, so the tenancy layer checks it (policy step 2) and stamps
+            // it on the context; another tenant is refused (FB-138).
+            if let Some(t) = &bound {
+                const TENANT_HEADER: &str = "x-forgebase-tenant";
+                let sent = req
+                    .headers()
+                    .get(TENANT_HEADER)
+                    .map(|v| v.to_str().unwrap_or("").trim().to_owned());
+                if sent.as_deref().is_some_and(|s| s != t) {
+                    return HttpError::new(
+                        AuthError::Forbidden(format!("tenant_mismatch: this key is bound to tenant {t}")),
+                        &rid,
+                    )
+                    .into_response();
+                }
+                if let Ok(v) = axum::http::HeaderValue::from_str(t) {
+                    req.headers_mut().insert(TENANT_HEADER, v);
                 }
             }
             // The identity's home realm, unless the request selects one
@@ -516,6 +546,9 @@ struct KeyReq {
     scopes: Vec<String>,
     #[serde(default)]
     expires_in_days: Option<u32>,
+    /// Tenant binding (FB-138).
+    #[serde(default)]
+    tenant: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -840,7 +873,14 @@ async fn create_pat(
     Body(b): Body<KeyReq>,
 ) -> Res {
     let k = a
-        .create_pat(&c, &ci, &b.name, &b.scopes, b.expires_in_days)
+        .create_pat_with(
+            &c,
+            &ci,
+            &b.name,
+            &b.scopes,
+            b.expires_in_days,
+            &crate::KeyOptions::default().with_tenant(b.tenant),
+        )
         .await
         .map_err(|e| HttpError::new(e, &rid))?;
     Ok(ok(StatusCode::CREATED, serde_json::to_value(k).unwrap_or(Json_::Null)))
@@ -940,7 +980,15 @@ async fn create_sa_key(
     Body(b): Body<KeyReq>,
 ) -> Res {
     let k = a
-        .create_api_key(&c, &ci, &id, &b.name, &b.scopes, b.expires_in_days)
+        .create_api_key_with(
+            &c,
+            &ci,
+            &id,
+            &b.name,
+            &b.scopes,
+            b.expires_in_days,
+            &crate::KeyOptions::default().with_tenant(b.tenant),
+        )
         .await
         .map_err(|e| HttpError::new(e, &rid))?;
     Ok(ok(StatusCode::CREATED, serde_json::to_value(k).unwrap_or(Json_::Null)))

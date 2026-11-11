@@ -741,6 +741,7 @@ async fn web_apis_behave_like_other_runtimes() {
     assert!(last.fuel_used < 30_000_000, "fuel {}", last.fuel_used);
 }
 
+// FB-138: callers without a tenant reach application data in shared.* namespaces.
 #[tokio::test]
 async fn key_value_namespaces_are_private_by_default_and_ruled_for_applications() {
     let h = harness().await;
@@ -754,8 +755,8 @@ serve(async (req, ctx) => {
   const keys = await ctx.kv.keys("");
   let app;
   try {
-    await ctx.kv.namespace("app").set("shared", "1");
-    app = await ctx.kv.namespace("app").get("shared");
+    await ctx.kv.namespace("shared.app").set("shared", "1");
+    app = await ctx.kv.namespace("shared.app").get("shared");
   } catch (e) {
     app = e.code;
   }
@@ -779,7 +780,7 @@ serve(async (req, ctx) => {
     );
     // Rules are for administrators only.
     grant(&h, "user:users/dev", "engine:manage_functions").await;
-    let rules = json!({"items": [{"namespace": "app", "access": "write"}]});
+    let rules = json!({"items": [{"namespace": "shared.app", "access": "write"}]});
     let r = call(
         &app,
         Method::PUT,
@@ -808,7 +809,7 @@ serve(async (req, ctx) => {
     let r = call(&app, Method::GET, "/api/v1/functions/counter/invoke", "user:u1", None).await;
     assert_eq!(r.json()["app"], "1", "{}", r.text());
     // A read rule allows reads only.
-    let ro = json!({"items": [{"namespace": "app*", "access": "read"}]});
+    let ro = json!({"items": [{"namespace": "shared.app*", "access": "read"}]});
     call(
         &app,
         Method::PUT,

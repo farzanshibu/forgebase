@@ -407,6 +407,10 @@ pub struct AuthKeyRequest {
     /// `<area>:read|write[:<name>]`.
     pub scopes: Vec<String>,
     pub expires_in_days: Option<u32>,
+    /// Bind the key to this tenant (environment id): requests then act in it
+    /// only (another `X-ForgeBase-Tenant` is refused) and RESP sessions run in
+    /// it. The owner must be able to use the tenant (FB-138).
+    pub tenant: Option<String>,
 }
 
 /// `POST /api/auth/service-accounts` body.
@@ -536,6 +540,8 @@ pub struct AuthKeyCreated {
     pub name: Option<String>,
     pub scopes: Option<Vec<String>>,
     pub key: String,
+    /// Tenant the key is bound to (FB-138).
+    pub tenant: Option<String>,
 }
 
 /// `{revoked: n}`.

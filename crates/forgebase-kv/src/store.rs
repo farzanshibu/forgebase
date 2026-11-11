@@ -5,7 +5,7 @@
 //! key, so a command can only ever address keys of its own scope: there is no
 //! API that takes a bare key.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 
 use crate::config::{EvictionPolicy, KvConfig};
@@ -56,6 +56,16 @@ pub(crate) struct Stats {
     pub(crate) evicted: u64,
 }
 
+/// What one tenant uses (FB-138): its keys, memory and counters. The
+/// "tenant" is the scope's tenant string: `t:<id>`, `shared:<realm>` or the
+/// privileged `default`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TenantUse {
+    pub(crate) keys: usize,
+    pub(crate) used: usize,
+    pub(crate) stats: Stats,
+}
+
 fn entry_mem(id: &KeyId, data: &Data) -> usize {
     ENTRY_OVERHEAD + 3 * (id.key.len() + id.scope.tenant.len() + id.scope.ns.len()) + data.mem()
 }
@@ -68,6 +78,9 @@ pub(crate) struct Store {
     lru: BTreeMap<u64, KeyId>,
     expiries: BTreeSet<(u64, KeyId)>,
     ns_counts: BTreeMap<Scope, usize>,
+    /// Per-tenant LRU index: `(tenant, tick)` of every key (FB-138).
+    tenant_lru: BTreeSet<(String, u64)>,
+    tenants: HashMap<String, TenantUse>,
     tick: u64,
     used: usize,
     dirty: HashSet<KeyId>,
@@ -82,6 +95,8 @@ impl Store {
             lru: BTreeMap::new(),
             expiries: BTreeSet::new(),
             ns_counts: BTreeMap::new(),
+            tenant_lru: BTreeSet::new(),
+            tenants: HashMap::new(),
             tick: 0,
             used: 0,
             dirty: HashSet::new(),
@@ -101,6 +116,33 @@ impl Store {
         self.ns_counts.get(scope).copied().unwrap_or(0)
     }
 
+    /// What `tenant` uses (zero when it holds nothing).
+    pub(crate) fn tenant_use(&self, tenant: &str) -> TenantUse {
+        self.tenants.get(tenant).copied().unwrap_or_default()
+    }
+
+    /// Changed keys of `tenant` not yet written to SQLite.
+    pub(crate) fn dirty_len_of(&self, tenant: &str) -> usize {
+        self.dirty.iter().filter(|k| k.scope.tenant == tenant).count()
+    }
+
+    fn tenant_mut(&mut self, tenant: &str) -> &mut TenantUse {
+        if !self.tenants.contains_key(tenant) {
+            self.tenants.insert(tenant.to_owned(), TenantUse::default());
+        }
+        let Some(t) = self.tenants.get_mut(tenant) else {
+            unreachable!("inserted above")
+        };
+        t
+    }
+
+    /// Whether a key exists and is not expired, without any side effect.
+    pub(crate) fn exists_now(&self, id: &KeyId, now: u64) -> bool {
+        self.map
+            .get(id)
+            .is_some_and(|e| !e.expires_at.is_some_and(|t| t <= now))
+    }
+
     /// Namespaces of a tenant with their key counts, in name order.
     pub(crate) fn namespaces(&self, tenant: &str) -> Vec<(String, usize)> {
         self.ns_counts
@@ -118,6 +160,10 @@ impl Store {
         let mem = entry_mem(&id, &data);
         self.used += mem;
         self.lru.insert(self.tick, id.clone());
+        self.tenant_lru.insert((id.scope.tenant.clone(), self.tick));
+        let tu = self.tenant_mut(&id.scope.tenant);
+        tu.used += mem;
+        tu.keys += 1;
         if let Some(t) = expires_at {
             self.expiries.insert((t, id.clone()));
         }
@@ -138,6 +184,11 @@ impl Store {
     fn remove_entry(&mut self, id: &KeyId) -> Option<Entry> {
         let e = self.map.remove(id)?;
         self.lru.remove(&e.tick);
+        self.tenant_lru.remove(&(id.scope.tenant.clone(), e.tick));
+        if let Some(tu) = self.tenants.get_mut(&id.scope.tenant) {
+            tu.used = tu.used.saturating_sub(e.mem);
+            tu.keys = tu.keys.saturating_sub(1);
+        }
         if let Some(t) = e.expires_at {
             self.expiries.remove(&(t, id.clone()));
         }
@@ -155,9 +206,11 @@ impl Store {
     fn touch(&mut self, id: &KeyId) {
         if let Some(e) = self.map.get_mut(id) {
             self.lru.remove(&e.tick);
+            self.tenant_lru.remove(&(id.scope.tenant.clone(), e.tick));
             self.tick += 1;
             e.tick = self.tick;
             self.lru.insert(self.tick, id.clone());
+            self.tenant_lru.insert((id.scope.tenant.clone(), self.tick));
         }
     }
 
@@ -166,6 +219,7 @@ impl Store {
         if self.map.get(id).is_some_and(|e| e.expires_at.is_some_and(|t| t <= now)) {
             self.remove_entry(id);
             self.stats.expired += 1;
+            self.tenant_mut(&id.scope.tenant).stats.expired += 1;
         }
     }
 
@@ -180,10 +234,14 @@ impl Store {
     /// Reads a key: lazily expires it, counts a hit or miss, marks it recently used.
     pub(crate) fn get_entry(&mut self, id: &KeyId, now: u64) -> Option<&Entry> {
         self.expire_if_due(id, now);
-        if self.map.contains_key(id) {
+        let hit = self.map.contains_key(id);
+        let tu = &mut self.tenant_mut(&id.scope.tenant).stats;
+        if hit {
+            tu.hits += 1;
             self.stats.hits += 1;
             self.touch(id);
         } else {
+            tu.misses += 1;
             self.stats.misses += 1;
         }
         self.map.get(id)
@@ -221,6 +279,8 @@ impl Store {
         entry.mem = new_mem;
         let empty = entry.data.is_empty();
         self.used = (self.used + new_mem).saturating_sub(old_mem);
+        let tu = self.tenant_mut(&id.scope.tenant);
+        tu.used = (tu.used + new_mem).saturating_sub(old_mem);
         if empty || (created && res.is_err()) {
             self.remove_entry(id);
         } else if res.is_ok() {
@@ -311,6 +371,7 @@ impl Store {
             }
             self.remove_entry(&id);
             self.stats.expired += 1;
+            self.tenant_mut(&id.scope.tenant).stats.expired += 1;
             n += 1;
         }
         n
@@ -320,36 +381,76 @@ impl Store {
         self.cfg.max_memory_bytes > 0 && self.used > self.cfg.max_memory_bytes
     }
 
-    /// Evicts least recently used keys until under the budget. The most
+    fn over_tenant_limit(&self, tenant: &str) -> bool {
+        self.cfg.tenant_max_bytes > 0
+            && self
+                .tenants
+                .get(tenant)
+                .is_some_and(|t| t.used > self.cfg.tenant_max_bytes)
+    }
+
+    fn evictable(&self, tick: u64, id: &KeyId) -> bool {
+        tick != self.tick
+            && (self.cfg.eviction != EvictionPolicy::VolatileLru
+                || self.map.get(id).is_some_and(|e| e.expires_at.is_some()))
+    }
+
+    fn evict(&mut self, id: &KeyId) {
+        self.remove_entry(id);
+        self.stats.evicted += 1;
+        self.tenant_mut(&id.scope.tenant).stats.evicted += 1;
+    }
+
+    /// Evicts least recently used keys of `tenant` (only) until it is under
+    /// its budget (FB-138): one tenant never evicts another's keys this way.
+    fn evict_tenant_to_limit(&mut self, tenant: &str) {
+        if self.cfg.eviction == EvictionPolicy::NoEviction {
+            return;
+        }
+        while self.over_tenant_limit(tenant) {
+            let start = (tenant.to_owned(), 0);
+            let victim = self
+                .tenant_lru
+                .range(start..)
+                .take_while(|(t, _)| t == tenant)
+                .filter_map(|(_, tick)| self.lru.get(tick).map(|id| (*tick, id)))
+                .find(|(tick, id)| self.evictable(*tick, id))
+                .map(|(_, id)| id.clone());
+            let Some(id) = victim else { break };
+            self.evict(&id);
+        }
+    }
+
+    /// Evicts least recently used keys until under the budgets: first those of
+    /// `tenant` for the tenant budget, then any for the global one. The most
     /// recently used key is never evicted, so the write that just happened
     /// is not thrown away.
-    pub(crate) fn evict_to_limit(&mut self) {
+    pub(crate) fn evict_to_limit(&mut self, tenant: Option<&str>) {
+        if let Some(t) = tenant {
+            self.evict_tenant_to_limit(t);
+        }
         if self.cfg.eviction == EvictionPolicy::NoEviction {
             return;
         }
         while self.over_limit() {
-            let volatile_only = self.cfg.eviction == EvictionPolicy::VolatileLru;
-            let newest = self.tick;
             let victim = self
                 .lru
                 .iter()
-                .find(|(tick, id)| {
-                    **tick != newest && (!volatile_only || self.map.get(*id).is_some_and(|e| e.expires_at.is_some()))
-                })
+                .find(|(tick, id)| self.evictable(**tick, id))
                 .map(|(_, id)| id.clone());
             let Some(id) = victim else { break };
-            self.remove_entry(&id);
-            self.stats.evicted += 1;
+            self.evict(&id);
         }
     }
 
-    /// Called before a command that may grow memory: makes room, or refuses.
-    pub(crate) fn make_room(&mut self) -> KvResult<()> {
-        if !self.over_limit() {
+    /// Called before a command of `tenant` that may grow memory: makes room,
+    /// or refuses.
+    pub(crate) fn make_room(&mut self, tenant: &str) -> KvResult<()> {
+        if !self.over_limit() && !self.over_tenant_limit(tenant) {
             return Ok(());
         }
-        self.evict_to_limit();
-        if self.over_limit() && self.cfg.eviction != EvictionPolicy::AllKeysLru {
+        self.evict_to_limit(Some(tenant));
+        if (self.over_limit() || self.over_tenant_limit(tenant)) && self.cfg.eviction != EvictionPolicy::AllKeysLru {
             return Err(KvError::OutOfMemory);
         }
         Ok(())
@@ -387,6 +488,6 @@ impl Store {
         }
         self.insert_entry(id.clone(), data, expires_at, updated_at);
         self.dirty.remove(&id);
-        self.evict_to_limit();
+        self.evict_to_limit(Some(&id.scope.tenant));
     }
 }

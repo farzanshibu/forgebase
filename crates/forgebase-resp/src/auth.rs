@@ -130,10 +130,11 @@ impl Authenticator for KeyAuthenticator {
             if !AuthService::is_api_key(secret) {
                 return Err(AuthFailure::Invalid);
             }
-            let a = self.auth.authenticate_key(secret).await.map_err(|e| match e {
+            let bound = self.auth.authenticate_key_bound(secret).await.map_err(|e| match e {
                 forgebase_auth::AuthError::Internal(m) => AuthFailure::Unavailable(m),
                 _ => AuthFailure::Invalid,
             })?;
+            let a = bound.auth;
             let subject_id = match &a.subject {
                 Subject::User { id, .. } | Subject::Admin { id } | Subject::ServiceAccount { id, .. } => id.clone(),
                 _ => return Err(AuthFailure::Invalid),
@@ -145,17 +146,26 @@ impl Authenticator for KeyAuthenticator {
             {
                 return Err(AuthFailure::Invalid);
             }
-            Ok(Identity::new(
-                a.access_context(None),
-                subject_id,
-                a.scopes.clone(),
-                secret,
-            ))
+            // FB-138 (rls-coverage G6): the session runs in the key's home
+            // realm and in the tenant the key is bound to; every command is
+            // then checked against that tenant by the policy (step 2). An
+            // unbound key has no tenant: non-privileged callers reach only
+            // `shared.*` namespaces (`tenant_required` otherwise).
+            let mut ctx = self.auth.access_context_for(&a);
+            if let Some(t) = bound.tenant {
+                ctx = ctx.with_tenant(t);
+            }
+            Ok(Identity::new(ctx, subject_id, a.scopes.clone(), secret))
         })
     }
 
     fn still_valid<'a>(&'a self, identity: &'a Identity) -> BoxFuture<'a, bool> {
-        Box::pin(async move { self.auth.authenticate_key(identity.secret()).await.is_ok() })
+        Box::pin(async move {
+            self.auth
+                .authenticate_key_bound(identity.secret())
+                .await
+                .is_ok_and(|b| b.tenant == identity.ctx.tenant)
+        })
     }
 }
 

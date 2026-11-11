@@ -136,28 +136,29 @@ impl Authorizer for UsersReadOnly {
     }
 }
 
+/// A user without a tenant reaches shared namespaces only (FB-138).
 #[tokio::test]
 async fn each_command_asks_for_the_action_it_needs() {
     let h = Harness::with(Arc::new(UsersReadOnly), KvConfig::default()).await;
-    h.put("/api/v1/kv/app/strings/k", json!({"value": "v"}))
+    h.put("/api/v1/kv/shared.app/strings/k", json!({"value": "v"}))
         .await
         .expect(StatusCode::OK);
     let user = [("x-test-user", "user:7")];
     // read is allowed
     let r = h
-        .send(Method::GET, "/api/v1/kv/app/keys/k", &user, None)
+        .send(Method::GET, "/api/v1/kv/shared.app/keys/k", &user, None)
         .await
         .expect(StatusCode::OK);
     assert_eq!(r.json()["value"], "v");
     h.send(
         Method::POST,
-        "/api/v1/kv/app/exec",
+        "/api/v1/kv/shared.app/exec",
         &user,
         Some(json!({"command": ["GET", "k"]})),
     )
     .await
     .expect(StatusCode::OK);
-    h.send(Method::GET, "/api/v1/kv/app/keys", &user, None)
+    h.send(Method::GET, "/api/v1/kv/shared.app/keys", &user, None)
         .await
         .expect(StatusCode::OK);
     h.send(Method::GET, "/api/v1/kv/_namespaces", &user, None)
@@ -172,7 +173,7 @@ async fn each_command_asks_for_the_action_it_needs() {
         json!({"command": ["FLUSHDB"]}),
     ] {
         let r = h
-            .send(Method::POST, "/api/v1/kv/app/exec", &user, Some(body.clone()))
+            .send(Method::POST, "/api/v1/kv/shared.app/exec", &user, Some(body.clone()))
             .await;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{body}");
     }
@@ -180,30 +181,32 @@ async fn each_command_asks_for_the_action_it_needs() {
     let r = h
         .send(
             Method::POST,
-            "/api/v1/kv/app/batch",
+            "/api/v1/kv/shared.app/batch",
             &user,
             Some(json!({"commands": [["GET", "k"], ["SET", "k", "evil"]]})),
         )
         .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    assert_eq!(h.exec("app", &["GET", "k"]).await, json!("v"));
+    assert_eq!(h.exec("shared.app", &["GET", "k"]).await, json!("v"));
     // admin-only: stats and flushing
     h.send(Method::GET, "/api/v1/kv/_info", &user, None)
         .await
         .expect(StatusCode::FORBIDDEN);
-    h.send(Method::DELETE, "/api/v1/kv/app", &user, None)
+    h.send(Method::DELETE, "/api/v1/kv/shared.app", &user, None)
         .await
         .expect(StatusCode::FORBIDDEN);
     h.send(
         Method::PUT,
-        "/api/v1/kv/app/strings/k",
+        "/api/v1/kv/shared.app/strings/k",
         &user,
         Some(json!({"value": "x"})),
     )
     .await
     .expect(StatusCode::FORBIDDEN);
     // an SSE stream never ends: check the status only, do not read the body
-    let sse = h.raw(Method::GET, "/api/v1/kv/app/subscribe/c", &user, None).await;
+    let sse = h
+        .raw(Method::GET, "/api/v1/kv/shared.app/subscribe/c", &user, None)
+        .await;
     assert_eq!(sse.status(), StatusCode::OK);
 }
 

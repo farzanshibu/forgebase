@@ -219,7 +219,11 @@ async fn start_full(
     };
     // One authorizer — the policy engine — for the data core and the KV engine.
     let authorizer: Arc<dyn Authorizer> = policy.authorizer();
-    let kv = match KvService::open(KvConfig::default(), authorizer, Some(Arc::new(db.clone()))).await {
+    let kv_cfg = KvConfig {
+        tenant_max_bytes: usize::try_from(config.kv.tenant_max_bytes).unwrap_or(usize::MAX),
+        ..KvConfig::default()
+    };
+    let kv = match KvService::open(kv_cfg, authorizer, Some(Arc::new(db.clone()))).await {
         Ok(kv) => kv,
         Err(e) => {
             db.close().await;

@@ -45,7 +45,7 @@ serve(async (req: Request, ctx) => {
   await t("queue", async () => (await s.queues.publish("events", { a: 1 })).duplicate === false);
   await t("job", async () => (await s.jobs.enqueue("noop", { a: 1 })).created);
   await t("realtime", async () => { await s.realtime.broadcast("room.1", "hi", { a: 1 }); return "ok"; });
-  await t("kv_app", async () => s.kv.namespace("app").set("k", "v"));
+  await t("kv_app", async () => s.kv.namespace("shared.app").set("k", "v"));
   return Response.json(out);
 });
 "#;
@@ -158,7 +158,7 @@ async fn every_ctx_service_runs_as_the_caller_and_service_role_bypasses() {
         &admin,
         "svc",
         vec![KvRule {
-            namespace: "app".into(),
+            namespace: "shared.app".into(),
             access: KvAccess::Write,
         }],
     )

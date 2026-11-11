@@ -54,6 +54,10 @@ pub enum KvError {
     /// The caller is not allowed to do this.
     #[error("not allowed")]
     Forbidden,
+    /// A non-privileged caller without a tenant named a tenant namespace
+    /// (FB-138): select a tenant, or use a `shared.<name>` namespace.
+    #[error("{0}")]
+    TenantRequired(String),
     /// The SQLite snapshot failed.
     #[error("kv storage error: {0}")]
     Storage(String),
@@ -78,6 +82,7 @@ impl ErrorCode for KvError {
             KvError::TooManyChannels => "kv_too_many_channels",
             KvError::Unauthenticated => "unauthenticated",
             KvError::Forbidden => "forbidden",
+            KvError::TenantRequired(_) => "tenant_required",
             KvError::Storage(_) => "kv_storage_error",
         }
     }
@@ -95,7 +100,8 @@ impl ErrorCode for KvError {
             | KvError::InvalidNamespace(_)
             | KvError::TooLarge(_)
             | KvError::TooManyKeys(_)
-            | KvError::OutOfRange(_) => ErrorKind::InvalidInput,
+            | KvError::OutOfRange(_)
+            | KvError::TenantRequired(_) => ErrorKind::InvalidInput,
             KvError::OutOfMemory | KvError::TooManyChannels => ErrorKind::Unavailable,
             KvError::Unauthenticated => ErrorKind::Unauthenticated,
             KvError::Forbidden => ErrorKind::Forbidden,

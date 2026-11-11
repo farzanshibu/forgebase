@@ -129,6 +129,11 @@ impl Hub {
     pub(crate) fn channel_count(&self) -> usize {
         self.lock().len()
     }
+
+    /// Live channels of every namespace of one tenant (FB-138).
+    pub(crate) fn channel_count_of(&self, tenant: &str) -> usize {
+        self.lock().keys().filter(|(s, _)| s.tenant == tenant).count()
+    }
 }
 
 #[cfg(test)]

@@ -89,6 +89,11 @@ enabled = true              # FORGEBASE_BILLING_ENABLED
 [realtime]
 max_connections_per_principal = 32  # FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL
 
+# Key-value engine. Per-tenant memory budget in bytes (0 = none): above it a
+# tenant's own least recently used keys are evicted, never another tenant's.
+[kv]
+tenant_max_bytes = 0        # FORGEBASE_KV_TENANT_MAX_BYTES
+
 [auth]
 # Client address from the last X-Forwarded-For entry. Only behind a reverse
 # proxy you run (it must append the real address); off, the socket address.
@@ -261,6 +266,8 @@ pub struct Config {
     pub billing: BillingConfig,
     /// Realtime (WebSocket) settings.
     pub realtime: RealtimeSettings,
+    /// Key-value engine settings (FB-138), `[kv]`.
+    pub kv: KvSettings,
     /// Authentication deployment settings.
     pub auth: AuthSettings,
     /// Server functions (FB-60), `[functions]`.
@@ -287,6 +294,13 @@ impl Default for ModuleSwitch {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// `[kv]`: key-value engine settings (FB-138).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct KvSettings {
+    /// Memory budget of one tenant in bytes; `0` = none.
+    pub tenant_max_bytes: u64,
 }
 
 /// Default most realtime connections one principal may hold (FIX-9).
@@ -493,6 +507,7 @@ impl Config {
                 enabled: true,
                 max_connections_per_principal: DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL,
             },
+            kv: KvSettings::default(),
             auth: AuthSettings::default(),
             functions: ModuleSwitch::default(),
             vector: ModuleSwitch::default(),
@@ -820,6 +835,9 @@ impl Config {
         if let Some(v) = o.realtime_max_connections_per_principal {
             self.realtime.max_connections_per_principal = v;
         }
+        if let Some(v) = o.kv_tenant_max_bytes {
+            self.kv.tenant_max_bytes = v;
+        }
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
@@ -895,6 +913,8 @@ pub struct ConfigOverrides {
     pub realtime_max_connections_per_principal: Option<u32>,
     /// `[realtime] enabled`.
     pub realtime_enabled: Option<bool>,
+    /// `[kv] tenant_max_bytes` (FB-138).
+    pub kv_tenant_max_bytes: Option<u64>,
     /// `[functions] enabled`.
     pub functions_enabled: Option<bool>,
     /// `[vector] enabled`.
@@ -951,6 +971,7 @@ impl ConfigOverrides {
                 "RESP_MAX_CONNECTIONS" => o.resp_max_connections = Some(parse_num(&value).map_err(bad)?),
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
+                "KV_TENANT_MAX_BYTES" => o.kv_tenant_max_bytes = Some(parse_num(&value).map_err(bad)?),
                 "REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL" => {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
@@ -1049,6 +1070,7 @@ impl ConfigOverrides {
             "realtime.max_connections_per_principal",
         );
         put(self.realtime_enabled.is_some(), "realtime.enabled");
+        put(self.kv_tenant_max_bytes.is_some(), "kv.tenant_max_bytes");
         put(self.functions_enabled.is_some(), "functions.enabled");
         put(self.vector_enabled.is_some(), "vector.enabled");
         put(self.graph_enabled.is_some(), "graph.enabled");
@@ -1337,6 +1359,8 @@ struct FileConfig {
     #[serde(default)]
     realtime: FileRealtime,
     #[serde(default)]
+    kv: FileKv,
+    #[serde(default)]
     auth: FileAuth,
     #[serde(default)]
     functions: FileSwitch,
@@ -1361,6 +1385,12 @@ struct FileSwitch {
 struct FileRealtime {
     enabled: Option<bool>,
     max_connections_per_principal: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileKv {
+    tenant_max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1442,6 +1472,7 @@ impl From<FileConfig> for ConfigOverrides {
             billing_enabled: f.billing.enabled,
             realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
             realtime_enabled: f.realtime.enabled,
+            kv_tenant_max_bytes: f.kv.tenant_max_bytes,
             functions_enabled: f.functions.enabled,
             vector_enabled: f.vector.enabled,
             graph_enabled: f.graph.enabled,

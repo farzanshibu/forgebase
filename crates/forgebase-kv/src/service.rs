@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forgebase_data::{AccessContext, Action, Authorizer, Decision, Principal};
+use forgebase_data::{AccessContext, Action, Authorizer, Decision, Principal, ResourceKind, ResourceOp, ResourceRef};
 use forgebase_db::Backend;
 use serde::Serialize;
 use tokio::task::JoinHandle;
@@ -15,7 +15,7 @@ use crate::error::{KvError, KvResult};
 use crate::persist;
 use crate::pubsub::{Hub, Subscription};
 use crate::reply::Reply;
-use crate::store::{Scope, Store};
+use crate::store::{KeyId, Scope, Store};
 
 /// Source of "now" in unix milliseconds (injectable for tests).
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -29,14 +29,20 @@ pub fn system_clock() -> Clock {
     })
 }
 
-/// Engine-wide statistics.
+/// Statistics: engine-wide for a privileged caller without a tenant, else
+/// those of the caller's tenant (FB-138).
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct KvStats {
-    /// Keys of all tenants (expired keys not yet swept included).
+    /// `engine` (every tenant) or `tenant` (the caller's tenant only).
+    pub scope: String,
+    /// The tenant the figures are for (`scope = tenant`).
+    pub tenant: Option<String>,
+    /// Keys (expired keys not yet swept included).
     pub keys: usize,
     /// Estimated memory in use, bytes.
     pub used_memory_bytes: usize,
-    /// Memory budget in bytes (`0` = unlimited).
+    /// Memory budget in bytes (`0` = unlimited): the engine's, or the
+    /// per-tenant budget `kv.tenant_max_bytes` for `scope = tenant`.
     pub max_memory_bytes: usize,
     /// Eviction policy: `noeviction`, `allkeys-lru` or `volatile-lru`.
     pub eviction_policy: String,
@@ -103,9 +109,23 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Prefix of a realm-wide shared namespace (FB-138): `shared.<name>` holds
+/// the same keys for every tenant of the realm and for callers without a
+/// tenant. Reaching one needs its own permission key
+/// (`engine:kv_<action>:shared.<name>`, or the plain `engine:kv_<action>`).
+pub const SHARED_PREFIX: &str = "shared.";
+
+/// Prefix of a server function's private namespace (`fn.<function>`): only
+/// privileged callers (the function's own system context, administrators)
+/// reach it.
+pub const FUNCTION_PREFIX: &str = "fn.";
+
+/// Tells [`KvService::command_needs`] whether a key already exists.
+pub type KeyExists<'a> = &'a dyn Fn(&[u8]) -> bool;
+
 /// Namespace names: 1 to 64 characters, start with a letter or digit, then
 /// letters, digits, `_`, `.`, `-` or `:`. Names starting with `_` are
-/// reserved for the API's own routes.
+/// reserved for the API's own routes. `shared.` must be followed by a name.
 pub fn validate_namespace(ns: &str) -> KvResult<()> {
     let ok = !ns.is_empty()
         && ns.len() <= 64
@@ -113,7 +133,7 @@ pub fn validate_namespace(ns: &str) -> KvResult<()> {
         && ns
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | ':'));
-    if ok {
+    if ok && ns != SHARED_PREFIX {
         Ok(())
     } else {
         Err(KvError::InvalidNamespace(
@@ -148,6 +168,10 @@ impl KvService {
             }
         }
         let hub = Hub::new(cfg.channel_capacity, cfg.max_channels);
+        // Namespace rules are namespace-level (edge-functions.md §2): they may
+        // use `@request` values only, never item fields, so a rule can never
+        // come back as a filter the engine cannot apply (FB-138).
+        authorizer.register_resource_schema(forgebase_data::ResourceSchema::new(ResourceKind::KvNamespace));
         Ok(Self {
             inner: Arc::new(Inner {
                 store: Mutex::new(store),
@@ -166,33 +190,76 @@ impl KvService {
         (self.inner.clock)()
     }
 
+    fn denied(ctx: &AccessContext) -> KvError {
+        if ctx.principal == Principal::Anonymous {
+            KvError::Unauthenticated
+        } else {
+            KvError::Forbidden
+        }
+    }
+
+    /// The plain check, for calls that span every namespace (listing
+    /// namespaces, statistics): only `engine:kv_<action>` grants those.
     fn authorize(&self, ctx: &AccessContext, action: Action) -> KvResult<()> {
         match self.inner.authorizer.authorize(ctx, action, None) {
             Decision::Allow => Ok(()),
             // KV has no row-level predicates: a filter cannot be applied, so it is a denial.
-            _ => Err(if ctx.principal == Principal::Anonymous {
-                KvError::Unauthenticated
-            } else {
-                KvError::Forbidden
-            }),
+            _ => Err(Self::denied(ctx)),
+        }
+    }
+
+    /// The namespace check (FB-134 resource rules, rls-coverage G7):
+    /// `engine:kv_<action>:<ns>` or the plain key, else the namespace's
+    /// resource rule for `op`.
+    fn authorize_ns(&self, ctx: &AccessContext, action: Action, ns: &str, op: ResourceOp) -> KvResult<()> {
+        let res = ResourceRef::new(ResourceKind::KvNamespace, ns, op);
+        match self.inner.authorizer.authorize_resource(ctx, action, &res) {
+            Decision::Allow => Ok(()),
+            // Namespace rules are decided on `@request` only (the schema has
+            // no item fields); a filter cannot be applied, so it is a denial.
+            _ => Err(Self::denied(ctx)),
+        }
+    }
+
+    /// The scope tenant of a caller (FB-138): `t:<tenant>`; without a tenant,
+    /// the legacy shared `default` for privileged callers only.
+    fn tenant_of(ctx: &AccessContext) -> KvResult<String> {
+        match &ctx.tenant {
+            Some(t) => Ok(format!("t:{t}")),
+            None if ctx.is_privileged() => Ok("default".to_owned()),
+            None => Err(KvError::TenantRequired(
+                "select a tenant (X-ForgeBase-Tenant header, or a tenant-bound key), or use a shared.<name> namespace"
+                    .into(),
+            )),
+        }
+    }
+
+    fn shared_tenant(ctx: &AccessContext) -> String {
+        format!("shared:{}", ctx.realm_id)
+    }
+
+    /// The tenant part of the scope of namespace `ns` for `ctx` (FB-138):
+    /// `shared:<realm>` for `shared.*`, else `t:<tenant>`, else `default` for
+    /// privileged callers; `tenant_required` for anyone else. `fn.*` is
+    /// refused to non-privileged callers. Call after authorising, so a
+    /// caller without access learns nothing about tenancy.
+    pub fn scope_tenant(ctx: &AccessContext, ns: &str) -> KvResult<String> {
+        validate_namespace(ns)?;
+        if ns.starts_with(FUNCTION_PREFIX) && !ctx.is_privileged() {
+            return Err(KvError::Forbidden);
+        }
+        if ns.starts_with(SHARED_PREFIX) {
+            Ok(Self::shared_tenant(ctx))
+        } else {
+            Self::tenant_of(ctx)
         }
     }
 
     fn scope(ctx: &AccessContext, ns: &str) -> KvResult<Scope> {
-        validate_namespace(ns)?;
         Ok(Scope {
-            tenant: ctx
-                .tenant
-                .as_ref()
-                .map_or_else(|| "default".to_owned(), |t| format!("t:{t}")),
+            tenant: Self::scope_tenant(ctx, ns)?,
             ns: ns.to_owned(),
         })
-    }
-
-    fn tenant(ctx: &AccessContext) -> String {
-        ctx.tenant
-            .as_ref()
-            .map_or_else(|| "default".to_owned(), |t| format!("t:{t}"))
     }
 
     fn action_for(class: Class) -> Action {
@@ -203,30 +270,79 @@ impl KvService {
         }
     }
 
-    /// Authorises every command of `cmds` (the strongest need of each class is
-    /// asked once) and returns the scope.
-    fn prepare(&self, ctx: &AccessContext, ns: &str, cmds: &[&[Vec<u8>]]) -> KvResult<Scope> {
-        let mut classes = [false; 3];
+    /// The (action, operation) pairs one command needs (FB-138): scans are
+    /// `List`, other reads `View`, deletions and `FLUSHDB` `Delete`,
+    /// `PUBLISH` `Create`, other writes `Update`, and writes that may add a
+    /// key `Create` for a key that does not exist yet and `Update` for one
+    /// that does (`exists`; without it, both). Pairs already in `out` are not
+    /// repeated. Unknown commands need `(KvRead, View)`, so a caller without
+    /// access learns nothing about the command set.
+    pub fn command_needs(
+        cmd: &[Vec<u8>],
+        exists: Option<KeyExists<'_>>,
+        out: &mut Vec<(Action, ResourceOp)>,
+    ) -> KvResult<()> {
+        let name = cmd
+            .first()
+            .map(|n| String::from_utf8_lossy(n).to_ascii_uppercase())
+            .ok_or_else(|| KvError::Syntax("empty command".into()))?;
+        let Some(sp) = spec(&name) else {
+            if !out.contains(&(Action::KvRead, ResourceOp::View)) {
+                out.push((Action::KvRead, ResourceOp::View));
+            }
+            return Ok(());
+        };
+        let action = Self::action_for(sp.class);
+        let mut push = |op| {
+            if !out.contains(&(action, op)) {
+                out.push((action, op));
+            }
+        };
+        match (sp.class, name.as_str()) {
+            (Class::Read, "KEYS" | "SCAN" | "DBSIZE") => push(ResourceOp::List),
+            (Class::Read, _) => push(ResourceOp::View),
+            (Class::Admin, _) | (Class::Write, "DEL" | "UNLINK" | "GETDEL") => push(ResourceOp::Delete),
+            (Class::Write, "PUBLISH") => push(ResourceOp::Create),
+            (Class::Write, _) if sp.grows => {
+                let args = &cmd[1..];
+                let keys: Vec<&Vec<u8>> = if name == "MSET" {
+                    args.iter().step_by(2).collect()
+                } else {
+                    args.first().into_iter().collect()
+                };
+                for k in keys {
+                    match exists {
+                        Some(f) if f(k) => push(ResourceOp::Update),
+                        Some(_) => push(ResourceOp::Create),
+                        None => {
+                            push(ResourceOp::Create);
+                            push(ResourceOp::Update);
+                        }
+                    }
+                }
+            }
+            (Class::Write, _) => push(ResourceOp::Update),
+        }
+        Ok(())
+    }
+
+    /// Authorises every command of `cmds` in namespace `ns` (each needed
+    /// action and operation is asked once) and returns the scope.
+    fn prepare(&self, store: &Store, ctx: &AccessContext, ns: &str, cmds: &[&[Vec<u8>]]) -> KvResult<Scope> {
+        let scope = Self::scope(ctx, ns);
+        let now = self.now();
+        let exists = |k: &[u8]| match (&scope, std::str::from_utf8(k)) {
+            (Ok(s), Ok(k)) => store.exists_now(&KeyId::new(s, k), now),
+            _ => false,
+        };
+        let mut needs = Vec::new();
         for c in cmds {
-            let name = c
-                .first()
-                .map(|n| String::from_utf8_lossy(n).to_ascii_uppercase())
-                .ok_or_else(|| KvError::Syntax("empty command".into()))?;
-            // Unknown commands are rejected after authorisation, so a caller
-            // without access learns nothing about the command set.
-            if let Some(sp) = spec(&name) {
-                classes[sp.class as usize] = true;
-            }
+            Self::command_needs(c, Some(&exists), &mut needs)?;
         }
-        if classes == [false; 3] {
-            self.authorize(ctx, Action::KvRead)?;
+        for (action, op) in needs {
+            self.authorize_ns(ctx, action, ns, op)?;
         }
-        for (i, class) in [Class::Read, Class::Write, Class::Admin].into_iter().enumerate() {
-            if classes[i] {
-                self.authorize(ctx, Self::action_for(class))?;
-            }
-        }
-        Self::scope(ctx, ns)
+        scope
     }
 
     fn run(&self, store: &mut Store, scope: &Scope, cmd: &[Vec<u8>]) -> KvResult<Reply> {
@@ -251,8 +367,8 @@ impl KvService {
 
     /// Runs one command in a namespace of the caller's tenant.
     pub fn exec(&self, ctx: &AccessContext, ns: &str, cmd: &[Vec<u8>]) -> KvResult<Reply> {
-        let scope = self.prepare(ctx, ns, &[cmd])?;
         let mut store = lock(&self.inner.store);
+        let scope = self.prepare(&store, ctx, ns, &[cmd])?;
         self.run(&mut store, &scope, cmd)
     }
 
@@ -261,14 +377,14 @@ impl KvService {
     /// does not undo the earlier ones.
     pub fn exec_batch(&self, ctx: &AccessContext, ns: &str, cmds: &[Vec<Vec<u8>>]) -> KvResult<Vec<KvResult<Reply>>> {
         let refs: Vec<&[Vec<u8>]> = cmds.iter().map(Vec::as_slice).collect();
-        let scope = self.prepare(ctx, ns, &refs)?;
         let mut store = lock(&self.inner.store);
+        let scope = self.prepare(&store, ctx, ns, &refs)?;
         Ok(cmds.iter().map(|c| self.run(&mut store, &scope, c)).collect())
     }
 
     /// Subscribes to a channel of a namespace.
     pub fn subscribe(&self, ctx: &AccessContext, ns: &str, channel: &str) -> KvResult<Subscription> {
-        self.authorize(ctx, Action::KvRead)?;
+        self.authorize_ns(ctx, Action::KvRead, ns, ResourceOp::View)?;
         let scope = Self::scope(ctx, ns)?;
         if channel.is_empty() || channel.len() > self.inner.cfg.max_key_bytes {
             return Err(KvError::InvalidKey("invalid channel name".into()));
@@ -281,7 +397,7 @@ impl KvService {
     /// RESP listener use this). `PUBLISH` replies count only exact-channel
     /// subscribers, not these.
     pub fn subscribe_all(&self, ctx: &AccessContext, ns: &str) -> KvResult<Subscription> {
-        self.authorize(ctx, Action::KvRead)?;
+        self.authorize_ns(ctx, Action::KvRead, ns, ResourceOp::View)?;
         let scope = Self::scope(ctx, ns)?;
         self.inner.hub.subscribe_all(&scope)
     }
@@ -289,7 +405,7 @@ impl KvService {
     /// Channels of a namespace with at least one subscriber (messages are not
     /// stored, so a channel exists only while someone listens).
     pub fn channels(&self, ctx: &AccessContext, ns: &str) -> KvResult<Vec<ChannelInfo>> {
-        self.authorize(ctx, Action::KvRead)?;
+        self.authorize_ns(ctx, Action::KvRead, ns, ResourceOp::List)?;
         let scope = Self::scope(ctx, ns)?;
         Ok(self
             .inner
@@ -300,31 +416,62 @@ impl KvService {
             .collect())
     }
 
-    /// Namespaces that hold keys, for the caller's tenant.
+    /// Namespaces that hold keys: those of the caller's tenant (the
+    /// privileged `default` scope without one) and the realm's `shared.*`
+    /// namespaces, in name order. A non-privileged caller without a tenant
+    /// sees the shared ones only.
     pub fn namespaces(&self, ctx: &AccessContext) -> KvResult<Vec<NamespaceInfo>> {
         self.authorize(ctx, Action::KvRead)?;
-        let tenant = Self::tenant(ctx);
-        Ok(lock(&self.inner.store)
-            .namespaces(&tenant)
+        let store = lock(&self.inner.store);
+        let mut out: Vec<NamespaceInfo> = Self::tenant_of(ctx)
+            .map(|t| store.namespaces(&t))
+            .unwrap_or_default()
             .into_iter()
+            .chain(store.namespaces(&Self::shared_tenant(ctx)))
+            .filter(|(name, _)| !name.starts_with(FUNCTION_PREFIX) || ctx.is_privileged())
             .map(|(name, keys)| NamespaceInfo { name, keys })
-            .collect())
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
-    /// Engine-wide statistics (administrators).
+    /// Statistics (`kv_admin`): engine-wide for a privileged caller without a
+    /// tenant, else those of the caller's tenant only (FB-138, G8).
     pub fn stats(&self, ctx: &AccessContext) -> KvResult<KvStats> {
         self.authorize(ctx, Action::KvAdmin)?;
+        let tenant = Self::tenant_of(ctx)?;
         let store = lock(&self.inner.store);
+        let policy = match store.cfg.eviction {
+            EvictionPolicy::NoEviction => "noeviction",
+            EvictionPolicy::AllKeysLru => "allkeys-lru",
+            EvictionPolicy::VolatileLru => "volatile-lru",
+        }
+        .to_owned();
+        if ctx.tenant.is_some() {
+            let u = store.tenant_use(&tenant);
+            return Ok(KvStats {
+                scope: "tenant".into(),
+                tenant: ctx.tenant.clone(),
+                keys: u.keys,
+                used_memory_bytes: u.used,
+                max_memory_bytes: store.cfg.tenant_max_bytes,
+                eviction_policy: policy,
+                hits: u.stats.hits,
+                misses: u.stats.misses,
+                expired_keys: u.stats.expired,
+                evicted_keys: u.stats.evicted,
+                channels: self.inner.hub.channel_count_of(&tenant),
+                unsaved_keys: store.dirty_len_of(&tenant),
+                persistent: self.inner.backend.is_some(),
+            });
+        }
         Ok(KvStats {
+            scope: "engine".into(),
+            tenant: None,
             keys: store.key_count(),
             used_memory_bytes: store.used_memory(),
             max_memory_bytes: store.cfg.max_memory_bytes,
-            eviction_policy: match store.cfg.eviction {
-                EvictionPolicy::NoEviction => "noeviction",
-                EvictionPolicy::AllKeysLru => "allkeys-lru",
-                EvictionPolicy::VolatileLru => "volatile-lru",
-            }
-            .to_owned(),
+            eviction_policy: policy,
             hits: store.stats.hits,
             misses: store.stats.misses,
             expired_keys: store.stats.expired,
