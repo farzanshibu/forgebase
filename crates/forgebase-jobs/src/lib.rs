@@ -41,6 +41,7 @@ mod error;
 mod flow;
 mod hooks;
 mod model;
+mod pgcron;
 mod pool;
 mod queues;
 mod registry;
@@ -61,6 +62,9 @@ pub use hooks::{
 pub use model::{
     ClaimRequest, ClaimedJob, Heartbeat, Job, JobEvent, JobFilter, JobPage, JobStats, JobStatus, NewJob, NewSchedule,
     NewWorker, QueueStats, Schedule, SchedulePatch, Worker, backoff_ms, iso,
+};
+pub use pgcron::{
+    CHANNEL as PGCRON_CHANNEL, JOB_PREFIX as PGCRON_JOB_PREFIX, PgCronHandle, attach_pgcron, map_expression,
 };
 pub use pool::{PoolConfig, PoolHandle, start_pool};
 pub use registry::{CancelToken, HandlerError, JobContext, JobHandler, JobRegistry};

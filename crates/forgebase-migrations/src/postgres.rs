@@ -115,6 +115,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "job_queue_tenant",
         include_str!("../../../migrations/postgres/0035_job_queue_tenant.sql"),
     ),
+    Migration::new(
+        38,
+        "schedule_fire",
+        include_str!("../../../migrations/postgres/0038_schedule_fire.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to
