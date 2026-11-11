@@ -1338,3 +1338,165 @@ on the set's primary and derefs to its `Database`. Routing rules:
   `control_replicated`. **FB-164:** pgmq queues are tenant-owned whole
   tables outside the registry; their `msg_id` sequences live in schema
   `pgmq`, which `apply_sequence_range` does not touch.
+
+## Addendum: FB-161, the extension layer (2026-11-11)
+
+Built as §1.1–§1.3 describe. Where the code differs from the text above, or
+decides something it left open, it is said here.
+
+**Files.** `crates/forgebase-db/src/pg/extensions.rs` and
+`crates/forgebase-pgengine/src/extensions.rs` (new); module and re-export
+lines in both crates; `DatabaseInfo.features`; the setup call in
+`forgebase-server`'s start (after `migrate`, before anything else touches
+the database); the `features` field of `/api/system/info`
+(`forgebase-api/src/routes.rs`). Tests:
+`crates/forgebase-db/tests/{extensions.rs, pg_uncached_reads.rs}`,
+`crates/forgebase-pgengine/tests/extensions.rs`, unit tests in both new
+modules, and the FB-148 system-info test in `forgebase-api`. No migration.
+
+**API (`forgebase-db`).**
+- `Feature` (`Vector`, `Graph`, `Queue`, `Cron`, `Trigram`): `name()`
+  (the `[database.postgres.extensions]` key), `extension()`, `label()`,
+  `stateful()`, `needs_superuser()`, `target_schema()`, `mode(&modes)`.
+- `Database::setup_extensions(&ExtensionSetup { modes, admin_url,
+  reader_role })` → `ExtensionReport` (one `FeatureStatus` per feature:
+  `engine` = `"pgvector 0.8.7"` or `"portable"`, `state` = `active` |
+  `portable` | `off`, `mode`, `extension`, `available`, `installed`,
+  `schema`, `schema_version`, `reason`). The report is kept on the
+  handle: `Database::extensions()`, `Database::feature_active(Feature)`
+  (no query; `false` on SQLite and until the setup ran) and
+  `Database::info().features`.
+- `Database::detect_extensions(&modes)`: the same decisions without
+  creating, granting or recording anything (one-off commands, tools; the
+  API falls back to it when the process did not run the setup).
+- Errors: `ExtensionError::Refused(Vec<String>)` (code
+  `extension_unavailable`, all problems in one message) or `Db`. The server
+  maps it to `ServerError::Extensions`; the start fails.
+
+**Detection.** One read of `pg_available_extensions` full-joined with
+`pg_extension` (so an installed extension whose files are gone still
+shows), plus `shared_preload_libraries`, `session_preload_libraries`,
+`cron.database_name`, `current_database()` and `current_user`. A feature is
+usable when its control file exists or it is installed, and:
+- pg_cron: `pg_cron` is in `shared_preload_libraries` and
+  `cron.database_name` is this database;
+- AGE: `age` is in this session's `session_preload_libraries` (or
+  `shared_preload_libraries`).
+
+**Decision (decided here; §1.1 left it open).** Vector and queue are
+**stateful**: they keep canonical data in the extension's storage. The
+first setup records their engine in `_forgebase_meta`
+`ext.<feature>.engine = extension | portable`, and later starts follow it:
+- `auto` with `portable` stays portable even when the extension appears
+  (reason names `<feature>.convert`); `on` with `portable` refuses;
+- `extension` must stay usable in every mode: missing extension refuses,
+  `off` refuses (run `<feature>.convert` first).
+Graph, cron and trigram hold only derived state (the rebuilt AGE graph,
+`cron.job` rows synced from schedules, an index kind), so they follow their
+mode on every start with no record. `auto` without a usable extension is
+portable with a `reason`; `on` refuses; `off` is portable and creates
+nothing.
+
+**Creation and owners.** `CREATE EXTENSION IF NOT EXISTS`, pgvector and
+pg_trgm `WITH SCHEMA forgebase` (next to the baseline's `citext` and
+`unaccent`); pgmq, pg_cron and AGE have fixed schemas (`pgmq`, `cron`,
+`ag_catalog`). pgvector, pg_cron and AGE need a superuser: created through
+`admin_url` (`forgebase_super` on the bundled engine; without it, the
+database's own role, as an external server's configured role). **pgmq and
+pg_trgm are created by the server role itself**, which then owns them:
+pgmq's queue tables are created by `pgmq.create` as the caller.
+A failed `CREATE EXTENSION` counts as "not usable" (auto falls back with
+the error as reason).
+
+**Grants (every start, idempotent; managed passes `reader_role =
+forgebase_reader`).** pgmq: the server gets `USAGE, CREATE` on the schema
+and rights on its tables, sequences and functions; the reader `USAGE`,
+`SELECT` on all tables and default `SELECT` on tables the server creates
+there. pg_cron: `USAGE ON SCHEMA cron` to the server (`cron.schedule` is
+`PUBLIC`; `cron.job` rows are per user by pg_cron's own RLS). AGE: `USAGE ON
+SCHEMA ag_catalog` to both, `SELECT` on its tables to the reader. pgvector
+and pg_trgm live in `forgebase`, which both roles already use.
+
+**Versioned DDL.** `EXTENSION_DDL` lists `(feature, version, sql)`; `{schema}`
+is replaced by the extension's schema. Pending steps run in version order
+on the writer, each in one `SchemaChange` transaction that also writes
+`ext.<feature>.schema = N`. Version 1 of vector is §1.4's column:
+`ALTER TABLE _forgebase_vector_values ADD COLUMN IF NOT EXISTS vec
+forgebase.vector, ALTER COLUMN vector DROP NOT NULL`. No other feature has
+DDL yet. A unit test checks versions count 1, 2, … per feature.
+
+**Engine side (`forgebase-pgengine`).** `EngineConfig.graph`
+(`[database.postgres.extensions] graph`, mapped by the server like `cron`).
+After the bootstrap of a primary, as `forgebase_super`: `ALTER ROLE
+forgebase_server|forgebase_reader SET session_preload_libraries =
+'$libdir/plugins/age'` when the engine has `lib/plugins/age.*` and graph is
+not `off`, otherwise `RESET` (a stale setting naming a missing library would
+make every login fail). `graph = "on"` with an engine without AGE is refused
+before `initdb`, like `cron = "on"`; `auto` adds a start-up warning.
+`EngineDir::has_plugin`, `EngineHandle::has_age`, `AGE_PRELOAD`. The roles'
+`search_path` stays `forgebase, public`: FB-163 sets `ag_catalog` with `SET
+LOCAL`.
+
+**`/api/system/info`.** `database.features.<feature>` = `{engine, state,
+mode, extension, available, installed, schema, schema_version, reason}`.
+**Changed from FB-148:** `engine` is real now, and `state` is `active |
+portable | off` (FB-148 reported `installed | available | unavailable |
+off` with `engine` always `portable`). The dashboard reads only `engine`
+and `state` as text.
+
+**Bug fixed (found by FB-170, FB-131's backend).** On PostgreSQL the first
+uncached read (`Statement::raw`) whose result had a type sqlx had not seen
+on that connection (`citext`, an enum, any extension type such as `vector`)
+failed with "unnamed prepared statement does not exist": sqlx 0.9 looks
+unknown types up with a simple query between `Parse` and `Bind`, and a
+simple query destroys the unnamed statement. Reads now retry once (the type
+is cached by then); in a write transaction such statements (uncached, no
+parameters) run under a savepoint and are retried after rolling back to it.
+Tests fail before the fix: `tests/pg_uncached_reads.rs` (citext on fresh
+readers, an enum in a write transaction and on readers).
+
+**Deviations.**
+- §1.1 says "`on` (refuse to start without it)"; for the stateful features
+  the stored engine also refuses `off` and `on`-against-portable, so a
+  switch is always an explicit conversion.
+- Databases set up after this package but before FB-162 / FB-164 record
+  `ext.vector.engine = extension` (and queue) while the services still
+  write portably; only development databases can be in that state (v0.3 is
+  not released): re-create them, or let FB-162/164's conversion handle it.
+- Shared edits outside Owns: `forgebase-server/src/{lib.rs (setup call,
+  ServerError::Extensions), database.rs (graph mode)}`,
+  `forgebase-pgengine/src/{lib.rs, config.rs}`, `forgebase-db/src/{lib.rs,
+  sqlite.rs, pg/mod.rs (report slot)}`, the FB-148 test in
+  `forgebase-api/src/lib.rs`.
+
+**For the next packages: how a feature asks.**
+- **FB-162 (vector):** `db.feature_active(Feature::Vector)` picks the
+  pgvector store. The column exists (`vec forgebase.vector`, `vector bytea`
+  nullable); add your own DDL as `EXTENSION_DDL` vector version 2+ (never
+  edit version 1). Qualify the type and operator classes with
+  `report.get(Feature::Vector).schema` (`forgebase` unless an external
+  server had it elsewhere). `vector.convert` must update
+  `ext.vector.engine` (`extension` | `portable`) in the same transaction as
+  its last batch; there is no API for it yet beyond `meta_set`.
+- **FB-163 (graph):** `db.feature_active(Feature::Graph)`; false means
+  `400 cypher_unsupported`. Managed roles preload AGE once FB-160 ships
+  `lib/plugins/age.*`; on external servers the operator must set
+  `session_preload_libraries` for the role (the reason says so). Use `SET
+  LOCAL search_path = ag_catalog, pg_catalog` per transaction.
+- **FB-164 (queue):** `db.feature_active(Feature::Queue)`; pgmq is owned
+  by the server role, so `pgmq.create`/`drop_queue` work on the writer, and
+  the reader can read queue tables (default privileges). Check the pgmq
+  table layout yourself and fall back to portable with a warning (§1.6);
+  `queue.convert` updates `ext.queue.engine` like vector.
+- **FB-165 (cron):** `db.feature_active(Feature::Cron)` is true only when
+  pg_cron is preloaded and `cron.database_name` is this database (the
+  bundled engine: `forgebase`); the server role has `USAGE` on `cron`, jobs
+  it schedules run as `forgebase_server`. Not stateful: if pg_cron goes
+  away, schedules fall back to the Rust tick at the next start (clear stale
+  `cron.job` rows when it comes back).
+- **FB-166 (trigram):** `db.feature_active(Feature::Trigram)`; false →
+  `400 index_kind_unsupported` / `fuzzy_unsupported` on PostgreSQL too.
+  pg_trgm is in schema `forgebase`: write `forgebase.gin_trgm_ops` in index
+  DDL.
+- **FB-153 (SQL editor allow list):** refuse `CREATE/ALTER/DROP EXTENSION`
+  for vector, age, pgmq, pg_cron and pg_trgm (§1.1), and `cron.*` (§1.7).

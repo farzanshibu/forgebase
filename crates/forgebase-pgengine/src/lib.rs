@@ -17,7 +17,8 @@
 //!    is skipped with a warning when the engine lacks it);
 //! 6. spawn `postgres` with its stderr in `tracing` (target
 //!    `forgebase::postgres`), wait for readiness, and bootstrap roles, the
-//!    `forgebase` database, its schemas and `search_path`;
+//!    `forgebase` database, its schemas and `search_path`, and the roles'
+//!    per-role Apache AGE preload ([`AGE_PRELOAD`], ADR-0029 §1.2);
 //! 7. supervise: restart with backoff when the postmaster dies, stop with a
 //!    fast shutdown.
 //!

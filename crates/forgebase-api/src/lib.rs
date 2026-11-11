@@ -755,17 +755,37 @@ mod tests {
                 f.keys().map(String::as_str).collect::<Vec<_>>(),
                 ["cron", "graph", "queue", "trigram", "vector"]
             );
+            // No extension setup in this process: detected, nothing installed.
             for (name, v) in f {
                 assert_eq!(v["engine"], "portable", "{name}: {v}");
             }
             assert_eq!(f["graph"]["state"], "off");
             assert_eq!(f["graph"]["extension"], "age");
+            assert_eq!(f["cron"]["mode"], "on");
             // pg_trgm is a contrib module: every PostgreSQL has it.
             assert!(f["trigram"]["available"].as_str().is_some(), "{f:?}");
+            assert_eq!(f["trigram"]["state"], "portable", "{f:?}");
             assert!(
-                ["available", "installed"].contains(&f["trigram"]["state"].as_str().unwrap()),
+                f["trigram"]["reason"].as_str().unwrap().contains("not installed yet"),
                 "{f:?}"
             );
+
+            // After the server's setup (FB-161): the report it kept.
+            test.database()
+                .setup_extensions(&forgebase_db::ExtensionSetup::default())
+                .await
+                .unwrap();
+            let (s, _, j, text) = call(&app, Method::GET, "/api/system/info", &[]).await;
+            assert_eq!(s, StatusCode::OK, "{text}");
+            let f = j["database"]["features"].as_object().unwrap();
+            assert_eq!(f.len(), 5, "{f:?}");
+            assert_eq!(f["trigram"]["state"], "active", "{f:?}");
+            assert!(f["trigram"]["engine"].as_str().unwrap().starts_with("pg_trgm "), "{f:?}");
+            assert_eq!(f["trigram"]["schema"], "forgebase");
+            assert_eq!(f["trigram"]["mode"], "auto");
+            assert_eq!(f["graph"]["state"], "portable", "{f:?}");
+            assert_eq!(f["graph"]["engine"], "portable");
+            assert!(f["graph"]["reason"].as_str().is_some(), "{f:?}");
         } else {
             assert_eq!(d["mode"], serde_json::Value::Null);
             assert_eq!(d["engine"], serde_json::Value::Null);

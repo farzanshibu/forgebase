@@ -372,7 +372,7 @@ pub(crate) struct Probe {
 
 fn listed(list: &str, module: &str) -> bool {
     list.split(',').map(str::trim).any(|m| {
-        let m = m.trim_matches('"');
+        let m = m.trim_matches(|c| c == '"' || c == '\'');
         let base = m.rsplit('/').next().unwrap_or(m);
         base == module || base.strip_suffix(".so").is_some_and(|b| b == module)
     })
