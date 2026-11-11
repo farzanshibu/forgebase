@@ -20,7 +20,7 @@ export default function FeaturesForm({ snapshot, apply }: {
   apply: (features: ServerFeature[], restartPending?: boolean) => void;
 }) {
   const features = snapshot.features;
-  const d = useSettingsDraft(features);
+  const d = useSettingsDraft();
   const [restart, setRestart] = useState(false);
 
   async function save() {

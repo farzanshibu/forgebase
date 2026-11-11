@@ -6,7 +6,7 @@ import { enabledKey, isUnchanged } from "./settingUtil";
  * The edits a person has made but not saved, shared by the first-run flow and the System form. `save()` sends one PATCH with
  * the changed keys only and keeps the draft when the server refuses.
  */
-export function useSettingsDraft(features: ServerFeature[]) {
+export function useSettingsDraft() {
   const [draft, setDraft] = useState<Record<string, SettingValue>>({});
   const [clientErr, setClientErr] = useState<Record<string, string>>({});
   const [serverErr, setServerErr] = useState<Record<string, string>>({});
@@ -68,6 +68,5 @@ export function useSettingsDraft(features: ServerFeature[]) {
     }
   }
 
-  void features;
   return { draft, changed, clientErr, serverErr, saveErr, busy, edit, valueOf, isOn, save, discard };
 }

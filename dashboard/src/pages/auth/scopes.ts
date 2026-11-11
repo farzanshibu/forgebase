@@ -36,20 +36,23 @@ export const AREAS: readonly ScopeArea[] = [
   { id: "jobs", label: "Jobs", resource: "job kind", read: "See jobs and schedules", write: "Enqueue and manage jobs" },
 ];
 
-/** One area's choice in the dialog. `only` empty means every resource of the area. */
+/** One area's choice in the dialog. `only` empty means every resource of the area, unless `narrow` is set: then it means "not picked yet". */
 export interface AreaChoice {
   area: string;
   read: boolean;
   write: boolean;
   only: string[];
+  /** "All" was unticked: the person is picking resources. With none picked the area grants nothing, never everything. */
+  narrow: boolean;
 }
 
-export const emptyChoice = (area: string): AreaChoice => ({ area, read: false, write: false, only: [] });
+export const emptyChoice = (area: string): AreaChoice => ({ area, read: false, write: false, only: [], narrow: false });
 
 /** The scope strings for the choices, in a stable order. */
 export function buildScopes(choices: readonly AreaChoice[]): string[] {
   const out: string[] = [];
   for (const c of choices) {
+    if (c.narrow && c.only.length === 0) continue;
     for (const access of ["read", "write"] as const) {
       if (!c[access]) continue;
       if (c.only.length === 0) out.push(`${c.area}:${access}`);
@@ -67,7 +70,10 @@ export function parseScopes(scopes: readonly string[]): AreaChoice[] {
     if (!area || (access !== "read" && access !== "write")) continue;
     const c = by.get(area) ?? emptyChoice(area);
     c[access] = true;
-    if (name && !c.only.includes(name)) c.only.push(name);
+    if (name) {
+      c.narrow = true;
+      if (!c.only.includes(name)) c.only.push(name);
+    }
     by.set(area, c);
   }
   return [...by.values()];

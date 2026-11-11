@@ -173,8 +173,8 @@ function AreaPicker({ area, choice, known, onChange }: { area: ScopeArea; choice
       </div>
       {on && list.length > 0 && (
         <div className="mt-3 space-y-1.5 border-t border-border pt-3">
-          <Check checked={choice.only.length === 0} onChange={(v) => onChange({ only: v ? [] : list.slice(0, 1) })} label={`All ${area.resource}s`} aria-label={`${area.label}: all ${area.resource}s`} />
-          {choice.only.length > 0 && (
+          <Check checked={!choice.narrow} onChange={(v) => onChange({ narrow: !v, only: [] })} label={`All ${area.resource}s`} aria-label={`${area.label}: all ${area.resource}s`} />
+          {choice.narrow && (
             <ul className="ms-6 grid max-h-40 gap-1 overflow-y-auto" aria-label={`Only these ${area.resource}s`}>
               {list.map((n) => (
                 <li key={n}>
@@ -183,6 +183,7 @@ function AreaPicker({ area, choice, known, onChange }: { area: ScopeArea; choice
               ))}
             </ul>
           )}
+          {choice.narrow && choice.only.length === 0 && <p role="alert" className="ms-6 text-xs font-medium text-destructive">Pick at least one {area.resource}, or tick All {area.resource}s.</p>}
         </div>
       )}
       {on && list.length === 0 && (
@@ -191,7 +192,7 @@ function AreaPicker({ area, choice, known, onChange }: { area: ScopeArea; choice
             Only this {area.resource} (optional)
             <Input
               size="sm" className="mt-1 w-full font-mono" aria-label={`${area.label}: only this ${area.resource}`} placeholder={`all ${area.resource}s`} value={choice.only[0] ?? ""}
-              onChange={(e) => onChange({ only: e.target.value.trim() ? [e.target.value.trim()] : [] })}
+              onChange={(e) => onChange({ narrow: Boolean(e.target.value.trim()), only: e.target.value.trim() ? [e.target.value.trim()] : [] })}
             />
           </label>
         </div>

@@ -88,11 +88,18 @@ test.describe.serial("first journey", () => {
   });
   test.afterAll(async () => { await page?.close(); });
 
-  // Step 1 (A-01): on a server with no administrator the dashboard should open the setup wizard,
-  // not a sign-in form. Lands with FB-92 (branch agent/worker-fb92, /admin/setup?token=...).
-  test.fixme("1. first-run setup creates the administrator in the browser", async () => {
-    await page.goto("/admin/");
+  // Step 1 (A-01): on a server with no administrator the dashboard opens the setup page, not a sign-in form.
+  // Needs a fresh server (docs/ux/walkthrough.md, "Fresh server"): FB_SETUP_URL is the link `forgebase serve` prints.
+  test("1. first-run setup creates the administrator in the browser", async () => {
+    test.skip(!process.env.FB_SETUP_URL, "Needs a server with no administrator: set FB_SETUP_URL to the First run link that serve prints.");
+    await page.goto(process.env.FB_SETUP_URL!);
     await expect(page.getByRole("heading", { name: /create the administrator/i })).toBeVisible();
+    await page.getByLabel("Email").fill(EMAIL);
+    await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
+    await page.getByLabel("Confirm password").fill(PASSWORD);
+    await page.getByRole("button", { name: "Create administrator" }).click();
+    await expect(page.getByRole("region", { name: "Feature map" })).toBeVisible();
+    await shot(page, test.info(), "00-setup");
   });
 
   test("1b. sign in and land on Overview", async () => {
@@ -145,19 +152,26 @@ test.describe.serial("first journey", () => {
     await expect(panel).toContainText("<YOUR_API_KEY>");
   });
 
-  test("3b. an API token reads the collection over HTTP (what the snippet should say)", async () => {
+  // A-08: one dialog makes a key with read access to one collection, without knowing the scope grammar.
+  test("3b. the Create API key dialog makes a key that reads the collection over HTTP", async () => {
     const info = test.info();
     const n = names(info.project.name);
-    await page.goto("/admin/auth/keys");
-    await page.getByLabel("Token name").fill(n.token);
-    await page.getByLabel("Token scopes").fill("collections:read");
-    await page.getByRole("button", { name: /create token/i }).click();
+    await page.goto("/admin/auth/keys?new=1");
+    const form = page.getByRole("form", { name: "Create API key" });
+    await form.getByLabel("App name").fill(n.token);
+    const records = form.getByRole("group", { name: "Records" });
+    await records.getByRole("checkbox", { name: "Read records" }).check();
+    await records.getByRole("checkbox", { name: "All collections" }).uncheck();
+    await records.getByRole("checkbox", { name: n.collection }).check();
+    await expect(form).toContainText(`collections:read:${n.collection}`);
+    await form.getByRole("button", { name: "Create key" }).click();
     const secret = page.getByLabel("Secret");
     await expect(secret).toBeVisible();
     token = (await secret.innerText()).trim();
+    await expect(page.getByLabel("curl example")).toContainText("<YOUR_API_KEY>");
     await shot(page, info, "03-token");
     await page.getByRole("button", { name: "Done" }).click();
-    const res = await page.request.get(`/api/v1/collections/${n.collection}/records`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await page.request.get(`/api/v1/collections/${n.collection}/records`, { headers: { "X-API-Key": token } });
     expect(res.status(), await res.text()).toBe(200);
     expect(JSON.stringify(await res.json())).toContain("Hello from the walkthrough");
   });

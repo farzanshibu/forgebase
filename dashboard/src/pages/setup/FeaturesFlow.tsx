@@ -28,7 +28,7 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
 }) {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("map");
-  const d = useSettingsDraft(snapshot.features);
+  const d = useSettingsDraft();
   const [restart, setRestart] = useState(false);
   const [saved, setSaved] = useState<string[]>([]);
   const [written, setWritten] = useState<string>();

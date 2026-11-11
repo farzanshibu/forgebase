@@ -4,13 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthFake, renderAuth } from "./authMock";
 
 const { startImpersonation } = vi.hoisted(() => ({ startImpersonation: vi.fn(async () => {}) }));
-vi.mock("../../auth/session", () => ({
-  useSession: () => ({ admin: { id: "adm1", email: "root@example.com" }, impersonation: null, startImpersonation }),
-}));
+const sessionState = vi.hoisted(() => ({ adminScope: "platform" as "platform" | { realm: string } }));
+vi.mock("../../auth/session", () => {
+  const session = () => ({ admin: { id: "adm1", email: "root@example.com" }, adminScope: sessionState.adminScope, impersonation: null, startImpersonation });
+  return { useSession: session, useOptionalSession: session };
+});
 
 let fake: AuthFake;
 beforeEach(() => {
   fake = new AuthFake();
+  sessionState.adminScope = "platform";
   startImpersonation.mockClear();
 });
 afterEach(() => {
@@ -76,51 +79,169 @@ describe("User detail", () => {
 });
 
 describe("Service accounts", () => {
-  it("creates, shows the key secret once, revokes, deletes", async () => {
+  it("creates one in a sheet, makes a key for it, revokes the key and deletes the account by typing its name", async () => {
     renderAuth("/auth/service-accounts");
     expect(await screen.findByText("ci-bot")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Service account name"), "etl");
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await userEvent.click(screen.getByRole("button", { name: "New service account" }));
+    const form = await screen.findByRole("form", { name: "New service account" });
+    await userEvent.type(within(form).getByLabelText(/^Name/), "etl");
+    await userEvent.click(within(form).getByRole("button", { name: "Create service account" }));
     expect(await screen.findByText("etl")).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("Keys of ci-bot"));
     expect(await screen.findByText("deploy")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Key name"), "ci");
-    await userEvent.type(screen.getByLabelText("Scopes"), "collections:read, kv:read");
     await userEvent.click(screen.getByRole("button", { name: "Create key" }));
+    const keyForm = await screen.findByRole("form", { name: "Create API key" });
+    // the sheet opens on this account
+    expect(within(keyForm).getByRole("combobox", { name: /Service account/ })).toHaveTextContent("ci-bot");
+    await userEvent.type(within(keyForm).getByLabelText(/^App name/), "ci");
+    await userEvent.click(within(within(keyForm).getByRole("group", { name: "Key-value" })).getByRole("checkbox", { name: "Read keys" }));
+    await userEvent.click(within(keyForm).getByRole("button", { name: "Create key" }));
     const dlg = await screen.findByRole("dialog");
     expect(within(dlg).getByLabelText("Secret")).toHaveTextContent("fbk_k2_SECRETVALUE");
-    expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toMatchObject({ scopes: ["collections:read", "kv:read"] });
+    expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toMatchObject({ scopes: ["kv:read"] });
     await userEvent.click(within(dlg).getByRole("button", { name: "Done" }));
     expect(screen.queryByText(/SECRETVALUE/)).not.toBeInTheDocument();
 
     const row = screen.getByText("deploy").closest("tr")!;
-    await userEvent.click(within(row).getByRole("button", { name: "Revoke" }));
-    await userEvent.click(screen.getByRole("button", { name: /confirm revoke/i }));
+    await userEvent.click(within(row).getByRole("button", { name: "Revoke deploy" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Revoke key" }));
     await waitFor(() => expect(fake.keys.find((k) => k.id === "k1")?.revoked).toBe(true));
 
     const sarow = screen.getByText("etl").closest("tr")!;
-    await userEvent.click(within(sarow).getByRole("button", { name: "Delete" }));
-    await userEvent.click(screen.getByRole("button", { name: /confirm delete/i }));
+    await userEvent.click(within(sarow).getByRole("button", { name: "Delete etl" }));
+    const confirm = await screen.findByRole("button", { name: "Delete service account" });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(screen.getByRole("textbox"), "etl");
+    await userEvent.click(confirm);
     await waitFor(() => expect(screen.queryByText("etl")).not.toBeInTheDocument());
+  });
+
+  it("explains an empty list", async () => {
+    fake.sas = [];
+    renderAuth("/auth/service-accounts");
+    const empty = await screen.findByRole("region", { name: "No service accounts yet" });
+    expect(empty).toHaveTextContent("owns the API keys");
   });
 });
 
-describe("API keys and PATs", () => {
-  it("lists every key, creates a PAT with a one-time secret, revokes", async () => {
+describe("Create API key", () => {
+  async function openDialog(path = "/auth/keys?new=1") {
+    renderAuth(path);
+    return screen.findByRole("form", { name: "Create API key" });
+  }
+  const area = (form: HTMLElement, name: string) => within(within(form).getByRole("group", { name }));
+
+  it("opens from /auth/keys?new=1, builds collections:read:<name> from the checkboxes, shows the secret once beside a curl example", async () => {
+    const form = await openDialog();
+    await userEvent.type(within(form).getByLabelText(/^App name/), "web");
+    const records = area(form, "Records");
+    expect(within(form).getByText("collections:read")).toBeInTheDocument(); // the scope string shows under the checkbox
+    await userEvent.click(records.getByRole("checkbox", { name: "Read records" }));
+    await userEvent.click(records.getByRole("checkbox", { name: "All collections" }));
+    expect(records.getByText(/Pick at least one collection/)).toBeInTheDocument();
+    await userEvent.click(records.getByRole("checkbox", { name: "posts" }));
+    // under the checkbox and in the summary line
+    expect(within(form).getAllByText("collections:read:posts", { selector: "code" })).toHaveLength(2);
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
+
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByLabelText("Secret")).toHaveTextContent(/fbk_k\d+_SECRETVALUE/);
+    expect(within(dlg).getByLabelText("curl example")).toHaveTextContent("<YOUR_API_KEY>");
+    expect(within(dlg).getByLabelText("curl example")).toHaveTextContent("/api/v1/collections/posts/records");
+    expect(within(dlg).getByLabelText("curl example")).not.toHaveTextContent("SECRETVALUE");
+    // a new service account named after the app owns the key
+    expect(fake.mock.bodies["post /api/auth/service-accounts"]?.[0]).toMatchObject({ name: "web", role: "service" });
+    expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toEqual({ name: "web", scopes: ["collections:read:posts"], expires_in_days: 90 });
+    await userEvent.click(within(dlg).getByRole("button", { name: "Done" }));
+    expect(screen.queryByText(/SECRETVALUE/)).not.toBeInTheDocument();
+  });
+
+  it("grants nothing until something is ticked, and write does not tick read", async () => {
+    const form = await openDialog();
+    await userEvent.type(within(form).getByLabelText(/^App name/), "web");
+    expect(within(form).getByRole("button", { name: "Create key" })).toBeDisabled();
+    const files = area(form, "Files");
+    await userEvent.click(files.getByRole("checkbox", { name: "Upload and delete files" }));
+    expect(files.getByRole("checkbox", { name: "Download and list files" })).not.toBeChecked();
+    expect(within(form).getByRole("button", { name: "Create key" })).toBeEnabled();
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
+    await screen.findByRole("dialog");
+    expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toMatchObject({ scopes: ["storage:write"] });
+  });
+
+  it("binds the key to a tenant, with an expiry of never", async () => {
+    const form = await openDialog();
+    await userEvent.type(within(form).getByLabelText(/^App name/), "tenant-app");
+    await userEvent.click(area(form, "Records").getByRole("checkbox", { name: "Read records" }));
+    await userEvent.type(within(form).getByLabelText(/Tenant/), "acme");
+    await userEvent.click(within(form).getByRole("combobox", { name: /Expires/ }));
+    await userEvent.click(await screen.findByRole("option", { name: "Never expires" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
+    await screen.findByRole("dialog");
+    expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toEqual({ name: "tenant-app", scopes: ["collections:read"], tenant: "acme" });
+  });
+
+  it("puts a server's tenant refusal next to the tenant field and reuses the service account on retry", async () => {
+    fake.rejectTenant = true;
+    const form = await openDialog();
+    await userEvent.type(within(form).getByLabelText(/^App name/), "web");
+    await userEvent.click(area(form, "Records").getByRole("checkbox", { name: "Read records" }));
+    await userEvent.type(within(form).getByLabelText(/Tenant/), "nope");
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
+    expect(await within(form).findByText("This tenant does not exist")).toBeInTheDocument();
+    expect(within(form).getByLabelText(/Tenant/)).toHaveAccessibleDescription(/This tenant does not exist/);
+    fake.rejectTenant = false;
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
+    await screen.findByRole("dialog");
+    expect(fake.mock.bodies["post /api/auth/service-accounts"]).toHaveLength(1);
+  });
+
+  it("makes a personal token without a service account", async () => {
     renderAuth("/auth/keys");
-    expect(await screen.findByText("deploy")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Token name"), "cli");
-    await userEvent.type(screen.getByLabelText("Token scopes"), "collections:read");
-    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await userEvent.click(await screen.findByRole("button", { name: "New personal token" }));
+    const form = await screen.findByRole("form", { name: "New personal token" });
+    expect(within(form).queryByRole("combobox", { name: /Service account/ })).not.toBeInTheDocument();
+    await userEvent.type(within(form).getByLabelText(/^Name/), "cli");
+    await userEvent.click(within(within(form).getByRole("group", { name: "Records" })).getByRole("checkbox", { name: "Read records" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Create token" }));
     const dlg = await screen.findByRole("dialog");
     expect(within(dlg).getByLabelText("Secret")).toHaveTextContent("fbp_p2_PATSECRET");
     await userEvent.click(within(dlg).getByRole("button", { name: "Done" }));
     expect(screen.queryByText(/PATSECRET/)).not.toBeInTheDocument();
-    const row = (await screen.findByText("cli")).closest("tr")!;
-    await userEvent.click(within(row).getByRole("button", { name: "Revoke" }));
-    await userEvent.click(screen.getByRole("button", { name: /confirm revoke/i }));
-    expect(await screen.findByText("revoked")).toBeInTheDocument();
+  });
+});
+
+describe("API keys", () => {
+  it("lists keys with their tenant, keeps personal tokens in a second section, and revokes", async () => {
+    fake.keys.push({ id: "p9", kind: "pat", name: "my-script", owner_type: "admin", collection: null, owner_id: "adm1", scopes: ["collections:read"], tenant: "acme", created_at: "2026-11-01T00:00:00Z", expires_at: null, last_used_at: null, revoked: false });
+    renderAuth("/auth/keys");
+    const keys = await screen.findByRole("region", { name: "API keys" });
+    expect(within(keys).getByText("deploy")).toBeInTheDocument();
+    expect(within(keys).queryByText("my-script")).not.toBeInTheDocument();
+    const tokens = screen.getByRole("region", { name: "Personal tokens" });
+    expect(tokens).toHaveTextContent("Personal tokens (for scripts you run yourself)");
+    expect(within(tokens).getByText("my-script")).toBeInTheDocument();
+    expect(within(tokens).getByText("acme")).toBeInTheDocument();
+    await userEvent.click(within(keys).getByRole("button", { name: "Revoke deploy" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Revoke key" }));
+    await waitFor(() => expect(fake.keys.find((k) => k.id === "k1")?.revoked).toBe(true));
+  });
+
+  it("explains an empty list and offers the dialog", async () => {
+    fake.keys = [];
+    renderAuth("/auth/keys");
+    const empty = await screen.findByRole("region", { name: "No API keys yet" });
+    await userEvent.click(within(empty).getByRole("button", { name: "Create API key" }));
+    expect(await screen.findByRole("form", { name: "Create API key" })).toBeInTheDocument();
+  });
+
+  it("names the tab API keys, and the header's primary action opens the dialog", async () => {
+    renderAuth("/auth");
+    expect(await screen.findByRole("tab", { name: "API keys" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /tokens/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Create API key" }));
+    expect(await screen.findByRole("form", { name: "Create API key" })).toBeInTheDocument();
   });
 });
 
@@ -150,5 +271,13 @@ describe("Admins", () => {
   it("lists administrators", async () => {
     renderAuth("/auth/admins");
     expect(await screen.findByText("root@example.com")).toBeInTheDocument();
+  });
+  it("is for platform administrators: a realm administrator gets no tab and an explanation", async () => {
+    sessionState.adminScope = { realm: "acme" };
+    renderAuth("/auth/admins");
+    expect(await screen.findByRole("region", { name: "Administrators is for platform administrators" })).toHaveTextContent("acme");
+    expect(screen.queryByRole("tab", { name: "Admins" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "API keys" })).toBeInTheDocument();
+    expect(screen.queryByText("root@example.com")).not.toBeInTheDocument();
   });
 });
