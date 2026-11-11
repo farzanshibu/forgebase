@@ -962,3 +962,113 @@ async fn pull_claim_query_does_not_sort_the_backlog() {
         );
     }
 }
+
+/// FB-141 (G2): a record-change message is the subscription owner's view at
+/// delivery (View rule, hidden fields); a dead letter keeps that view; an
+/// owner that no longer exists (a disabled service account) sees nothing.
+#[tokio::test]
+async fn record_messages_are_the_owners_view_at_delivery() {
+    let h = harness().await;
+    h.data
+        .create_collection(
+            &admin(),
+            serde_json::from_value(json!({
+                "name": "notes",
+                "fields": [
+                    {"name": "owner", "type": "text"},
+                    {"name": "secret", "type": "text", "hidden": true}
+                ]
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    h.policy
+        .put_policy(
+            &admin(),
+            "notes",
+            &forgebase_policy::store::PolicyInput {
+                list_rule: Some("owner = @request.auth.id".into()),
+                view_rule: Some("owner = @request.auth.id".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    h.svc
+        .create_topic(
+            &admin(),
+            NewTopic {
+                name: "note-events".into(),
+                source: Some(RecordSource {
+                    collection: "notes".into(),
+                    ops: vec![],
+                }),
+                ..NewTopic::default()
+            },
+        )
+        .await
+        .unwrap();
+    let mut tx = h.data.backend().begin(TxMode::Normal).await.unwrap();
+    tx.execute(&forgebase_db::Statement::raw(
+        "INSERT INTO _forgebase_service_accounts (id, name, role, created_by, created_at) \
+         VALUES ('w1', 'worker', 'service', 'admin:root', 0)",
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let w1 = AccessContext::service("w1", false);
+    for p in ["engine:queue_admin", "engine:queue_read", "engine:queue_consume"] {
+        h.grant("service:w1", p).await;
+    }
+    h.svc
+        .create_subscription(
+            &w1,
+            NewSubscription {
+                max_delivery_attempts: Some(1),
+                ..sub("w1-notes", "note-events")
+            },
+        )
+        .await
+        .unwrap();
+    for (owner, secret) in [("w1", "s1"), ("other", "s2")] {
+        h.data
+            .create_record(&admin(), "notes", json!({"owner": owner, "secret": secret}))
+            .await
+            .unwrap();
+    }
+    h.svc.run_maintenance().await.unwrap();
+    let got = h.svc.pull(&w1, "w1-notes", PullRequest::default()).await.unwrap();
+    assert_eq!(got.len(), 1, "only the owner's record: {got:?}");
+    let rec = &got[0].message.data["record"];
+    assert_eq!(rec["owner"], "w1");
+    assert!(rec.get("secret").is_none(), "hidden field: {rec}");
+    // Nacked with one attempt allowed: dead-lettered with the owner's view.
+    h.svc.nack(&w1, "w1-notes", &[got[0].ack_id.clone()]).await.unwrap();
+    let dl = h.svc.dead_letters(&w1, "w1-notes", None, 10).await.unwrap();
+    assert_eq!(dl.items.len(), 1);
+    assert_eq!(dl.items[0].data["record"]["owner"], "w1");
+    assert!(dl.items[0].data["record"].get("secret").is_none());
+    // The stored message carries no record; the administrator's browse is the full view.
+    let all = h.svc.messages(&admin(), "note-events", 0, 10).await.unwrap();
+    assert_eq!(all.items.len(), 2);
+    assert!(all.items.iter().any(|m| m.data["record"]["secret"] == "s2"));
+    let mine = h.svc.messages(&w1, "note-events", 0, 10).await.unwrap();
+    assert_eq!(mine.items.len(), 1, "a reader's browse is their view");
+
+    // A disabled owner sees nothing more.
+    let mut tx = h.data.backend().begin(TxMode::Normal).await.unwrap();
+    tx.execute(&forgebase_db::Statement::raw(
+        "UPDATE _forgebase_service_accounts SET disabled_at = 1 WHERE id = 'w1'",
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.data
+        .create_record(&admin(), "notes", json!({"owner": "w1", "secret": "s3"}))
+        .await
+        .unwrap();
+    h.svc.run_maintenance().await.unwrap();
+    let got = h.svc.pull(&w1, "w1-notes", PullRequest::default()).await.unwrap();
+    assert!(got.is_empty(), "{got:?}");
+}

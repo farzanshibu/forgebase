@@ -2306,3 +2306,122 @@ ever exposed, the rule fields are real columns, so policies can reuse them.
 `bucket` resource rules with the fields above (`folders.0`, `owner`); a
 "rotate signing key" action for administrators; expect `404` for objects a
 rule hides.
+
+## Addendum (FB-141): queue tenancy, resource permissions and record views
+
+Written 2026-11-11 by FB-141. Closes `rls-coverage.md` G2 and G16 in
+`forgebase-queue`. Backend-neutral: new SQL uses numbered `?N`
+placeholders and constructs valid on both engines; migration pair 0030
+(`queue_rls`).
+
+**Tenant-scoped names (G16).** `_forgebase_queue_topics.tenant`,
+`_forgebase_queue_subscriptions.tenant` and `_forgebase_queue_snapshots.tenant`
+(NULL = instance-wide, every resource before FB-141). A caller with a
+tenant creates resources of that tenant, stored as `<tenant>/<name>` (queue
+names never hold `/`, and every name is validated before lookup, so a
+stored name is never addressable), exactly as FB-140 did for buckets. A
+name resolves to the caller's tenant resource, else the instance-wide one;
+another tenant's topic, subscription or snapshot is unreachable. A tenant
+may not create a name an instance-wide resource holds (`409`). A
+subscription's topic and dead-letter topic are resolved in the creator's
+scope (a tenant may subscribe to an instance-wide topic). Listings show
+the tenant's resources plus the instance-wide ones it does not shadow;
+topic metrics count only the subscriptions of the caller's scope. The wire
+`Topic`, `Subscription` and `Snapshot` gained `tenant`; names (topics,
+subscriptions, dead-letter topics, messages' `topic`, dead letters, push
+bodies and headers) are always the bare name. Record-source topics are
+still created by privileged callers only; one created in a tenant relays
+only that tenant's changes.
+
+**Permissions (G16).** Every call asks `Authorizer::authorize_resource`
+(FB-134) about the topic or subscription it acts on:
+
+| Call | Action, kind, operation |
+|---|---|
+| create topic | `queue_admin`, topic, `create` (so `engine:queue_admin:<name>` lets one create that name) |
+| get topic, topic metrics | `queue_read`, topic, `view` |
+| browse messages | `queue_read`, topic, `list` |
+| update / delete topic | `queue_admin`, topic, `update` / `delete` |
+| publish (REST, `publish_in_tx`, `ctx.queues.publish`) | `queue_publish`, topic, `create` |
+| create subscription | `queue_admin`, subscription, `create`; plus `queue_read` on the topic (`list`) and `queue_publish` on the dead-letter topic (`create`) |
+| get subscription, metrics | `queue_read`, subscription, `view` |
+| dead letters | `queue_read`, subscription, `list` |
+| update / delete subscription, seek | `queue_admin`, subscription, `update` / `delete` / `update` |
+| pull, WebSocket and SSE streams | `queue_consume`, subscription, `list` (streams re-check every round) |
+| ack, nack, modify deadline | `queue_consume`, subscription, `update` |
+| snapshots | on their subscription: create `queue_admin`/`create`, get `queue_read`/`view`, delete `queue_admin`/`delete` |
+
+Listings (topics, subscriptions, snapshots) return everything in scope for
+holders of the plain `engine:queue_read`, else the resources the caller
+may `list` (resource keys, ownership, rules); with none of those the plain
+`403`/`401` stands. **Ownership**: a subscription's creator
+(`created_by`, the principal key) is passed as `ResourceRef::owner`, so the
+owner holds every permission on it (consume, read, administer) without a
+grant; an explicit deny still wins. Admin actions stay permission-only
+(FB-134). Queue resource rules read `@request` only (no item fields; the
+FB-134 default schema), so a `Filter` decision is a denial. HTTP: a call
+on a path resource is checked before its body is read; create calls (the
+name is in the body) are checked by the service once the body parses,
+and a body that does not parse is answered after the plain check, so
+anonymous and forbidden callers still get `401`/`403` first.
+`QueueService::authorize_topic` and `authorize_subscription` are the
+public pre-checks.
+
+**Record-source subscriptions (G2).** Evaluated at **delivery**, like
+realtime. The relay no longer builds messages as the system: a
+record-change message stores the changed row in
+`_forgebase_queue_messages.source_row` (`{collection_id, tenant,
+snapshot}` with the outbox row snapshot) and `data.record` is null at
+rest. A subscription records its creator's context in
+`_forgebase_queue_subscriptions.owner_context` (principal key, realm,
+organization, tenant, key scopes). Each claim (pull, stream, push)
+resolves the owner **as they are now** (an administrator or service
+account must still exist and be enabled, with its current admin role; a
+user record must still exist, its fields are the `@request.auth.*`
+attributes) and fills `data.record` through `DataService::view_snapshot`
+as that owner: tenant clause, current View rule, hidden fields and field
+rules. A message the owner may not see (another tenant, the rule, a
+deleted collection, a deleted owner) is withheld: its delivery row is
+dropped (`forgebase_queue_withheld_total`), and the claim continues with
+the next ones. Redeliveries are evaluated again. Dead letters store the
+owner's view; a copy on a dead-letter topic keeps `source_row`, so its
+subscribers get their own view. Browsing a topic evaluates each record as
+the reader and leaves out the rows they may not see (a page may hold fewer
+items than `limit`). Subscriptions from before FB-141 (no
+`owner_context`) act as their `created_by` in the default realm.
+Record-change messages from before FB-141 (full system view in `data`)
+are marked `source_row = 'legacy'` by the migration and are delivered and
+shown only to privileged owners and readers.
+
+**Edge functions.** `ctx.queues.publish` goes through
+`QueueService::publish` with the caller's context (FB-93), so it gets the
+same resource checks and resolves names in the caller's tenant. Push to a
+function still invokes it with its own identity (FB-142 owns recorded
+invocation contexts).
+
+**Breaking.** Non-privileged consumers of record-source topics get the
+owner's view instead of every field of every row: hidden fields, other
+tenants' rows and rows outside the owner's View rule are gone, and
+messages can be withheld. Creating a subscription needs `queue_read` on
+its topic (and `queue_publish` on a dead-letter topic). Tenant callers
+create tenant topics (callers with a tenant used to share one global
+namespace). `Topic`, `Subscription`, `Snapshot` gained `tenant`;
+`QueueService::authorize` keeps the plain check.
+
+**For FB-146 (queues on PostgreSQL, pgmq per ADR-0029).** Keep the stored
+name scheme or replace it with a `(tenant, name)` key: pgmq queue names
+are identifiers (`pgmq.q_<name>`, 47 characters), so map a stored name to
+a hashed pgmq queue name and keep `tenant` in ForgeBase's own tables. The
+owner view must stay in ForgeBase (it runs the data core's rules), not in
+pgmq: keep `source_row` with the message (pgmq message JSON can carry it)
+and fill `record` at read time. New SQL to check on PostgreSQL:
+`(tenant IS NULL OR tenant = ?1)` with a NULL parameter,
+`(?2 IS NULL OR topic = ?2)`, and the 0030 twin's `UPDATE ... WHERE topic
+IN (SELECT ...)`. Resource placement (ADR-0029 §3.2): `tenant` on topics
+and subscriptions is the placement key; instance-wide ones stay on
+control. **For the dashboard queues studio.** Show `tenant` on topics,
+subscriptions and snapshots and send `X-ForgeBase-Tenant` when creating
+them; show the owner (`created_by`) of a subscription; offer
+`queue_topic` / `queue_subscription` resource rules with `@request` only;
+explain that record-source messages show the owner's (or, when browsing,
+your own) view and that withheld messages do not appear.

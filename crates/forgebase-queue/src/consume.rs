@@ -244,9 +244,10 @@ impl QueueService {
                 Some(o) => self.view_record(o, &mut msg.data, src).await?,
                 None => false,
             };
-            if visible {
-                data = serde_json::to_string(&msg.data).map_err(|e| QueueError::Internal(e.to_string()))?;
+            if !visible && let Some(o) = msg.data.as_object_mut() {
+                o.insert("record".into(), serde_json::Value::Null);
             }
+            data = serde_json::to_string(&msg.data).map_err(|e| QueueError::Internal(e.to_string()))?;
         }
         let mut forwarded: Option<String> = None;
         if let Some(dlt) = &sub.dead_letter_topic

@@ -1467,10 +1467,19 @@ impl QueueService {
                 Some(d) => Some(resolve_topic(&mut Db::Tx(&mut *tx), tenant.as_deref(), d).await?.name),
                 None => None,
             };
+            // A tenant may not take a name an instance-wide subscription holds.
             let exists = tx
                 .fetch_all(&Statement::new(
-                    "SELECT 1 FROM _forgebase_queue_subscriptions WHERE name = ?1 OR (?2 AND name = ?3)",
-                    vec![key.as_str().into(), tenant.is_some().into(), new.name.as_str().into()],
+                    "SELECT 1 FROM _forgebase_queue_subscriptions WHERE name = ?1 OR name = ?2",
+                    vec![
+                        key.as_str().into(),
+                        if tenant.is_some() {
+                            new.name.as_str()
+                        } else {
+                            key.as_str()
+                        }
+                        .into(),
+                    ],
                 ))
                 .await?;
             if !exists.is_empty() {

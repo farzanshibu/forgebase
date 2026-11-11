@@ -73,6 +73,17 @@ pub async fn open_db(dir: &Path) -> Database {
         .await
         .unwrap();
     db.migrate(Some(&layout.backups_dir())).await.unwrap();
+    // `admin()` is a real administrator: subscriptions record their creator,
+    // and record-change messages are delivered as that creator sees them
+    // (FB-141), which needs the account to exist.
+    let mut tx = db.begin(forgebase_db::TxMode::Normal).await.unwrap();
+    tx.execute(&forgebase_db::Statement::raw(
+        "INSERT INTO _forgebase_admins (id, email, password_hash, created_at, updated_at) \
+         VALUES ('root', 'root@example.com', '$argon2id$test', 0, 0) ON CONFLICT (id) DO NOTHING",
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     db
 }
 
