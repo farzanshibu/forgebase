@@ -147,6 +147,7 @@ async fn events_flow_per_set_with_replay_resets_and_fan_in() {
 
     // Replay from the subscription's set.
     data.create_record(&t1, "notes", json!({"body": "two"})).await.unwrap();
+    assert_eq!(next_event(&mut a).await["data"]["body"], "two");
     let mut b = ws(addr, Some("t1")).await;
     let (replayed, sub) = b
         .subscribe(json!({"id": "n", "collection": "notes", "cursor": c1}))
