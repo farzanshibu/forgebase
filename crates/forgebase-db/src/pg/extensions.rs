@@ -479,10 +479,15 @@ pub(crate) fn decide(f: Feature, mode: ExtensionMode, usable: Result<(), String>
             "{name} = \"on\", but this database stores its {name} data on the portable engine; start with \
              {name} = \"auto\" and run {name}.convert"
         )),
+        // Without a usable extension the reason is the same as at the first
+        // start (FB-164): a restart reports the status it reported then.
         (ExtensionMode::Auto, Some(Pin::Portable)) => Decision::Portable {
-            reason: format!(
-                "this database stores its {name} data on the portable engine; {name}.convert moves it to {ext}"
-            ),
+            reason: match usable {
+                Ok(()) => format!(
+                    "this database stores its {name} data on the portable engine; {name}.convert moves it to {ext}"
+                ),
+                Err(why) => why,
+            },
             pin: false,
         },
         (_, Some(Pin::Extension)) => match usable {
@@ -957,6 +962,21 @@ mod tests {
             decide(Feature::Vector, ON, Ok(()), Some(Pin::Portable)),
             Decision::Refuse(_)
         ));
+        // Without the extension a restart gives the first start's reason.
+        assert_eq!(
+            decide(Feature::Queue, AUTO, missing(), Some(Pin::Portable)),
+            Decision::Portable {
+                reason: "missing".into(),
+                pin: false
+            }
+        );
+        assert_eq!(
+            decide(Feature::Queue, AUTO, missing(), None),
+            Decision::Portable {
+                reason: "missing".into(),
+                pin: true
+            }
+        );
         // Stored in the extension: it must stay usable, whatever the mode.
         assert_eq!(
             decide(Feature::Queue, AUTO, Ok(()), Some(Pin::Extension)),
