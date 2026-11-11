@@ -342,7 +342,12 @@ impl ReplicaSet {
     /// [`ReplicaSet::fetch`] as `run_as` when given (FB-171): the replica's
     /// (or the primary's) read-only transaction switches role and sets the
     /// claims first ([`Backend::fetch_all_as`]).
-    pub async fn fetch_as(&self, stmt: &Statement, intent: &ReadIntent, run_as: Option<&RunAs>) -> Result<Rows, DbError> {
+    pub async fn fetch_as(
+        &self,
+        stmt: &Statement,
+        intent: &ReadIntent,
+        run_as: Option<&RunAs>,
+    ) -> Result<Rows, DbError> {
         let inner = &self.inner;
         if !intent.replica || inner.options.read_routing == ReadRouting::Primary {
             return read_on(&inner.primary, stmt, run_as).await;
@@ -398,7 +403,12 @@ impl ReplicaSet {
         }
     }
 
-    async fn on_primary(&self, stmt: &Statement, run_as: Option<&RunAs>, reason: FallbackReason) -> Result<Rows, DbError> {
+    async fn on_primary(
+        &self,
+        stmt: &Statement,
+        run_as: Option<&RunAs>,
+        reason: FallbackReason,
+    ) -> Result<Rows, DbError> {
         let set = self.inner.set_id.clone();
         metrics::counter!(FALLBACKS_METRIC, "set" => set.clone(), "reason" => reason.as_str()).increment(1);
         metrics::counter!(READS_METRIC, "set" => set, "target" => "primary").increment(1);

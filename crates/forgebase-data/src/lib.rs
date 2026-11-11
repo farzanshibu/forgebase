@@ -57,7 +57,10 @@ pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, List
 pub use native::NativePolicies;
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
 pub use shards::{CrossShardRule, RELATION_CROSSES_SHARDS, RelationDeletes, RelationFanout, TENANT_REQUIRED_SHARDED};
-pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};
+pub use sql::{
+    ColumnInfo, LOGIN_GROUP, LOGIN_WRITE_GROUP, RUN_AS_EVENT, SQL_ADMIN_ROLE, SqlOptions, SqlResult, SqlRunAs,
+    SqlStatement, TableInfo,
+};
 
 pub use forgebase_db as db;
 pub use forgebase_query as query;
@@ -102,6 +105,9 @@ struct Inner {
     /// Fan-out of `ON DELETE` actions of shared records to every set
     /// (FB-171), installed once at startup.
     relation_fanout: OnceLock<Arc<dyn shards::RelationFanout>>,
+    /// Role the SQL editor's statements run as on PostgreSQL (FB-153,
+    /// `forgebase_sql_admin`); `None`: the pools' own roles.
+    sql_role: RwLock<Option<String>>,
 }
 
 impl DataService {
@@ -129,6 +135,7 @@ impl DataService {
                 native: OnceLock::new(),
                 shards: OnceLock::new(),
                 relation_fanout: OnceLock::new(),
+                sql_role: RwLock::new(None),
             }),
         })
     }
@@ -316,12 +323,8 @@ impl DataService {
         })
     }
 
-    /// A plain read that may be served by a replica (ADR-0029 §2.5).
-    pub(crate) async fn fetch_replica(&self, stmt: &Statement, what: &'static str) -> Result<Rows, DbError> {
-        Self::fetch_replica_on(&self.inner.backend, stmt, what).await
-    }
-
-    /// Same on `backend` (a collection's set, [`DataService::route`]).
+    /// A plain read on `backend` (a collection's set, [`DataService::route`])
+    /// that may be served by one of its replicas (ADR-0029 §2.5).
     pub(crate) async fn fetch_replica_on(
         backend: &Arc<dyn Backend>,
         stmt: &Statement,

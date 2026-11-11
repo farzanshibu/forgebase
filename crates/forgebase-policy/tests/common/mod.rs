@@ -54,6 +54,15 @@ impl Env {
         env
     }
 
+    /// The test database's URL (PostgreSQL), for connecting as a direct
+    /// login (FB-153).
+    pub fn db_url(&self) -> Option<String> {
+        match self._tmp.options().target {
+            forgebase_db::DbTarget::Postgres { url, .. } => Some(url.expose().to_owned()),
+            _ => None,
+        }
+    }
+
     pub async fn collection(&self, def: Json) -> Collection {
         self.data
             .create_collection(&AccessContext::system(), serde_json::from_value(def).unwrap())

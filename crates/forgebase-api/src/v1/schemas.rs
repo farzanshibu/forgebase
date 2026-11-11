@@ -265,6 +265,11 @@ pub struct SqlStatementBody {
     /// statements that name them. Each use is audited (`sql.show_secrets`
     /// in `GET /api/auth/audit`). Default `false`.
     pub show_secrets: Option<bool>,
+    /// `POST /sql` only (FB-153, PostgreSQL): run as a direct login bound to
+    /// this user would, `{"principal": "user:users/u1", "tenant": "env1"}`.
+    /// Audited (`sql.run_as`).
+    #[schema(value_type = Option<crate::v1::sql::RunAsBody>)]
+    pub run_as: Option<Json>,
 }
 
 #[derive(ToSchema)]
@@ -274,6 +279,9 @@ pub struct SqlBatchBody {
     /// Return secret columns unmasked for the whole batch and allow
     /// statements that name them; audited once per batch. Default `false`.
     pub show_secrets: Option<bool>,
+    /// Run the batch as a direct login bound to this user would (FB-153).
+    #[schema(value_type = Option<crate::v1::sql::RunAsBody>)]
+    pub run_as: Option<Json>,
 }
 
 #[derive(ToSchema)]

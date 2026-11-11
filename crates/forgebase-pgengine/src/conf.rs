@@ -20,6 +20,10 @@ pub const DENY: &[&str] = &[
     "unix_socket_directories",
     "data_directory",
     "hba_file",
+    // TLS of TCP logins (FB-153: on whenever `listen` is set)
+    "ssl",
+    "ssl_cert_file",
+    "ssl_key_file",
     "shared_preload_libraries",
     // ADR-0029 §1.3 (also every `cron.*`)
     "max_worker_processes",
@@ -64,8 +68,10 @@ pub struct ConfInput<'a> {
     pub socket_dir: Option<&'a Path>,
     /// Port (names the socket; the TCP port when listening).
     pub port: u16,
-    /// TCP address to listen on (loopback only).
+    /// TCP address to listen on.
     pub listen: Option<SocketAddr>,
+    /// Certificate and key: TLS on (`listen` is set).
+    pub tls: Option<(&'a Path, &'a Path)>,
     /// Libraries for `shared_preload_libraries`.
     pub preload: Vec<&'static str>,
     /// Whether pg_cron is preloaded (writes `cron.*`).
@@ -138,6 +144,12 @@ pub fn settings(input: &ConfInput<'_>) -> Vec<(String, String)> {
         None => set("listen_addresses", String::new()),
     }
     set("port", input.port.to_string());
+    if let Some((cert, key)) = input.tls {
+        set("ssl", "on".into());
+        set("ssl_cert_file", cert.display().to_string());
+        set("ssl_key_file", key.display().to_string());
+        set("ssl_min_protocol_version", "TLSv1.2".into());
+    }
     match input.socket_dir {
         Some(d) => {
             set("unix_socket_directories", d.display().to_string());
@@ -245,6 +257,7 @@ mod tests {
             socket_dir: Some(dir),
             port: 5432,
             listen: None,
+            tls: None,
             preload: vec!["pg_stat_statements", "pg_cron"],
             cron: true,
             standby: false,

@@ -17,6 +17,7 @@
 
 pub mod engine;
 pub mod http;
+pub mod logins;
 pub mod native;
 pub mod perm;
 pub mod pipeline;
@@ -151,6 +152,8 @@ struct Inner {
     schemas: RwLock<HashMap<ResourceKind, ResourceSchema>>,
     /// Native PostgreSQL row-level security (FB-152).
     native: native::NativeState,
+    /// Serialises direct-login claims refreshes (FB-153).
+    logins: tokio::sync::Mutex<()>,
 }
 
 impl PolicyService {
@@ -168,6 +171,7 @@ impl PolicyService {
                 realms: OnceLock::new(),
                 schemas: RwLock::new(HashMap::new()),
                 native: native::NativeState::default(),
+                logins: tokio::sync::Mutex::new(()),
             }),
         })
     }
@@ -243,11 +247,17 @@ impl PolicyService {
         self.reload().await
     }
 
-    /// Reloads the model (after any change; drops every cached permission).
+    /// Reloads the model (after any change; drops every cached permission)
+    /// and rewrites the claims of direct logins (FB-153) from it.
     pub async fn reload(&self) -> Result<(), PolicyError> {
         let mut snap = Snapshot::load(self.inner.db.as_ref()).await?;
         snap.realm_dir = self.inner.realms.get().cloned();
         *self.inner.snap.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(snap);
+        if self.native_rls_mode().is_some()
+            && let Err(e) = self.refresh_db_logins().await
+        {
+            tracing::warn!(error = %e, "direct login claims were not refreshed");
+        }
         Ok(())
     }
 

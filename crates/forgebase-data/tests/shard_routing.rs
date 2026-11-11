@@ -112,6 +112,30 @@ async fn one_set_behaves_as_before() {
     assert!(left.items[0]["author"].is_null() || left.items[0].get("author").is_none());
     // Without shard sets no foreign key is dropped.
     assert_eq!(data.drop_cross_placement_keys().await.unwrap(), 0);
+    // The SQL editor's node selector: control only on one set.
+    let on = |set| forgebase_data::SqlOptions {
+        set,
+        ..Default::default()
+    };
+    let read = || forgebase_data::SqlStatement {
+        sql: "SELECT count(*) AS n FROM posts".into(),
+        params: vec![],
+    };
+    assert!(
+        data.execute_sql_with(&common::admin(), read(), on(Some(0)))
+            .await
+            .is_ok()
+    );
+    let e = data
+        .execute_sql_with(&common::admin(), read(), on(Some(3)))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "shard_not_found");
+    let e = data
+        .execute_sql_batch_with(&common::admin(), vec![read()], on(Some(3)))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "sql_set_read_only");
 }
 
 #[tokio::test]
@@ -152,6 +176,24 @@ mod sharded {
             ),
         )
         .await
+    }
+
+    async fn sql_count(data: &DataService, set: Option<u16>) -> i64 {
+        let r = data
+            .execute_sql_with(
+                &common::admin(),
+                forgebase_data::SqlStatement {
+                    sql: "SELECT count(*) AS n FROM posts".into(),
+                    params: vec![],
+                },
+                forgebase_data::SqlOptions {
+                    set,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        r.rows[0][0].as_i64().unwrap()
     }
 
     fn code(e: &forgebase_data::DataError) -> &'static str {
@@ -398,5 +440,24 @@ mod sharded {
             .await
             .unwrap();
         assert!(again.values().all(|n| *n == 0), "{again:?}");
+
+        // The SQL editor's node selector reads the chosen set.
+        assert_eq!(sql_count(&data, Some(set.number)).await, 1, "s1 holds t1's post");
+        assert_eq!(sql_count(&data, None).await, 1, "control holds t0's post");
+        let e = data
+            .execute_sql_batch_with(
+                &common::admin(),
+                vec![forgebase_data::SqlStatement {
+                    sql: "DELETE FROM posts".into(),
+                    params: vec![],
+                }],
+                forgebase_data::SqlOptions {
+                    set: Some(set.number),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(code(&e), "sql_set_read_only");
     }
 }

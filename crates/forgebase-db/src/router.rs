@@ -228,6 +228,10 @@ impl Backend for SetHandle {
         self.db.fetch_all_as(stmt, run_as)
     }
 
+    fn admin_batch<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.db.admin_batch(statements)
+    }
+
     fn fetch_routed_as<'a>(
         &'a self,
         stmt: &'a Statement,

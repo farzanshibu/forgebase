@@ -150,6 +150,7 @@ async fn primary_is_initialised_configured_and_restartable() {
         names,
         [
             "forgebase_login",
+            "forgebase_login_write",
             "forgebase_owner",
             "forgebase_reader",
             "forgebase_rls",
@@ -163,7 +164,7 @@ async fn primary_is_initialised_configured_and_restartable() {
             "forgebase_super" => (true, true, true),
             "forgebase_server" | "forgebase_reader" => (true, false, true),
             "forgebase_owner" | "forgebase_sql_admin" => (false, false, true),
-            "forgebase_rls" | "forgebase_login" => (false, false, false),
+            "forgebase_rls" | "forgebase_login" | "forgebase_login_write" => (false, false, false),
             _ => unreachable!(),
         };
         assert_eq!((*login, *superuser, *bypass), want, "{name}");
