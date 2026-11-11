@@ -29,8 +29,8 @@ use forgebase_pgengine::replication::service::{
 use forgebase_pgengine::replication::{self, EngineIdentity, Lsn};
 use forgebase_pgengine::standby::{self, CloneOptions};
 use forgebase_pgengine::{Engine, EngineConfig, EngineHandle, EngineSource, Layout, NodeKind, Role};
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::GlobalArgs;
@@ -237,7 +237,11 @@ impl Server {
         let base = base.trim_end_matches('/');
         Ok(Self {
             addr,
-            base: if base.is_empty() { String::new() } else { format!("/{base}") },
+            base: if base.is_empty() {
+                String::new()
+            } else {
+                format!("/{base}")
+            },
         })
     }
 
@@ -249,7 +253,10 @@ impl Server {
         body: Option<&impl Serialize>,
         timeout: Duration,
     ) -> Result<T, CallError> {
-        let json = body.map(serde_json::to_vec).transpose().map_err(|e| CallError::Io(e.to_string()))?;
+        let json = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| CallError::Io(e.to_string()))?;
         let reply = probe::request(
             &self.addr,
             method,
@@ -263,7 +270,10 @@ impl Server {
         if reply.status == 200 {
             serde_json::from_slice(&reply.body).map_err(|e| CallError::Io(format!("bad reply: {e}")))
         } else {
-            Err(CallError::Status(reply.status, String::from_utf8_lossy(&reply.body).into_owned()))
+            Err(CallError::Status(
+                reply.status,
+                String::from_utf8_lossy(&reply.body).into_owned(),
+            ))
         }
     }
 }
@@ -571,7 +581,13 @@ impl Agent {
         let path = node_path(service::paths::HEARTBEAT, &self.file.node_id);
         let r = self
             .server
-            .call("POST", &path, Some(&self.file.agent_key), Some(&hb), Duration::from_secs(20))
+            .call(
+                "POST",
+                &path,
+                Some(&self.file.agent_key),
+                Some(&hb),
+                Duration::from_secs(20),
+            )
             .await;
         if r.is_err() {
             // Answers are sent again with the next heartbeat.
@@ -699,11 +715,8 @@ impl Agent {
             self.file.upstream.port = c.port;
             self.file.upstream.slot = c.slot;
         } else {
-            let up: UpstreamGrant = serde_json::from_value(
-                args.get("upstream")
-                    .cloned()
-                    .context("the command has no upstream")?,
-            )?;
+            let up: UpstreamGrant =
+                serde_json::from_value(args.get("upstream").cloned().context("the command has no upstream")?)?;
             self.file.upstream = up;
         }
         self.file.save(&self.data_dir)?;
@@ -740,7 +753,11 @@ async fn poll_loop(server: Server, node_id: String, key: String, wait_ms: u64, t
     let mut backoff = Duration::from_secs(1);
     let mut first = true;
     loop {
-        let path = if first { format!("{path}&resend=1") } else { path.clone() };
+        let path = if first {
+            format!("{path}&resend=1")
+        } else {
+            path.clone()
+        };
         let r: Result<CommandBatch, CallError> = server
             .call(
                 "GET",
@@ -783,7 +800,10 @@ mod tests {
         assert!(Server::parse("https://x").is_err());
         assert!(Server::parse("ftp://x").is_err());
         assert!(Server::parse("http://").is_err());
-        assert_eq!(node_path(service::paths::HEARTBEAT, "n1"), "/api/system/database/agent/nodes/n1/heartbeat");
+        assert_eq!(
+            node_path(service::paths::HEARTBEAT, "n1"),
+            "/api/system/database/agent/nodes/n1/heartbeat"
+        );
     }
 
     #[test]

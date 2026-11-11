@@ -113,17 +113,20 @@ async fn local_replica_is_promoted_under_write_load_without_losing_a_commit() {
     let Some(engine) = engine_dir() else { return };
     let tmp = tempdir();
     let cfg = config(&engine, 18_681);
-    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg).await.expect("primary");
+    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg)
+        .await
+        .expect("primary");
     {
         let mut c = conn(&primary, Role::Server).await;
         sqlx::query("CREATE TABLE forgebase.fb168_load (id bigint PRIMARY KEY, v text NOT NULL)")
             .execute(&mut c)
             .await
             .expect("table");
-        let repl: bool = sqlx::query_scalar("SELECT rolreplication FROM pg_roles WHERE rolname = 'forgebase_replicator'")
-            .fetch_one(&mut c)
-            .await
-            .expect("replicator");
+        let repl: bool =
+            sqlx::query_scalar("SELECT rolreplication FROM pg_roles WHERE rolname = 'forgebase_replicator'")
+                .fetch_one(&mut c)
+                .await
+                .expect("replicator");
         assert!(repl, "forgebase_replicator has REPLICATION");
         let keep: String = sqlx::query_scalar("SHOW max_slot_wal_keep_size")
             .fetch_one(&mut c)
@@ -136,7 +139,9 @@ async fn local_replica_is_promoted_under_write_load_without_losing_a_commit() {
     let r1 = replicas.add(&primary, "r1").await.expect("r1");
     let r2 = replicas.add(&primary, "r2").await.expect("r2");
     for r in [&r1, &r2] {
-        standby::wait_streaming(r, Duration::from_secs(30)).await.expect("streaming");
+        standby::wait_streaming(r, Duration::from_secs(30))
+            .await
+            .expect("streaming");
     }
     // The follow settings carry no password; the slots exist and are used.
     let auto = std::fs::read_to_string(replicas.layout("r1").unwrap().pgdata().join("postgresql.auto.conf")).unwrap();
@@ -156,9 +161,15 @@ async fn local_replica_is_promoted_under_write_load_without_losing_a_commit() {
     let stop = Arc::new(AtomicBool::new(false));
     let load = writer(&primary, stop.clone());
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    let report = standby::promote_local(&replicas, "r1", OldPrimary::Running(&primary), false, Duration::from_secs(60))
-        .await
-        .expect("promote");
+    let report = standby::promote_local(
+        &replicas,
+        "r1",
+        OldPrimary::Running(&primary),
+        false,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("promote");
     stop.store(true, Ordering::SeqCst);
     let acked = load.await.expect("writer");
     assert!(acked.len() > 20, "the writer committed under load: {}", acked.len());
@@ -176,7 +187,11 @@ async fn local_replica_is_promoted_under_write_load_without_losing_a_commit() {
             .fetch_one(&mut c)
             .await
             .expect("present");
-        assert_eq!(present, i64::try_from(acked.len()).unwrap(), "every acknowledged commit survived");
+        assert_eq!(
+            present,
+            i64::try_from(acked.len()).unwrap(),
+            "every acknowledged commit survived"
+        );
         let f = replication::facts(&mut c).await.expect("facts");
         assert!(!f.in_recovery);
     }
@@ -211,10 +226,18 @@ async fn local_replica_is_promoted_under_write_load_without_losing_a_commit() {
     )
     .await
     .expect("rejoin");
-    let expected = if has_rewind(&engine) { RejoinHow::Rewound } else { RejoinHow::Recloned };
+    let expected = if has_rewind(&engine) {
+        RejoinHow::Rewound
+    } else {
+        RejoinHow::Recloned
+    };
     assert_eq!(how, expected);
-    let old = Engine::prepare(&old_layout, &replicas.config().clone()).await.expect("old primary as standby");
-    standby::wait_streaming(&old, Duration::from_secs(30)).await.expect("old primary streams");
+    let old = Engine::prepare(&old_layout, &replicas.config().clone())
+        .await
+        .expect("old primary as standby");
+    standby::wait_streaming(&old, Duration::from_secs(30))
+        .await
+        .expect("old primary streams");
     standby::wait_replayed(&old, current_lsn(&new).await, Duration::from_secs(30))
         .await
         .expect("old primary catches up");
@@ -232,10 +255,14 @@ async fn unclean_stop_needs_accept_data_loss() {
     let Some(engine) = engine_dir() else { return };
     let tmp = tempdir();
     let cfg = config(&engine, 18_682);
-    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg).await.expect("primary");
+    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg)
+        .await
+        .expect("primary");
     let replicas = LocalReplicas::new(tmp.path(), &cfg);
     let r1 = replicas.add(&primary, "r1").await.expect("r1");
-    standby::wait_streaming(&r1, Duration::from_secs(30)).await.expect("streaming");
+    standby::wait_streaming(&r1, Duration::from_secs(30))
+        .await
+        .expect("streaming");
     primary.stop_immediate().await.expect("crash-like stop");
     let layout = Layout::primary(tmp.path());
     let err = standby::promote_local(
@@ -305,7 +332,9 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
     let Some(engine) = engine_dir() else { return };
     let tmp = tempdir();
     let cfg = config(&engine, 18_683);
-    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg).await.expect("primary");
+    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg)
+        .await
+        .expect("primary");
     let control = open_db(&primary).await;
     control.migrate(None).await.expect("migrate");
     let replicas = LocalReplicas::new(tmp.path(), &cfg);
@@ -358,7 +387,9 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
     .expect_err("confirmation");
     assert!(matches!(wrong, ServiceError::ConfirmMismatch(_)), "{wrong}");
 
-    let check = service::promote_check(&replicas, Some(&primary), "r1").await.expect("check");
+    let check = service::promote_check(&replicas, Some(&primary), "r1")
+        .await
+        .expect("check");
     assert!(check.primary_reachable && check.replayed.is_some());
 
     let topo_file = tmp.path().join("topology.json");
@@ -383,8 +414,15 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
     assert!(topo.epoch >= out.epoch);
     let p = topo.primary_of("control").expect("primary row");
     assert_eq!((p.name.as_str(), p.state), ("r1", NodeState::Ready));
-    let old = topo.nodes.iter().find(|n| n.id == out.old_primary).expect("old primary row");
-    assert_eq!((old.name.as_str(), old.role, old.state), ("primary", NodeRole::Replica, NodeState::NeedsRebuild));
+    let old = topo
+        .nodes
+        .iter()
+        .find(|n| n.id == out.old_primary)
+        .expect("old primary row");
+    assert_eq!(
+        (old.name.as_str(), old.role, old.state),
+        ("primary", NodeRole::Replica, NodeState::NeedsRebuild)
+    );
     let file = topology::read_topology_file(&topo_file).expect("read").expect("file");
     assert_eq!(file.topology.epoch, topo.epoch);
 
@@ -392,24 +430,41 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
         .await
         .expect("rejoin");
     assert_eq!(view.state, NodeState::CatchingUp);
-    let expected = if has_rewind(&engine) { RejoinHow::Rewound } else { RejoinHow::Recloned };
+    let expected = if has_rewind(&engine) {
+        RejoinHow::Rewound
+    } else {
+        RejoinHow::Recloned
+    };
     assert_eq!(how, expected);
     let rejoined = replicas.get("primary").await.expect("running");
-    standby::wait_streaming(&rejoined, Duration::from_secs(30)).await.expect("streams");
+    standby::wait_streaming(&rejoined, Duration::from_secs(30))
+        .await
+        .expect("streams");
 
     // Slot health: nothing lost yet.
-    assert!(service::mark_lost_slots(&control, "control", &new).await.expect("slots").is_empty());
+    assert!(
+        service::mark_lost_slots(&control, "control", &new)
+            .await
+            .expect("slots")
+            .is_empty()
+    );
 
     service::remove_replica(&control, &replicas, Some(&new), &out.old_primary, "primary")
         .await
         .expect("remove");
-    assert!(!tmp.path().join("postgres/data").exists(), "the old primary's data is gone");
+    assert!(
+        !tmp.path().join("postgres/data").exists(),
+        "the old primary's data is gone"
+    );
     assert!(replicas.get("primary").await.is_none());
     // The new primary's own directory, the engine and roles.secret stay.
     assert!(tmp.path().join("postgres/nodes/r1/data/PG_VERSION").is_file());
     assert!(tmp.path().join("postgres/roles.secret").is_file());
     let mut c = conn(&new, Role::Server).await;
-    let one: i32 = sqlx::query_scalar("SELECT 1").fetch_one(&mut c).await.expect("new primary answers");
+    let one: i32 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(&mut c)
+        .await
+        .expect("new primary answers");
     assert_eq!(one, 1);
     let names: Vec<String> = service::nodes(&control, None)
         .await
@@ -429,7 +484,9 @@ async fn join_tokens_agents_commands_and_heartbeats() {
     let tmp = tempdir();
     let mut cfg = config(&engine, 18_684);
     cfg.listen = Some("127.0.0.1:18684".parse().unwrap());
-    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg).await.expect("primary");
+    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg)
+        .await
+        .expect("primary");
     let control = open_db(&primary).await;
     control.migrate(None).await.expect("migrate");
     let source = ReplicationSource::from_handle(&primary, None, SslMode::Disable).expect("source");
@@ -445,7 +502,12 @@ async fn join_tokens_agents_commands_and_heartbeats() {
     )
     .await
     .expect("token");
-    assert!(tok.command.starts_with("forgebase node join http://127.0.0.1:8090 --token fbj_"), "{}", tok.command);
+    assert!(
+        tok.command
+            .starts_with("forgebase node join http://127.0.0.1:8090 --token fbj_"),
+        "{}",
+        tok.command
+    );
     let mut req = JoinRequest {
         token: tok.token.clone(),
         name: "far-1".into(),
@@ -456,7 +518,9 @@ async fn join_tokens_agents_commands_and_heartbeats() {
         },
         listen: Some("127.0.0.1:18685".into()),
     };
-    let e = service::redeem_join(&control, &source, &req, None).await.expect_err("engine mismatch");
+    let e = service::redeem_join(&control, &source, &req, None)
+        .await
+        .expect_err("engine mismatch");
     assert_eq!(e.code(), "engine_mismatch");
     req.engine = source.engine.clone();
     let grant = service::redeem_join(&control, &source, &req, Some("127.0.0.1".parse().unwrap()))
@@ -464,14 +528,21 @@ async fn join_tokens_agents_commands_and_heartbeats() {
         .expect("join after fixing the engine (token kept)");
     assert_eq!(grant.upstream.slot, "fbr_far_1");
     assert_eq!(grant.upstream.user, "forgebase_replicator");
-    let again = service::redeem_join(&control, &source, &req, None).await.expect_err("one time");
+    let again = service::redeem_join(&control, &source, &req, None)
+        .await
+        .expect_err("one time");
     assert_eq!(again.code(), "join_token_invalid");
 
     // The agent clones over TCP with what the grant says.
     let layout = Layout::node(tmp.path().join("agent"), "far-1", NodeKind::Standby).unwrap();
-    standby::clone_from(primary.engine(), &layout, &grant.upstream.upstream("far-1"), CloneOptions { no_sync: true })
-        .await
-        .expect("clone over TCP");
+    standby::clone_from(
+        primary.engine(),
+        &layout,
+        &grant.upstream.upstream("far-1"),
+        CloneOptions { no_sync: true },
+    )
+    .await
+    .expect("clone over TCP");
     assert!(layout.pgdata().join("standby.signal").is_file());
 
     // Commands and heartbeats.
@@ -479,16 +550,34 @@ async fn join_tokens_agents_commands_and_heartbeats() {
         .await
         .expect_err("bad key");
     assert_eq!(bad.status(), 401);
-    let empty = service::poll_commands(&control, &grant.node_id, &grant.agent_key, Duration::from_millis(300), false)
-        .await
-        .expect("poll");
+    let empty = service::poll_commands(
+        &control,
+        &grant.node_id,
+        &grant.agent_key,
+        Duration::from_millis(300),
+        false,
+    )
+    .await
+    .expect("poll");
     assert!(empty.commands.is_empty());
-    let cmd = service::queue_command(&control, &grant.node_id, CommandKind::Follow, serde_json::json!({"x": 1}), None)
-        .await
-        .expect("queue");
-    let got = service::poll_commands(&control, &grant.node_id, &grant.agent_key, Duration::from_secs(5), false)
-        .await
-        .expect("poll");
+    let cmd = service::queue_command(
+        &control,
+        &grant.node_id,
+        CommandKind::Follow,
+        serde_json::json!({"x": 1}),
+        None,
+    )
+    .await
+    .expect("queue");
+    let got = service::poll_commands(
+        &control,
+        &grant.node_id,
+        &grant.agent_key,
+        Duration::from_secs(5),
+        false,
+    )
+    .await
+    .expect("poll");
     assert_eq!(got.commands.len(), 1);
     assert_eq!(got.commands[0].id, cmd.id);
     let reply = service::heartbeat(
@@ -512,14 +601,24 @@ async fn join_tokens_agents_commands_and_heartbeats() {
     .expect("heartbeat");
     assert_eq!(reply.node_state, NodeState::CatchingUp);
     assert!(!reply.commands_pending);
-    let done = service::wait_command(&control, &cmd.id, Duration::from_secs(2)).await.expect("done");
-    assert_eq!((done.state.as_str(), done.result.as_deref()), ("done", Some("followed")));
+    let done = service::wait_command(&control, &cmd.id, Duration::from_secs(2))
+        .await
+        .expect("done");
+    assert_eq!(
+        (done.state.as_str(), done.result.as_deref()),
+        ("done", Some("followed"))
+    );
     let v = service::node_view(&control, &grant.node_id).await.expect("view");
     let agent = v.agent.expect("agent");
     assert_eq!(agent.state, AgentState::Streaming);
     assert_eq!(agent.replay_lsn, Some(Lsn(42)));
-    let (addr, listen) = service::agent_addresses(&control, &grant.node_id).await.expect("addresses");
-    assert_eq!((addr.as_deref(), listen.as_deref()), (Some("127.0.0.1"), Some("127.0.0.1:18685")));
+    let (addr, listen) = service::agent_addresses(&control, &grant.node_id)
+        .await
+        .expect("addresses");
+    assert_eq!(
+        (addr.as_deref(), listen.as_deref()),
+        (Some("127.0.0.1"), Some("127.0.0.1:18685"))
+    );
 
     control.close().await;
     primary.stop().await.expect("stop");

@@ -155,8 +155,7 @@ fn sha256_hex(s: &str) -> String {
 
 fn random_secret(prefix: &str) -> ServiceResult<String> {
     let mut buf = [0u8; 32];
-    getrandom::fill(&mut buf)
-        .map_err(|e| EngineError::Config(format!("system random generator failed: {e}")))?;
+    getrandom::fill(&mut buf).map_err(|e| EngineError::Config(format!("system random generator failed: {e}")))?;
     Ok(format!("{prefix}{}", fsutil::hex(&buf)))
 }
 
@@ -455,7 +454,11 @@ pub async fn slot_health(primary: &EngineHandle) -> ServiceResult<Vec<SlotInfo>>
 ///
 /// # Errors
 /// SQL or database errors.
-pub async fn mark_lost_slots(control: &dyn Backend, set_id: &str, primary: &EngineHandle) -> ServiceResult<Vec<String>> {
+pub async fn mark_lost_slots(
+    control: &dyn Backend,
+    set_id: &str,
+    primary: &EngineHandle,
+) -> ServiceResult<Vec<String>> {
     let lost: Vec<String> = slot_health(primary)
         .await?
         .into_iter()
@@ -470,7 +473,10 @@ pub async fn mark_lost_slots(control: &dyn Backend, set_id: &str, primary: &Engi
     for n in topo.nodes_of(set_id) {
         if n.role == NodeRole::Replica
             && n.kind != NodeKind::External
-            && !matches!(n.state, NodeState::NeedsRebuild | NodeState::Retired | NodeState::Provisioning)
+            && !matches!(
+                n.state,
+                NodeState::NeedsRebuild | NodeState::Retired | NodeState::Provisioning
+            )
             && lost.contains(&super::slot_name(&n.name))
         {
             topology::update_node_state(control, &n.id, NodeState::NeedsRebuild).await?;
@@ -560,7 +566,10 @@ pub async fn rebuild_replica(
     require_pg(control)?;
     let node = node_by_id(control, node_id).await?;
     if node.role != NodeRole::Replica {
-        return Err(ServiceError::Unsupported(format!("{} is the primary; promote another node first", node.name)));
+        return Err(ServiceError::Unsupported(format!(
+            "{} is the primary; promote another node first",
+            node.name
+        )));
     }
     match node.kind {
         NodeKind::External => Err(ServiceError::Unsupported(format!(
@@ -617,7 +626,14 @@ pub async fn remove_replica(
     match node.kind {
         NodeKind::Local => replicas.remove(primary, &node.name).await?,
         NodeKind::Remote => {
-            queue_command(control, node_id, CommandKind::Stop, serde_json::json!({"remove": true}), None).await?;
+            queue_command(
+                control,
+                node_id,
+                CommandKind::Stop,
+                serde_json::json!({"remove": true}),
+                None,
+            )
+            .await?;
             if let Some(p) = primary {
                 let mut c = super::connect(&p.url_for(Role::Super, "postgres")).await?;
                 super::drop_slot(&mut c, &super::slot_name(&node.name)).await?;
@@ -688,7 +704,11 @@ pub struct PromoteCheck {
 ///
 /// # Errors
 /// The target is not running or not a standby.
-pub async fn promote_check(replicas: &LocalReplicas, primary: Option<&EngineHandle>, target: &str) -> ServiceResult<PromoteCheck> {
+pub async fn promote_check(
+    replicas: &LocalReplicas,
+    primary: Option<&EngineHandle>,
+    target: &str,
+) -> ServiceResult<PromoteCheck> {
     let h = replicas
         .get(target)
         .await
@@ -727,13 +747,15 @@ pub struct PromoteOutcome {
 /// Job `database.promote` for a local replica of the set whose primary is
 /// `old_primary` (running here, or already stopped):
 ///
-/// 1. confirmation and target checks; 2. [`PoolSwitch::fence`], then stop
-/// the old primary; 3. wait for its last record when it stopped cleanly
-/// (else `accept_data_loss` is required); 4. `pg_promote`; 5.
-/// [`PoolSwitch::repoint`], swap the roles on control (the old primary
-/// becomes `needs_rebuild`; control's primary gets a row named `primary`
-/// if it had none), bump the epoch, rewrite `topology.json`; 6. the other
-/// local replicas follow the new primary (new slots, reload).
+/// 1. confirmation and target checks;
+/// 2. [`PoolSwitch::fence`], then stop the old primary;
+/// 3. wait for its last record when it stopped cleanly (else
+///    `accept_data_loss` is required);
+/// 4. promote;
+/// 5. [`PoolSwitch::repoint`], swap the roles on control (the old primary
+///    becomes `needs_rebuild`; control's primary gets a row named
+///    `primary` if it had none), bump the epoch, rewrite `topology.json`;
+/// 6. the other local replicas follow the new primary (new slots, reload).
 ///
 /// The new primary's handle leaves `replicas` (it is the primary now);
 /// the caller keeps the returned handle running.
@@ -826,7 +848,14 @@ async fn swap_roles(
     let mut tx = new_control.begin(TxMode::Normal).await?;
     let old_id = match old_row {
         Some(o) => {
-            set_node(tx.as_mut(), &o.id, Some(NodeRole::Replica), NodeState::NeedsRebuild, None).await?;
+            set_node(
+                tx.as_mut(),
+                &o.id,
+                Some(NodeRole::Replica),
+                NodeState::NeedsRebuild,
+                None,
+            )
+            .await?;
             o.id.clone()
         }
         None => {
@@ -846,7 +875,14 @@ async fn swap_roles(
             .await?
         }
     };
-    set_node(tx.as_mut(), &node.id, Some(NodeRole::Primary), NodeState::Ready, Some(facts)).await?;
+    set_node(
+        tx.as_mut(),
+        &node.id,
+        Some(NodeRole::Primary),
+        NodeState::Ready,
+        Some(facts),
+    )
+    .await?;
     let epoch = topology::bump_epoch(tx.as_mut()).await?;
     commit(tx).await?;
     if let Some(path) = topology_file {
@@ -968,10 +1004,21 @@ pub async fn promote_remote(
     promoted.role = NodeRole::Primary;
     promoted.state = NodeState::Ready;
     let new_control = pools.repoint(&node.set_id, &promoted, None).await?;
-    let (old_id, epoch) = swap_roles(&new_control, &node, old_row.as_ref(), &NodeFacts::default(), topology_file).await?;
+    let (old_id, epoch) = swap_roles(
+        &new_control,
+        &node,
+        old_row.as_ref(),
+        &NodeFacts::default(),
+        topology_file,
+    )
+    .await?;
     let (host, port) = listen
         .rsplit_once(':')
-        .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.trim_matches(['[', ']']).to_owned(), p)))
+        .and_then(|(h, p)| {
+            p.parse::<u16>()
+                .ok()
+                .map(|p| (h.trim_matches(['[', ']']).to_owned(), p))
+        })
         .ok_or_else(|| ServiceError::Invalid(format!("bad listen address {listen:?}")))?;
     let mut follow_commands = Vec::new();
     for other in &others {
@@ -1613,7 +1660,9 @@ pub async fn poll_commands(
             let mut tx = control.begin(TxMode::Normal).await?;
             for r in &rows.rows {
                 let text = |i: usize| r.get(i).and_then(Value::as_str).unwrap_or_default().to_owned();
-                let Some(kind) = CommandKind::parse(&text(1)) else { continue };
+                let Some(kind) = CommandKind::parse(&text(1)) else {
+                    continue;
+                };
                 tx.execute(&Statement::new(
                     "UPDATE _forgebase_db_node_commands SET state = 'sent', sent_at = ?2 WHERE id = ?1",
                     vec![text(0).into(), now().into()],
@@ -1702,7 +1751,12 @@ pub fn state_after_heartbeat(stored: NodeState, reported: AgentState) -> Option<
 ///
 /// # Errors
 /// Bad agent key, or database errors.
-pub async fn heartbeat(control: &dyn Backend, node_id: &str, agent_key: &str, hb: &Heartbeat) -> ServiceResult<HeartbeatReply> {
+pub async fn heartbeat(
+    control: &dyn Backend,
+    node_id: &str,
+    agent_key: &str,
+    hb: &Heartbeat,
+) -> ServiceResult<HeartbeatReply> {
     authenticate_agent(control, node_id, agent_key).await?;
     // A removed (retired) node still reports once: the answer to its `stop`.
     let node = topology::load(control)
@@ -1834,11 +1888,17 @@ mod tests {
     fn heartbeat_transitions() {
         use AgentState as A;
         use NodeState as N;
-        assert_eq!(state_after_heartbeat(N::Provisioning, A::Streaming), Some(N::CatchingUp));
+        assert_eq!(
+            state_after_heartbeat(N::Provisioning, A::Streaming),
+            Some(N::CatchingUp)
+        );
         assert_eq!(state_after_heartbeat(N::Provisioning, A::Cloning), None);
         assert_eq!(state_after_heartbeat(N::Streaming, A::Streaming), None);
         assert_eq!(state_after_heartbeat(N::Lagging, A::CatchingUp), None);
-        assert_eq!(state_after_heartbeat(N::Streaming, A::Rebuilding), Some(N::Provisioning));
+        assert_eq!(
+            state_after_heartbeat(N::Streaming, A::Rebuilding),
+            Some(N::Provisioning)
+        );
         assert_eq!(state_after_heartbeat(N::Streaming, A::Stopped), Some(N::Unreachable));
         assert_eq!(state_after_heartbeat(N::Unreachable, A::Streaming), Some(N::CatchingUp));
         assert_eq!(state_after_heartbeat(N::Streaming, A::Failed), Some(N::NeedsRebuild));

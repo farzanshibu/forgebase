@@ -117,7 +117,10 @@ async fn node_join_clones_streams_heartbeats_and_stops_on_command() {
         .await
         .expect("primary");
     let control = Database::open(DbOptions {
-        target: DbTarget::postgres(forgebase_db::SecretString::new(primary.url(Role::Server).expose()), true),
+        target: DbTarget::postgres(
+            forgebase_db::SecretString::new(primary.url(Role::Server).expose()),
+            true,
+        ),
         synchronous: forgebase_core::Synchronous::Full,
         busy_timeout: Duration::from_secs(5),
         read_pool_size: 2,
@@ -157,7 +160,16 @@ async fn node_join_clones_streams_heartbeats_and_stops_on_command() {
     let agent_dir = tmp.path().join("agent");
     let mut child = Child(Some(
         tokio::process::Command::new(env!("CARGO_BIN_EXE_forgebase"))
-            .args(["node", "join", &url, "--token", &tok.token, "--name", "far-1", "--data-dir"])
+            .args([
+                "node",
+                "join",
+                &url,
+                "--token",
+                &tok.token,
+                "--name",
+                "far-1",
+                "--data-dir",
+            ])
             .arg(&agent_dir)
             .arg("--engine-dir")
             .arg(&engine)
@@ -224,7 +236,9 @@ async fn node_join_clones_streams_heartbeats_and_stops_on_command() {
         .expect("the agent exits")
         .unwrap();
     assert!(status.success(), "{status}");
-    let out = service::wait_command(&control, &cmd.id, Duration::from_secs(5)).await.unwrap();
+    let out = service::wait_command(&control, &cmd.id, Duration::from_secs(5))
+        .await
+        .unwrap();
     assert_eq!(out.state, "done");
     assert!(!agent_dir.join("node.json").exists());
     assert!(!agent_dir.join("postgres/nodes/far-1").exists());

@@ -107,11 +107,11 @@ fn duration_setting(d: Duration) -> String {
     let s = d.as_secs();
     if s == 0 {
         "0".into()
-    } else if s % 86_400 == 0 {
+    } else if s.is_multiple_of(86_400) {
         format!("{}d", s / 86_400)
-    } else if s % 3_600 == 0 {
+    } else if s.is_multiple_of(3_600) {
         format!("{}h", s / 3_600)
-    } else if s % 60 == 0 {
+    } else if s.is_multiple_of(60) {
         format!("{}min", s / 60)
     } else {
         format!("{s}s")
@@ -341,8 +341,14 @@ pub async fn senders(conn: &mut PgConnection) -> Result<Vec<Sender>> {
     rows.into_iter()
         .map(|r| {
             Ok(Sender {
-                application_name: r.try_get::<Option<String>, _>(0).map_err(sql_err("application_name"))?.unwrap_or_default(),
-                state: r.try_get::<Option<String>, _>(1).map_err(sql_err("state"))?.unwrap_or_default(),
+                application_name: r
+                    .try_get::<Option<String>, _>(0)
+                    .map_err(sql_err("application_name"))?
+                    .unwrap_or_default(),
+                state: r
+                    .try_get::<Option<String>, _>(1)
+                    .map_err(sql_err("state"))?
+                    .unwrap_or_default(),
                 sent_lsn: opt_lsn(r.try_get(2).map_err(sql_err("sent_lsn"))?)?,
                 replay_lsn: opt_lsn(r.try_get(3).map_err(sql_err("replay_lsn"))?)?,
                 client_addr: r.try_get(4).map_err(sql_err("client_addr"))?,
@@ -380,12 +386,11 @@ pub struct ClusterFacts {
 /// # Errors
 /// SQL errors.
 pub async fn receiver_status(conn: &mut PgConnection) -> Result<Option<String>> {
-    let row: Option<(Option<String>, Option<i32>, Option<String>)> = sqlx::query_as(
-        "SELECT status::text, pid, pg_last_wal_receive_lsn()::text FROM pg_stat_wal_receiver",
-    )
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(sql_err("read pg_stat_wal_receiver"))?;
+    let row: Option<(Option<String>, Option<i32>, Option<String>)> =
+        sqlx::query_as("SELECT status::text, pid, pg_last_wal_receive_lsn()::text FROM pg_stat_wal_receiver")
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(sql_err("read pg_stat_wal_receiver"))?;
     Ok(match row {
         None => None,
         Some((Some(status), _, _)) => Some(status),
@@ -575,7 +580,10 @@ impl HbaEntry {
                 "{kind}\t{}\t{}\t{a}\t{}\t# {}",
                 self.database, self.user, self.method, self.reason
             ),
-            None => format!("{kind}\t{}\t{}\t{}\t# {}", self.database, self.user, self.method, self.reason),
+            None => format!(
+                "{kind}\t{}\t{}\t{}\t# {}",
+                self.database, self.user, self.method, self.reason
+            ),
         }
     }
 }

@@ -141,10 +141,25 @@ impl Upstream {
     /// (for slot functions over a normal connection; never log it).
     pub fn url(&self, database: &str) -> Secret {
         let host = if self.host.starts_with('/') {
-            format!("localhost/{}?host={}&port={}&sslmode={}", crate::pct(database), crate::pct_path(&self.host), self.port, self.sslmode.as_str())
+            format!(
+                "localhost/{}?host={}&port={}&sslmode={}",
+                crate::pct(database),
+                crate::pct_path(&self.host),
+                self.port,
+                self.sslmode.as_str()
+            )
         } else {
-            let h = if self.host.contains(':') { format!("[{}]", self.host) } else { self.host.clone() };
-            format!("{h}:{}/{}?sslmode={}", self.port, crate::pct(database), self.sslmode.as_str())
+            let h = if self.host.contains(':') {
+                format!("[{}]", self.host)
+            } else {
+                self.host.clone()
+            };
+            format!(
+                "{h}:{}/{}?sslmode={}",
+                self.port,
+                crate::pct(database),
+                self.sslmode.as_str()
+            )
         };
         Secret::new(format!(
             "postgres://{}:{}@{host}&application_name={}",
@@ -934,7 +949,9 @@ pub async fn promote_local(
                 "the old primary did not stop cleanly ({}), so commits after {} may be lost: \
                  confirm with accept_data_loss",
                 control.as_ref().map_or("no pg_control", |c| c.state.as_str()),
-                before.lsn.map_or_else(|| "the last replayed position".to_owned(), |l| l.to_string())
+                before
+                    .lsn
+                    .map_or_else(|| "the last replayed position".to_owned(), |l| l.to_string())
             )));
         }
     };

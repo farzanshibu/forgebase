@@ -1306,6 +1306,7 @@ name = "forgebase-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.22.1",
  "clap",
  "dotenvy",
