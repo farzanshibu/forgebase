@@ -40,6 +40,9 @@ pub enum DbCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write a `pg_dump` of the database that any PostgreSQL can load (works
+    /// while the server runs). `forgebase backup` is the restorable backup.
+    Dump(crate::dataops::DumpCli),
     /// Open psql on the bundled PostgreSQL, through its Unix socket.
     ///
     /// Arguments after the options go to psql, for example
@@ -64,6 +67,7 @@ pub async fn run(g: &GlobalArgs, cli: DbCli) -> anyhow::Result<ExitCode> {
     quiet_logging(g)?;
     match cli.command {
         DbCommand::Status { json } => status(g, json).await,
+        DbCommand::Dump(args) => crate::dataops::run_db_dump(g, args).await,
         DbCommand::Psql {
             read_only,
             superuser,

@@ -13,11 +13,12 @@ use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use forgebase_backup::restore::{self, RestoreOptions};
 use forgebase_backup::transfer::{self, ExportOptions, Format, ImportOptions, OnConflict};
-use forgebase_backup::{BackupOptions, Retention, SnapshotStore, backup};
+use forgebase_backup::manifest::Manifest;
+use forgebase_backup::{BackupOptions, DumpPlan, PgSource, Retention, SnapshotStore, backup};
 use forgebase_core::{Config, DataLayout};
 use forgebase_data::{DataService, DefaultAuthorizer};
 use forgebase_db::Database;
-use forgebase_server::database::{self, Access, Create, PrimaryDatabase};
+use forgebase_server::database::{self, Access, BackendMarker, Create, PrimaryDatabase};
 use forgebase_server::{DataDirLock, ServerError};
 use serde_json::json;
 
@@ -62,6 +63,23 @@ async fn data_service(db: &Database) -> anyhow::Result<DataService> {
         );
     }
     Ok(DataService::new(Arc::new(db.clone()), Arc::new(DefaultAuthorizer)).await?)
+}
+
+/// The engine's tools without a connection: `verify` and `restore` read a
+/// backup and never start the cluster. The version comes from the engine's
+/// own `postgres --version`.
+async fn pg_tools(config: &Config, layout: &DataLayout) -> Option<PgSource> {
+    let root = database::engine_root(&config.database, layout)?;
+    let bin = root.join("bin").join(format!("postgres{}", std::env::consts::EXE_SUFFIX));
+    let out = tokio::process::Command::new(&bin).arg("--version").output().await.ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let version = forgebase_pgengine::PgVersion::parse(&text).map(|v| v.text);
+    Some(PgSource::tools_only(Some(root), version.unwrap_or_default()))
+}
+
+/// The tools and the way in for the database `primary` (None on SQLite).
+fn pg_source(config: &Config, layout: &DataLayout, primary: &PrimaryDatabase) -> Option<PgSource> {
+    database::pg_source(config, layout, primary.marker(), primary.engine().map(|e| &**e), primary.attached())
 }
 
 fn print_json(v: &serde_json::Value) -> anyhow::Result<()> {
@@ -191,6 +209,7 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
                 print_json(&json!({ "dir": store.dir(), "snapshots": all.iter().map(|s| json!({
                     "id": s.id, "created": s.manifest.created, "label": s.manifest.label,
                     "schema_version": s.manifest.schema_version, "bytes": s.manifest.total_bytes(),
+                    "engine": s.manifest.engine_info(),
                     "files": s.manifest.files.len(), "master_key_included": s.manifest.master_key.included,
                 })).collect::<Vec<_>>() }))?;
             } else if all.is_empty() {
@@ -198,9 +217,10 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
             } else {
                 for s in &all {
                     println!(
-                        "{}  {}  schema v{}  {} in {} files{}",
+                        "{}  {}  {}  schema v{}  {} in {} files{}",
                         s.id,
                         s.manifest.created,
+                        s.manifest.engine_info().describe(),
                         s.manifest.schema_version,
                         human_bytes(s.manifest.total_bytes()),
                         s.manifest.files.len(),
@@ -216,7 +236,14 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
         }
         Some(BackupCommand::Verify { target, json: as_json }) => {
             let path = resolve_backup(&store, &target)?;
-            let report = forgebase_backup::verify(&path).await;
+            let report = forgebase_backup::verify_with(
+                &path,
+                &forgebase_backup::VerifyOptions {
+                    pg: pg_tools(&config, &layout).await,
+                    tmp: Some(layout.tmp_dir()),
+                },
+            )
+            .await;
             if as_json {
                 print_json(&serde_json::to_value(&report)?)?;
             } else {
@@ -290,6 +317,7 @@ async fn create(
         include_indexes: !a.no_indexes,
         include_master_key: a.include_master_key,
         label: a.label,
+        pg: pg_source(config, layout, &db),
         ..BackupOptions::default()
     };
     let result = match &a.dest {
@@ -311,8 +339,9 @@ async fn create(
         print_json(&json!({ "path": path, "manifest": m }))?;
     } else {
         println!(
-            "backup written to {}\n  {} file(s), {}, schema v{}, master key {}",
+            "backup written to {}\n  {}, {} file(s), {}, schema v{}, master key {}",
             path.display(),
+            m.engine_info().describe(),
             m.files.len(),
             human_bytes(m.total_bytes()),
             m.schema_version,
@@ -356,7 +385,7 @@ pub struct RestoreCli {
 
 /// Runs `forgebase restore`.
 pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<ExitCode> {
-    let (_config, layout) = setup(g)?;
+    let (config, layout) = setup(g)?;
     layout
         .ensure()
         .with_context(|| format!("cannot create {}", layout.root().display()))?;
@@ -378,6 +407,17 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
     };
     let store = SnapshotStore::new(&layout);
     let path = resolve_backup(&store, &source)?;
+    let manifest = Manifest::read(&path)?;
+    let engine = manifest.engine_info();
+    let target = restore_marker(&config, &layout, &engine)?;
+    let pg = if engine.is_postgres() && engine.method == forgebase_backup::manifest::Method::Dump {
+        // A logical backup loads into the external server named by the configuration.
+        database::pg_source(&config, &layout, BackendMarker::PostgresExternal, None, None)
+    } else if engine.is_postgres() {
+        pg_tools(&config, &layout).await
+    } else {
+        None
+    };
     let report = restore::restore(
         &path,
         &layout,
@@ -386,17 +426,22 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
             master_key: cli.master_key,
             allow_missing_key: cli.allow_missing_key,
             skip_indexes: cli.no_indexes,
+            pg,
             crash_after: None,
         },
     )
     .await?;
+    // The marker follows the data (ADR-0028 §6.3); a physical restore into an
+    // empty directory is what writes it first.
+    database::write_marker(&layout, target)?;
     if cli.json {
         print_json(&json!({ "source": path, "report": report }))?;
     } else {
         println!(
-            "restored {} into {}\n  {} file(s), {}, schema v{}; master key: {}",
+            "restored {} into {}\n  {}, {} file(s), {}, schema v{}; master key: {}",
             path.display(),
             layout.root().display(),
+            report.engine,
             report.files,
             human_bytes(report.bytes),
             report.schema_version,
@@ -408,9 +453,47 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
         for w in &report.warnings {
             println!("  note: {w}");
         }
+        if engine.is_postgres() && engine.method == forgebase_backup::manifest::Method::Basebackup {
+            println!("  PostgreSQL replays its WAL when the server starts, so the first start takes a moment longer");
+        }
         println!("start the server with `forgebase serve`; run `forgebase doctor` to check the result");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The backend marker a restore of a backup made by `engine` leaves behind,
+/// after checking that it does not change the backend of this data directory
+/// (that is `forgebase db convert`'s job, FB-151).
+fn restore_marker(
+    config: &Config,
+    layout: &DataLayout,
+    engine: &forgebase_backup::manifest::EngineInfo,
+) -> anyhow::Result<BackendMarker> {
+    let wanted = match (engine.kind.as_str(), engine.mode.as_deref()) {
+        ("postgres", Some("external")) => BackendMarker::PostgresExternal,
+        ("postgres", _) => BackendMarker::PostgresManaged,
+        _ => BackendMarker::Sqlite,
+    };
+    if wanted == BackendMarker::PostgresManaged && !database::bundled_engine_available(&config.database) {
+        bail!("{}", database::NO_BUNDLED_ENGINE);
+    }
+    if wanted == BackendMarker::PostgresExternal && config.database.postgres.url.is_none() {
+        bail!(
+            "the backup is a logical backup of an external PostgreSQL server: set FORGEBASE_DATABASE_URL to the \
+             server to load it into, and keep database.postgres.mode = \"external\""
+        );
+    }
+    if let Some(have) = database::read_marker(layout)?
+        && have != wanted
+    {
+        bail!(
+            "this data directory is {} but the backup is {}: a restore does not change the backend; move the \
+             project with `forgebase db convert` (FB-151), or restore into an empty data directory",
+            have.describe(),
+            wanted.describe()
+        );
+    }
+    Ok(wanted)
 }
 
 // ------------------------------------------------------------ export/import
@@ -696,4 +779,92 @@ async fn open_read_write(config: &Config, layout: &DataLayout) -> anyhow::Result
                 layout.root().display()
             )
         })
+}
+
+// -------------------------------------------------------------------- dump
+
+/// `forgebase db dump`.
+#[derive(Debug, Args)]
+pub struct DumpCli {
+    /// Destination file (default: `<data dir>/backups/dumps/forgebase-<UTC time>.dump`).
+    dest: Option<PathBuf>,
+    /// Write plain SQL instead of the custom format.
+    #[arg(long)]
+    plain: bool,
+    /// Only the schema, no rows.
+    #[arg(long)]
+    schema_only: bool,
+    /// Print JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Runs `forgebase db dump`: `pg_dump` of the whole database, without
+/// ownership and privileges, so any PostgreSQL can load it. Works while the
+/// server runs.
+pub async fn run_db_dump(g: &GlobalArgs, cli: DumpCli) -> anyhow::Result<ExitCode> {
+    let (config, layout) = setup(g)?;
+    let primary = open_read_only(&config, &layout).await?;
+    let result = dump(&config, &layout, &primary, &cli).await;
+    primary.close().await;
+    let (path, size) = result?;
+    if cli.json {
+        print_json(&json!({ "path": path, "bytes": size, "format": if cli.plain { "plain" } else { "custom" } }))?;
+    } else {
+        println!(
+            "dump written to {} ({})\n  load it with {}",
+            path.display(),
+            human_bytes(size),
+            if cli.plain { "psql -f" } else { "pg_restore -d <database>" }
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn dump(
+    config: &Config,
+    layout: &DataLayout,
+    primary: &PrimaryDatabase,
+    cli: &DumpCli,
+) -> anyhow::Result<(PathBuf, u64)> {
+    let Some(src) = pg_source(config, layout, primary) else {
+        bail!(
+            "this project uses SQLite: `forgebase backup` copies it, and `sqlite3 {} .dump` gives plain SQL",
+            layout.database_path().display()
+        );
+    };
+    let dest = match &cli.dest {
+        Some(d) => std::path::absolute(d)?,
+        None => {
+            let stamp = forgebase_core::now_rfc3339().replace([':', '-'], "");
+            layout.backups_dir().join("dumps").join(format!(
+                "forgebase-{stamp}.{}",
+                if cli.plain { "sql" } else { "dump" }
+            ))
+        }
+    };
+    if dest.exists() {
+        bail!("{} already exists", dest.display());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+    }
+    src.dump(
+        &dest,
+        &layout.tmp_dir(),
+        &DumpPlan {
+            forgebase_schema_only: false,
+            plain: cli.plain,
+            portable: true,
+            schema_only: cli.schema_only,
+        },
+    )
+    .await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let size = std::fs::metadata(&dest)?.len();
+    Ok((dest, size))
 }

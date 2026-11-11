@@ -92,6 +92,8 @@ struct PgInner {
     indeterminate: Mutex<HashMap<String, Arc<[usize]>>>,
     /// The latest [`extensions`] setup of this handle.
     extensions: RwLock<Option<Arc<extensions::ExtensionReport>>>,
+    /// Takes the pre-migration snapshot (FB-150).
+    pre_migration: Mutex<Option<Arc<dyn crate::PreMigrationSnapshot>>>,
 }
 
 /// A failure while running a statement: the driver's (the server may have
@@ -201,6 +203,7 @@ impl PgDatabase {
                 sql: Mutex::new(HashMap::new()),
                 indeterminate: Mutex::new(HashMap::new()),
                 extensions: RwLock::new(None),
+                pre_migration: Mutex::new(None),
             }),
         })
     }
@@ -306,8 +309,10 @@ impl PgDatabase {
     /// `search_path`.
     ///
     /// The pre-migration snapshot (ADR-0028 §7.6: `pg_basebackup`, managed
-    /// mode) needs the engine's tools, which this crate does not have: it is
-    /// skipped with a warning and `backup` is `None`.
+    /// mode) needs the engine's tools, which this crate does not have: the
+    /// server installs a provider ([`PgDatabase::set_pre_migration`]). Without
+    /// one (an external server) it is skipped with a warning and `backup` is
+    /// `None`.
     pub(crate) async fn migrate(&self, backups_dir: Option<&Path>) -> Result<MigrateReport, DbError> {
         let migrator = PgMigrator::system();
         let mut conn = self.inner.writer.acquire().await.map_err(|e| self.classify(e))?;
@@ -315,15 +320,25 @@ impl PgDatabase {
         if let Some(problem) = status.problems.into_iter().next() {
             return Err(MigrationError::from(problem).into());
         }
+        let mut backup = None;
         let applied = if status.pending.is_empty() {
             Vec::new()
         } else {
-            if backups_dir.is_some() && status.current_version > 0 {
-                tracing::warn!(
-                    location = %self.inner.location,
-                    managed = self.inner.managed,
-                    "no pre-migration snapshot on PostgreSQL yet; take a backup before upgrading"
-                );
+            if let (Some(dir), true) = (backups_dir, status.current_version > 0) {
+                let hook = self.inner.pre_migration.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                match hook {
+                    Some(h) => {
+                        let target = h.take(dir, status.current_version).await?;
+                        tracing::info!(backup = %target.display(), "wrote pre-migration snapshot");
+                        backup = Some(target);
+                    }
+                    None => tracing::warn!(
+                        location = %self.inner.location,
+                        managed = self.inner.managed,
+                        "no pre-migration snapshot: this PostgreSQL server is not managed by ForgeBase; \
+                         take a backup before upgrading"
+                    ),
+                }
             }
             self.bump_schema_generation();
             let applied = migrator.run(&mut conn).await;
@@ -337,7 +352,11 @@ impl PgDatabase {
                 let _ = reader.close().await;
             }
         }
-        Ok(MigrateReport { applied, backup: None })
+        Ok(MigrateReport { applied, backup })
+    }
+
+    pub(crate) fn set_pre_migration(&self, hook: Arc<dyn crate::PreMigrationSnapshot>) {
+        *self.inner.pre_migration.lock().unwrap_or_else(|p| p.into_inner()) = Some(hook);
     }
 
     /// Applied / pending migrations, read without changing anything.

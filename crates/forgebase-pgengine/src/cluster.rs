@@ -213,7 +213,8 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
              ALTER ROLE {reader} SET search_path = {SEARCH_PATH};
              ALTER ROLE {reader} SET default_transaction_read_only = on;
              GRANT {OWNER_ROLE} TO {server};
-             GRANT {RLS_ROLE} TO {server};"
+             GRANT {RLS_ROLE} TO {server};
+             GRANT pg_checkpoint TO {server};"
         ),
     )
     .await?;

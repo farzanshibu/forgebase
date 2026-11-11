@@ -540,7 +540,13 @@ async fn start_on(
         forgebase_entitlements::extension(entitlements.clone()),
         forgebase_credits::extension(credits.clone()),
         forgebase_customize::extension(customize.clone()),
-        forgebase_backup::extension(forgebase_backup::BackupService::new(db.clone(), layout.clone())),
+        forgebase_backup::extension({
+            let service = forgebase_backup::BackupService::new(db.clone(), layout.clone());
+            match database::pg_source(config, layout, backend, engine.as_deref(), None) {
+                Some(src) => service.with_pg(src),
+                None => service,
+            }
+        }),
     ];
     if let Some(v) = &vector {
         extensions.push(forgebase_vector::extension(v.clone()));

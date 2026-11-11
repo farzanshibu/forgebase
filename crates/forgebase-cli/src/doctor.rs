@@ -360,7 +360,8 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, db: 
             "an earlier restore was interrupted; run `forgebase restore --recover` (the server is stopped)",
         );
     }
-    check_snapshots(r, layout, deep).await;
+    check_snapshots(r, config, layout, deep).await;
+    check_pre_migration(r, layout);
     check_staging(r, layout);
     check_index_files(r, layout);
     if let Some(db) = db {
@@ -414,7 +415,16 @@ fn check_key(r: &mut Report, layout: &DataLayout) {
     }
 }
 
-async fn check_snapshots(r: &mut Report, layout: &DataLayout, deep: bool) {
+/// The backend a snapshot of this project must come from, `None` when it cannot be told.
+fn current_engine(config: &Config, layout: &DataLayout) -> Option<(BackendMarker, Option<u32>)> {
+    let marker = database::resolve(config, false, layout).ok()?;
+    let major = std::fs::read_to_string(database::engine_layout(layout).pgdata().join("PG_VERSION"))
+        .ok()
+        .and_then(|t| t.trim().parse().ok());
+    Some((marker, major))
+}
+
+async fn check_snapshots(r: &mut Report, config: &Config, layout: &DataLayout, deep: bool) {
     let store = forgebase_backup::SnapshotStore::new(layout);
     let all = match store.list() {
         Ok(a) => a,
@@ -450,8 +460,45 @@ async fn check_snapshots(r: &mut Report, layout: &DataLayout, deep: bool) {
         level = Level::Warn;
         detail.push_str(&format!("; older than {SNAPSHOT_STALE_DAYS} days"));
     }
+    let engine = latest.manifest.engine_info();
+    detail.push_str(&format!("; {}", engine.describe()));
+    if let Some((marker, major)) = current_engine(config, layout) {
+        let same = match marker {
+            BackendMarker::Sqlite => !engine.is_postgres(),
+            BackendMarker::PostgresManaged => {
+                engine.is_postgres() && engine.method == forgebase_backup::manifest::Method::Basebackup
+            }
+            BackendMarker::PostgresExternal => {
+                engine.is_postgres() && engine.method == forgebase_backup::manifest::Method::Dump
+            }
+        };
+        if !same {
+            level = Level::Warn;
+            detail.push_str(&format!(
+                "; the project is {} now, so a restore of it would be refused (`forgebase db convert`, or take a new backup)",
+                marker.describe()
+            ));
+        } else if let (Some(have), Some(want)) = (major, engine.major)
+            && engine.method == forgebase_backup::manifest::Method::Basebackup
+            && have != want
+        {
+            level = Level::Warn;
+            detail.push_str(&format!(
+                "; it is PostgreSQL {want} but the cluster is {have}: a physical backup restores on the same major only, take a new one"
+            ));
+        }
+    }
     if deep {
-        let v = forgebase_backup::verify(&latest.path).await;
+        let tools = database::engine_root(&config.database, layout)
+            .map(|root| forgebase_backup::PgSource::tools_only(Some(root), String::new()));
+        let v = forgebase_backup::verify_with(
+            &latest.path,
+            &forgebase_backup::VerifyOptions {
+                pg: tools,
+                tmp: Some(layout.tmp_dir()),
+            },
+        )
+        .await;
         if v.ok {
             detail.push_str(&format!("; verified ({} files)", v.files_checked));
         } else {
@@ -462,13 +509,39 @@ async fn check_snapshots(r: &mut Report, layout: &DataLayout, deep: bool) {
     r.push("snapshots", level, detail);
 }
 
+/// Pre-migration snapshots (`backups/pre-migrate-*`): how many, how big the newest is.
+fn check_pre_migration(r: &mut Report, layout: &DataLayout) {
+    let Ok(rd) = std::fs::read_dir(layout.backups_dir()) else {
+        return;
+    };
+    let mut found: Vec<String> = rd
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("pre-migrate-") && !n.ends_with(".partial"))
+        .collect();
+    if found.is_empty() {
+        return;
+    }
+    found.sort();
+    let newest = found.last().cloned().unwrap_or_default();
+    r.push(
+        "pre_migration",
+        Level::Ok,
+        format!(
+            "{} pre-migration snapshot(s) in {}; newest {newest} (delete them once the upgrade is verified)",
+            found.len(),
+            layout.backups_dir().display()
+        ),
+    );
+}
+
 fn check_staging(r: &mut Report, layout: &DataLayout) {
     let mut leftovers = Vec::new();
-    for dir in [layout.tmp_dir(), layout.backups_dir().join("snapshots")] {
+    for dir in [layout.tmp_dir(), layout.backups_dir().join("snapshots"), layout.backups_dir()] {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if name.starts_with("restore-") || name.ends_with(".partial") {
+                if name.starts_with("restore-") || name.starts_with(".pgpass-") || name.ends_with(".partial") {
                     leftovers.push(e.path().display().to_string());
                 }
             }

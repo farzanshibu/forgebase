@@ -290,12 +290,12 @@ impl PrimaryDatabase {
         drop(self.lock);
     }
 
-    /// Folds the SQLite WAL into the database file. Nothing on PostgreSQL:
-    /// the engine's fast shutdown checkpoints, and `forgebase_server` is not
-    /// allowed `CHECKPOINT` (no `pg_checkpoint` membership).
+    /// Folds the SQLite WAL into the database file; `CHECKPOINT` on the
+    /// bundled engine (`forgebase_server` is a member of `pg_checkpoint`
+    /// since FB-150); nothing on an external server.
     ///
     /// # Errors
-    /// SQLite checkpoint errors.
+    /// Checkpoint errors.
     pub async fn checkpoint(&self) -> Result<(), forgebase_db::DbError> {
         checkpoint(&self.db).await
     }
@@ -313,16 +313,12 @@ impl std::ops::Deref for PrimaryDatabase {
     }
 }
 
-/// [`Database::checkpoint`] on SQLite only (see [`PrimaryDatabase::checkpoint`]).
+/// [`Database::checkpoint`] (see [`PrimaryDatabase::checkpoint`]).
 ///
 /// # Errors
-/// SQLite checkpoint errors.
+/// Checkpoint errors.
 pub async fn checkpoint(db: &Database) -> Result<(), forgebase_db::DbError> {
-    if db.kind() == forgebase_db::BackendKind::Sqlite {
-        db.checkpoint().await
-    } else {
-        Ok(())
-    }
+    db.checkpoint().await
 }
 
 /// How [`open_owned`] treats a data directory without a database.
@@ -371,7 +367,7 @@ pub async fn open_owned(
             let opts = pg_options(&config.database, engine.url(Role::Server).expose(), true);
             match Database::open(opts).await {
                 Ok(db) => PrimaryDatabase {
-                    db,
+                    db: with_pre_migration(db, config, layout, marker, Some(&engine), None),
                     marker,
                     engine: Some(Arc::new(engine)),
                     attached: None,
@@ -400,6 +396,76 @@ pub async fn open_owned(
         return Err(e);
     }
     Ok(primary)
+}
+
+/// How the backup tools reach the bundled engine of `layout` (ADR-0028 §5):
+/// the engine this process runs, or the running server's engine it attached
+/// to. `None` for SQLite, for an external server without a usable URL, and
+/// when the engine's directory or passwords cannot be found.
+pub fn pg_source(
+    config: &Config,
+    layout: &DataLayout,
+    marker: BackendMarker,
+    engine: Option<&EngineHandle>,
+    attached: Option<&AttachedEngine>,
+) -> Option<forgebase_backup::PgSource> {
+    use forgebase_backup::{Password, PgSource};
+    match marker {
+        BackendMarker::Sqlite => None,
+        BackendMarker::PostgresExternal => {
+            let url = config.database.postgres.url.as_ref()?.expose();
+            let root = engine_root(&config.database, layout);
+            Some(PgSource::external(root, String::new(), url))
+        }
+        BackendMarker::PostgresManaged => {
+            let el = engine_layout(layout);
+            let secrets = RoleSecrets::load(&el.secrets_file()).ok().flatten()?;
+            let password = Password::new(secrets.password(Role::Super)?);
+            let (root, version, socket_dir, port) = match (engine, attached) {
+                (Some(e), _) => (
+                    Some(e.engine().root.clone()),
+                    e.version().text.clone(),
+                    e.socket_dir()?.to_path_buf(),
+                    e.port(),
+                ),
+                (None, Some(a)) => {
+                    let major = std::fs::read_to_string(el.pgdata().join("PG_VERSION"))
+                        .map(|t| t.trim().to_owned())
+                        .unwrap_or_default();
+                    (engine_root(&config.database, layout), major, a.socket_dir.clone(), a.port)
+                }
+                (None, None) => return None,
+            };
+            Some(PgSource::managed(
+                root,
+                version,
+                socket_dir,
+                port,
+                Role::Super.name(),
+                password,
+                el.postgres_dir(),
+            ))
+        }
+    }
+}
+
+/// Installs the pre-migration snapshot provider on a managed PostgreSQL
+/// database (FB-150), so every `migrate` (server start, `forgebase migrate`)
+/// snapshots the cluster first.
+fn with_pre_migration(
+    db: Database,
+    config: &Config,
+    layout: &DataLayout,
+    marker: BackendMarker,
+    engine: Option<&EngineHandle>,
+    attached: Option<&AttachedEngine>,
+) -> Database {
+    if marker == BackendMarker::PostgresManaged
+        && let Some(src) = pg_source(config, layout, marker, engine, attached)
+    {
+        db.set_pre_migration(forgebase_backup::pre_migration::PgPreMigration::new(layout.clone(), src));
+    }
+    db
 }
 
 /// A marked data directory must still hold its database: never create an
@@ -544,7 +610,7 @@ pub async fn open_attached(
                     opts.read_pool_size = 2;
                     match Database::open(opts).await {
                         Ok(db) => Ok(PrimaryDatabase {
-                            db,
+                            db: with_pre_migration(db, config, layout, marker, Some(&engine), None),
                             marker,
                             engine: Some(Arc::new(engine)),
                             attached: None,
@@ -562,7 +628,14 @@ pub async fn open_attached(
                     let mut opts = pg_options(&config.database, &url, true);
                     opts.read_pool_size = 2;
                     Ok(PrimaryDatabase {
-                        db: Database::open(opts).await?,
+                        db: with_pre_migration(
+                            Database::open(opts).await?,
+                            config,
+                            layout,
+                            marker,
+                            None,
+                            Some(&attached),
+                        ),
                         marker,
                         engine: None,
                         attached: Some(attached),
