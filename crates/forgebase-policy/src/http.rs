@@ -125,6 +125,19 @@ async fn resolve(svc: &PolicyService, ctx: &mut AccessContext, h: &HeaderMap) ->
     let realm = header(h, REALM_HEADER)?;
     let org = header(h, ORG_HEADER)?;
     let tenant = header(h, TENANT_HEADER)?;
+    resolve_parts(svc, ctx, realm, org, tenant).await
+}
+
+/// The tenancy layer's resolution of a realm, organization and tenant
+/// selection into `ctx` (roles and auth-record attributes included), also
+/// used for the contexts of direct logins and "run as" (FB-153).
+pub(crate) async fn resolve_parts(
+    svc: &PolicyService,
+    ctx: &mut AccessContext,
+    realm: Option<String>,
+    org: Option<String>,
+    tenant: Option<String>,
+) -> Result<(), PolicyError> {
     let snap = svc.snapshot();
     let deny = |ctx: &AccessContext, d: Denial| {
         svc.audit()

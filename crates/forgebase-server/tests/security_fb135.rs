@@ -136,22 +136,33 @@ async fn sql_editor_masks_secret_columns_unless_show_secrets() {
     let admin = env.admin("fb135-sql@example.com").await;
     let _ = env.user("hash-owner@example.com").await;
 
-    // `SELECT *` returns the columns, masked.
-    let r = sql(&env, &admin, json!({"sql": "SELECT * FROM users"})).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    let j = r.json();
-    assert_eq!(j["secrets_masked"], true, "{j}");
-    for col in ["password", "token_key"] {
-        let values = column(&j, col);
-        assert!(!values.is_empty());
-        assert!(values.iter().all(|v| v == "********"), "{col}: {values:?}");
-    }
-    assert!(!r.text().contains("$argon2"), "a password hash leaked: {}", r.text());
-    assert_eq!(
-        column(&j, "email")[0],
-        "hash-owner@example.com",
-        "other columns are kept"
+    // `SELECT *` returns the columns, masked. On PostgreSQL (FB-153) the
+    // editor runs as forgebase_sql_admin, which has no SELECT on secret
+    // columns at all: the statement is refused unless it sets show_secrets.
+    let postgres = matches!(
+        std::env::var("FORGEBASE_TEST_BACKEND").ok().as_deref(),
+        Some("postgres" | "postgresql" | "pg")
     );
+    let r = sql(&env, &admin, json!({"sql": "SELECT * FROM users"})).await;
+    if postgres {
+        assert_eq!(r.status, 403, "{}", r.text());
+        assert!(!r.text().contains("$argon2"), "a password hash leaked: {}", r.text());
+    } else {
+        assert_eq!(r.status, 200, "{}", r.text());
+        let j = r.json();
+        assert_eq!(j["secrets_masked"], true, "{j}");
+        for col in ["password", "token_key"] {
+            let values = column(&j, col);
+            assert!(!values.is_empty());
+            assert!(values.iter().all(|v| v == "********"), "{col}: {values:?}");
+        }
+        assert!(!r.text().contains("$argon2"), "a password hash leaked: {}", r.text());
+        assert_eq!(
+            column(&j, "email")[0],
+            "hash-owner@example.com",
+            "other columns are kept"
+        );
+    }
 
     // Nested JSON documents are masked by key.
     collection(

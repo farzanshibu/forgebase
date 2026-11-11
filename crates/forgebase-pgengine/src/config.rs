@@ -80,12 +80,19 @@ impl RestartPolicy {
 pub struct EngineConfig {
     /// Where the binaries come from.
     pub source: EngineSource,
-    /// `None` (default): Unix socket only (`listen_addresses = ''`). `Some`:
-    /// also listen on this loopback TCP address (`[database.postgres]
-    /// listen`). Addresses off loopback need TLS and are refused until
-    /// FB-153 generates certificates. On Windows the engine always listens
-    /// on loopback (a free port when this is `None`).
+    /// `None` (default): Unix socket only (`listen_addresses = ''`, no
+    /// `host` line in `pg_hba.conf`). `Some`: also listen on this TCP
+    /// address (`[database.postgres] listen`, an operator's explicit
+    /// choice); TLS is then always on and every TCP login must use it
+    /// (`hostssl` only, FB-153). Only named logins (`forgebase_login`) may
+    /// log in from other hosts; ForgeBase's own roles over loopback only. On
+    /// Windows the engine always listens on loopback (a free port when this
+    /// is `None`).
     pub listen: Option<SocketAddr>,
+    /// The TLS certificate and key used when `listen` is set
+    /// (`[database.postgres] tls_cert` / `tls_key`). `None`: a self-signed
+    /// certificate ForgeBase generates once under `<node>/tls/`.
+    pub tls: Option<TlsFiles>,
     /// Port number naming the Unix socket (`.s.PGSQL.<port>`) when `listen`
     /// is `None`. Default 5432; every node has its own socket directory.
     pub socket_port: u16,
@@ -120,6 +127,7 @@ impl Default for EngineConfig {
         Self {
             source: EngineSource::Auto,
             listen: None,
+            tls: None,
             socket_port: 5432,
             settings: BTreeMap::new(),
             cron: ExtensionMode::Auto,
@@ -137,10 +145,10 @@ impl Default for EngineConfig {
 
 impl EngineConfig {
     /// Parses `[database.postgres] listen`: `""` = socket only, otherwise
-    /// `host:port` on loopback.
+    /// `host:port` (TLS is required on every TCP login).
     ///
     /// # Errors
-    /// Not an address, or not loopback.
+    /// Not an address, or port 0.
     pub fn parse_listen(value: &str) -> Result<Option<SocketAddr>> {
         let value = value.trim();
         if value.is_empty() {
@@ -157,16 +165,20 @@ impl EngineConfig {
 }
 
 pub(crate) fn check_listen(addr: SocketAddr) -> Result<()> {
-    if !addr.ip().is_loopback() {
-        return Err(EngineError::Config(format!(
-            "listen {addr}: logins from other hosts need TLS, which this version does not set up; \
-             use a loopback address (127.0.0.1 or ::1) or leave listen empty"
-        )));
-    }
     if addr.port() == 0 {
         return Err(EngineError::Config(format!("listen {addr}: choose a port")));
     }
     Ok(())
+}
+
+/// A TLS certificate chain and its private key (PEM files the operator
+/// manages; PostgreSQL wants the key readable by its user only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsFiles {
+    /// Certificate (chain) in PEM.
+    pub cert: PathBuf,
+    /// Private key in PEM.
+    pub key: PathBuf,
 }
 
 /// The default cache base for the long-path fallback.
@@ -198,8 +210,9 @@ mod tests {
             Some("127.0.0.1:5433".parse().expect("addr"))
         );
         assert!(EngineConfig::parse_listen("[::1]:5433").expect("v6").is_some());
-        assert!(EngineConfig::parse_listen("0.0.0.0:5433").is_err());
-        assert!(EngineConfig::parse_listen("10.0.0.1:5433").is_err());
+        // FB-153: other hosts are allowed (TLS on, named logins only).
+        assert!(EngineConfig::parse_listen("0.0.0.0:5433").expect("any").is_some());
+        assert!(EngineConfig::parse_listen("10.0.0.1:5433").expect("lan").is_some());
         assert!(EngineConfig::parse_listen("127.0.0.1:0").is_err());
         assert!(EngineConfig::parse_listen("localhost").is_err());
     }

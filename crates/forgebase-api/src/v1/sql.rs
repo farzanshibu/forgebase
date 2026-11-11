@@ -7,11 +7,18 @@
 //! `secrets_masked: true` on the result), and a statement that names such a
 //! column is refused with 403, unless the body sends `"show_secrets": true`. Every use of `show_secrets` is recorded as a
 //! `sql.show_secrets` entry of the auth audit log (`GET /api/auth/audit`).
+//!
+//! PostgreSQL (FB-153): the editor runs as `forgebase_sql_admin`, which has no
+//! `SELECT` on secret columns, so `show_secrets` cannot reveal them there
+//! (the statement fails with 403). `"run_as": {"principal": "user:users/u1",
+//! "tenant": "env1"}` runs the statements as a direct login bound to that
+//! user would (row and field rules apply, names resolve to the `api`
+//! views); DDL is refused with it; each call is audited as `sql.run_as`.
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use forgebase_data::{SqlOptions, SqlStatement};
+use forgebase_data::{AccessContext, SqlOptions, SqlRunAs, SqlStatement};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -20,6 +27,7 @@ use super::schemas::{
     QueryPlanSchema, SqlBatchBody, SqlBatchResult, SqlResultSchema, SqlStatementBody, TableInfoSchema, TableList,
 };
 use crate::AppState;
+use crate::error::ApiError;
 use crate::http::ApiJson;
 use crate::principal::Access;
 
@@ -36,24 +44,58 @@ pub async fn execute(
     Access(ctx): Access,
     ApiJson(b): ApiJson<ExecuteRequest>,
 ) -> ApiResult<Response> {
-    Ok(Json(s.data().execute_sql_with(&ctx, b.statement, b.opts).await?).into_response())
+    let run_as = run_as(&s, &ctx, b.run_as.as_ref()).await?;
+    Ok(Json(
+        s.data()
+            .execute_sql_as(&ctx, b.statement, b.opts, run_as.as_ref())
+            .await?,
+    )
+    .into_response())
 }
 
-/// Body of `POST /sql`: `{sql, params, show_secrets}`.
+/// `run_as` of a SQL editor body (FB-153): whose claims the statements run
+/// with.
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunAsBody {
+    /// Principal key: `user:<collection>/<id>` or `service:<id>`.
+    pub principal: String,
+    /// The tenant to act in.
+    #[serde(default)]
+    pub tenant: Option<String>,
+}
+
+async fn run_as(s: &AppState, ctx: &AccessContext, body: Option<&RunAsBody>) -> Result<Option<SqlRunAs>, ApiError> {
+    let Some(b) = body else { return Ok(None) };
+    let policy = s
+        .policy()
+        .ok_or_else(|| ApiError::bad_request("run_as_unavailable", "run as needs the policy service"))?;
+    policy
+        .run_as_claims(ctx, &b.principal, b.tenant.as_deref())
+        .await
+        .map(Some)
+        .map_err(|e| ApiError::from_error(&e))
+}
+
+/// Body of `POST /sql`: `{sql, params, show_secrets, run_as}`.
 #[derive(Deserialize)]
 pub struct ExecuteRequest {
     #[serde(flatten)]
     statement: SqlStatement,
     #[serde(flatten)]
     opts: SqlOptions,
+    #[serde(default)]
+    run_as: Option<RunAsBody>,
 }
 
-/// Body of `POST /sql/batch`: `{statements, show_secrets}`.
+/// Body of `POST /sql/batch`: `{statements, show_secrets, run_as}`.
 #[derive(Deserialize)]
 pub struct BatchRequest {
     statements: Vec<SqlStatement>,
     #[serde(flatten)]
     opts: SqlOptions,
+    #[serde(default)]
+    run_as: Option<RunAsBody>,
 }
 
 /// Runs 1 to 1000 statements in one all-or-nothing transaction. With
@@ -68,7 +110,11 @@ pub async fn batch(
     Access(ctx): Access,
     ApiJson(b): ApiJson<BatchRequest>,
 ) -> ApiResult<Response> {
-    let items = s.data().execute_sql_batch_with(&ctx, b.statements, b.opts).await?;
+    let run_as = run_as(&s, &ctx, b.run_as.as_ref()).await?;
+    let items = s
+        .data()
+        .execute_sql_batch_as(&ctx, b.statements, b.opts, run_as.as_ref())
+        .await?;
     Ok(Json(json!({ "items": items })).into_response())
 }
 
