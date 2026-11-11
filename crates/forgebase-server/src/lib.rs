@@ -452,6 +452,11 @@ async fn start_on(
         Some(f) => forgebase_functions::register_jobs(registry, f.clone()),
         None => registry,
     };
+    // FB-164: `queue.convert` moves deliveries between pgmq and portable rows.
+    let registry = match &queue {
+        Some(q) => forgebase_queue::register_jobs(registry, q.clone()),
+        None => registry,
+    };
     // Object storage (FB-30): local directory or S3-compatible driver, unless
     // `[storage] enabled = false`.
     let storage = if config.storage.enabled {

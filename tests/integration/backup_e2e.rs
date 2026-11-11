@@ -25,11 +25,12 @@ fn forgebase(cwd: &Path) -> Command {
         }
     }
     cmd.env("NO_COLOR", "1");
+    common::backend_env(&mut cmd);
     cmd
 }
 
 fn run(cwd: &Path, args: &[&str]) -> Output {
-    forgebase(cwd).args(args).output().unwrap()
+    forgebase(cwd).args(common::backend_args(cwd, args)).output().unwrap()
 }
 
 fn ok(cwd: &Path, args: &[&str]) -> String {
@@ -203,6 +204,11 @@ fn scenario_21_restart_keeps_collections_and_records() {
 /// SPEC §27 #22: back up and restore the database.
 #[test]
 fn scenario_22_online_backup_then_restore_after_data_loss() {
+    // Backups on PostgreSQL (pg_basebackup) are FB-150; until then `backup` refuses.
+    if common::postgres() {
+        eprintln!("skipped on postgres: backups are FB-150");
+        return;
+    }
     let (_tmp, proj) = project();
     let data = proj.join("forgebase-data");
     let bundle = proj.join("seed");

@@ -40,11 +40,12 @@ fn forgebase(cwd: &Path) -> Command {
         }
     }
     cmd.env("NO_COLOR", "1");
+    common::backend_env(&mut cmd);
     cmd
 }
 
 fn run(cwd: &Path, args: &[&str]) -> Output {
-    forgebase(cwd).args(args).output().unwrap()
+    forgebase(cwd).args(common::backend_args(cwd, args)).output().unwrap()
 }
 
 struct Serve {

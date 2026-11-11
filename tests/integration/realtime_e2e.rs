@@ -26,12 +26,13 @@ fn forgebase(cwd: &Path) -> Command {
         }
     }
     cmd.env("NO_COLOR", "1");
+    common::backend_env(&mut cmd);
     cmd
 }
 
 fn run(cwd: &Path, args: &[&str], input: Option<&str>) -> Output {
     let mut child = forgebase(cwd)
-        .args(args)
+        .args(common::backend_args(cwd, args))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

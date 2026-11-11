@@ -11,19 +11,15 @@ use axum::http::{Request, StatusCode};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_auth::{Argon2Config, AuthConfig, AuthService, ClientInfo};
 use forgebase_core::DataLayout;
-use forgebase_db::{Database, DbOptions};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn app() -> (axum::Router, AuthService, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().unwrap();
-    let layout = DataLayout::new(tmp.path().join("data"));
+async fn app() -> (axum::Router, AuthService, forgebase_db::testing::TestDb) {
+    // FORGEBASE_TEST_BACKEND picks SQLite (default) or PostgreSQL (FB-149).
+    let tmp = forgebase_db::testing::test_backend().await;
+    let layout = DataLayout::new(tmp.data_dir().join("data"));
     layout.ensure().unwrap();
-    let cfg = forgebase_core::Config::defaults(tmp.path());
-    let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-        .await
-        .unwrap();
-    db.migrate(None).await.unwrap();
+    let db = tmp.database().clone();
     let mut acfg = AuthConfig::for_data_dir(layout.root());
     acfg.argon2 = Argon2Config::insecure_fast_for_tests();
     let auth = AuthService::open_with_data(
