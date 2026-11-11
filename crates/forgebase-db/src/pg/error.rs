@@ -29,6 +29,20 @@ pub(crate) fn is_stale_plan(e: &sqlx::Error) -> bool {
     }
 }
 
+/// "Unnamed prepared statement does not exist" (`26000`): sqlx resolved a
+/// result type it did not know yet (`citext`, an enum, an extension type)
+/// with a simple query between preparing an uncached statement and binding
+/// it, and a simple query destroys the unnamed statement. The type is cached
+/// on the connection by then, so running the statement again works.
+pub(crate) fn is_lost_unnamed_statement(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(db) => {
+            db.code().as_deref() == Some("26000") && db.message().contains("unnamed prepared statement")
+        }
+        _ => false,
+    }
+}
+
 /// Key columns from a unique violation's detail, `Key (a, b)=(1, 2) already exists.`
 fn key_columns(detail: &str) -> Option<Vec<String>> {
     let rest = detail.strip_prefix("Key (")?;

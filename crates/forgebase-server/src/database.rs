@@ -212,7 +212,7 @@ pub fn engine_config(config: &DatabaseConfig) -> Result<EngineConfig, ServerErro
     } else {
         EngineSource::Dir(PathBuf::from(&pg.engine_dir))
     };
-    let cron = match pg.extensions.cron {
+    let mode = |m: ExtensionMode| match m {
         ExtensionMode::Auto => forgebase_pgengine::ExtensionMode::Auto,
         ExtensionMode::On => forgebase_pgengine::ExtensionMode::On,
         ExtensionMode::Off => forgebase_pgengine::ExtensionMode::Off,
@@ -221,7 +221,8 @@ pub fn engine_config(config: &DatabaseConfig) -> Result<EngineConfig, ServerErro
         source,
         listen: EngineConfig::parse_listen(&pg.listen)?,
         settings: pg.settings.clone(),
-        cron,
+        cron: mode(pg.extensions.cron),
+        graph: mode(pg.extensions.graph),
         ..EngineConfig::default()
     })
 }
@@ -822,8 +823,10 @@ mod tests {
         c.postgres.listen = "127.0.0.1:5433".into();
         c.postgres.engine_dir = "/opt/pg".into();
         c.postgres.extensions.cron = ExtensionMode::Off;
+        c.postgres.extensions.graph = ExtensionMode::On;
         c.postgres.settings.insert("work_mem".into(), "16MB".into());
         let e = engine_config(&c).unwrap();
+        assert_eq!(e.graph, forgebase_pgengine::ExtensionMode::On);
         assert_eq!(e.listen, Some("127.0.0.1:5433".parse().unwrap()));
         assert_eq!(e.source, EngineSource::Dir("/opt/pg".into()));
         assert_eq!(e.cron, forgebase_pgengine::ExtensionMode::Off);
