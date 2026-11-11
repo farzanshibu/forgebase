@@ -138,7 +138,50 @@ pub fn config(dir: &Path) -> Config {
     cfg.server.port = 0;
     cfg.server.shutdown_timeout_secs = 5;
     cfg.queue.poll_interval_ms = 50;
+    apply_backend(&mut cfg);
     cfg
+}
+
+/// `FORGEBASE_TEST_BACKEND=postgres` (FB-149): the managed PostgreSQL engine
+/// from `FORGEBASE_PG_ENGINE_DIR` (or the embedded archive of a
+/// `bundled-postgres` build) instead of SQLite. Anything else: SQLite.
+/// `FORGEBASE_TEST_PG_ACCELERATORS=off` turns every extension accelerator off
+/// (the nightly "portable" run, FB-158 addendum).
+pub fn apply_backend(cfg: &mut Config) {
+    use forgebase_core::config::{DatabaseBackend, ExtensionMode, PostgresMode};
+    let postgres = matches!(
+        std::env::var("FORGEBASE_TEST_BACKEND").ok().as_deref().map(str::trim),
+        Some("postgres" | "postgresql" | "pg")
+    );
+    if !postgres {
+        cfg.database.backend = DatabaseBackend::Sqlite;
+        return;
+    }
+    cfg.database.backend = DatabaseBackend::Postgres;
+    cfg.database.postgres.mode = PostgresMode::Managed;
+    // Tests on an external SSD: durability off, as forgebase_db::testing does.
+    for (k, v) in [
+        ("fsync", "off"),
+        ("synchronous_commit", "off"),
+        ("full_page_writes", "off"),
+    ] {
+        cfg.database.postgres.settings.insert(k.into(), v.into());
+    }
+    if std::env::var("FORGEBASE_TEST_PG_ACCELERATORS").as_deref() == Ok("off") {
+        let ext = &mut cfg.database.postgres.extensions;
+        ext.vector = ExtensionMode::Off;
+        ext.graph = ExtensionMode::Off;
+        ext.queue = ExtensionMode::Off;
+        ext.cron = ExtensionMode::Off;
+        ext.trigram = ExtensionMode::Off;
+    }
+}
+
+/// A fresh data directory. Short path on PostgreSQL: the engine's Unix socket
+/// path is limited to 103 bytes (`FORGEBASE_TEST_PG_TMP` moves the base).
+pub fn data_tempdir() -> tempfile::TempDir {
+    let base = std::env::var_os("FORGEBASE_TEST_PG_TMP").unwrap_or_else(|| std::env::temp_dir().into_os_string());
+    tempfile::Builder::new().prefix("fbs-").tempdir_in(base).unwrap()
 }
 
 impl Env {
@@ -147,7 +190,7 @@ impl Env {
     }
 
     pub async fn with(f: impl FnOnce(&mut Config)) -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = data_tempdir();
         let mut cfg = config(dir.path());
         f(&mut cfg);
         let server = forgebase_server::start(&cfg).await.unwrap();

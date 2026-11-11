@@ -13,7 +13,7 @@ use axum::middleware::{self, Next};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, Authorizer, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
 use futures_util::stream;
 use serde_json::{Value as Json, json};
 use tower::ServiceExt;
@@ -21,7 +21,7 @@ use tower::ServiceExt;
 pub struct Api {
     pub app: Router,
     pub db: Database,
-    _tmp: tempfile::TempDir,
+    _tmp: forgebase_db::testing::TestDb,
 }
 
 pub struct Resp {
@@ -77,14 +77,11 @@ impl Api {
 
     async fn build(ctx: Option<AccessContext>, authorizer: Option<Arc<dyn Authorizer>>, opts: RouterOptions) -> Self {
         let authorizer_is_policy = authorizer.is_none();
-        let tmp = tempfile::tempdir().unwrap();
-        let layout = DataLayout::new(tmp.path().join("data"));
+        // FORGEBASE_TEST_BACKEND picks SQLite (default) or PostgreSQL (FB-149).
+        let tmp = forgebase_db::testing::test_backend().await;
+        let layout = DataLayout::new(tmp.data_dir().join("data"));
         layout.ensure().unwrap();
-        let cfg = forgebase_core::Config::defaults(tmp.path());
-        let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-            .await
-            .unwrap();
-        db.migrate(Some(&layout.backups_dir())).await.unwrap();
+        let db = tmp.database().clone();
         let state = match authorizer {
             Some(a) => AppState::with_authorizer(db.clone(), layout, a).await.unwrap(),
             None => {

@@ -1,7 +1,18 @@
 name: Release
 
-# Builds the forgebase binary for five targets, writes SHA-256 checksums, attaches
-# everything to a GitHub release, and publishes the Docker image.
+# Builds the forgebase binary for five targets in two flavours, writes SHA-256
+# checksums, attaches everything to a GitHub release, and publishes the Docker
+# image (FB-149, ADR-0028).
+#
+#   forgebase-<tag>-<target>.tar.gz        standard: the PostgreSQL engine embedded
+#                                          (bundled-postgres), PostgreSQL by default
+#   forgebase-<tag>-<target>-lite.tar.gz   -lite: no engine, SQLite only
+#
+# The engine is the release engine.lock names (engine.release), built by
+# .github/workflows/postgres-engine.yml and pinned by SHA-256: the `engine` job
+# downloads it, checks it and writes the release's engine.lock.archives into
+# engine.lock for this run, so build.rs verifies the bytes it embeds. The
+# engine release must exist before the first tag (push engine-pg<ver>-r<n>).
 #
 # Trigger: push a tag such as v0.2.0, or run the workflow by hand. A manual run
 # builds and uploads the artifacts but does not create a release or push an image.
@@ -44,9 +55,67 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The pinned engine archives, checked against the engine release's SHA256SUMS,
+  # and engine.lock with its [archives.*] tables replaced by the release's
+  # engine.lock.archives (CI-built bytes differ from any local build).
+  engine:
+    name: pinned PostgreSQL engine
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download, verify and write engine.lock
+        run: |
+          set -euo pipefail
+          release=$(python3 deploy/postgres-engine/engine.py get engine.release)
+          mkdir -p engine-dl
+          gh release download "$release" -D engine-dl \
+            -p 'forgebase-pg*.tar.zst' -p SHA256SUMS -p engine.lock.archives
+          python3 - <<'PY'
+          import hashlib, pathlib, re, sys, tomllib
+          d = pathlib.Path("engine-dl")
+          sums = {}
+          for line in (d / "SHA256SUMS").read_text().splitlines():
+              if line.strip():
+                  digest, name = line.split(None, 1)
+                  sums[name.strip().lstrip("*")] = digest
+          lock = pathlib.Path("engine.lock")
+          text = lock.read_text()
+          cut = text.index("[archives.")
+          fragment = (d / "engine.lock.archives").read_text()
+          lock.write_text(text[:cut] + fragment)
+          archives = tomllib.loads(lock.read_text())["archives"]
+          targets = [
+              "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-musl",
+              "aarch64-unknown-linux-musl", "x86_64-pc-windows-msvc",
+          ]
+          for t in targets:
+              entry = archives.get(t)
+              if not entry or "sha256" not in entry:
+                  sys.exit(f"the engine release has no archive for {t}")
+              f = d / entry["file"]
+              got = hashlib.sha256(f.read_bytes()).hexdigest()
+              if got != entry["sha256"] or sums.get(f.name) != got:
+                  sys.exit(f"{f.name}: sha256 {got} does not match engine.lock.archives / SHA256SUMS")
+              print(f"{t}: {f.name} {got}")
+          PY
+          git --no-pager diff --stat -- engine.lock || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-pinned
+          path: |
+            engine-dl/forgebase-pg*.tar.zst
+            engine.lock
+          if-no-files-found: error
+          retention-days: 7
+
   binaries:
     name: binary ${{ matrix.target }}
-    needs: dashboard
+    needs: [dashboard, engine]
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +149,12 @@ jobs:
           name: dashboard-dist
           path: dashboard/dist
 
+      # engine-dl/<archive> for every target, and engine.lock with the release's hashes.
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-pinned
+          path: .
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -94,44 +169,112 @@ jobs:
         if: matrix.builder == 'cross'
         run: cargo install cross --version 0.2.5 --locked
 
-      - name: Build (cross)
+      # Two builds per target: -lite (no engine, SQLite only), then the standard
+      # build with the engine archive of this target embedded (feature
+      # bundled-postgres; build.rs checks its SHA-256 against engine.lock). The
+      # cross container sees the workspace as /project, so the archive path it
+      # gets is the container's.
+      - name: Build -lite (cross)
         if: matrix.builder == 'cross'
         run: cross build --release --locked --target ${{ matrix.target }} -p forgebase-cli
 
-      - name: Build (cargo)
+      - name: Build -lite (cargo)
         if: matrix.builder == 'cargo'
         run: cargo build --release --locked --target ${{ matrix.target }} -p forgebase-cli
 
+      - name: Stage the -lite binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/lite
+          bin="target/${{ matrix.target }}/release/forgebase"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cp "$bin" stage/lite/
+
+      - name: Build with the PostgreSQL engine (cross)
+        if: matrix.builder == 'cross'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(basename "$(ls engine-dl/forgebase-pg*-${{ matrix.target }}.tar.zst)")
+          export FORGEBASE_PG_ENGINE_ARCHIVE="/project/engine-dl/$archive"
+          export CROSS_CONTAINER_OPTS="-e FORGEBASE_PG_ENGINE_ARCHIVE=$FORGEBASE_PG_ENGINE_ARCHIVE"
+          cross build --release --locked --target ${{ matrix.target }} -p forgebase-cli --features bundled-postgres
+
+      - name: Build with the PostgreSQL engine (cargo)
+        if: matrix.builder == 'cargo'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(basename "$(ls engine-dl/forgebase-pg*-${{ matrix.target }}.tar.zst)")
+          export FORGEBASE_PG_ENGINE_ARCHIVE="${{ github.workspace }}/engine-dl/$archive"
+          cargo build --release --locked --target ${{ matrix.target }} -p forgebase-cli --features bundled-postgres
+
+      - name: Stage the standard binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/bundled
+          bin="target/${{ matrix.target }}/release/forgebase"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cp "$bin" stage/bundled/
+
+      # The runner can execute this target: the standard build must not say
+      # "lite", must start its embedded engine and report it; -lite must say
+      # "lite". Not run for targets the runner cannot execute.
       - name: Smoke test
         if: matrix.smoke
         shell: bash
         run: |
-          bin="target/${{ matrix.target }}/release/forgebase"
-          [ -f "$bin.exe" ] && bin="$bin.exe"
-          "$bin" version
+          set -euo pipefail
+          exe=forgebase; [ "${{ runner.os }}" = Windows ] && exe=forgebase.exe
+          lite="$PWD/stage/lite/$exe"; full="$PWD/stage/bundled/$exe"
+          "$lite" --version | tee lite.version
+          grep -q 'lite' lite.version
+          "$full" --version | tee full.version
+          if grep -q 'lite' full.version; then echo "the standard build reports lite" >&2; exit 1; fi
+          work=$(mktemp -d); cd "$work"
+          export HOME="$work/home"; mkdir -p "$HOME"
+          "$full" init smoke --no-admin
+          cd smoke
+          "$full" status
+          "$full" doctor || true
+          "$full" db status --json | tee db.json
+          grep -q '"postgres"' db.json
+          cd ..
+          "$lite" init smoke-lite --database sqlite --no-admin
+          (cd smoke-lite && "$lite" status)
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          name="forgebase-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/forgebase" "dist/$name/forgebase"
-          cp README.md LICENSE-APACHE LICENSE-MIT "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          rm -rf "dist/$name"
+          for flavour in bundled lite; do
+            name="forgebase-${{ github.ref_name }}-${{ matrix.target }}"
+            [ "$flavour" = lite ] && name="$name-lite"
+            mkdir -p "dist/$name"
+            cp "stage/$flavour/forgebase" "dist/$name/forgebase"
+            cp README.md LICENSE-APACHE LICENSE-MIT "dist/$name/"
+            if [ "$flavour" = bundled ]; then cp -R THIRD_PARTY_LICENSES "dist/$name/"; fi
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm -rf "dist/$name"
+          done
 
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "forgebase-${{ github.ref_name }}-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/forgebase.exe" "dist/$name/forgebase.exe"
-          Copy-Item README.md, LICENSE-APACHE, LICENSE-MIT "dist/$name/"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          Remove-Item -Recurse -Force "dist/$name"
+          foreach ($flavour in "bundled", "lite") {
+            $name = "forgebase-${{ github.ref_name }}-${{ matrix.target }}"
+            if ($flavour -eq "lite") { $name = "$name-lite" }
+            New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+            Copy-Item "stage/$flavour/forgebase.exe" "dist/$name/forgebase.exe"
+            Copy-Item README.md, LICENSE-APACHE, LICENSE-MIT "dist/$name/"
+            if ($flavour -eq "bundled") { Copy-Item THIRD_PARTY_LICENSES "dist/$name/THIRD_PARTY_LICENSES" -Recurse }
+            Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+            Remove-Item -Recurse -Force "dist/$name"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -181,12 +324,27 @@ jobs:
 
   docker:
     name: docker image
+    needs: engine
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      # The image embeds the x86_64 musl engine (the Dockerfile builds on Alpine,
+      # so the target is x86_64-unknown-linux-musl) and the engine.lock hashes.
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-pinned
+          path: .
+
+      - name: Engine archive for the image
+        id: engine
+        run: |
+          set -euo pipefail
+          archive=$(basename "$(ls engine-dl/forgebase-pg*-x86_64-unknown-linux-musl.tar.zst)")
+          echo "archive=engine-dl/$archive" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -208,13 +366,15 @@ jobs:
             type=ref,event=branch
             type=sha
 
-      # The Dockerfile builds the dashboard and the binary itself, so this job
-      # needs no artifacts from the jobs above. Single platform: a Rust build
+      # The Dockerfile builds the dashboard and the binary itself (with the
+      # engine archive passed as ENGINE_ARCHIVE). Single platform: a Rust build
       # under QEMU for a second platform would take far longer than the release.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
+          build-args: |
+            ENGINE_ARCHIVE=${{ steps.engine.outputs.archive }}
           platforms: linux/amd64
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
           tags: ${{ steps.meta.outputs.tags }}
