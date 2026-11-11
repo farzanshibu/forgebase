@@ -1821,3 +1821,90 @@ a debug build after 400 rounds, every statement well under 1 ms.
   in `forgebase-server/src/lib.rs` next to the other `register_jobs`
   calls: `let registry = match &queue { Some(q) =>
   forgebase_queue::register_jobs(registry, q.clone()), None => registry };`.
+
+## Addendum: FB-166, trigram indexes, fuzzy search, full-text query (2026-11-11)
+
+Built as §1.8 describes. Where the code decides something the text left
+open, it is said here.
+
+**Files.** `crates/forgebase-data/src/{indexes.rs, list.rs}`; one-line
+shared edits in `forgebase-data/src/collections.rs` (the table-rebuild match
+treats `Trigram` like `Btree`), `forgebase-db/src/{backend.rs, lib.rs,
+router.rs}` (see Backend below), `forgebase-api/src/{http.rs,
+v1/records.rs, v1/schemas.rs}` (the query-string parameters and their
+OpenAPI text). Tests: `crates/forgebase-data/tests/trigram.rs`. No
+migration, no change in `forgebase-query` (the `~` compile already renders
+`ILIKE`, which the trigram index serves).
+
+**Full text.** `search` on PostgreSQL is `plainto_tsquery('simple',
+_forgebase_unaccent($n))` (was `websearch_to_tsquery`): words are ANDed and
+`-`, `OR`, quotes are text, as on SQLite (FTS5 words are quoted). The
+tsvector expression is unchanged, so existing GIN indexes still match.
+`forgebase-db`'s `PgDialect::fulltext_match` and the vector hybrid keyword
+query still use `websearch_to_tsquery` (not on the record-list path; FB-162
+owns the latter).
+
+**Backend.** `Backend::feature_active(Feature) -> bool` (default `false`;
+`Database` and `SetHandle` delegate) lets the data service ask whether
+pg_trgm is in use without holding a `Database`. FB-167's `SetHandle` impl got
+the delegating method.
+
+**Trigram index.** `IndexKind::Trigram` (`"trigram"`): one GIN index, one
+`forgebase.gin_trgm_ops` key per field (`CREATE INDEX n ON t USING gin
+((col) forgebase.gin_trgm_ops, …)`), not unique, not partial (`400
+invalid_index`). No cast, so `~` (`ILIKE`) and `%` on the plain column match
+it (plan test). Creation answers `400 index_kind_unsupported` when
+`db.feature_active(Feature::Trigram)` is false: SQLite, `trigram = "off"`, or
+no extension. **Stored as a `btree` row:** `_forgebase_indexes.kind` has a
+CHECK for `btree|fulltext` and FB-166 adds no migration, so the row says
+`btree` and `definition` says `"kind":"trigram"`; code reading the kind
+column alone sees `btree`. If a migration is ever added, widen the CHECK on
+both engines and store `trigram`. `IndexInfo.kind` reads the definition.
+
+**`fuzzy`.** List parameters `fuzzy`, `fuzzy_fields` (comma list), `fuzzy_threshold`
+(0–1, else `400 invalid_fuzzy_threshold`); also in the POST query body.
+Blank `fuzzy` is ignored. Where pg_trgm is not in use: `400
+fuzzy_unsupported`. Each field must be a key of a trigram index and readable
+by the caller, else `400 no_trigram_index` (masked fields refused exactly as
+for `search`; with no `fuzzy_fields`, every key of the collection's trigram
+indexes is used, so one masked key refuses the whole query for that caller).
+SQL: `col % $n` OR-ed over the fields; ordered by `GREATEST(similarity(col,
+$n)…)::float8 DESC, id` unless `sort` is given (then `sort` wins and the
+match is a filter). Cursor pagination works on the ranking (the similarity
+is the first key of the cursor).
+
+**Threshold semantics.** `%` uses the server's `pg_trgm.similarity_threshold`
+(0.3 by default), and a request cannot change a GUC on a pooled read. So:
+no `fuzzy_threshold` → `%` only (index assisted); ≥ 0.3 → `% AND
+similarity >= t` (index assisted); < 0.3 → `similarity >= t` only (correct,
+not index assisted: a sequential scan). A server whose GUC differs from 0.3
+shifts the 0.3 boundary.
+
+**Extension off.** Tested: PostgreSQL with `trigram = "off"` answers like
+SQLite (`index_kind_unsupported`, `fuzzy_unsupported`), `~` unindexed.
+An existing trigram index survives the extension going away only as far as
+PostgreSQL allows (dropping pg_trgm cascades or refuses; FB-161 never drops
+extensions).
+
+**New API parameters (OpenAPI fixtures and SDKs).** Query string and POST
+`.../records/query` body: `fuzzy` (string), `fuzzy_fields` (array / comma
+list), `fuzzy_threshold` (number). Index kind value `trigram` in the index
+definition. New error codes: `index_kind_unsupported`, `fuzzy_unsupported`,
+`no_trigram_index`, `invalid_fuzzy_threshold` (all 400).
+
+**Breaking.** `search` no longer interprets `-word`, `OR` or quotes as
+operators on PostgreSQL (it never should have; SQLite never did). `ListQuery`
+has three new fields (all `Default`); `Backend` has a new defaulted method.
+
+**Notes for next packages.**
+- FB-169 (replica reads): `list_records` and `explain_list` read the trigram
+  catalogue (`_forgebase_indexes`) through `backend.fetch_all`; the list
+  itself already goes through `read_rows`. A replica needs pg_trgm and the
+  same indexes (streaming replication carries both); `feature_active` is the
+  primary's view.
+- FB-172: `trigram_indexes` is one query per fuzzy request; cache it with the
+  catalog snapshot if it shows in profiles.
+- Dashboard (database studio): index kind selector gains `trigram`
+  (PostgreSQL with `database.features.trigram.state = active` only); list
+  screens may offer a fuzzy toggle with a threshold slider. `explain` shows
+  the trigram index in `indexes_used`.
