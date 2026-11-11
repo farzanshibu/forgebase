@@ -517,6 +517,10 @@ impl WriteTx for TokenTx {
     fn rollback(self: Box<Self>) -> BoxFuture<'static, Result<(), DbError>> {
         self.tx.rollback()
     }
+
+    fn prepare(self: Box<Self>, gid: String) -> BoxFuture<'static, Result<(), DbError>> {
+        self.tx.prepare(gid)
+    }
 }
 
 async fn monitor(weak: Weak<Inner>, interval: Duration) {

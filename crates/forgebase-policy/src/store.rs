@@ -186,13 +186,18 @@ impl PolicyService {
                 });
             }
         }
-        if let Some((coll, policy)) = native
-            && let Err(e) = self.regenerate_in(&mut *tx, coll, policy.as_ref()).await
-        {
-            let _ = tx.rollback().await;
-            return Err(e);
+        let mut generated = Vec::new();
+        if let Some((coll, policy)) = native {
+            match self.regenerate_in(&mut *tx, coll, policy.as_ref()).await {
+                Ok(s) => generated = s,
+                Err(e) => {
+                    let _ = tx.rollback().await;
+                    return Err(e);
+                }
+            }
         }
-        tx.commit().await?;
+        // On a sharded cluster the regenerated policies commit on every set (FB-173).
+        self.commit_native(tx, &generated).await?;
         self.reload().await
     }
 

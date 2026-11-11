@@ -400,6 +400,13 @@ pub enum RouterError {
     /// [`SetConnector`].
     #[error("the database topology has shards but no way to connect to them")]
     NoConnector,
+    /// The set is below the binary's schema head and is being migrated
+    /// (ADR-0029 §3.7, FB-173): its tenants wait for the migration.
+    #[error("database set {0:?} is being migrated; retry shortly")]
+    SetMigrating(String),
+    /// A node cannot be a shard (no two-phase commit: `max_prepared_transactions = 0`).
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl ErrorCode for RouterError {
@@ -413,6 +420,8 @@ impl ErrorCode for RouterError {
             RouterError::SingleSet => "sharding_unsupported",
             RouterError::PostgresRequired => "postgres_required",
             RouterError::NoConnector => "shard_connector_missing",
+            RouterError::SetMigrating(_) => "shard_migrating",
+            RouterError::Unsupported(_) => "sharding_unsupported",
         }
     }
 
@@ -420,7 +429,8 @@ impl ErrorCode for RouterError {
         match self {
             RouterError::Db(e) => e.kind(),
             RouterError::UnknownSet(_) => ErrorKind::NotFound,
-            RouterError::SetUnavailable(_) => ErrorKind::Unavailable,
+            RouterError::SetUnavailable(_) | RouterError::SetMigrating(_) => ErrorKind::Unavailable,
+            RouterError::Unsupported(_) => ErrorKind::InvalidInput,
             RouterError::SetClosed(_) | RouterError::SingleSet | RouterError::PostgresRequired => {
                 ErrorKind::InvalidInput
             }
@@ -481,11 +491,11 @@ impl State {
         match self.placements.get(tenant) {
             None => Ok(self.control()),
             Some(p) if p.state == PlacementState::Frozen => Err(RouterError::TenantMoving(tenant.to_owned())),
-            Some(p) => self
-                .handles
-                .get(&p.set_id)
-                .cloned()
-                .ok_or_else(|| RouterError::SetUnavailable(p.set_id.clone())),
+            Some(p) => match self.handles.get(&p.set_id) {
+                Some(h) if h.set().state == SetState::Migrating => Err(RouterError::SetMigrating(p.set_id.clone())),
+                Some(h) => Ok(h.clone()),
+                None => Err(RouterError::SetUnavailable(p.set_id.clone())),
+            },
         }
     }
 
