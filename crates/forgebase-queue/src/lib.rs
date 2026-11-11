@@ -18,6 +18,7 @@
 //! | Seek to a time or a snapshot | [`QueueService::seek`], [`QueueService::create_snapshot`] |
 //! | Metrics (backlog, oldest unacked age, rates, dead letters) | [`QueueService::subscription_metrics`] |
 //! | Metering (`queue.messages`, `queue.bytes`) and quotas (FB-24) | [`QueueService::attach_entitlements`] |
+//! | Deliveries on pgmq (PostgreSQL), conversion both ways (FB-164) | [`QueueService::delivery_engine`], [`QueueService::convert`], [`CONVERT_JOB`] |
 //!
 //! Delivery is at least once: a message is redelivered after a missed ack
 //! deadline, after a nack (with backoff), or after a crash (leases are rows,
@@ -35,6 +36,7 @@ mod history;
 mod http;
 mod model;
 mod ops;
+mod pgmq;
 pub mod push;
 mod row;
 pub mod schema;
@@ -44,4 +46,5 @@ pub use error::QueueError;
 pub use http::{StreamClientMessage, StreamServerMessage, api, extension, openapi, router};
 pub use model::*;
 pub use ops::QueueBacklog;
+pub use pgmq::{CONVERT_JOB, register_jobs};
 pub use service::QueueService;

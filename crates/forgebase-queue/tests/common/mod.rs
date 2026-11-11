@@ -111,6 +111,7 @@ impl Store {
         } else {
             pg.database().clone()
         };
+        setup_extensions(&db).await;
         insert_root(&db).await;
         db
     }
@@ -130,6 +131,27 @@ pub async fn open_db(dir: &Path) -> Database {
     db.migrate(Some(&layout.backups_dir())).await.unwrap();
     insert_root(&db).await;
     db
+}
+
+/// The server's start-up extension setup (FB-161): with pgmq on the test
+/// engine, queue deliveries live in pgmq (FB-164); `FORGEBASE_TEST_PGMQ=off`
+/// keeps them portable.
+async fn setup_extensions(db: &Database) {
+    let mut modes = forgebase_core::config::PostgresExtensions::default();
+    if std::env::var("FORGEBASE_TEST_PGMQ").as_deref() == Ok("off") {
+        modes.queue = forgebase_core::config::ExtensionMode::Off;
+    }
+    db.setup_extensions(&forgebase_db::ExtensionSetup {
+        modes,
+        ..forgebase_db::ExtensionSetup::default()
+    })
+    .await
+    .unwrap();
+}
+
+/// Whether pgmq holds this harness's deliveries.
+pub async fn on_pgmq(h: &H) -> bool {
+    h.svc.delivery_engine().await.unwrap() == forgebase_queue::DeliveryEngine::Pgmq
 }
 
 async fn insert_root(db: &Database) {

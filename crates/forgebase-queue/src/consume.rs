@@ -19,14 +19,22 @@ use crate::access::bare;
 use crate::error::QueueError;
 use crate::history;
 use crate::model::{
-    AckResult, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage, SeekRequest,
-    SeekResult, Snapshot, check_name, iso, parse_time,
+    AckResult, DeliveryEngine, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage,
+    SeekRequest, SeekResult, Snapshot, check_name, iso, parse_time,
 };
 use crate::row::{Row, scalar};
 use crate::service::{
     Db, MESSAGE_COLS, Prepared, QueueService, Result, SYSTEM_PUBLISHER, SubRow, bump_rate, cursor_before, finish,
     insert_message_tx, message_from, sub_row, topic_row,
 };
+
+/// One owed delivery: a portable row (by `seq`) or a pgmq entry (by
+/// `msg_id`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Delivery {
+    Seq(i64),
+    Entry(i64),
+}
 
 /// Claim rounds per pull at most when withheld record-change messages leave
 /// room (each round drops what it withholds, so the next one progresses).
@@ -60,6 +68,9 @@ impl QueueService {
     /// must not contain a sort of the backlog).
     #[doc(hidden)]
     pub async fn explain_claim_plan(&self, ordering: bool) -> Result<Vec<String>> {
+        if self.delivery_engine().await? == DeliveryEngine::Pgmq {
+            return self.pgmq_explain(ordering).await;
+        }
         let params = || vec!["s".into(), 0_i64.into(), 10_i64.into()];
         if self.backend().dialect().name() != "postgres" {
             let rows = self
@@ -86,9 +97,16 @@ impl QueueService {
         Ok(Row::all(&rows?).map(|r| r.text("QUERY PLAN")).collect())
     }
 
-    /// Reads up to `MATERIALIZE_MAX` new topic messages into delivery rows of
-    /// `sub` and advances its cursor. Returns the rows created.
-    pub(crate) async fn materialize_tx(&self, tx: &mut dyn WriteTx, sub: &SubRow, now: i64) -> Result<i64> {
+    /// Reads up to `MATERIALIZE_MAX` new topic messages into deliveries of
+    /// `sub` (rows, or pgmq entries sent with `pgmq.send_batch`) and
+    /// advances its cursor. Returns the deliveries created.
+    pub(crate) async fn materialize_tx(
+        &self,
+        tx: &mut dyn WriteTx,
+        eng: DeliveryEngine,
+        sub: &SubRow,
+        now: i64,
+    ) -> Result<i64> {
         let mut cursor = sub.cursor_seq;
         let mut created = 0;
         match &sub.filter {
@@ -101,7 +119,10 @@ impl QueueService {
                     ))
                     .await?,
                 );
-                if head > cursor {
+                if head > cursor && eng == DeliveryEngine::Pgmq {
+                    created = self.pgmq_send_range(tx, sub, cursor, head, now).await?;
+                    cursor = head;
+                } else if head > cursor {
                     created = i64::try_from(
                         tx.execute(&Statement::new(
                             "INSERT INTO _forgebase_queue_deliveries (subscription, seq, ordering_key, state, available_at) \
@@ -130,10 +151,13 @@ impl QueueService {
                         vec![sub.topic.as_str().into(), cursor.into(), MATERIALIZE_MAX.into()],
                     ))
                     .await?;
+                let mut picked = Vec::new();
                 for r in Row::all(&rows) {
                     let seq = r.int("seq");
                     let attrs: BTreeMap<String, String> = r.map("attributes")?;
-                    if filter.matches(&attrs) {
+                    if filter.matches(&attrs) && eng == DeliveryEngine::Pgmq {
+                        picked.push((seq, r.opt_text("ordering_key")));
+                    } else if filter.matches(&attrs) {
                         tx.execute(&Statement::new(
                             "INSERT INTO _forgebase_queue_deliveries (subscription, seq, ordering_key, state, \
                              available_at) VALUES (?1, ?2, ?3, 'ready', ?4)",
@@ -149,6 +173,7 @@ impl QueueService {
                     }
                     cursor = seq;
                 }
+                created += self.pgmq_send(tx, &sub.name, &picked, now).await?;
             }
         }
         if cursor != sub.cursor_seq {
@@ -163,7 +188,35 @@ impl QueueService {
 
     /// Ends the expired leases of `sub`: the message becomes ready again after
     /// the retry backoff, or is dead-lettered when attempts are used up.
-    pub(crate) async fn reap_tx(&self, tx: &mut dyn WriteTx, sub: &SubRow, now: i64) -> Result<usize> {
+    pub(crate) async fn reap_tx(
+        &self,
+        tx: &mut dyn WriteTx,
+        eng: DeliveryEngine,
+        sub: &SubRow,
+        now: i64,
+    ) -> Result<usize> {
+        if eng == DeliveryEngine::Pgmq {
+            let expired = self.pgmq_expired(tx, &sub.name, now).await?;
+            for &(id, attempts) in &expired {
+                self.pgmq_outcome(tx, &sub.name, id, "expired", None).await?;
+                if sub.max_delivery_attempts.is_some_and(|m| attempts >= m) {
+                    self.dead_letter_tx(
+                        tx,
+                        sub,
+                        Delivery::Entry(id),
+                        "max delivery attempts reached (ack deadline expired)",
+                        now,
+                    )
+                    .await?;
+                } else {
+                    // The lease stays valid until the next lease, so a late ack still counts.
+                    self.pgmq_ready(tx, &sub.name, id, now + self.backoff(sub, attempts), true)
+                        .await?;
+                }
+            }
+            self.count_expired(tx, sub, expired.len()).await?;
+            return Ok(expired.len());
+        }
         let rows = tx
             .fetch_all(&Statement::new(
                 "SELECT seq, attempts FROM _forgebase_queue_deliveries \
@@ -187,7 +240,7 @@ impl QueueService {
                 self.dead_letter_tx(
                     tx,
                     sub,
-                    seq,
+                    Delivery::Seq(seq),
                     "max delivery attempts reached (ack deadline expired)",
                     now,
                 )
@@ -206,14 +259,19 @@ impl QueueService {
                 .await?;
             }
         }
-        if !rows.is_empty() {
+        self.count_expired(tx, sub, rows.len()).await?;
+        Ok(rows.len())
+    }
+
+    async fn count_expired(&self, tx: &mut dyn WriteTx, sub: &SubRow, n: usize) -> Result<()> {
+        if n > 0 {
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_queue_subscriptions SET expired_total = expired_total + ?2 WHERE name = ?1",
-                vec![sub.name.as_str().into(), i64::try_from(rows.len()).unwrap_or(0).into()],
+                vec![sub.name.as_str().into(), i64::try_from(n).unwrap_or(0).into()],
             ))
             .await?;
         }
-        Ok(rows.len())
+        Ok(())
     }
 
     pub(crate) fn backoff(&self, sub: &SubRow, attempts: i64) -> i64 {
@@ -229,23 +287,29 @@ impl QueueService {
         &self,
         tx: &mut dyn WriteTx,
         sub: &SubRow,
-        seq: i64,
+        delivery: Delivery,
         reason: &str,
         now: i64,
     ) -> Result<()> {
-        let rows = tx
-            .fetch_all(&Statement::new(
-                // `+d.available_at` keeps the planner on the (subscription, state, seq)
-                // index: rows come in `seq` order, with no sort of the backlog.
-                format!(
-                    "SELECT {MESSAGE_COLS}, d.attempts AS d_attempts, d.history AS d_history \
-                     FROM _forgebase_queue_deliveries d JOIN _forgebase_queue_messages m ON m.seq = d.seq \
-                     WHERE d.subscription = ?1 AND d.seq = ?2"
-                ),
-                vec![sub.name.as_str().into(), seq.into()],
-            ))
-            .await?;
+        let rows = match delivery {
+            Delivery::Seq(seq) => {
+                tx.fetch_all(&Statement::new(
+                    format!(
+                        "SELECT {MESSAGE_COLS}, d.attempts AS d_attempts, d.history AS d_history \
+                         FROM _forgebase_queue_deliveries d JOIN _forgebase_queue_messages m ON m.seq = d.seq \
+                         WHERE d.subscription = ?1 AND d.seq = ?2"
+                    ),
+                    vec![sub.name.as_str().into(), seq.into()],
+                ))
+                .await?
+            }
+            Delivery::Entry(id) => self.pgmq_delivery(tx, &sub.name, id).await?,
+        };
         let Some(r) = Row::all(&rows).next() else {
+            // A pgmq entry whose message retention dropped: nothing to keep.
+            if let Delivery::Entry(id) = delivery {
+                self.pgmq_delete(tx, &sub.name, id).await?;
+            }
             return Ok(());
         };
         let (attempts, history) = (r.int("d_attempts"), r.text("d_history"));
@@ -308,11 +372,16 @@ impl QueueService {
             ],
         ))
         .await?;
-        tx.execute(&Statement::new(
-            "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND seq = ?2",
-            vec![sub.name.as_str().into(), seq.into()],
-        ))
-        .await?;
+        match delivery {
+            Delivery::Seq(seq) => {
+                tx.execute(&Statement::new(
+                    "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND seq = ?2",
+                    vec![sub.name.as_str().into(), seq.into()],
+                ))
+                .await?;
+            }
+            Delivery::Entry(id) => self.pgmq_delete(tx, &sub.name, id).await?,
+        }
         tx.execute(&Statement::new(
             "UPDATE _forgebase_queue_subscriptions SET dead_lettered_total = dead_lettered_total + 1 WHERE name = ?1",
             vec![sub.name.as_str().into()],
@@ -323,14 +392,21 @@ impl QueueService {
     }
 
     /// Cheap read: is anything claimable for `sub` right now?
-    async fn has_work(&self, sub: &str, now: i64) -> Result<bool> {
+    async fn has_work(&self, eng: DeliveryEngine, sub: &str, now: i64) -> Result<bool> {
+        let owed = match eng {
+            DeliveryEngine::Pgmq => Self::pgmq_has_work_sql(sub),
+            DeliveryEngine::Portable => "EXISTS (SELECT 1 FROM _forgebase_queue_deliveries WHERE subscription = ?1 \
+                AND ((state = 'ready' AND available_at <= ?2) OR (state = 'leased' AND lease_until <= ?2)))"
+                .to_owned(),
+        };
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT EXISTS (SELECT 1 FROM _forgebase_queue_deliveries WHERE subscription = ?1 \
-                    AND ((state = 'ready' AND available_at <= ?2) OR (state = 'leased' AND lease_until <= ?2))) \
+                format!(
+                    "SELECT {owed} \
                  OR EXISTS (SELECT 1 FROM _forgebase_queue_subscriptions s JOIN _forgebase_queue_messages m \
-                    ON m.topic = s.topic AND m.seq > s.cursor_seq WHERE s.name = ?1)",
+                    ON m.topic = s.topic AND m.seq > s.cursor_seq WHERE s.name = ?1)"
+                ),
                 vec![sub.into(), now.into()],
             ))
             .await?;
@@ -346,13 +422,15 @@ impl QueueService {
         max_bytes: Option<i64>,
         consumer: &str,
     ) -> Result<Vec<ReceivedMessage>> {
+        let eng = self.store().await?;
         let now = self.now();
-        if max < 1 || !self.has_work(sub, now).await? {
+        if max < 1 || !self.has_work(*eng, sub, now).await? {
             return Ok(Vec::new());
         }
         let mut tx = self.begin().await?;
-        let r = self.claim_tx(&mut *tx, sub, max, max_bytes, consumer, now).await;
+        let r = self.claim_tx(&mut *tx, *eng, sub, max, max_bytes, consumer, now).await;
         let out = finish(tx, r).await?;
+        drop(eng);
         if !out.is_empty() {
             metrics::counter!("forgebase_queue_delivered_total", "subscription" => sub.to_owned())
                 .increment(out.len() as u64);
@@ -360,9 +438,11 @@ impl QueueService {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn claim_tx(
         &self,
         tx: &mut dyn WriteTx,
+        eng: DeliveryEngine,
         name: &str,
         max: i64,
         max_bytes: Option<i64>,
@@ -370,8 +450,8 @@ impl QueueService {
         now: i64,
     ) -> Result<Vec<ReceivedMessage>> {
         let sub = sub_row(&mut Db::Tx(&mut *tx), name).await?;
-        self.reap_tx(tx, &sub, now).await?;
-        self.materialize_tx(tx, &sub, now).await?;
+        self.reap_tx(tx, eng, &sub, now).await?;
+        self.materialize_tx(tx, eng, &sub, now).await?;
         let max = max.min(MAX_PULL);
         let mut out = Vec::new();
         let mut bytes = 0_i64;
@@ -379,25 +459,30 @@ impl QueueService {
         // The owner's access, resolved once per claim (G2).
         let mut owner: Option<Option<AccessContext>> = None;
         let mut withheld = 0_u64;
-        'rounds: for _ in 0..CLAIM_ROUNDS {
-            let rows = tx
-                .fetch_all(&Statement::new(
-                    ready_claim_sql(sub.ordering),
-                    vec![
-                        name.into(),
-                        now.into(),
-                        (max - i64::try_from(out.len()).unwrap_or(max)).into(),
-                    ],
-                ))
-                .await?;
+        for _ in 0..CLAIM_ROUNDS {
+            let room = max - i64::try_from(out.len()).unwrap_or(max);
+            let rows = match eng {
+                DeliveryEngine::Pgmq => self.pgmq_ready_rows(tx, &sub, now, room).await?,
+                DeliveryEngine::Portable => {
+                    tx.fetch_all(&Statement::new(
+                        ready_claim_sql(sub.ordering),
+                        vec![name.into(), now.into(), room.into()],
+                    ))
+                    .await?
+                }
+            };
             let mut dropped = 0;
+            // pgmq: the entries to lease, in one statement per round.
+            let mut leases: Vec<(i64, String)> = Vec::new();
+            let mut full = false;
             for r in Row::all(&rows) {
                 let size = r.int("bytes");
                 if let Some(limit) = max_bytes
                     && !out.is_empty()
                     && bytes + size > limit
                 {
-                    break 'rounds;
+                    full = true;
+                    break;
                 }
                 let seq = r.int("seq");
                 let mut message = message_from(&r)?;
@@ -411,16 +496,32 @@ impl QueueService {
                     };
                     if !visible {
                         // Withheld: the owner may not see this record, now or later.
-                        tx.execute(&Statement::new(
-                            "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND seq = ?2",
-                            vec![name.into(), seq.into()],
-                        ))
-                        .await?;
+                        if eng == DeliveryEngine::Pgmq {
+                            self.pgmq_delete(tx, name, r.int("q_id")).await?;
+                        } else {
+                            tx.execute(&Statement::new(
+                                "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND seq = ?2",
+                                vec![name.into(), seq.into()],
+                            ))
+                            .await?;
+                        }
                         dropped += 1;
                         continue;
                     }
                 }
                 bytes += size;
+                if eng == DeliveryEngine::Pgmq {
+                    let id = r.int("q_id");
+                    let lease = crate::pgmq::new_lease(id);
+                    leases.push((id, lease.clone()));
+                    out.push(ReceivedMessage {
+                        ack_id: lease,
+                        delivery_attempt: r.int("d_attempts") + 1,
+                        ack_deadline: iso(until),
+                        message,
+                    });
+                    continue;
+                }
                 let lease = format!("ack-{}", uuid::Uuid::new_v4().simple());
                 tx.execute(&Statement::new(
                     format!(
@@ -446,8 +547,9 @@ impl QueueService {
                     message,
                 });
             }
+            self.pgmq_lease(tx, name, &leases, consumer, now, until).await?;
             withheld += dropped;
-            if dropped == 0 || i64::try_from(out.len()).unwrap_or(max) >= max {
+            if full || dropped == 0 || i64::try_from(out.len()).unwrap_or(max) >= max {
                 break;
             }
         }
@@ -535,12 +637,23 @@ impl QueueService {
 
     /// [`QueueService::ack`] of the subscription stored as `sub`, unchecked.
     pub(crate) async fn ack_stored(&self, sub: &str, ack_ids: &[String]) -> Result<AckResult> {
+        let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             sub_row(&mut Db::Tx(&mut *tx), sub).await?;
             let mut res = AckResult::default();
-            for id in ack_ids {
+            if *eng == DeliveryEngine::Pgmq {
+                let counted = self.pgmq_ack(&mut *tx, sub, ack_ids).await?;
+                for (id, ok) in ack_ids.iter().zip(counted) {
+                    if ok {
+                        res.count += 1;
+                    } else {
+                        res.unknown.push(id.clone());
+                    }
+                }
+            }
+            for id in ack_ids.iter().filter(|_| *eng == DeliveryEngine::Portable) {
                 let n = tx
                     .execute(&Statement::new(
                         "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND lease_id = ?2",
@@ -566,6 +679,7 @@ impl QueueService {
         }
         .await;
         let res = finish(tx, r).await?;
+        drop(eng);
         if res.count > 0 {
             metrics::counter!("forgebase_queue_acked_total", "subscription" => sub.to_owned())
                 .increment(u64::try_from(res.count).unwrap_or(0));
@@ -599,12 +713,34 @@ impl QueueService {
         outcome: &str,
         error: Option<&str>,
     ) -> Result<AckResult> {
+        let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let s = sub_row(&mut Db::Tx(&mut *tx), sub).await?;
             let mut res = AckResult::default();
-            for id in ack_ids {
+            for id in ack_ids.iter().filter(|_| *eng == DeliveryEngine::Pgmq) {
+                let Some((entry, attempts)) = self.pgmq_leased(&mut *tx, sub, id).await? else {
+                    res.unknown.push(id.clone());
+                    continue;
+                };
+                self.pgmq_outcome(&mut *tx, sub, entry, outcome, error).await?;
+                if s.max_delivery_attempts.is_some_and(|m| attempts >= m) {
+                    self.dead_letter_tx(
+                        &mut *tx,
+                        &s,
+                        Delivery::Entry(entry),
+                        &format!("max delivery attempts reached ({outcome})"),
+                        now,
+                    )
+                    .await?;
+                } else {
+                    self.pgmq_ready(&mut *tx, sub, entry, now + self.backoff(&s, attempts), false)
+                        .await?;
+                }
+                res.count += 1;
+            }
+            for id in ack_ids.iter().filter(|_| *eng == DeliveryEngine::Portable) {
                 let rows = tx
                     .fetch_all(&Statement::new(
                         "SELECT seq, attempts FROM _forgebase_queue_deliveries \
@@ -634,7 +770,7 @@ impl QueueService {
                     self.dead_letter_tx(
                         &mut *tx,
                         &s,
-                        seq,
+                        Delivery::Seq(seq),
                         &format!("max delivery attempts reached ({outcome})"),
                         now,
                     )
@@ -660,6 +796,7 @@ impl QueueService {
         }
         .await;
         let res = finish(tx, r).await?;
+        drop(eng);
         if res.count > 0 {
             self.notify();
         }
@@ -689,12 +826,21 @@ impl QueueService {
         if ms == 0 {
             return self.nack_internal(sub, ack_ids, "nacked", None).await;
         }
+        let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             sub_row(&mut Db::Tx(&mut *tx), sub).await?;
             let mut res = AckResult::default();
             for id in ack_ids {
+                if *eng == DeliveryEngine::Pgmq {
+                    if self.pgmq_deadline(&mut *tx, sub, id, now + ms).await? {
+                        res.count += 1;
+                    } else {
+                        res.unknown.push(id.clone());
+                    }
+                    continue;
+                }
                 let n = tx
                     .execute(&Statement::new(
                         "UPDATE _forgebase_queue_deliveries SET lease_until = ?3 \
@@ -718,9 +864,13 @@ impl QueueService {
     /// Gives back every lease `consumer` holds on `sub` without counting the
     /// attempt (a stream that closed). Returns the number released.
     pub(crate) async fn release_consumer(&self, sub: &str, consumer: &str) -> Result<u64> {
+        let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
+            if *eng == DeliveryEngine::Pgmq {
+                return self.pgmq_release(&mut *tx, sub, consumer, now).await;
+            }
             Ok(tx
                 .execute(&Statement::new(
                     format!(
@@ -738,6 +888,7 @@ impl QueueService {
         }
         .await;
         let n = finish(tx, r).await?;
+        drop(eng);
         if n > 0 {
             self.notify();
         }
@@ -746,6 +897,12 @@ impl QueueService {
 
     /// Messages and bytes `consumer` holds on `sub` with unexpired leases.
     pub(crate) async fn in_flight(&self, sub: &str, consumer: &str) -> Result<(i64, i64)> {
+        let eng = self.store().await?;
+        if *eng == DeliveryEngine::Pgmq {
+            let rows = self.pgmq_in_flight(sub, consumer, self.now()).await?;
+            let r = Row::new(&rows, 0);
+            return Ok((r.int("n"), r.int("b")));
+        }
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -805,15 +962,20 @@ impl QueueService {
                 ));
             }
         };
+        let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let s = sub_row(&mut Db::Tx(&mut *tx), sub).await?;
-            tx.execute(&Statement::new(
-                "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1",
-                vec![sub.into()],
-            ))
-            .await?;
+            if *eng == DeliveryEngine::Pgmq {
+                self.pgmq_purge(&mut *tx, sub).await?;
+            } else {
+                tx.execute(&Statement::new(
+                    "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1",
+                    vec![sub.into()],
+                ))
+                .await?;
+            }
             let (cursor, restored) = if let Some(ts) = ts {
                 (cursor_before(&mut *tx, &s.topic, ts).await?, 0)
             } else {
@@ -828,16 +990,22 @@ impl QueueService {
                         format!("snapshot {shown:?} is of topic {:?}", bare(&snap.topic)),
                     ));
                 }
-                let n = tx
-                    .execute(&Statement::new(
-                        "INSERT INTO _forgebase_queue_deliveries (subscription, seq, ordering_key, state, available_at) \
-                         SELECT ?1, i.seq, m.ordering_key, 'ready', ?3 FROM _forgebase_queue_snapshot_items i \
-                         JOIN _forgebase_queue_messages m ON m.seq = i.seq WHERE i.snapshot = ?2",
-                        vec![sub.into(), name.into(), now.into()],
-                    ))
-                    .await?
-                    .rows_affected;
-                (snap.public.cursor_seq, i64::try_from(n).unwrap_or(0))
+                let n = if *eng == DeliveryEngine::Pgmq {
+                    self.pgmq_restore(&mut *tx, sub, name, now).await?
+                } else {
+                    let n = tx
+                        .execute(&Statement::new(
+                            "INSERT INTO _forgebase_queue_deliveries (subscription, seq, ordering_key, state, \
+                             available_at) SELECT ?1, i.seq, m.ordering_key, 'ready', ?3 \
+                             FROM _forgebase_queue_snapshot_items i JOIN _forgebase_queue_messages m ON m.seq = i.seq \
+                             WHERE i.snapshot = ?2",
+                            vec![sub.into(), name.into(), now.into()],
+                        ))
+                        .await?
+                        .rows_affected;
+                    i64::try_from(n).unwrap_or(0)
+                };
+                (snap.public.cursor_seq, n)
             };
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_queue_subscriptions SET cursor_seq = ?2, updated_at = ?3 WHERE name = ?1",
@@ -851,6 +1019,7 @@ impl QueueService {
         }
         .await;
         let res = finish(tx, r).await?;
+        drop(eng);
         self.notify();
         Ok(res)
     }
@@ -869,6 +1038,7 @@ impl QueueService {
             .await?;
         check_name("snapshot name", &new.name)?;
         let key = crate::access::stored(found.tenant.as_deref(), &new.name);
+        let eng = self.store().await?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
@@ -889,7 +1059,7 @@ impl QueueService {
             loop {
                 let cur = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?;
                 let before = cur.cursor_seq;
-                self.materialize_tx(&mut *tx, &cur, now).await?;
+                self.materialize_tx(&mut *tx, *eng, &cur, now).await?;
                 let after = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?.cursor_seq;
                 if after == before {
                     break;
@@ -911,12 +1081,16 @@ impl QueueService {
                 ],
             ))
             .await?;
-            tx.execute(&Statement::new(
-                "INSERT INTO _forgebase_queue_snapshot_items (snapshot, seq) \
-                 SELECT ?1, seq FROM _forgebase_queue_deliveries WHERE subscription = ?2",
-                vec![key.as_str().into(), s.name.as_str().into()],
-            ))
-            .await?;
+            if *eng == DeliveryEngine::Pgmq {
+                self.pgmq_snapshot(&mut *tx, &s.name, &key).await?;
+            } else {
+                tx.execute(&Statement::new(
+                    "INSERT INTO _forgebase_queue_snapshot_items (snapshot, seq) \
+                     SELECT ?1, seq FROM _forgebase_queue_deliveries WHERE subscription = ?2",
+                    vec![key.as_str().into(), s.name.as_str().into()],
+                ))
+                .await?;
+            }
             snapshot_row(&mut Db::Tx(&mut *tx), &key).await
         }
         .await;
