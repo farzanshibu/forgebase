@@ -4,6 +4,8 @@
 //! whose rules a test can change while connections are open.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod writers;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};

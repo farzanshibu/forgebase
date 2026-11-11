@@ -2,23 +2,47 @@
 //! limit per second or minute, pause and resume, default priority and
 //! timeout. The limits are checked inside the claim transaction, so they hold
 //! across the in-process pool and every external worker.
+//!
+//! Settings belong to a tenant (FB-146): a caller configures the queues of
+//! its own tenant (none: the tenantless queues), and the settings govern
+//! only that tenant's jobs. A tenant's settings are stored under the name
+//! `<tenant>/<queue>` ([`queue_key`]; queue names never hold '/').
+//! Non-privileged callers see and change only settings of their tenant, and
+//! only those they created unless they hold `engine:read_jobs:all`, like
+//! jobs (FB-142); queue counts include only the jobs they may see.
 
 use std::collections::BTreeMap;
 
-use forgebase_data::{AccessContext, Action};
-use forgebase_db::{Statement, WriteTx};
+use forgebase_data::{AccessContext, Action, DataError};
+use forgebase_db::{Statement, Value, WriteTx};
 
+use crate::access::{Owner, Scope};
 use crate::error::JobError;
 use crate::model::{check_name, iso};
 use crate::service::{JobService, Result, Row, finish};
 use crate::tasks::{QueueInfo, QueueSettings, RatePeriod};
 
-const QUEUE_COLS: &str = "name, concurrency, rate_limit, rate_period_ms, paused, default_priority, \
-    default_timeout_ms, created_at, updated_at";
+const QUEUE_COLS: &str = "name, tenant, created_by, concurrency, rate_limit, rate_period_ms, paused, \
+    default_priority, default_timeout_ms, created_at, updated_at";
 
-fn blank(name: &str) -> QueueInfo {
+/// Stored name of the settings of queue `name` in `tenant`.
+pub(crate) fn queue_key(tenant: Option<&str>, name: &str) -> String {
+    match tenant {
+        Some(t) => format!("{t}/{name}"),
+        None => name.to_owned(),
+    }
+}
+
+/// SQL expression of the settings name ([`queue_key`]) that governs a job
+/// row; `alias` is empty or ends with `.`.
+pub(crate) fn job_queue_key(alias: &str) -> String {
+    format!("(CASE WHEN {alias}tenant IS NULL THEN {alias}queue ELSE {alias}tenant || '/' || {alias}queue END)")
+}
+
+fn blank(tenant: Option<&str>, name: &str) -> QueueInfo {
     QueueInfo {
         name: name.to_owned(),
+        tenant: tenant.map(str::to_owned),
         configured: false,
         concurrency: None,
         rate_limit: None,
@@ -32,6 +56,7 @@ fn blank(name: &str) -> QueueInfo {
         succeeded: 0,
         dead: 0,
         cancelled: 0,
+        created_by: None,
         created_at: None,
         updated_at: None,
     }
@@ -39,6 +64,7 @@ fn blank(name: &str) -> QueueInfo {
 
 fn settings_into(q: &mut QueueInfo, r: &Row<'_>) {
     q.configured = true;
+    q.created_by = r.opt_text("created_by");
     q.concurrency = r.opt_int("concurrency");
     q.rate_limit = r.opt_int("rate_limit");
     q.rate_period = RatePeriod::from_ms(r.int("rate_period_ms"));
@@ -50,52 +76,81 @@ fn settings_into(q: &mut QueueInfo, r: &Row<'_>) {
 }
 
 impl JobService {
-    /// Every queue that has settings or jobs, by name.
+    /// Every queue that has settings or jobs the caller may see, by tenant
+    /// and name.
     pub async fn queues(&self, ctx: &AccessContext) -> Result<Vec<QueueInfo>> {
         self.allow(ctx, Action::ReadJobs)?;
-        self.queue_infos(None).await
+        self.queue_infos(&self.access().scope(ctx), None).await
     }
 
-    /// One queue (a queue without settings or jobs has default settings).
+    /// One queue of the caller's tenant (a queue without settings or jobs has
+    /// default settings).
     pub async fn queue(&self, ctx: &AccessContext, name: &str) -> Result<QueueInfo> {
         self.allow(ctx, Action::ReadJobs)?;
         check_name("queue", name, 64)?;
-        Ok(self.queue_infos(Some(name)).await?.pop().unwrap_or_else(|| blank(name)))
+        let tenant = ctx.tenant.as_deref();
+        Ok(self
+            .queue_infos(&self.access().scope(ctx), Some((tenant, name)))
+            .await?
+            .pop()
+            .unwrap_or_else(|| blank(tenant, name)))
     }
 
-    async fn queue_infos(&self, only: Option<&str>) -> Result<Vec<QueueInfo>> {
-        let (cond, params) = match only {
-            Some(n) => ("WHERE name = ?1", vec![n.into()]),
-            None => ("", Vec::new()),
-        };
+    async fn queue_infos(&self, scope: &Scope, only: Option<(Option<&str>, &str)>) -> Result<Vec<QueueInfo>> {
+        let mut params: Vec<Value> = Vec::new();
+        let mut cond = scope.sql("", false, &mut params);
+        if let Some((tenant, name)) = only {
+            params.push(queue_key(tenant, name).into());
+            cond.push_str(&format!(" AND name = ?{}", params.len()));
+        }
         let mut out: BTreeMap<String, QueueInfo> = BTreeMap::new();
         let settings = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT {QUEUE_COLS} FROM _forgebase_job_queues {cond}"),
-                params.clone(),
+                format!("SELECT {QUEUE_COLS} FROM _forgebase_job_queues WHERE {cond}"),
+                params,
             ))
             .await?;
         for i in 0..settings.len() {
             let r = Row::new(&settings, i);
-            let q = out.entry(r.text("name")).or_insert_with(|| blank(&r.text("name")));
+            let tenant = r.opt_text("tenant");
+            let key = r.text("name");
+            let name = match &tenant {
+                Some(t) => key.strip_prefix(&format!("{t}/")).unwrap_or(&key).to_owned(),
+                None => key.clone(),
+            };
+            let q = out.entry(key).or_insert_with(|| blank(tenant.as_deref(), &name));
             settings_into(q, &r);
         }
-        let jcond = if only.is_some() { "WHERE queue = ?1" } else { "" };
+        let mut params: Vec<Value> = Vec::new();
+        let mut jcond = scope.sql("", true, &mut params);
+        if let Some((tenant, name)) = only {
+            params.push(name.into());
+            jcond.push_str(&format!(" AND queue = ?{}", params.len()));
+            match tenant {
+                Some(t) => {
+                    params.push(t.into());
+                    jcond.push_str(&format!(" AND tenant = ?{}", params.len()));
+                }
+                None => jcond.push_str(" AND tenant IS NULL"),
+            }
+        }
         let counts = self
             .backend()
             .fetch_all(&Statement::new(
                 format!(
-                    "SELECT queue, status, waiting_for > 0 AS waiting, COUNT(*) AS n FROM _forgebase_jobs {jcond} \
-                     GROUP BY queue, status, waiting_for > 0"
+                    "SELECT queue, tenant, status, waiting_for > 0 AS waiting, COUNT(*) AS n FROM _forgebase_jobs \
+                     WHERE {jcond} GROUP BY queue, tenant, status, waiting_for > 0"
                 ),
                 params,
             ))
             .await?;
         for i in 0..counts.len() {
             let r = Row::new(&counts, i);
-            let name = r.text("queue");
-            let q = out.entry(name.clone()).or_insert_with(|| blank(&name));
+            let (name, tenant) = (r.text("queue"), r.opt_text("tenant"));
+            let q = out
+                .entry(queue_key(tenant.as_deref(), &name))
+                .or_insert_with(|| blank(tenant.as_deref(), &name));
             let n = r.int("n");
             match (r.text("status").as_str(), r.int("waiting") == 1) {
                 ("queued", true) => q.waiting += n,
@@ -118,15 +173,17 @@ impl JobService {
         check_name("queue", name, 64)?;
         settings.validate()?;
         let now = self.now();
+        let key = queue_key(ctx.tenant.as_deref(), name);
+        let scope = self.access().scope(ctx);
         let mut tx = self.begin().await?;
         let r = async {
-            upsert(&mut *tx, name, now).await?;
+            upsert(&mut *tx, &scope, ctx, &key, now).await?;
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_job_queues SET concurrency = ?2, rate_limit = ?3, rate_period_ms = ?4, \
                  paused = COALESCE(?5, paused), default_priority = ?6, default_timeout_ms = ?7, updated_at = ?8 \
                  WHERE name = ?1",
                 vec![
-                    name.into(),
+                    key.as_str().into(),
                     settings.concurrency.into(),
                     settings.rate_limit.into(),
                     settings.rate_period.unwrap_or_default().ms().into(),
@@ -160,12 +217,14 @@ impl JobService {
         self.allow(ctx, Action::ManageJobs)?;
         check_name("queue", name, 64)?;
         let now = self.now();
+        let key = queue_key(ctx.tenant.as_deref(), name);
+        let scope = self.access().scope(ctx);
         let mut tx = self.begin().await?;
         let r = async {
-            upsert(&mut *tx, name, now).await?;
+            upsert(&mut *tx, &scope, ctx, &key, now).await?;
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_job_queues SET paused = ?2, updated_at = ?3 WHERE name = ?1",
-                vec![name.into(), i64::from(paused).into(), now.into()],
+                vec![key.as_str().into(), i64::from(paused).into(), now.into()],
             ))
             .await?;
             Ok::<_, JobError>(())
@@ -182,11 +241,16 @@ impl JobService {
     pub async fn delete_queue(&self, ctx: &AccessContext, name: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
         check_name("queue", name, 64)?;
+        let key = queue_key(ctx.tenant.as_deref(), name);
+        let scope = self.access().scope(ctx);
         let mut tx = self.begin().await?;
         let r = async {
+            if owner_of(&mut *tx, &key).await?.is_some_and(|o| !scope.sees(&o, None)) {
+                return Err(not_yours(name));
+            }
             tx.execute(&Statement::new(
                 "DELETE FROM _forgebase_job_queues WHERE name = ?1",
-                vec![name.into()],
+                vec![key.as_str().into()],
             ))
             .await?;
             Ok::<_, JobError>(())
@@ -198,11 +262,48 @@ impl JobService {
     }
 }
 
-async fn upsert(tx: &mut dyn WriteTx, name: &str, now: i64) -> Result<()> {
+/// The owner of the settings stored as `key`, if they exist.
+async fn owner_of(tx: &mut dyn WriteTx, key: &str) -> Result<Option<Owner>> {
+    let rows = tx
+        .fetch_all(&Statement::new(
+            "SELECT tenant, created_by FROM _forgebase_job_queues WHERE name = ?1",
+            vec![key.into()],
+        ))
+        .await?;
+    Ok((!rows.is_empty()).then(|| {
+        let r = Row::new(&rows, 0);
+        Owner {
+            tenant: r.opt_text("tenant"),
+            created_by: r.opt_text("created_by").unwrap_or_default(),
+        }
+    }))
+}
+
+fn not_yours(name: &str) -> JobError {
+    JobError::Access(DataError::Forbidden(format!(
+        "the settings of queue {name:?} were created by someone else"
+    )))
+}
+
+/// Creates the settings row `key` for the caller (its tenant and principal),
+/// or checks that the caller may change the existing one.
+async fn upsert(tx: &mut dyn WriteTx, scope: &Scope, ctx: &AccessContext, key: &str, now: i64) -> Result<()> {
+    if let Some(owner) = owner_of(tx, key).await? {
+        if !scope.sees(&owner, None) {
+            let name = key.rsplit('/').next().unwrap_or(key);
+            return Err(not_yours(name));
+        }
+        return Ok(());
+    }
     tx.execute(&Statement::new(
-        "INSERT INTO _forgebase_job_queues (name, created_at, updated_at) VALUES (?1, ?2, ?2) \
-         ON CONFLICT (name) DO NOTHING",
-        vec![name.into(), now.into()],
+        "INSERT INTO _forgebase_job_queues (name, tenant, created_by, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?4)",
+        vec![
+            key.into(),
+            ctx.tenant.clone().into(),
+            ctx.actor().into(),
+            now.into(),
+        ],
     ))
     .await?;
     Ok(())

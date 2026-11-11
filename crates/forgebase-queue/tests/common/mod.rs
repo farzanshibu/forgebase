@@ -5,6 +5,8 @@
 //! outbox that feeds record sources) and the queue service on a manual clock.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod writers;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
