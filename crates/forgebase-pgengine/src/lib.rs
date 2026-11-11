@@ -52,6 +52,7 @@ mod lock;
 mod process;
 pub mod replication;
 mod secret;
+pub mod shard;
 pub mod standby;
 
 pub use cluster::{DATABASE, LOGIN_ROLE, LOGIN_WRITE_ROLE, OWNER_ROLE, RLS_ROLE, SEARCH_PATH, SQL_ADMIN_ROLE};
