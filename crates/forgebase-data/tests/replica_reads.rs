@@ -226,6 +226,7 @@ async fn the_sql_editor_reads_a_replica_only_when_asked() {
     let secrets = SqlOptions {
         read_from_replica: true,
         show_secrets: true,
+        ..SqlOptions::default()
     };
     let before = rc.replica_reads();
     let r = svc.execute_sql_with(ctx, stmt(), secrets).await.unwrap();

@@ -45,6 +45,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+# FB-171: real shard clusters (forgebase_db::shard_testing) in tests/shards_fb171.rs.
+forgebase-db = { workspace = true, features = ["testing"] }
 # FB-153: direct logins over the engine's socket.
 sqlx.workspace = true
 wat.workspace = true

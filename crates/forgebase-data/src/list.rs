@@ -203,6 +203,7 @@ impl DataService {
             None => None,
         };
         if let Some(e) = &filter {
+            self.check_crossing(coll, e, "filter")?;
             wheres.push(compiler.filter(&mut b, coll, "t", e)?);
         }
         if let Some(p) = pred {
@@ -272,6 +273,9 @@ impl DataService {
         }
 
         let mut sort: Vec<SortKey> = parse_sort(q.sort.as_deref().unwrap_or(""))?;
+        for k in &sort {
+            self.check_path_crossing(coll, &k.path, "sort key")?;
+        }
         let fuzzy_sort = fuzzy_order.is_some() && sort.is_empty();
         if fuzzy_sort {
             sort.push(SortKey {
@@ -428,11 +432,13 @@ impl DataService {
         q: &ListQuery,
     ) -> Result<ListResult, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
+        let backend = self.route(ctx, &coll).await?;
         let fts = self.fulltext_index(&coll, q).await?;
         let trigram = self.trigram_indexes(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref(), &trigram)?;
         let rows = self
             .read_rows(
+                &backend,
                 ctx,
                 Action::List,
                 &coll,
@@ -470,6 +476,7 @@ impl DataService {
         } else {
             let n = self
                 .read_rows(
+                    &backend,
                     ctx,
                     Action::List,
                     &coll,
@@ -514,9 +521,11 @@ impl DataService {
             params,
             ..ListQuery::default()
         };
+        let backend = self.route(ctx, &coll).await?;
         let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None, &[])?;
         let rows = self
             .read_rows(
+                &backend,
                 ctx,
                 Action::List,
                 &coll,
@@ -559,7 +568,9 @@ impl DataService {
         // PostgreSQL).
         let mut types: Vec<ScalarType> = Vec::new();
         for (i, g) in q.group_by.iter().enumerate() {
-            let (e, ty) = compiler.scalar_typed(&mut b, &coll, "t", &FieldPath::parse(g)?)?;
+            let path = FieldPath::parse(g)?;
+            self.check_path_crossing(&coll, &path, "group key")?;
+            let (e, ty) = compiler.scalar_typed(&mut b, &coll, "t", &path)?;
             select.push(format!("{e} AS \"__g{i}\""));
             groups.push(e);
             keys.push(g.clone());
@@ -583,7 +594,11 @@ impl DataService {
                 AggregateFunction::Max => "max",
             };
             let (arg, ty) = match &a.field {
-                Some(p) => compiler.scalar_typed(&mut b, &coll, "t", &FieldPath::parse(p)?)?,
+                Some(p) => {
+                    let path = FieldPath::parse(p)?;
+                    self.check_path_crossing(&coll, &path, "aggregate")?;
+                    compiler.scalar_typed(&mut b, &coll, "t", &path)?
+                }
                 None if a.function == AggregateFunction::Count => ("*".to_owned(), ScalarType::Integer),
                 None => return Err(DataError::invalid("invalid_aggregate", format!("{f} needs a field"))),
             };
@@ -630,6 +645,7 @@ impl DataService {
             wheres.push(t);
         }
         if let Some(e) = q.filter.as_deref().map(parse_filter).transpose()?.flatten() {
+            self.check_crossing(&coll, &e, "filter")?;
             wheres.push(compiler.filter(&mut b, &coll, "t", &e)?);
         }
         if let Some(p) = &pred {
@@ -657,8 +673,10 @@ impl DataService {
         let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
         sql.push_str(&format!(" LIMIT {}", b.bind(i64::from(limit))));
         let follows = b.follows_relations();
+        let backend = self.route(ctx, &coll).await?;
         let rows = self
             .read_rows(
+                &backend,
                 ctx,
                 Action::List,
                 &coll,

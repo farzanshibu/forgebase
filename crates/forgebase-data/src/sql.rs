@@ -81,6 +81,13 @@ pub struct SqlOptions {
     /// stay on the primary. Ignored without replicas.
     #[serde(default)]
     pub read_from_replica: bool,
+    /// The SQL editor's node selector (ADR-0029 §3.6, FB-171): the number of
+    /// the database set a **read** runs on (`0` or absent: control). With
+    /// `read_from_replica`, one of that set's healthy replicas. Statements
+    /// that write run on control only (`400 sql_set_read_only`); an unknown
+    /// or closed set is `404 shard_not_found` / `503 shard_unavailable`.
+    #[serde(default)]
+    pub set: Option<u16>,
 }
 
 /// What a masked secret value reads as.
@@ -642,19 +649,21 @@ impl DataService {
                 c.sql.clone()
             };
             let stmt = Statement::new(sql, c.params.clone()).uncached();
-            // The editor's role (FB-153) is the boundary, so it wins over a
-            // replica read (FB-169): replicas have no role-switching read yet.
+            // FB-171: the node selector picks the set; "Read from replica"
+            // reads one of its replicas, still as the editor's role (FB-153;
+            // `fetch_routed_as` switches role on the replica as on the
+            // primary). `show_secrets` reads stay on the primary.
+            let backend = self.sql_backend(opts.set)?;
+            let replica = opts.read_from_replica && !opts.show_secrets;
+            let intent = forgebase_db::ReadIntent::replica("sql.editor");
             let rows = match self.statement_role(&c, run_as, opts.show_secrets) {
-                Some(role) => self
-                    .inner
-                    .backend
-                    .fetch_all_as(&stmt, &role)
+                Some(role) if replica => backend
+                    .fetch_routed_as(&stmt, &intent, &role)
                     .await
                     .map_err(role_refusal)?,
-                None if opts.read_from_replica && !opts.show_secrets => {
-                    self.fetch_replica(&stmt, "sql.editor").await?
-                }
-                None => self.inner.backend.fetch_all(&stmt).await?,
+                Some(role) => backend.fetch_all_as(&stmt, &role).await.map_err(role_refusal)?,
+                None if replica => Self::fetch_replica_on(&backend, &stmt, "sql.editor").await?,
+                None => backend.fetch_all(&stmt).await?,
             };
             let mut r = result_from(c.kind, rows, started);
             if opts.show_secrets || run_as.is_some() {
@@ -718,6 +727,7 @@ impl DataService {
         if statements.is_empty() || statements.len() > 1000 {
             return Err(DataError::invalid("invalid_batch", "send 1 to 1000 statements"));
         }
+        refuse_writes_off_control(opts.set)?;
         let mut checked = Vec::with_capacity(statements.len());
         for s in &statements {
             checked.push(self.check_sql(ctx, s, !opts.show_secrets, run_as.is_some()).await?);
@@ -732,6 +742,7 @@ impl DataService {
         opts: SqlOptions,
         run_as: Option<&SqlRunAs>,
     ) -> Result<Vec<SqlResult>, DataError> {
+        refuse_writes_off_control(opts.set)?;
         let schema = checked.iter().any(|c| c.kind == StatementKind::Schema);
         let _guard = if schema {
             Some(self.inner.schema_lock.lock().await)
@@ -950,6 +961,42 @@ impl DataService {
 
 /// Set at the start of every SQL editor write transaction on PostgreSQL.
 const PG_EDITOR_SEARCH_PATH: &str = "SET LOCAL search_path = public, forgebase";
+
+/// Statements that write run on control only (FB-171): a shard's tenant
+/// data changes through the data API, its schema through the collections API
+/// (two-phase, on every set); `forgebase db psql --node` reaches a shard
+/// directly.
+fn refuse_writes_off_control(set: Option<u16>) -> Result<(), DataError> {
+    match set {
+        None | Some(0) => Ok(()),
+        Some(k) => Err(DataError::invalid(
+            "sql_set_read_only",
+            format!("statements that write run on control only; set {k} takes read statements"),
+        )),
+    }
+}
+
+impl DataService {
+    /// The backend of the SQL editor's node selector (FB-171): control, or
+    /// the open set with this number.
+    fn sql_backend(&self, set: Option<u16>) -> Result<std::sync::Arc<dyn forgebase_db::Backend>, DataError> {
+        match set {
+            None | Some(0) => Ok(self.inner.backend.clone()),
+            Some(k) => {
+                let router = self
+                    .shard_router()
+                    .ok_or_else(|| forgebase_db::RouterError::UnknownSet(k.to_string()))?;
+                let h = router
+                    .set_by_number(k)
+                    .ok_or_else(|| forgebase_db::RouterError::UnknownSet(k.to_string()))?;
+                if h.set().state == forgebase_db::topology::SetState::Migrating {
+                    return Err(forgebase_db::RouterError::SetMigrating(h.id().to_owned()).into());
+                }
+                Ok(std::sync::Arc::new(h))
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

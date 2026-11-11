@@ -199,6 +199,12 @@ pub(crate) fn relation_table(
             ),
         ));
     }
+    // FB-171 (ADR-0029 §3.6): once the topology has shards, tenant data and
+    // the shared target may live on different sets, so the relation has no
+    // foreign key; the data core checks existence and runs `ON DELETE`.
+    if catalog.has_shards() && is_tenant_scoped(coll) && !is_tenant_scoped(target) {
+        return Ok(None);
+    }
     Ok(Some(target.name.clone()))
 }
 
