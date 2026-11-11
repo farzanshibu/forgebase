@@ -2194,6 +2194,119 @@ share`, so it passes with a relocatable engine.
 - External servers: the text-collation check FB-133 suggested (a libc locale
   may sort differently from the bundled engine's builtin C.UTF-8) is not done.
 
+## Addendum (FB-140): object storage tenancy, object rules and the sealed signing key
+
+Written 2026-11-11 by FB-140. Closes `rls-coverage.md` G1, G14 and G15 and
+the storage part of G11 in `forgebase-storage`. Backend-neutral: new SQL is
+valid on both engines (numbered `?N` placeholders, `Dialect::insert_ignore`,
+`Dialect::column_type` casts); migration pair 0029 (`storage_rls`).
+
+**Bucket ACLs (G1).** An ACL entry for a prefix covers the keys under it
+and never the bucket: get, update, ACL get/set, usage, delete (also
+`force`) and the bucket listing match only entries with the empty prefix.
+A user with `admin` on `users/alice/` keeps writing there and administers
+nothing.
+
+**Authorization order.** Privileged callers; the bucket owner; visibility
+(reads); ACL entries; then `Authorizer::authorize_resource(ctx,
+Storage<need>, bucket <name>, op)` (FB-134): the permission
+`engine:storage_<need>:<bucket>` or the plain key, else the bucket's
+resource rule for the operation. Operations: object listing and version
+listing `list`; get, head, signed GET, copy source and restore source
+`view`; put, upload, copy target and restore `create` when the key holds
+no live object at install time, `update` otherwise; delete and move
+source `delete`. Bucket get and listing ask `view` / `list`; admin needs
+are decided by permissions only. `create_bucket` asks
+`authorize_resource(StorageAdmin, bucket <name>, create)`, so
+`engine:storage_admin:<name>` lets one create that name. Anonymous callers
+reach the rule step (a rule may open a bucket to them). Statistics and the
+reconciler keep the plain `authorize`.
+
+**Object rules (G14).** Storage registers its own `bucket` schema
+(`forgebase_storage::object_schema`): `key`, `created_by` (principal key
+as stored), `owner` (the creator's id, as `@request.auth.id` gives it),
+`owner_collection` (a user creator's auth collection), `size`,
+`content_type`, `folders` (JSON array of the key's folder names, as
+Supabase's `storage.foldername`; `folders.0` is the first). They are
+columns of `_forgebase_storage_objects` (0029 adds `owner`,
+`owner_collection`, `folders` and fills existing rows with the values the
+service writes), so a `Decision::Filter` compiles with
+`ResourceSchema::compile` straight into the object SQL over alias `o`.
+Reads add it to `WHERE` (hidden objects are `404`; folder prefixes of a
+delimiter listing come only from visible objects). Writes that add a
+version get both the `create` and `update` decisions up front
+(`WriteCheck`); an early check refuses before any byte is received when
+the current state's decision denies or the version being replaced fails
+the `update` filter; the decision for the state found **inside the
+install transaction** is applied there: the replaced version must pass
+(`USING`) and the new one, as a one-row derived table of its fields
+(`WITH CHECK`), must pass too, else `403` and nothing is written.
+Multipart and resumable uploads are checked when they complete. Deletes
+check the version removed (or the latest). Owner-only pattern:
+`owner = @request.auth.id && owner_collection = @request.auth.collection`
+(the second term keeps users of two auth collections with the same id
+apart); per-user folders: `folders.0 = @request.auth.id`.
+
+**Tenant buckets (G14).** `_forgebase_storage_buckets.tenant` (NULL =
+instance-wide, every bucket before FB-140). A caller with a tenant creates
+buckets of that tenant, stored as `<tenant>/<name>` (bucket names never
+hold `/`, so names are unique per tenant and the stored name is never
+addressable: every name is validated before lookup). A name resolves to
+the caller's tenant bucket, else the instance-wide bucket of that name;
+another tenant's bucket is unreachable, and so are its upload sessions. A
+tenant may not create a name an instance-wide bucket holds (`409`); an
+instance-wide bucket created later is hidden in a tenant that has its own.
+Listings show the tenant's buckets plus the instance-wide ones; the wire
+`Bucket` gained `tenant`; objects and uploads keep showing the bare name.
+`GET /api/v1/storage/stats` gained `scope` (`tenant`, `instance` for
+non-privileged callers without a tenant, `engine` for privileged callers
+without one) and `tenant`; stored bytes are the distinct blobs the scope
+references. Resource permissions and rules name the bare bucket name, so
+`engine:storage_read:files` and the rules of `files` apply to every
+tenant's `files` (rules are super-admin, instance-level settings, as FB-134
+decided for engine names).
+
+**Signing key (G11).** The 32-byte key lives in
+`_forgebase_storage_settings` row `signing_key_sealed`, sealed with the
+auth keyring (XChaCha20-Poly1305, AAD `forgebase/storage/url-signing-key/v1`).
+At start a plain `signing_key` row from before FB-140 is sealed
+**unchanged** and deleted in one transaction, so URLs issued before the
+upgrade stay valid until they expire. A master key that does not open the
+sealed key fails the start with a message naming the row to delete;
+nothing is overwritten. `StorageService::open` takes a `Keyring` (server:
+the data directory's master key, as billing and queues).
+
+**Signed URLs (G15).** Checked when issued, never when used (as S3 and
+Supabase), documented in `signed.rs`, ADR-0018 §7 and `docs/security.md`.
+New URLs carry `v=2`, `t` (bucket tenant) and `by` (the uploader, recorded
+as `created_by`; format 1 recorded `signed-url`), each value length-prefixed
+in the signed message; format-1 URLs still verify. Signing a PUT is
+refused when the rule for the key's state could fail for an upload the URL
+accepts (a rule on `size`, or on `content_type` without `content_type`
+pinned). `POST /api/v1/storage/maintenance/rotate-signing-key`
+(administrators, `StorageService::rotate_signing_key`) replaces the key and
+revokes every URL at once.
+
+**Breaking.** A prefix ACL entry no longer shows its bucket in listings or
+opens bucket metadata. Rules that read `owner`/`folders` see the new
+columns only (0029 fills existing rows). `StorageService::open` gained the
+keyring argument; `SignedParams` gained `format`, `tenant`, `signer`;
+`StorageStats` gained `scope`, `tenant`; `Bucket` gained `tenant`.
+`DataService::authorizer()` added in `forgebase-data` (one accessor).
+
+**For FB-147 (storage on PostgreSQL).** The new SQL is portable; check on
+PostgreSQL: the `CAST(?n AS jsonb)` of `folders` in the new-row check, JSON
+paths (`o."folders"->>0`) on the `jsonb` column, `trim_array` in the 0029
+twin (PG 14+), and the SQLite twin's `json_remove(…, '$[#-1]')`. The
+signing key row is text hex on both engines. Native RLS stays out of scope
+(engine tables are API-only, rls-coverage §3.4); if storage objects are
+ever exposed, the rule fields are real columns, so policies can reuse them.
+**For the dashboard storage studio (FB-100).** Show `tenant` on buckets and
+`scope` on stats; send `X-ForgeBase-Tenant` when creating buckets; offer
+`bucket` resource rules with the fields above (`folders.0`, `owner`); a
+"rotate signing key" action for administrators; expect `404` for objects a
+rule hides.
+
 ## Addendum (FB-136): billing, credits and realtime scoping
 
 Written 2026-11-11 by FB-136. Closes `rls-coverage.md` G18 (billing and

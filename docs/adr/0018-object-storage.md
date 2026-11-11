@@ -80,12 +80,24 @@ variants in `forgebase-data`), so policy roles, the entitlement hook and the quo
 pipeline apply. Creating buckets and running the reconciler need `storage_admin`. Public visibility never
 grants writes. Downloads carry `Content-Security-Policy: sandbox`; HTML, SVG and XML are served as attachments.
 
+**FB-140** (ADR-0028 addendum FB-140): an ACL entry for a prefix covers keys under it and never the bucket
+itself (bucket operations need an entry with the empty prefix); the permission step asks
+`Authorizer::authorize_resource` (`engine:storage_<need>:<bucket>`, then bucket **object rules** over `key`,
+`created_by`, `owner`, `owner_collection`, `size`, `content_type`, `folders`); buckets belong to a tenant or
+to the instance.
+
 ## 7. Signed URLs
 
 HMAC-SHA256 over method, bucket, key, expiry and every optional field (`version`, `download`, `ct`, `sub`),
 keyed with a random 32-byte instance key created on first start (`_forgebase_storage_settings`). Verified in
 constant time, then expiry: forged or altered → `403 signature_invalid`, past expiry → `403 url_expired`.
 Signing needs read (GET) or write (PUT) access to the key; a signed upload bills the signer's subject.
+
+**FB-140:** the key is sealed with the auth keyring (`signing_key_sealed`; a plain key from before is sealed
+unchanged, so issued URLs keep working). New URLs (`v=2`) also sign the bucket's tenant (`t`) and the
+uploader (`by`). A URL is checked when issued, never when used (rls-coverage G15, as S3 and Supabase): keep
+lifetimes short (default 15 minutes); `POST /api/v1/storage/maintenance/rotate-signing-key` (administrators)
+revokes every URL at once.
 
 ## 8. Quota
 

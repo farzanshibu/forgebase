@@ -166,7 +166,7 @@ async fn scenario_11_signed_download_url() {
     assert_eq!(s, StatusCode::OK, "{signed}");
     let url = signed["url"].as_str().unwrap().to_owned();
     assert!(
-        url.starts_with("/api/v1/storage/signed/docs/reports/q3%202026.txt?expires="),
+        url.starts_with("/api/v1/storage/signed/docs/reports/q3%202026.txt?v=2&expires="),
         "{url}"
     );
 
@@ -978,7 +978,8 @@ async fn bucket_visibility_acl_and_limits_are_enforced() {
             .await
             .is_err()
     );
-    assert_eq!(env.storage.list_buckets(&alice).await.unwrap().len(), 1);
+    // A prefix grant reaches keys, never the bucket itself (FB-140, G1).
+    assert_eq!(env.storage.list_buckets(&alice).await.unwrap().len(), 0);
     // Role-based grant.
     let mut uploader = user("bob");
     uploader.roles = vec!["uploader".into()];

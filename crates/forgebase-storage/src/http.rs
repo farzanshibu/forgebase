@@ -233,6 +233,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(svc: StorageService) -> Router<S
     Router::<StorageService>::new()
         .route("/storage/stats", get(stats))
         .route("/storage/maintenance/reconcile", post(reconcile))
+        .route("/storage/maintenance/rotate-signing-key", post(rotate_signing_key))
         .route("/storage/buckets", get(list_buckets).post(create_bucket))
         .route(
             "/storage/buckets/{bucket}",
@@ -281,7 +282,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        stats, reconcile, list_buckets, create_bucket, get_bucket, patch_bucket, delete_bucket, get_acl, put_acl,
+        stats, reconcile, rotate_signing_key, list_buckets, create_bucket, get_bucket, patch_bucket, delete_bucket, get_acl, put_acl,
         list_objects, put_object, get_object, delete_object, copy_object, move_object, list_versions,
         restore_version, sign, create_upload, get_upload, append_chunk, abort_upload, upload_part, complete_upload,
         signed_get, signed_put, bucket_usage, object_meta, object_meta_head,
@@ -345,6 +346,15 @@ async fn stats(State(s): State<StorageService>, Access(ctx): Access) -> ApiResul
     responses((status = 200, body = ReconcileReport)))]
 async fn reconcile(State(s): State<StorageService>, Access(ctx): Access) -> ApiResult {
     ok(s.reconcile(&ctx).await.map_err(api)?)
+}
+
+/// Replaces the URL signing key: every signed URL issued so far stops
+/// working (administrators).
+#[utoipa::path(post, path = "/api/v1/storage/maintenance/rotate-signing-key", tag = "storage",
+    responses((status = 204, description = "Rotated"), (status = 403, description = "Not an administrator")))]
+async fn rotate_signing_key(State(s): State<StorageService>, Access(ctx): Access) -> ApiResult {
+    s.rotate_signing_key(&ctx).await.map_err(api)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Buckets the caller may read.
@@ -735,7 +745,7 @@ async fn complete_upload(
 
 fn signed_params(method: SignedMethod, bucket: &str, key: &str, q: &Query) -> Result<SignedParams, ApiError> {
     let mut map = BTreeMap::new();
-    for name in ["expires", "version", "download", "ct", "sub", "sig"] {
+    for name in ["v", "t", "expires", "version", "download", "ct", "sub", "by", "sig"] {
         if let Some(v) = q.get(name) {
             map.insert(name.to_owned(), v.to_owned());
         }
@@ -787,8 +797,15 @@ async fn signed_put(
 impl StorageService {
     /// Space used by a bucket (needs admin access on it).
     pub async fn bucket_usage(&self, ctx: &forgebase_data::AccessContext, name: &str) -> crate::Result<BucketUsage> {
-        let b = self.bucket_row(name).await?;
-        self.authorize(ctx, &b, None, crate::service::Need::Admin).await?;
+        let b = self.bucket_row(ctx, name).await?;
+        self.authorize(
+            ctx,
+            &b,
+            None,
+            crate::service::Need::Admin,
+            forgebase_data::ResourceOp::View,
+        )
+        .await?;
         let rows = self
             .read(
                 "SELECT COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN 1 ELSE 0 END), 0), \
@@ -796,7 +813,7 @@ impl StorageService {
                         COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN size ELSE 0 END), 0), \
                         COALESCE(SUM(size), 0) \
                  FROM _forgebase_storage_objects WHERE bucket = ?",
-                vec![name.into()],
+                vec![b.id.as_str().into()],
             )
             .await?;
         let r = rows
@@ -805,7 +822,7 @@ impl StorageService {
             .ok_or_else(|| StorageError::Internal("no usage".into()))?;
         let n = |i: usize| crate::service::uint(r, i);
         Ok(BucketUsage {
-            bucket: name.to_owned(),
+            bucket: b.name.clone(),
             objects: n(0),
             versions: n(1),
             logical_bytes: n(2),
@@ -813,18 +830,35 @@ impl StorageService {
         })
     }
 
-    /// Totals over the instance (needs the `storage_admin` permission).
+    /// Totals (needs the `storage_admin` permission). A caller with a tenant
+    /// sees that tenant's buckets (`scope: tenant`); without one, a
+    /// privileged caller sees the whole engine (`scope: engine`) and anyone
+    /// else the instance-wide buckets (`scope: instance`). Stored bytes are
+    /// the distinct blobs the scope references.
     pub async fn stats(&self, ctx: &forgebase_data::AccessContext) -> crate::Result<StorageStats> {
         self.authorize_platform(ctx, Action::StorageAdmin)?;
+        let (scope, cond, params): (&str, &str, Vec<forgebase_db::Value>) = match &ctx.tenant {
+            Some(t) => ("tenant", "k.tenant = ?1", vec![t.as_str().into()]),
+            None if ctx.is_privileged() => ("engine", "1 = 1", vec![]),
+            None => ("instance", "k.tenant IS NULL", vec![]),
+        };
         let rows = self
             .read(
-                "SELECT (SELECT COUNT(*) FROM _forgebase_storage_buckets), \
-                        (SELECT COUNT(*) FROM _forgebase_storage_objects WHERE is_latest = 1 AND delete_marker = 0), \
-                        (SELECT COUNT(*) FROM _forgebase_storage_objects), \
-                        (SELECT COALESCE(SUM(size), 0) FROM _forgebase_storage_objects WHERE is_latest = 1 AND delete_marker = 0), \
-                        (SELECT COALESCE(SUM(size), 0) FROM _forgebase_storage_blobs WHERE refcount > 0), \
-                        (SELECT COUNT(*) FROM _forgebase_storage_uploads)",
-                vec![],
+                &format!(
+                    "SELECT (SELECT COUNT(*) FROM _forgebase_storage_buckets k WHERE {cond}), \
+                        (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+                          WHERE {cond} AND o.is_latest = 1 AND o.delete_marker = 0), \
+                        (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+                          WHERE {cond}), \
+                        (SELECT COALESCE(SUM(o.size), 0) FROM _forgebase_storage_objects o \
+                          JOIN _forgebase_storage_buckets k ON k.name = o.bucket WHERE {cond} AND o.is_latest = 1 AND o.delete_marker = 0), \
+                        (SELECT COALESCE(SUM(b.size), 0) FROM _forgebase_storage_blobs b WHERE b.refcount > 0 AND b.sha256 IN \
+                          (SELECT o.blob_sha FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+                           WHERE {cond})), \
+                        (SELECT COUNT(*) FROM _forgebase_storage_uploads u JOIN _forgebase_storage_buckets k ON k.name = u.bucket \
+                          WHERE {cond})"
+                ),
+                params,
             )
             .await?;
         let r = rows
@@ -839,6 +873,8 @@ impl StorageService {
             logical_bytes: n(3),
             stored_bytes: n(4),
             open_uploads: n(5),
+            scope: scope.to_owned(),
+            tenant: ctx.tenant.clone(),
         })
     }
 }
