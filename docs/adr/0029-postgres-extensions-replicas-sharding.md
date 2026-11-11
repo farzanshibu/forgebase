@@ -1821,3 +1821,126 @@ a debug build after 400 rounds, every statement well under 1 ms.
   in `forgebase-server/src/lib.rs` next to the other `register_jobs`
   calls: `let registry = match &queue { Some(q) =>
   forgebase_queue::register_jobs(registry, q.clone()), None => registry };`.
+
+## Addendum: FB-165, schedules on pg_cron (2026-11-11)
+
+Built as §1.7 describes. Where the code differs from the text above, or
+decides something it left open, it is said here.
+
+**Files.** `crates/forgebase-jobs/src/pgcron.rs` (new: mapping, sync,
+catch-up, listener, layout check), call sites in `service.rs`
+(`create/update/delete_schedule`, `schedule_from`), `model.rs`
+(`Schedule.fired_by`), `lib.rs` (exports). `migrations/{system,postgres}/
+0038_schedule_fire.sql` (registered in `forgebase-migrations`'s `lib.rs` and
+`postgres.rs`). Outside Owns, needed for the `PgListener` wake-up:
+`forgebase-db` `Database::listen(channel) -> Listener` (`src/pg/listen.rs`,
+new; a `mod` line and one method). Tests: `crates/forgebase-jobs/tests/
+pgcron.rs` (starts a managed engine from `FORGEBASE_PG_ENGINE_DIR`, skips
+without pg_cron) and unit tests in `pgcron.rs`.
+
+**Expression mapping (`map_expression`).** Decided by reading pg_cron 1.6's
+parser (vixie cron) and a differential test: an independent model of
+pg_cron's reading gives the same next 1 000 due times as `Cron::next_after`
+for every expression the mapping accepts (19 fixed + 400 generated
+expressions); the live half runs the mapped text through the real
+`cron.schedule` and checks that the refused ones really are refused. Not
+mapped, so they stay on the Rust tick:
+- `n/s` (a number with a step): ForgeBase reads "from n to the end", pg_cron
+  refuses it; `?`: ForgeBase only;
+- a day field that starts with `*` but is not a plain `*` (`*/2`, `5,*`
+  with the other day field restricted): pg_cron ANDs day-of-month and
+  day-of-week whenever either starts with `*`; ForgeBase ORs unless a field
+  has a plain `*` element. The mapping accepts a field only when both
+  readings agree on whether it is a star;
+- 6-field expressions other than a leading `0` (mapped as the 5-field
+  expression) or `*/N * * * * *`. N must divide 60 (1, 2, 3, 4, 5, 6, 10,
+  12, 15, 20, 30), because ForgeBase's seconds grid restarts every minute
+  (`*/7` is 0, 7, …, 56, 0) and `'N seconds'` does not. These map to
+  `'N seconds'`.
+Names (`JAN`, `mon-fri`, any case) and `7` = Sunday agree and map.
+
+**`forgebase.fire_schedule(id text, due bigint DEFAULT NULL)`** (PL/pgSQL;
+the SQLite file is a comment plus `SELECT 1`). As §1.7, plus: the due time
+is the start of the minute, or of the N-second slot for `*/N * * * * *`
+(read from the stored expression, so a changed expression needs no new
+function), or `due` when the Rust start-up catch-up passes it. The job is
+inserted like `insert_job`: key `schedule:<id>:<due ms>` per tenant, the
+schedule's priority, `timeout_ms` from `<tenant>/<queue>` queue settings,
+`created_by = 'schedule:<name>'`, `waiting_for 0`, tenant and context copied,
+the `enqueued` event, `pg_notify('forgebase_jobs', <job id>)`. A test
+compares the job it inserts column by column with the one the tick inserts.
+`next_run_at` is not touched. pg_cron runs `SELECT
+forgebase.fire_schedule('<id>')` (exactly the command FB-146's census
+allows). pg_cron seconds jobs are "every N seconds" from when the worker
+saw them, not a grid; the function snaps the due time to the grid, so a
+slot is fired once (a late firing in a slot already fired is deduplicated).
+Realtime job events are not published for jobs inserted by pg_cron (the
+sink lives in the server process); the status events of later transitions
+are.
+
+**Who fires a schedule: a sentinel, not a column.** A pg_cron-owned
+schedule keeps `next_run_at = 253402300799000` (9999-12-31), so the Rust
+tick's due query never returns it, with no join to `cron.job` (which the
+reader role cannot see) and no new column (the schema-parity test stays
+untouched). Reads compute the real next firing from the expression and
+return `fired_by = "pg_cron"`; every other schedule says `"forgebase"`.
+The sentinel and the `cron.job` row change in one transaction
+(`pgcron_reconcile`): creating, updating, enabling a mappable schedule takes
+it over; disabling, deleting or an unmappable expression takes the job
+away and gives `next_run_at` back (next due time from now). A failed
+post-commit sync is logged and repeated every 60 s; until then the
+schedule stays with the tick, so it is never fired by neither.
+
+**Engine selection.** Not stateful (FB-161): `attach_pgcron(&JobService,
+&Database)` follows `db.feature_active(Feature::Cron)` at each start; there
+is no `ext.schedule.engine` pin and no convert job (the schedules are the
+state, `cron.job` is derived). Layout check before attaching:
+`forgebase.fire_schedule(text, bigint)` exists and `cron.job` has text
+columns `jobname`, `schedule`, `command`; a mismatch logs a warning and
+leaves every schedule on the tick. When the feature is not active but
+pg_cron is installed (mode `off`, preload removed), the same call removes
+ForgeBase's `fbsched_*` jobs and hands every schedule back.
+
+**Catch-up.** At attach, a schedule with a due time since max(`last_run_at`,
+`updated_at`, `created_at`) is fired once with the first missed due time (a
+schedule handed over from the tick uses its recorded `next_run_at` if it
+passed): missed firings collapse into one (ADR-0007 §6). A second start with
+nothing missed fires nothing.
+
+**Wake-up.** `Database::listen("forgebase_jobs")` opens a dedicated
+connection (sqlx `PgListener`, reader pool's options); a task wakes the
+worker pool on every notification and once after each reconnect (messages
+sent while it was away are lost, so a wake means "look").
+
+**Tests.** `tests/pgcron.rs`: `fire_schedule` equals the tick (PostgreSQL),
+keys per slot, idempotence, disabled and unknown ids, NOTIFY payload; the
+fallback without an active pg_cron (every backend); on the bundled engine:
+pg_cron fires a `*/2` seconds schedule, the pool is woken by NOTIFY, the
+`cron.job` row is exact, mappable ↔ unmappable ↔ disabled ↔ enabled ↔
+deleted moves the schedule between pg_cron and the tick, the census (only
+`fire_schedule` commands); restart catch-up fires once, a second attach
+adds nothing, a non-active attach hands everything back; the real pg_cron
+accepts every mapped text and refuses the unmapped ones.
+
+**Server wiring (not done here, outside Owns).** In
+`forgebase-server/src/lib.rs`, after `start_pool` and with the other
+schedule owners registered: `let pgcron = forgebase_jobs::attach_pgcron(&jobs,
+&db).await;` and keep `pgcron` (a `PgCronHandle`) in the server handle next
+to `job_pool`; dropping it stops the listener and the 60 s check.
+
+**For FB-169 (replicas).** pg_cron, `fire_schedule` and the sync all write:
+run `attach_pgcron` on the primary's handle only (pg_cron idles in a hot
+standby and starts on promotion; after a promotion call `attach_pgcron`
+again, it is idempotent). The `LISTEN` connection uses the reader pool's
+primary options; it must stay on the primary (NOTIFY is not replicated to
+standbys' listeners).
+
+**For FB-172 (tenant moves).** Schedules carry `tenant`; a moved tenant's
+schedules must move with its jobs, and each set's server attaches to its
+own database: after the move, `pgcron_reconcile` on the target creates the
+`fbsched_*` jobs (the reconcile runs at attach) and on the source removes
+them (the schedule row is gone). The sentinel travels with the row, so a
+move must be followed by an attach/reconcile on the target before the
+tick is relied on. `idempotency` keys are per tenant, so a due time already
+fired on the source is not re-fired as the same key on the target only if
+the job rows moved too.

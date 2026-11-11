@@ -62,6 +62,8 @@ struct Inner {
     local: Mutex<HashMap<String, Arc<watch::Sender<bool>>>>,
     /// Tenancy, kinds and channel owners (FB-142).
     access: RwLock<JobAccess>,
+    /// Schedules run on pg_cron ([`crate::attach_pgcron`], FB-165).
+    pgcron: std::sync::atomic::AtomicBool,
 }
 
 /// Who creates a job: recorded in `created_by`, `tenant` and `context`.
@@ -108,7 +110,7 @@ pub(crate) const JOB_COLS: &str = "id, queue, kind, payload, priority, status, r
     has_checkpoint, checkpoint_at, timeout_ms, deadline_at, heartbeat_at, workflow_id, step, parent_id, compensates, \
     waiting_for, result_ref, result_size, tenant, context";
 
-const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max_attempts, backoff_base_ms, \
+pub(crate) const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max_attempts, backoff_base_ms, \
     backoff_max_ms, visibility_timeout_ms, enabled, next_run_at, last_run_at, last_job_id, created_by, created_at, \
     updated_at, tenant, context";
 
@@ -169,6 +171,7 @@ impl JobService {
                 store: RwLock::new(None),
                 local: Mutex::new(HashMap::new()),
                 access: RwLock::new(JobAccess::new()),
+                pgcron: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -307,6 +310,14 @@ impl JobService {
 
     fn wake(&self) {
         self.inner.wake.notify_one();
+    }
+
+    pub(crate) fn pgcron_flag(&self) -> bool {
+        self.inner.pgcron.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_pgcron(&self, on: bool) {
+        self.inner.pgcron.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub(crate) fn wake_pool(&self) {
@@ -1178,7 +1189,9 @@ impl JobService {
             fetch_schedule_tx(&mut *tx, &id).await
         }
         .await;
-        finish(tx, r).await
+        let s = finish(tx, r).await?;
+        self.pgcron_after_write(&s.id).await;
+        self.schedule_fresh(&s).await
     }
 
     /// Changes a schedule. A new cron expression recomputes the next firing.
@@ -1243,7 +1256,9 @@ impl JobService {
             fetch_schedule_tx(&mut *tx, id).await
         }
         .await;
-        finish(tx, r).await
+        let s = finish(tx, r).await?;
+        self.pgcron_after_write(id).await;
+        self.schedule_fresh(&s).await
     }
 
     /// Deletes a schedule (jobs it already enqueued stay).
@@ -1265,7 +1280,9 @@ impl JobService {
             Ok(())
         }
         .await;
-        finish(tx, r).await
+        finish(tx, r).await?;
+        self.pgcron_after_write(id).await;
+        Ok(())
     }
 
     /// One schedule.
@@ -1573,7 +1590,26 @@ impl JobUpdate {
     }
 }
 
-fn schedule_from(r: &Row<'_>) -> Result<Schedule> {
+/// FB-165: a schedule that pg_cron fires carries [`crate::pgcron::OWNED`] in
+/// `next_run_at`; its next firing is computed from the expression.
+fn fired_by_of(r: &Row<'_>) -> &'static str {
+    if r.int("next_run_at") == crate::pgcron::OWNED {
+        "pg_cron"
+    } else {
+        "forgebase"
+    }
+}
+
+fn next_run_at_of(r: &Row<'_>) -> String {
+    let at = r.int("next_run_at");
+    if at == crate::pgcron::OWNED {
+        let next = Cron::parse(&r.text("cron")).ok().and_then(|c| c.next_after(now_ms()));
+        return iso(next.unwrap_or(at));
+    }
+    iso(at)
+}
+
+pub(crate) fn schedule_from(r: &Row<'_>) -> Result<Schedule> {
     Ok(Schedule {
         id: r.text("id"),
         name: r.text("name"),
@@ -1587,7 +1623,8 @@ fn schedule_from(r: &Row<'_>) -> Result<Schedule> {
         backoff_max_ms: r.int("backoff_max_ms"),
         visibility_timeout_ms: r.int("visibility_timeout_ms"),
         enabled: r.int("enabled") == 1,
-        next_run_at: iso(r.int("next_run_at")),
+        next_run_at: next_run_at_of(r),
+        fired_by: fired_by_of(r).to_owned(),
         last_run_at: r.opt_int("last_run_at").map(iso),
         last_job_id: r.opt_text("last_job_id"),
         created_by: r.text("created_by"),

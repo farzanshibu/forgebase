@@ -1533,6 +1533,7 @@ dependencies = [
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-pgengine",
  "forgebase-realtime",
  "http-body-util",
  "serde",

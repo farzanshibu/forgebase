@@ -116,6 +116,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/postgres/0035_job_queue_tenant.sql"),
     ),
     Migration::new(
+        38,
+        "schedule_fire",
+        include_str!("../../../migrations/postgres/0038_schedule_fire.sql"),
+    ),
+    Migration::new(
         40,
         "native_rls",
         include_str!("../../../migrations/postgres/0040_native_rls.sql"),

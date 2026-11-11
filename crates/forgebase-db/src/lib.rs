@@ -54,6 +54,7 @@ pub use pg::extensions::{
     EXTENSION_DDL, EXTENSION_SCHEMA, ExtensionDdl, ExtensionError, ExtensionReport, ExtensionSetup, Feature,
     FeatureState, FeatureStatus,
 };
+pub use pg::listen::Listener;
 pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_placeholders};
 pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
 pub use routing::{
@@ -535,6 +536,18 @@ impl Database {
         match &*self.inner {
             Inner::Sqlite(db) => db.snapshot_to(target).await,
             Inner::Postgres(_) => Err(DbError::unsupported("snapshot_to", BackendKind::Postgres)),
+        }
+    }
+
+    /// Listens on a PostgreSQL notification `channel` (`NOTIFY`) on a
+    /// connection of its own (FB-165).
+    ///
+    /// # Errors
+    /// `Unsupported` on SQLite; the connection failed.
+    pub async fn listen(&self, channel: &str) -> Result<Listener, DbError> {
+        match &*self.inner {
+            Inner::Sqlite(_) => Err(DbError::unsupported("LISTEN", BackendKind::Sqlite)),
+            Inner::Postgres(db) => db.listen(channel).await,
         }
     }
 

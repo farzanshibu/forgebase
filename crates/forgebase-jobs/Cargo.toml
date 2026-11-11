@@ -28,6 +28,8 @@ uuid.workspace = true
 # Test databases on both backends (forgebase_db::testing, ADR-0028 §7.7).
 forgebase-db = { workspace = true, features = ["testing"] }
 forgebase-core.workspace = true
+# The managed engine with pg_cron, for tests/pgcron.rs (FB-165).
+forgebase-pgengine.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
 tower.workspace = true
