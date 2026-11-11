@@ -706,6 +706,22 @@ async fn containers_created_during_a_move_are_copied_in_the_freeze() {
         texts(&shard, &format!("SELECT id FROM _forgebase_queue_messages WHERE topic = '{A}/late' ORDER BY seq")).await,
         vec![format!("{A}:late-0"), format!("{A}:late-1"), format!("{A}:late-2")]
     );
+
+    // A column the target lacks (an extension set up on one set only): a
+    // published table with REPLICA IDENTITY FULL cannot take a column list,
+    // so the move is refused before anything changes; pgvector's `vec` on
+    // `_forgebase_vector_values` (key-covered filter) moves without it while
+    // empty (the server test covers it).
+    moves::cleanup(&s.router, hooks.as_ref(), &options(), &rec.id).await.unwrap();
+    exec(&shard, "ALTER TABLE public.posts ADD COLUMN extra text").await;
+    let back = moves::begin(&s.router, hooks.as_ref(), &options(), BeginMove { tenant: A.into(), to: "control".into(), ..Default::default() })
+        .await
+        .unwrap();
+    let err = moves::run(&s.router, hooks.as_ref(), &Quiet, &options(), &back.id).await.unwrap_err();
+    assert_eq!(err.code(), "move_state", "{err}");
+    assert!(err.to_string().contains("extra"), "{err}");
+    assert_eq!(moves::get(&s.control, &back.id).await.unwrap().state, MoveState::Aborted);
+    assert_eq!(moves::routed_set(&s.router, A).await.unwrap(), set.id);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

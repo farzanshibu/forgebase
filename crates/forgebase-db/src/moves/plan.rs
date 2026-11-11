@@ -88,6 +88,11 @@ pub struct TablePlan {
     pub identity_full: bool,
     /// Staging table on the target (`Stage`).
     pub staging: Option<String>,
+    /// Source columns the target does not have (an extension set up on one
+    /// set only, e.g. pgvector's `vec`). Published with a column list; the
+    /// move refuses while the tenant has values in them.
+    #[serde(default)]
+    pub missing: Vec<String>,
 }
 
 /// The container a published child filters by.
@@ -154,9 +159,16 @@ impl MovePlan {
             .iter()
             .filter(|t| t.feed != Feed::Stage)
             .filter(|t| t.feed == Feed::Whole || t.filter.is_some())
-            .map(|t| match &t.filter {
-                Some(f) => format!("{} WHERE ({f})", t.qualified()),
-                None => t.qualified(),
+            .map(|t| {
+                let cols = if t.missing.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", t.columns.iter().map(|c| ident(c)).collect::<Vec<_>>().join(", "))
+                };
+                match &t.filter {
+                    Some(f) => format!("{}{cols} WHERE ({f})", t.qualified()),
+                    None => format!("{}{cols}", t.qualified()),
+                }
             })
             .collect();
         out.push(format!(
@@ -402,11 +414,16 @@ impl Builder<'_> {
         predicate: String,
         depth: u32,
     ) -> Result<TablePlan, DbError> {
-        let cols: Vec<Column> = pgsql::columns(self.source, schema, table)
+        let on_target: Vec<String> = pgsql::columns(self.target, schema, table)
+            .await?
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        let (cols, missing): (Vec<Column>, Vec<Column>) = pgsql::columns(self.source, schema, table)
             .await?
             .into_iter()
             .filter(|c| !c.generated)
-            .collect();
+            .partition(|c| on_target.contains(&c.name));
         let key = pgsql::primary_key(self.source, schema, table).await?;
         let renumber = match RENUMBERED.iter().find(|(t, _)| schema == SYSTEM_SCHEMA && *t == table) {
             Some((_, column)) => {
@@ -447,6 +464,7 @@ impl Builder<'_> {
             depth,
             identity_full: false,
             staging: (feed == Feed::Stage).then(|| self.staging_name()),
+            missing: missing.into_iter().map(|c| c.name).collect(),
         })
     }
 
@@ -597,6 +615,7 @@ mod tests {
             depth: 0,
             identity_full: false,
             staging: None,
+            missing: vec![],
         }
     }
 

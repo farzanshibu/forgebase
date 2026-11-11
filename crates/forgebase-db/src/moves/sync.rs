@@ -139,6 +139,20 @@ pub struct SyncStats {
     pub copied: u64,
 }
 
+/// Rows of the tenant with a value in a column the target lacks.
+pub(crate) async fn values_in_missing(db: &dyn Backend, t: &TablePlan) -> Result<i64, DbError> {
+    if t.missing.is_empty() {
+        return Ok(0);
+    }
+    let any = t
+        .missing
+        .iter()
+        .map(|c| format!("{} IS NOT NULL", ident(c)))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    count(db, &t.qualified(), &format!("({}) AND ({any})", t.predicate)).await
+}
+
 /// Number of the tenant's rows of `t` on the source.
 pub(crate) async fn count(db: &dyn Backend, table: &str, pred: &str) -> Result<i64, DbError> {
     Ok(int(&db
@@ -359,6 +373,7 @@ mod tests {
             depth: 1,
             identity_full: false,
             staging: Some("0123_7".into()),
+            missing: vec![],
         }
     }
 

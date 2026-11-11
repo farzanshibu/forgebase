@@ -111,3 +111,113 @@ async fn a_local_shard_starts_with_the_primarys_roles_and_is_retired_with_its_da
     shards.stop_all().await;
     primary.stop().await.unwrap();
 }
+
+/// A shard primary on another host (FB-174): a primary join token for a
+/// provisioning shard; the grant says `primary` and carries no slot; the
+/// agent bootstraps its own cluster with the cluster's roles.
+#[tokio::test]
+async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clusters_roles() {
+    use forgebase_db::topology::{self, NewSet, NodeKind as TopoKind, NodeRole, NodeState};
+    use forgebase_db::{Database, DbOptions, DbTarget};
+    use forgebase_pgengine::replication::service::{self, JoinRequest, JoinTokenRequest, ReplicationSource};
+    use forgebase_pgengine::replication::EngineIdentity;
+    use forgebase_pgengine::standby::SslMode;
+    use forgebase_pgengine::NodeKind;
+
+    let Some(engine) = engine_dir() else { return };
+    let tmp = tempdir();
+    let mut cfg = config(&engine);
+    cfg.socket_port = 18_436;
+    cfg.listen = Some("127.0.0.1:18436".parse().unwrap());
+    let primary = Engine::prepare(&Layout::primary(tmp.path()), &cfg).await.unwrap();
+    let control = Database::open(DbOptions {
+        target: DbTarget::postgres(forgebase_db::SecretString::new(primary.url(Role::Server).expose()), true),
+        synchronous: forgebase_core::Synchronous::Full,
+        busy_timeout: Duration::from_secs(5),
+        read_pool_size: 2,
+        create_if_missing: false,
+        read_only: false,
+    })
+    .await
+    .unwrap();
+    control.migrate(None).await.unwrap();
+    let source = ReplicationSource::from_handle(&primary, None, SslMode::Require).unwrap();
+
+    // Control and active sets take no primary token.
+    let refused = service::issue_join_token(
+        &control,
+        &JoinTokenRequest {
+            set_id: "control".into(),
+            role: NodeRole::Primary,
+        },
+        None,
+        "https://fb.example/",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), "node_unsupported");
+    let set = topology::insert_set(
+        &control,
+        &NewSet {
+            name: "far-shard".into(),
+            weight: 1,
+        },
+    )
+    .await
+    .unwrap();
+    let tok = service::issue_join_token(
+        &control,
+        &JoinTokenRequest {
+            set_id: set.id.clone(),
+            role: NodeRole::Primary,
+        },
+        Some("admin"),
+        "https://fb.example/",
+    )
+    .await
+    .unwrap();
+    let mut grant = service::redeem_join(
+        &control,
+        &source,
+        &JoinRequest {
+            token: tok.token,
+            name: "far-1".into(),
+            engine: EngineIdentity::of(primary.engine()),
+            listen: Some("10.0.0.7:5432".into()),
+        },
+        Some("10.0.0.7".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(grant.role, NodeRole::Primary);
+    assert!(grant.upstream.slot.is_empty(), "a shard primary streams from nobody");
+    let node = topology::load(&control)
+        .await
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|n| n.id == grant.node_id)
+        .unwrap();
+    assert_eq!((node.kind, node.role, node.state), (TopoKind::Remote, NodeRole::Primary, NodeState::Provisioning));
+    assert_eq!(node.set_id, set.id);
+    // The server adds the cluster's role passwords; the agent bootstraps with them.
+    grant.secrets = Some(std::fs::read_to_string(primary.layout().secrets_file()).unwrap());
+    let wire: service::JoinGrant = serde_json::from_str(&serde_json::to_string(&grant).unwrap()).unwrap();
+    assert_eq!(wire.role, NodeRole::Primary);
+    let agent_dir = tmp.path().join("agent");
+    let layout = Layout::node(&agent_dir, "far-1", NodeKind::Primary).unwrap();
+    std::fs::create_dir_all(layout.postgres_dir()).unwrap();
+    std::fs::write(layout.secrets_file(), wire.secrets.unwrap()).unwrap();
+    let mut agent_cfg = config(&engine);
+    agent_cfg.socket_port = 18_437;
+    let far = Engine::prepare(&layout, &agent_cfg).await.unwrap();
+    assert_eq!(far.url(Role::Server).expose().split('@').next(), primary.url(Role::Server).expose().split('@').next(),
+        "same server role and password");
+    let url = far.url(Role::Server).expose().to_owned();
+    assert_eq!(setting(&url, "max_prepared_transactions").await, "16");
+    let shown = service::server_url("10.0.0.7:5432", &forgebase_pgengine::Secret::new("pw".into()), SslMode::Require);
+    assert_eq!(shown.expose(), "postgres://forgebase_server:pw@10.0.0.7:5432/forgebase?sslmode=require");
+    far.stop().await.unwrap();
+    control.close().await;
+    primary.stop().await.unwrap();
+}

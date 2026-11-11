@@ -267,7 +267,7 @@ mod sharded {
                     i += 1;
                     let msg = serde_json::from_value(json!({"data": {"n": i}})).unwrap();
                     match queue.publish(&t1, "t1-orders", vec![msg]).await {
-                        Ok(p) => published.lock().unwrap().extend(p.into_iter().map(|m| m.id)),
+                        Ok(p) => published.lock().unwrap().extend(p.into_iter().map(|m| m.message_id)),
                         Err(e) => errors.lock().unwrap().push(format!("publish: {e}")),
                     }
                     tokio::time::sleep(Duration::from_millis(7)).await;
@@ -374,7 +374,8 @@ mod sharded {
         sub.task.abort();
         let distinct: BTreeSet<&String> = created.iter().collect();
         assert_eq!(distinct.len(), created.len(), "duplicated events; frames {frames:?}");
-        let want: BTreeSet<&String> = records.iter().chain(std::iter::once(&after["id"].as_str().unwrap().to_owned())).collect::<Vec<_>>().into_iter().collect();
+        let after_id = after["id"].as_str().unwrap().to_owned();
+        let want: BTreeSet<&String> = records.iter().chain(std::iter::once(&after_id)).collect();
         let missing: Vec<&&String> = want.iter().filter(|r| !distinct.contains(**r)).collect();
         assert!(missing.is_empty(), "{} events missing (frames {frames:?}): {missing:?}", missing.len());
 

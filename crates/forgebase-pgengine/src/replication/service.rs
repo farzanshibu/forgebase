@@ -1151,14 +1151,22 @@ pub async fn issue_join_token(
     server_url: &str,
 ) -> ServiceResult<IssuedJoinToken> {
     require_pg(control)?;
-    if req.role != NodeRole::Replica {
-        return Err(ServiceError::Unsupported(
-            "join tokens add replicas; shard primaries on other hosts come with FB-174".into(),
-        ));
-    }
     let topo = topology::load(control).await?;
-    if topo.set(&req.set_id).is_none() {
+    let Some(set) = topo.set(&req.set_id) else {
         return Err(ServiceError::SetNotFound(req.set_id.clone()));
+    };
+    // FB-174: the primary of a new shard on another host joins like a
+    // replica, but bootstraps its own cluster (`forgebase node join` with a
+    // primary token) instead of cloning.
+    if req.role == NodeRole::Primary
+        && (set.kind != topology::SetKind::Shard
+            || set.state != topology::SetState::Provisioning
+            || topo.primary_of(&set.id).is_some())
+    {
+        return Err(ServiceError::Unsupported(format!(
+            "a primary join token is for a new shard that is provisioning and has no primary; {} is {} ({})",
+            set.name, set.state, set.kind
+        )));
     }
     let token = random_secret(JOIN_TOKEN_PREFIX)?;
     let id = new_id('j');
@@ -1308,6 +1316,19 @@ pub struct JoinGrant {
     pub heartbeat_ms: u64,
     /// Longest long-poll wait.
     pub poll_wait_ms: u64,
+    /// `replica` (clone and follow the upstream) or `primary` (FB-174: a
+    /// shard's primary, bootstrapped on the agent's host).
+    #[serde(default = "replica_role")]
+    pub role: NodeRole,
+    /// For a primary: `roles.secret` of the cluster (every role's password,
+    /// so the new shard has the same logins as every other node). Set by
+    /// the server after [`redeem_join`]; sent once over HTTPS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<String>,
+}
+
+fn replica_role() -> NodeRole {
+    NodeRole::Replica
 }
 
 /// Redeems a join token (`POST` [`paths::JOIN`]): checks the token (one
@@ -1339,6 +1360,11 @@ pub async fn redeem_join(
     let text = |i: usize| row.get(i).and_then(Value::as_str).map(str::to_owned);
     let token_id = text(0).ok_or(ServiceError::TokenInvalid)?;
     let set_id = text(1).ok_or(ServiceError::TokenInvalid)?;
+    let role = if text(2).as_deref() == Some("primary") {
+        NodeRole::Primary
+    } else {
+        NodeRole::Replica
+    };
     let expired = text(3)
         .and_then(|s| parse_time(&s))
         .is_none_or(|t| t <= time::OffsetDateTime::now_utc());
@@ -1367,7 +1393,7 @@ pub async fn redeem_join(
             set_id: set_id.clone(),
             name: req.name.clone(),
             kind: NodeKind::Remote,
-            role: NodeRole::Replica,
+            role,
             url_sealed: None,
             state: NodeState::Provisioning,
             weight: 1,
@@ -1406,10 +1432,16 @@ pub async fn redeem_join(
     )
     .await?;
     topology::bump_epoch(tx.as_mut()).await?;
-    let slot = super::slot_name(&req.name);
-    // The slot first: a failure rolls the join back and keeps the token unused.
-    let mut admin = super::connect(&source.admin_url).await?;
-    super::ensure_slot(&mut admin, &slot).await?;
+    let slot = if role == NodeRole::Primary {
+        // A shard primary streams from nobody.
+        String::new()
+    } else {
+        let slot = super::slot_name(&req.name);
+        // The slot first: a failure rolls the join back and keeps the token unused.
+        let mut admin = super::connect(&source.admin_url).await?;
+        super::ensure_slot(&mut admin, &slot).await?;
+        slot
+    };
     commit(tx).await?;
     Ok(JoinGrant {
         node_id,
@@ -1427,7 +1459,22 @@ pub async fn redeem_join(
         engine: source.engine.clone(),
         heartbeat_ms: u64::try_from(HEARTBEAT_INTERVAL.as_millis()).unwrap_or(5_000),
         poll_wait_ms: u64::try_from(MAX_POLL_WAIT.as_millis()).unwrap_or(30_000),
+        role,
+        secrets: None,
     })
+}
+
+/// The writer URL of a remote shard primary for the server's pool (FB-174):
+/// it was bootstrapped with the cluster's roles, so the server logs in with
+/// its own password. Seal it into the node's `url_sealed`.
+pub fn server_url(listen: &str, server_password: &Secret, sslmode: SslMode) -> Secret {
+    Secret::new(format!(
+        "postgres://{}:{}@{listen}/{}?sslmode={}",
+        Role::Server.name(),
+        server_password.expose(),
+        crate::DATABASE,
+        sslmode.as_str()
+    ))
 }
 
 /// The read URL of a remote replica for the server's read pool: the

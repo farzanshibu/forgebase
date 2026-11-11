@@ -3533,3 +3533,188 @@ router and its `SetConnector` are built, so FB-168's managed replicas
 (`LocalReplicas`, `connect_replica` for local nodes, `PoolSwitch`) hook in
 there from `replicas.rs`; `NodeConnector::connect_replica` already opens
 sealed-URL replicas read-only and refuses local ones.
+
+## Addendum: FB-174, tenant moves, shard add/drain/remove, rebalance (2026-11-11)
+
+Built as §3.8–§3.9 describe, on FB-170's router and registry, FB-171/172's
+routing and FB-173's shard activation. Where the code differs from the
+text above, or decides something it left open, it is said here.
+
+**Files.** New: `crates/forgebase-db/src/moves/{mod, plan, pgsql, sync,
+switch, engine, rebalance}.rs`, `crates/forgebase-pgengine/src/shard.rs`,
+`crates/forgebase-server/src/moves.rs`, tests
+`crates/forgebase-db/tests/moves.rs`,
+`crates/forgebase-pgengine/tests/shards.rs`,
+`crates/forgebase-server/tests/moves_fb174.rs`. Shared edits are listed at
+the end.
+
+**Engine (`forgebase_db::moves`).** `begin` records a move (`preparing`);
+`run` drives `preparing → copying → catching_up → switching → cleanup` and
+resumes from the stored state after a restart; `abort`, `cleanup`, `undo`,
+`run_plan`. Every step is checkpointed in `_forgebase_db_moves.detail`
+(`MoveDetail`: the table plan, replica identities changed, indexes and
+pgmq queues created, rows per table, freeze length and its parts). Hooks
+(`MoveHooks`) reach the services; `MoveControl` carries progress and
+cancel.
+- **Checks at `begin`:** PostgreSQL (`400 postgres_required`), an open
+  target set that takes tenants (`shard_not_found`, `shard_unavailable`,
+  `shard_closed`), the tenant exists (environment or placement row),
+  `active` or in cleanup, no open move of it (`409 tenant_moving`), no
+  other move between the same two sets (`409 operation_in_progress`,
+  §3.12). A previous move still keeping its source rows is cleaned up
+  first, so the target never holds stale rows of the tenant. The target
+  must not hold rows of the tenant at prepare (`409 target_not_empty`).
+- **Table plan (`plan.rs`).** From `placement::TABLES` plus every base table
+  with a `_tenant` column (tenant-scoped collections) and the tenant's
+  pgmq queues. Each table gets a *predicate* (subqueries allowed; used to
+  verify, abort and clean up) and a *feed*:
+  - `publish`: a row filter on the table's own columns: the tenant column
+    (`tenant = '<t>'`; KV `tenant = 't:<t>'`, FB-172; collections
+    `_tenant = '<t>'`) or a constant list of **container** keys (vector
+    collections, queue topics, queue subscriptions, storage buckets).
+    Queue subscriptions and snapshots follow their topic and subscription,
+    not their `tenant` column (FB-172: a tenant's subscription to an
+    instance-wide topic stays on control).
+  - `stage` (deviation from "staging tables for order-defining tables"):
+    a row filter can only read the row, so tables whose parent is *data*
+    (job attempts, events and dependencies through the job; upload parts
+    through the upload; keyword rows through the vector item; record
+    versions through the record; snapshot items through the snapshot) are
+    copied by the engine into `fb_move.<id>_<n>` on the target (same
+    shape, primary key, no triggers) and reconciled by **bucket hashes**:
+    rows are spread over up to 4 096 buckets by an MD5 of their key; each
+    side computes per bucket the count and an MD5 over the sorted row
+    MD5s; differing buckets are deleted and copied again. A pass runs in
+    `copying`, one in `catching_up`, and the last one in the freeze makes
+    the staging table equal to the source. Rows travel as JSON
+    (`row_to_json` / `json_populate_recordset`), keyset-paged by the key.
+  - `whole`: the tenant's pgmq queue and archive tables (FB-164), published
+    without a filter; `pgmq.create` on the target first.
+  Record versions (no tenant column) are the versions of the tenant's
+  records in tenant-scoped collections, and of deleted records whose
+  earlier version's `data` names the tenant.
+- **Prepare.** Placement `moving`; schema `fb_move` with table `barrier`
+  on both sets (outside `forgebase`, so the registry's completeness test
+  never sees it); the target's missing indexes of published tables are
+  built `CONCURRENTLY` (the tenant's partial pgvector indexes, pgmq
+  indexes); `REPLICA IDENTITY FULL` on tables whose filter column is not
+  in the replica identity (restored after the switch unless another open
+  move from the same source still needs it); publication
+  `fb_move_<16 hex>` with the filters and the barrier (`move_id = '<id>'`);
+  the logical slot is created first on the source
+  (`pg_create_logical_replication_slot`, `failover` when the source set
+  has replicas and runs PostgreSQL 17+).
+- **Columns a set lacks.** A source column missing on the target (an
+  extension set up on one set only: pgvector's `vec`, FB-171's open point)
+  is published with a column list; the move is refused (`409
+  move_state`) while the tenant has values in it, at prepare and again in
+  the freeze, and for tables that also need `REPLICA IDENTITY FULL` (a
+  column list cannot leave out identity columns).
+- **Copy and catch-up** as §3.8 (`copy_data`, `origin = none`, `binary`,
+  `disable_on_error`, `create_slot = false`); progress = tables ready of
+  `pg_subscription_rel` and bytes of `pg_stat_progress_copy`; a disabled
+  subscription is `move_replication_failed` with the error counts of
+  `pg_stat_subscription_stats`. Catch-up ends when the slot's confirmed
+  position is less than 1 MiB behind (`max_lag_bytes`).
+- **Switch** (at most `move_freeze_timeout_ms`; every wait gets the time
+  left): placement `frozen`; `hooks.frozen` (KV `flush_tenant`,
+  `sync_pgcron_now`); **drain**: the router now counts handles routed to a
+  tenant (`DbRouter::in_flight`, `wait_drained`; a lease taken under the
+  state lock, so every handle routed before the freeze is counted);
+  `hooks.drain` (queue relays, control's `outbox_cursor:<set>` included);
+  barrier row on the source, awaited on the target; subscription
+  disabled; rows of **containers created during the move** (a new topic,
+  bucket, subscription: not in the constant filters) copied straight from
+  the source; the last staged pass; source digests; then **one target
+  transaction** with triggers off (`session_replication_role = replica`,
+  like the apply worker): staged rows into the real tables (job events
+  and attempts renumbered with the target's sequence in source order),
+  queue messages renumbered in `seq` order through a temporary map
+  (checked monotone), deliveries, pgmq messages' `seq`, subscription and
+  snapshot cursors remapped (a cursor keeps its place between its topic's
+  renumbered messages; with none left it is the target sequence's last
+  value), snapshot items mapped, record-source topics'
+  `source_after_seq` set to the target's outbox head, pgmq `msg_id`
+  sequences set past their rows; **verification** inside the same
+  transaction; commit; the flip (`place(t, to, cleanup)`, epoch + 1,
+  `topology.json`); waiting requests run on the target. Over the limit,
+  or any failure before the flip: rollback, placement `moving`, then the
+  abort (`move_freeze_timeout`, `move_verification_failed`, …).
+- **Verification:** per published table, row counts and a SHA-256 over the
+  sorted MD5s of the rows (columns that are renumbered or remapped left
+  out); above 100 000 rows of the tenant the same over a 1 % sample chosen
+  by row digest (the same rows on both sides). Staged tables are equal by
+  construction (bucket hashes) and their inserted counts are checked.
+- **After the flip** (deviation): `hooks.switched` (queue settings copied
+  to the target, `sync_pgcron_now`), then the subscription, slot and
+  publication are dropped and replica identities restored at once rather
+  than after the retention: a disabled subscription would keep the slot
+  and its WAL for 24 h, and undo is a move back that does not use them.
+  Only the source rows wait for the retention.
+- **Cleanup** (job `database.tenant.cleanup`, due `switched_at +
+  move_source_retention_hours`): the tenant's rows on the source deleted
+  deepest table first, in batches of 10 000, with triggers off (no outbox
+  rows, no realtime events, no cascades), pgmq queues dropped, partial
+  indexes built for the move dropped there; placement `active`; `done`.
+- **Abort** before the flip: subscription dropped, placement `active` on
+  the source (the tenant works again at once), `hooks.unfrozen`, copied
+  rows deleted on the target (only once a subscription existed), staging
+  tables, queues and indexes dropped, slot and publication dropped,
+  identities restored. A switched move cannot be aborted
+  (`move_state`); undo it.
+- **Undo** = a move back (`undo_of` in the detail); the original's
+  cleanup runs first.
+
+**Measured freeze** (bundled PostgreSQL 18 engine, three separate local
+clusters under the test suite's load, debug build): tenant with 300
+seeded posts, 300 KV keys, a job with 4 events, a topic with 567 messages
+and deliveries, a writer committing every 3 ms throughout: **540 ms**
+(drain 0, barrier 392, staged 5, source digests 99, switch transaction
+38, flip 1); the server test (records, a realtime subscriber, a queue
+publisher and consumer; writes every 5–7 ms): see the server test line
+below. The barrier wait is the apply worker's latency; the rest grows with
+the tenant's rows (digests). Plans estimate `150 ms + 4 ms per 1 000
+rows`.
+
+**Rebalance (`rebalance.rs`).** `refresh_stats` (one grouped scan per
+tenant-column table per set; KV by its `t:` scope; the server runs it
+hourly and before every plan; the stats job §3.4 did not exist),
+`ensure_control_placements` (FB-170: control rows for every environment
+before the first shard), `plan_rebalance` (§3.9: whole projects, smallest
+first, from the highest to the lowest score while the larger of the two
+new scores is below the old maximum, until the spread
+(max − min) ÷ max ≤ 10 % or `max_moves`, default 20), `plan_drain`
+(largest project first to the set whose score stays lowest),
+`drain_set` (state `draining`, plan), `check_removable` (no placements,
+no open move: `move_state` / `operation_in_progress`); plans are stored on
+control (`_forgebase_meta` `rebalance_plan:<id>`) and run within an hour;
+`run_plan` runs them one move at a time (skips tenants no longer on the
+planned source, stops at the first failure, cancel between moves).
+
+**Local shard nodes (`forgebase_pgengine::shard::LocalShards`).** `add`
+(`initdb` under `postgres/nodes/<name>`, the primary's bootstrap and role
+passwords, never on TCP, a `shard` marker holding the set id),
+`start_existing` (server start), `retire` (stop, move to
+`postgres/retired/<name>-<unix time>`), `retired`, `delete_retired`.
+
+**Remote shard primaries** (FB-168's join path, shared edits): a join token
+with `role = primary` is issued only for a shard that is `provisioning`
+and has no primary; `redeem_join` inserts a remote primary node and
+creates no slot; `JoinGrant` gains `role` and `secrets` (the cluster's
+`roles.secret`, added by the server, sent once over HTTPS);
+`forgebase node join` with such a grant writes the secrets and
+bootstraps a primary (`Layout::node(.., Primary)`) instead of cloning,
+reports `primary`, and answers only `stop`. `service::server_url` is the
+writer URL the server seals into the node.
+
+**Server (`forgebase_server::moves`).** `Moves` implements the hooks:
+`source_conninfo` (control's configured URL, a local shard's superuser
+socket, a node's sealed URL), `admin` (superuser connection for managed
+nodes: publications, slots, subscriptions and `session_replication_role`
+need it; the server's own role has none of those rights; external nodes
+use their URL's role), `prepare_target` (direct-login roles copied with the
+same SCRAM verifier, FB-153/FB-173), `frozen`, `drain`, `switched`,
+`unfrozen`. Reserved jobs `database.tenant.move`,
+`database.tenant.cleanup` (new), `database.shard.drain`,
+`database.rebalance` on queue `database`; `start_move`, `undo_move`,
+`plan`, `start_rebalance`, `start_drain`; `spawn_stats` (hourly).

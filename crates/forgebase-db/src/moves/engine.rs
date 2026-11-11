@@ -425,6 +425,7 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     pgsql::ensure_move_schema(target.database()).await?;
     let plan = plan::build(&ctx.control_set, source.database(), target.database(), &rec.tenant, &rec.id).await?;
     let mut detail = rec.detail.clone();
+    check_missing_columns(&source, &plan, target.name()).await?;
     if detail.plan.is_none() {
         let mut busy = Vec::new();
         for t in &plan.tables {
@@ -507,6 +508,30 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     }
     detail.plan = Some(plan);
     ctx.save(rec, MoveState::Copying, &detail).await?;
+    Ok(())
+}
+
+/// Refuses a move while the tenant has values in columns the target lacks
+/// (an extension set up on the source only), and a table that would need
+/// both a column list and `REPLICA IDENTITY FULL`.
+async fn check_missing_columns(source: &SetHandle, plan: &MovePlan, target: &str) -> Result<(), MoveError> {
+    for t in plan.tables.iter().filter(|t| !t.missing.is_empty()) {
+        if t.identity_full && t.feed == Feed::Publish {
+            return Err(MoveError::State(format!(
+                "{} on {target} lacks columns {:?}; set up the same extensions on every set first",
+                t.name(),
+                t.missing
+            )));
+        }
+        let n = sync::values_in_missing(source, t).await?;
+        if n > 0 {
+            return Err(MoveError::State(format!(
+                "{n} rows of {} hold values in {:?}, which {target} lacks; set up the same extensions on every set first",
+                t.name(),
+                t.missing
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -807,6 +832,7 @@ async fn frozen_switch(
         .await?;
     }
     f.lap("staged")?;
+    check_missing_columns(source, plan, target.name()).await?;
     // Source digests (the tenant is quiet).
     let mut expected = Vec::new();
     for t in plan.tables.iter().filter(|t| t.feed != Feed::Stage) {
