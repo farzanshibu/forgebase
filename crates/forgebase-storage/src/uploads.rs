@@ -319,7 +319,7 @@ impl StorageService {
         tx.execute(&st(
             "UPDATE _forgebase_storage_uploads SET \
              received_bytes = (SELECT COALESCE(SUM(size), 0) FROM _forgebase_storage_parts WHERE upload_id = ?1), \
-             next_part = MAX(next_part, ?2 + 1) WHERE id = ?1",
+             next_part = CASE WHEN next_part > ?2 + 1 THEN next_part ELSE ?2 + 1 END WHERE id = ?1",
             vec![row.id.as_str().into(), i64::from(part_number).into()],
         ))
         .await?;

@@ -7,9 +7,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::{self, Next};
-use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, Action, Authorizer, DataService, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::Database;
+use forgebase_db::testing::{TestDb, test_backend};
 use forgebase_graph::GraphService;
 use serde_json::{Value as Json, json};
 use tower::ServiceExt;
@@ -18,25 +18,19 @@ pub struct Env {
     pub db: Database,
     pub data: DataService,
     pub graph: GraphService,
-    _tmp: tempfile::TempDir,
+    _test: TestDb,
 }
 
 pub async fn env_with(authorizer: Arc<dyn Authorizer>) -> Env {
-    let tmp = tempfile::tempdir().unwrap();
-    let layout = DataLayout::new(tmp.path().join("data"));
-    layout.ensure().unwrap();
-    let cfg = forgebase_core::Config::defaults(tmp.path());
-    let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-        .await
-        .unwrap();
-    db.migrate(Some(&layout.backups_dir())).await.unwrap();
+    let test = test_backend().await;
+    let db = test.database().clone();
     let data = DataService::new(Arc::new(db.clone()), authorizer).await.unwrap();
     let graph = GraphService::new(data.clone());
     Env {
         db,
         data,
         graph,
-        _tmp: tmp,
+        _test: test,
     }
 }
 
