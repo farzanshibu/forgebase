@@ -3043,6 +3043,286 @@ superuser password, and exits 0 on `stop {remove}`.
 - **FB-130:** ship `pg_rewind` (and keep `pg_ctl`, `pg_controldata`) in
   the engine archive.
 
+## Addendum: FB-172, shard routing in jobs, queues, KV, vector and storage (2026-11-11)
+
+The §3.5 rows for jobs, schedules, queues, KV, vector and storage, as code,
+on FB-170's router. Without a router, or with a router over one set, every
+service behaves exactly as before (all existing suites, unchanged, on SQLite
+and PostgreSQL; plus a one-set-router test per crate). Where the code
+differs from the text above, or decides something it left open, it is said
+here.
+
+**Files.** New: `crates/forgebase-jobs/src/sets.rs`,
+`crates/forgebase-queue/src/sets.rs`, and `tests/shards.rs` in each of the
+five crates. Changed: `forgebase-jobs` `service.rs`, `pool.rs`, `pgcron.rs`,
+`flow.rs`, `queues.rs`, `error.rs`, `lib.rs`; `forgebase-queue`
+`service.rs`, `consume.rs`, `ops.rs`, `push.rs`, `pgmq/engine.rs`,
+`error.rs`, `lib.rs`; `forgebase-kv` `service.rs`, `store.rs`;
+`forgebase-vector` `service.rs`, `pg.rs`, `store.rs`, `model.rs`,
+`jobs.rs`, `error.rs`, `lib.rs`; `forgebase-storage` `service.rs`,
+`objects.rs`, `uploads.rs`, `signed.rs`, `reconcile.rs`, `http.rs`,
+`error.rs`, `lib.rs`. No migration; nothing outside the five crates.
+
+**One pattern (jobs, queue, vector, storage).** A service takes the router
+with `attach_router(router)` (constructors are unchanged, so every caller in
+other crates compiles as before). A clone made by `on_set(SetHandle)` is a
+*view* bound to one set: its `backend()` is that `SetHandle` (so FB-169's
+`ReadVia` / `read_replica` call sites route over that set's replicas). Each
+public method resolves its view first and runs its old body (`*_here`) on
+it. Errors gain a `Router(RouterError)` variant whose code and status are
+the router's: `tenant_moving` 409, `shard_unavailable` / `shard_migrating`
+503. `SetHandle` is passed where `&dyn Backend` was; nothing else in a body
+changed.
+
+**Moving tenants (§3.5 "Background loops", §3.8).**
+`forgebase_jobs::excluded_tenants(router, set_id)` is the exclusion list
+every background loop and claim on a set uses, and
+`forgebase_jobs::tenant_guard(col, list, params, taken)` appends
+` AND (col IS NULL OR col NOT IN (…))` (nothing when the list is empty, so
+unsharded SQL is unchanged). Decision the ADR left open: on set S a tenant
+is skipped when its placement is `frozen` (everywhere), or `moving` /
+`cleanup` and the placement names another set than S. So the source keeps
+serving a moving tenant until the switch freezes it (§3.8 4.1 "background
+loops skip it" at the freeze), the target never touches its partial copy,
+and the old source leaves its stale copy alone until cleanup. Loads at
+start-up take a tenant's rows only from the set its placement names (else
+control).
+
+**Jobs.**
+- Jobs, schedules, workflows and a tenant's queue settings live on the
+  tenant's set; instance-wide ones and the worker registry
+  (`_forgebase_job_workers`, class `control`) on control.
+- Calls about a tenant (`enqueue`, `list`, `create_schedule`, `schedules`,
+  `create_workflow`, `workflows`, `queues`, `queue`) go to the caller's
+  tenant's set (`for_tenant`: a frozen tenant waits, then 409). A
+  privileged caller without a tenant lists control (instance-wide jobs);
+  `stats` without a tenant adds up every set (dashboard statistics, §3.6).
+- Calls about one job, schedule or workflow (`get`, `events`, `attempts`,
+  `result`, `checkpoint`, `cancel`, `retry`, `delete`, `heartbeat`,
+  `progress`, `save_checkpoint`, `spawn_children`, `complete`, `fail`,
+  `release`, `schedule`, `update_schedule`, `delete_schedule`, `workflow`,
+  `cancel_workflow`) find the row's **tenant** by primary key (the view's
+  set, the caller's tenant's set, then every set; a set that cannot be read
+  is skipped), remember it (at most 100 000 ids; enqueue and claim fill it),
+  and then go to that tenant's set through `for_tenant`. Remembering the
+  tenant, not the set, keeps a lookup right after a move.
+- Claims: a view claims on its set. An unbound claim by a privileged worker
+  goes **round-robin**: each call starts one set further and moves on until
+  `max` is reached. A non-privileged worker (limited to its tenant, FB-142)
+  claims on its tenant's set only (none: control). Workers seen by a claim or
+  heartbeat on a shard are recorded on control after the commit (best
+  effort; the claim is already committed).
+- The pool (`start_pool`) with a router runs **one claim loop per set**
+  (`supervise`), each on a view, sharing the `concurrency` budget, started
+  and stopped as `router.subscribe()` reports sets coming and going; each
+  loop fires that set's due schedules, reaps its expired leases and purges
+  its finished jobs. Wake-ups are per set (one `Notify` per set id).
+- Maintenance called on the unbound service (`fire_due_schedules`,
+  `reap_expired`, `purge_finished`) runs per set. The claim SQL, the
+  claimability probe, `reap_tx`, `fire_tx` and the purge carry the
+  exclusion guard.
+- Queue settings (`_forgebase_job_queues`, per set): read and written on the
+  tenant's set (its claims check them there) and every change mirrored to
+  control, which so holds every tenant's settings.
+  `copy_queue_settings(tenant)` copies them from control to the tenant's
+  current set (for FB-174 after a switch; the rate window restarts).
+- pg_cron (FB-165): `attach_pgcron_sets(&jobs, &control_db)` runs
+  `attach_pgcron` on every set's primary with a view of that set: each set's
+  schedules are in its own `cron.job`, `forgebase.fire_schedule` inserts on
+  that set, and its `NOTIFY` wakes that set's loop. One set (or no router):
+  it is `attach_pgcron`. The reconcile leaves excluded tenants' rows alone
+  and unschedules their `cron.job` entries; `sync_pgcron_now()` runs the
+  reconcile on every set at once (FB-174 calls it at the freeze and after
+  the switch; the ownership mark travels with the rows, so the target takes
+  the schedules over at its reconcile).
+
+**Queues.**
+- A topic lives on its tenant's set, an instance-wide topic on control. A
+  subscription lives **with its topic** (its deliveries reference the
+  topic's message log), so a tenant's subscription to an instance-wide topic
+  is on control (stored `<tenant>/<name>` there); snapshots and dead letters
+  live with their subscription. Names resolve as on one set: for a caller
+  in tenant t, the tenant's set is asked for `t/<name>`, else control
+  (`at_topic`, `at_sub`, `at_snapshot`; streams resolve the stored name).
+- Listings of a tenant caller (`topics`, `subscriptions`, `snapshots`) read
+  its set and control, then apply the existing shadowing.
+- `run_maintenance`, `deliver_push`, `meter_pending`, `relay_outbox`,
+  `backlog` and `convert` run per set (the background task: one round per
+  set, a failing set does not hold up the others). Maintenance (leases,
+  materialisation, retention), push and metering skip excluded tenants.
+  The delivery engine (FB-164) is resolved per set (each database pins its
+  own `ext.queue.engine`).
+- Record relay: each set relays its own outbox to its topics with its own
+  cursor (as before; tenant source topics are on their tenant's set). On
+  control, instance-wide source topics also relay **every other set's**
+  outbox, with one cursor per set on control (`_forgebase_queue_state` key
+  `outbox_cursor:<set id>`) written in the transaction of the inserts; the
+  dedup id is `outbox:<set number>:<seq>` (control's own stays
+  `outbox:<seq>`). A set's cursor starts at its outbox head the first time.
+- Limits: a subscription's dead-letter topic must live on the
+  subscription's set (a tenant subscription on its own topic cannot
+  dead-letter to an instance-wide topic on a sharded cluster:
+  `topic_not_found`); the check that a tenant name does not shadow an
+  instance-wide subscription is made on the tenant's set only.
+  `publish_in_tx` publishes in the caller's transaction, so on the
+  caller's set.
+
+**KV.** `KvService::open_routed(cfg, authorizer, router)` (and
+`open_routed_with_clock`): memory as today; start-up loads every set
+(oldest write first across sets), a tenant's keys only from its owner set;
+the flusher groups dirty keys by `try_for_tenant` and writes one
+transaction per set; keys of a frozen tenant, or of a set that cannot be
+reached, stay dirty for the next round (a failed set's group too).
+`flush_tenant(tenant)` writes one tenant's dirty keys on the set its
+placement names even while frozen (§3.8 4.1 "KV flushes the tenant's dirty
+keys"). `open` is unchanged.
+
+**Vector (pgvector and portable).**
+- A collection and its fields, items, values and keyword rows live on the
+  tenant's set (the shared `''` scope and unplaced tenants on control).
+  Calls resolve the set with `for_tenant`; FB-169's `ReadVia` reads run on
+  the routed `SetHandle`.
+- The engine is per set: each set keeps its own storage engine and lock,
+  from its own `ext.vector.engine` pin (FB-162), so control can run
+  pgvector while a shard is portable (tested).
+- `VectorService::open_routed(data, router, indexes_dir, config)` runs the
+  start-up (reconcile, collection load, index repair, warm-up) per set with
+  owners and exclusions applied from the start; `open` then
+  `attach_router` (async, a second call answers 400 `router_attached`)
+  also works but control's start-up has then already seen every row, so the
+  server should use `open_routed`. A set's collections load only from the
+  owner set; orphan `fbv_` indexes are judged against every collection row
+  of the set, so a move target's early-built indexes stay. The portable
+  in-process index files are keyed by collection id (unique across sets),
+  so all sets share `indexes_dir`.
+- Schema changes (create collection, add or delete field, delete
+  collection) of a tenant whose placement is `moving` or `frozen` answer
+  409 `tenant_moving` (§3.8 step 1); reads and upserts keep running on the
+  source.
+- Following a move: after the router publishes a placement change, a
+  tenant's next call sees its collections on the old set, saves the old
+  in-process index, loads the tenant from the new set, moves copied vectors
+  into that set's engine column and builds missing pgvector indexes.
+- `vector.convert` (and `convert`) converts every set; `convert_set(ctx,
+  set, to)` one. A set still serving a frozen tenant with collections is
+  refused with 409 (the job retries), so an aborted switch cannot leave the
+  tenant in the other column. `ConvertReport.sets` lists the sets when
+  sharded (left out of JSON otherwise); the job payload accepts `"set"`.
+  `storage_engines()` reports the engine per set.
+
+**Storage.**
+- A tenant bucket (stored `<tenant>/<name>`) and its objects, ACL entries,
+  uploads and parts live on the tenant's set; instance-wide buckets on
+  control; `_forgebase_storage_settings` and the sealed signing key always
+  on control. A name resolves as on one set (the tenant's bucket on its
+  set, else the instance-wide one on control); creating a tenant bucket on a
+  shard also checks control for the instance-wide name (not in one
+  transaction: two simultaneous creates could both pass). Listings read the
+  tenant's set and control. Upload sessions by id: the caller's set, then
+  control, then (privileged) every set, counting only an owner set's row.
+- Signed URLs carry the tenant (`t`), so the holder, who has no tenant
+  context, reaches the bucket's set; URLs of the old format only named
+  instance-wide buckets.
+- `stats`: tenant scope its set, instance scope control, the privileged
+  engine scope the sum over sets (each counting the tenants it owns; a blob
+  file shared by two sets counted once).
+- Reconcile (`storage.reconcile`, one instance-wide job): per set, expired
+  sessions are dropped, skipping excluded tenants (sessions have no tenant
+  column: the guard is on their bucket; a session whose bucket row has not
+  arrived in a copy is skipped). The blob files are shared by every set, so
+  a staged file is kept while any set's part names it, and a blob file is
+  deleted only when every set's count is zero past the grace period and no
+  object of an excluded tenant on any set names it. Every set is read before
+  anything is deleted: a set that cannot be read fails the run.
+
+**Tests.** Every crate's full suite on `FORGEBASE_TEST_BACKEND=sqlite`
+and `=postgres` (the r1 engine: pgvector, pgmq, pg_cron), plus one
+`tests/shards.rs` per crate. Multi-set tests use FB-173's
+`shard_testing::Sharded` (control plus one shard activated with
+`activate_shard`) and a router with a 200–300 ms freeze timeout; they skip
+without an engine.
+- Jobs: one-set router (enqueue, claim, complete, stats, workers,
+  schedules, the pool); on two sets: rows on the tenant's set only, lookup
+  by id from a fresh service and any caller, per-set lists, stats summed,
+  round-robin claims reaching the shard, tenant-bound workers on their set,
+  workers on control only, queue settings on the set and mirrored
+  (pause blocks claims), schedules stored and fired on the set, a moving
+  tenant's copy neither claimed nor fired, a frozen tenant answering 409,
+  the pool running jobs of both sets, workflows by id,
+  `copy_queue_settings`. pg_cron per set on two managed engines with
+  pg_cron: a tenant's 2-second schedule in the shard's `cron.job` only,
+  fired there; after the tenant moves away, `sync_pgcron_now` removes it.
+- Queue: one-set router; on two sets: topics, subscriptions (with their
+  topic), messages and snapshots on the right set, name resolution,
+  merged listings, backlog and metrics, a moving tenant's lease not reaped
+  until it is back, a frozen tenant answering 409, the instance-wide source
+  topic relaying a shard's outbox with the cursor on control (once).
+- KV: one-set router (`open_routed`, `flush_tenant`); on two sets: rows on
+  the tenant's set (`t:<env>`), instance-wide on control, deletes routed,
+  a restart loading every set and ignoring a stale copy on a non-owner set,
+  a frozen tenant's keys held back and written by `flush_tenant`, writes
+  after the switch on the new set.
+- Vector: one-set router and `open_routed`; on two sets: rows on the
+  tenant's set, shard ids from 2⁴⁰, isolated search, get and hybrid,
+  pgvector on control and portable on the shard, 409 for schema changes of
+  a moving tenant, warm-up from files after a restart, a frozen tenant's
+  409 and refused conversion, a simulated move followed by the service, and
+  start-up and conversion skipping partial and stale copies.
+- Storage: one-set router (buckets, objects, signed URLs, multipart, stats,
+  reconcile); on two sets: rows on the tenant's set, isolated listings and
+  reads, signed GET and PUT for a shard bucket without a tenant context,
+  stats counting shared blobs once, a blob shared by two sets kept until
+  both delete it, a moving tenant's copy skipped by the reconciler, a frozen
+  tenant answering 409 (signed URLs too).
+- Server `--test jobs` and `--test security_bypass` on both backends (no
+  server change).
+
+**Server wiring (not done here; FB-171 / god).** In
+`crates/forgebase-server/src/lib.rs`, once `DbRouter::open` has built
+`router`:
+- KV (line 353 at this merge): `KvService::open_routed(kv_cfg, authorizer,
+  router.clone())` instead of `KvService::open(kv_cfg, authorizer,
+  Some(Arc::new(db.clone())))`.
+- Jobs (line 446): `jobs.attach_router(router.clone())` right after
+  `JobService::new`, before `start_pool` (the pool then runs a loop per
+  set) and before anything enqueues.
+- pg_cron (line 674): `forgebase_jobs::attach_pgcron_sets(&jobs,
+  &db)` instead of `attach_pgcron(&jobs, &db)`.
+- Vector (line 529): `VectorService::open_routed(state.data().clone(),
+  router.clone(), layout.indexes_dir(), VectorConfig::default())` instead of
+  `VectorService::open(..)`.
+- Queue (`open_queue`, line 855): `queue.attach_router(router.clone())`
+  after `QueueService::new` (the function needs the router as an
+  argument).
+- Storage (line 1458): `svc.attach_router(router.clone())` after
+  `StorageService::open`.
+Without these lines the services run on control only, as today.
+
+**Breaking.** `JobService`, `QueueService` (and `VectorService`, `StorageService` internals; `VectorError` and
+`StorageError` gain `Router`; `ConvertReport` gains `sets`, skipped when
+empty)
+have a new field (a struct literal of them never existed outside the
+crates); `JobError` and `QueueError` gain `Router` (exhaustive matches
+outside the crates: none). `QueueBacklog` derives `Default`. No HTTP or
+OpenAPI change: errors `tenant_moving` (409), `shard_unavailable` and
+`shard_migrating` (503) may now come from the job, queue, vector and storage
+routes on a sharded cluster.
+
+**For FB-174 (moves).** KV stores a tenant's scope as `t:<env>` (and
+instance-wide keys as `default` / `shared:<realm>`): the move's row filter
+on `_forgebase_kv_entries` must be `tenant = 't:<env>'`, not the bare id
+the registry's `Column("tenant")` suggests. Storage reference counts
+(`_forgebase_storage_blobs`, `rebuild`) are not recounted by this package:
+after a switch the target has none for the moved objects and the source
+still counts its stale ones until cleanup (the reconciler keeps files, so
+this only leaks space until a recount). At the freeze: `kv.flush_tenant(t)`,
+`jobs.sync_pgcron_now()`. After the switch: `jobs.copy_queue_settings(t)`,
+`jobs.sync_pgcron_now()`. A tenant's subscriptions to instance-wide topics
+stay on control (do not move them with the tenant: the registry classifies
+subscriptions by `tenant`, but these follow their topic). The queue relay
+cursor `outbox_cursor:<source set id>` on control must be drained up to the
+barrier like the source's own relay.
+
 ## Addendum: FB-171, shard routing in the data core, realtime, functions and the server (2026-11-11)
 
 Built as §3.5 and §3.6 describe, on FB-170's router, FB-169's replica

@@ -49,7 +49,7 @@ pub fn open_node_url(keyring: &Keyring, node_id: &str, sealed: &str) -> Result<S
         .step_by(2)
         .map(|i| text.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
         .collect::<Option<Vec<u8>>>()
-        .filter(|_| text.len() % 2 == 0)
+        .filter(|_| text.len().is_multiple_of(2))
         .ok_or_else(|| format!("sealed URL of node {node_id} is not hex"))?;
     let plain = keyring
         .open(&bytes, &node_url_aad(node_id))

@@ -3,7 +3,7 @@
 use forgebase_core::{ErrorCode, ErrorKind};
 use forgebase_data::DataError;
 use forgebase_data::query::QueryError;
-use forgebase_db::DbError;
+use forgebase_db::{DbError, RouterError};
 
 /// Errors of the vector service.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +57,12 @@ pub enum VectorError {
     /// Storage failure.
     #[error(transparent)]
     Db(#[from] DbError),
+    /// The tenant's database set cannot take the call (FB-172, ADR-0029
+    /// §3.5, §3.8): `409 tenant_moving` (a move's freeze outlasted the
+    /// timeout, or a schema change for a tenant being moved), `503
+    /// shard_unavailable` / `shard_migrating`.
+    #[error(transparent)]
+    Router(#[from] RouterError),
     /// The ANN engine failed.
     #[error("vector index error: {0}")]
     Index(String),
@@ -110,6 +116,7 @@ impl ErrorCode for VectorError {
             VectorError::Filter(e) => e.code(),
             VectorError::IndexNotReady(..) => "vector_index_not_ready",
             VectorError::Db(e) => e.code(),
+            VectorError::Router(e) => e.code(),
             VectorError::Index(_) => "vector_index_error",
             VectorError::Io(_) => "vector_index_io_error",
             VectorError::Internal(_) => "internal_error",
@@ -128,6 +135,7 @@ impl ErrorCode for VectorError {
             VectorError::Filter(e) => e.kind(),
             VectorError::IndexNotReady(..) => ErrorKind::Unavailable,
             VectorError::Db(e) => e.kind(),
+            VectorError::Router(e) => e.kind(),
             VectorError::Index(_) | VectorError::Io(_) | VectorError::Internal(_) => ErrorKind::Internal,
         }
     }

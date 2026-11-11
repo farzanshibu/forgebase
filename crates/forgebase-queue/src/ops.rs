@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use forgebase_data::{AccessContext, Action, ChangeOp, ResourceKind, ResourceOp};
-use forgebase_db::{DbError, ReadIntent, Rows, Statement};
+use forgebase_db::{Backend, DbError, ReadIntent, Rows, Statement, Value};
 use forgebase_entitlements::{EntitlementError, UsageRequest};
 use serde_json::{Value as Json, json};
 use tokio::sync::watch;
@@ -27,7 +27,7 @@ const RELAY_PAGE: i64 = 200;
 const RELAY_CURSOR: &str = "outbox_cursor";
 
 /// Server-wide queue backlog ([`QueueService::backlog`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct QueueBacklog {
     /// Deliveries ready now.
     pub ready: i64,
@@ -79,7 +79,21 @@ impl QueueService {
     /// Server-wide backlog for `/metrics`: deliveries by state and messages
     /// retained. Two cheap aggregate queries, no per-topic or per-subscription
     /// labels. No authorisation: counts only, for the process itself.
+    ///
+    /// Sharded (FB-172): the sum over every set.
     pub async fn backlog(&self) -> Result<QueueBacklog> {
+        let mut total = QueueBacklog::default();
+        for view in self.views() {
+            let b = view.backlog_here().await?;
+            total.ready += b.ready;
+            total.delayed += b.delayed;
+            total.in_flight += b.in_flight;
+            total.messages += b.messages;
+        }
+        Ok(total)
+    }
+
+    async fn backlog_here(&self) -> Result<QueueBacklog> {
         let now = self.now();
         let rows = self
             .read_replica(
@@ -114,6 +128,14 @@ impl QueueService {
 
     /// Metrics of a topic.
     pub async fn topic_metrics(&self, ctx: &AccessContext, topic: &str) -> Result<TopicMetrics> {
+        self.at_topic(ctx.tenant.as_deref(), topic)
+            .await?
+            .topic_metrics_here(ctx, topic)
+            .await
+    }
+
+    /// [`Self::topic_metrics`] on this view's set.
+    pub(crate) async fn topic_metrics_here(&self, ctx: &AccessContext, topic: &str) -> Result<TopicMetrics> {
         self.check(
             ctx,
             Action::QueueRead,
@@ -158,6 +180,18 @@ impl QueueService {
     /// into the backlog without the filter (the background task reads them
     /// every poll interval, applying it).
     pub async fn subscription_metrics(&self, ctx: &AccessContext, sub: &str) -> Result<SubscriptionMetrics> {
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .subscription_metrics_here(ctx, sub)
+            .await
+    }
+
+    /// [`Self::subscription_metrics`] on this view's set.
+    pub(crate) async fn subscription_metrics_here(
+        &self,
+        ctx: &AccessContext,
+        sub: &str,
+    ) -> Result<SubscriptionMetrics> {
         let s = self
             .sub_for(
                 &mut Db::Ro(self.backend()),
@@ -235,6 +269,20 @@ impl QueueService {
         before: Option<i64>,
         limit: i64,
     ) -> Result<DeadLetterPage> {
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .dead_letters_here(ctx, sub, before, limit)
+            .await
+    }
+
+    /// [`Self::dead_letters`] on this view's set.
+    pub(crate) async fn dead_letters_here(
+        &self,
+        ctx: &AccessContext,
+        sub: &str,
+        before: Option<i64>,
+        limit: i64,
+    ) -> Result<DeadLetterPage> {
         let s = self
             .sub_for(
                 &mut Db::Ro(self.backend()),
@@ -287,9 +335,24 @@ impl QueueService {
     /// rate buckets, old dead letters and expired snapshots, relays record
     /// changes from the realtime outbox and meters transactional publishes.
     /// The background task runs it every poll interval; tests call it directly.
+    ///
+    /// Sharded (FB-172): one round per set; each skips the tenants moving
+    /// in or out of it.
     pub async fn run_maintenance(&self) -> Result<MaintenanceReport> {
+        let mut total = MaintenanceReport::default();
+        for view in self.views() {
+            let r = view.run_maintenance_here().await?;
+            total.expired += r.expired;
+            total.pruned += r.pruned;
+            total.relayed += r.relayed;
+            total.metered += r.metered;
+        }
+        Ok(total)
+    }
+
+    async fn run_maintenance_here(&self) -> Result<MaintenanceReport> {
         let mut report = MaintenanceReport {
-            relayed: self.relay_outbox().await?,
+            relayed: self.relay_outbox_here().await?,
             ..MaintenanceReport::default()
         };
         let now = self.now();
@@ -315,29 +378,37 @@ impl QueueService {
             }
         }
         report.pruned = self.enforce_retention(now).await?;
-        report.metered = self.meter_pending().await?;
+        report.metered = self.meter_pending_here().await?;
         if report.expired > 0 || report.relayed > 0 {
             self.notify();
         }
         Ok(report)
     }
 
+    /// Subscriptions of this set, without those of tenants moving in or out.
     async fn all_subs(&self) -> Result<Vec<SubRow>> {
+        let mut params: Vec<Value> = Vec::new();
+        let guard = forgebase_jobs::tenant_guard("tenant", &self.excluded(), &mut params, 0);
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(format!(
-                "SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions ORDER BY name"
-            )))
+            .fetch_all(&Statement::new(
+                format!("SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions WHERE 1 = 1{guard} ORDER BY name"),
+                params,
+            ))
             .await?;
         Row::all(&rows).map(|r| SubRow::from_row(&r)).collect()
     }
 
+    /// Topics of this set, without those of tenants moving in or out.
     async fn all_topics(&self) -> Result<Vec<TopicRow>> {
+        let mut params: Vec<Value> = Vec::new();
+        let guard = forgebase_jobs::tenant_guard("tenant", &self.excluded(), &mut params, 0);
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(format!(
-                "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics ORDER BY name"
-            )))
+            .fetch_all(&Statement::new(
+                format!("SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE 1 = 1{guard} ORDER BY name"),
+                params,
+            ))
             .await?;
         Row::all(&rows).map(|r| TopicRow::from_row(&r)).collect()
     }
@@ -418,11 +489,43 @@ impl QueueService {
 
     /// Records the usage of messages published inside a caller's transaction
     /// (`metered = 0`), once each. Returns the number of messages handled.
+    ///
+    /// Sharded (FB-172): on every set, skipping the messages of tenants
+    /// moving in or out (a target's copy must not be metered twice).
     pub async fn meter_pending(&self) -> Result<usize> {
+        let mut n = 0;
+        for view in self.views() {
+            n += view.meter_pending_here().await?;
+        }
+        Ok(n)
+    }
+
+    async fn meter_pending_here(&self) -> Result<usize> {
+        let mut params: Vec<Value> = Vec::new();
+        let excluded = self.excluded();
+        let guard = if excluded.is_empty() {
+            String::new()
+        } else {
+            let marks: Vec<String> = excluded
+                .iter()
+                .map(|t| {
+                    params.push(t.as_str().into());
+                    format!("?{}", params.len())
+                })
+                .collect();
+            format!(
+                " AND topic NOT IN (SELECT name FROM _forgebase_queue_topics WHERE tenant IN ({}))",
+                marks.join(", ")
+            )
+        };
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(
-                "SELECT seq, id, subject, bytes FROM _forgebase_queue_messages WHERE metered = 0 ORDER BY seq LIMIT 200",
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT seq, id, subject, bytes FROM _forgebase_queue_messages WHERE metered = 0{guard} \
+                     ORDER BY seq LIMIT 200"
+                ),
+                params,
             ))
             .await?;
         let ent = self.inner.ent.get();
@@ -468,17 +571,59 @@ impl QueueService {
     /// the topics whose `source` names their collection. The relay cursor
     /// advances in the same transaction as the inserts, so each change is
     /// published once. Returns the number of messages published.
+    ///
+    /// Sharded (FB-172): every set relays its own outbox to its topics; on
+    /// control, instance-wide record-source topics also relay the outbox of
+    /// every other set, with one cursor per set kept on control
+    /// (`outbox_cursor:<set id>`) and advanced in the transaction of the
+    /// inserts; such messages have the dedup id `outbox:<set number>:<seq>`.
     pub async fn relay_outbox(&self) -> Result<usize> {
+        let mut n = 0;
+        for view in self.views() {
+            n += view.relay_outbox_here().await?;
+        }
+        Ok(n)
+    }
+
+    async fn relay_outbox_here(&self) -> Result<usize> {
+        let mut n = self.relay_from(self.backend(), RELAY_CURSOR, None).await?;
+        if let Some(router) = self.sharded()
+            && self.on_control()
+        {
+            for set in router.sets().into_iter().filter(|s| !s.is_control()) {
+                let key = format!("{RELAY_CURSOR}:{}", set.id());
+                match self.relay_from(&set, &key, Some(set.number())).await {
+                    Ok(k) => n += k,
+                    Err(e) => tracing::warn!(set = %set.id(), error = %e, "record changes of a set not relayed"),
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// Relays the outbox of `source` (this set's own when `origin` is
+    /// `None`, else the set with that number, into this set's instance-wide
+    /// topics only), with the cursor `key` of this set.
+    async fn relay_from(&self, source: &dyn Backend, key: &str, origin: Option<u16>) -> Result<usize> {
         let backend = self.backend();
         let cursor = {
             let rows = backend
                 .fetch_all(&Statement::new(
                     "SELECT value FROM _forgebase_queue_state WHERE key = ?1",
-                    vec![RELAY_CURSOR.into()],
+                    vec![key.into()],
                 ))
                 .await?;
             match Row::all(&rows).next() {
                 Some(r) => r.int("value"),
+                None if origin.is_some() => {
+                    // Another set: from its head now.
+                    let start = forgebase_realtime::outbox::bounds(source)
+                        .await
+                        .map_err(|e| QueueError::Internal(e.to_string()))?
+                        .1;
+                    self.set_relay_cursor(key, start).await?;
+                    start
+                }
                 None => {
                     // First run: from the oldest source topic's start, else the head.
                     let start = scalar(
@@ -497,7 +642,7 @@ impl QueueService {
                             .map_err(|e| QueueError::Internal(e.to_string()))?
                             .1
                     };
-                    self.set_relay_cursor(start).await?;
+                    self.set_relay_cursor(key, start).await?;
                     start
                 }
             }
@@ -506,16 +651,16 @@ impl QueueService {
             .all_topics()
             .await?
             .into_iter()
-            .filter(|t| t.source.is_some())
+            .filter(|t| t.source.is_some() && (origin.is_none() || t.tenant.is_none()))
             .collect();
-        let events = forgebase_realtime::outbox::read_after(backend, cursor, RELAY_PAGE)
+        let events = forgebase_realtime::outbox::read_after(source, cursor, RELAY_PAGE)
             .await
             .map_err(|e| QueueError::Internal(e.to_string()))?;
         let Some(last) = events.last().map(|e| e.seq) else {
             return Ok(0);
         };
         if topics.is_empty() {
-            self.set_relay_cursor(last).await?;
+            self.set_relay_cursor(key, last).await?;
             return Ok(0);
         }
         let now = self.now();
@@ -558,7 +703,10 @@ impl QueueService {
                         .into_iter()
                         .collect(),
                         ordering_key: Some(ev.record_id.clone()),
-                        dedup_id: Some(format!("outbox:{}", ev.seq)),
+                        dedup_id: Some(match origin {
+                            None => format!("outbox:{}", ev.seq),
+                            Some(k) => format!("outbox:{k}:{}", ev.seq),
+                        }),
                     };
                     let prepared = prepare(t, &m, true).and_then(|mut p| {
                         let row = source_row(ev);
@@ -588,7 +736,7 @@ impl QueueService {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_state (key, value) VALUES (?1, ?2) \
                  ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                vec![RELAY_CURSOR.into(), last.into()],
+                vec![key.into(), last.into()],
             ))
             .await?;
             Ok(n)
@@ -601,13 +749,13 @@ impl QueueService {
         Ok(n)
     }
 
-    async fn set_relay_cursor(&self, value: i64) -> Result<()> {
+    async fn set_relay_cursor(&self, key: &str, value: i64) -> Result<()> {
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_state (key, value) VALUES (?1, ?2) \
                  ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                vec![RELAY_CURSOR.into(), value.into()],
+                vec![key.into(), value.into()],
             ))
             .await?;
             Ok(())
@@ -664,16 +812,23 @@ async fn background(
     let mut last_maintenance: Option<tokio::time::Instant> = None;
     loop {
         let Some(inner) = weak.upgrade() else { return };
-        let svc = QueueService { inner };
+        let svc = QueueService::unbound(inner);
+        // One round per set (FB-172); a set that fails does not hold up the others.
+        let views = svc.views();
         if last_maintenance.is_none_or(|t| t.elapsed() >= every) {
-            if let Err(e) = svc.run_maintenance().await {
-                tracing::warn!(error = %e, "queue maintenance failed");
+            for view in &views {
+                if let Err(e) = view.run_maintenance_here().await {
+                    tracing::warn!(set = %view.set_id(), error = %e, "queue maintenance failed");
+                }
             }
             last_maintenance = Some(tokio::time::Instant::now());
         }
-        if let Err(e) = svc.deliver_push().await {
-            tracing::warn!(error = %e, "queue push delivery failed");
+        for view in &views {
+            if let Err(e) = view.deliver_push_here().await {
+                tracing::warn!(set = %view.set_id(), error = %e, "queue push delivery failed");
+            }
         }
+        drop(views);
         drop(svc);
         tokio::select! {
             _ = stop.changed() => return,

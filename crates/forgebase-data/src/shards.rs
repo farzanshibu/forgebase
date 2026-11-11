@@ -122,7 +122,7 @@ pub(crate) fn path_crosses(cat: &CatalogSnapshot, coll: &Collection, path: &Fiel
     // The last segment is the column read; only the hops before it follow
     // relations.
     for (i, name) in names.iter().enumerate().take(names.len().saturating_sub(1)) {
-        let Some(f) = current.field(name) else { return None };
+        let f = current.field(name)?;
         let FieldKind::Relation { collection_id, .. } = &f.kind else {
             return None;
         };

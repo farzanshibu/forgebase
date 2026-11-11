@@ -60,13 +60,29 @@ pub fn verify(secret: &str, header: &str, body: &[u8], now_secs: i64, tolerance_
 impl QueueService {
     /// One push round over every push subscription. Returns the number of
     /// messages delivered successfully.
+    ///
+    /// Sharded (FB-172): on every set, skipping the subscriptions of tenants
+    /// moving in or out.
     pub async fn deliver_push(&self) -> Result<usize> {
+        let mut n = 0;
+        for view in self.views() {
+            n += view.deliver_push_here().await?;
+        }
+        Ok(n)
+    }
+
+    pub(crate) async fn deliver_push_here(&self) -> Result<usize> {
+        let mut params = Vec::new();
+        let guard = forgebase_jobs::tenant_guard("tenant", &self.excluded(), &mut params, 0);
         let rows = self
             .backend()
-            .fetch_all(&forgebase_db::Statement::raw(format!(
-                "SELECT {} FROM _forgebase_queue_subscriptions WHERE push_kind IS NOT NULL ORDER BY name",
-                crate::service::SUB_COLS
-            )))
+            .fetch_all(&forgebase_db::Statement::new(
+                format!(
+                    "SELECT {} FROM _forgebase_queue_subscriptions WHERE push_kind IS NOT NULL{guard} ORDER BY name",
+                    crate::service::SUB_COLS
+                ),
+                params,
+            ))
             .await?;
         let subs: Vec<SubRow> = crate::row::Row::all(&rows)
             .map(|r| SubRow::from_row(&r))
