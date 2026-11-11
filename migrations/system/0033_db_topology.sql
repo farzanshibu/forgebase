@@ -108,7 +108,7 @@ CREATE TABLE _forgebase_db_moves (
 ) STRICT;
 CREATE INDEX _forgebase_db_moves_tenant ON _forgebase_db_moves (tenant, created_at);
 CREATE UNIQUE INDEX _forgebase_db_moves_one_open ON _forgebase_db_moves (tenant)
-    WHERE state NOT IN ('done', 'aborted');
+    WHERE state <> 'done' AND state <> 'aborted';
 
 -- Two-phase schema changes across sets (ADR-0029 §3.7). A row is written,
 -- in control, only once every node has prepared `<gid>_<set number>`; an

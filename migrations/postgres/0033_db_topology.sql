@@ -74,7 +74,7 @@ CREATE TABLE _forgebase_db_moves (
 );
 CREATE INDEX _forgebase_db_moves_tenant ON _forgebase_db_moves (tenant, created_at);
 CREATE UNIQUE INDEX _forgebase_db_moves_one_open ON _forgebase_db_moves (tenant)
-    WHERE state NOT IN ('done', 'aborted');
+    WHERE state <> 'done' AND state <> 'aborted';
 
 CREATE TABLE _forgebase_xact_journal (
     gid         text  NOT NULL PRIMARY KEY CHECK (length(gid) BETWEEN 1 AND 180),
