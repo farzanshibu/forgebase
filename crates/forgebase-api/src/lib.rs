@@ -452,6 +452,9 @@ pub fn router_with(
     let policy = state.policy().cloned();
     if let (Some(a), Some(p)) = (&auth, &policy) {
         a.set_realm_creator(realm_creator(p.clone()));
+        // FB-137: realm administrators hold `identity:admin` through a realm binding.
+        let p = p.clone();
+        a.set_realm_admin_check(Arc::new(move |ctx| p.has(ctx, forgebase_auth::IDENTITY_ADMIN, None)));
     }
     let state = state.with_limits(Limits {
         max_import_bytes: opts.max_import_bytes,

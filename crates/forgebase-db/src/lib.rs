@@ -36,18 +36,22 @@ pub use forgebase_migrations as migrations;
 pub mod backend;
 pub mod dialect;
 mod pg;
+pub mod placement;
+pub mod router;
 pub mod routing;
 mod slow_log;
 mod sqlite;
 mod sqlite_backend;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod topology;
 
 pub use backend::{
     Backend, BoxFuture, ExecResult, PlanStep, QueryLabel, Rows, SlowQuery, Statement, TxMode, Value, WriteTx,
 };
 pub use dialect::{ColumnType, Dialect, JsonPathSeg, PG_FULLTEXT_SETUP, PG_UNACCENT_FN, PgDialect, SqliteDialect};
 pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_placeholders};
+pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
 pub use routing::{Lsn, PrimaryOnly, ReadRequest, ReadRouter, ReadTarget};
 pub use slow_log::{DEFAULT_SLOW_QUERY_THRESHOLD, SLOW_QUERY_LOG_CAPACITY};
 pub use sqlite::sqlite_library_version;

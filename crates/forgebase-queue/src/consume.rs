@@ -11,10 +11,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use forgebase_data::{AccessContext, Action};
+use forgebase_data::{AccessContext, Action, ResourceKind, ResourceOp};
 use forgebase_db::{Statement, Value, WriteTx};
 use forgebase_jobs::backoff_ms;
 
+use crate::access::bare;
 use crate::error::QueueError;
 use crate::model::{
     AckResult, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage, SeekRequest,
@@ -25,6 +26,10 @@ use crate::service::{
     Db, MESSAGE_COLS, Prepared, QueueService, Result, SYSTEM_PUBLISHER, SubRow, bump_rate, cursor_before, finish,
     insert_message_tx, message_from, sub_row, topic_row,
 };
+
+/// Claim rounds per pull at most when withheld record-change messages leave
+/// room (each round drops what it withholds, so the next one progresses).
+const CLAIM_ROUNDS: usize = 8;
 
 /// Messages turned into delivery rows per claim at most.
 const MATERIALIZE_MAX: i64 = 2000;
@@ -227,13 +232,29 @@ impl QueueService {
             return Ok(());
         };
         let (attempts, history) = (r.int("d_attempts"), r.text("d_history"));
-        let msg = message_from(&r)?;
+        let mut msg = message_from(&r)?;
+        let source = r.opt_text("source_row");
+        // A record-change message is kept as the owner sees it now (the record
+        // is null when the owner may not see it); a copy on the dead-letter
+        // topic keeps the changed row, so its subscribers get their own view.
+        let mut data = r.text("data");
+        if let Some(src) = &source {
+            let owner = self.owner_access(&mut Db::Tx(&mut *tx), &sub.owner()?).await?;
+            let visible = match &owner {
+                Some(o) => self.view_record(o, &mut msg.data, src).await?,
+                None => false,
+            };
+            if !visible && let Some(o) = msg.data.as_object_mut() {
+                o.insert("record".into(), serde_json::Value::Null);
+            }
+            data = serde_json::to_string(&msg.data).map_err(|e| QueueError::Internal(e.to_string()))?;
+        }
         let mut forwarded: Option<String> = None;
         if let Some(dlt) = &sub.dead_letter_topic
             && let Some(t) = topic_row(&mut Db::Tx(&mut *tx), dlt).await?
         {
             let mut attrs = msg.attributes.clone();
-            attrs.insert("forgebase.dead_letter.subscription".into(), sub.name.clone());
+            attrs.insert("forgebase.dead_letter.subscription".into(), bare(&sub.name).to_owned());
             attrs.insert("forgebase.dead_letter.topic".into(), msg.topic.clone());
             attrs.insert("forgebase.dead_letter.message_id".into(), msg.id.clone());
             attrs.insert("forgebase.dead_letter.attempts".into(), attempts.to_string());
@@ -244,6 +265,7 @@ impl QueueService {
                 dedup_id: None,
                 bytes: msg.bytes,
                 history: Some(history.clone()),
+                source_row: source.clone(),
             };
             let published = insert_message_tx(tx, &t, &p, SYSTEM_PUBLISHER, None, 1, now).await?;
             forwarded = Some(published.message_id);
@@ -254,9 +276,9 @@ impl QueueService {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             vec![
                 sub.name.as_str().into(),
-                msg.topic.as_str().into(),
+                r.text("topic").into(),
                 msg.id.as_str().into(),
-                r.text("data").into(),
+                data.into(),
                 r.text("attributes").into(),
                 msg.ordering_key.clone().into(),
                 r.int("published_at").into(),
@@ -333,48 +355,86 @@ impl QueueService {
         let sub = sub_row(&mut Db::Tx(&mut *tx), name).await?;
         self.reap_tx(tx, &sub, now).await?;
         self.materialize_tx(tx, &sub, now).await?;
-        let rows = tx
-            .fetch_all(&Statement::new(
-                ready_claim_sql(sub.ordering),
-                vec![name.into(), now.into(), max.min(MAX_PULL).into()],
-            ))
-            .await?;
+        let max = max.min(MAX_PULL);
         let mut out = Vec::new();
         let mut bytes = 0_i64;
         let until = now + sub.ack_deadline_ms;
-        for r in Row::all(&rows) {
-            let size = r.int("bytes");
-            if let Some(limit) = max_bytes
-                && !out.is_empty()
-                && bytes + size > limit
-            {
-                break;
-            }
-            bytes += size;
-            let seq = r.int("seq");
-            let lease = format!("ack-{}", uuid::Uuid::new_v4().simple());
-            tx.execute(&Statement::new(
-                format!(
-                    "UPDATE _forgebase_queue_deliveries SET state = 'leased', history = {PUSH_HISTORY}, \
+        // The owner's access, resolved once per claim (G2).
+        let mut owner: Option<Option<AccessContext>> = None;
+        let mut withheld = 0_u64;
+        'rounds: for _ in 0..CLAIM_ROUNDS {
+            let rows = tx
+                .fetch_all(&Statement::new(
+                    ready_claim_sql(sub.ordering),
+                    vec![
+                        name.into(),
+                        now.into(),
+                        (max - i64::try_from(out.len()).unwrap_or(max)).into(),
+                    ],
+                ))
+                .await?;
+            let mut dropped = 0;
+            for r in Row::all(&rows) {
+                let size = r.int("bytes");
+                if let Some(limit) = max_bytes
+                    && !out.is_empty()
+                    && bytes + size > limit
+                {
+                    break 'rounds;
+                }
+                let seq = r.int("seq");
+                let mut message = message_from(&r)?;
+                if let Some(src) = r.opt_text("source_row") {
+                    if owner.is_none() {
+                        owner = Some(self.owner_access(&mut Db::Tx(&mut *tx), &sub.owner()?).await?);
+                    }
+                    let visible = match owner.as_ref().and_then(Option::as_ref) {
+                        Some(o) => self.view_record(o, &mut message.data, &src).await?,
+                        None => false,
+                    };
+                    if !visible {
+                        // Withheld: the owner may not see this record, now or later.
+                        tx.execute(&Statement::new(
+                            "DELETE FROM _forgebase_queue_deliveries WHERE subscription = ?1 AND seq = ?2",
+                            vec![name.into(), seq.into()],
+                        ))
+                        .await?;
+                        dropped += 1;
+                        continue;
+                    }
+                }
+                bytes += size;
+                let lease = format!("ack-{}", uuid::Uuid::new_v4().simple());
+                tx.execute(&Statement::new(
+                    format!(
+                        "UPDATE _forgebase_queue_deliveries SET state = 'leased', history = {PUSH_HISTORY}, \
                      attempts = attempts + 1, lease_id = ?5, lease_until = ?6, consumer = ?4 \
                      WHERE subscription = ?1 AND seq = ?2"
-                ),
-                vec![
-                    name.into(),
-                    seq.into(),
-                    now.into(),
-                    consumer.into(),
-                    lease.as_str().into(),
-                    until.into(),
-                ],
-            ))
-            .await?;
-            out.push(ReceivedMessage {
-                ack_id: lease,
-                delivery_attempt: r.int("d_attempts") + 1,
-                ack_deadline: iso(until),
-                message: message_from(&r)?,
-            });
+                    ),
+                    vec![
+                        name.into(),
+                        seq.into(),
+                        now.into(),
+                        consumer.into(),
+                        lease.as_str().into(),
+                        until.into(),
+                    ],
+                ))
+                .await?;
+                out.push(ReceivedMessage {
+                    ack_id: lease,
+                    delivery_attempt: r.int("d_attempts") + 1,
+                    ack_deadline: iso(until),
+                    message,
+                });
+            }
+            withheld += dropped;
+            if dropped == 0 || i64::try_from(out.len()).unwrap_or(max) >= max {
+                break;
+            }
+        }
+        if withheld > 0 {
+            metrics::counter!("forgebase_queue_withheld_total", "subscription" => name.to_owned()).increment(withheld);
         }
         if !out.is_empty() {
             tx.execute(&Statement::new(
@@ -389,7 +449,15 @@ impl QueueService {
     /// Pulls up to `max_messages` messages. With `wait_ms`, waits (long poll)
     /// until at least one message is available or the time is up.
     pub async fn pull(&self, ctx: &AccessContext, sub: &str, req: PullRequest) -> Result<Vec<ReceivedMessage>> {
-        self.allow(ctx, Action::QueueConsume)?;
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueConsume,
+                ResourceOp::List,
+                sub,
+            )
+            .await?;
         let max = crate::model::in_range("max_messages", req.max_messages.unwrap_or(10), 1, MAX_PULL)?;
         let wait = crate::model::in_range(
             "wait_ms",
@@ -399,7 +467,6 @@ impl QueueService {
         )?;
         let consumer = req.consumer.unwrap_or_else(|| "rest".into());
         check_name("consumer", &consumer)?;
-        let s = sub_row(&mut Db::Ro(self.backend()), sub).await?;
         if s.push.is_some() {
             return Err(QueueError::conflict(
                 "push_subscription",
@@ -410,7 +477,7 @@ impl QueueService {
         let mut rx = self.wake_rx();
         loop {
             rx.borrow_and_update();
-            let got = self.claim(sub, max, None, &consumer).await?;
+            let got = self.claim(&s.name, max, None, &consumer).await?;
             let now = tokio::time::Instant::now();
             if !got.is_empty() || now >= deadline {
                 return Ok(got);
@@ -435,8 +502,21 @@ impl QueueService {
 
     /// Acknowledges deliveries: the messages are done for this subscription.
     pub async fn ack(&self, ctx: &AccessContext, sub: &str, ack_ids: &[String]) -> Result<AckResult> {
-        self.allow(ctx, Action::QueueConsume)?;
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueConsume,
+                ResourceOp::Update,
+                sub,
+            )
+            .await?;
         Self::check_ids(ack_ids)?;
+        self.ack_stored(&s.name, ack_ids).await
+    }
+
+    /// [`QueueService::ack`] of the subscription stored as `sub`, unchecked.
+    pub(crate) async fn ack_stored(&self, sub: &str, ack_ids: &[String]) -> Result<AckResult> {
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
@@ -480,9 +560,17 @@ impl QueueService {
     /// Negative acknowledgement: redeliver after the retry backoff (or
     /// dead-letter when attempts are used up).
     pub async fn nack(&self, ctx: &AccessContext, sub: &str, ack_ids: &[String]) -> Result<AckResult> {
-        self.allow(ctx, Action::QueueConsume)?;
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueConsume,
+                ResourceOp::Update,
+                sub,
+            )
+            .await?;
         Self::check_ids(ack_ids)?;
-        self.nack_internal(sub, ack_ids, "nacked", None).await
+        self.nack_internal(&s.name, ack_ids, "nacked", None).await
     }
 
     /// Nack with an outcome and error recorded in the delivery history (push).
@@ -564,7 +652,16 @@ impl QueueService {
         ack_ids: &[String],
         ms: i64,
     ) -> Result<AckResult> {
-        self.allow(ctx, Action::QueueConsume)?;
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueConsume,
+                ResourceOp::Update,
+                sub,
+            )
+            .await?;
+        let sub = s.name.as_str();
         Self::check_ids(ack_ids)?;
         let ms = crate::model::in_range("ack_deadline_ms", ms, 0, MAX_ACK_DEADLINE_MS)?;
         if ms == 0 {
@@ -662,7 +759,16 @@ impl QueueService {
     /// To a snapshot: the acknowledgement state saved in it is restored.
     /// Outstanding leases are dropped either way.
     pub async fn seek(&self, ctx: &AccessContext, sub: &str, req: SeekRequest) -> Result<SeekResult> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        let found = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueAdmin,
+                ResourceOp::Update,
+                sub,
+            )
+            .await?;
+        let sub = found.name.as_str();
         let ts = match (&req.time, &req.snapshot) {
             (Some(t), None) => Some(parse_time("time", t)?),
             (None, Some(_)) => None,
@@ -685,12 +791,15 @@ impl QueueService {
             let (cursor, restored) = if let Some(ts) = ts {
                 (cursor_before(&mut *tx, &s.topic, ts).await?, 0)
             } else {
-                let name = req.snapshot.as_deref().unwrap_or_default();
-                let snap = snapshot_row(&mut Db::Tx(&mut *tx), name).await?;
+                let shown = req.snapshot.as_deref().unwrap_or_default();
+                let snap = find_snapshot(&mut Db::Tx(&mut *tx), s.tenant.as_deref(), shown)
+                    .await?
+                    .ok_or_else(|| QueueError::SnapshotNotFound(shown.to_owned()))?;
+                let name = snap.stored.as_str();
                 if snap.topic != s.topic {
                     return Err(QueueError::invalid(
                         "invalid_seek",
-                        format!("snapshot {name:?} is of topic {:?}", snap.topic),
+                        format!("snapshot {shown:?} is of topic {:?}", bare(&snap.topic)),
                     ));
                 }
                 let n = tx
@@ -702,7 +811,7 @@ impl QueueService {
                     ))
                     .await?
                     .rows_affected;
-                (snap.cursor_seq, i64::try_from(n).unwrap_or(0))
+                (snap.public.cursor_seq, i64::try_from(n).unwrap_or(0))
             };
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_queue_subscriptions SET cursor_seq = ?2, updated_at = ?3 WHERE name = ?1",
@@ -723,13 +832,25 @@ impl QueueService {
     /// Saves the acknowledgement state of a subscription (its cursor and the
     /// messages it still owes) for a later [`QueueService::seek`].
     pub async fn create_snapshot(&self, ctx: &AccessContext, new: NewSnapshot) -> Result<Snapshot> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        let found = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueAdmin,
+                ResourceOp::Create,
+                &new.subscription,
+            )
+            .await?;
         check_name("snapshot name", &new.name)?;
+        let key = crate::access::stored(found.tenant.as_deref(), &new.name);
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
-            let s = sub_row(&mut Db::Tx(&mut *tx), &new.subscription).await?;
-            if snapshot_row(&mut Db::Tx(&mut *tx), &new.name).await.is_ok() {
+            let s = sub_row(&mut Db::Tx(&mut *tx), &found.name).await?;
+            // A tenant may not take a name an instance-wide snapshot holds.
+            if snapshot_row(&mut Db::Tx(&mut *tx), &key).await.is_ok()
+                || (s.tenant.is_some() && snapshot_row(&mut Db::Tx(&mut *tx), &new.name).await.is_ok())
+            {
                 return Err(QueueError::Exists {
                     kind: "snapshot",
                     name: new.name.clone(),
@@ -751,55 +872,111 @@ impl QueueService {
             let cursor = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?.cursor_seq;
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_snapshots (name, subscription, topic, cursor_seq, created_by, \
-                 created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 created_at, expires_at, tenant) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 vec![
-                    new.name.as_str().into(),
+                    key.as_str().into(),
                     s.name.as_str().into(),
                     s.topic.as_str().into(),
                     cursor.into(),
                     ctx.actor().into(),
                     now.into(),
                     (now + t.retention_ms).into(),
+                    s.tenant.clone().into(),
                 ],
             ))
             .await?;
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_snapshot_items (snapshot, seq) \
                  SELECT ?1, seq FROM _forgebase_queue_deliveries WHERE subscription = ?2",
-                vec![new.name.as_str().into(), s.name.as_str().into()],
+                vec![key.as_str().into(), s.name.as_str().into()],
             ))
             .await?;
-            snapshot_row(&mut Db::Tx(&mut *tx), &new.name).await
+            snapshot_row(&mut Db::Tx(&mut *tx), &key).await
         }
         .await;
         finish(tx, r).await
     }
 
-    /// One snapshot.
-    pub async fn snapshot(&self, ctx: &AccessContext, name: &str) -> Result<Snapshot> {
-        self.allow(ctx, Action::QueueRead)?;
-        snapshot_row(&mut Db::Ro(self.backend()), name).await
+    /// The snapshot `name` resolves to for `ctx`, once `ctx` may do `action`
+    /// (`op`) on its subscription.
+    async fn snapshot_for(&self, ctx: &AccessContext, action: Action, op: ResourceOp, name: &str) -> Result<SnapRow> {
+        let found = find_snapshot(&mut Db::Ro(self.backend()), ctx.tenant.as_deref(), name).await?;
+        match found {
+            Some(snap) => {
+                self.check(
+                    ctx,
+                    action,
+                    ResourceKind::Subscription,
+                    bare(&snap.subscription),
+                    op,
+                    snap.sub_owner.as_deref(),
+                )?;
+                Ok(snap)
+            }
+            None => {
+                self.allow(ctx, action)?;
+                Err(QueueError::SnapshotNotFound(name.to_owned()))
+            }
+        }
     }
 
-    /// Every snapshot, by name.
+    /// One snapshot.
+    pub async fn snapshot(&self, ctx: &AccessContext, name: &str) -> Result<Snapshot> {
+        Ok(self
+            .snapshot_for(ctx, Action::QueueRead, ResourceOp::View, name)
+            .await?
+            .public)
+    }
+
+    /// The snapshots of the caller's scope, by name: every one with
+    /// `engine:queue_read`, else those of subscriptions the caller owns or may
+    /// list.
     pub async fn snapshots(&self, ctx: &AccessContext) -> Result<Vec<Snapshot>> {
-        self.allow(ctx, Action::QueueRead)?;
+        let plain = self.allow(ctx, Action::QueueRead);
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(format!("{SNAPSHOT_SELECT} ORDER BY s.name")))
+            .fetch_all(&Statement::new(
+                format!("{SNAPSHOT_SELECT} WHERE s.tenant IS NULL OR s.tenant = ?1 ORDER BY s.name"),
+                vec![ctx.tenant.clone().into()],
+            ))
             .await?;
-        Ok(Row::all(&rows).map(|r| snapshot_from(&r)).collect())
+        let rows: Vec<SnapRow> = Row::all(&rows).map(|r| SnapRow::from_row(&r)).collect();
+        let mut out: Vec<Snapshot> =
+            crate::service::scoped(rows, |s| s.stored.as_str(), |s| s.public.tenant.as_deref())
+                .into_iter()
+                .filter(|s| {
+                    plain.is_ok()
+                        || self
+                            .check(
+                                ctx,
+                                Action::QueueRead,
+                                ResourceKind::Subscription,
+                                bare(&s.subscription),
+                                ResourceOp::List,
+                                s.sub_owner.as_deref(),
+                            )
+                            .is_ok()
+                })
+                .map(|s| s.public)
+                .collect();
+        if out.is_empty() {
+            plain?;
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
     }
 
     /// Deletes a snapshot.
     pub async fn delete_snapshot(&self, ctx: &AccessContext, name: &str) -> Result<()> {
-        self.allow(ctx, Action::QueueAdmin)?;
+        let snap = self
+            .snapshot_for(ctx, Action::QueueAdmin, ResourceOp::Delete, name)
+            .await?;
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let n = tx
                 .execute(&Statement::new(
                     "DELETE FROM _forgebase_queue_snapshots WHERE name = ?1",
-                    vec![name.into()],
+                    vec![snap.stored.as_str().into()],
                 ))
                 .await?
                 .rows_affected;
@@ -814,14 +991,65 @@ impl QueueService {
 }
 
 const SNAPSHOT_SELECT: &str = "SELECT s.name, s.subscription, s.topic, s.cursor_seq, s.created_by, s.created_at, \
-    s.expires_at, (SELECT COUNT(*) FROM _forgebase_queue_snapshot_items i WHERE i.snapshot = s.name) AS unacked \
+    s.expires_at, s.tenant, \
+    (SELECT COUNT(*) FROM _forgebase_queue_snapshot_items i WHERE i.snapshot = s.name) AS unacked, \
+    (SELECT u.created_by FROM _forgebase_queue_subscriptions u WHERE u.name = s.subscription) AS sub_owner \
     FROM _forgebase_queue_snapshots s";
+
+/// A snapshot as stored.
+struct SnapRow {
+    /// Stored name.
+    stored: String,
+    /// Stored names of its subscription and topic.
+    subscription: String,
+    topic: String,
+    /// The subscription's owner.
+    sub_owner: Option<String>,
+    public: Snapshot,
+}
+
+impl SnapRow {
+    fn from_row(r: &Row<'_>) -> Self {
+        Self {
+            stored: r.text("name"),
+            subscription: r.text("subscription"),
+            topic: r.text("topic"),
+            sub_owner: r.opt_text("sub_owner"),
+            public: snapshot_from(r),
+        }
+    }
+}
+
+/// The snapshot `name` resolves to for a caller in `tenant`.
+async fn find_snapshot(db: &mut Db<'_>, tenant: Option<&str>, name: &str) -> Result<Option<SnapRow>> {
+    if check_name("snapshot name", name).is_err() {
+        return Ok(None);
+    }
+    let mut keys = Vec::new();
+    if let Some(t) = tenant {
+        keys.push(crate::access::stored(Some(t), name));
+    }
+    keys.push(name.to_owned());
+    for key in keys {
+        let rows = db
+            .fetch(&Statement::new(
+                format!("{SNAPSHOT_SELECT} WHERE s.name = ?1"),
+                vec![key.into()],
+            ))
+            .await?;
+        if let Some(r) = Row::all(&rows).next() {
+            return Ok(Some(SnapRow::from_row(&r)));
+        }
+    }
+    Ok(None)
+}
 
 fn snapshot_from(r: &Row<'_>) -> Snapshot {
     Snapshot {
-        name: r.text("name"),
-        subscription: r.text("subscription"),
-        topic: r.text("topic"),
+        name: bare(&r.text("name")).to_owned(),
+        tenant: r.opt_text("tenant"),
+        subscription: bare(&r.text("subscription")).to_owned(),
+        topic: bare(&r.text("topic")).to_owned(),
         cursor_seq: r.int("cursor_seq"),
         unacked: r.int("unacked"),
         created_by: r.text("created_by"),
@@ -840,5 +1068,5 @@ async fn snapshot_row(db: &mut Db<'_>, name: &str) -> Result<Snapshot> {
     Row::all(&rows)
         .next()
         .map(|r| snapshot_from(&r))
-        .ok_or_else(|| QueueError::SnapshotNotFound(name.to_owned()))
+        .ok_or_else(|| QueueError::SnapshotNotFound(bare(name).to_owned()))
 }

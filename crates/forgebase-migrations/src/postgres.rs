@@ -100,6 +100,16 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "job_tenant",
         include_str!("../../../migrations/postgres/0030_job_tenant.sql"),
     ),
+    Migration::new(
+        31,
+        "queue_rls",
+        include_str!("../../../migrations/postgres/0031_queue_rls.sql"),
+    ),
+    Migration::new(
+        33,
+        "db_topology",
+        include_str!("../../../migrations/postgres/0033_db_topology.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

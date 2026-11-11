@@ -180,6 +180,16 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "job_tenant",
         include_str!("../../../migrations/system/0030_job_tenant.sql"),
     ),
+    Migration::new(
+        31,
+        "queue_rls",
+        include_str!("../../../migrations/system/0031_queue_rls.sql"),
+    ),
+    Migration::new(
+        33,
+        "db_topology",
+        include_str!("../../../migrations/system/0033_db_topology.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

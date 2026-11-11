@@ -4,12 +4,13 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use forgebase_data::{AccessContext, Action, ChangeOp};
+use forgebase_data::{AccessContext, Action, ChangeOp, ResourceKind, ResourceOp};
 use forgebase_db::Statement;
 use forgebase_entitlements::{EntitlementError, UsageRequest};
 use serde_json::{Value as Json, json};
 use tokio::sync::watch;
 
+use crate::access::{bare, source_row};
 use crate::error::QueueError;
 use crate::model::{DeadLetter, DeadLetterPage, MaintenanceReport, NewMessage, SubscriptionMetrics, TopicMetrics, iso};
 use crate::row::{Row, scalar};
@@ -86,20 +87,31 @@ impl QueueService {
 
     /// Metrics of a topic.
     pub async fn topic_metrics(&self, ctx: &AccessContext, topic: &str) -> Result<TopicMetrics> {
-        self.allow(ctx, Action::QueueRead)?;
-        let t = self.topic_internal(topic).await?.public();
+        self.check(
+            ctx,
+            Action::QueueRead,
+            ResourceKind::Topic,
+            topic,
+            ResourceOp::View,
+            None,
+        )?;
+        let row = self.topic_for(ctx, topic).await?;
+        let stored = row.name.clone();
+        let t = row.public();
         let now = self.now();
+        // Subscriptions of the caller's scope only: other tenants' are not counted.
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
                 "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
-                 (SELECT COUNT(*) FROM _forgebase_queue_subscriptions WHERE topic = ?1) AS subs \
+                 (SELECT COUNT(*) FROM _forgebase_queue_subscriptions WHERE topic = ?1 \
+                    AND (tenant IS NULL OR tenant = ?2)) AS subs \
                  FROM _forgebase_queue_messages WHERE topic = ?1",
-                vec![topic.into()],
+                vec![stored.as_str().into(), ctx.tenant.clone().into()],
             ))
             .await?;
         let r = Row::new(&rows, 0);
-        let (last, per_sec) = self.rate("topic", topic, "published", now).await?;
+        let (last, per_sec) = self.rate("topic", &stored, "published", now).await?;
         Ok(TopicMetrics {
             topic: t.name,
             messages: r.int("n"),
@@ -117,8 +129,16 @@ impl QueueService {
     /// into the backlog without the filter (the background task reads them
     /// every poll interval, applying it).
     pub async fn subscription_metrics(&self, ctx: &AccessContext, sub: &str) -> Result<SubscriptionMetrics> {
-        self.allow(ctx, Action::QueueRead)?;
-        let s = sub_row(&mut Db::Ro(self.backend()), sub).await?;
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueRead,
+                ResourceOp::View,
+                sub,
+            )
+            .await?;
+        let sub = s.name.as_str();
         let now = self.now();
         let rows = self
             .backend()
@@ -150,8 +170,8 @@ impl QueueService {
         };
         let (last, per_sec) = self.rate("subscription", sub, "acked", now).await?;
         Ok(SubscriptionMetrics {
-            subscription: s.name.clone(),
-            topic: s.topic.clone(),
+            subscription: bare(&s.name).to_owned(),
+            topic: bare(&s.topic).to_owned(),
             backlog_messages: d.int("n") + u.int("n"),
             backlog_bytes: d.int("b") + u.int("b"),
             oldest_unacked_age_ms: oldest.map(|o| (now - o).max(0)),
@@ -177,8 +197,16 @@ impl QueueService {
         before: Option<i64>,
         limit: i64,
     ) -> Result<DeadLetterPage> {
-        self.allow(ctx, Action::QueueRead)?;
-        sub_row(&mut Db::Ro(self.backend()), sub).await?;
+        let s = self
+            .sub_for(
+                &mut Db::Ro(self.backend()),
+                ctx,
+                Action::QueueRead,
+                ResourceOp::List,
+                sub,
+            )
+            .await?;
+        let sub = s.name.as_str();
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -196,8 +224,8 @@ impl QueueService {
             .map(|r| {
                 Ok(DeadLetter {
                     id: r.int("id"),
-                    subscription: r.text("subscription"),
-                    topic: r.text("topic"),
+                    subscription: bare(&r.text("subscription")).to_owned(),
+                    topic: bare(&r.text("topic")).to_owned(),
                     message_id: r.text("message_id"),
                     data: r.json("data")?,
                     attributes: r.map("attributes")?,
@@ -206,7 +234,7 @@ impl QueueService {
                     attempts: r.int("attempts"),
                     history: parse_history(&r.text("history"))?,
                     reason: r.text("reason"),
-                    dead_letter_topic: r.opt_text("dead_letter_topic"),
+                    dead_letter_topic: r.opt_text("dead_letter_topic").map(|d| bare(&d).to_owned()),
                     forwarded_message_id: r.opt_text("forwarded_message_id"),
                     at: iso(r.int("at")),
                 })
@@ -435,21 +463,11 @@ impl QueueService {
             self.set_relay_cursor(last).await?;
             return Ok(0);
         }
-        // Records as the data core shows them (reads, so before the write transaction).
-        let mut records = Vec::with_capacity(events.len());
-        for ev in &events {
-            let wanted = topics.iter().any(|t| {
-                t.source
-                    .as_ref()
-                    .is_some_and(|s| s.collection == ev.collection || s.collection == ev.collection_id)
-            });
-            records.push(if wanted { self.record_json(ev).await } else { Json::Null });
-        }
         let now = self.now();
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let mut n = 0;
-            for (ev, record) in events.iter().zip(&records) {
+            for ev in &events {
                 let op = match ev.op {
                     ChangeOp::Create => "create",
                     ChangeOp::Update => "update",
@@ -457,9 +475,11 @@ impl QueueService {
                 };
                 for t in &topics {
                     let Some(src) = &t.source else { continue };
+                    // A tenant topic carries its own tenant's changes only.
                     let hit = (src.collection == ev.collection || src.collection == ev.collection_id)
                         && (src.ops.is_empty() || src.ops.iter().any(|o| o == op))
-                        && ev.seq > t.source_after_seq;
+                        && ev.seq > t.source_after_seq
+                        && (t.tenant.is_none() || t.tenant == ev.tenant);
                     if !hit {
                         continue;
                     }
@@ -468,7 +488,8 @@ impl QueueService {
                             "op": op,
                             "collection": ev.collection,
                             "record_id": ev.record_id,
-                            "record": record,
+                            // Filled per reader at delivery (G2): the owner's view.
+                            "record": Json::Null,
                             "tenant": ev.tenant,
                             "actor": ev.actor,
                             "changed_at": ev.created_at,
@@ -484,7 +505,21 @@ impl QueueService {
                         ordering_key: Some(ev.record_id.clone()),
                         dedup_id: Some(format!("outbox:{}", ev.seq)),
                     };
-                    match prepare(t, &m, true) {
+                    let prepared = prepare(t, &m, true).and_then(|mut p| {
+                        let row = source_row(ev);
+                        p.bytes += i64::try_from(row.len()).unwrap_or(i64::MAX);
+                        if p.bytes > t.max_message_bytes {
+                            return Err(QueueError::TooLarge(format!(
+                                "the changed row is {} bytes; topic {:?} accepts at most {}",
+                                p.bytes,
+                                bare(&t.name),
+                                t.max_message_bytes
+                            )));
+                        }
+                        p.source_row = Some(row);
+                        Ok(p)
+                    });
+                    match prepared {
                         Ok(p) => {
                             insert_message_tx(&mut *tx, t, &p, &ev.actor, None, 1, now).await?;
                             n += 1;
@@ -509,37 +544,6 @@ impl QueueService {
             self.notify();
         }
         Ok(n)
-    }
-
-    /// The changed row as a record: through the data core (field rules of the
-    /// system view: password columns are never in the outbox), else the raw
-    /// columns when the collection is gone.
-    async fn record_json(&self, ev: &forgebase_realtime::Event) -> Json {
-        match self
-            .inner
-            .data
-            .view_snapshot(
-                &AccessContext::system(),
-                Action::View,
-                &ev.collection_id,
-                &ev.snapshot,
-                None,
-            )
-            .await
-        {
-            Ok(Some(rec)) => Json::Object(rec),
-            _ => {
-                let raw = ev.snapshot.to_json();
-                let cols = raw["c"].as_array().cloned().unwrap_or_default();
-                let vals = raw["v"].as_array().cloned().unwrap_or_default();
-                Json::Object(
-                    cols.iter()
-                        .zip(vals)
-                        .filter_map(|(c, v)| c.as_str().filter(|c| !c.starts_with("__")).map(|c| (c.to_owned(), v)))
-                        .collect(),
-                )
-            }
-        }
     }
 
     async fn set_relay_cursor(&self, value: i64) -> Result<()> {

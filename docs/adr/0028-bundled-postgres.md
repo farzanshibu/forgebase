@@ -2648,3 +2648,202 @@ schedules and workflows; list or `GET` a job before subscribing to its
 channel; explain `engine:read_jobs:all` in the roles editor; reserved kinds
 answer `403` (offer only public kinds and `function.invoke` of functions the
 user may invoke).
+
+## Addendum (FB-141): queue tenancy, resource permissions and record views
+
+Written 2026-11-11 by FB-141. Closes `rls-coverage.md` G2 and G16 in
+`forgebase-queue`. Backend-neutral: new SQL uses numbered `?N`
+placeholders and constructs valid on both engines; migration pair 0031
+(`queue_rls`).
+
+**Tenant-scoped names (G16).** `_forgebase_queue_topics.tenant`,
+`_forgebase_queue_subscriptions.tenant` and `_forgebase_queue_snapshots.tenant`
+(NULL = instance-wide, every resource before FB-141). A caller with a
+tenant creates resources of that tenant, stored as `<tenant>/<name>` (queue
+names never hold `/`, and every name is validated before lookup, so a
+stored name is never addressable), exactly as FB-140 did for buckets. A
+name resolves to the caller's tenant resource, else the instance-wide one;
+another tenant's topic, subscription or snapshot is unreachable. A tenant
+may not create a name an instance-wide resource holds (`409`). A
+subscription's topic and dead-letter topic are resolved in the creator's
+scope (a tenant may subscribe to an instance-wide topic). Listings show
+the tenant's resources plus the instance-wide ones it does not shadow;
+topic metrics count only the subscriptions of the caller's scope. The wire
+`Topic`, `Subscription` and `Snapshot` gained `tenant`; names (topics,
+subscriptions, dead-letter topics, messages' `topic`, dead letters, push
+bodies and headers) are always the bare name. Record-source topics are
+still created by privileged callers only; one created in a tenant relays
+only that tenant's changes.
+
+**Permissions (G16).** Every call asks `Authorizer::authorize_resource`
+(FB-134) about the topic or subscription it acts on:
+
+| Call | Action, kind, operation |
+|---|---|
+| create topic | `queue_admin`, topic, `create` (so `engine:queue_admin:<name>` lets one create that name) |
+| get topic, topic metrics | `queue_read`, topic, `view` |
+| browse messages | `queue_read`, topic, `list` |
+| update / delete topic | `queue_admin`, topic, `update` / `delete` |
+| publish (REST, `publish_in_tx`, `ctx.queues.publish`) | `queue_publish`, topic, `create` |
+| create subscription | `queue_admin`, subscription, `create`; plus `queue_read` on the topic (`list`) and `queue_publish` on the dead-letter topic (`create`) |
+| get subscription, metrics | `queue_read`, subscription, `view` |
+| dead letters | `queue_read`, subscription, `list` |
+| update / delete subscription, seek | `queue_admin`, subscription, `update` / `delete` / `update` |
+| pull, WebSocket and SSE streams | `queue_consume`, subscription, `list` (streams re-check every round) |
+| ack, nack, modify deadline | `queue_consume`, subscription, `update` |
+| snapshots | on their subscription: create `queue_admin`/`create`, get `queue_read`/`view`, delete `queue_admin`/`delete` |
+
+Listings (topics, subscriptions, snapshots) return everything in scope for
+holders of the plain `engine:queue_read`, else the resources the caller
+may `list` (resource keys, ownership, rules); with none of those the plain
+`403`/`401` stands. **Ownership**: a subscription's creator
+(`created_by`, the principal key) is passed as `ResourceRef::owner`, so the
+owner holds every permission on it (consume, read, administer) without a
+grant; an explicit deny still wins. Admin actions stay permission-only
+(FB-134). Queue resource rules read `@request` only (no item fields; the
+FB-134 default schema), so a `Filter` decision is a denial. HTTP: a call
+on a path resource is checked before its body is read; create calls (the
+name is in the body) are checked by the service once the body parses,
+and a body that does not parse is answered after the plain check, so
+anonymous and forbidden callers still get `401`/`403` first.
+`QueueService::authorize_topic` and `authorize_subscription` are the
+public pre-checks.
+
+**Record-source subscriptions (G2).** Evaluated at **delivery**, like
+realtime. The relay no longer builds messages as the system: a
+record-change message stores the changed row in
+`_forgebase_queue_messages.source_row` (`{collection_id, tenant,
+snapshot}` with the outbox row snapshot) and `data.record` is null at
+rest. A subscription records its creator's context in
+`_forgebase_queue_subscriptions.owner_context` (principal key, realm,
+organization, tenant, key scopes). Each claim (pull, stream, push)
+resolves the owner **as they are now** (an administrator or service
+account must still exist and be enabled, with its current admin role; a
+user record must still exist, its fields are the `@request.auth.*`
+attributes) and fills `data.record` through `DataService::view_snapshot`
+as that owner: tenant clause, current View rule, hidden fields and field
+rules. A message the owner may not see (another tenant, the rule, a
+deleted collection, a deleted owner) is withheld: its delivery row is
+dropped (`forgebase_queue_withheld_total`), and the claim continues with
+the next ones. Redeliveries are evaluated again. Dead letters store the
+owner's view; a copy on a dead-letter topic keeps `source_row`, so its
+subscribers get their own view. Browsing a topic evaluates each record as
+the reader and leaves out the rows they may not see (a page may hold fewer
+items than `limit`). Subscriptions from before FB-141 (no
+`owner_context`) act as their `created_by` in the default realm.
+Record-change messages from before FB-141 (full system view in `data`)
+are marked `source_row = 'legacy'` by the migration and are delivered and
+shown only to privileged owners and readers.
+
+**Edge functions.** `ctx.queues.publish` goes through
+`QueueService::publish` with the caller's context (FB-93), so it gets the
+same resource checks and resolves names in the caller's tenant. Push to a
+function still invokes it with its own identity (FB-142 owns recorded
+invocation contexts).
+
+**Breaking.** Non-privileged consumers of record-source topics get the
+owner's view instead of every field of every row: hidden fields, other
+tenants' rows and rows outside the owner's View rule are gone, and
+messages can be withheld. Creating a subscription needs `queue_read` on
+its topic (and `queue_publish` on a dead-letter topic). Tenant callers
+create tenant topics (callers with a tenant used to share one global
+namespace). `Topic`, `Subscription`, `Snapshot` gained `tenant`;
+`QueueService::authorize` keeps the plain check.
+
+**For FB-146 (queues on PostgreSQL, pgmq per ADR-0029).** Keep the stored
+name scheme or replace it with a `(tenant, name)` key: pgmq queue names
+are identifiers (`pgmq.q_<name>`, 47 characters), so map a stored name to
+a hashed pgmq queue name and keep `tenant` in ForgeBase's own tables. The
+owner view must stay in ForgeBase (it runs the data core's rules), not in
+pgmq: keep `source_row` with the message (pgmq message JSON can carry it)
+and fill `record` at read time. New SQL to check on PostgreSQL:
+`(tenant IS NULL OR tenant = ?1)` with a NULL parameter,
+`(?2 IS NULL OR topic = ?2)`, and the 0031 twin's `UPDATE ... WHERE topic
+IN (SELECT ...)`. Resource placement (ADR-0029 §3.2): `tenant` on topics
+and subscriptions is the placement key; instance-wide ones stay on
+control. **For the dashboard queues studio.** Show `tenant` on topics,
+subscriptions and snapshots and send `X-ForgeBase-Tenant` when creating
+them; show the owner (`created_by`) of a subscription; offer
+`queue_topic` / `queue_subscription` resource rules with `@request` only;
+explain that record-source messages show the owner's (or, when browsing,
+your own) view and that withheld messages do not appear.
+
+## Addendum (FB-137): realm-scoped administrators
+
+Written 2026-11-11 by FB-137. Closes `rls-coverage.md` G19: every
+administrator was a cross-realm superuser, and impersonation never checked
+the target's realm. Backend-neutral: no migration; the new SQL is plain
+`IN`/`NOT IN` lists and sub-selects, valid on both engines.
+
+**Who is a realm administrator.** A user, or a service account without the
+`admin` role, that holds the permission key `identity:admin` in its **home
+realm** at realm level: through a realm binding (`PUT
+/api/v1/realm-bindings` with a realm role that allows `identity:admin`, or
+`*`) or a realm-level override. Org memberships and teams do not count.
+Auth cannot call the policy engine (policy depends on auth), so
+`forgebase_auth::RealmAdminCheck` (`Fn(&AccessContext) -> bool`) is
+installed with `AuthService::set_realm_admin_check`; the router
+(`forgebase_api::router_with`, next to the realm creator) wires it to
+`PolicyService::has(ctx, IDENTITY_ADMIN, None)` with the caller's context in
+its home realm. Policy step 2 refuses cross-realm access, so a binding in
+another realm makes nobody an administrator there, and a suspended account
+holds nothing. Without the check (the engine used on its own) only
+platform administrators administer.
+
+**Scope.** `AuthService::admin_scope(caller) -> AdminScope`:
+`Platform` for administrators and admin service accounts (unchanged),
+`Realm(home)` for a realm administrator, `403` otherwise. An impersonation
+session never administers, whoever it impersonates. Helpers in
+`service/mod.rs`: `require_realm_admin(caller, realm)`,
+`require_admin_of(caller, subject)` (users and non-admin service accounts
+of the realm; platform admins and admin service accounts are platform
+targets), and `realm_users_sql` / `realm_principals_sql`, which turn a
+realm into conditions over collection or principal columns (users of
+`default` are the auth collections no other realm names, as in
+`RealmDirectory::realm_of_collection`). `require_admin` keeps meaning
+"platform administrator".
+
+**What a realm administrator reaches.**
+- Users (`/api/auth/users/{collection}/{id}` detail, sessions, revoke,
+  sign-in history, and the lifecycle calls: status, suspend, unsuspend,
+  deactivate, reactivate, delete, anonymise, export): users of their realm.
+  The realm check runs before the existence check, so another realm's ids
+  give `403` whether or not they exist.
+- Service accounts and keys: create `service`-role accounts in their realm
+  only (`X-ForgeBase-Realm` defaults to it; `admin` role `403`); get, list,
+  delete and create keys for their realm's non-admin accounts (others are
+  `404`); `GET /api/auth/api-keys` and `DELETE /api/auth/api-keys/{id}`
+  cover their realm's users' PATs and accounts' keys (others `404`).
+  FB-138 tenant bindings are unchanged: `create_api_key_with` validates the
+  binding for the key's owner as before.
+- Realm identity: `GET /api/auth/realms` lists their realm only; `GET`/`PUT
+  /api/auth/realms/{realm}` and the FIX-4 endpoints under it (consents,
+  OIDC key ids, social providers, SMS) and `POST /api/auth/keys/oidc/rotate`
+  for their realm. Setting a realm's user pool up for the first time
+  (`PUT` on a realm without identity, `POST /api/auth/realms`) stays
+  platform-only.
+- Audit: `GET /api/auth/audit` returns the rows whose `realm` column
+  (0014) is their realm: events about their users, and subject-less events
+  of requests that selected their realm. Rows with no realm (requests
+  without `X-ForgeBase-Realm`, platform events) are platform-only.
+- Impersonation: users of their realm only (same rules: interactive
+  session, MFA when enrolled, reason, TTL), never another realm
+  administrator (`cannot_impersonate_admin`). The session's `impersonator`
+  is the realm administrator's principal `user:<collection>/<id>`
+  (platform administrators keep their id). They list and end
+  impersonations of their realm's users only.
+
+**Platform-only, unchanged:** administrators (`/api/auth/admins`), the
+auth signing key rotation, realm creation, IdP client apps
+(`/api/auth/clients`, still `require_admin`), and everything
+outside `/api/auth`. The first-run setup (FB-90) creates a platform
+administrator as before. `GET /api/auth/me` gains `admin_scope`
+(`"platform"` or `{"realm": "<id>"}`, absent for non-administrators) for
+the dashboard (FB-102).
+
+**PostgreSQL (FB-145).** The new SQL keeps the existing `?N IS NULL OR`
+pattern and adds `col IN (?n, …)`, `col NOT IN (…)` and
+`owner_id IN (SELECT id FROM _forgebase_service_accounts WHERE realm = ?n
+AND role <> 'admin')`; `revoke_key` keeps its `?6 OR …` boolean parameter
+(an integer on SQLite; FB-145 ports it with the rest of the file).
+Tests: `crates/forgebase-server/tests/security_fb137.rs`.
