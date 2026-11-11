@@ -97,7 +97,11 @@ pub async fn on_primary<F: Future>(f: F) -> F::Output {
     if let Some(outer) = outer {
         let commits = inner.commits();
         outer.commits.lock().unwrap_or_else(|p| p.into_inner()).merge(&commits);
-        outer.read_after.lock().unwrap_or_else(|p| p.into_inner()).merge(&commits);
+        outer
+            .read_after
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .merge(&commits);
     }
     out
 }
@@ -137,6 +141,9 @@ mod tests {
         assert_eq!(scope.commits().to_header().as_deref(), Some("control/0/7"));
         assert_eq!(scope.read_after_of("control"), Some(Lsn(7)));
         // Outside any scope it still runs (no commits to keep).
-        assert_eq!(on_primary(async { current().map(|s| s.consistency()) }).await, Some(Consistency::Strong));
+        assert_eq!(
+            on_primary(async { current().map(|s| s.consistency()) }).await,
+            Some(Consistency::Strong)
+        );
     }
 }

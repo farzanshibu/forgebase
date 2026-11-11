@@ -169,7 +169,9 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
             .await;
         assert_eq!(r.status, 201);
         // FIX-15 (found by FB-178): a control-set write on a sharded server answers its token.
-        let token = r.header("x-forgebase-commit").expect("X-ForgeBase-Commit with shards present");
+        let token = r
+            .header("x-forgebase-commit")
+            .expect("X-ForgeBase-Commit with shards present");
         assert!(token.starts_with("control/"), "{token}");
         let l = t
             .adm("GET", "/api/v1/collections/settings/records?perPage=500", None)

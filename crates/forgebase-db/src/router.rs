@@ -1165,10 +1165,10 @@ impl DbRouter {
                 .iter()
                 .filter_map(|r| r.first().and_then(Value::as_str))
                 .find_map(|sibling| self.placement(sibling));
-            if let Some(p) = sibling_set {
-                if self.set(&p.set_id).is_some_and(|h| h.set().takes_new_tenants()) {
-                    return Ok(p.set_id);
-                }
+            if let Some(p) = sibling_set
+                && self.set(&p.set_id).is_some_and(|h| h.set().takes_new_tenants())
+            {
+                return Ok(p.set_id);
             }
         }
         let loads = self.set_loads();

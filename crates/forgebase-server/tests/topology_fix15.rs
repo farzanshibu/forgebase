@@ -85,7 +85,10 @@ async fn wait_in_rotation(env: &Env, name: &str) {
         {
             return;
         }
-        assert!(start.elapsed() < Duration::from_secs(120), "{name} never entered rotation");
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "{name} never entered rotation"
+        );
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 }
@@ -167,7 +170,18 @@ fn psql(data_dir: &Path, node: &Path, sql: &str) {
     let out = std::process::Command::new(engine.join("bin").join("psql"))
         .env("PGPASSWORD", password)
         .args(["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-w"])
-        .args(["-U", "forgebase_super", "-d", "postgres", "-h", &sock, "-p", &port, "-c", sql])
+        .args([
+            "-U",
+            "forgebase_super",
+            "-d",
+            "postgres",
+            "-h",
+            &sock,
+            "-p",
+            &port,
+            "-c",
+            sql,
+        ])
         .output()
         .unwrap();
     assert!(out.status.success(), "psql: {}", String::from_utf8_lossy(&out.stderr));
@@ -197,7 +211,10 @@ async fn a_replica_added_or_removed_while_the_server_runs_is_used_by_the_data_co
             .as_(&reader, "GET", "/api/v1/collections/notes/records", &[], None)
             .await;
         assert_eq!(r.status, 200, "{}", r.text());
-        assert!(start.elapsed() < Duration::from_secs(30), "record reads never reached r1");
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "record reads never reached r1"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -259,7 +276,9 @@ async fn control_set_writes_on_a_sharded_server_return_the_commit_token() {
     let admin = r.json()["access_token"].as_str().unwrap().to_owned();
     assert!(env.server.router().is_sharded());
     wait_in_rotation(&env, "r1").await;
-    let token = write(&env, &admin, "settings", "b").await.expect("X-ForgeBase-Commit after a restart");
+    let token = write(&env, &admin, "settings", "b")
+        .await
+        .expect("X-ForgeBase-Commit after a restart");
     assert!(token.starts_with("control/"), "{token}");
     env.shutdown().await;
 }
