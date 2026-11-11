@@ -46,12 +46,15 @@ it("create collection -> add record -> filter -> edit cell -> index -> SQL -> sl
   await u.type(input, "gamma");
   await u.click(within(edit).getByRole("button", { name: "Save record" }));
   // The edited row no longer matches the active filter; clearing it shows the new value.
+  // The edit sheet closes (its exit transition releases the page's inert/scroll lock) before the page is usable again.
+  await waitFor(() => expect(screen.queryByRole("form", { name: /^Edit record/ })).not.toBeInTheDocument(), { timeout: 5000 });
   expect(await screen.findByText(/No records match this filter/)).toBeInTheDocument();
   await u.click(screen.getAllByRole("button", { name: "Clear filter" })[0]!);
   expect(await screen.findByText("gamma")).toBeInTheDocument();
+  await waitFor(() => expect(document.body.style.overflow).not.toBe("hidden"), { timeout: 5000 });
 
   // Index manager.
-  await u.click(within(await screen.findByRole("tablist", { name: "Collection sections" })).getByRole("tab", { name: "Indexes" }));
+  await u.click(within(await screen.findByRole("tablist", { name: "Collection sections" }, { timeout: 5000 })).getByRole("tab", { name: "Indexes" }));
   await u.type(await screen.findByLabelText(/^Keys/), "body");
   await u.click(await screen.findByRole("button", { name: "Create index" }));
   expect(await screen.findByText("idx_notes_body")).toBeInTheDocument();
