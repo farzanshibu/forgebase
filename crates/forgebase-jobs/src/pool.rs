@@ -7,6 +7,11 @@
 //! jobs up to a grace period, then aborts the rest and *releases* their leases
 //! (the attempt is not counted), so a restart picks them up at once. If the
 //! process dies instead, the visibility timeout does the same later.
+//!
+//! With a router (FB-172) the pool runs one such loop per database set,
+//! each on a view of the service bound to its set ([`JobService::on_set`]),
+//! sharing the `concurrency` budget; loops start and stop as sets are added
+//! and removed.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -100,8 +105,65 @@ pub fn start_pool(service: JobService, registry: JobRegistry, config: PoolConfig
     // FB-142: who may enqueue each registered kind.
     service.install_kinds(&registry);
     let (stop, stop_rx) = watch::channel(false);
-    let task = tokio::spawn(run(service, registry, config, stop_rx));
+    let permits = Arc::new(Semaphore::new(config.concurrency.max(1)));
+    let task = match service.router().cloned() {
+        None => tokio::spawn(run(service, registry, config, permits, stop_rx)),
+        Some(router) => tokio::spawn(supervise(service, router, registry, config, permits, stop_rx)),
+    };
     PoolHandle { stop, task: Some(task) }
+}
+
+/// One claim loop per set of `router` (FB-172), kept in step with the
+/// topology. Dropping (aborting) this task aborts the loops.
+async fn supervise(
+    service: JobService,
+    router: forgebase_db::DbRouter,
+    registry: JobRegistry,
+    config: PoolConfig,
+    permits: Arc<Semaphore>,
+    mut stop: watch::Receiver<bool>,
+) {
+    let mut loops: HashMap<String, watch::Sender<bool>> = HashMap::new();
+    let mut tasks: JoinSet<()> = JoinSet::new();
+    let mut changes = router.subscribe();
+    loop {
+        if *stop.borrow() {
+            break;
+        }
+        let sets = router.sets();
+        loops.retain(|id, tx| {
+            let keep = sets.iter().any(|s| s.id() == id);
+            if !keep {
+                tracing::info!(set = %id, "set gone; its job claim loop stops");
+                let _ = tx.send(true);
+            }
+            keep
+        });
+        for set in sets {
+            if loops.contains_key(set.id()) {
+                continue;
+            }
+            let (tx, rx) = watch::channel(false);
+            loops.insert(set.id().to_owned(), tx);
+            tracing::info!(set = %set.id(), "job claim loop starts");
+            let view = service.on_set(set);
+            tasks.spawn(run(view, registry.clone(), config.clone(), permits.clone(), rx));
+        }
+        tokio::select! {
+            _ = stop.changed() => {}
+            changed = changes.changed() => {
+                if changed.is_err() {
+                    // The router is gone: keep the loops until shutdown.
+                    let _ = stop.changed().await;
+                }
+            }
+            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+        }
+    }
+    for tx in loops.values() {
+        let _ = tx.send(true);
+    }
+    while tasks.join_next().await.is_some() {}
 }
 
 /// Aborts the wrapped task when dropped.
@@ -124,16 +186,21 @@ impl Drop for Unregister {
 
 type InFlight = Arc<Mutex<HashMap<String, String>>>;
 
-async fn run(service: JobService, registry: JobRegistry, config: PoolConfig, mut stop: watch::Receiver<bool>) {
+async fn run(
+    service: JobService,
+    registry: JobRegistry,
+    config: PoolConfig,
+    permits: Arc<Semaphore>,
+    mut stop: watch::Receiver<bool>,
+) {
     let system = AccessContext::system();
     let kinds = registry.kinds();
     let concurrency = config.concurrency.max(1);
-    let permits = Arc::new(Semaphore::new(concurrency));
     let in_flight: InFlight = Arc::default();
     let mut tasks: JoinSet<()> = JoinSet::new();
     let mut last_maintenance = std::time::Instant::now() - config.maintenance_interval;
     let mut last_purge = std::time::Instant::now();
-    tracing::info!(worker_id = %config.worker_id, concurrency, kinds = ?kinds, "job pool started");
+    tracing::info!(worker_id = %config.worker_id, set = %service.set_id(), concurrency, kinds = ?kinds, "job pool started");
 
     loop {
         if *stop.borrow() {

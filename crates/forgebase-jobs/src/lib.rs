@@ -47,6 +47,7 @@ mod queues;
 mod registry;
 mod routes;
 mod service;
+mod sets;
 mod tasks;
 
 pub use access::{
@@ -64,12 +65,14 @@ pub use model::{
     NewWorker, QueueStats, Schedule, SchedulePatch, Worker, backoff_ms, iso,
 };
 pub use pgcron::{
-    CHANNEL as PGCRON_CHANNEL, JOB_PREFIX as PGCRON_JOB_PREFIX, PgCronHandle, attach_pgcron, map_expression,
+    CHANNEL as PGCRON_CHANNEL, JOB_PREFIX as PGCRON_JOB_PREFIX, PgCronHandle, attach_pgcron, attach_pgcron_sets,
+    map_expression,
 };
 pub use pool::{PoolConfig, PoolHandle, start_pool};
 pub use registry::{CancelToken, HandlerError, JobContext, JobHandler, JobRegistry};
 pub use routes::{extension, openapi, router};
 pub use service::{JobService, now_ms};
+pub use sets::{excluded_tenants, tenant_guard};
 pub use tasks::{
     Attempt, Checkpoint, Compensation, FailurePolicy, JobUpdate, MAX_CHECKPOINT_BYTES, MAX_INLINE_RESULT_BYTES,
     MAX_RESULT_BYTES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, NewStep, NewWorkflow, ParentResult, Progress, ProgressReport,
