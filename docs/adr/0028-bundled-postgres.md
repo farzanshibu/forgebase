@@ -1871,3 +1871,112 @@ columns, no `pg_read_server_files`/`pg_execute_server_program`, `CREATE` on
 it on that role). The deny list stays as defence in depth; it refuses every
 `SET`, `DO` and `GRANT`, so role and privilege changes must go through an
 admin API.
+
+## Addendum (FB-139): vector collection rules and graph label rules
+
+Written 2026-11-11 by FB-139. Closes `rls-coverage.md` G9 (vector) and G10
+(graph) on the FB-134 framework. Backend-neutral: no migration; the new SQL
+(a derived items table, a loose index scan over labels, `IN` lists,
+`coalesce`) is valid on both engines, and rules compile through
+`ResourceSchema::compile` with the backend's `Dialect`.
+
+**Data core helpers** (`forgebase-data`, small and listed):
+`DataService::authorize_resource(ctx, action, &ResourceRef) ->
+Result<Option<Predicate>>` (the system is allowed; `Some(p)` restricts
+items), `DataService::register_resource_schema`, and
+`DataService::unreadable_fields(ctx, collection)` (hidden fields plus
+field rules, lower case; empty for privileged callers).
+
+**Vector (G9).** Every call on one collection asks `authorize_resource`
+for `vector_collection <name>` with the operation of the call: `search` and
+`hybrid` are `list`; `get_item`, `get_collection`, `list_fields`,
+`wait_ready` are `view`; an upsert is `create` for a new item and `update`
+for an existing one; deletions are `delete`; administration
+(`create_collection` `create`, `delete_collection` `delete`, fields and
+`rebuild` `update`, `recall` `view`) and collection `stats` need the
+permission or an unconditional rule (a restricting rule cannot apply to
+them, so it is refused). Listing collections and `/vector/stats` keep the
+plain key and leave out collections the caller may not read at all. The
+engine registers `item_schema()` (`id`, `metadata`, the kind's default).
+A rule's predicate is ANDed with the caller's filter into every statement
+that reads items (`store::ITEMS` is the items table with `_data` exposed
+again as `metadata`): the ANN pre-filter key set, exact scans, the
+post-filter verification and the FTS5 keyword ranking, so a rule is a
+**pre-filter**, never applied after `k`. Writes check the stored row
+(update) and the written row (create, update) inside the transaction;
+deletes affect only matching items (others are ignored like unknown ids;
+`DELETE .../items/{id}` gives 404). Collection definitions count the items
+the caller's rule shows. The HTTP layer checks the collection before
+reading a body (upsert: `create` or `update`; `create_collection` refuses
+anonymous callers only, since the name is in the body).
+
+`source_collection` (new optional field of `NewCollection`, stored in the
+collection options, shown on `VectorCollection`; creation only, validated
+to exist): items are keyed by record id. For every caller but the system,
+each hit is re-checked with `DataService::get_record` as the caller (View
+rule, tenant; any failure but a database error hides the item), metadata
+keys that name fields the caller may not read are removed, and a caller's
+filter on such a key is refused as `unknown_field` (no oracle). Searches
+refill `k` by asking for 4× more candidates up to `MAX_K`; hybrid searches
+re-check within their `candidates` pool. The `text` and the vectors are
+returned as stored: do not put hidden record content in `text`.
+
+`tenant_required`: callers with a tenant use it; privileged callers
+without one keep the shared `''` scope; anyone else gets `400
+tenant_required` after authorisation. Edge functions call the same service
+methods as the caller (`ctx.vector`), so they get every check above;
+`ctx.admin.vector` (the system) bypasses rules and source re-checks.
+
+**Graph (G10).** A node's resource is its label (`graph_label`), an edge's
+its type (`graph_edge_type`); rule fields are the kinds' defaults, which
+are the tables' own columns. Reads (`list` for listings, neighbours,
+traversal, shortest path and stats; `view` for single nodes and edges)
+build a `GraphAccess`: the tenant's distinct labels and edge types (a
+recursive loose index scan, at most `MAX_RULE_NAMES` = 1000 each, else
+`400 graph_too_many_names`) each get a decision, compiled into one
+condition (`label IN (allowed…) OR (label = ? AND <predicate>) …`; denied
+names are absent, so labels created meanwhile stay hidden). An edge is
+visible when its type is and both of its nodes are. The traversal's
+recursive step joins the next node and applies both conditions, so a walk
+never crosses a hidden edge or enters a hidden node; shortest-path hops do
+the same; neighbours, listings and counts filter in their statements.
+Privileged callers and callers whose every decision is `Allow` get the
+statements unchanged. A caller for whom nothing at all is allowed gets
+`403` (on an empty graph, the decision for the name `*` decides). Writes
+ask the row's label or type: `create` (the new row must match a
+restricting rule), `update` (the stored row, and the changed row under the
+rule of its possibly new label), `delete` (and deleting a node needs the
+`delete` rule of every edge touching it, else `403`). A refused stored row
+is `404` when the caller may not view it, `403` otherwise; edges can only
+be created between nodes the caller may view. `tenant_required` as for
+vector; `stats` keeps the plain key and counts only what the rules show.
+
+**For FB-162 / FB-163.** `VectorService::item_rule(ctx, action, name, op)`
+returns `ItemRule { predicate }`; `ItemRule::compile(&mut SqlBuilder,
+alias)` gives the condition over a row exposing `id` and `metadata`.
+`GraphService::access(ctx, action, op)` returns `GraphAccess`;
+`is_unrestricted()` says whether any label or edge-type rule applies,
+`node_sql`/`edge_sql` give the conditions (numbered placeholders, safe to
+repeat in one statement), and `nodes`/`edges` are the per-kind `Rules`.
+
+**For FB-147 (PostgreSQL port).** Hybrid search on `tsvector` must AND the
+same `Filter` (rule plus caller filter) into the keyword query, and the
+pgvector path must use the rule as a pre-filter (`item_rule`). The graph
+walk on PostgreSQL must keep the per-step node join and the edge condition;
+`json_each` in the existing statements is the only SQLite-only construct
+left in these crates. **For FB-160 (AGE).** A derived AGE graph must be
+read through `GraphAccess` (or not at all for restricted callers), since
+openCypher queries do not see these conditions until FB-163. **For the
+dashboard vector and graph studios.** Offer `vector_collection` rules over
+`id`/`metadata.*` and `graph_label`/`graph_edge_type` rules over
+`properties.*`; show `source_collection` on a collection; administrators
+see everything, so preview a rule with `POST
+/api/v1/policies/resources/{kind}/{name}/check`.
+
+**Breaking.** Non-privileged callers without a tenant lose the shared
+vector scope and the shared `''` graph (`tenant_required`); a `Filter`
+decision for graph data is now applied instead of refused; an explicit
+deny of `engine:vector_read:<name>` now hides that collection from
+listings. `NewCollection` and `VectorCollection` gained a public field
+(`source_collection`), so struct literals add it; `store` functions of
+the vector crate take the dialect and an optional filter (crate-private).

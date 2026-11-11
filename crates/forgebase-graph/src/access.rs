@@ -210,7 +210,10 @@ mod tests {
         assert!(!r.is_unrestricted() && r.allows_any());
         let mut b = SqlBuilder::new(&d);
         let sql = r.compile(&mut b, "n").unwrap().unwrap();
-        assert!(sql.contains("n.\"label\" IN (?1)") && sql.contains("n.\"properties\""), "{sql}");
+        assert!(
+            sql.contains("n.\"label\" IN (?1)") && sql.contains("n.\"properties\""),
+            "{sql}"
+        );
         assert!(!sql.contains("secret"), "denied labels are simply absent: {sql}");
         let all = Rules::from_decisions(ResourceKind::GraphLabel, vec![("a".into(), One::Allow)]);
         assert!(all.compile(&mut b, "n").unwrap().is_none());
@@ -229,6 +232,11 @@ mod tests {
         let mut b = SqlBuilder::new(&d);
         let sql = acc.edge_sql(&mut b, "e", "nodes").unwrap().unwrap();
         assert!(sql.contains("e.source") && sql.contains("e.target"), "{sql}");
-        assert!(GraphAccess::unrestricted().edge_sql(&mut b, "e", "x").unwrap().is_none());
+        assert!(
+            GraphAccess::unrestricted()
+                .edge_sql(&mut b, "e", "x")
+                .unwrap()
+                .is_none()
+        );
     }
 }

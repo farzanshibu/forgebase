@@ -194,7 +194,10 @@ mod tests {
         let only = Filter::restrict(&d, None, Some(rule)).unwrap().unwrap();
         assert!(only.user_keys().is_empty());
         let bad = Predicate::parse("salary > 1", HashMap::new()).unwrap();
-        assert!(Filter::restrict(&d, None, Some(bad)).is_err(), "rules read declared fields only");
+        assert!(
+            Filter::restrict(&d, None, Some(bad)).is_err(),
+            "rules read declared fields only"
+        );
     }
 
     #[test]

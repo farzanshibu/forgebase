@@ -433,7 +433,10 @@ impl VectorService {
     fn allow(&self, ctx: &AccessContext, action: Action, name: &str, op: ResourceOp) -> Result<()> {
         match self.rule(ctx, action, name, op)? {
             None => Ok(()),
-            Some(_) => Err(Self::denied(ctx, format!("{action:?} on {name} needs unrestricted access"))),
+            Some(_) => Err(Self::denied(
+                ctx,
+                format!("{action:?} on {name} needs unrestricted access"),
+            )),
         }
     }
 

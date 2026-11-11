@@ -110,7 +110,10 @@ impl GraphService {
                      UNION ALL SELECT (SELECT min({column}) FROM {table} WHERE tenant = ?1 AND {column} > l.v) \
                      FROM l WHERE l.v IS NOT NULL) SELECT v FROM l WHERE v IS NOT NULL LIMIT ?2"
                 ),
-                vec![tenant.into(), i64::try_from(MAX_RULE_NAMES + 1).unwrap_or(i64::MAX).into()],
+                vec![
+                    tenant.into(),
+                    i64::try_from(MAX_RULE_NAMES + 1).unwrap_or(i64::MAX).into(),
+                ],
             ))
             .await?;
         if rows.len() > MAX_RULE_NAMES {
@@ -155,7 +158,13 @@ impl GraphService {
         self.access_in(ctx, &tenant, action, op).await
     }
 
-    async fn access_in(&self, ctx: &AccessContext, tenant: &str, action: Action, op: ResourceOp) -> Result<GraphAccess> {
+    async fn access_in(
+        &self,
+        ctx: &AccessContext,
+        tenant: &str,
+        action: Action,
+        op: ResourceOp,
+    ) -> Result<GraphAccess> {
         if ctx.is_privileged() {
             return Ok(GraphAccess::unrestricted());
         }
@@ -185,7 +194,14 @@ impl GraphService {
     }
 
     /// The rules of one name, as [`Rules`].
-    fn rules_of(&self, ctx: &AccessContext, action: Action, kind: ResourceKind, name: &str, op: ResourceOp) -> Result<Rules> {
+    fn rules_of(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        kind: ResourceKind,
+        name: &str,
+        op: ResourceOp,
+    ) -> Result<Rules> {
         if ctx.is_privileged() {
             return Ok(Rules::unrestricted(kind));
         }
@@ -254,7 +270,13 @@ impl GraphService {
     pub async fn create_node(&self, ctx: &AccessContext, new: NewNode) -> Result<Node> {
         let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let label = check_label(new.label.as_deref())?;
-        let rule = self.rules_of(ctx, Action::GraphWrite, ResourceKind::GraphLabel, &label, ResourceOp::Create)?;
+        let rule = self.rules_of(
+            ctx,
+            Action::GraphWrite,
+            ResourceKind::GraphLabel,
+            &label,
+            ResourceOp::Create,
+        )?;
         if !rule.allows_any() {
             return Err(Self::denied(ctx, format!("creating {label:?} nodes is not allowed")));
         }
@@ -290,7 +312,10 @@ impl GraphService {
             ))
             .await?;
             if !self.row_matches(&mut *tx, NODES, "n", &tenant, &id, &rule).await? {
-                return Err(Self::denied(ctx, format!("the node does not satisfy the create rule of {label:?}")));
+                return Err(Self::denied(
+                    ctx,
+                    format!("the node does not satisfy the create rule of {label:?}"),
+                ));
             }
             Ok(())
         }
@@ -369,7 +394,9 @@ impl GraphService {
             let k = ResourceKind::GraphLabel;
             let before = self.rules_of(ctx, Action::GraphWrite, k, &old, ResourceOp::Update)?;
             if !self.row_matches(&mut *tx, NODES, "n", &tenant, id, &before).await? {
-                return Err(self.refuse(ctx, &mut *tx, k, &old, &tenant, id, "changing this node").await?);
+                return Err(self
+                    .refuse(ctx, &mut *tx, k, &old, &tenant, id, "changing this node")
+                    .await?);
             }
             let new_label = label.clone().unwrap_or_else(|| old.clone());
             let after = if new_label == old {
@@ -442,7 +469,9 @@ impl GraphService {
             let k = ResourceKind::GraphLabel;
             let rule = self.rules_of(ctx, Action::GraphWrite, k, &label, ResourceOp::Delete)?;
             if !self.row_matches(&mut *tx, NODES, "n", &tenant, id, &rule).await? {
-                return Err(self.refuse(ctx, &mut *tx, k, &label, &tenant, id, "deleting this node").await?);
+                return Err(self
+                    .refuse(ctx, &mut *tx, k, &label, &tenant, id, "deleting this node")
+                    .await?);
             }
             let mut b = SqlBuilder::new(self.dialect());
             let t = b.bind(tenant.clone());
@@ -494,7 +523,10 @@ impl GraphService {
         let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let limit = check_limit(limit)?;
         let mut b = SqlBuilder::new(self.dialect());
-        bind_all(&mut b, vec![tenant.into(), label.into(), after.into(), i64::from(limit + 1).into()]);
+        bind_all(
+            &mut b,
+            vec![tenant.into(), label.into(), after.into(), i64::from(limit + 1).into()],
+        );
         let vis = and(acc.node_sql(&mut b, "n")?.as_deref());
         let rows = self
             .backend()
@@ -520,14 +552,23 @@ impl GraphService {
         let k = ResourceKind::GraphEdgeType;
         let rule = self.rules_of(ctx, Action::GraphWrite, k, &edge_type, ResourceOp::Create)?;
         if !rule.allows_any() {
-            return Err(Self::denied(ctx, format!("creating {edge_type:?} edges is not allowed")));
+            return Err(Self::denied(
+                ctx,
+                format!("creating {edge_type:?} edges is not allowed"),
+            ));
         }
         let view = if ctx.is_privileged() {
             GraphAccess::unrestricted()
         } else {
             GraphAccess {
                 nodes: self
-                    .rules(ctx, &tenant, Action::GraphRead, ResourceKind::GraphLabel, ResourceOp::View)
+                    .rules(
+                        ctx,
+                        &tenant,
+                        Action::GraphRead,
+                        ResourceKind::GraphLabel,
+                        ResourceOp::View,
+                    )
                     .await?,
                 edges: Rules::unrestricted(k),
             }
@@ -643,7 +684,9 @@ impl GraphService {
             let k = ResourceKind::GraphEdgeType;
             let rule = self.rules_of(ctx, Action::GraphWrite, k, &edge_type, ResourceOp::Update)?;
             if !self.row_matches(&mut *tx, EDGES, "e", &tenant, id, &rule).await? {
-                return Err(self.refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "changing this edge").await?);
+                return Err(self
+                    .refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "changing this edge")
+                    .await?);
             }
             let done = tx
                 .execute(&Statement::new(
@@ -699,7 +742,9 @@ impl GraphService {
             let k = ResourceKind::GraphEdgeType;
             let rule = self.rules_of(ctx, Action::GraphWrite, k, &edge_type, ResourceOp::Delete)?;
             if !self.row_matches(&mut *tx, EDGES, "e", &tenant, id, &rule).await? {
-                return Err(self.refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "deleting this edge").await?);
+                return Err(self
+                    .refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "deleting this edge")
+                    .await?);
             }
             let done = tx
                 .execute(&Statement::new(
@@ -763,7 +808,9 @@ impl GraphService {
     pub async fn stats(&self, ctx: &AccessContext) -> Result<GraphStats> {
         let tenant = self.tenant_of(ctx, Action::GraphRead)?;
         self.data.authorize_action(ctx, Action::GraphRead)?;
-        let acc = self.access_in(ctx, &tenant, Action::GraphRead, ResourceOp::List).await?;
+        let acc = self
+            .access_in(ctx, &tenant, Action::GraphRead, ResourceOp::List)
+            .await?;
         let mut b = SqlBuilder::new(self.dialect());
         b.bind(tenant.clone());
         let vis = and(acc.node_sql(&mut b, "n")?.as_deref());
@@ -813,13 +860,16 @@ impl GraphService {
             return Err(GraphError::NodeNotFound(id.to_owned()));
         }
         let mut b = SqlBuilder::new(self.dialect());
-        bind_all(&mut b, vec![
-            tenant.into(),
-            id.into(),
-            json_list(&types).into(),
-            i64::from(limit + 1).into(),
-            i64::from(offset).into(),
-        ]);
+        bind_all(
+            &mut b,
+            vec![
+                tenant.into(),
+                id.into(),
+                json_list(&types).into(),
+                i64::from(limit + 1).into(),
+                i64::from(offset).into(),
+            ],
+        );
         // The queried node is visible; the edge's type and the node at the
         // other end must be too.
         let vis = format!(
@@ -861,10 +911,7 @@ impl GraphService {
             ),
         };
         let sql = format!("SELECT * FROM ({union}) ORDER BY 10, 2 LIMIT ?4 OFFSET ?5");
-        let rows = self
-            .backend()
-            .fetch_all(&Statement::new(sql, b.into_params()))
-            .await?;
+        let rows = self.backend().fetch_all(&Statement::new(sql, b.into_params())).await?;
         let has_more = rows.len() > limit as usize;
         let items = rows
             .rows
@@ -987,12 +1034,15 @@ impl GraphService {
                 " AND e.type IN (SELECT value FROM json_each(?3))"
             };
             let mut b = SqlBuilder::new(self.dialect());
-            bind_all(&mut b, vec![
-                tenant.into(),
-                json_list(&ids).into(),
-                json_list(&types).into(),
-                i64::try_from(MAX_TRAVERSE_EDGES + 1).unwrap_or(i64::MAX).into(),
-            ]);
+            bind_all(
+                &mut b,
+                vec![
+                    tenant.into(),
+                    json_list(&ids).into(),
+                    json_list(&types).into(),
+                    i64::try_from(MAX_TRAVERSE_EDGES + 1).unwrap_or(i64::MAX).into(),
+                ],
+            );
             // Both ends are among the visible nodes; the type must be too.
             let evis = and(acc.edges.compile(&mut b, "e")?.as_deref());
             let rows = self
@@ -1091,10 +1141,7 @@ impl GraphService {
                 (row_cap + 1).into(),
             ];
             params.extend(rule_params.iter().cloned());
-            let rows = self
-                .backend()
-                .fetch_all(&Statement::new(sql.clone(), params))
-                .await?;
+            let rows = self.backend().fetch_all(&Statement::new(sql.clone(), params)).await?;
             if rows.len() as i64 > row_cap {
                 return Err(search_limit());
             }
