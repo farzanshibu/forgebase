@@ -39,7 +39,10 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     let nodes = topo["nodes"].as_array().unwrap();
     for r in ["r1", "r2"] {
         let n = nodes.iter().find(|n| n["name"] == r).expect(r);
-        assert_eq!((n["role"].as_str(), n["state"].as_str()), (Some("replica"), Some("streaming")));
+        assert_eq!(
+            (n["role"].as_str(), n["state"].as_str()),
+            (Some("replica"), Some("streaming"))
+        );
         assert_eq!(n["in_rotation"], true, "{n}");
         assert_eq!(n["set"], "control");
     }
@@ -91,7 +94,9 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     }
     for (i, tenant) in tenants.iter().enumerate() {
         for n in 0..5 {
-            let r = t.write(tenant, "notes", json!({"body": format!("t{i}-{n}"), "n": n})).await;
+            let r = t
+                .write(tenant, "notes", json!({"body": format!("t{i}-{n}"), "n": n}))
+                .await;
             assert_eq!(r.status, 201, "write: {}", r.text());
         }
     }
@@ -124,15 +129,25 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     assert_eq!(r.status, 200, "{}", r.text());
     let placed = r.json()["items"].as_array().unwrap().clone();
     for (i, tenant) in tenants.iter().enumerate() {
-        let p = placed.iter().find(|p| p["tenant"] == tenant.as_str()).expect("placement listed");
-        assert_eq!((p["set"].as_str(), p["state"].as_str()), (Some(set_ids[i % 3].as_str()), Some("active")));
+        let p = placed
+            .iter()
+            .find(|p| p["tenant"] == tenant.as_str())
+            .expect("placement listed");
+        assert_eq!(
+            (p["set"].as_str(), p["state"].as_str()),
+            (Some(set_ids[i % 3].as_str()), Some("active"))
+        );
     }
 
     eprintln!("[{:?}] tenants done", t0.elapsed());
     // --- Replica reads: served by the standbys, never ahead of the writer --
     for k in 0..10 {
         let r = t
-            .adm("POST", "/api/v1/collections/settings/records", Some(json!({"k": format!("k{k}"), "v": "x"})))
+            .adm(
+                "POST",
+                "/api/v1/collections/settings/records",
+                Some(json!({"k": format!("k{k}"), "v": "x"})),
+            )
             .await;
         assert_eq!(r.status, 201, "{}", r.text());
     }
@@ -141,7 +156,9 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     let before: u64 = status().iter().map(|s| s.reads).sum();
     // A reader that carries no token (no recent write of its own): allowed on replicas.
     for _ in 0..30 {
-        let r = t.as_(&reader, "GET", "/api/v1/collections/settings/records", &[], None).await;
+        let r = t
+            .as_(&reader, "GET", "/api/v1/collections/settings/records", &[], None)
+            .await;
         assert!(r.status == 200 || r.status == 403, "{}", r.text());
     }
     let after: u64 = status().iter().map(|s| s.reads).sum();
@@ -149,7 +166,11 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     // A write and, right after it, a read by the same principal never goes back in time.
     for k in 0..10 {
         let r = t
-            .adm("POST", "/api/v1/collections/settings/records", Some(json!({"k": format!("ryw{k}"), "v": "y"})))
+            .adm(
+                "POST",
+                "/api/v1/collections/settings/records",
+                Some(json!({"k": format!("ryw{k}"), "v": "y"})),
+            )
             .await;
         assert_eq!(r.status, 201);
         // FINDING (FB-178): with shards present, a control-set record write returns no
@@ -157,10 +178,16 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
         if r.header("x-forgebase-commit").is_none() {
             eprintln!("FINDING: no X-ForgeBase-Commit on a record write with shards present");
         }
-        let l = t.adm("GET", "/api/v1/collections/settings/records?perPage=500", None).await;
+        let l = t
+            .adm("GET", "/api/v1/collections/settings/records?perPage=500", None)
+            .await;
         assert_eq!(l.status, 200);
         assert!(
-            l.json()["items"].as_array().unwrap().iter().any(|x| x["k"] == format!("ryw{k}")),
+            l.json()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["k"] == format!("ryw{k}")),
             "read-your-writes: ryw{k}"
         );
     }
@@ -170,20 +197,36 @@ async fn the_topology_serves_tenants_replica_reads_and_schema_changes() {
     let r = t.adm("GET", &format!("{BASE}/operations?limit=50"), None).await;
     assert_eq!(r.status, 200);
     let ops = r.json();
-    let kinds: Vec<&str> = ops["items"].as_array().unwrap().iter().filter_map(|o| o["kind"].as_str()).collect();
-    assert!(kinds.contains(&"database.node.add") && kinds.contains(&"database.shard.add"), "{kinds:?}");
+    let kinds: Vec<&str> = ops["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o["kind"].as_str())
+        .collect();
+    assert!(
+        kinds.contains(&"database.node.add") && kinds.contains(&"database.shard.add"),
+        "{kinds:?}"
+    );
     let r = t.adm("GET", "/api/auth/audit?event=db.topology.shard.add", None).await;
     assert_eq!(r.status, 200);
-    assert!(r.json()["items"].as_array().unwrap().len() >= 3, "three shard adds audited");
+    assert!(
+        r.json()["items"].as_array().unwrap().len() >= 3,
+        "three shard adds audited"
+    );
 
     eprintln!("[{:?}] audit done", t0.elapsed());
     // --- A restart brings every node back with no loss -----------------------
     t.restart().await;
     let reads = t.list(&tenants[0], "notes", &[]).await;
     assert_eq!(Topo::count(&reads), 5);
-    until("both replicas are back in rotation", Duration::from_secs(120), async || {
-        t.node("r1").await.is_some_and(|n| n["in_rotation"] == true) && t.node("r2").await.is_some_and(|n| n["in_rotation"] == true)
-    })
+    until(
+        "both replicas are back in rotation",
+        Duration::from_secs(120),
+        async || {
+            t.node("r1").await.is_some_and(|n| n["in_rotation"] == true)
+                && t.node("r2").await.is_some_and(|n| n["in_rotation"] == true)
+        },
+    )
     .await;
     t.shutdown().await;
 }

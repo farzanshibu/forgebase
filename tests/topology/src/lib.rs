@@ -245,14 +245,7 @@ impl Topo {
     }
 
     /// A request with a bearer token.
-    pub async fn as_(
-        &self,
-        token: &str,
-        method: &str,
-        path: &str,
-        extra: &[(&str, &str)],
-        body: Option<Json>,
-    ) -> Resp {
+    pub async fn as_(&self, token: &str, method: &str, path: &str, extra: &[(&str, &str)], body: Option<Json>) -> Resp {
         let auth = format!("Bearer {token}");
         let mut h = vec![("Authorization", auth.as_str())];
         h.extend_from_slice(extra);
@@ -308,14 +301,25 @@ impl Topo {
             .signup(&ClientInfo::default(), None, &email, USER_PASSWORD, None)
             .await
             .unwrap();
-        let r = self
-            .req(
-                "POST",
-                "/api/auth/login",
-                &[],
-                Some(json!({"email": email, "password": USER_PASSWORD})),
-            )
-            .await;
+        // FINDING (FB-178): an anonymous login right after a signup can read a replica
+        // that has not replayed the user yet (404 record_not_found); no token covers
+        // anonymous callers. The harness retries, as a client would.
+        let mut r;
+        let start = Instant::now();
+        loop {
+            r = self
+                .req(
+                    "POST",
+                    "/api/auth/login",
+                    &[],
+                    Some(json!({"email": email, "password": USER_PASSWORD})),
+                )
+                .await;
+            if r.status == 200 || start.elapsed() > Duration::from_secs(10) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         assert_eq!(r.status, 200, "login: {}", r.text());
         r.json()["access_token"].as_str().unwrap().to_owned()
     }
@@ -431,7 +435,13 @@ impl Topo {
         self.seq += 1;
         let slug = format!("org{}", self.seq);
         let r = self
-            .as_(&user, "POST", "/api/v1/orgs", &[], Some(json!({"slug": slug, "name": slug})))
+            .as_(
+                &user,
+                "POST",
+                "/api/v1/orgs",
+                &[],
+                Some(json!({"slug": slug, "name": slug})),
+            )
             .await;
         assert_eq!(r.status, 201, "org: {}", r.text());
         let org = r.json()["id"].as_str().unwrap().to_owned();
@@ -634,10 +644,25 @@ pub fn psql(data_dir: &std::path::Path, node: &std::path::Path, db: &str, sql: &
     let secrets = forgebase_pgengine::RoleSecrets::load(&data_dir.join("postgres").join("roles.secret"))
         .map_err(|e| e.to_string())?
         .ok_or("no roles.secret")?;
-    let password = secrets.password(forgebase_pgengine::Role::Super).ok_or("no superuser password")?;
+    let password = secrets
+        .password(forgebase_pgengine::Role::Super)
+        .ok_or("no superuser password")?;
     let out = std::process::Command::new(engine.join("bin").join("psql"))
         .env("PGPASSWORD", password)
-        .args(["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-w", "-U", "forgebase_super", "-d", db, "-h"])
+        .args([
+            "-X",
+            "-A",
+            "-t",
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-w",
+            "-U",
+            "forgebase_super",
+            "-d",
+            db,
+            "-h",
+        ])
         .arg(&sock)
         .args(["-p", &port.to_string(), "-c", sql])
         .output()

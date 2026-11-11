@@ -19,7 +19,7 @@ async fn lsn(db: &Database) -> String {
 }
 
 async fn diff(db: &Database, from: &str, to: &str) -> i64 {
-    db.fetch_all(&Statement::raw(&format!(
+    db.fetch_all(&Statement::raw(format!(
         "SELECT CAST(pg_wal_lsn_diff('{to}', '{from}') AS BIGINT)"
     )))
     .await
@@ -77,7 +77,11 @@ async fn load(db: &Database) -> (i64, i64, i64) {
     for k in 0..100 {
         run(
             db,
-            &format!("DELETE FROM fb178_wal WHERE id BETWEEN {} AND {}", k * 100 + 1, k * 100 + 100),
+            &format!(
+                "DELETE FROM fb178_wal WHERE id BETWEEN {} AND {}",
+                k * 100 + 1,
+                k * 100 + 100
+            ),
         )
         .await;
     }
@@ -128,7 +132,10 @@ async fn logical_decoding_adds_a_small_share_of_wal_volume() {
         },
     });
     record("wal_level", &out);
-    assert!(total(l) >= total(r), "logical never writes less WAL than replica: {out}");
+    assert!(
+        total(l) >= total(r),
+        "logical never writes less WAL than replica: {out}"
+    );
     assert!(
         pct(total(r), total(l)) < 50.0,
         "logical decoding should cost well under 50% more WAL for row changes: {out}"

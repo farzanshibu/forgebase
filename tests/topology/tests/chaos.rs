@@ -30,7 +30,9 @@ async fn put(t: &Topo, k: &str) -> bool {
 }
 
 async fn keys(t: &Topo) -> Vec<String> {
-    let r = t.adm("GET", "/api/v1/collections/events/records?perPage=500", None).await;
+    let r = t
+        .adm("GET", "/api/v1/collections/events/records?perPage=500", None)
+        .await;
     assert_eq!(r.status, 200, "{}", r.text());
     r.json()["items"]
         .as_array()
@@ -65,15 +67,19 @@ async fn a_killed_replica_fails_reads_over_to_the_primary_and_comes_back() {
     };
     let on_standby = async |rs: &forgebase_db::ReplicaSet| try_standby(rs).await.expect("a read answers");
     // Both standbys have the table and the twenty rows before anything is killed.
-    until("both standbys have the first twenty", Duration::from_secs(60), async || {
-        let mut seen = 0;
-        for _ in 0..8 {
-            if try_standby(&replicas).await == Some((1, 20)) {
-                seen += 1;
+    until(
+        "both standbys have the first twenty",
+        Duration::from_secs(60),
+        async || {
+            let mut seen = 0;
+            for _ in 0..8 {
+                if try_standby(&replicas).await == Some((1, 20)) {
+                    seen += 1;
+                }
             }
-        }
-        seen >= 6
-    })
+            seen >= 6
+        },
+    )
     .await;
 
     // A reader runs through the whole failure: no read may fail.
@@ -151,15 +157,30 @@ async fn a_killed_replica_fails_reads_over_to_the_primary_and_comes_back() {
             .rows[0][0]
             .as_i64()
             .unwrap();
-        let lsn = t.server().router().control().database().current_wal_lsn().await.unwrap();
+        let lsn = t
+            .server()
+            .router()
+            .control()
+            .database()
+            .current_wal_lsn()
+            .await
+            .unwrap();
         let st = replicas.status();
-        n == 40 && lsn.is_some_and(|l| st.iter().any(|s| s.name == "r1" && s.replay_lsn.is_some_and(|r| r >= l)))
+        n == 40
+            && lsn.is_some_and(|l| {
+                st.iter()
+                    .any(|s| s.name == "r1" && s.replay_lsn.is_some_and(|r| r >= l))
+            })
     })
     .await;
     stop.store(true, Ordering::Relaxed);
     reader.await.unwrap();
     assert!(reads.load(Ordering::Relaxed) > 20, "the reader ran");
-    assert_eq!(failed.load(Ordering::Relaxed), 0, "no HTTP read failed while r1 was killed");
+    assert_eq!(
+        failed.load(Ordering::Relaxed),
+        0,
+        "no HTTP read failed while r1 was killed"
+    );
     let mut standby_reads = 0;
     for _ in 0..20 {
         let (in_recovery, n) = on_standby(&replicas).await;
@@ -169,7 +190,9 @@ async fn a_killed_replica_fails_reads_over_to_the_primary_and_comes_back() {
         }
     }
     assert!(standby_reads > 0, "replicas serve reads again");
-    let r = t.adm("GET", &format!("{BASE}/nodes/{}", r1["id"].as_str().unwrap()), None).await;
+    let r = t
+        .adm("GET", &format!("{BASE}/nodes/{}", r1["id"].as_str().unwrap()), None)
+        .await;
     assert_eq!(r.status, 200, "{}", r.text());
     t.shutdown().await;
 }
@@ -230,17 +253,21 @@ async fn a_promoted_replica_keeps_every_committed_write_and_the_old_primary_rejo
     assert_eq!(r.status, 202, "{}", r.text());
     let promote_op = r.json()["operation"]["id"].as_str().unwrap().to_owned();
     let file = t.cfg.data_dir.join(forgebase_db::topology::TOPOLOGY_FILE);
-    until("r1 is the primary in topology.json", Duration::from_secs(180), async || {
-        forgebase_db::topology::read_topology_file(&file)
-            .ok()
-            .flatten()
-            .is_some_and(|f| {
-                f.topology
-                    .nodes
-                    .iter()
-                    .any(|n| n.name == "r1" && n.role == forgebase_db::topology::NodeRole::Primary)
-            })
-    })
+    until(
+        "r1 is the primary in topology.json",
+        Duration::from_secs(180),
+        async || {
+            forgebase_db::topology::read_topology_file(&file)
+                .ok()
+                .flatten()
+                .is_some_and(|f| {
+                    f.topology
+                        .nodes
+                        .iter()
+                        .any(|n| n.name == "r1" && n.role == forgebase_db::topology::NodeRole::Primary)
+                })
+        },
+    )
     .await;
     stop.store(true, Ordering::Relaxed);
     writer.await.unwrap();
@@ -249,7 +276,10 @@ async fn a_promoted_replica_keeps_every_committed_write_and_the_old_primary_rejo
 
     // Restart onto the new primary; the promote finishes there.
     t.restart().await;
-    assert!(t.primary_pgdata().ends_with("postgres/nodes/r1/data"), "r1 is the primary now");
+    assert!(
+        t.primary_pgdata().ends_with("postgres/nodes/r1/data"),
+        "r1 is the primary now"
+    );
     let present: Vec<String> = t
         .server()
         .database()
@@ -260,7 +290,11 @@ async fn a_promoted_replica_keeps_every_committed_write_and_the_old_primary_rejo
         .iter()
         .map(|r| r[0].as_str().unwrap().to_owned())
         .collect();
-    eprintln!("{} records after the promotion, {} acknowledged live writes", present.len(), acked.len());
+    eprintln!(
+        "{} records after the promotion, {} acknowledged live writes",
+        present.len(),
+        acked.len()
+    );
     for k in (0..25).map(|i| format!("pre-{i}")).chain(acked.iter().cloned()) {
         assert!(present.contains(&k), "committed write {k} survived the promotion");
     }
@@ -272,22 +306,37 @@ async fn a_promoted_replica_keeps_every_committed_write_and_the_old_primary_rejo
     let old = t.node("primary").await.expect("the old primary is a node now");
     assert_eq!(old["state"], "needs_rebuild", "{old}");
     let r = t
-        .adm("POST", &format!("{BASE}/nodes/{}/rebuild", old["id"].as_str().unwrap()), None)
+        .adm(
+            "POST",
+            &format!("{BASE}/nodes/{}/rebuild", old["id"].as_str().unwrap()),
+            None,
+        )
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
-    let done = t.wait_op(r.json()["operation"]["id"].as_str().unwrap(), Duration::from_secs(300)).await;
+    let done = t
+        .wait_op(r.json()["operation"]["id"].as_str().unwrap(), Duration::from_secs(300))
+        .await;
     assert_eq!(done["status"], "succeeded", "{done}");
-    until("the old primary streams from r1", Duration::from_secs(120), async || {
-        t.node("primary")
-            .await
-            .is_some_and(|n| matches!(n["state"].as_str(), Some("streaming" | "catching_up")))
-    })
+    until(
+        "the old primary streams from r1",
+        Duration::from_secs(120),
+        async || {
+            t.node("primary")
+                .await
+                .is_some_and(|n| matches!(n["state"].as_str(), Some("streaming" | "catching_up")))
+        },
+    )
     .await;
     // It has the post-promotion write, too.
     assert!(put(&t, "after-rejoin").await);
     let started = Instant::now();
     loop {
-        let last = match psql(&t.cfg.data_dir, &old_pgdata, "forgebase", "SELECT count(*) FROM events WHERE k = 'after-rejoin'") {
+        let last = match psql(
+            &t.cfg.data_dir,
+            &old_pgdata,
+            "forgebase",
+            "SELECT count(*) FROM events WHERE k = 'after-rejoin'",
+        ) {
             Ok(s) if s == "1" => break,
             Ok(s) => format!("count {s}"),
             Err(e) => e,
@@ -330,14 +379,16 @@ async fn prepared_transactions_resolve_after_a_crash_in_the_middle_of_a_cross_sh
     for (gid, table) in [(decided, "fb178_decided"), (undecided, "fb178_undecided")] {
         for p in &parts {
             let mut tx = p.db.begin(TxMode::Normal).await.unwrap();
-            tx.execute(&Statement::raw(&format!("CREATE TABLE {table} (id INT)"))).await.unwrap();
+            tx.execute(&Statement::raw(format!("CREATE TABLE {table} (id INT)")))
+                .await
+                .unwrap();
             tx.prepare(node_gid(gid, p.number)).await.unwrap();
         }
     }
     let nodes: Vec<String> = parts.iter().map(|p| format!("\"{}\"", p.set_id)).collect();
     {
         let mut tx = router.control().begin(TxMode::Normal).await.unwrap();
-        tx.execute(&Statement::raw(&format!(
+        tx.execute(&Statement::raw(format!(
             "INSERT INTO _forgebase_xact_journal (gid, nodes, state, purpose, created_at) \
              VALUES ('{decided}', CAST('[{}]' AS jsonb), 'committing', 'fb178 chaos', '2026-01-01T00:00:00Z')",
             nodes.join(",")
@@ -373,7 +424,10 @@ async fn prepared_transactions_resolve_after_a_crash_in_the_middle_of_a_cross_sh
         if open == 0 {
             break;
         }
-        assert!(started.elapsed() < Duration::from_secs(240), "{open} transactions still prepared");
+        assert!(
+            started.elapsed() < Duration::from_secs(240),
+            "{open} transactions still prepared"
+        );
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     let router = t.server().router().clone();
@@ -381,7 +435,7 @@ async fn prepared_transactions_resolve_after_a_crash_in_the_middle_of_a_cross_sh
         let exists = |table: &'static str| {
             let db = p.db.clone();
             async move {
-                db.fetch_all(&Statement::raw(&format!(
+                db.fetch_all(&Statement::raw(format!(
                     "SELECT count(*) FROM information_schema.tables WHERE table_name = '{table}'"
                 )))
                 .await
@@ -391,12 +445,24 @@ async fn prepared_transactions_resolve_after_a_crash_in_the_middle_of_a_cross_sh
                     .unwrap()
             }
         };
-        assert_eq!(exists("fb178_decided").await, 1, "the decided transaction committed on {}", p.set_id);
-        assert_eq!(exists("fb178_undecided").await, 0, "the undecided one rolled back on {}", p.set_id);
+        assert_eq!(
+            exists("fb178_decided").await,
+            1,
+            "the decided transaction committed on {}",
+            p.set_id
+        );
+        assert_eq!(
+            exists("fb178_undecided").await,
+            0,
+            "the undecided one rolled back on {}",
+            p.set_id
+        );
     }
     assert_eq!(
-        t.control_scalar(&format!("SELECT count(*) FROM _forgebase_xact_journal WHERE gid = '{decided}' AND state = 'committed'"))
-            .await,
+        t.control_scalar(&format!(
+            "SELECT count(*) FROM _forgebase_xact_journal WHERE gid = '{decided}' AND state = 'committed'"
+        ))
+        .await,
         1,
         "the journal row is closed"
     );

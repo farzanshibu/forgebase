@@ -16,6 +16,10 @@ name = "cluster"
 path = "tests/cluster.rs"
 
 [[test]]
+name = "moves"
+path = "tests/moves.rs"
+
+[[test]]
 name = "chaos"
 path = "tests/chaos.rs"
 

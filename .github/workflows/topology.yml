@@ -7,7 +7,8 @@ name: topology
 # lag and read-your-writes tests, and the measurements recorded in the
 # addendum of docs/adr/0029-postgres-extensions-replicas-sharding.md.
 #
-# Nightly, and on changes to the routing, shard, replica and move code. The
+# Nightly and on demand (workflow_dispatch) only, by decision of the orchestrator
+# (the suites start many clusters; pull requests do not run them). The
 # suites are gated by FORGEBASE_TOPOLOGY=1 so a plain `cargo test --workspace`
 # stays fast. The engine is the one engine.lock pins, downloaded the way the
 # CI workflow's PostgreSQL jobs do.
@@ -16,37 +17,6 @@ on:
   schedule:
     - cron: "43 3 * * *"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "crates/forgebase-db/src/router*"
-      - "crates/forgebase-db/src/routing/**"
-      - "crates/forgebase-db/src/shards*"
-      - "crates/forgebase-db/src/replicas*"
-      - "crates/forgebase-db/src/moves*"
-      - "crates/forgebase-db/src/twophase*"
-      - "crates/forgebase-pgengine/**"
-      - "crates/forgebase-server/src/replicas*"
-      - "crates/forgebase-server/src/moves*"
-      - "crates/forgebase-server/src/shards*"
-      - "tests/topology/**"
-      - "engine.lock"
-      - ".github/workflows/topology.yml"
-  push:
-    branches: [main]
-    paths:
-      - "crates/forgebase-db/src/router*"
-      - "crates/forgebase-db/src/routing/**"
-      - "crates/forgebase-db/src/shards*"
-      - "crates/forgebase-db/src/replicas*"
-      - "crates/forgebase-db/src/moves*"
-      - "crates/forgebase-db/src/twophase*"
-      - "crates/forgebase-pgengine/**"
-      - "crates/forgebase-server/src/replicas*"
-      - "crates/forgebase-server/src/moves*"
-      - "crates/forgebase-server/src/shards*"
-      - "tests/topology/**"
-      - "engine.lock"
-      - ".github/workflows/topology.yml"
 
 permissions:
   contents: read

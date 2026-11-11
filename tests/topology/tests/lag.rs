@@ -12,7 +12,13 @@ use serde_json::json;
 
 async fn count(t: &Topo, extra: &[(&str, &str)]) -> usize {
     let r = t
-        .as_(&t.admin, "GET", "/api/v1/collections/events/records?perPage=500", extra, None)
+        .as_(
+            &t.admin,
+            "GET",
+            "/api/v1/collections/events/records?perPage=500",
+            extra,
+            None,
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     Topo::count(&r)
@@ -46,7 +52,11 @@ async fn paused_replicas_never_serve_a_read_older_than_the_callers_writes_and_le
     assert_eq!(r.status, 201, "{}", r.text());
     for i in 0..5 {
         let r = t
-            .adm("POST", "/api/v1/collections/events/records", Some(json!({"k": format!("a{i}")})))
+            .adm(
+                "POST",
+                "/api/v1/collections/events/records",
+                Some(json!({"k": format!("a{i}")})),
+            )
             .await;
         assert_eq!(r.status, 201);
     }
@@ -63,23 +73,37 @@ async fn paused_replicas_never_serve_a_read_older_than_the_callers_writes_and_le
     };
     let standby_count = async || try_standby().await.expect("a read answers");
     // Both standbys have the five.
-    until("the standbys have the first five", Duration::from_secs(30), async || {
-        let mut ok = 0;
-        for _ in 0..8 {
-            ok += usize::from(try_standby().await == Some((1, 5)));
-        }
-        ok >= 6
-    })
+    until(
+        "the standbys have the first five",
+        Duration::from_secs(30),
+        async || {
+            let mut ok = 0;
+            for _ in 0..8 {
+                ok += usize::from(try_standby().await == Some((1, 5)));
+            }
+            ok >= 6
+        },
+    )
     .await;
 
     // Pause the replay on both standbys, then write five more.
     for r in ["r1", "r2"] {
-        psql(&t.cfg.data_dir, &t.node_data(r), "postgres", "SELECT pg_wal_replay_pause()").expect("pause");
+        psql(
+            &t.cfg.data_dir,
+            &t.node_data(r),
+            "postgres",
+            "SELECT pg_wal_replay_pause()",
+        )
+        .expect("pause");
     }
     let mut token = String::new();
     for i in 0..5 {
         let r = t
-            .adm("POST", "/api/v1/collections/events/records", Some(json!({"k": format!("b{i}")})))
+            .adm(
+                "POST",
+                "/api/v1/collections/events/records",
+                Some(json!({"k": format!("b{i}")})),
+            )
             .await;
         assert_eq!(r.status, 201);
         token = r.header("x-forgebase-commit").expect("commit token").to_owned();
@@ -90,35 +114,60 @@ async fn paused_replicas_never_serve_a_read_older_than_the_callers_writes_and_le
     let (in_recovery, n) = standby_count().await;
     assert_eq!((in_recovery, n), (1, 5), "a replica read with no token is behind");
     assert_eq!(
-        count(&t, &[("X-ForgeBase-Read-After", &token), ("X-ForgeBase-Consistency", "eventual")]).await,
+        count(
+            &t,
+            &[
+                ("X-ForgeBase-Read-After", &token),
+                ("X-ForgeBase-Consistency", "eventual")
+            ]
+        )
+        .await,
         10,
         "read-after: the replicas are behind, the read goes to the primary"
     );
     assert_eq!(count(&t, &[("X-ForgeBase-Consistency", "strong")]).await, 10, "strong");
-    assert_eq!(count(&t, &[]).await, 10, "the writer's own next read (remembered commit)");
+    assert_eq!(
+        count(&t, &[]).await,
+        10,
+        "the writer's own next read (remembered commit)"
+    );
 
     // Past max_lag_ms both leave the rotation; every HTTP read still works.
-    until("both replicas lag out of rotation", Duration::from_secs(90), async || {
-        let mut out = 0;
-        for r in ["r1", "r2"] {
-            if let Some(n) = t.node(r).await
-                && n["in_rotation"] != true
-            {
-                assert_eq!(n["state"], "lagging", "{n}");
-                out += 1;
+    until(
+        "both replicas lag out of rotation",
+        Duration::from_secs(90),
+        async || {
+            let mut out = 0;
+            for r in ["r1", "r2"] {
+                if let Some(n) = t.node(r).await
+                    && n["in_rotation"] != true
+                {
+                    assert_eq!(n["state"], "lagging", "{n}");
+                    out += 1;
+                }
             }
-        }
-        assert_eq!(count(&t, &[]).await, 10);
-        out == 2
-    })
+            assert_eq!(count(&t, &[]).await, 10);
+            out == 2
+        },
+    )
     .await;
     let (in_recovery, n) = standby_count().await;
-    assert_eq!((in_recovery, n), (0, 10), "with no replica in rotation reads use the primary");
+    assert_eq!(
+        (in_recovery, n),
+        (0, 10),
+        "with no replica in rotation reads use the primary"
+    );
     assert_eq!(count(&t, &[("X-ForgeBase-Read-After", &token)]).await, 10);
 
     // Resume: they catch up and come back; their reads include every write.
     for r in ["r1", "r2"] {
-        psql(&t.cfg.data_dir, &t.node_data(r), "postgres", "SELECT pg_wal_replay_resume()").expect("resume");
+        psql(
+            &t.cfg.data_dir,
+            &t.node_data(r),
+            "postgres",
+            "SELECT pg_wal_replay_resume()",
+        )
+        .expect("resume");
     }
     for r in ["r1", "r2"] {
         t.wait_in_rotation(r, Duration::from_secs(120)).await;

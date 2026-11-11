@@ -4329,3 +4329,61 @@ the suite does not cover yet: kill the source or target mid-copy (resume
 from `copying`), promote the source during a move (`failover` slots),
 crash between the switch transaction and the flip (abort cleans the
 target).
+
+## Addendum: FB-178 measurements (2026-11-12)
+
+FB-178 adds the topology tests (`tests/topology`, crate
+`forgebase-topology-tests`; `.github/workflows/topology.yml`, nightly and
+`workflow_dispatch`). One managed primary with two local replicas (added with
+`POST /nodes`) and three shards (separate clusters added with
+`POST /shards`) are driven through `/api/system/database/*` and `/api/v1/*`.
+Suites need `FORGEBASE_TOPOLOGY=1`, `FORGEBASE_TEST_BACKEND=postgres` and an
+engine; otherwise they skip at once. Suites: `cluster` (placement, isolation,
+schema change on every set, replica reads, restart), `chaos` (replica killed,
+promote under writes with the old primary rejoined by `/rebuild`, prepared
+transactions after a crash), `lag` (paused replay, read-after tokens,
+`max_lag_ms` rotation), `wal`, `moves` (FB-174: move under load, cancel,
+restart during a move, rebalance; written against the merged routes).
+
+**WAL overhead of `wal_level = logical`** (bundled PostgreSQL 18.6-r1, two
+fresh clusters differing only in `wal_level`, same load, two runs each with
+identical bytes): 40 000 inserts, 20 000 updates (indexed counter and JSON
+body), 10 000 deletes in 700 transactions of 100 rows; key, tenant, JSON body,
+two secondary indexes, `full_page_writes = off`.
+
+| Phase | replica | logical | overhead |
+|---|---|---|---|
+| inserts | 22 138 648 B | 22 141 848 B | +0.01 % |
+| updates | 12 394 136 B | 12 706 168 B | +2.5 % |
+| deletes | 609 464 B | 770 744 B | +26 % |
+| total | 35 142 248 B | 35 618 760 B | **+1.4 %** |
+
+Logical decoding adds the old-key image to updates and deletes (deletes are
+small in absolute terms). The risk-table row ("small for row changes") holds.
+
+**Move freeze times.** FB-174's own measurements stand (540 ms; 819 ms and
+4 149 ms on a loaded machine, under the 10 s limit). The `moves` suite records
+`FB178_MEASURE move_freeze` lines (freeze_ms, rows, live writes) into the
+nightly job's summary and artifact; it was not run when this was written
+(orchestrator's skip-tests rule), so no new freeze numbers are claimed here.
+
+**Findings the tests exposed (no production code changed).**
+- A replica added through the API while the server runs is not used by the
+  data core until the next start: the data service holds control's handle from
+  open time, so record writes carry no `X-ForgeBase-Commit` and record reads
+  never reach the replica.
+- With shards present, a control-set record write returned no
+  `X-ForgeBase-Commit` even after a restart (seen in the `cluster` suite; the
+  test prints `FINDING` and does not fail).
+- An anonymous login straight after a signup can read a replica that has not
+  replayed the user (404 `record_not_found`): anonymous callers have no token.
+- Creating an environment never calls `place_new_tenant`; tenants stay on
+  control until moved, so the harness places them with `router().place`.
+- Chaos not covered: kill a source or target mid-copy, promote the source
+  mid-move, crash between the switch transaction and the flip.
+
+**Running locally.** `FORGEBASE_TOPOLOGY=1 FORGEBASE_TEST_BACKEND=postgres
+FORGEBASE_TEST_PG_ENGINE=<engine> FORGEBASE_PG_ENGINE_DIR=<engine>
+FORGEBASE_TEST_PG_TMP=<short dir> cargo test -p forgebase-topology-tests`.
+On macOS killed clusters leak SysV shared-memory segments
+(`kern.sysv.shmmni = 32`).
