@@ -484,7 +484,9 @@ async fn start_on(
     let registry = shards::register_jobs(registry, state.data().clone());
     // FB-175: the `database.*` topology operations.
     let registry = replicas::register_jobs(registry, replicas.clone());
-    replicas.attach(router.clone(), jobs.clone(), state.data().clone()).await;
+    replicas
+        .attach(router.clone(), jobs.clone(), state.data().clone())
+        .await;
     // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
     jobs.attach_access(job_access);
     let jp = fn_policy.clone();

@@ -224,7 +224,10 @@ impl Replicas {
 
     /// The control primary's engine, when this server runs it.
     pub fn primary(&self) -> Option<Arc<EngineHandle>> {
-        self.primary.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.primary
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The router over control `db` with this server's connector, the
@@ -522,12 +525,9 @@ impl Replicas {
             .filter(|ip| !ip.is_unspecified())
             .into_iter()
             .collect();
-        forgebase_pgengine::hba::apply_peers(
-            &primary,
-            &forgebase_pgengine::replication::HbaInput { agents, readers },
-        )
-        .await
-        .map_err(|e| TopologyError::internal(e.to_string()))
+        forgebase_pgengine::hba::apply_peers(&primary, &forgebase_pgengine::replication::HbaInput { agents, readers })
+            .await
+            .map_err(|e| TopologyError::internal(e.to_string()))
     }
 
     // -- operations ---------------------------------------------------------
@@ -972,7 +972,10 @@ impl TopologyOps for Replicas {
             let control = self.control()?;
             let v = service::node_view(&control, id).await.map_err(svc_err)?;
             let st = self.statuses().get(id).cloned();
-            let lag_history = lock(&self.lag).get(id).map(|q| q.iter().cloned().collect()).unwrap_or_default();
+            let lag_history = lock(&self.lag)
+                .get(id)
+                .map(|q| q.iter().cloned().collect())
+                .unwrap_or_default();
             Ok(api::NodeDetail {
                 node: node_info(v, st.as_ref()),
                 lag_history,
@@ -985,14 +988,22 @@ impl TopologyOps for Replicas {
             let control = self.control()?;
             let topo = topology::load(&control).await.map_err(db_err)?;
             if topo.set(&req.set).is_none_or(|s| s.state == SetState::Retired) {
-                return Err(TopologyError::new(404, "shard_not_found", format!("set {} not found", req.set)));
+                return Err(TopologyError::new(
+                    404,
+                    "shard_not_found",
+                    format!("set {} not found", req.set),
+                ));
             }
             if topo
                 .nodes
                 .iter()
                 .any(|n| n.state != NodeState::Retired && n.name.eq_ignore_ascii_case(&req.name))
             {
-                return Err(TopologyError::new(409, "node_exists", format!("a node named {} already exists", req.name)));
+                return Err(TopologyError::new(
+                    409,
+                    "node_exists",
+                    format!("a node named {} already exists", req.name),
+                ));
             }
             let weight = req.weight.unwrap_or(1);
             if req.kind == "local" {
@@ -1105,7 +1116,11 @@ impl TopologyOps for Replicas {
         Box::pin(async move {
             let n = self.node_row(id).await?;
             if n.role != NodeRole::Replica {
-                return Err(TopologyError::new(409, "node_state", format!("{} is already the primary", n.name)));
+                return Err(TopologyError::new(
+                    409,
+                    "node_state",
+                    format!("{} is already the primary", n.name),
+                ));
             }
             if n.kind != NodeKind::Local {
                 // Remote: the agent's last report against the primary.
@@ -1146,14 +1161,21 @@ impl TopologyOps for Replicas {
             let n = self.node_row(id).await?;
             check_confirm(&req.confirm, &n.name)?;
             if n.role != NodeRole::Replica {
-                return Err(TopologyError::new(409, "node_state", format!("{} is already the primary", n.name)));
+                return Err(TopologyError::new(
+                    409,
+                    "node_state",
+                    format!("{} is already the primary", n.name),
+                ));
             }
             match n.kind {
                 NodeKind::External => {
                     return Err(TopologyError::new(
                         400,
                         "node_unsupported",
-                        format!("{} is an external replica: promote it on its own server, then add it as a primary", n.name),
+                        format!(
+                            "{} is an external replica: promote it on its own server, then add it as a primary",
+                            n.name
+                        ),
                     ));
                 }
                 NodeKind::Local | NodeKind::Remote => {
@@ -1167,7 +1189,10 @@ impl TopologyOps for Replicas {
                 return Err(TopologyError::new(
                     409,
                     "node_state",
-                    format!("{} is {}: only a replica that follows the primary can be promoted", n.name, n.state),
+                    format!(
+                        "{} is {}: only a replica that follows the primary can be promoted",
+                        n.name, n.state
+                    ),
                 ));
             }
             self.enqueue(
@@ -1201,7 +1226,8 @@ impl TopologyOps for Replicas {
             if n.kind == NodeKind::Local {
                 self.need_primary()?;
             }
-            self.enqueue(ctx, kinds::NODE_REBUILD, &n.set_id, Some(id), json!({})).await
+            self.enqueue(ctx, kinds::NODE_REBUILD, &n.set_id, Some(id), json!({}))
+                .await
         })
     }
 
@@ -1256,7 +1282,11 @@ impl TopologyOps for Replicas {
                 .iter()
                 .any(|s| s.state != SetState::Retired && s.name.eq_ignore_ascii_case(req.name.trim()))
             {
-                return Err(TopologyError::new(409, "shard_exists", format!("a shard named {} exists", req.name)));
+                return Err(TopologyError::new(
+                    409,
+                    "shard_exists",
+                    format!("a shard named {} exists", req.name),
+                ));
             }
             if topo
                 .nodes
@@ -1297,7 +1327,8 @@ impl TopologyOps for Replicas {
             .map_err(db_err)?;
             let sealed = seal_node_url(&self.keyring, &node.id, &url).map_err(TopologyError::internal)?;
             set_node_url(&control, &node.id, Some(&sealed), None).await?;
-            self.enqueue(ctx, kinds::SHARD_ADD, &set.id, Some(&node.id), json!({})).await
+            self.enqueue(ctx, kinds::SHARD_ADD, &set.id, Some(&node.id), json!({}))
+                .await
         })
     }
 
@@ -1377,7 +1408,10 @@ impl TopologyOps for Replicas {
                 return Err(TopologyError::new(
                     409,
                     api::codes::SHARD_NOT_EMPTY,
-                    format!("{} still holds {placed} tenants: drain it and move them first", set.name),
+                    format!(
+                        "{} still holds {placed} tenants: drain it and move them first",
+                        set.name
+                    ),
                 ));
             }
             if let Some(h) = self.router()?.set(id) {
@@ -1493,9 +1527,11 @@ impl TopologyOps for Replicas {
     fn operation<'a>(&'a self, ctx: &'a AccessContext, id: &'a str) -> OpsFuture<'a, api::Operation> {
         Box::pin(async move {
             let job = self.jobs()?.get(ctx, id).await.map_err(|e| match e {
-                forgebase_jobs::JobError::NotFound(_) => {
-                    TopologyError::new(404, api::codes::OPERATION_NOT_FOUND, format!("operation {id} not found"))
-                }
+                forgebase_jobs::JobError::NotFound(_) => TopologyError::new(
+                    404,
+                    api::codes::OPERATION_NOT_FOUND,
+                    format!("operation {id} not found"),
+                ),
                 e => job_err(e),
             })?;
             if job.queue != api::OPERATIONS_QUEUE {
@@ -1532,7 +1568,9 @@ impl TopologyOps for Replicas {
                 serde_json::from_value(body).map_err(|e| TopologyError::invalid(format!("bad join request: {e}")))?;
             let source = service::ReplicationSource::from_handle(&primary, None, replication_sslmode(&self.config))
                 .map_err(svc_err)?;
-            let grant = service::redeem_join(&control, &source, &req, peer).await.map_err(svc_err)?;
+            let grant = service::redeem_join(&control, &source, &req, peer)
+                .await
+                .map_err(svc_err)?;
             // The server's read pool on the replica: the reader's URL, sealed.
             if let Some(listen) = req.listen.as_deref().filter(|l| !l.trim().is_empty()) {
                 let pw = reader_password(&self.data_dir)?;
@@ -1591,10 +1629,18 @@ async fn check_external_replica(
     let db = open_probe(config, url).await?;
     let ident = "SELECT CAST(system_identifier AS TEXT) FROM pg_control_system()";
     let theirs = db.fetch_all(&Statement::raw(ident)).await;
-    let recovery = db.fetch_all(&Statement::raw("SELECT CAST(pg_is_in_recovery() AS INT)")).await;
+    let recovery = db
+        .fetch_all(&Statement::raw("SELECT CAST(pg_is_in_recovery() AS INT)"))
+        .await;
     db.close().await;
     let ours = primary.fetch_all(&Statement::raw(ident)).await.map_err(db_err)?;
-    let text = |r: &forgebase_db::Rows| r.rows.first().and_then(|r| r.first()).and_then(Value::as_str).map(str::to_owned);
+    let text = |r: &forgebase_db::Rows| {
+        r.rows
+            .first()
+            .and_then(|r| r.first())
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
     let theirs = theirs.map_err(|e| {
         TopologyError::new(
             400,
@@ -1646,7 +1692,11 @@ async fn check_reachable(config: &forgebase_core::Config, url: &str) -> Result<(
     let r = db.fetch_all(&Statement::raw("SELECT 1")).await;
     db.close().await;
     r.map(|_| ()).map_err(|e| {
-        TopologyError::new(503, api::codes::NODE_UNREACHABLE, format!("the server at that URL failed a query: {e}"))
+        TopologyError::new(
+            503,
+            api::codes::NODE_UNREACHABLE,
+            format!("the server at that URL failed a query: {e}"),
+        )
     })
 }
 
@@ -1670,7 +1720,9 @@ async fn report(ctx: &JobContext, p: forgebase_jobs::ProgressReport) {
 
 fn cancelled(ctx: &JobContext, before: &str) -> Result<(), HandlerError> {
     if ctx.is_cancelled() {
-        Err(HandlerError::fatal(format!("cancelled before {before}; nothing was changed")))
+        Err(HandlerError::fatal(format!(
+            "cancelled before {before}; nothing was changed"
+        )))
     } else {
         Ok(())
     }
@@ -1732,11 +1784,21 @@ impl Replicas {
             .nodes
             .into_iter()
             .find(|n| n.name == name && n.state != NodeState::Retired);
-        report(ctx, stage("cloning", 10.0, format!("copying the primary's data into replica {name}"))).await;
+        report(
+            ctx,
+            stage(
+                "cloning",
+                10.0,
+                format!("copying the primary's data into replica {name}"),
+            ),
+        )
+        .await;
         let view = match existing {
-            Some(n) if ctx.checkpoint().is_some() => service::rebuild_replica(&control, &self.local, Some(&primary), &n.id)
-                .await
-                .map_err(|e| fail(svc_err(e)))?,
+            Some(n) if ctx.checkpoint().is_some() => {
+                service::rebuild_replica(&control, &self.local, Some(&primary), &n.id)
+                    .await
+                    .map_err(|e| fail(svc_err(e)))?
+            }
             Some(n) => return Err(HandlerError::fatal(format!("a node named {} already exists", n.name))),
             None => {
                 let _ = ctx.save_checkpoint(json!({ "stage": "cloning", "name": name })).await;
@@ -1754,7 +1816,11 @@ impl Replicas {
                 .map_err(|e| fail(svc_err(e)))?
             }
         };
-        report(ctx, stage("starting", 90.0, format!("replica {name} started; catching up"))).await;
+        report(
+            ctx,
+            stage("starting", 90.0, format!("replica {name} started; catching up")),
+        )
+        .await;
         self.reload().await;
         report(ctx, stage("done", 100.0, format!("replica {name} is catching up"))).await;
         Ok(json!({ "node": view.id, "name": view.name, "state": view.state.as_str() }))
@@ -1890,7 +1956,11 @@ impl Replicas {
             .connect(&set, &node)
             .await
             .map_err(|e| HandlerError::retry(e.to_string()))?;
-        report(ctx, stage("activating", 30.0, "migrating the shard and creating the collections")).await;
+        report(
+            ctx,
+            stage("activating", 30.0, "migrating the shard and creating the collections"),
+        )
+        .await;
         let backups = DataLayoutDirs::backups(&self.data_dir);
         let replay = self.data.get().map(|d| d as &dyn forgebase_db::shards::CatalogReplay);
         let setup = forgebase_db::shards::ShardSetup {

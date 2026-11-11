@@ -32,7 +32,9 @@ fn postgres() -> bool {
 async fn wait_op(env: &Env, admin: &str, id: &str, timeout: Duration) -> Json {
     let start = Instant::now();
     loop {
-        let r = env.as_(admin, "GET", &format!("{BASE}/operations/{id}"), &[], None).await;
+        let r = env
+            .as_(admin, "GET", &format!("{BASE}/operations/{id}"), &[], None)
+            .await;
         assert_eq!(r.status, 200, "operation: {}", r.text());
         let j = r.json();
         if matches!(j["status"].as_str(), Some("succeeded" | "dead" | "cancelled")) {
@@ -97,9 +99,20 @@ async fn sqlite_shows_one_server_and_answers_postgres_required() {
     let t = topology(&env, &admin).await;
     assert_eq!(t["backend"], "sqlite");
     let r = env
-        .as_(admin.as_str(), "POST", &format!("{BASE}/nodes"), &[], Some(json!({"name": "r1", "kind": "local"})))
+        .as_(
+            admin.as_str(),
+            "POST",
+            &format!("{BASE}/nodes"),
+            &[],
+            Some(json!({"name": "r1", "kind": "local"})),
+        )
         .await;
-    assert_eq!((r.status, r.code()), (400, "postgres_required".to_owned()), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code()),
+        (400, "postgres_required".to_owned()),
+        "{}",
+        r.text()
+    );
     let (user, _) = env.user("fb175-sqlite-user@example.com").await;
     let r = env.as_(&user, "GET", &format!("{BASE}/topology"), &[], None).await;
     assert_eq!(r.status, 403);
@@ -120,11 +133,22 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
     let r = env
         .as_(&admin, "POST", &format!("{BASE}/join-tokens"), &[], Some(json!({})))
         .await;
-    assert_eq!((r.status, r.code()), (400, "node_unsupported".to_owned()), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code()),
+        (400, "node_unsupported".to_owned()),
+        "{}",
+        r.text()
+    );
 
     // Add r1: a job clones and starts it; the router opens it.
     let r = env
-        .as_(&admin, "POST", &format!("{BASE}/nodes"), &[], Some(json!({"name": "r1", "kind": "local"})))
+        .as_(
+            &admin,
+            "POST",
+            &format!("{BASE}/nodes"),
+            &[],
+            Some(json!({"name": "r1", "kind": "local"})),
+        )
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     let op = r.json()["operation"].clone();
@@ -135,7 +159,10 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
     let t = topology(&env, &admin).await;
     let r1 = node(&t, "r1").expect("r1 listed").clone();
     let r1_id = r1["id"].as_str().unwrap().to_owned();
-    assert_eq!((r1["kind"].as_str(), r1["role"].as_str()), (Some("local"), Some("replica")));
+    assert_eq!(
+        (r1["kind"].as_str(), r1["role"].as_str()),
+        (Some("local"), Some("replica"))
+    );
     assert!(!t.to_string().contains("url_sealed"), "no URLs in the topology");
 
     // Reads route to it once the health monitor has it in rotation.
@@ -161,25 +188,48 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
     assert!(replicas.status().iter().any(|s| s.name == "r1" && s.reads > 0));
     let t = topology(&env, &admin).await;
     assert_eq!(node(&t, "r1").unwrap()["in_rotation"], true, "{t}");
-    let r = env.as_(&admin, "GET", &format!("{BASE}/nodes/{r1_id}"), &[], None).await;
+    let r = env
+        .as_(&admin, "GET", &format!("{BASE}/nodes/{r1_id}"), &[], None)
+        .await;
     assert_eq!(r.status, 200);
     assert!(r.json()["lag_history"].is_array());
 
     // One topology change per set: r2's clone holds control.
     let r = env
-        .as_(&admin, "POST", &format!("{BASE}/nodes"), &[], Some(json!({"name": "r2", "kind": "local"})))
+        .as_(
+            &admin,
+            "POST",
+            &format!("{BASE}/nodes"),
+            &[],
+            Some(json!({"name": "r2", "kind": "local"})),
+        )
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     let r2_op = r.json()["operation"]["id"].as_str().unwrap().to_owned();
-    let r = env.as_(&admin, "POST", &format!("{BASE}/nodes/{r1_id}/rebuild"), &[], None).await;
-    assert_eq!((r.status, r.code()), (409, "operation_in_progress".to_owned()), "{}", r.text());
+    let r = env
+        .as_(&admin, "POST", &format!("{BASE}/nodes/{r1_id}/rebuild"), &[], None)
+        .await;
+    assert_eq!(
+        (r.status, r.code()),
+        (409, "operation_in_progress".to_owned()),
+        "{}",
+        r.text()
+    );
     let done = wait_op(&env, &admin, &r2_op, Duration::from_secs(180)).await;
     assert_eq!(done["status"], "succeeded", "{done}");
-    let r2_id = node(&topology(&env, &admin).await, "r2").unwrap()["id"].as_str().unwrap().to_owned();
+    let r2_id = node(&topology(&env, &admin).await, "r2").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let r = env
         .as_(&admin, "DELETE", &format!("{BASE}/nodes/{r2_id}?confirm=r1"), &[], None)
         .await;
-    assert_eq!((r.status, r.code()), (400, "confirm_mismatch".to_owned()), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code()),
+        (400, "confirm_mismatch".to_owned()),
+        "{}",
+        r.text()
+    );
     let r = env
         .as_(&admin, "DELETE", &format!("{BASE}/nodes/{r2_id}?confirm=r2"), &[], None)
         .await;
@@ -199,12 +249,24 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["primary_reachable"], true);
     let r = env
-        .as_(&admin, "POST", &format!("{BASE}/nodes/{r1_id}/promote"), &[], Some(json!({"confirm": "R1"})))
+        .as_(
+            &admin,
+            "POST",
+            &format!("{BASE}/nodes/{r1_id}/promote"),
+            &[],
+            Some(json!({"confirm": "R1"})),
+        )
         .await;
     assert_eq!((r.status, r.code()), (400, "confirm_mismatch".to_owned()));
     db.meta_set("fb175_before_promote", "2").await.unwrap();
     let r = env
-        .as_(&admin, "POST", &format!("{BASE}/nodes/{r1_id}/promote"), &[], Some(json!({"confirm": "r1"})))
+        .as_(
+            &admin,
+            "POST",
+            &format!("{BASE}/nodes/{r1_id}/promote"),
+            &[],
+            Some(json!({"confirm": "r1"})),
+        )
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     let promote_op = r.json()["operation"]["id"].as_str().unwrap().to_owned();
@@ -220,7 +282,10 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
         {
             break;
         }
-        assert!(start.elapsed() < Duration::from_secs(120), "r1 never became primary in topology.json");
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "r1 never became primary in topology.json"
+        );
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
@@ -243,11 +308,19 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
         "control's primary is r1 now"
     );
     assert_eq!(meta(&db, "fb175_before_replica").await.as_deref(), Some("1"));
-    assert_eq!(meta(&db, "fb175_before_promote").await.as_deref(), Some("2"), "no commit lost");
+    assert_eq!(
+        meta(&db, "fb175_before_promote").await.as_deref(),
+        Some("2"),
+        "no commit lost"
+    );
     db.meta_set("fb175_after_promote", "3").await.unwrap();
     let t = topology(&env, &admin).await;
     let r1 = node(&t, "r1").unwrap();
-    assert_eq!((r1["role"].as_str(), r1["state"].as_str()), (Some("primary"), Some("ready")), "{t}");
+    assert_eq!(
+        (r1["role"].as_str(), r1["state"].as_str()),
+        (Some("primary"), Some("ready")),
+        "{t}"
+    );
     let old = node(&t, "primary").expect("the old primary is a node now").clone();
     assert_eq!(old["state"], "needs_rebuild", "{t}");
     assert!(t["restart_required"].is_null());
@@ -257,9 +330,17 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
 
     // Rejoin the old primary (pg_rewind, or a fresh clone on engines without it).
     let old_id = old["id"].as_str().unwrap().to_owned();
-    let r = env.as_(&admin, "POST", &format!("{BASE}/nodes/{old_id}/rebuild"), &[], None).await;
+    let r = env
+        .as_(&admin, "POST", &format!("{BASE}/nodes/{old_id}/rebuild"), &[], None)
+        .await;
     assert_eq!(r.status, 202, "{}", r.text());
-    let done = wait_op(&env, &admin, r.json()["operation"]["id"].as_str().unwrap(), Duration::from_secs(180)).await;
+    let done = wait_op(
+        &env,
+        &admin,
+        r.json()["operation"]["id"].as_str().unwrap(),
+        Duration::from_secs(180),
+    )
+    .await;
     assert_eq!(done["status"], "succeeded", "{done}");
     let t = topology(&env, &admin).await;
     let old = node(&t, "primary").unwrap();
@@ -269,7 +350,12 @@ async fn a_local_replica_added_through_the_api_serves_reads_is_promoted_and_the_
     );
 
     // Every change is in the audit log.
-    for e in ["db.topology.node.add", "db.topology.node.remove", "db.topology.node.promote", "db.topology.refused"] {
+    for e in [
+        "db.topology.node.add",
+        "db.topology.node.remove",
+        "db.topology.node.promote",
+        "db.topology.refused",
+    ] {
         assert!(audit(&env, &admin, e).await >= 1, "{e} audited");
     }
     env.shutdown().await;
@@ -290,15 +376,26 @@ async fn removing_and_promoting_need_a_recent_second_factor() {
     assert_eq!((r.status, r.code()), (404, "node_not_found".to_owned()), "{}", r.text());
 
     // Turn TOTP on.
-    let r = env.as_(&admin, "POST", "/api/auth/mfa/totp/setup", &[], Some(json!({}))).await;
+    let r = env
+        .as_(&admin, "POST", "/api/auth/mfa/totp/setup", &[], Some(json!({})))
+        .await;
     assert_eq!(r.status, 200, "{}", r.text());
     let secret = forgebase_auth::crypto::base32_decode(r.json()["secret"].as_str().unwrap()).unwrap();
     let step = |d: u64| {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         forgebase_auth::crypto::hotp(&secret, now / 30 + d)
     };
     let r = env
-        .as_(&admin, "POST", "/api/auth/mfa/totp/confirm", &[], Some(json!({"code": step(0)})))
+        .as_(
+            &admin,
+            "POST",
+            "/api/auth/mfa/totp/confirm",
+            &[],
+            Some(json!({"code": step(0)})),
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
 
@@ -306,11 +403,20 @@ async fn removing_and_promoting_need_a_recent_second_factor() {
     for token in [admin.as_str()] {
         for (m, p, b) in [
             ("DELETE", format!("{BASE}/nodes/n-nope?confirm=x"), None),
-            ("POST", format!("{BASE}/nodes/n-nope/promote"), Some(json!({"confirm": "x"}))),
+            (
+                "POST",
+                format!("{BASE}/nodes/n-nope/promote"),
+                Some(json!({"confirm": "x"})),
+            ),
             ("DELETE", format!("{BASE}/shards/s-nope?confirm=x"), None),
         ] {
             let r = env.as_(token, m, &p, &[], b).await;
-            assert_eq!((r.status, r.code()), (403, "mfa_step_up_required".to_owned()), "{m} {p}: {}", r.text());
+            assert_eq!(
+                (r.status, r.code()),
+                (403, "mfa_step_up_required".to_owned()),
+                "{m} {p}: {}",
+                r.text()
+            );
         }
     }
     // A sign-in that passed the second factor can.
@@ -325,7 +431,12 @@ async fn removing_and_promoting_need_a_recent_second_factor() {
     assert_eq!(r.status, 200, "{}", r.text());
     let mfa_token = r.json()["mfa_token"].as_str().expect("mfa required").to_owned();
     let r = env
-        .req("POST", "/api/auth/mfa/verify", &[], Some(json!({"mfa_token": mfa_token, "code": step(1)})))
+        .req(
+            "POST",
+            "/api/auth/mfa/verify",
+            &[],
+            Some(json!({"mfa_token": mfa_token, "code": step(1)})),
+        )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     let fresh = r.json()["access_token"].as_str().unwrap().to_owned();
@@ -335,14 +446,21 @@ async fn removing_and_promoting_need_a_recent_second_factor() {
     assert_eq!((r.status, r.code()), (404, "node_not_found".to_owned()), "{}", r.text());
     // Ten minutes later it has to step up again.
     let mut tx = env.server.database().begin(forgebase_db::TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw("UPDATE _forgebase_auth_sessions SET created_at = created_at - 3600"))
-        .await
-        .unwrap();
+    tx.execute(&Statement::raw(
+        "UPDATE _forgebase_auth_sessions SET created_at = created_at - 3600",
+    ))
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     let r = env
         .as_(&fresh, "DELETE", &format!("{BASE}/nodes/n-nope?confirm=x"), &[], None)
         .await;
-    assert_eq!((r.status, r.code()), (403, "mfa_step_up_required".to_owned()), "{}", r.text());
+    assert_eq!(
+        (r.status, r.code()),
+        (403, "mfa_step_up_required".to_owned()),
+        "{}",
+        r.text()
+    );
     assert!(audit(&env, &fresh, "db.topology.refused").await >= 1);
     env.shutdown().await;
 }

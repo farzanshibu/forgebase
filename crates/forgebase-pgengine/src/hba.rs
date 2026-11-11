@@ -428,7 +428,10 @@ mod tests {
             assert!(pos(needle) < first_reject, "{needle} before the rejects:\n{s}");
         }
         for l in r.iter().filter(|l| l.contains("forgebase_replicator")) {
-            assert!(l.starts_with("hostssl") && l.contains("scram-sha-256"), "TLS and SCRAM only: {l}");
+            assert!(
+                l.starts_with("hostssl") && l.contains("scram-sha-256"),
+                "TLS and SCRAM only: {l}"
+            );
         }
         // The generator does what splice_hba does to the file without peers.
         let base = render(&input(Some("0.0.0.0:5433"), true));
@@ -461,7 +464,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join(PEERS_FILE)).expect("meta").permissions().mode();
+            let mode = std::fs::metadata(dir.path().join(PEERS_FILE))
+                .expect("meta")
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o077, 0, "private file");
         }
     }

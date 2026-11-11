@@ -487,14 +487,21 @@ async fn allow_replicator_over_tcp(h: &EngineHandle) {
         agents: vec!["127.0.0.1".parse().unwrap()],
         readers: vec![],
     };
-    assert!(forgebase_pgengine::hba::apply_peers(h, &peers).await.expect("apply peers"));
+    assert!(
+        forgebase_pgengine::hba::apply_peers(h, &peers)
+            .await
+            .expect("apply peers")
+    );
     let text = std::fs::read_to_string(h.layout().pgdata().join("pg_hba.conf")).expect("pg_hba.conf");
     assert!(
         text.lines()
             .any(|l| l.starts_with("hostssl\treplication\tforgebase_replicator\t127.0.0.1/32")),
         "{text}"
     );
-    assert!(!forgebase_pgengine::hba::apply_peers(h, &peers).await.expect("again"), "no change, no reload");
+    assert!(
+        !forgebase_pgengine::hba::apply_peers(h, &peers).await.expect("again"),
+        "no change, no reload"
+    );
 }
 
 #[tokio::test]

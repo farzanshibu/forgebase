@@ -783,7 +783,9 @@ impl DbApi {
             )
         };
         let Some(sid) = caller.session_id() else {
-            return Err(refuse("API keys and access tokens of an administrator with MFA cannot run it."));
+            return Err(refuse(
+                "API keys and access tokens of an administrator with MFA cannot run it.",
+            ));
         };
         if !caller.mfa {
             return Err(refuse("this session did not pass the second factor."));
@@ -848,7 +850,9 @@ fn check_url(url: Option<&str>, what: &str) -> ApiResult<String> {
         Some(u) if u.starts_with("postgres://") || u.starts_with("postgresql://") => Ok(u.to_owned()),
         _ => Err(ApiError::bad_request(
             "invalid_request",
-            format!("{what} needs url, a PostgreSQL address such as postgres://forgebase:secret@db.example.com/forgebase"),
+            format!(
+                "{what} needs url, a PostgreSQL address such as postgres://forgebase:secret@db.example.com/forgebase"
+            ),
         )),
     }
 }
@@ -995,7 +999,10 @@ pub async fn update_node(
     let detail = json!({ "node": id, "weight": body.weight });
     let r = async {
         if body.weight > 1_000 {
-            return Err(ApiError::bad_request("invalid_request", "weight must be from 0 to 1000"));
+            return Err(ApiError::bad_request(
+                "invalid_request",
+                "weight must be from 0 to 1000",
+            ));
         }
         Ok(ops.update_node(&id, body).await?)
     }
@@ -1041,11 +1048,7 @@ pub async fn remove_node(
     params(("id" = String, Path, description = "Node id")),
     responses((status = 200, description = "Estimate", body = PromoteCheck))
 )]
-pub async fn promote_check(
-    State(s): State<DbApi>,
-    Access(ctx): Access,
-    Path(id): Path<String>,
-) -> ApiResult<Response> {
+pub async fn promote_check(State(s): State<DbApi>, Access(ctx): Access, Path(id): Path<String>) -> ApiResult<Response> {
     let c = s.ops(&ctx)?.promote_check(&id).await?;
     Ok(Json(c).into_response())
 }
@@ -1223,7 +1226,10 @@ pub async fn update_shard(
             ));
         }
         if body.weight.is_some_and(|w| !(1..=1_000).contains(&w)) {
-            return Err(ApiError::bad_request("invalid_request", "weight must be from 1 to 1000"));
+            return Err(ApiError::bad_request(
+                "invalid_request",
+                "weight must be from 1 to 1000",
+            ));
         }
         if body == UpdateShard::default() {
             return Err(ApiError::bad_request(
@@ -1383,7 +1389,9 @@ pub async fn operations(State(s): State<DbApi>, Access(ctx): Access, RawQuery(q)
     let ops = s.ops(&ctx)?;
     let raw = q.as_deref();
     let active = query_value(raw, "active").is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
-    let limit = query_value(raw, "limit").and_then(|v| v.parse::<u32>().ok()).map(|n| n.clamp(1, 200));
+    let limit = query_value(raw, "limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|n| n.clamp(1, 200));
     let list = ops.operations(&ctx, OperationQuery { active, limit }).await?;
     Ok(Json(list).into_response())
 }
@@ -1535,14 +1543,55 @@ pub async fn agent_heartbeat(
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        topology, node, add_node, update_node, remove_node, promote_check, promote, rebuild, join_token,
-        add_shard, update_shard, remove_shard, placements, move_tenant, rebalance_plan, rebalance,
-        operations, operation, cancel_operation, agent_join, agent_commands, agent_heartbeat,
+        topology,
+        node,
+        add_node,
+        update_node,
+        remove_node,
+        promote_check,
+        promote,
+        rebuild,
+        join_token,
+        add_shard,
+        update_shard,
+        remove_shard,
+        placements,
+        move_tenant,
+        rebalance_plan,
+        rebalance,
+        operations,
+        operation,
+        cancel_operation,
+        agent_join,
+        agent_commands,
+        agent_heartbeat,
     ),
     components(schemas(
-        TopologyView, SetInfo, NodeInfo, NodeDetail, LagSample, AddNode, Added, UpdateNode, Removed, PromoteBody,
-        PromoteCheck, JoinTokenBody, JoinToken, ShardNode, AddShard, UpdateShard, PlacementInfo, PlacementPage,
-        OperationProgress, Operation, OperationList, MoveBody, RebalancePlanBody, RebalanceBody, Accepted,
+        TopologyView,
+        SetInfo,
+        NodeInfo,
+        NodeDetail,
+        LagSample,
+        AddNode,
+        Added,
+        UpdateNode,
+        Removed,
+        PromoteBody,
+        PromoteCheck,
+        JoinTokenBody,
+        JoinToken,
+        ShardNode,
+        AddShard,
+        UpdateShard,
+        PlacementInfo,
+        PlacementPage,
+        OperationProgress,
+        Operation,
+        OperationList,
+        MoveBody,
+        RebalancePlanBody,
+        RebalanceBody,
+        Accepted,
     ))
 )]
 pub struct DatabaseApiDoc;
@@ -1681,7 +1730,10 @@ mod tests {
             )
         }
         fn promote<'a>(&'a self, _ctx: &'a AccessContext, id: &'a str, req: PromoteBody) -> OpsFuture<'a, Operation> {
-            self.hit(format!("promote {id} {} {}", req.confirm, req.accept_data_loss), op(kinds::PROMOTE))
+            self.hit(
+                format!("promote {id} {} {}", req.confirm, req.accept_data_loss),
+                op(kinds::PROMOTE),
+            )
         }
         fn rebuild<'a>(&'a self, _ctx: &'a AccessContext, id: &'a str) -> OpsFuture<'a, Operation> {
             self.hit(format!("rebuild {id}"), op(kinds::NODE_REBUILD))
@@ -1716,7 +1768,10 @@ mod tests {
         }
         fn placements(&self, q: PlacementQuery) -> OpsFuture<'_, PlacementPage> {
             self.hit(
-                format!("placements {:?} {:?} {:?} {:?} {:?}", q.set, q.project, q.q, q.cursor, q.limit),
+                format!(
+                    "placements {:?} {:?} {:?} {:?} {:?}",
+                    q.set, q.project, q.q, q.cursor, q.limit
+                ),
                 PlacementPage {
                     items: vec![],
                     next_cursor: None,
@@ -1747,7 +1802,10 @@ mod tests {
             wait_ms: Option<u64>,
             resend: bool,
         ) -> OpsFuture<'a, Json_> {
-            self.hit(format!("commands {id} {key} {wait_ms:?} {resend}"), json!({"commands": []}))
+            self.hit(
+                format!("commands {id} {key} {wait_ms:?} {resend}"),
+                json!({"commands": []}),
+            )
         }
         fn agent_heartbeat<'a>(&'a self, id: &'a str, key: &'a str, _body: Json_) -> OpsFuture<'a, Json_> {
             self.hit(format!("heartbeat {id} {key}"), json!({"node_state": "streaming"}))
@@ -1921,7 +1979,10 @@ mod tests {
             _db: db,
         };
         let (s, _, j) = call(&f, admin(), Method::GET, "/api/system/database/topology", None, &[]).await;
-        assert_eq!((s, code(&j)), (StatusCode::SERVICE_UNAVAILABLE, codes::TOPOLOGY_UNAVAILABLE));
+        assert_eq!(
+            (s, code(&j)),
+            (StatusCode::SERVICE_UNAVAILABLE, codes::TOPOLOGY_UNAVAILABLE)
+        );
     }
 
     #[tokio::test]
@@ -1939,16 +2000,30 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{j}");
         assert!(j["node"]["id"].is_string() && j["lag_history"].is_array());
         // Add: local is an operation, external a node; bad input never reaches the service.
-        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes"), Some(json!({"name": "r1", "kind": "local"})), &[]).await;
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/nodes"),
+            Some(json!({"name": "r1", "kind": "local"})),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::ACCEPTED, "{j}");
         assert_eq!(j["operation"]["kind"], kinds::NODE_ADD);
         let ext = json!({"name": "e1", "kind": "external", "url": "postgres://u:p@h/db"});
         let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes"), Some(ext), &[]).await;
         assert_eq!(s, StatusCode::CREATED, "{j}");
-        assert!(j["node"]["url_sealed"].is_null() && !j.to_string().contains("u:p@"), "no URL in answers");
+        assert!(
+            j["node"]["url_sealed"].is_null() && !j.to_string().contains("u:p@"),
+            "no URL in answers"
+        );
         for (bad, why) in [
             (json!({"name": "e2", "kind": "external"}), "external without url"),
-            (json!({"name": "e2", "kind": "external", "url": "mysql://h"}), "not postgres"),
+            (
+                json!({"name": "e2", "kind": "external", "url": "mysql://h"}),
+                "not postgres",
+            ),
             (json!({"name": "e2", "kind": "remote"}), "remote joins with a token"),
             (json!({"name": "Primary", "kind": "local"}), "bad name"),
             (json!({"name": "primary", "kind": "local"}), "reserved name"),
@@ -1959,70 +2034,223 @@ mod tests {
             let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes"), Some(bad), &[]).await;
             assert_eq!(s, StatusCode::BAD_REQUEST, "{why}: {j}");
         }
-        let (s, _, _) = call(&f, a(), Method::PATCH, &format!("{base}/nodes/n1"), Some(json!({"weight": 3})), &[]).await;
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::PATCH,
+            &format!("{base}/nodes/n1"),
+            Some(json!({"weight": 3})),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
-        let (s, _, _) = call(&f, a(), Method::PATCH, &format!("{base}/nodes/n1"), Some(json!({"weight": 1001})), &[]).await;
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::PATCH,
+            &format!("{base}/nodes/n1"),
+            Some(json!({"weight": 1001})),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        let (s, _, j) = call(&f, a(), Method::DELETE, &format!("{base}/nodes/n1?confirm=r%201"), None, &[]).await;
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::DELETE,
+            &format!("{base}/nodes/n1?confirm=r%201"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!((s, j["removed"].as_str()), (StatusCode::OK, Some("n1")));
-        let (s, _, j) = call(&f, a(), Method::GET, &format!("{base}/nodes/n1/promote-check"), None, &[]).await;
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::GET,
+            &format!("{base}/nodes/n1/promote-check"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!((s, j["primary_reachable"].as_bool()), (StatusCode::OK, Some(true)));
-        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/nodes/n1/promote"), Some(json!({"confirm": "r1", "accept_data_loss": true})), &[]).await;
-        assert_eq!((s, j["operation"]["kind"].as_str()), (StatusCode::ACCEPTED, Some(kinds::PROMOTE)));
-        let (s, _, _) = call(&f, a(), Method::POST, &format!("{base}/nodes/n1/promote"), Some(json!({})), &[]).await;
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/nodes/n1/promote"),
+            Some(json!({"confirm": "r1", "accept_data_loss": true})),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            (s, j["operation"]["kind"].as_str()),
+            (StatusCode::ACCEPTED, Some(kinds::PROMOTE))
+        );
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/nodes/n1/promote"),
+            Some(json!({})),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "confirm is required");
         let (s, _, _) = call(&f, a(), Method::POST, &format!("{base}/nodes/n1/rebuild"), None, &[]).await;
         assert_eq!(s, StatusCode::ACCEPTED);
         // Join tokens: shown once, not cached.
-        let (s, h, j) = call(&f, a(), Method::POST, &format!("{base}/join-tokens"), Some(json!({})), &[("host", "fb.example:8090")]).await;
+        let (s, h, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/join-tokens"),
+            Some(json!({})),
+            &[("host", "fb.example:8090")],
+        )
+        .await;
         assert_eq!(s, StatusCode::CREATED, "{j}");
         assert_eq!(h.get("cache-control").unwrap(), "no-store");
         // Shards: external works, local / remote wait for FB-174.
         let shard = |kind: &str| json!({"name": "s2", "node": {"name": "s2p", "kind": kind, "url": "postgres://h/db"}});
-        let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/shards"), Some(shard("external")), &[]).await;
-        assert_eq!((s, j["operation"]["kind"].as_str()), (StatusCode::ACCEPTED, Some(kinds::SHARD_ADD)));
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/shards"),
+            Some(shard("external")),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            (s, j["operation"]["kind"].as_str()),
+            (StatusCode::ACCEPTED, Some(kinds::SHARD_ADD))
+        );
         for k in ["local", "remote"] {
             let (s, _, j) = call(&f, a(), Method::POST, &format!("{base}/shards"), Some(shard(k)), &[]).await;
-            assert_eq!((s, code(&j)), (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED), "{k}");
+            assert_eq!(
+                (s, code(&j)),
+                (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED),
+                "{k}"
+            );
         }
-        let (s, _, _) = call(&f, a(), Method::PATCH, &format!("{base}/shards/s1"), Some(json!({"state": "draining"})), &[]).await;
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::PATCH,
+            &format!("{base}/shards/s1"),
+            Some(json!({"state": "draining"})),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         for bad in [json!({"state": "retired"}), json!({}), json!({"weight": 0})] {
             let (s, _, j) = call(&f, a(), Method::PATCH, &format!("{base}/shards/s1"), Some(bad), &[]).await;
             assert_eq!(s, StatusCode::BAD_REQUEST, "{j}");
         }
-        let (s, _, _) = call(&f, a(), Method::DELETE, &format!("{base}/shards/s1?confirm=shard-1"), None, &[]).await;
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::DELETE,
+            &format!("{base}/shards/s1?confirm=shard-1"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         // Placements: filters and pages; limit is checked.
-        let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/placements?set=s1&project=p1&q=env&cursor=t5&limit=10"), None, &[]).await;
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::GET,
+            &format!("{base}/placements?set=s1&project=p1&q=env&cursor=t5&limit=10"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/placements?limit=0"), None, &[]).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         // Moves and rebalancing: 501 until FB-174.
         for (p, b) in [
-            (format!("{base}/placements/t1/move"), json!({"to": "s2", "confirm": "t1"})),
+            (
+                format!("{base}/placements/t1/move"),
+                json!({"to": "s2", "confirm": "t1"}),
+            ),
             (format!("{base}/rebalance/plan"), json!({})),
             (format!("{base}/rebalance"), json!({"plan_id": "p", "confirm": "p"})),
         ] {
             let (s, _, j) = call(&f, a(), Method::POST, &p, Some(b), &[]).await;
-            assert_eq!((s, code(&j)), (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED), "{p}");
+            assert_eq!(
+                (s, code(&j)),
+                (StatusCode::NOT_IMPLEMENTED, codes::NOT_IMPLEMENTED),
+                "{p}"
+            );
         }
         // Operations.
-        let (s, _, j) = call(&f, a(), Method::GET, &format!("{base}/operations?active=1&limit=5"), None, &[]).await;
+        let (s, _, j) = call(
+            &f,
+            a(),
+            Method::GET,
+            &format!("{base}/operations?active=1&limit=5"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!((s, j["items"].as_array().map(Vec::len)), (StatusCode::OK, Some(1)));
         let (s, _, _) = call(&f, a(), Method::GET, &format!("{base}/operations/j1"), None, &[]).await;
         assert_eq!(s, StatusCode::OK);
-        let (s, _, _) = call(&f, a(), Method::POST, &format!("{base}/operations/j1/cancel"), None, &[]).await;
+        let (s, _, _) = call(
+            &f,
+            a(),
+            Method::POST,
+            &format!("{base}/operations/j1/cancel"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         // Agent routes: no session; the bearer key goes to the service.
-        let (s, h, _) = call(&f, None, Method::POST, &format!("{base}/agent/join"), Some(json!({"token": "fbj_x"})), &[]).await;
+        let (s, h, _) = call(
+            &f,
+            None,
+            Method::POST,
+            &format!("{base}/agent/join"),
+            Some(json!({"token": "fbj_x"})),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(h.get("cache-control").unwrap(), "no-store");
-        let (s, _, j) = call(&f, None, Method::GET, &format!("{base}/agent/nodes/n1/commands?wait_ms=10"), None, &[]).await;
+        let (s, _, j) = call(
+            &f,
+            None,
+            Method::GET,
+            &format!("{base}/agent/nodes/n1/commands?wait_ms=10"),
+            None,
+            &[],
+        )
+        .await;
         assert_eq!((s, code(&j)), (StatusCode::UNAUTHORIZED, "agent_unauthorized"));
-        let (s, _, _) = call(&f, None, Method::GET, &format!("{base}/agent/nodes/n1/commands?wait_ms=10&resend=1"), None, &[("authorization", "Bearer fba_k")]).await;
+        let (s, _, _) = call(
+            &f,
+            None,
+            Method::GET,
+            &format!("{base}/agent/nodes/n1/commands?wait_ms=10&resend=1"),
+            None,
+            &[("authorization", "Bearer fba_k")],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
-        let (s, _, _) = call(&f, None, Method::POST, &format!("{base}/agent/nodes/n1/heartbeat"), Some(json!({})), &[("authorization", "Bearer fba_k")]).await;
+        let (s, _, _) = call(
+            &f,
+            None,
+            Method::POST,
+            &format!("{base}/agent/nodes/n1/heartbeat"),
+            Some(json!({})),
+            &[("authorization", "Bearer fba_k")],
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
 
         let calls = f.mock.calls.lock().unwrap().clone();
@@ -2107,6 +2335,9 @@ mod tests {
             assert!(doc.paths.paths.contains_key(p), "{p}");
         }
         let whole = crate::openapi::document();
-        assert!(whole.paths.paths.contains_key("/api/system/database/topology"), "merged into the API document");
+        assert!(
+            whole.paths.paths.contains_key("/api/system/database/topology"),
+            "merged into the API document"
+        );
     }
 }

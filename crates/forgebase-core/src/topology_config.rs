@@ -317,7 +317,10 @@ impl TopologyOverrides {
         if let Some(s) = &self.sharding {
             put(s.placement.is_some(), "database.sharding.placement");
             put(s.project_affinity.is_some(), "database.sharding.project_affinity");
-            put(s.move_freeze_timeout_ms.is_some(), "database.sharding.move_freeze_timeout_ms");
+            put(
+                s.move_freeze_timeout_ms.is_some(),
+                "database.sharding.move_freeze_timeout_ms",
+            );
             put(
                 s.move_source_retention_hours.is_some(),
                 "database.sharding.move_source_retention_hours",
@@ -462,7 +465,11 @@ impl TopologyConfig {
                 );
             }
             let env = n.url_env.trim();
-            if env.is_empty() || !env.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') {
+            if env.is_empty()
+                || !env
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            {
                 invalid(
                     "database.nodes",
                     format!(
@@ -471,7 +478,10 @@ impl TopologyConfig {
                 );
             }
             if n.weight > 1_000 {
-                invalid("database.nodes", format!("node {name:?}: weight must be from 0 to 1000"));
+                invalid(
+                    "database.nodes",
+                    format!("node {name:?}: weight must be from 0 to 1000"),
+                );
             }
         }
     }
