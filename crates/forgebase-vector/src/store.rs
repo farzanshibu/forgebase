@@ -1,5 +1,8 @@
 //! SQL of the vector tables (migration 0012). Canonical data only: every
-//! function here reads or writes SQLite, never the ANN index.
+//! function here reads or writes the database, never the ANN index. Vector
+//! reads and writes take the pgvector installation when the vectors live in
+//! the `vec` column (FB-162, [`crate::pg`]); they still hand the service the
+//! portable byte encoding.
 //!
 //! Every statement on items and vectors is restricted by `collection_id`,
 //! which the service resolved from the caller's tenant; user filters are
@@ -17,6 +20,7 @@ use serde_json::{Map, Value as Json};
 use crate::error::VectorError;
 use crate::filter::Filter;
 use crate::model::{Metric, Quantization, VectorField};
+use crate::pg::{self, Pgv};
 
 type Result<T> = std::result::Result<T, VectorError>;
 
@@ -306,21 +310,53 @@ pub(crate) async fn upsert_item(
     Ok((key(&r[0])?, int(&r[1], "_version")?))
 }
 
-/// Replaces every vector of an item.
-pub(crate) async fn replace_vectors(tx: &mut dyn WriteTx, cid: i64, k: u64, vectors: &[(&str, Vec<u8>)]) -> Result<()> {
+/// Replaces every vector of an item: `vector` bytea on the portable
+/// engine, `vec` on pgvector.
+pub(crate) async fn replace_vectors(
+    tx: &mut dyn WriteTx,
+    cid: i64,
+    k: u64,
+    vectors: &[(&str, &[f32])],
+    pgv: Option<&Pgv>,
+) -> Result<()> {
     tx.execute(&Statement::new(
         "DELETE FROM _forgebase_vector_values WHERE collection_id = ?1 AND key = ?2",
         vec![cid.into(), int_of(k)],
     ))
     .await?;
-    for (field, bytes) in vectors {
-        tx.execute(&Statement::new(
-            "INSERT INTO _forgebase_vector_values (collection_id, field, key, vector) VALUES (?1, ?2, ?3, ?4)",
-            vec![cid.into(), (*field).into(), int_of(k), Value::Blob(bytes.clone())],
-        ))
-        .await?;
+    for (field, v) in vectors {
+        let stmt = match pgv {
+            None => Statement::new(
+                "INSERT INTO _forgebase_vector_values (collection_id, field, key, vector) VALUES (?1, ?2, ?3, ?4)",
+                vec![cid.into(), (*field).into(), int_of(k), Value::Blob(crate::metric::encode(v))],
+            ),
+            Some(p) => Statement::new(
+                format!(
+                    "INSERT INTO _forgebase_vector_values (collection_id, field, key, vec) VALUES (?1, ?2, ?3, {})",
+                    p.vector_param("?4")
+                ),
+                vec![cid.into(), (*field).into(), int_of(k), Value::Text(pg::text_of(v))],
+            ),
+        };
+        tx.execute(&stmt).await?;
     }
     Ok(())
+}
+
+/// The vector column as the service reads it.
+fn vector_col(pgv: Option<&Pgv>) -> &'static str {
+    match pgv {
+        None => "vector",
+        Some(_) => "CAST(vec AS text)",
+    }
+}
+
+/// A selected vector column in the portable byte encoding.
+fn stored(v: Value, pgv: Option<&Pgv>) -> Result<Vec<u8>> {
+    match pgv {
+        None => blob(v),
+        Some(_) => pg::bytes_of(&v),
+    }
 }
 
 /// Deletes items by id, only those matching `filter` (the caller's delete
@@ -421,17 +457,25 @@ pub(crate) async fn get_item(db: &dyn Backend, cid: i64, id: &str, filter: Optio
 }
 
 /// Every vector of one item, by field.
-pub(crate) async fn item_vectors(db: &dyn Backend, cid: i64, k: u64) -> Result<Vec<(String, Vec<u8>)>> {
+pub(crate) async fn item_vectors(
+    db: &dyn Backend,
+    cid: i64,
+    k: u64,
+    pgv: Option<&Pgv>,
+) -> Result<Vec<(String, Vec<u8>)>> {
     let rows = db
         .fetch_all(&Statement::new(
-            "SELECT field, vector FROM _forgebase_vector_values WHERE collection_id = ?1 AND key = ?2 ORDER BY field",
+            format!(
+                "SELECT field, {} FROM _forgebase_vector_values WHERE collection_id = ?1 AND key = ?2 ORDER BY field",
+                vector_col(pgv)
+            ),
             vec![cid.into(), int_of(k)],
         ))
         .await?;
     rows.rows
         .into_iter()
         .map(|mut r| {
-            let v = blob(r.pop().unwrap_or(Value::Null))?;
+            let v = stored(r.pop().unwrap_or(Value::Null), pgv)?;
             Ok((text(&r[0], "field")?, v))
         })
         .collect()
@@ -455,21 +499,28 @@ pub(crate) async fn items_by_keys(db: &dyn Backend, cid: i64, keys: &[u64]) -> R
     rows.rows.iter().map(|r| item_row(r).map(|i| (i.key, i))).collect()
 }
 
-fn vectors_rows(rows: Rows) -> Result<HashMap<u64, Vec<u8>>> {
+fn vectors_rows(rows: Rows, pgv: Option<&Pgv>) -> Result<HashMap<u64, Vec<u8>>> {
     rows.rows
         .into_iter()
         .map(|mut r| {
-            let v = blob(r.pop().unwrap_or(Value::Null))?;
+            let v = stored(r.pop().unwrap_or(Value::Null), pgv)?;
             Ok((key(&r[0])?, v))
         })
         .collect()
 }
 
-fn vectors_by_keys_stmt(dialect: &dyn forgebase_db::Dialect, cid: i64, field: &str, keys: &[u64]) -> Statement {
+fn vectors_by_keys_stmt(
+    dialect: &dyn forgebase_db::Dialect,
+    cid: i64,
+    field: &str,
+    keys: &[u64],
+    pgv: Option<&Pgv>,
+) -> Statement {
     Statement::new(
         format!(
-            "SELECT key, vector FROM _forgebase_vector_values \
+            "SELECT key, {} FROM _forgebase_vector_values \
              WHERE collection_id = ?1 AND field = ?2 AND {}",
+            vector_col(pgv),
             key_in_list(dialect, "key", "?3")
         ),
         vec![cid.into(), field.into(), keys_json(keys)],
@@ -482,13 +533,15 @@ pub(crate) async fn vectors_by_keys(
     cid: i64,
     field: &str,
     keys: &[u64],
+    pgv: Option<&Pgv>,
 ) -> Result<HashMap<u64, Vec<u8>>> {
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
     vectors_rows(
-        db.fetch_all(&vectors_by_keys_stmt(db.dialect(), cid, field, keys))
+        db.fetch_all(&vectors_by_keys_stmt(db.dialect(), cid, field, keys, pgv))
             .await?,
+        pgv,
     )
 }
 

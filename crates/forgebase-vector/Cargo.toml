@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-vector"
-description = "ForgeBase vector database: canonical vectors in SQLite, USearch HNSW as a derived and rebuildable index, filtered kNN and hybrid (FTS5 + vector, RRF) search."
+description = "ForgeBase vector database: canonical vectors in SQLite or PostgreSQL, USearch HNSW as a derived and rebuildable index or pgvector HNSW in PostgreSQL, filtered kNN and hybrid (full-text + vector, RRF) search."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ forgebase-api.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true
+forgebase-jobs.workspace = true
 metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true

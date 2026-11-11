@@ -458,6 +458,11 @@ pub(crate) enum Decision {
     /// Portable, with the reason; `pin` records `portable` for a stateful
     /// feature that had no engine yet.
     Portable { reason: String, pin: bool },
+    /// A stateful feature pinned to its portable engine in mode `auto`
+    /// whose extension is usable: stays portable (`reason`), but the
+    /// extension is created and its DDL applied, so `<feature>.convert` can
+    /// move the data (FB-162).
+    Prepare { reason: String },
     /// Mode `off`; `pin` as above.
     Off { pin: bool },
     /// Refuse the start.
@@ -481,14 +486,13 @@ pub(crate) fn decide(f: Feature, mode: ExtensionMode, usable: Result<(), String>
         )),
         // Without a usable extension the reason is the same as at the first
         // start (FB-164): a restart reports the status it reported then.
-        (ExtensionMode::Auto, Some(Pin::Portable)) => Decision::Portable {
-            reason: match usable {
-                Ok(()) => format!(
+        (ExtensionMode::Auto, Some(Pin::Portable)) => match usable {
+            Ok(()) => Decision::Prepare {
+                reason: format!(
                     "this database stores its {name} data on the portable engine; {name}.convert moves it to {ext}"
                 ),
-                Err(why) => why,
             },
-            pin: false,
+            Err(why) => Decision::Portable { reason: why, pin: false },
         },
         (_, Some(Pin::Extension)) => match usable {
             Ok(()) => Decision::Use,
@@ -755,7 +759,7 @@ impl PgDatabase {
         for f in Feature::ALL {
             let mode = f.mode(&setup.modes);
             let mut decision = decide(f, mode, probe.usable(f), recorded.pin(f));
-            if decision == Decision::Use && probe.offer(f).installed.is_none() {
+            if matches!(decision, Decision::Use | Decision::Prepare { .. }) && probe.offer(f).installed.is_none() {
                 let schema = f
                     .target_schema()
                     .map(|s| format!(" WITH SCHEMA {}", super::PG.quote_ident(s)))
@@ -806,6 +810,16 @@ impl PgDatabase {
                         self.write_pin(f, Pin::Extension).await?;
                     }
                     status(f, mode, &offer, FeatureState::Active, None, version)
+                }
+                Decision::Prepare { reason } => {
+                    if let Some(sql) = Self::grants(f, &probe.role, setup.reader_role.as_deref())
+                        && let Err(e) = self.run_admin(setup.admin_url.as_ref(), &mut admin, sql).await
+                    {
+                        problems.push(format!("granting the {} schema failed: {e}", f.extension()));
+                    }
+                    let schema = offer.schema.clone().unwrap_or_else(|| EXTENSION_SCHEMA.to_owned());
+                    let version = self.apply_ddl(f, version, &schema).await?;
+                    status(f, mode, &offer, FeatureState::Portable, Some(reason), version)
                 }
                 Decision::Portable { reason, pin } => {
                     if pin {
@@ -862,7 +876,7 @@ impl PgDatabase {
                         )),
                         version,
                     ),
-                    Decision::Portable { reason, .. } | Decision::Refuse(reason) => {
+                    Decision::Portable { reason, .. } | Decision::Prepare { reason } | Decision::Refuse(reason) => {
                         status(f, mode, &offer, FeatureState::Portable, Some(reason), version)
                     }
                     Decision::Off { .. } => status(f, mode, &offer, FeatureState::Off, None, version),
@@ -953,10 +967,11 @@ mod tests {
 
     #[test]
     fn stateful_features_never_switch_engine_on_their_own() {
-        // Stored portably: an extension that appeared changes nothing in auto.
+        // Stored portably: an extension that appeared changes nothing in auto
+        // (it is only prepared for <feature>.convert, FB-162).
         assert!(matches!(
             decide(Feature::Vector, AUTO, Ok(()), Some(Pin::Portable)),
-            Decision::Portable { pin: false, .. }
+            Decision::Prepare { reason } if reason.contains("vector.convert")
         ));
         assert!(matches!(
             decide(Feature::Vector, ON, Ok(()), Some(Pin::Portable)),

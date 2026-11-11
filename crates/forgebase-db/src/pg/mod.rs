@@ -1154,6 +1154,30 @@ impl Backend for PgDatabase {
     fn set_slow_query_threshold(&self, threshold: Duration) {
         self.inner.slow.set_threshold(threshold);
     }
+
+    /// A connection of its own with the writer's options (FB-162).
+    fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        Box::pin(async move {
+            if self.inner.read_only {
+                return Err(DbError::ReadOnly(
+                    "maintenance statements need the primary".into(),
+                ));
+            }
+            let opts = (*self.inner.writer.connect_options()).clone();
+            let mut conn = sqlx::PgConnection::connect_with(&opts)
+                .await
+                .map_err(|e| self.classify(e))?;
+            let mut result = Ok(());
+            for sql in statements {
+                if let Err(e) = sqlx::raw_sql(AssertSqlSafe(sql.clone())).execute(&mut conn).await {
+                    result = Err(self.classify(e));
+                    break;
+                }
+            }
+            let _ = conn.close().await;
+            result
+        })
+    }
 }
 
 /// A write transaction on the single writer connection.

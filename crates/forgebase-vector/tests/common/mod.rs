@@ -1,5 +1,9 @@
-//! Shared harness: a real, migrated SQLite database in a temp dir and a
-//! vector service whose index files live in that data directory.
+//! Shared harness: a real, migrated database in a temp dir (SQLite, or
+//! PostgreSQL with `FORGEBASE_TEST_BACKEND=postgres`) and a vector service
+//! whose index files live in that data directory. On PostgreSQL the
+//! server's start-up extension setup runs first (FB-161): with pgvector on
+//! the test engine the vectors live in pgvector (FB-162);
+//! `FORGEBASE_TEST_PGVECTOR=off` keeps them portable.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
@@ -7,8 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use forgebase_core::DataLayout;
+use forgebase_core::config::ExtensionMode;
 use forgebase_data::{AccessContext, Authorizer, DataService, DefaultAuthorizer};
-use forgebase_db::Database;
+use forgebase_db::{Backend, Database};
 use forgebase_db::testing::{TestDb, test_backend};
 use forgebase_vector::model::*;
 use forgebase_vector::{VectorConfig, VectorService};
@@ -40,7 +45,56 @@ pub fn index_dir(dir: &Path) -> PathBuf {
 
 pub async fn test_db(dir: &Path) -> TestDb {
     layout(dir).ensure().unwrap();
-    test_backend().await
+    let test = test_backend().await;
+    setup_extensions(test.database(), pgvector_mode()).await;
+    test
+}
+
+/// `[database.postgres.extensions] vector` of the harness.
+pub fn pgvector_mode() -> ExtensionMode {
+    if std::env::var("FORGEBASE_TEST_PGVECTOR").as_deref() == Ok("off") {
+        ExtensionMode::Off
+    } else {
+        ExtensionMode::Auto
+    }
+}
+
+/// The server's extension setup (FB-161) with `vector` in `mode`; nothing
+/// on SQLite.
+pub async fn setup_extensions(db: &Database, mode: ExtensionMode) {
+    if db.kind() != forgebase_db::BackendKind::Postgres {
+        return;
+    }
+    let modes = forgebase_core::config::PostgresExtensions {
+        vector: mode,
+        ..Default::default()
+    };
+    db.setup_extensions(&forgebase_db::ExtensionSetup {
+        modes,
+        ..forgebase_db::ExtensionSetup::default()
+    })
+    .await
+    .unwrap();
+}
+
+/// Whether the vectors of this harness live in pgvector.
+pub async fn on_pgvector(svc: &VectorService) -> bool {
+    svc.storage_engine().await == VectorEngine::Pgvector
+}
+
+/// Whether pgvector is installed in the test database.
+pub async fn pgvector_installed(db: &Database) -> bool {
+    db.kind() == forgebase_db::BackendKind::Postgres
+        && db
+            .fetch_all(&forgebase_db::Statement::raw(
+                "SELECT COUNT(*) FROM pg_extension WHERE extname = 'vector'",
+            ))
+            .await
+            .unwrap()
+            .scalar()
+            .and_then(forgebase_db::Value::as_i64)
+            .unwrap_or(0)
+            > 0
 }
 
 pub async fn service(
