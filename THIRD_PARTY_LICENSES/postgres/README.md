@@ -12,6 +12,7 @@ missing. Texts are copied verbatim from the pinned upstream sources.
 | pgvector 0.8.7 | PostgreSQL License | `pgvector.txt` | all |
 | pg_cron 1.6.8 | PostgreSQL License | `pg_cron.txt` | all |
 | pgmq 1.13.1 | PostgreSQL License | `pgmq.txt` | all |
+| Apache AGE 1.8.0 (with three carried upstream patches, FB-160) | Apache-2.0, with PostgreSQL-licensed parts (in the licence text); NOTICE shipped as `age-NOTICE.txt` | `age/age.txt`, `age/NOTICE` | macOS, Linux (Windows archives have no AGE) |
 | OpenSSL 3.5.9 | Apache-2.0 (no NOTICE file upstream) | `openssl.txt` | all |
 | lz4 1.11.1 (library) | BSD-2-Clause | `lz4.txt` | all |
 | zstd 1.5.7 | BSD-3-Clause (dual BSD/GPLv2; used under BSD) | `zstd.txt` | all |

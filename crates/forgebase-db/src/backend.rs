@@ -314,6 +314,15 @@ pub trait Backend: Send + Sync + fmt::Debug {
         self.fetch_all(stmt)
     }
 
+    /// The primary's current commit position as a token (`<set>/<lsn>`,
+    /// ADR-0029 §2.6): realtime stamps each dispatched page with it so a
+    /// client that reads after an event sees the change. `None` unless the
+    /// backend is a set with replicas (SQLite, an unrouted PostgreSQL, and a
+    /// set without replicas have nothing to wait for).
+    fn sample_commit_token(&self) -> BoxFuture<'_, Result<Option<crate::routing::CommitToken>, DbError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Starts a write transaction on the single writer.
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>>;
 

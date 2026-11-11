@@ -243,6 +243,23 @@ impl StorageService {
         Ok(self.inner.db.fetch_all(&st(sql, params)).await?)
     }
 
+    /// A metadata read that may be served by a replica (ADR-0029 §2.5,
+    /// FB-169): bucket listings, usage and statistics, object listings,
+    /// versions and heads. Authorisation state (ACLs, bucket rows, grants),
+    /// object content reads, writes and signed-URL issue stay on
+    /// [`Self::read`].
+    pub(crate) async fn read_replica(&self, what: &'static str, sql: &str, params: Vec<Value>) -> Result<Rows> {
+        self.fetch_replica(what, &st(sql, params)).await
+    }
+
+    pub(crate) async fn fetch_replica(&self, what: &'static str, stmt: &Statement) -> Result<Rows> {
+        Ok(self
+            .inner
+            .db
+            .fetch_routed(stmt, &forgebase_db::ReadIntent::replica(what))
+            .await?)
+    }
+
     pub(crate) async fn begin(&self) -> Result<Box<dyn WriteTx>> {
         Ok(self.inner.db.begin(TxMode::Normal).await?)
     }
@@ -555,7 +572,8 @@ impl StorageService {
     pub async fn list_buckets(&self, ctx: &AccessContext) -> Result<Vec<Bucket>> {
         let rows = match &ctx.tenant {
             Some(t) => {
-                self.read(
+                self.read_replica(
+                    "storage.list_buckets",
                     &format!(
                         "SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant = ?1 OR tenant IS NULL ORDER BY name"
                     ),
@@ -564,7 +582,8 @@ impl StorageService {
                 .await?
             }
             None => {
-                self.read(
+                self.read_replica(
+                    "storage.list_buckets",
                     &format!("SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant IS NULL ORDER BY name"),
                     vec![],
                 )

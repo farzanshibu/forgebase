@@ -16,7 +16,10 @@ fn stmt(sql: &str) -> SqlStatement {
 }
 
 fn secrets() -> SqlOptions {
-    SqlOptions { show_secrets: true }
+    SqlOptions {
+        show_secrets: true,
+        ..SqlOptions::default()
+    }
 }
 
 #[tokio::test]

@@ -75,6 +75,12 @@ pub struct SqlOptions {
     /// Each use is audited.
     #[serde(default)]
     pub show_secrets: bool,
+    /// Run a read statement on a replica when the database has one that has
+    /// replayed the caller's own writes (ADR-0029 §2.5; the dashboard's
+    /// "Read from replica" toggle). Writes, batches and `show_secrets` reads
+    /// stay on the primary. Ignored without replicas.
+    #[serde(default)]
+    pub read_from_replica: bool,
 }
 
 /// What a masked secret value reads as.
@@ -636,6 +642,8 @@ impl DataService {
                 c.sql.clone()
             };
             let stmt = Statement::new(sql, c.params.clone()).uncached();
+            // The editor's role (FB-153) is the boundary, so it wins over a
+            // replica read (FB-169): replicas have no role-switching read yet.
             let rows = match self.statement_role(&c, run_as, opts.show_secrets) {
                 Some(role) => self
                     .inner
@@ -643,6 +651,9 @@ impl DataService {
                     .fetch_all_as(&stmt, &role)
                     .await
                     .map_err(role_refusal)?,
+                None if opts.read_from_replica && !opts.show_secrets => {
+                    self.fetch_replica(&stmt, "sql.editor").await?
+                }
                 None => self.inner.backend.fetch_all(&stmt).await?,
             };
             let mut r = result_from(c.kind, rows, started);

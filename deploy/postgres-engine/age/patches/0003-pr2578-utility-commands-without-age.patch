@@ -1,0 +1,229 @@
+From 6e073cf40917731b4cd5b2654e4a93da005a2295 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] Fix utility commands when AGE is preloaded but not installed
+ (#2578) -- backport to PG18/1.8.0
+
+Backport of apache/age master commit 6e073cf40917731b4cd5b2654e4a93da005a2295
+(https://github.com/apache/age/pull/2578) for ForgeBase's engine build
+(FB-160, ADR-0029 section 9a).
+
+Adapted: upstream adds the is_age_extension_exists() guard to three
+branches of ag_ProcessUtility_hook (TRUNCATE, VACUUM FULL, CLUSTER). In
+1.8.0 the hook has only the TRUNCATE branch: the VACUUM and CLUSTER
+branches came later with master commit 0e30566226 (#2551, after 1.8.0), so
+on 1.8.0 only TRUNCATE reads AGE's catalog in a database without AGE. This
+backport keeps the TRUNCATE hunk and the upstream regression tests
+(regress/sql/drop.sql, regress/expected/drop.out) unchanged; the VACUUM
+FULL and CLUSTER cases in those tests pass on 1.8.0 without a code change.
+
+Upstream message:
+
+When AGE is loaded through shared_preload_libraries, TRUNCATE,
+VACUUM FULL on a table, and CLUSTER on a table attempt to access
+AGE catalogs even if the extension is not installed in the current
+database. This fails with a missing ag_catalog schema or ag_label
+table.
+
+Check is_age_extension_exists() before these utility branches perform
+graph-cache invalidation. If AGE is absent, continue through the normal
+ProcessUtility chain. Preserve existing invalidation when AGE is
+installed.
+
+Add regression coverage for missing and empty ag_catalog schemas.
+Verify data preservation after VACUUM FULL and CLUSTER, the selected
+index's clustering flag, and an empty table after TRUNCATE.
+
+Follow-up to 2438.
+---
+diff --git a/regress/expected/drop.out b/regress/expected/drop.out
+index 43e0bf4..61dc719 100644
+--- a/regress/expected/drop.out
++++ b/regress/expected/drop.out
+@@ -48,6 +48,83 @@ DROP SCHEMA IF EXISTS ag_catalog CASCADE;
+ RESET client_min_messages;
+ CREATE SCHEMA _regress_drop;
+ DROP SCHEMA _regress_drop; -- should'n produce the ERROR
++-- A loaded library must not inspect AGE catalogs before installation.
++CREATE TABLE public._regress_utility (id int);
++CREATE INDEX _regress_utility_idx ON public._regress_utility (id);
++INSERT INTO public._regress_utility VALUES (2), (1), (2), (NULL);
++VACUUM FULL public._regress_utility;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'VACUUM FULL did not preserve the ordinary table data';
++    END IF;
++END
++$$;
++CLUSTER public._regress_utility USING _regress_utility_idx;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'CLUSTER did not preserve the ordinary table data';
++    END IF;
++    IF NOT EXISTS (
++        SELECT FROM pg_catalog.pg_index
++        WHERE indexrelid = 'public._regress_utility_idx'::regclass
++          AND indisclustered
++    ) THEN
++        RAISE EXCEPTION 'CLUSTER did not mark the specified index';
++    END IF;
++END
++$$;
++TRUNCATE public._regress_utility;
++DO $$
++BEGIN
++    IF EXISTS (SELECT FROM public._regress_utility) THEN
++        RAISE EXCEPTION 'TRUNCATE did not empty the ordinary table';
++    END IF;
++END
++$$;
++-- An empty schema is not an installed extension.
++CREATE SCHEMA ag_catalog;
++-- Clear the previous CLUSTER marker so this case tests it independently.
++ALTER TABLE public._regress_utility SET WITHOUT CLUSTER;
++INSERT INTO public._regress_utility VALUES (2), (1), (2), (NULL);
++VACUUM FULL public._regress_utility;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'VACUUM FULL did not preserve the ordinary table data';
++    END IF;
++END
++$$;
++CLUSTER public._regress_utility USING _regress_utility_idx;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'CLUSTER did not preserve the ordinary table data';
++    END IF;
++    IF NOT EXISTS (
++        SELECT FROM pg_catalog.pg_index
++        WHERE indexrelid = 'public._regress_utility_idx'::regclass
++          AND indisclustered
++    ) THEN
++        RAISE EXCEPTION 'CLUSTER did not mark the specified index';
++    END IF;
++END
++$$;
++TRUNCATE public._regress_utility;
++DO $$
++BEGIN
++    IF EXISTS (SELECT FROM public._regress_utility) THEN
++        RAISE EXCEPTION 'TRUNCATE did not empty the ordinary table';
++    END IF;
++END
++$$;
++DROP TABLE public._regress_utility;
++DROP SCHEMA ag_catalog;
+ -- Recreate the extension and validate we can recreate a graph
+ CREATE EXTENSION age;
+ SELECT create_graph('drop');
+diff --git a/regress/sql/drop.sql b/regress/sql/drop.sql
+index a71d5a7..006e50d 100644
+--- a/regress/sql/drop.sql
++++ b/regress/sql/drop.sql
+@@ -37,6 +37,84 @@ RESET client_min_messages;
+ CREATE SCHEMA _regress_drop;
+ DROP SCHEMA _regress_drop; -- should'n produce the ERROR
+ 
++-- A loaded library must not inspect AGE catalogs before installation.
++CREATE TABLE public._regress_utility (id int);
++CREATE INDEX _regress_utility_idx ON public._regress_utility (id);
++INSERT INTO public._regress_utility VALUES (2), (1), (2), (NULL);
++VACUUM FULL public._regress_utility;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'VACUUM FULL did not preserve the ordinary table data';
++    END IF;
++END
++$$;
++CLUSTER public._regress_utility USING _regress_utility_idx;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'CLUSTER did not preserve the ordinary table data';
++    END IF;
++    IF NOT EXISTS (
++        SELECT FROM pg_catalog.pg_index
++        WHERE indexrelid = 'public._regress_utility_idx'::regclass
++          AND indisclustered
++    ) THEN
++        RAISE EXCEPTION 'CLUSTER did not mark the specified index';
++    END IF;
++END
++$$;
++TRUNCATE public._regress_utility;
++DO $$
++BEGIN
++    IF EXISTS (SELECT FROM public._regress_utility) THEN
++        RAISE EXCEPTION 'TRUNCATE did not empty the ordinary table';
++    END IF;
++END
++$$;
++-- An empty schema is not an installed extension.
++CREATE SCHEMA ag_catalog;
++-- Clear the previous CLUSTER marker so this case tests it independently.
++ALTER TABLE public._regress_utility SET WITHOUT CLUSTER;
++INSERT INTO public._regress_utility VALUES (2), (1), (2), (NULL);
++VACUUM FULL public._regress_utility;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'VACUUM FULL did not preserve the ordinary table data';
++    END IF;
++END
++$$;
++CLUSTER public._regress_utility USING _regress_utility_idx;
++DO $$
++BEGIN
++    IF (SELECT array_agg(id ORDER BY id) FROM public._regress_utility)
++        IS DISTINCT FROM ARRAY[1, 2, 2, NULL] THEN
++        RAISE EXCEPTION 'CLUSTER did not preserve the ordinary table data';
++    END IF;
++    IF NOT EXISTS (
++        SELECT FROM pg_catalog.pg_index
++        WHERE indexrelid = 'public._regress_utility_idx'::regclass
++          AND indisclustered
++    ) THEN
++        RAISE EXCEPTION 'CLUSTER did not mark the specified index';
++    END IF;
++END
++$$;
++TRUNCATE public._regress_utility;
++DO $$
++BEGIN
++    IF EXISTS (SELECT FROM public._regress_utility) THEN
++        RAISE EXCEPTION 'TRUNCATE did not empty the ordinary table';
++    END IF;
++END
++$$;
++DROP TABLE public._regress_utility;
++DROP SCHEMA ag_catalog;
++
+ -- Recreate the extension and validate we can recreate a graph
+ CREATE EXTENSION age;
+ 
+diff --git a/src/backend/catalog/ag_catalog.c b/src/backend/catalog/ag_catalog.c
+index 107de37..d5b9a21 100644
+--- a/src/backend/catalog/ag_catalog.c
++++ b/src/backend/catalog/ag_catalog.c
+@@ -181,6 +181,11 @@ void ag_ProcessUtility_hook(PlannedStmt *pstmt, const char *queryString,
+                     TruncateStmt *tstmt = (TruncateStmt *) parsetree;
+                     ListCell *lc;
+ 
++                    if (!is_age_extension_exists())
++                    {
++                        break;
++                    }
++
+                     foreach(lc, tstmt->relations)
+                     {
+                         RangeVar *rv = (RangeVar *) lfirst(lc);

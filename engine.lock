@@ -35,10 +35,12 @@ contrib = [
   "btree_gist", "hstore", "ltree", "intarray", "tablefunc",
   "pg_stat_statements", "amcheck",
 ]
-# Third-party extensions, built after contrib in this order. One more
-# extension with patches (Apache AGE, FB-160) goes in
-# deploy/postgres-engine/extensions/<name>/ and is listed here.
-extensions = ["pgvector", "pg_cron", "pgmq"]
+# Third-party extensions, built after contrib in this order. An extension
+# with a hook directory (deploy/postgres-engine/<name>/ or extensions/<name>/:
+# patches, make-args, post-install.sh) is built through it; Apache AGE uses
+# deploy/postgres-engine/age/ (FB-160). Windows builds pgvector, pg_cron and
+# pgmq only (no AGE: no MSVC build upstream; features.graph_cypher = false).
+extensions = ["pgvector", "pg_cron", "pgmq", "age"]
 
 [sources.postgresql]
 version = "18.6"
@@ -74,6 +76,46 @@ dir = "pgmq-1.13.1"
 licence = "PostgreSQL"
 licence_file = "pgmq.txt"
 os = ["linux", "macos", "windows"]
+
+[sources.age]
+# Apache AGE for PostgreSQL 18 (FB-160, ADR-0029 §1.2-§1.3). The ASF release
+# tarball from archive.apache.org (keeps every release; downloads.apache.org
+# drops 1.8.0 once a newer PG18 release is out). Its ASF SHA-512
+# (apache-age-1.8.0-src.tar.gz.sha512 on downloads.apache.org) was checked
+# against this file on 2026-11-11; the build checks the SHA-256 below.
+version = "1.8.0"
+url = "https://archive.apache.org/dist/age/PG18/1.8.0/apache-age-1.8.0-src.tar.gz"
+sha256 = "555736a31974255223778959ca8bcd9cb710b93a8fab1d846eaf3e84704b9417"
+asf_sha512 = "8103dc6a4daec0441c2bdfe4e456be619d04526efa5c4e1a5148a29d7e6359e5df7d9a1fabbc6a6a08f6229c4d6f8634b7bf3554eca8ffb58550382542279866"
+dir = "apache-age-1.8.0"
+licence = "Apache-2.0 (with PostgreSQL-licensed parts; NOTICE shipped as share/licenses/age-NOTICE.txt)"
+licence_file = "age/age.txt"
+os = ["linux", "macos"]
+
+# Unreleased upstream fixes carried on 1.8.0 (ADR-0029 §9a, decision 1 B),
+# applied in this order from deploy/postgres-engine/age/patches/. Each one is
+# dropped when an AGE release for PG18 contains it. age/post-install.sh fails
+# the build when a file's SHA-256 differs from the one here.
+[[sources.age.patches]]
+file = "0001-pr2475-detach-delete-rls-segfault.patch"
+upstream_pr = "https://github.com/apache/age/pull/2475"
+upstream_commit = "2e4b4ad91359b6e4dedbe787b83176f565bf7727"
+sha256 = "f62d9ad52221010e62b9d06e659663efe578ff0e0e0b3f2b296d9a40bd3781ed"
+note = "upstream commit verbatim"
+
+[[sources.age.patches]]
+file = "0002-pr2561-rls-and-select-acl-in-traversals.patch"
+upstream_pr = "https://github.com/apache/age/pull/2561"
+upstream_commit = "3eeb20bd967875cb32158d495396916d85697a51"
+sha256 = "8ae84d4ac59c6e013bb14a3218442f7e0bb566dcb573bae64ee9edadbd40ace1"
+note = "upstream commit verbatim"
+
+[[sources.age.patches]]
+file = "0003-pr2578-utility-commands-without-age.patch"
+upstream_pr = "https://github.com/apache/age/pull/2578"
+upstream_commit = "6e073cf40917731b4cd5b2654e4a93da005a2295"
+sha256 = "46da0aa2c42698679ea033977b255af5f654301b9195b4729119c487bc19de8d"
+note = "backport: TRUNCATE hunk and tests only (1.8.0 has no VACUUM/CLUSTER branch)"
 
 [sources.openssl]
 version = "3.5.9"
@@ -140,12 +182,12 @@ os = ["linux"]
 # replace these tables with the release's engine.lock.archives fragment.
 [archives."aarch64-apple-darwin"]
 file = "forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst"
-sha256 = "c5a23a423b28d934a41688d0b3947260fa50d32cea2af087c132c7d39ced5396"
-size = 7661698
-# Built and smoke-tested locally by FB-130 (Apple clang 21, macOS 27 SDK);
-# two clean builds in different work directories gave these bytes. The CI
-# release archive will differ: replace this table with the release's
-# engine.lock.archives fragment.
+sha256 = "8fd03e59898fa86f87ebfd0a8f3f75f780f66e82fb0294a31b131402b4d175e9"
+size = 7857850
+# Built and smoke-tested locally by FB-160 with Apache AGE (Apple clang 21,
+# macOS 27 SDK, Homebrew bison 3.8.2); FB-130's archive without AGE was
+# c5a23a42..., 7661698 bytes. The CI release archive will differ: replace
+# this table with the release's engine.lock.archives fragment.
 status = "local"
 
 [archives."x86_64-apple-darwin"]
