@@ -33,6 +33,23 @@ pub enum GraphError {
         /// Explanation.
         message: String,
     },
+    /// The caller's graph rules cannot be applied to an openCypher query
+    /// (FB-163: they select too many rows to pass along).
+    #[error("{0}")]
+    RulesUnsupported(String),
+    /// openCypher needs PostgreSQL with Apache AGE (FB-163).
+    #[error("openCypher needs PostgreSQL with Apache AGE; this server answers the REST graph API only")]
+    CypherUnsupported,
+    /// The tenant's derived graph is being built (FB-163); `job_id` is the
+    /// `graph.materialise` job, when the jobs service runs it.
+    #[error("the openCypher graph of this tenant is being built; retry when job {} is done", .job_id.as_deref().unwrap_or("(in process)"))]
+    Materialising {
+        /// The job.
+        job_id: Option<String>,
+    },
+    /// Shard routing (ADR-0029 §3.5).
+    #[error(transparent)]
+    Router(#[from] forgebase_db::RouterError),
     /// Storage failure.
     #[error(transparent)]
     Db(#[from] DbError),
@@ -78,6 +95,10 @@ impl ErrorCode for GraphError {
             GraphError::NodeExists(_) => "node_exists",
             GraphError::EdgeExists(_) => "edge_exists",
             GraphError::Invalid { code, .. } => code,
+            GraphError::RulesUnsupported(_) => "cypher_rules_unsupported",
+            GraphError::CypherUnsupported => "cypher_unsupported",
+            GraphError::Materialising { .. } => "graph_materialising",
+            GraphError::Router(e) => e.code(),
             GraphError::Db(e) => e.code(),
             GraphError::Internal(_) => "internal_error",
         }
@@ -89,7 +110,10 @@ impl ErrorCode for GraphError {
             GraphError::Forbidden(_) => ErrorKind::Forbidden,
             GraphError::NodeNotFound(_) | GraphError::EdgeNotFound(_) => ErrorKind::NotFound,
             GraphError::NodeExists(_) | GraphError::EdgeExists(_) => ErrorKind::Conflict,
-            GraphError::Invalid { .. } => ErrorKind::InvalidInput,
+            GraphError::Invalid { .. } | GraphError::CypherUnsupported => ErrorKind::InvalidInput,
+            GraphError::RulesUnsupported(_) => ErrorKind::Forbidden,
+            GraphError::Materialising { .. } => ErrorKind::Conflict,
+            GraphError::Router(e) => e.kind(),
             GraphError::Db(e) => e.kind(),
             GraphError::Internal(_) => ErrorKind::Internal,
         }

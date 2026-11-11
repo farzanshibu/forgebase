@@ -22,6 +22,10 @@ export interface DatabaseInfo {
   server_version?: string;
   connections?: number | null;
   engine?: { state: string; version: string } | null;
+  /** The backend a new project of this build gets (FB-177): `postgres`, or `sqlite` in a `-lite` build. */
+  default_backend?: string;
+  /** This build embeds the PostgreSQL engine (not a `-lite` build). */
+  bundled_postgres?: boolean;
   features?: Record<string, DatabaseFeature>;
 }
 
@@ -31,3 +35,13 @@ export const getDatabaseInfo = async (signal?: AbortSignal): Promise<DatabaseInf
 };
 
 export const BACKEND_NAME: Record<string, string> = { sqlite: "SQLite", postgres: "PostgreSQL" };
+
+/** Where the topology screen lives (FB-176 builds it; until then the link leads to the System studio's own not-found line). */
+export const TOPOLOGY_PATH = "/system/topology";
+
+/** What the CLI prints for an SQLite project in a build where PostgreSQL is the default (same words as `sqlite_notice`). */
+export const SQLITE_NOTICE = "This project uses SQLite. PostgreSQL is the default now: `forgebase db convert --to postgres` moves it.";
+
+/** True when the System studio should show the SQLite notice. */
+export const showSqliteNotice = (db: Partial<Pick<DatabaseInfo, "backend" | "default_backend">> | undefined): boolean =>
+  db?.backend === "sqlite" && db.default_backend === "postgres";

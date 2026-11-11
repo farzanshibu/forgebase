@@ -30,6 +30,10 @@ function listQuery(q: ListParams): string {
   if (q.filter) p.set("filter", q.filter);
   if (q.sort) p.set("sort", q.sort);
   if (q.search) p.set("search", q.search);
+  if (q.search && q.fuzzy) {
+    p.set("fuzzy", "true");
+    if (q.fuzzy_threshold !== undefined) p.set("fuzzy_threshold", String(q.fuzzy_threshold));
+  }
   if (q.fields?.length) p.set("fields", q.fields.join(","));
   p.set("page", String(q.page ?? 1));
   p.set("per_page", String(q.per_page ?? 25));

@@ -14,7 +14,14 @@
 //!   (`forgebase_super`, `forgebase_server`, `forgebase_reader`) may log in
 //!   over loopback only; named logins (members of `forgebase_login`) from
 //!   the listen address's reach (loopback for a loopback address, anywhere
-//!   otherwise), to the `forgebase` database only.
+//!   otherwise), to the `forgebase` database only;
+//! * managed replicas on other hosts (FB-168, FB-175): the replicator's
+//!   `hostssl` lines for each `forgebase node` agent address, and the
+//!   reader's for the server's own address
+//!   ([`crate::replication::hba_entries`]), go before the reject lines.
+//!   The server keeps that list in `<node>/replication-peers.json`
+//!   ([`save_peers`] / [`load_peers`]); [`apply_peers`] rewrites the file
+//!   and reloads a running engine.
 //!
 //! The certificate is the operator's ([`crate::TlsFiles`]) or a self-signed
 //! ECDSA P-256 certificate generated once under `<node>/tls/` (10 years,
@@ -32,13 +39,14 @@ use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 
 use crate::error::{EngineError, Result};
 use crate::fsutil;
+use crate::replication;
 use crate::secret::Role;
 
 /// The NOLOGIN group of named direct logins.
 pub const LOGIN_GROUP: &str = "forgebase_login";
 
 /// What `pg_hba.conf` depends on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HbaInput {
     /// The engine has a Unix socket.
     pub socket: bool,
@@ -47,7 +55,14 @@ pub struct HbaInput {
     /// TCP comes from `[database.postgres] listen` (TLS required), not the
     /// Windows loopback fallback.
     pub tls: bool,
+    /// Remote replicas (FB-168): agent and reader addresses whose
+    /// replicator / reader logins are admitted over TLS. Used only with
+    /// `tls` (they need a TCP port).
+    pub replication: replication::HbaInput,
 }
+
+/// File (in the node directory) that holds the replication peers.
+pub const PEERS_FILE: &str = "replication-peers.json";
 
 fn loopback_cidrs() -> [&'static str; 2] {
     ["127.0.0.1/32", "::1/128"]
@@ -76,6 +91,15 @@ pub fn render(input: &HbaInput) -> String {
             let _ = writeln!(s, "host       replication  all    {c}  scram-sha-256");
         }
         return s;
+    }
+    // FB-168: the replicator's and reader's TLS lines for remote replicas,
+    // before every reject (rules match top down).
+    for e in replication::hba_entries(&input.replication)
+        .iter()
+        .filter(|e| e.kind == replication::HbaType::Hostssl)
+    {
+        s.push_str(&e.line());
+        s.push('\n');
     }
     s.push_str("hostnossl  all          all    all       reject\n");
     for c in loopback_cidrs() {
@@ -111,6 +135,76 @@ pub fn write(pgdata: &Path, input: &HbaInput) -> Result<()> {
         f.sync_all().map_err(|e| EngineError::io("sync", &tmp, e))?;
     }
     std::fs::rename(&tmp, &path).map_err(|e| EngineError::io("rename into place", &path, e))
+}
+
+/// Reads the replication peers of a node (`<node_dir>/replication-peers.json`);
+/// none when the file does not exist.
+///
+/// # Errors
+/// An unreadable or malformed file.
+pub fn load_peers(node_dir: &Path) -> Result<replication::HbaInput> {
+    let path = node_dir.join(PEERS_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| EngineError::Config(format!("{} is not valid: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(replication::HbaInput::default()),
+        Err(e) => Err(EngineError::io("read", &path, e)),
+    }
+}
+
+/// Writes the replication peers of a node (atomically, mode 0600; sorted,
+/// without duplicates).
+///
+/// # Errors
+/// File-system errors.
+pub fn save_peers(node_dir: &Path, peers: &replication::HbaInput) -> Result<()> {
+    let mut p = peers.clone();
+    for list in [&mut p.agents, &mut p.readers] {
+        list.sort_unstable();
+        list.dedup();
+    }
+    let path = node_dir.join(PEERS_FILE);
+    let tmp = node_dir.join(format!("{PEERS_FILE}.forgebase"));
+    let text = serde_json::to_string_pretty(&p).map_err(|e| EngineError::Config(e.to_string()))?;
+    {
+        use std::io::Write;
+        let mut f = fsutil::create_private_file(&tmp)?;
+        f.write_all(text.as_bytes())
+            .map_err(|e| EngineError::io("write", &tmp, e))?;
+        f.sync_all().map_err(|e| EngineError::io("sync", &tmp, e))?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| EngineError::io("rename into place", &path, e))
+}
+
+/// Saves `peers` for `handle`'s node, rewrites its `pg_hba.conf` with them
+/// and reloads the engine (no restart: PostgreSQL rereads `pg_hba.conf` on
+/// reload). Returns whether the file changed. On Windows (no socket, TCP
+/// from the loopback fallback) the peers are saved and used at the next
+/// start only.
+///
+/// # Errors
+/// File-system errors, or `pg_ctl reload` fails.
+pub async fn apply_peers(handle: &crate::EngineHandle, peers: &replication::HbaInput) -> Result<bool> {
+    let layout = handle.layout();
+    save_peers(&layout.node_dir(), peers)?;
+    if handle.socket_dir().is_none() {
+        return Ok(false);
+    }
+    let input = HbaInput {
+        socket: true,
+        tcp: handle.tcp_addr(),
+        // On Unix TCP is open only with `listen`, which always means TLS.
+        tls: handle.tcp_addr().is_some(),
+        replication: load_peers(&layout.node_dir())?,
+    };
+    let pgdata = layout.pgdata();
+    let before = std::fs::read_to_string(pgdata.join("pg_hba.conf")).unwrap_or_default();
+    if before == render(&input) {
+        return Ok(false);
+    }
+    write(&pgdata, &input)?;
+    handle.pg_ctl(&["reload", "-s"]).await?;
+    Ok(true)
 }
 
 /// The certificate and key to serve, generating the self-signed pair under
@@ -302,6 +396,79 @@ mod tests {
             socket: true,
             tcp: tcp.map(|a| a.parse().expect("addr")),
             tls,
+            replication: replication::HbaInput::default(),
+        }
+    }
+
+    fn peers() -> replication::HbaInput {
+        replication::HbaInput {
+            agents: vec!["10.0.0.7".parse().expect("ip"), "fd00::7".parse().expect("ip")],
+            readers: vec!["10.0.0.1".parse().expect("ip")],
+        }
+    }
+
+    #[test]
+    fn remote_replication_lines_come_before_the_rejects() {
+        let mut i = input(Some("0.0.0.0:5433"), true);
+        i.replication = peers();
+        let s = render(&i);
+        let r = rules(&s);
+        let first_reject = r.iter().position(|l| l.ends_with("reject")).expect("reject lines");
+        let pos = |needle: &str| {
+            r.iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} in\n{s}"))
+        };
+        for needle in [
+            "hostssl\treplication\tforgebase_replicator\t10.0.0.7/32",
+            "hostssl\tpostgres\tforgebase_replicator\t10.0.0.7/32",
+            "hostssl\treplication\tforgebase_replicator\tfd00::7/128",
+            "hostssl\tforgebase\tforgebase_reader\t10.0.0.1/32",
+        ] {
+            assert!(pos(needle) < first_reject, "{needle} before the rejects:\n{s}");
+        }
+        for l in r.iter().filter(|l| l.contains("forgebase_replicator")) {
+            assert!(
+                l.starts_with("hostssl") && l.contains("scram-sha-256"),
+                "TLS and SCRAM only: {l}"
+            );
+        }
+        // The generator does what splice_hba does to the file without peers.
+        let base = render(&input(Some("0.0.0.0:5433"), true));
+        let spliced = replication::splice_hba(&base, &replication::hba_entries(&peers()));
+        assert_eq!(rules(&s), rules(&spliced));
+    }
+
+    #[test]
+    fn peers_need_a_tls_port() {
+        let mut i = input(None, false);
+        i.replication = peers();
+        let s = render(&i);
+        assert!(!s.contains("hostssl"), "{s}");
+        let mut w = input(Some("127.0.0.1:50000"), false);
+        w.socket = false;
+        w.replication = peers();
+        assert!(!render(&w).contains("forgebase_replicator"));
+    }
+
+    #[test]
+    fn peers_file_round_trips() {
+        let dir = tempfile::tempdir().expect("tmp");
+        assert_eq!(load_peers(dir.path()).expect("none"), replication::HbaInput::default());
+        let mut p = peers();
+        p.agents.push("10.0.0.7".parse().expect("ip"));
+        save_peers(dir.path(), &p).expect("save");
+        let back = load_peers(dir.path()).expect("load");
+        assert_eq!(back.agents.len(), 2, "deduplicated");
+        assert_eq!(back.readers, peers().readers);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join(PEERS_FILE))
+                .expect("meta")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "private file");
         }
     }
 

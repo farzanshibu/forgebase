@@ -88,6 +88,10 @@ export interface ListParams {
   page?: number;
   per_page?: number;
   search?: string;
+  /** Trigram match of `search` (PostgreSQL with pg_trgm; FB-166). */
+  fuzzy?: boolean;
+  /** 0 to 1; the server's default is 0.3. */
+  fuzzy_threshold?: number;
   fields?: string[];
 }
 

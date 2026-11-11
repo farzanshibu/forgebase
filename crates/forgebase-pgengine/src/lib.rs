@@ -203,6 +203,8 @@ impl Engine {
                 socket: endpoint.socket_dir.is_some(),
                 tcp: endpoint.tcp,
                 tls: cfg.listen.is_some(),
+                // FB-175: remote replicas' agent and reader addresses.
+                replication: hba::load_peers(&layout.node_dir())?,
             },
         )?;
         let settings = conf::settings(&conf::ConfInput {

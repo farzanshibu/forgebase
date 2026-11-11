@@ -36,9 +36,19 @@ export const READ_ONLY_KEYS = ["id", "created", "updated", "_version", "expand"]
 
 export const PER_PAGE = 25;
 
-/** The grid's state as it sits in the URL: `?filter=&sort=&page=&record=`. */
+/** The grid's state as it sits in the URL: `?filter=&sort=&page=&record=&search=&fuzzy=1&ft=0.4`. */
 export function readGridState(p: URLSearchParams) {
   const page = Number.parseInt(p.get("page") ?? "1", 10);
-  return { filter: p.get("filter") ?? "", sort: p.get("sort") ?? "", page: Number.isFinite(page) && page > 0 ? page : 1, record: p.get("record") ?? "" };
+  return {
+    filter: p.get("filter") ?? "", sort: p.get("sort") ?? "", page: Number.isFinite(page) && page > 0 ? page : 1, record: p.get("record") ?? "",
+    search: p.get("search") ?? "", fuzzy: p.get("fuzzy") === "1", threshold: p.get("ft") ?? "",
+  };
 }
+
+/** The fuzzy threshold box: blank (server default 0.3) or a number from 0 to 1. */
+export const fuzzyThresholdError = (t: string): string | undefined => {
+  if (t.trim() === "") return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? undefined : "A number from 0 to 1, such as 0.3.";
+};
 

@@ -479,17 +479,29 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
 }
 
 /// FB-153's generated `pg_hba.conf` admits only ForgeBase's own roles over
-/// TCP; add the replicator's lines ([`replication::hba_entries`]) the way
-/// the generator should, and reload.
+/// TCP; FB-175's generator adds the replicator's lines for each agent
+/// address ([`forgebase_pgengine::hba::apply_peers`]: peers file, rewrite,
+/// reload), which is what the server does when an agent joins.
 async fn allow_replicator_over_tcp(h: &EngineHandle) {
-    let path = h.layout().pgdata().join("pg_hba.conf");
-    let text = std::fs::read_to_string(&path).expect("pg_hba.conf");
-    let entries = replication::hba_entries(&replication::HbaInput {
+    let peers = replication::HbaInput {
         agents: vec!["127.0.0.1".parse().unwrap()],
         readers: vec![],
-    });
-    std::fs::write(&path, replication::splice_hba(&text, &entries)).expect("write pg_hba.conf");
-    h.pg_ctl(&["reload", "-s"]).await.expect("reload");
+    };
+    assert!(
+        forgebase_pgengine::hba::apply_peers(h, &peers)
+            .await
+            .expect("apply peers")
+    );
+    let text = std::fs::read_to_string(h.layout().pgdata().join("pg_hba.conf")).expect("pg_hba.conf");
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("hostssl\treplication\tforgebase_replicator\t127.0.0.1/32")),
+        "{text}"
+    );
+    assert!(
+        !forgebase_pgengine::hba::apply_peers(h, &peers).await.expect("again"),
+        "no change, no reload"
+    );
 }
 
 #[tokio::test]

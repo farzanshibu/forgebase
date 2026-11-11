@@ -141,6 +141,15 @@ describe("step 2: feature map", () => {
     expect(within(card("billing")).queryByRole("link")).not.toBeInTheDocument();
   });
 
+  it("names the database engines with PostgreSQL first (FB-177)", async () => {
+    setup({ required: false });
+    renderStudio("/system/features");
+    const note = await screen.findByTestId("database-engines-note");
+    expect(note.textContent!.indexOf("PostgreSQL")).toBeGreaterThanOrEqual(0);
+    expect(note.textContent!.indexOf("PostgreSQL")).toBeLessThan(note.textContent!.indexOf("SQLite"));
+    expect(note).toHaveTextContent("forgebase db convert --to postgres");
+  });
+
   it("makes an env-sourced switch read-only with the reason", async () => {
     setup();
     renderStudio("/system/features");

@@ -54,6 +54,7 @@ export default function FeaturesForm({ snapshot, apply }: {
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Features</h2>
           <p className="text-sm text-muted-foreground">Choose what this server runs. A feature that is off answers “disabled” and starts nothing.</p>
+          <p className="text-sm text-muted-foreground" data-testid="database-engines-note">The database engine is chosen when the project is created: PostgreSQL (the default) or SQLite (one file). <code>forgebase db convert --to postgres</code> moves an SQLite project.</p>
         </div>
         <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {features.map((f) => {

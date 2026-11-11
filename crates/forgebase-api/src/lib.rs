@@ -10,6 +10,7 @@
 //! | `GET /api/system/info` | instance information |
 //! | `GET /api/system/features` | feature registry and settings (administrators; FB-91) |
 //! | `PATCH /api/system/config` | write settings to the config file (administrators; FB-91) |
+//! | `/api/system/database/*` | database topology: replicas, shards, operations (administrators; FB-175) |
 //! | `/api/auth/*` | authentication (forgebase-auth, ADR-0004) |
 //! | `/api/v1/realtime/*` | WebSocket, SSE, channels (forgebase-realtime, ADR-0011) |
 //! | `/admin/` | embedded admin dashboard |
@@ -36,6 +37,7 @@ pub mod http;
 pub mod openapi;
 pub mod principal;
 pub mod routes;
+pub mod system_database;
 pub mod v1;
 
 use std::future::Future;
@@ -358,6 +360,14 @@ pub struct RouterOptions {
     /// the routes of disabled modules into `404 feature_disabled`. Without
     /// it nothing is gated and both endpoints answer `503`.
     pub system_config: Option<Arc<features::SystemConfig>>,
+    /// The server's topology service behind `/api/system/database/*`
+    /// (FB-175). Without it those routes answer `503 topology_unavailable`
+    /// on PostgreSQL (`400 postgres_required` on SQLite).
+    pub database_topology: Option<Arc<dyn system_database::TopologyOps>>,
+    /// The graph service mounted at `/api/v1/graph` (FB-163: the server
+    /// passes one with the shard router and the `graph.materialise` job
+    /// hook attached). `None`: a plain one on the app state's data service.
+    pub graph: Option<forgebase_graph::GraphService>,
 }
 
 /// Routes of a feature crate that depends on `forgebase-api` (so this crate
@@ -389,6 +399,8 @@ impl Default for RouterOptions {
             gates: Vec::new(),
             ops_access: forgebase_core::OpsAccess::default(),
             system_config: None,
+            database_topology: None,
+            graph: None,
         }
     }
 }
@@ -493,7 +505,11 @@ pub fn router_with(
     let graph = if graph_on {
         Router::new().nest_service(
             "/api/v1/graph",
-            forgebase_graph::router(forgebase_graph::GraphService::new(state.data().clone())),
+            forgebase_graph::router(
+                opts.graph
+                    .clone()
+                    .unwrap_or_else(|| forgebase_graph::GraphService::new(state.data().clone())),
+            ),
         )
     } else {
         Router::new()
@@ -522,7 +538,9 @@ pub fn router_with(
         .route("/admin/", get(admin::index))
         .route("/admin/{*path}", get(admin::asset))
         .fallback(routes::not_found)
-        .with_state(state)
+        .with_state(state.clone())
+        // FB-175: `/api/system/database/*` (administrators).
+        .merge(system_database::router(state.clone(), opts.database_topology.clone()))
         .layer(middleware::from_fn_with_state(
             consistency::RecentCommits::default(),
             consistency::track,
@@ -536,7 +554,10 @@ pub fn router_with(
         app.layer(middleware::from_fn_with_state(gates, gate::run))
     };
     let app = with_policy_layer(app, policy);
+    // FB-175: the `forgebase node` agent routes authenticate with their own
+    // token or key, so they sit outside the session/API-key layer.
     let app = with_auth_layer(app, auth)
+        .merge(system_database::agent_router(state, opts.database_topology.clone()))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             opts.request_timeout,
@@ -757,6 +778,9 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{text}");
         let d = &j["database"];
         assert_eq!(d["backend"], if pg { "postgres" } else { "sqlite" });
+        // FB-155: what a new project of this build gets, for the System studio's SQLite notice.
+        assert_eq!(d["default_backend"], forgebase_core::config::DEFAULT_BACKEND.as_str());
+        assert_eq!(d["bundled_postgres"], forgebase_core::config::BUNDLED_POSTGRES);
         assert!(d["server_version"].as_str().is_some_and(|v| !v.is_empty()), "{d}");
         if pg {
             assert_eq!(d["mode"], "managed");

@@ -1,4 +1,4 @@
-//! The ForgeBase graph model (FB-51, SPEC §7) on SQLite.
+//! The ForgeBase graph model (FB-51, SPEC §7) on SQLite and PostgreSQL.
 //!
 //! * **Model**: nodes (id, label, JSON properties) and typed edges (type,
 //!   source, target, directed or undirected, JSON properties) in two indexed
@@ -18,18 +18,31 @@
 //!   enters a hidden node. Callers without a tenant: privileged only
 //!   (`tenant_required`).
 //! * **REST** ([`router`], [`openapi`]): mounted at `/api/v1/graph`.
+//! * **openCypher** (ADR-0029 §1.5, FB-163; PostgreSQL with Apache AGE):
+//!   `POST /graph/cypher` runs read-only queries on a derived per-tenant AGE
+//!   graph ([`age`]) that every write keeps in step; label and edge-type
+//!   rules apply inside the query. Elsewhere `400 cypher_unsupported`.
+//! * **Shards** ([`GraphService::attach_router`]): every call runs on its
+//!   tenant's database set.
 //!
 //! Limits: depth 1 to 10, results 1 to 1000, at most 20 edge types and 8
 //! property conditions per query, properties up to 64 KiB, shortest-path
 //! searches up to 100 000 nodes.
 
 mod access;
+pub mod age;
+mod cypher;
 mod error;
 mod http;
 mod model;
+mod routed;
 mod service;
 
 pub use access::{GraphAccess, Rules};
+pub use cypher::{
+    CypherDropped, CypherQuery, CypherResult, CypherStatus, DEFAULT_LIMIT, DEFAULT_TIMEOUT_MS, MATERIALISE_JOB,
+    MAX_LIMIT, MAX_QUERY_BYTES, MAX_TIMEOUT_MS, MaterialiseJobs, MaterialiseReport,
+};
 pub use error::GraphError;
 pub use http::{openapi, router};
 pub use model::*;
