@@ -13,19 +13,23 @@
 //!   [`Authorizer`](forgebase_data::Authorizer) first
 //!   ([`Action::GraphRead`](forgebase_data::Action) /
 //!   [`Action::GraphWrite`](forgebase_data::Action)); the default authorizer
-//!   fails closed. Graph data has no row-level policies: a filter decision is a
-//!   denial.
+//!   fails closed. Label and edge-type rules (FB-139, [`GraphAccess`]) are
+//!   compiled into every statement: a walk never crosses a hidden edge or
+//!   enters a hidden node. Callers without a tenant: privileged only
+//!   (`tenant_required`).
 //! * **REST** ([`router`], [`openapi`]): mounted at `/api/v1/graph`.
 //!
 //! Limits: depth 1 to 10, results 1 to 1000, at most 20 edge types and 8
 //! property conditions per query, properties up to 64 KiB, shortest-path
 //! searches up to 100 000 nodes.
 
+mod access;
 mod error;
 mod http;
 mod model;
 mod service;
 
+pub use access::{GraphAccess, Rules};
 pub use error::GraphError;
 pub use http::{openapi, router};
 pub use model::*;

@@ -4,18 +4,26 @@
 //! Rules every method follows:
 //!
 //! * the [`Authorizer`](forgebase_data::Authorizer) is asked first
-//!   ([`Action::GraphRead`] / [`Action::GraphWrite`]), fail closed;
-//! * every statement filters on the caller's tenant (`AccessContext::tenant`,
-//!   `''` when none) and every value is a bound parameter; the SQL text is
-//!   assembled only from fixed fragments;
+//!   ([`Action::GraphRead`] / [`Action::GraphWrite`]), fail closed, per
+//!   label and edge type (FB-139, [`GraphAccess`]): reads compile the
+//!   caller's rules into the statement (`list` for listings and walks,
+//!   `view` for single reads); writes ask the label or type of the row
+//!   (`create`, `update`, `delete`) and check a restricting rule on the
+//!   stored row and on the written one before commit;
+//! * every statement filters on the caller's tenant (`AccessContext::tenant`;
+//!   the shared `''` graph only for privileged callers without one, anyone
+//!   else gets `tenant_required`) and every value is a bound parameter; the
+//!   SQL text is assembled only from fixed fragments and compiled rules;
 //! * depth, result size, filter size and search effort are capped.
 
 use std::collections::{HashMap, HashSet};
 
-use forgebase_data::{AccessContext, Action, DataService};
-use forgebase_db::{Backend, Rows, Statement, TxMode, Value};
+use forgebase_data::query::SqlBuilder;
+use forgebase_data::{AccessContext, Action, DataError, DataService, Principal, ResourceKind, ResourceOp, ResourceRef};
+use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::{Map, Value as Json};
 
+use crate::access::{GraphAccess, One, Rules, and};
 use crate::error::GraphError;
 use crate::model::*;
 
@@ -30,6 +38,9 @@ const N_COLS: &str = "n.id, n.label, n.properties, n.created_at, n.updated_at";
 const E_COLS: &str = "e.id, e.type, e.source, e.target, e.directed, e.properties, e.created_at, e.updated_at";
 /// Hard cap on rows the recursive walk may produce, whatever the depth.
 const MAX_WALK_ROWS: u32 = 200_000;
+/// Most distinct labels (and, separately, edge types) a tenant may have for
+/// callers whose access is decided per label (FB-139).
+pub const MAX_RULE_NAMES: usize = 1000;
 
 /// The graph service. Cheap to clone.
 #[derive(Debug, Clone)]
@@ -47,25 +58,210 @@ impl GraphService {
         self.data.backend().as_ref()
     }
 
-    fn guard(&self, ctx: &AccessContext, action: Action) -> Result<String> {
-        if self.data.authorize(ctx, action, None)?.is_some() {
-            return Err(GraphError::Forbidden(
-                "row-level policies are not supported for graph data".into(),
+    fn dialect(&self) -> &dyn forgebase_db::Dialect {
+        self.backend().dialect()
+    }
+
+    /// The caller's tenant: its own, or the shared `''` graph for privileged
+    /// callers without one. Anyone else without a tenant gets
+    /// `tenant_required`, after the plain check so a denied caller learns
+    /// nothing (FB-139).
+    fn tenant_of(&self, ctx: &AccessContext, action: Action) -> Result<String> {
+        match &ctx.tenant {
+            Some(t) => Ok(t.clone()),
+            None if ctx.is_privileged() => Ok(String::new()),
+            None => {
+                self.data.authorize(ctx, action, None)?;
+                Err(GraphError::invalid(
+                    "tenant_required",
+                    "select a tenant (X-ForgeBase-Tenant header, or a tenant-bound key)",
+                ))
+            }
+        }
+    }
+
+    fn denied(ctx: &AccessContext, msg: String) -> GraphError {
+        if ctx.principal == Principal::Anonymous {
+            GraphError::Unauthenticated
+        } else {
+            GraphError::Forbidden(msg)
+        }
+    }
+
+    /// The decision for one label (or edge type).
+    fn one(&self, ctx: &AccessContext, action: Action, kind: ResourceKind, name: &str, op: ResourceOp) -> Result<One> {
+        let r = ResourceRef::new(kind, name, op);
+        match self.data.authorize_resource(ctx, action, &r) {
+            Ok(None) => Ok(One::Allow),
+            Ok(Some(p)) => Ok(One::Filter(p)),
+            Err(DataError::Forbidden(_) | DataError::Unauthenticated) => Ok(One::Deny),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Distinct labels (`column = "label"`) or edge types of a tenant, by
+    /// skipping through the index (one probe per name).
+    async fn names(&self, tenant: &str, table: &str, column: &str) -> Result<Vec<String>> {
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                format!(
+                    "WITH RECURSIVE l(v) AS (SELECT (SELECT min({column}) FROM {table} WHERE tenant = ?1) \
+                     UNION ALL SELECT (SELECT min({column}) FROM {table} WHERE tenant = ?1 AND {column} > l.v) \
+                     FROM l WHERE l.v IS NOT NULL) SELECT v FROM l WHERE v IS NOT NULL LIMIT ?2"
+                ),
+                vec![tenant.into(), i64::try_from(MAX_RULE_NAMES + 1).unwrap_or(i64::MAX).into()],
+            ))
+            .await?;
+        if rows.len() > MAX_RULE_NAMES {
+            return Err(GraphError::invalid(
+                "graph_too_many_names",
+                format!("the graph has more than {MAX_RULE_NAMES} labels or edge types; rules cannot be applied"),
             ));
         }
-        Ok(ctx.tenant.clone().unwrap_or_default())
+        rows.rows.iter().map(|r| text(&r[0])).collect()
+    }
+
+    async fn rules(
+        &self,
+        ctx: &AccessContext,
+        tenant: &str,
+        action: Action,
+        kind: ResourceKind,
+        op: ResourceOp,
+    ) -> Result<Rules> {
+        let (table, column) = match kind {
+            ResourceKind::GraphEdgeType => (EDGES, "type"),
+            _ => (NODES, "label"),
+        };
+        let names = self.names(tenant, table, column).await?;
+        if names.is_empty() {
+            return Ok(Rules::empty(kind, &self.one(ctx, action, kind, "*", op)?));
+        }
+        let decisions = names
+            .into_iter()
+            .map(|n| self.one(ctx, action, kind, &n, op).map(|d| (n, d)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Rules::from_decisions(kind, decisions))
+    }
+
+    /// What the caller may see (or change) of its tenant's graph for `op`
+    /// (FB-139): the decision of every label and edge type, ready to compile
+    /// into SQL. Public so engines that walk the graph with their own SQL
+    /// (FB-147, FB-163) apply the same rules and can tell whether any rule
+    /// applies ([`GraphAccess::is_unrestricted`]).
+    pub async fn access(&self, ctx: &AccessContext, action: Action, op: ResourceOp) -> Result<GraphAccess> {
+        let tenant = self.tenant_of(ctx, action)?;
+        self.access_in(ctx, &tenant, action, op).await
+    }
+
+    async fn access_in(&self, ctx: &AccessContext, tenant: &str, action: Action, op: ResourceOp) -> Result<GraphAccess> {
+        if ctx.is_privileged() {
+            return Ok(GraphAccess::unrestricted());
+        }
+        let acc = GraphAccess {
+            nodes: self.rules(ctx, tenant, action, ResourceKind::GraphLabel, op).await?,
+            edges: self.rules(ctx, tenant, action, ResourceKind::GraphEdgeType, op).await?,
+        };
+        if !acc.nodes.allows_any() && !acc.edges.allows_any() {
+            // Nothing at all: the caller has no business here.
+            return Err(Self::denied(ctx, format!("{action:?} is not allowed")));
+        }
+        Ok(acc)
+    }
+
+    /// The edge-type rules alone (no "nothing at all" check).
+    async fn edge_rules(&self, ctx: &AccessContext, tenant: &str, action: Action, op: ResourceOp) -> Result<Rules> {
+        if ctx.is_privileged() {
+            return Ok(Rules::unrestricted(ResourceKind::GraphEdgeType));
+        }
+        self.rules(ctx, tenant, action, ResourceKind::GraphEdgeType, op).await
+    }
+
+    async fn read(&self, ctx: &AccessContext, op: ResourceOp) -> Result<(String, GraphAccess)> {
+        let tenant = self.tenant_of(ctx, Action::GraphRead)?;
+        let acc = self.access_in(ctx, &tenant, Action::GraphRead, op).await?;
+        Ok((tenant, acc))
+    }
+
+    /// The rules of one name, as [`Rules`].
+    fn rules_of(&self, ctx: &AccessContext, action: Action, kind: ResourceKind, name: &str, op: ResourceOp) -> Result<Rules> {
+        if ctx.is_privileged() {
+            return Ok(Rules::unrestricted(kind));
+        }
+        Ok(Rules::from_decisions(
+            kind,
+            vec![(name.to_owned(), self.one(ctx, action, kind, name, op)?)],
+        ))
+    }
+
+    /// Whether row `id` of `table` (aliased `alias`) matches `rules`, read
+    /// in the write transaction (stored and written rows).
+    async fn row_matches(
+        &self,
+        tx: &mut dyn WriteTx,
+        table: &str,
+        alias: &str,
+        tenant: &str,
+        id: &str,
+        rules: &Rules,
+    ) -> Result<bool> {
+        let mut b = SqlBuilder::new(self.dialect());
+        let t = b.bind(tenant);
+        let i = b.bind(id);
+        let Some(cond) = rules.compile(&mut b, alias)? else {
+            return Ok(true);
+        };
+        let rows = tx
+            .fetch_all(&Statement::new(
+                format!("SELECT 1 FROM {table} {alias} WHERE {alias}.tenant = {t} AND {alias}.id = {i} AND {cond}"),
+                b.into_params(),
+            ))
+            .await?;
+        Ok(!rows.is_empty())
+    }
+
+    /// The error for a stored row the caller may not change: not found when
+    /// the caller may not even view it (no existence oracle), else forbidden.
+    #[allow(clippy::too_many_arguments)]
+    async fn refuse(
+        &self,
+        ctx: &AccessContext,
+        tx: &mut dyn WriteTx,
+        kind: ResourceKind,
+        name: &str,
+        tenant: &str,
+        id: &str,
+        what: &str,
+    ) -> Result<GraphError> {
+        let (table, alias, missing) = match kind {
+            ResourceKind::GraphEdgeType => (EDGES, "e", GraphError::EdgeNotFound(id.to_owned())),
+            _ => (NODES, "n", GraphError::NodeNotFound(id.to_owned())),
+        };
+        let view = self.rules_of(ctx, Action::GraphRead, kind, name, ResourceOp::View)?;
+        if self.row_matches(tx, table, alias, tenant, id, &view).await? && view.allows_any() {
+            Ok(Self::denied(ctx, format!("{what} is not allowed")))
+        } else {
+            Ok(missing)
+        }
     }
 
     // ---- nodes -----------------------------------------------------------
 
     /// Creates a node.
+    /// The label's `create` rule must allow it (a restricting rule must
+    /// hold for the new node).
     pub async fn create_node(&self, ctx: &AccessContext, new: NewNode) -> Result<Node> {
-        let tenant = self.guard(ctx, Action::GraphWrite)?;
+        let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
+        let label = check_label(new.label.as_deref())?;
+        let rule = self.rules_of(ctx, Action::GraphWrite, ResourceKind::GraphLabel, &label, ResourceOp::Create)?;
+        if !rule.allows_any() {
+            return Err(Self::denied(ctx, format!("creating {label:?} nodes is not allowed")));
+        }
         let id = match new.id {
             Some(id) => check_id(&id, "node")?,
             None => generate_id(),
         };
-        let label = check_label(new.label.as_deref())?;
         let props = check_props(new.properties)?;
         let now = forgebase_core::now_rfc3339();
         let mut tx = self.backend().begin(TxMode::Normal).await?;
@@ -93,6 +289,9 @@ impl GraphService {
                 ],
             ))
             .await?;
+            if !self.row_matches(&mut *tx, NODES, "n", &tenant, &id, &rule).await? {
+                return Err(Self::denied(ctx, format!("the node does not satisfy the create rule of {label:?}")));
+            }
             Ok(())
         }
         .await;
@@ -108,30 +307,76 @@ impl GraphService {
 
     /// One node.
     pub async fn get_node(&self, ctx: &AccessContext, id: &str) -> Result<Node> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
-        self.node(&tenant, id)
+        let (tenant, acc) = self.read(ctx, ResourceOp::View).await?;
+        self.node(&tenant, id, &acc)
             .await?
             .ok_or_else(|| GraphError::NodeNotFound(id.to_owned()))
     }
 
-    async fn node(&self, tenant: &str, id: &str) -> Result<Option<Node>> {
+    /// Node `id` when the caller may see it.
+    async fn node(&self, tenant: &str, id: &str, acc: &GraphAccess) -> Result<Option<Node>> {
+        let mut b = SqlBuilder::new(self.dialect());
+        let t = b.bind(tenant);
+        let i = b.bind(id);
+        let vis = acc.node_sql(&mut b, "n")?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND n.id = ?2"),
-                vec![tenant.into(), id.into()],
+                format!(
+                    "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = {t} AND n.id = {i}{}",
+                    and(vis.as_deref())
+                ),
+                b.into_params(),
             ))
             .await?;
         rows.rows.first().map(|r| read_node(r, 0)).transpose()
     }
 
+    /// The type of edge `id` in the write transaction.
+    async fn edge_type_tx(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> Result<Option<String>> {
+        let rows = tx
+            .fetch_all(&Statement::new(
+                format!("SELECT type FROM {EDGES} WHERE tenant = ?1 AND id = ?2"),
+                vec![tenant.into(), id.into()],
+            ))
+            .await?;
+        rows.rows.first().map(|r| text(&r[0])).transpose()
+    }
+
+    /// The label of node `id` in the write transaction.
+    async fn label_tx(tx: &mut dyn WriteTx, tenant: &str, id: &str) -> Result<Option<String>> {
+        let rows = tx
+            .fetch_all(&Statement::new(
+                format!("SELECT label FROM {NODES} WHERE tenant = ?1 AND id = ?2"),
+                vec![tenant.into(), id.into()],
+            ))
+            .await?;
+        rows.rows.first().map(|r| text(&r[0])).transpose()
+    }
+
     /// Replaces (`merge = false`) or merge-patches (`merge = true`) a node.
+    /// The stored node must pass its label's `update` rule, and the changed
+    /// node the `update` rule of its (possibly new) label.
     pub async fn change_node(&self, ctx: &AccessContext, id: &str, change: NodeChange, merge: bool) -> Result<Node> {
-        let tenant = self.guard(ctx, Action::GraphWrite)?;
+        let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let label = change.label.as_deref().map(|l| check_label(Some(l))).transpose()?;
         let props = change.properties.map(|p| check_props(Some(p))).transpose()?;
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         let result = async {
+            let Some(old) = Self::label_tx(&mut *tx, &tenant, id).await? else {
+                return Err(GraphError::NodeNotFound(id.to_owned()));
+            };
+            let k = ResourceKind::GraphLabel;
+            let before = self.rules_of(ctx, Action::GraphWrite, k, &old, ResourceOp::Update)?;
+            if !self.row_matches(&mut *tx, NODES, "n", &tenant, id, &before).await? {
+                return Err(self.refuse(ctx, &mut *tx, k, &old, &tenant, id, "changing this node").await?);
+            }
+            let new_label = label.clone().unwrap_or_else(|| old.clone());
+            let after = if new_label == old {
+                before
+            } else {
+                self.rules_of(ctx, Action::GraphWrite, k, &new_label, ResourceOp::Update)?
+            };
             let props_sql = match (&props, merge) {
                 (None, _) => "properties",
                 (Some(_), true) => "json_patch(properties, ?4)",
@@ -168,6 +413,12 @@ impl GraphService {
                 0,
             )?;
             check_props(Some(node.properties.clone()))?;
+            if !self.row_matches(&mut *tx, NODES, "n", &tenant, id, &after).await? {
+                return Err(Self::denied(
+                    ctx,
+                    format!("the changed node does not satisfy the update rule of {new_label:?}"),
+                ));
+            }
             Ok(node)
         }
         .await;
@@ -176,10 +427,40 @@ impl GraphService {
 
     /// Deletes a node and every edge that touches it. Returns the number of
     /// edges removed.
+    /// Needs the label's `delete` rule, and the `delete` rule of every edge
+    /// that touches the node.
     pub async fn delete_node(&self, ctx: &AccessContext, id: &str) -> Result<u64> {
-        let tenant = self.guard(ctx, Action::GraphWrite)?;
+        let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
+        let edge_rules = self
+            .edge_rules(ctx, &tenant, Action::GraphWrite, ResourceOp::Delete)
+            .await?;
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         let result = async {
+            let Some(label) = Self::label_tx(&mut *tx, &tenant, id).await? else {
+                return Err(GraphError::NodeNotFound(id.to_owned()));
+            };
+            let k = ResourceKind::GraphLabel;
+            let rule = self.rules_of(ctx, Action::GraphWrite, k, &label, ResourceOp::Delete)?;
+            if !self.row_matches(&mut *tx, NODES, "n", &tenant, id, &rule).await? {
+                return Err(self.refuse(ctx, &mut *tx, k, &label, &tenant, id, "deleting this node").await?);
+            }
+            let mut b = SqlBuilder::new(self.dialect());
+            let t = b.bind(tenant.clone());
+            let i = b.bind(id);
+            if let Some(cond) = edge_rules.compile(&mut b, "e")? {
+                let blocked = tx
+                    .fetch_all(&Statement::new(
+                        format!(
+                            "SELECT 1 FROM {EDGES} e WHERE e.tenant = {t} AND (e.source = {i} OR e.target = {i}) \
+                             AND NOT coalesce(({cond}), 1 = 0) LIMIT 1"
+                        ),
+                        b.into_params(),
+                    ))
+                    .await?;
+                if !blocked.is_empty() {
+                    return Err(Self::denied(ctx, "the node has edges you may not delete".into()));
+                }
+            }
             let edges = tx
                 .execute(&Statement::new(
                     format!("DELETE FROM {EDGES} WHERE tenant = ?1 AND (source = ?2 OR target = ?2)"),
@@ -210,16 +491,19 @@ impl GraphService {
         after: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Page<Node>> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let limit = check_limit(limit)?;
+        let mut b = SqlBuilder::new(self.dialect());
+        bind_all(&mut b, vec![tenant.into(), label.into(), after.into(), i64::from(limit + 1).into()]);
+        let vis = and(acc.node_sql(&mut b, "n")?.as_deref());
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND (?2 IS NULL OR n.label = ?2) \
-                     AND (?3 IS NULL OR n.id > ?3) ORDER BY n.id LIMIT ?4"
+                     AND (?3 IS NULL OR n.id > ?3){vis} ORDER BY n.id LIMIT ?4"
                 ),
-                vec![tenant.into(), label.into(), after.into(), i64::from(limit + 1).into()],
+                b.into_params(),
             ))
             .await?;
         page(rows, limit, |r| read_node(r, 0), |n| n.id.clone())
@@ -228,13 +512,30 @@ impl GraphService {
     // ---- edges -----------------------------------------------------------
 
     /// Creates an edge between two existing nodes of the caller's tenant.
+    /// The type's `create` rule must allow it, and the caller must be able
+    /// to view both nodes.
     pub async fn create_edge(&self, ctx: &AccessContext, new: NewEdge) -> Result<Edge> {
-        let tenant = self.guard(ctx, Action::GraphWrite)?;
+        let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
+        let edge_type = check_type(&new.edge_type)?;
+        let k = ResourceKind::GraphEdgeType;
+        let rule = self.rules_of(ctx, Action::GraphWrite, k, &edge_type, ResourceOp::Create)?;
+        if !rule.allows_any() {
+            return Err(Self::denied(ctx, format!("creating {edge_type:?} edges is not allowed")));
+        }
+        let view = if ctx.is_privileged() {
+            GraphAccess::unrestricted()
+        } else {
+            GraphAccess {
+                nodes: self
+                    .rules(ctx, &tenant, Action::GraphRead, ResourceKind::GraphLabel, ResourceOp::View)
+                    .await?,
+                edges: Rules::unrestricted(k),
+            }
+        };
         let id = match new.id {
             Some(id) => check_id(&id, "edge")?,
             None => generate_id(),
         };
-        let edge_type = check_type(&new.edge_type)?;
         let source = check_id(&new.source, "source node")?;
         let target = check_id(&new.target, "target node")?;
         let directed = new.directed.unwrap_or(true);
@@ -242,10 +543,13 @@ impl GraphService {
         let now = forgebase_core::now_rfc3339();
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         let result = async {
+            let mut b = SqlBuilder::new(self.dialect());
+            bind_all(&mut b, vec![tenant.clone().into(), source.clone().into(), target.clone().into()]);
+            let vis = and(view.node_sql(&mut b, "n")?.as_deref());
             let nodes = tx
                 .fetch_all(&Statement::new(
-                    format!("SELECT id FROM {NODES} WHERE tenant = ?1 AND id IN (?2, ?3)"),
-                    vec![tenant.clone().into(), source.clone().into(), target.clone().into()],
+                    format!("SELECT n.id FROM {NODES} n WHERE n.tenant = ?1 AND n.id IN (?2, ?3){vis}"),
+                    b.into_params(),
                 ))
                 .await?;
             let found: HashSet<&str> = nodes.rows.iter().filter_map(|r| r[0].as_str()).collect();
@@ -283,6 +587,12 @@ impl GraphService {
                 ],
             ))
             .await?;
+            if !self.row_matches(&mut *tx, EDGES, "e", &tenant, &id, &rule).await? {
+                return Err(Self::denied(
+                    ctx,
+                    format!("the edge does not satisfy the create rule of {edge_type:?}"),
+                ));
+            }
             Ok(())
         }
         .await;
@@ -301,12 +611,16 @@ impl GraphService {
 
     /// One edge.
     pub async fn get_edge(&self, ctx: &AccessContext, id: &str) -> Result<Edge> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let (tenant, acc) = self.read(ctx, ResourceOp::View).await?;
+        let mut b = SqlBuilder::new(self.dialect());
+        b.bind(tenant);
+        b.bind(id);
+        let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND e.id = ?2"),
-                vec![tenant.into(), id.into()],
+                format!("SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND e.id = ?2{vis}"),
+                b.into_params(),
             ))
             .await?;
         rows.rows
@@ -317,11 +631,20 @@ impl GraphService {
     }
 
     /// Merge-patches an edge's properties.
+    /// The stored and the changed edge must pass the type's `update` rule.
     pub async fn change_edge(&self, ctx: &AccessContext, id: &str, change: EdgeChange) -> Result<Edge> {
-        let tenant = self.guard(ctx, Action::GraphWrite)?;
+        let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let props = change.properties.map(|p| check_props(Some(p))).transpose()?;
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         let result = async {
+            let Some(edge_type) = Self::edge_type_tx(&mut *tx, &tenant, id).await? else {
+                return Err(GraphError::EdgeNotFound(id.to_owned()));
+            };
+            let k = ResourceKind::GraphEdgeType;
+            let rule = self.rules_of(ctx, Action::GraphWrite, k, &edge_type, ResourceOp::Update)?;
+            if !self.row_matches(&mut *tx, EDGES, "e", &tenant, id, &rule).await? {
+                return Err(self.refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "changing this edge").await?);
+            }
             let done = tx
                 .execute(&Statement::new(
                     format!(
@@ -352,6 +675,12 @@ impl GraphService {
                 0,
             )?;
             check_props(Some(edge.properties.clone()))?;
+            if !self.row_matches(&mut *tx, EDGES, "e", &tenant, id, &rule).await? {
+                return Err(Self::denied(
+                    ctx,
+                    format!("the changed edge does not satisfy the update rule of {edge_type:?}"),
+                ));
+            }
             Ok(edge)
         }
         .await;
@@ -359,10 +688,19 @@ impl GraphService {
     }
 
     /// Deletes an edge.
+    /// Needs the type's `delete` rule.
     pub async fn delete_edge(&self, ctx: &AccessContext, id: &str) -> Result<()> {
-        let tenant = self.guard(ctx, Action::GraphWrite)?;
+        let tenant = self.tenant_of(ctx, Action::GraphWrite)?;
         let mut tx = self.backend().begin(TxMode::Normal).await?;
         let result = async {
+            let Some(edge_type) = Self::edge_type_tx(&mut *tx, &tenant, id).await? else {
+                return Err(GraphError::EdgeNotFound(id.to_owned()));
+            };
+            let k = ResourceKind::GraphEdgeType;
+            let rule = self.rules_of(ctx, Action::GraphWrite, k, &edge_type, ResourceOp::Delete)?;
+            if !self.row_matches(&mut *tx, EDGES, "e", &tenant, id, &rule).await? {
+                return Err(self.refuse(ctx, &mut *tx, k, &edge_type, &tenant, id, "deleting this edge").await?);
+            }
             let done = tx
                 .execute(&Statement::new(
                     format!("DELETE FROM {EDGES} WHERE tenant = ?1 AND id = ?2"),
@@ -388,24 +726,30 @@ impl GraphService {
         after: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Page<Edge>> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let limit = check_limit(limit)?;
+        let mut b = SqlBuilder::new(self.dialect());
+        bind_all(
+            &mut b,
+            vec![
+                tenant.into(),
+                edge_type.into(),
+                source.into(),
+                target.into(),
+                after.into(),
+                i64::from(limit + 1).into(),
+            ],
+        );
+        let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND (?2 IS NULL OR e.type = ?2) \
                      AND (?3 IS NULL OR e.source = ?3) AND (?4 IS NULL OR e.target = ?4) \
-                     AND (?5 IS NULL OR e.id > ?5) ORDER BY e.id LIMIT ?6"
+                     AND (?5 IS NULL OR e.id > ?5){vis} ORDER BY e.id LIMIT ?6"
                 ),
-                vec![
-                    tenant.into(),
-                    edge_type.into(),
-                    source.into(),
-                    target.into(),
-                    after.into(),
-                    i64::from(limit + 1).into(),
-                ],
+                b.into_params(),
             ))
             .await?;
         page(rows, limit, |r| read_edge(r, 0), |e| e.id.clone())
@@ -413,21 +757,33 @@ impl GraphService {
 
     // ---- queries ---------------------------------------------------------
 
-    /// Counts of nodes, edges and edges per type.
+    /// Counts of nodes, edges and edges per type. Spans every label, so only
+    /// the plain `engine:graph_read` grants it; the counts still leave out
+    /// what the caller's rules hide.
     pub async fn stats(&self, ctx: &AccessContext) -> Result<GraphStats> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let tenant = self.tenant_of(ctx, Action::GraphRead)?;
+        self.data.authorize_action(ctx, Action::GraphRead)?;
+        let acc = self.access_in(ctx, &tenant, Action::GraphRead, ResourceOp::List).await?;
+        let mut b = SqlBuilder::new(self.dialect());
+        b.bind(tenant.clone());
+        let vis = and(acc.node_sql(&mut b, "n")?.as_deref());
         let nodes = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT count(*) FROM {NODES} WHERE tenant = ?1"),
-                vec![tenant.clone().into()],
+                format!("SELECT count(*) FROM {NODES} n WHERE n.tenant = ?1{vis}"),
+                b.into_params(),
             ))
             .await?;
+        let mut b = SqlBuilder::new(self.dialect());
+        b.bind(tenant);
+        let vis = and(acc.edge_sql(&mut b, "e", NODES)?.as_deref());
         let types = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT type, count(*) FROM {EDGES} WHERE tenant = ?1 GROUP BY type ORDER BY type"),
-                vec![tenant.into()],
+                format!(
+                    "SELECT e.type, count(*) FROM {EDGES} e WHERE e.tenant = ?1{vis} GROUP BY e.type ORDER BY e.type"
+                ),
+                b.into_params(),
             ))
             .await?;
         let edge_types = types
@@ -449,13 +805,28 @@ impl GraphService {
 
     /// Nodes one hop from `id`, with the connecting edge.
     pub async fn neighbors(&self, ctx: &AccessContext, id: &str, q: NeighborQuery) -> Result<Page<Neighbor>> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let types = check_types(q.edge_types)?;
         let limit = check_limit(q.limit)?;
         let offset = q.offset.unwrap_or(0);
-        if self.node(&tenant, id).await?.is_none() {
+        if self.node(&tenant, id, &acc).await?.is_none() {
             return Err(GraphError::NodeNotFound(id.to_owned()));
         }
+        let mut b = SqlBuilder::new(self.dialect());
+        bind_all(&mut b, vec![
+            tenant.into(),
+            id.into(),
+            json_list(&types).into(),
+            i64::from(limit + 1).into(),
+            i64::from(offset).into(),
+        ]);
+        // The queried node is visible; the edge's type and the node at the
+        // other end must be too.
+        let vis = format!(
+            "{}{}",
+            and(acc.edges.compile(&mut b, "e")?.as_deref()),
+            and(acc.node_sql(&mut b, "n")?.as_deref())
+        );
         let type_sql = if types.is_empty() {
             ""
         } else {
@@ -467,7 +838,7 @@ impl GraphService {
         let side = |dir: &str, own: &str, nbr: &str, extra: &str| {
             format!(
                 "SELECT '{dir}' AS dir, {E_COLS}, {N_COLS} FROM {EDGES} e JOIN {NODES} n \
-                 ON n.tenant = e.tenant AND n.id = e.{nbr} WHERE e.tenant = ?1 AND e.{own} = ?2{extra}{type_sql}"
+                 ON n.tenant = e.tenant AND n.id = e.{nbr} WHERE e.tenant = ?1 AND e.{own} = ?2{extra}{type_sql}{vis}"
             )
         };
         let loops = " AND e.source <> e.target";
@@ -492,16 +863,7 @@ impl GraphService {
         let sql = format!("SELECT * FROM ({union}) ORDER BY 10, 2 LIMIT ?4 OFFSET ?5");
         let rows = self
             .backend()
-            .fetch_all(&Statement::new(
-                sql,
-                vec![
-                    tenant.into(),
-                    id.into(),
-                    json_list(&types).into(),
-                    i64::from(limit + 1).into(),
-                    i64::from(offset).into(),
-                ],
-            ))
+            .fetch_all(&Statement::new(sql, b.into_params()))
             .await?;
         let has_more = rows.len() > limit as usize;
         let items = rows
@@ -530,12 +892,12 @@ impl GraphService {
     /// `start` within `max_depth` hops, with its fewest-hops depth. Cycles
     /// cannot loop (the walk is bounded by depth and deduplicated).
     pub async fn traverse(&self, ctx: &AccessContext, q: TraverseQuery) -> Result<TraverseResult> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let depth = check_depth(q.max_depth, DEFAULT_DEPTH)?;
         let limit = check_limit(q.limit)?;
         let types = check_types(q.edge_types.into_vec())?;
         let (label, conds) = check_filter(q.filter)?;
-        if self.node(&tenant, &q.start).await?.is_none() {
+        if self.node(&tenant, &q.start, &acc).await?.is_none() {
             return Err(GraphError::NodeNotFound(q.start));
         }
 
@@ -555,6 +917,16 @@ impl GraphService {
             params.push(value);
             filter_sql.push_str(&format!(" AND json_extract(n.properties, ?{path}) = ?{}", path + 1));
         }
+        // Rules (FB-139): every step crosses a visible edge into a visible
+        // node, so hidden parts of the graph are never walked through.
+        let mut b = SqlBuilder::new(self.dialect());
+        for v in params {
+            b.bind(v);
+        }
+        let evis = and(acc.edges.compile(&mut b, "e")?.as_deref());
+        let ncond = acc.node_sql(&mut b, "n")?;
+        let nvis = and(ncond.as_deref());
+        let params = b.into_params();
         let t = if types.is_empty() {
             ""
         } else {
@@ -564,9 +936,13 @@ impl GraphService {
         // planner scans the edge table for every queue row (measured: 37 s
         // instead of 0.1 s for 15 000 rows on a 10 000-edge graph).
         let step = |join: &str, next: &str, extra: &str| {
+            let into = match &ncond {
+                Some(c) => format!(" JOIN {NODES} n ON n.tenant = e.tenant AND n.id = e.{next} AND {c}"),
+                None => String::new(),
+            };
             format!(
-                "SELECT e.{next}, w.depth + 1 FROM walk w CROSS JOIN {EDGES} e ON e.tenant = ?1 AND {join} \
-                 WHERE w.depth < ?3{extra}{t}"
+                "SELECT e.{next}, w.depth + 1 FROM walk w CROSS JOIN {EDGES} e ON e.tenant = ?1 AND {join}{into} \
+                 WHERE w.depth < ?3{extra}{t}{evis}"
             )
         };
         let forward = step("e.source = w.node", "target", "");
@@ -582,7 +958,7 @@ impl GraphService {
             "WITH RECURSIVE walk(node, depth) AS (SELECT ?2, 0 UNION {recursive} LIMIT {MAX_WALK_ROWS}) \
              SELECT {N_COLS}, m.depth FROM (SELECT node, min(depth) AS depth FROM walk GROUP BY node) m \
              JOIN {NODES} n ON n.tenant = ?1 AND n.id = m.node \
-             WHERE m.depth >= ?5 AND (?6 IS NULL OR n.label = ?6){filter_sql} \
+             WHERE m.depth >= ?5 AND (?6 IS NULL OR n.label = ?6){filter_sql}{nvis} \
              ORDER BY m.depth, n.id LIMIT ?7"
         );
         let rows = self.backend().fetch_all(&Statement::new(sql, params)).await?;
@@ -610,20 +986,24 @@ impl GraphService {
             } else {
                 " AND e.type IN (SELECT value FROM json_each(?3))"
             };
+            let mut b = SqlBuilder::new(self.dialect());
+            bind_all(&mut b, vec![
+                tenant.into(),
+                json_list(&ids).into(),
+                json_list(&types).into(),
+                i64::try_from(MAX_TRAVERSE_EDGES + 1).unwrap_or(i64::MAX).into(),
+            ]);
+            // Both ends are among the visible nodes; the type must be too.
+            let evis = and(acc.edges.compile(&mut b, "e")?.as_deref());
             let rows = self
                 .backend()
                 .fetch_all(&Statement::new(
                     format!(
                         "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 \
                          AND e.source IN (SELECT value FROM json_each(?2)) \
-                         AND e.target IN (SELECT value FROM json_each(?2)){type_sql} ORDER BY e.id LIMIT ?4"
+                         AND e.target IN (SELECT value FROM json_each(?2)){type_sql}{evis} ORDER BY e.id LIMIT ?4"
                     ),
-                    vec![
-                        tenant.into(),
-                        json_list(&ids).into(),
-                        json_list(&types).into(),
-                        i64::try_from(MAX_TRAVERSE_EDGES + 1).unwrap_or(i64::MAX).into(),
-                    ],
+                    b.into_params(),
                 ))
                 .await?;
             truncated |= rows.len() > MAX_TRAVERSE_EDGES;
@@ -645,14 +1025,22 @@ impl GraphService {
     /// Fewest-hops path between two nodes (breadth-first, one indexed query
     /// per level, bounded by `max_depth` and [`MAX_VISITED`]).
     pub async fn shortest_path(&self, ctx: &AccessContext, q: PathQuery) -> Result<PathResult> {
-        let tenant = self.guard(ctx, Action::GraphRead)?;
+        let (tenant, acc) = self.read(ctx, ResourceOp::List).await?;
         let max_depth = check_depth(q.max_depth, 6)?;
         let types = check_types(q.edge_types.into_vec())?;
         for id in [&q.from, &q.to] {
-            if self.node(&tenant, id).await?.is_none() {
+            if self.node(&tenant, id, &acc).await?.is_none() {
                 return Err(GraphError::NodeNotFound(id.clone()));
             }
         }
+        // Rules (FB-139): hops cross visible edges into visible nodes only.
+        let mut b = SqlBuilder::new(self.dialect());
+        for _ in 0..4 {
+            b.bind(Value::Null);
+        }
+        let evis = and(acc.edges.compile(&mut b, "e")?.as_deref());
+        let ncond = acc.node_sql(&mut b, "n")?;
+        let rule_params: Vec<Value> = b.into_params().split_off(4);
         let none = PathResult {
             found: false,
             length: None,
@@ -670,9 +1058,13 @@ impl GraphService {
             " AND e.type IN (SELECT value FROM json_each(?3))"
         };
         let hop = |from: &str, to: &str, extra: &str| {
+            let into = match &ncond {
+                Some(c) => format!(" JOIN {NODES} n ON n.tenant = e.tenant AND n.id = e.{to} AND {c}"),
+                None => String::new(),
+            };
             format!(
-                "SELECT e.{to} AS nxt, e.id AS eid, e.{from} AS prev FROM {EDGES} e WHERE e.tenant = ?1 \
-                 AND e.{from} IN (SELECT value FROM json_each(?2)){extra}{t}"
+                "SELECT e.{to} AS nxt, e.id AS eid, e.{from} AS prev FROM {EDGES} e{into} WHERE e.tenant = ?1 \
+                 AND e.{from} IN (SELECT value FROM json_each(?2)){extra}{t}{evis}"
             )
         };
         let (a, b) = match q.direction {
@@ -692,17 +1084,16 @@ impl GraphService {
             if reached || frontier.is_empty() {
                 break;
             }
+            let mut params: Vec<Value> = vec![
+                tenant.clone().into(),
+                json_list(&frontier).into(),
+                json_list(&types).into(),
+                (row_cap + 1).into(),
+            ];
+            params.extend(rule_params.iter().cloned());
             let rows = self
                 .backend()
-                .fetch_all(&Statement::new(
-                    sql.clone(),
-                    vec![
-                        tenant.clone().into(),
-                        json_list(&frontier).into(),
-                        json_list(&types).into(),
-                        (row_cap + 1).into(),
-                    ],
-                ))
+                .fetch_all(&Statement::new(sql.clone(), params))
                 .await?;
             if rows.len() as i64 > row_cap {
                 return Err(search_limit());
@@ -798,6 +1189,13 @@ impl GraphService {
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/// Binds the fixed parameters `?1..?n` of a statement before its rules.
+fn bind_all(b: &mut SqlBuilder<'_>, values: Vec<Value>) {
+    for v in values {
+        b.bind(v);
+    }
+}
 
 fn search_limit() -> GraphError {
     GraphError::invalid(
