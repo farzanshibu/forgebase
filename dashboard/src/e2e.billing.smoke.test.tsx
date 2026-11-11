@@ -20,7 +20,7 @@ it("walks every Billing Studio screen from the sidebar and runs one real action 
   // Four groups on top, the pages of the active group below (A-23).
   const go = async (name: string) => {
     const g = BILLING_GROUPS.find((x) => x.pages.some((p) => p.label === name))!;
-    await u.click(within(screen.getByRole("tablist", { name: "Billing groups" })).getByRole("tab", { name: g.label }));
+    await u.click(within(await screen.findByRole("tablist", { name: "Billing groups" })).getByRole("tab", { name: g.label }));
     if (g.pages.length > 1) await u.click(within(await screen.findByRole("tablist", { name: `${g.label} pages` })).getByRole("tab", { name }));
   };
 
@@ -32,24 +32,24 @@ it("walks every Billing Studio screen from the sidebar and runs one real action 
 
   await go("Subscriptions");
   await screen.findByRole("table", { name: "Subscriptions" });
-  await u.click(screen.getByRole("button", { name: "Manage sub1" }));
+  await u.click(await screen.findByRole("button", { name: "Manage sub1" }));
   await u.click(await screen.findByRole("button", { name: "Pause" }));
   await waitFor(() => expect(st.subscriptions[0]!.status).toBe("paused"));
 
   await go("Orders");
   await u.type(await screen.findByLabelText("Order subject"), "org:acme");
-  await u.click(screen.getByRole("button", { name: "Show orders" }));
+  await u.click(await screen.findByRole("button", { name: "Show orders" }));
   expect(await screen.findByRole("table", { name: "Orders" })).toHaveTextContent("ord1");
 
   await go("Usage meters");
   await u.type(await screen.findByLabelText("Usage subject"), "org:acme");
-  await u.click(screen.getByRole("button", { name: "Show usage" }));
+  await u.click(await screen.findByRole("button", { name: "Show usage" }));
   expect(await screen.findByLabelText("api_calls usage")).toHaveTextContent("750 / 1,000");
 
   await go("Invoices");
   await u.click(await screen.findByRole("link", { name: "INV-inv1" }));
   expect(await screen.findByRole("table", { name: "Invoice lines" })).toHaveTextContent("Pro plan (monthly)");
-  await u.click(screen.getByRole("link", { name: "Back to invoices" }));
+  await u.click(await screen.findByRole("link", { name: "Back to invoices" }));
 
   await go("Payments");
   expect(await screen.findByRole("table", { name: "Payments" })).toHaveTextContent("card_declined");

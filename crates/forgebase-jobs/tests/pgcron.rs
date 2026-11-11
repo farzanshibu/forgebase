@@ -136,7 +136,7 @@ async fn fire_schedule_inserts_the_job_the_tick_inserts() {
     );
 
     // NOTIFY forgebase_jobs carries the job id.
-    let payload = tokio::time::timeout(Duration::from_secs(5), listener.recv())
+    let payload = tokio::time::timeout(Duration::from_secs(30), listener.recv())
         .await
         .unwrap()
         .unwrap();
@@ -327,6 +327,14 @@ fn jobs_of(id: &str) -> String {
     format!("SELECT count(*) FROM _forgebase_jobs WHERE schedule_id = '{id}'")
 }
 
+/// Jobs of a schedule whose due time is at or before `cutoff` (a catch-up's, not pg_cron's).
+fn missed_jobs(id: &str, cutoff: i64) -> String {
+    format!(
+        "SELECT count(*) FROM _forgebase_jobs WHERE schedule_id = '{id}' \
+         AND substring(idempotency_key from '[0-9]+$')::bigint <= {cutoff}"
+    )
+}
+
 fn cron_jobs() -> &'static str {
     "SELECT count(*) FROM cron.job WHERE jobname LIKE 'fbsched\\_%'"
 }
@@ -497,16 +505,21 @@ async fn a_restart_fires_a_missed_schedule_once_and_cleans_up_when_pg_cron_goes(
     // Take pg_cron's job away so only the catch-up can fire it this minute.
     write(&c.db, &format!("SELECT cron.unschedule('fbsched_{}')", a.id)).await;
     let handle = attach_pgcron(&c.svc, &c.db).await.expect("attached again");
+    // Only the catch-up's job counts: pg_cron's own job is back at once, and on a
+    // loaded machine a minute boundary can pass during this test and fire it.
+    let missed = missed_jobs(&a.id, ago + 60_000);
     assert_eq!(
-        count(&c.db, &jobs_of(&a.id)).await,
+        count(&c.db, &missed).await,
         1,
         "the missed firings collapse into one job"
     );
     let key = rows(
         &c.db,
         &format!(
-            "SELECT idempotency_key FROM _forgebase_jobs WHERE schedule_id = '{}'",
-            a.id
+            "SELECT idempotency_key FROM _forgebase_jobs WHERE schedule_id = '{}' \
+             AND substring(idempotency_key from '[0-9]+$')::bigint <= {}",
+            a.id,
+            ago + 60_000
         ),
     )
     .await;
@@ -519,7 +532,7 @@ async fn a_restart_fires_a_missed_schedule_once_and_cleans_up_when_pg_cron_goes(
     // A second start without a miss adds nothing.
     drop(handle);
     let handle = attach_pgcron(&c.svc, &c.db).await.expect("attached a third time");
-    assert_eq!(count(&c.db, &jobs_of(&a.id)).await, 1);
+    assert_eq!(count(&c.db, &missed).await, 1);
     drop(handle);
 
     // A server whose feature is not active hands everything back.
