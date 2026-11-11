@@ -23,6 +23,7 @@ pub(crate) mod error;
 pub(crate) mod extensions;
 pub(crate) mod listen;
 pub(crate) mod placeholders;
+pub(crate) mod twophase;
 pub(crate) mod types;
 
 use std::collections::HashMap;
@@ -1455,6 +1456,10 @@ impl WriteTx for PgTx {
 
     fn rollback(self: Box<Self>) -> BoxFuture<'static, Result<(), DbError>> {
         Box::pin((*self).finish(false))
+    }
+
+    fn prepare(self: Box<Self>, gid: String) -> BoxFuture<'static, Result<(), DbError>> {
+        Box::pin((*self).finish_prepare(gid))
     }
 }
 
