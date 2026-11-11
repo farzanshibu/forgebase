@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{open_pg, pg_engine_dir, read, short_tempdir};
+use common::{open_pg, open_pg_with, pg_engine_dir, read, short_tempdir};
 use forgebase_backup::manifest::{FileKind, Method};
 use forgebase_backup::restore::{self, RestoreOptions};
 use forgebase_backup::{BackupError, BackupOptions, PgSource, Retention, SnapshotStore, VerifyOptions, backup};
@@ -393,7 +393,8 @@ async fn snapshots_and_pre_migration_snapshots() {
     assert_eq!(read(layout.storage_dir().join("blobs/new/after")), b"written after the snapshot");
     assert_eq!(read(layout.storage_dir().join("blobs/ab/abcdef")), b"blob one");
     assert_eq!(read(forgebase_backup::backup::master_key_path(&layout)), b"0123456789abcdef0123456789abcdef");
-    let back = open_pg(&engine, &root).await;
+    // (The snapshot was taken mid-hack: its migration row is missing, so do not migrate.)
+    let back = open_pg_with(&engine, &root, false).await;
     assert_eq!(back.inst.count("books").await, 25);
     back.close().await;
 }
@@ -411,7 +412,7 @@ async fn an_external_server_gets_a_logical_backup_that_restores_in_place() {
     let tmp = short_tempdir();
     let host = open_pg(&engine, &tmp.path().join("host")).await;
     // "External" here: a second database of the same server, reached by URL.
-    sqlx_exec(&host, "CREATE DATABASE fbext").await;
+    sqlx_exec(&host, "CREATE DATABASE fbext OWNER forgebase_owner").await;
     let url = host.engine.url_for(Role::Super, "fbext");
     let src = PgSource::external(Some(engine.clone()), host.src.version.clone(), url.expose());
 

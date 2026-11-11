@@ -18,8 +18,9 @@ use std::process::Stdio;
 use crate::error::{BackupError, Result, io};
 use crate::fsutil::{create_private, mkdir_private};
 
-/// The schema ForgeBase owns on an external server.
-pub const FORGEBASE_SCHEMA: &str = "forgebase";
+/// The schemas ForgeBase owns on an external server: system tables in
+/// `forgebase`, collection tables in `public`.
+pub const FORGEBASE_SCHEMAS: [&str; 2] = ["forgebase", "public"];
 
 /// A password that never prints.
 #[derive(Clone, PartialEq, Eq)]
@@ -320,7 +321,9 @@ impl PgSource {
             args.push("--no-acl".into());
         }
         if plan.forgebase_schema_only {
-            args.extend(["-n".to_owned(), FORGEBASE_SCHEMA.to_owned()]);
+            for n in FORGEBASE_SCHEMAS {
+                args.extend(["-n".to_owned(), n.to_owned()]);
+            }
         }
         self.run("pg_dump", args, tmp, true).await.map(|_| ())
     }
@@ -335,7 +338,7 @@ impl PgSource {
             .map(|_| ())
     }
 
-    /// `pg_restore` of a custom-format dump of the ForgeBase schema into the
+    /// `pg_restore` of a custom-format dump of the ForgeBase schemas into the
     /// database: the schema's objects are dropped and recreated, in one
     /// transaction (a failure changes nothing).
     ///
@@ -354,11 +357,12 @@ impl PgSource {
                 "--exit-on-error",
                 "-d",
                 &conn.database,
-                "-n",
-                FORGEBASE_SCHEMA,
             ]
             .map(str::to_owned),
         );
+        for n in FORGEBASE_SCHEMAS {
+            args.extend(["-n".to_owned(), n.to_owned()]);
+        }
         args.push(file.display().to_string());
         self.run("pg_restore", args, tmp, true).await.map(|_| ())
     }

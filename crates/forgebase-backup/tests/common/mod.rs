@@ -194,6 +194,10 @@ pub fn pg_source_of(engine: &EngineHandle, root: &Path) -> PgSource {
 /// Starts the engine of `root` and opens, migrates and wires the database
 /// the way the server does (pre-migration hook included).
 pub async fn open_pg(engine_dir: &Path, root: &Path) -> PgInstance {
+    open_pg_with(engine_dir, root, true).await
+}
+
+pub async fn open_pg_with(engine_dir: &Path, root: &Path, migrate: bool) -> PgInstance {
     let layout = DataLayout::new(root);
     layout.ensure().unwrap();
     let engine = Engine::prepare(&Layout::primary(root), &engine_config(engine_dir))
@@ -207,7 +211,9 @@ pub async fn open_pg(engine_dir: &Path, root: &Path) -> PgInstance {
     let db = Database::open(opts).await.unwrap();
     let src = pg_source_of(&engine, root);
     db.set_pre_migration(PgPreMigration::new(layout.clone(), src.clone()));
-    db.migrate(Some(&layout.backups_dir())).await.unwrap();
+    if migrate {
+        db.migrate(Some(&layout.backups_dir())).await.unwrap();
+    }
     let data = DataService::new(Arc::new(db.clone()), Arc::new(DefaultAuthorizer))
         .await
         .unwrap();
