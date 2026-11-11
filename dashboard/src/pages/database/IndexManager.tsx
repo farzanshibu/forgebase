@@ -2,7 +2,8 @@ import { useState } from "react";
 import { analyzeIndexes, createIndex, dropIndex, indexRecommendations, indexStats, listIndexes, rebuildIndex } from "../../api";
 import type { IndexDefinition, IndexStats } from "../../api";
 import { useLoad } from "../../hooks";
-import { Check } from "../../components/controls";
+import { Check, Sel } from "../../components/controls";
+import { getDatabaseInfo } from "./info";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
@@ -24,6 +25,10 @@ export default function IndexManager({ collection }: { collection?: string }) {
   const [keys, setKeys] = useState("");
   const [unique, setUnique] = useState(false);
   const [indexName, setIndexName] = useState("");
+  const [kind, setKind] = useState("btree");
+  // A trigram index needs pg_trgm: the kind appears only when the server reports that feature active (FB-166).
+  const trigram = useLoad(getDatabaseInfo, "database-info").data?.features?.trigram?.state === "active";
+  const isTrigram = trigram && kind === "trigram";
 
   async function act(fn: () => Promise<unknown>) {
     setProblem(undefined);
@@ -58,7 +63,7 @@ export default function IndexManager({ collection }: { collection?: string }) {
               const st = stats[ix.name] ?? ix.stats;
               return (
                 <Table.Row key={ix.name} className="border-t border-border">
-                  <Table.Cell className="py-1 font-mono text-xs">{ix.name}{ix.unique && <span className="ml-1 text-warning">unique</span>}</Table.Cell>
+                  <Table.Cell className="py-1 font-mono text-xs">{ix.name}{ix.unique && <span className="ml-1 text-warning">unique</span>}{(ix.kind === "trigram" || ix.definition?.kind === "trigram") && <span className="ml-1 rounded border border-border px-1 text-[0.625rem] text-muted-foreground" title="Speeds up fuzzy search and ~ filters">trigram</span>}</Table.Cell>
                   <Table.Cell>{ix.collection ?? ix.table}</Table.Cell>
                   <Table.Cell>{ix.origin}</Table.Cell>
                   <Table.Cell className="font-mono text-xs">{ix.columns.join(", ")}</Table.Cell>
@@ -91,13 +96,18 @@ export default function IndexManager({ collection }: { collection?: string }) {
           className="flex flex-wrap items-end gap-3 text-sm"
           onSubmit={(e) => {
             e.preventDefault();
-            void create({ name: indexName || undefined, collection: coll, keys: parseKeys(keys), unique });
+            void create({ name: indexName || undefined, collection: coll, keys: parseKeys(keys), unique: unique && !isTrigram, ...(isTrigram ? { kind: "trigram" } : {}) });
           }}
         >
           {!collection && <FormField label="Collection" required>{(p) => <Input {...p} size="sm" value={coll} onChange={(e) => setColl(e.target.value)} />}</FormField>}
           <FormField label="Keys" required help="Comma separated; put - before a field to sort it descending.">{(p) => <Input {...p} size="sm" className="w-64" value={keys} onChange={(e) => setKeys(e.target.value)} placeholder="price, -created" />}</FormField>
           <FormField label="Name" help="Optional.">{(p) => <Input {...p} size="sm" value={indexName} onChange={(e) => setIndexName(e.target.value)} />}</FormField>
-          <Check checked={unique} onChange={setUnique} label="Unique" description="Reject a second record with the same keys." />
+          {trigram && (
+            <FormField label="Kind" help={isTrigram ? "Trigram: makes fuzzy search and contains (~) filters on text fields fast." : "Btree: the usual sorted index."}>
+              {(p) => <Sel {...p} value={kind} onChange={setKind} options={[{ value: "btree", label: "btree" }, { value: "trigram", label: "trigram (fuzzy search)" }]} />}
+            </FormField>
+          )}
+          <Check checked={unique && !isTrigram} disabled={isTrigram} onChange={setUnique} label="Unique" description="Reject a second record with the same keys." />
           <Button type="submit" tone="primary" disabled={!keys.trim() || !coll}>Create index</Button>
         </form>
       </Panel>

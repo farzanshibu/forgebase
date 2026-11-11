@@ -118,4 +118,34 @@ describe("SystemPage", () => {
     expect(list.querySelector('[data-feature="queue"]')).toHaveTextContent("pgmq is not installed");
     expect(state("graph").getByText("off")).toBeInTheDocument();
   });
+
+  it("tells an SQLite project that PostgreSQL is the default now (FB-155, FB-177)", async () => {
+    route({
+      "/health": json(200, { status: "ok" }),
+      "/health/ready": json(200, { status: "ready", checks: {} }),
+      "/api/system/info": json(200, { ...info, database: { ...info.database, backend: "sqlite", default_backend: "postgres", bundled_postgres: true } }),
+    });
+    renderPage();
+    const note = await screen.findByTestId("sqlite-notice");
+    expect(note).toHaveTextContent("This project uses SQLite. PostgreSQL is the default now: forgebase db convert --to postgres moves it.");
+    expect(within(note).getByText("forgebase db convert --to postgres").tagName).toBe("CODE");
+  });
+
+  it("shows no SQLite notice in a -lite build, or on PostgreSQL", async () => {
+    for (const database of [
+      { ...info.database, backend: "sqlite", default_backend: "sqlite", bundled_postgres: false },
+      { ...info.database, backend: "postgres", default_backend: "postgres", bundled_postgres: true },
+      info.database,
+    ]) {
+      route({
+        "/health": json(200, { status: "ok" }),
+        "/health/ready": json(200, { status: "ready", checks: {} }),
+        "/api/system/info": json(200, { ...info, database }),
+      });
+      const { unmount } = renderPage();
+      await screen.findByText("0.1.0");
+      expect(screen.queryByTestId("sqlite-notice")).not.toBeInTheDocument();
+      unmount();
+    }
+  });
 });
