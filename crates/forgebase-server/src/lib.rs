@@ -45,6 +45,7 @@ pub mod database;
 mod function_services;
 mod job_results;
 mod lock;
+pub mod replicas;
 pub mod shards;
 
 use std::net::SocketAddr;
@@ -108,6 +109,8 @@ pub struct RunningServer {
     /// Two-phase commit recovery at start and every minute (FB-173,
     /// PostgreSQL); dropping it stops the loop.
     recovery: Option<forgebase_db::twophase::RecoveryTask>,
+    /// Managed replicas and the topology service (FB-175).
+    replicas: Arc<replicas::Replicas>,
 }
 
 /// Starts a server for `config` with no in-process job handlers (jobs are
@@ -277,9 +280,18 @@ async fn start_on(
     // FB-171 (ADR-0029 §3.5): the database sets. The router reads the
     // topology from the migrated control database and opens every other
     // set and the replicas; SQLite has one fixed set.
-    let router = match open_sets(&db, config, layout).await {
+    // FB-175: local replicas start after the primary; the router opens them.
+    let replicas = match replicas::Replicas::open(config, layout.root(), engine.clone()).await {
         Ok(r) => r,
         Err(e) => {
+            db.close().await;
+            return Err(e);
+        }
+    };
+    let router = match open_sets(&db, &replicas, layout).await {
+        Ok(r) => r,
+        Err(e) => {
+            replicas.stop().await;
             db.close().await;
             return Err(e);
         }
@@ -470,6 +482,9 @@ async fn start_on(
         .data()
         .set_relation_fanout(Arc::new(shards::JobFanout::new(jobs.clone())));
     let registry = shards::register_jobs(registry, state.data().clone());
+    // FB-175: the `database.*` topology operations.
+    let registry = replicas::register_jobs(registry, replicas.clone());
+    replicas.attach(router.clone(), jobs.clone(), state.data().clone()).await;
     // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
     jobs.attach_access(job_access);
     let jp = fn_policy.clone();
@@ -614,6 +629,7 @@ async fn start_on(
             entitlements.rate_gate(),
             Arc::new(forgebase_customize::AgreementGate::new(customize.clone())),
         ],
+        database_topology: replicas.ops(),
         ..opts
     };
     let state = state.with_metrics_collector(subsystem_gauges(
@@ -745,6 +761,7 @@ async fn start_on(
         engine,
         router,
         recovery,
+        replicas,
     })
 }
 
@@ -752,13 +769,14 @@ async fn start_on(
 /// migrates every shard (FB-173: control first, at most four shards at a
 /// time; a shard that fails stays `migrating` and its tenants get `503
 /// shard_migrating`).
-async fn open_sets(db: &Database, config: &Config, layout: &DataLayout) -> Result<forgebase_db::DbRouter, ServerError> {
-    let path = forgebase_auth::AuthConfig::for_data_dir(layout.root()).master_key_path;
-    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
-        .await
-        .map_err(|e| ServerError::Backend(e.to_string()))?
-        .map_err(|e| ServerError::Backend(e.to_string()))?;
-    let router = shards::open_router(db, config, layout.root(), keyring).await?;
+async fn open_sets(
+    db: &Database,
+    replicas: &Arc<replicas::Replicas>,
+    layout: &DataLayout,
+) -> Result<forgebase_db::DbRouter, ServerError> {
+    // FB-175: the connector opens local replicas too; [database.replicas]
+    // and [database.sharding] become the router's options.
+    let router = replicas.open_router(db).await?;
     if router.is_sharded() {
         let report = forgebase_db::shards::migrate_sets(
             &router,
@@ -1228,6 +1246,8 @@ impl RunningServer {
             set.database().close().await;
         }
         self.db.close().await;
+        // FB-175: local replicas (and a promoted primary) before the engine.
+        self.replicas.stop().await;
         if let Some(engine) = self.engine.take()
             && let Err(e) = engine.stop().await
         {
