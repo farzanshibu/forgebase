@@ -1737,7 +1737,11 @@ a directory left without a matching `forgebase-engine.sha256` is replaced
 instead of kept. Measured with the real FB-130 archive
 (`forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst`, 938 files, debug build,
 external SSD): first extraction **143.6 s before, 2.6 s after**; finding it
-again 0.09 s (`examples/extract_engine.rs`). The archive test packs `bin lib
+again 0.09 s (`examples/extract_engine.rs`). With the archive embedded
+(`--features bundled-postgres`), `forgebase init` on a fresh directory
+started the engine in 5.2 s (extraction about 1.8 s, then `initdb`, start and
+bootstrap) and finished in 7.5 s with the migrations; a later start of the
+same cluster takes about 0.1 s. The archive test packs `bin lib
 share`, so it passes with a relocatable engine.
 
 **Not done here / for the next packages.**

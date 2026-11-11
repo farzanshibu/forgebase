@@ -21,7 +21,12 @@ use crate::probe;
 pub(crate) fn quiet_logging(g: &GlobalArgs) -> anyhow::Result<()> {
     // The bundled engine's own log (target forgebase::postgres) stays out of
     // one-off commands: a failure to start is reported with its last lines.
-    let level = g.log_level.as_deref().unwrap_or("warn,forgebase::postgres=off");
+    // So does sqlx's slow-statement warning, which prints the whole statement
+    // (the PostgreSQL baseline migration is one).
+    let level = g
+        .log_level
+        .as_deref()
+        .unwrap_or("warn,forgebase::postgres=off,sqlx::query=error");
     forgebase_observability::init_logging(level, g.log_format.unwrap_or(forgebase_core::LogFormat::Pretty))?;
     Ok(())
 }
