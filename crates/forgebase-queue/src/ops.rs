@@ -273,16 +273,19 @@ impl QueueService {
         let now = self.now();
         let subs = self.all_subs().await?;
         for s in &subs {
+            let eng = self.store().await?;
             let mut tx = self.begin().await?;
             let r: Result<_> = async {
                 let cur = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?;
-                let n = self.reap_tx(&mut *tx, &cur, now).await?;
+                let n = self.reap_tx(&mut *tx, *eng, &cur, now).await?;
                 let cur = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?;
-                self.materialize_tx(&mut *tx, &cur, now).await?;
+                self.materialize_tx(&mut *tx, *eng, &cur, now).await?;
                 Ok(n)
             }
             .await;
-            match finish(tx, r).await {
+            let done = finish(tx, r).await;
+            drop(eng);
+            match done {
                 Ok(n) => report.expired += n,
                 // Deleted meanwhile.
                 Err(QueueError::SubscriptionNotFound(_)) => {}

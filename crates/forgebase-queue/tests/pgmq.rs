@@ -12,6 +12,7 @@ mod common;
 use std::time::Duration;
 
 use common::{admin, harness, ids, on_pgmq, user};
+use forgebase_core::ErrorCode;
 use forgebase_db::{Backend, Statement};
 use forgebase_queue::{CONVERT_JOB, DeliveryEngine, NewSubscription, register_jobs};
 use serde_json::json;

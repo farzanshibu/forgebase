@@ -33,7 +33,7 @@ use forgebase_db::{Rows, Statement, WriteTx};
 use sha2::{Digest, Sha256};
 
 pub use engine::{CONVERT_JOB, register_jobs};
-pub(crate) use engine::{EngineSlot, layout_problems};
+pub(crate) use engine::EngineSlot;
 
 use crate::history::MAX_ENTRIES;
 use crate::row::{Row, scalar};
