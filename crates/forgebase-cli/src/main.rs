@@ -28,6 +28,7 @@ mod db;
 mod doctor;
 mod dotenv;
 mod functions;
+mod node;
 mod probe;
 mod queues;
 #[cfg(test)]
@@ -197,6 +198,9 @@ enum Command {
     Jobs(Box<queues::JobsCli>),
     /// The database engine: status, and psql on the bundled PostgreSQL.
     Db(Box<db::DbCli>),
+    /// Run this host's PostgreSQL as a managed replica of a ForgeBase server
+    /// (engine only: no API, no services).
+    Node(Box<node::NodeCli>),
 }
 
 fn main() -> ExitCode {
@@ -240,5 +244,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Queues(q) => queues::run_queues(g, q.server, q.command).await,
         Command::Jobs(j) => queues::run_jobs(g, j.server, j.command).await,
         Command::Db(d) => db::run(g, *d).await,
+        Command::Node(n) => node::run(g, *n).await,
     }
 }

@@ -1,9 +1,34 @@
 # ForgeBase database
 
-ForgeBase keeps its structured data in one embedded SQLite file, in WAL mode.
-Other data types sit beside it in the same data directory. This page covers
-the storage engine, the data-directory files, the multi-model layout, the
-system migrations, and the backup pointers.
+ForgeBase keeps its structured data in PostgreSQL by default: the standard
+release embeds PostgreSQL 18 and runs it for you. SQLite (one file, WAL mode) is
+the optional alternative, and the default of the `-lite` release, which leaves
+the engine out. Other data types sit beside the database in the same data
+directory. This page covers the backends, the storage engines, the
+data-directory files, the multi-model layout, the system migrations, and the
+backup pointers.
+
+## 0. Backends
+
+| | PostgreSQL (bundled or your server) | SQLite |
+|---|---|---|
+| Default | Standard release | `-lite` release; `forgebase init --database sqlite` |
+| Choose at init | `forgebase init`, `--database postgres`, `--database-url postgres://…` | `forgebase init --database sqlite` |
+| Data | `<data_dir>/postgres/data` (bundled) or your server | `<data_dir>/forgebase.db` |
+| Access | Unix socket only; TCP is off unless `[database.postgres] listen` is set | in-process |
+| Extras | Extensions as accelerators with a portable fallback (ADR-0029), `forgebase db psql` | none |
+
+`forgebase init` asks `Database: [1] PostgreSQL (default, bundled server) [2]
+SQLite (one file)` on a terminal and takes the build's default otherwise. The
+data directory's backend marker (`forgebase.backend`) wins over the default at
+every start: an existing SQLite project stays SQLite, and `forgebase status`
+and `forgebase doctor` say so with the command that moves it,
+`forgebase db convert --to postgres` (ADR-0028 §6.4). PostgreSQL cannot run as
+root. [Deployment §3.5](deployment.md#35-database-postgresql-or-sqlite) has the
+details and [Upgrading to 0.3](release-notes/0.3.md#upgrading-to-03) the steps.
+
+The rest of this page describes SQLite unless a section says otherwise; the
+PostgreSQL engine's settings and commands are in the deployment guide.
 
 Decisions: [ADR-0001 §2–5](adr/0001-architecture.md) (engine, concurrency,
 migrations), [ADR-0003](adr/0003-data-core.md) (collections and records),
@@ -11,7 +36,7 @@ migrations), [ADR-0003](adr/0003-data-core.md) (collections and records),
 [ADR-0012](adr/0012-vector.md) (vector), [ADR-0018](adr/0018-object-storage.md)
 (object storage).
 
-## 1. Engine and concurrency
+## 1. Engine and concurrency (SQLite)
 
 | Setting | Value | Config key / env var |
 |---|---|---|
@@ -34,7 +59,9 @@ Only one server may use a data directory. The running server holds
 
 ```text
 <data_dir>/
-├── forgebase.db (+ -wal, -shm)  canonical: structured data
+├── forgebase.backend             which engine this directory holds
+├── forgebase.db (+ -wal, -shm)  SQLite only, canonical: structured data
+├── postgres/                     PostgreSQL only: engine, data/, run/ (socket), roles.secret
 ├── storage/                      canonical: object blobs (when storage is in use)
 ├── auth/master.key               canonical: root key for auth secrets (see §5)
 ├── indexes/                      derived: rebuildable indexes

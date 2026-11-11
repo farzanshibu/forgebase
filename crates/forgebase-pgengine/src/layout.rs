@@ -74,6 +74,14 @@ impl Layout {
         })
     }
 
+    /// The same paths holding another kind of cluster (FB-168: a promoted
+    /// replica is a primary; a rejoined old primary is a standby).
+    #[must_use]
+    pub fn with_kind(mut self, kind: NodeKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
     /// `<data_dir>/postgres`.
     pub fn postgres_dir(&self) -> &Path {
         &self.postgres
