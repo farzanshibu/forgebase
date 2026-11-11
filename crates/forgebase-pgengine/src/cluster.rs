@@ -194,6 +194,8 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
     let mut conn = connect(&connect_options(ep, Role::Super.name(), super_pw, "postgres")).await?;
     exec(&mut conn, QUIET.into()).await?;
     let (server, reader) = (Role::Server.name(), Role::Reader.name());
+    let replicator = Role::Replicator.name();
+    let rewind_grants = crate::replication::rewind_grants_sql();
     exec(
         &mut conn,
         format!(
@@ -203,12 +205,15 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{SQL_ADMIN_ROLE}') THEN CREATE ROLE {SQL_ADMIN_ROLE} NOLOGIN; END IF;
                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{server}') THEN CREATE ROLE {server} LOGIN; END IF;
                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{reader}') THEN CREATE ROLE {reader} LOGIN; END IF;
+               IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{replicator}') THEN CREATE ROLE {replicator} LOGIN REPLICATION; END IF;
              END $fb$;
              ALTER ROLE {OWNER_ROLE} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
              ALTER ROLE {RLS_ROLE} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
              ALTER ROLE {SQL_ADMIN_ROLE} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
              ALTER ROLE {server} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
              ALTER ROLE {reader} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+             ALTER ROLE {replicator} LOGIN REPLICATION NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+             {rewind_grants}
              ALTER ROLE {server} SET search_path = {SEARCH_PATH};
              ALTER ROLE {reader} SET search_path = {SEARCH_PATH};
              ALTER ROLE {reader} SET default_transaction_read_only = on;
@@ -226,9 +231,11 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
     exec(
         &mut conn,
         format!(
-            "ALTER ROLE {server} PASSWORD '{}'; ALTER ROLE {reader} PASSWORD '{}';",
+            "ALTER ROLE {server} PASSWORD '{}'; ALTER ROLE {reader} PASSWORD '{}'; \
+             ALTER ROLE {replicator} PASSWORD '{}';",
             pw(Role::Server)?,
-            pw(Role::Reader)?
+            pw(Role::Reader)?,
+            pw(Role::Replicator)?
         ),
     )
     .await?;

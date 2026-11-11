@@ -125,6 +125,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "native_rls",
         include_str!("../../../migrations/postgres/0040_native_rls.sql"),
     ),
+    Migration::new(
+        43,
+        "db_node_agents",
+        include_str!("../../../migrations/postgres/0043_db_node_agents.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

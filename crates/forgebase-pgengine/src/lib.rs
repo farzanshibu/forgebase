@@ -47,7 +47,9 @@ mod layout;
 #[cfg(test)]
 mod lock;
 mod process;
+pub mod replication;
 mod secret;
+pub mod standby;
 
 pub use cluster::{DATABASE, OWNER_ROLE, RLS_ROLE, SEARCH_PATH, SQL_ADMIN_ROLE};
 pub use conf::{DENY as DENIED_SETTINGS, DENY_PREFIXES as DENIED_SETTING_PREFIXES};
@@ -188,6 +190,8 @@ impl Engine {
             preload: preload.clone(),
             cron,
             standby: layout.kind() == NodeKind::Standby,
+            major: engine.version.major,
+            slots: &cfg.replication,
             slow_query: cfg.slow_query,
             unsafe_fast: cfg.unsafe_fast,
             user: &cfg.settings,

@@ -47,6 +47,9 @@ pub const DENY: &[&str] = &[
     // replication wiring (FB-168) carries credentials
     "primary_conninfo",
     "primary_slot_name",
+    // slot WAL limits come from [database.replicas] slot_wal_keep_size (FB-168)
+    "max_slot_wal_keep_size",
+    "idle_replication_slot_timeout",
     // the log stream ForgeBase reads
     "log_destination",
     "logging_collector",
@@ -72,6 +75,10 @@ pub struct ConfInput<'a> {
     pub cron: bool,
     /// Hot standby settings (FB-168 replicas).
     pub standby: bool,
+    /// Engine major (settings that exist only in later majors).
+    pub major: u32,
+    /// Slot WAL limits (FB-168).
+    pub slots: &'a crate::replication::SlotLimits,
     /// `log_min_duration_statement`.
     pub slow_query: Option<Duration>,
     /// Tests only: no durability.
@@ -155,6 +162,11 @@ pub fn settings(input: &ConfInput<'_>) -> Vec<(String, String)> {
     set("max_prepared_transactions", "16".into());
     set("max_worker_processes", "16".into());
     set("synchronous_commit", "on".into());
+    // ADR-0029 §2.2: WAL kept for slots is bounded; a replica further behind
+    // is invalidated (needs_rebuild) instead of filling the primary's disk.
+    for (k, v) in input.slots.settings(input.major) {
+        set(k, v);
+    }
     set("shared_preload_libraries", input.preload.join(","));
     if input.cron {
         set("cron.database_name", crate::DATABASE.into());
@@ -240,6 +252,8 @@ pub fn ensure_include(pgdata: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    static SLOTS: crate::replication::SlotLimits = crate::replication::SlotLimits::DEFAULT;
+
     fn input<'a>(user: &'a BTreeMap<String, String>, dir: &'a Path) -> ConfInput<'a> {
         ConfInput {
             socket_dir: Some(dir),
@@ -248,6 +262,8 @@ mod tests {
             preload: vec!["pg_stat_statements", "pg_cron"],
             cron: true,
             standby: false,
+            major: 18,
+            slots: &SLOTS,
             slow_query: Some(Duration::from_millis(250)),
             unsafe_fast: false,
             user,
@@ -279,6 +295,8 @@ mod tests {
             ("max_wal_senders", "16"),
             ("max_replication_slots", "16"),
             ("max_prepared_transactions", "16"),
+            ("max_slot_wal_keep_size", "8GB"),
+            ("idle_replication_slot_timeout", "1d"),
             ("log_min_duration_statement", "250"),
             ("log_destination", "stderr"),
         ] {
