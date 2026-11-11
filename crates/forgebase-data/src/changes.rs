@@ -291,12 +291,13 @@ impl DataService {
         action: Action,
         filter: Option<(&Expr, &HashMap<String, Json>)>,
     ) -> Result<Collection, DataError> {
-        let (coll, _) = self.resolve(ctx, action, collection)?;
+        let (coll, _) = self.resolve_spanning(ctx, action, collection, true)?;
         if let Some((expr, params)) = filter {
             let opts = self.filter_options(ctx, &coll, params);
             let cat = self.catalog();
             let mut b = SqlBuilder::new(self.inner.backend.dialect());
             Compiler::new(&*cat, &opts).filter(&mut b, &coll, "t", expr)?;
+            self.check_crossing(&coll, expr, "filter")?;
         }
         Ok(coll)
     }
@@ -378,11 +379,19 @@ impl DataService {
                 cols.join(", "),
                 clauses.join(") AND (")
             );
-            let rows = self
-                .inner
-                .backend
-                .fetch_all(&Statement::new(sql, b.into_params()))
-                .await?;
+            // FB-171: relation paths of the rule and the filter read the
+            // set that holds the row (its tenant's set; control otherwise).
+            let tenant = match row
+                .columns
+                .iter()
+                .position(|c| c == crate::TENANT_COLUMN)
+                .and_then(|i| row.values.get(i))
+            {
+                Some(Value::Text(t)) => Some(t.clone()),
+                _ => ctx.tenant.clone(),
+            };
+            let backend = self.route_tenant(&coll, tenant.as_deref()).await?;
+            let rows = backend.fetch_all(&Statement::new(sql, b.into_params())).await?;
             if rows.rows.is_empty() {
                 return Ok(None);
             }

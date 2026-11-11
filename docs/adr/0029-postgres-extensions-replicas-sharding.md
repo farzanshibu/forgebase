@@ -3322,3 +3322,214 @@ stay on control (do not move them with the tenant: the registry classifies
 subscriptions by `tenant`, but these follow their topic). The queue relay
 cursor `outbox_cursor:<source set id>` on control must be drained up to the
 barrier like the source's own relay.
+
+## Addendum: FB-171, shard routing in the data core, realtime, functions and the server (2026-11-11)
+
+Built as §3.5 and §3.6 describe, on FB-170's router, FB-169's replica
+reads and FB-173's fan-out. Without shards (SQLite, one-set PostgreSQL)
+every path below runs on the service's backend exactly as before; the
+"sharded" checks are `DataService::is_sharded()` (the attached router has
+more than one routable set). Human decision 2 (option A) is what is built.
+
+**Files.** New: `crates/forgebase-data/src/shards.rs`,
+`crates/forgebase-server/src/shards.rs`, and the tests
+`crates/forgebase-data/tests/shard_routing.rs`,
+`crates/forgebase-realtime/tests/shards.rs`,
+`crates/forgebase-functions/tests/shards.rs`,
+`crates/forgebase-server/tests/shards_fb171.rs`. Changed: data `lib.rs`,
+`error.rs`, `guard.rs`, `records.rs`, `list.rs`, `changes.rs`,
+`catalog.rs`, `ddl.rs`; realtime `lib.rs`, `outbox.rs`, `conn.rs`;
+functions `lib.rs`; server `lib.rs`, `Cargo.toml` (dev-dependency
+`forgebase-db` with `testing`, for the shard test clusters). No migration.
+
+**Data core: the set per call.** `DataService::route(ctx, coll)`: a
+tenant-scoped collection (and a view with `reads_tenant_data`) →
+`router.for_tenant(ctx.tenant)` (control's handle is the service's own
+backend); every other collection → control. Records create / get / update
+/ delete, list, count, aggregate, versions and `expand` begin their
+transaction or read on that backend (FB-169's `fetch_routed` per set:
+`fetch_replica_on`). Collection DDL, indexes, the SQL editor and the
+catalog stay on control (FB-173 fans DDL out). Router errors surface as
+`DataError::Shard` with the router's code (`tenant_moving` 409,
+`shard_migrating` / `shard_unavailable` 503).
+
+**`tenant_required_sharded` (400).** On a sharded cluster a record call
+on tenant data without a tenant (or with `""`) is refused in `resolve`,
+privileged callers included (on one set they still see every tenant's
+rows). Realtime subscriptions are the exception (`resolve_spanning`):
+they fan in, below. The system context without a tenant is refused by
+`route`.
+
+**Relations across placements (tenant-scoped → shared).**
+- **No foreign key.** `CatalogSnapshot` records whether
+  `_forgebase_db_sets` has a non-retired shard row (one `count(*)` per
+  catalog load; rows are control-only, so a shard reads 0).
+  `ddl::relation_table` then returns no target for such a relation, so
+  create / update collection, the shard steps of FB-173 and the catalog
+  replay of a new shard create the column without `REFERENCES`.
+  `DataService::drop_cross_placement_keys()` drops the keys that tables
+  made before the first shard still have on control (PostgreSQL; a no-op
+  while there is no shard row; idempotent); the server runs it at start on
+  a sharded topology. Deviation from "no SQL foreign key" taken literally
+  for control: a key kept on control would be harmless, but one rule for
+  every set keeps `ON DELETE` in one place.
+- **Existence check.** `check_relations` reads a shared target on
+  control's primary (outside the writer's transaction); every other target
+  in the writer's transaction as before.
+- **`expand`.** Each hop reads its target's set: a shared target of tenant
+  data is a second query on control (two steps, as §3.6 says).
+- **`ON DELETE`.** Deleting a shared record whose collection is the target
+  of tenant-scoped relations: `RESTRICT` (a required, non-cascading
+  relation) is checked on every set's primary before control's delete
+  (`409 record_referenced`, naming the set); the in-transaction walk skips
+  tenant-scoped referrers; after the commit the deleted ids are handed to
+  the installed `RelationFanout` (the server: job
+  `data.relation_deletes`, reserved, 10 attempts), whose handler calls
+  `DataService::apply_relation_deletes`: on every set, one transaction
+  each, cascade (through the normal delete path: change events,
+  tombstones, nested relations), set null, or removal of the id from
+  multi-value relations, without the referencing collections' rules (as
+  foreign-key actions). Idempotent. Without a hook the data core runs it
+  right after the commit. Gap: a crash between control's commit and the
+  enqueue loses the fan-out of that delete (no migration was added for an
+  outbox of fan-outs; references then point to a missing record until the
+  record is written again, and `expand` leaves it out).
+- **`relation_crosses_shards` (400).** A rule, filter, sort key, group
+  key or aggregate path that follows a relation from tenant data to a
+  shared collection (at any hop) is refused on a sharded cluster: rules in
+  `resolve` and in `expand`'s target rule, filters and paths in
+  `build_list` / `aggregate`, realtime filters in `subscription_target`,
+  and saved rules in `validate_predicate` (the policy service calls it in
+  `put_policy`). The relation's own column (`author = 'id'`) is not a
+  crossing. Realtime's per-event `view_snapshot` reads on the row's set.
+- **The pre-check (open question 2).** `DataService::cross_shard_offenders()`
+  parses every stored collection rule (`@request…` references replaced by a
+  parameter) and lists `{collection, rule, path}` for each crossing; works
+  on one set. The server logs them at start when sharded.
+
+**Realtime.** Every set's outbox is tailed by its own dispatcher
+(`SetTail`: set id, number, backend), started by a supervisor that follows
+`DbRouter::subscribe` (sets added or removed later get or lose theirs);
+commits wake every dispatcher (`Wakers`); the pruner prunes each set's
+outbox. `RealtimeService::heads()` gives the newest cursor per set number;
+`stats().head` and the welcome cursor are the maximum. A record
+subscription has a **home**: one set (`Set(k)`: a tenant's data → its
+tenant's set; shared collections and channels → control) or every set
+(`All`: a privileged caller without a tenant on tenant data, sharded).
+- One set: replay and catch-up read only that set's outbox (subscriptions
+  are grouped by set); a cursor whose set (`cursor >> 40`) is not the
+  home gets `reset` with reason **`tenant_moved`** (cursor: the home's
+  head) instead of a silent gap. A live event of the subscriber's own
+  tenant arriving from another set (the tenant moved while connected)
+  re-homes the subscription and sends the same `reset` (cursor: the event's
+  cursor − 1). Cursor `0` is "the beginning" of any set.
+- Every set: live events only, last cursor kept per set; a subscription
+  that brings a cursor, and a bus overflow (catch-up), get `reset` with
+  reason **`cursor_unsupported_sharded`** and `cursor: null`; the
+  `subscribed` reply's cursor is `null`.
+
+**Functions.** The after-hook cursor (`after_hooks`) is stored on each set
+(the table is `per_set`), next to its outbox: `FunctionService::open`
+starts every current set's missing cursor at its head; a set opened later
+has none and is read from its start; `run_after_hooks` passes over every
+set in turn under the one lock (commit order within a set). A shard that
+cannot be read is skipped and retried; control's error is returned. The
+hook acts in the event's tenant, so its own data calls route to the
+tenant's set.
+
+**Server.** After control's `migrate`: `shards::open_router` (SQLite:
+`DbRouter::single`; PostgreSQL: `DbRouter::open` with
+`<data_dir>/topology.json`, default placement policy, freeze timeout and
+replica options until FB-175's `[database.sharding]` / `[database.replicas]`
+exist, and `NodeConnector`), then on a sharded topology
+`shards::migrate_sets(&router, Some(backups), MultiOptions::default())`
+(failures logged; such sets stay `migrating`). Policy, auth and the data
+service get **control's `SetHandle`** as their backend (replica routing per
+§2.5 now applies in the server). In `open_auth`:
+`data.attach_shards(router)` before `enable_native_rls`. Then
+`twophase::spawn_recovery(router, RECOVERY_INTERVAL)` on PostgreSQL (kept
+in `RunningServer`, dropped in shutdown), `prepare_data` (drop the
+cross-placement keys, log rule offenders), the relation fan-out hook and
+its job handler. Shutdown closes every shard's pools.
+`RunningServer::router()` is new. Per-set loops: realtime and after-hooks
+here; jobs, queues, KV, vector and storage are FB-172's.
+- **`NodeConnector`** (`SetConnector`): unseals `url_sealed` (lowercase hex
+  of `Keyring::seal(url, aad = "forgebase/db-node/<node id>")`, the data
+  directory's master key) and opens the node with the server's pool
+  settings (`read_only` for replicas). `seal_node_url` / `open_node_url`
+  are public for FB-175 (node URL sealing). Local nodes (no URL) are
+  refused until FB-174's shard provisioning opens them.
+
+**SQL editor (§3.6, after FB-153).**
+- **Node selector:** `SqlOptions.set` (body field `set` of `POST /sql` and
+  `/sql/batch`, the set **number**; absent or `0`: control). A read runs on
+  that set's primary, or with `read_from_replica` on one of its replicas;
+  statements that write (and every batch) run on control only (`400
+  sql_set_read_only`: tenant data changes through the data API, schema
+  through the collections API on every set; `forgebase db psql --node`
+  reaches a shard). Unknown set: `404 shard_not_found`; a migrating set:
+  `503 shard_migrating`. The number (not the id) keeps `SqlOptions` `Copy`.
+- **"Read from replica" under the editor's role:** new defaulted
+  `Backend::fetch_routed_as(stmt, intent, run_as)`. `SetHandle` routes it
+  through `ReplicaSet::fetch_as`: the chosen replica's read-only
+  transaction runs `SET LOCAL ROLE` and the claims exactly as
+  `fetch_all_as` on the primary (a physical standby has the roles; both are
+  allowed in read-only transactions); strong requests, lagging replicas and
+  fallbacks read the primary as the role. `ReadVia` forwards it; everything
+  else is `fetch_all_as`. `sql.rs` uses it when `read_from_replica` is set
+  and `show_secrets` is not, so FB-153's `forgebase_sql_admin` boundary and
+  FB-169's replica reads both hold. `SetHandle` now also forwards FB-153's
+  `admin_batch` (the services run on control's handle).
+
+**Not done here.** No dashboard change (the SQL editor's set selector and
+the replica toggle are dashboard follow-ups). Extensions on shards
+(`setup_extensions` runs on control only; FB-173 noted shards need the same
+extensions).
+
+**Tests.** `shard_routing.rs` (data): one set unchanged and the pre-check
+(both backends); sharded (real clusters): placement of records, existence
+on control, two-step expand, `tenant_required_sharded`, every
+`relation_crosses_shards` path, no foreign keys on the replayed shard and
+dropped on control, `RESTRICT` across sets, cascade / set null /
+multi-value removal on both sets, idempotent fan-out. Realtime
+`shards.rs`: per-set dispatch and cursor ranges, shared collections from
+control, replay from the home set, `tenant_moved`, fan-in with
+`cursor_unsupported_sharded`, per-set pruning. Functions `shards.rs`:
+per-set cursors and hooks for events on both sets, once. Data
+`routed_as.rs` (`RoutedCluster`): `fetch_routed_as` on the standby and the
+primary as a role, and the SQL editor reading the replica as
+`forgebase_sql_admin`; the node selector in `shard_routing.rs`. Server
+`shards_fb171.rs`: one set (SQLite); sharded: the router opens the shard
+through its sealed URL, `topology.json`, a dispatcher and an after-hook
+cursor per set, records on the shard, the relation fan-out job.
+
+**Breaking.** `DataError::Shard` (new variant). `SqlOptions` has a new
+field `set` (struct literals need `..Default::default()`). `Backend` has a
+new defaulted method `fetch_routed_as`. Record calls on tenant data
+without a tenant answer `400 tenant_required_sharded` on sharded clusters.
+Rules / filters / sort keys across placements answer `400
+relation_crosses_shards` on sharded clusters (and such rules cannot be
+saved). Realtime: `subscribed.cursor` and `reset.cursor` may be `null`
+(spanning subscriptions); reset reasons `tenant_moved` and
+`cursor_unsupported_sharded`. `DataService::delete_in_tx` gained a
+parameter (crate-internal). Server: policy, auth and data run on control's
+`SetHandle` instead of the `Database`.
+
+**For FB-172.** Constructor arguments in `start_on` take `router.clone()`
+(it is built right after `migrate`, before `open_auth`); one loop per
+`router.sets()` entry, watch `router.subscribe()` for new sets (see the
+realtime supervisor); control's handle for control-only work is
+`router.control()`.
+**For FB-174.** Before activating the first shard (its set row inserted):
+`data.cross_shard_offenders()` (refuse or warn) and
+`data.drop_cross_placement_keys()`. A move: realtime re-homes live
+subscriptions on the first event from the new set and answers old cursors
+with `tenant_moved`; after-hook cursors are per set, so events copied by a
+move are not re-run (the copy writes no outbox rows through the data core).
+**For FB-175.** Store node URLs with `forgebase_server::shards::seal_node_url`
+(or the same format). Add `[database.sharding]` / `[database.replicas]` to
+`RouterOptions` in `shards::open_router`: it is the one place where the
+router and its `SetConnector` are built, so FB-168's managed replicas
+(`LocalReplicas`, `connect_replica` for local nodes, `PoolSwitch`) hook in
+there from `replicas.rs`; `NodeConnector::connect_replica` already opens
+sealed-URL replicas read-only and refuses local ones.

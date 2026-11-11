@@ -278,8 +278,18 @@ impl DataService {
     }
 
     /// Checks that related records exist — in `tenant` when the target is
-    /// tenant-scoped, so relations never cross tenants.
-    async fn check_relations(&self, tx: &mut dyn WriteTx, p: &Prepared, tenant: Option<&str>) -> Result<(), DataError> {
+    /// tenant-scoped, so relations never cross tenants. On a sharded
+    /// cluster a target in a shared collection is looked up on control (the
+    /// relation has no foreign key there, ADR-0029 §3.6); every other target
+    /// lives on the writer's set, inside `tx`.
+    async fn check_relations(
+        &self,
+        tx: &mut dyn WriteTx,
+        coll: &Collection,
+        p: &Prepared,
+        tenant: Option<&str>,
+    ) -> Result<(), DataError> {
+        let sharded = self.is_sharded();
         let d = self.inner.backend.dialect();
         let cat = self.catalog();
         let mut errors = ValidationErrors::default();
@@ -313,7 +323,12 @@ impl DataService {
                     b.bind(t.to_owned())
                 ));
             }
-            let rows = tx.fetch_all(&Statement::new(sql, b.into_params())).await?;
+            let stmt = Statement::new(sql, b.into_params());
+            let rows = if sharded && crate::shards::relation_crosses(&cat, coll, field).is_some() {
+                self.backend().fetch_all(&stmt).await?
+            } else {
+                tx.fetch_all(&stmt).await?
+            };
             if rows.scalar().and_then(Value::as_i64) != Some(ids.len() as i64) {
                 errors.add(
                     field.clone(),
@@ -412,7 +427,7 @@ impl DataService {
         self.check_writable(ctx, coll, &mut doc, None, &sent)?;
         let tenant = self.tenant_for_insert(ctx, coll)?;
         let prepared = self.prepare(coll, &doc, WriteMode::Create)?;
-        self.check_relations(tx, &prepared, tenant.as_deref()).await?;
+        self.check_relations(tx, coll, &prepared, tenant.as_deref()).await?;
         let now = now_timestamp();
         let mut b = SqlBuilder::new(d);
         let mut cols = vec![d.quote_ident("id"), d.quote_ident("created"), d.quote_ident("updated")];
@@ -550,11 +565,12 @@ impl DataService {
                 format!("send 1 to {MAX_BATCH} records"),
             ));
         }
+        let backend = self.route(ctx, &coll).await?;
         for item in &data {
             let id = item.get("id").and_then(Json::as_str);
             self.guard_write(ctx, &coll, ChangeOp::Create, id, Some(item)).await?;
         }
-        let mut tx = self.begin(TxMode::Normal).await?;
+        let mut tx = Self::begin_on(&backend, TxMode::Normal).await?;
         let result = async {
             let mut out = Vec::with_capacity(data.len());
             for (i, item) in data.iter().enumerate() {
@@ -587,9 +603,10 @@ impl DataService {
         opts: &GetOptions,
     ) -> Result<Record, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
+        let backend = self.route(ctx, &coll).await?;
         let (stmt, follows) = self.select_by_id_flagged(ctx, &coll, id, pred.as_ref())?;
         let rows = self
-            .read_rows(ctx, Action::View, &coll, &stmt, follows, "records.view")
+            .read_rows(&backend, ctx, Action::View, &coll, &stmt, follows, "records.view")
             .await?;
         let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
             collection: coll.name.clone(),
@@ -625,10 +642,11 @@ impl DataService {
         {
             return Err(ValidationErrors::single("id", FieldError::new("read_only", "the id cannot change")).into());
         }
+        let backend = self.route(ctx, &coll).await?;
         self.guard_write(ctx, &coll, ChangeOp::Update, Some(id), Some(&patch))
             .await?;
         let d = self.inner.backend.dialect();
-        let mut tx = self.begin(TxMode::Normal).await?;
+        let mut tx = Self::begin_on(&backend, TxMode::Normal).await?;
         let result = async {
             let rows = tx.fetch_all(&self.select_by_id(ctx, &coll, id, pred.as_ref())?).await?;
             let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
@@ -661,7 +679,7 @@ impl DataService {
             self.check_writable(ctx, &coll, &mut doc, Some(&current), patch_obj)?;
             let tenant = current.get(TENANT_COLUMN).and_then(Json::as_str);
             let prepared = self.prepare(&coll, &doc, WriteMode::Update)?;
-            self.check_relations(&mut *tx, &prepared, tenant).await?;
+            self.check_relations(&mut *tx, &coll, &prepared, tenant).await?;
             let mut b = SqlBuilder::new(d);
             let mut sets = vec![
                 format!("{} = {}", d.quote_ident("updated"), b.bind(now_timestamp())),
@@ -707,8 +725,15 @@ impl DataService {
     ) -> Result<(), DataError> {
         let (coll, pred) = self.resolve(ctx, Action::Delete, collection)?;
         self.writable(&coll)?;
+        let backend = self.route(ctx, &coll).await?;
         self.guard_write(ctx, &coll, ChangeOp::Delete, Some(id), None).await?;
-        let mut tx = self.begin(TxMode::Normal).await?;
+        // FB-171: tenant data on other sets may require this shared record
+        // (RESTRICT has no foreign key to enforce it across sets).
+        if self.fans_out_deletes(&coll) {
+            self.check_cross_restrict(&coll, id).await?;
+        }
+        let mut pending = Vec::new();
+        let mut tx = Self::begin_on(&backend, TxMode::Normal).await?;
         let result = async {
             let rows = tx.fetch_all(&self.select_by_id(ctx, &coll, id, pred.as_ref())?).await?;
             let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
@@ -722,11 +747,14 @@ impl DataService {
             {
                 return Err(DataError::VersionConflict { expected, actual });
             }
-            self.delete_in_tx(ctx, &mut *tx, &coll, id, actual, 0).await
+            self.delete_in_tx(ctx, &mut *tx, &coll, id, actual, 0, &mut pending)
+                .await
         }
         .await;
         finish(tx, result).await?;
         self.changes_committed();
+        // FB-171: the `ON DELETE` actions of tenant data on every set.
+        self.schedule_relation_deletes(pending).await;
         Ok(())
     }
 
@@ -746,7 +774,14 @@ impl DataService {
     /// events and tombstones are written for what they delete); single-value
     /// relations are engine foreign keys, so the engine removes or nulls
     /// those rows without change events or tombstones.
-    fn delete_in_tx<'a>(
+    ///
+    /// On a sharded cluster (FB-171) relations from tenant-scoped
+    /// collections to a shared `coll` are not walked here (their rows are
+    /// on every set): the deleted id goes to `pending`, and
+    /// [`DataService::apply_relation_deletes`] runs those actions on every
+    /// set after the commit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn delete_in_tx<'a>(
         &'a self,
         ctx: &'a AccessContext,
         tx: &'a mut dyn WriteTx,
@@ -754,6 +789,7 @@ impl DataService {
         id: &'a str,
         version: i64,
         depth: usize,
+        pending: &'a mut Vec<crate::shards::RelationDeletes>,
     ) -> forgebase_db::BoxFuture<'a, Result<(), DataError>> {
         Box::pin(async move {
             if depth > 8 {
@@ -764,8 +800,12 @@ impl DataService {
             }
             let d = self.inner.backend.dialect();
             let cat = self.catalog();
+            let fans_out = self.fans_out_deletes(coll);
             // Multi-value relations pointing at this collection.
             for other in cat.all() {
+                if fans_out && is_tenant_scoped(other) {
+                    continue; // on every set, after the commit
+                }
                 for f in &other.fields {
                     let FieldKind::Relation {
                         collection_id,
@@ -795,8 +835,16 @@ impl DataService {
                         let rid = r[0].as_str().unwrap_or_default().to_owned();
                         if *cascade_delete {
                             if !(other.id == coll.id && rid == id) {
-                                self.delete_in_tx(ctx, &mut *tx, other, &rid, r[1].as_i64().unwrap_or(1), depth + 1)
-                                    .await?;
+                                self.delete_in_tx(
+                                    ctx,
+                                    &mut *tx,
+                                    other,
+                                    &rid,
+                                    r[1].as_i64().unwrap_or(1),
+                                    depth + 1,
+                                    &mut *pending,
+                                )
+                                .await?;
                             }
                         } else if f.required && r[2].as_i64() == Some(1) {
                             return Err(DataError::conflict(
@@ -866,6 +914,15 @@ impl DataService {
                 }
                 return Ok(()); // already removed by an engine cascade
             }
+            if fans_out {
+                match pending.iter_mut().find(|p| p.collection_id == coll.id) {
+                    Some(p) => p.ids.push(id.to_owned()),
+                    None => pending.push(crate::shards::RelationDeletes {
+                        collection_id: coll.id.clone(),
+                        ids: vec![id.to_owned()],
+                    }),
+                }
+            }
             if let Some(before) = &before
                 && let Some(row) = before.rows.first()
             {
@@ -902,17 +959,22 @@ impl DataService {
         id: &str,
     ) -> Result<Vec<RecordVersion>, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
-        let rows = self
-            .fetch_replica(
-                &Statement::new(
-                    "SELECT version, op, data, changed_at, actor FROM _forgebase_record_versions
+        // Versions live on the record's set (keyed by the record, FB-170).
+        let backend = self.route(ctx, &coll).await?;
+        let rows = Self::fetch_replica_on(
+            &backend,
+            &Statement::new(
+                "SELECT version, op, data, changed_at, actor FROM _forgebase_record_versions
                  WHERE collection_id = ?1 AND record_id = ?2 ORDER BY version",
-                    vec![coll.id.clone().into(), id.into()],
-                ),
-                "records.versions",
-            )
-            .await?;
-        if !self.history_visible(ctx, &coll, id, pred.as_ref(), &rows).await? {
+                vec![coll.id.clone().into(), id.into()],
+            ),
+            "records.versions",
+        )
+        .await?;
+        if !self
+            .history_visible(&backend, ctx, &coll, id, pred.as_ref(), &rows)
+            .await?
+        {
             return Err(DataError::RecordNotFound {
                 collection: coll.name.clone(),
                 id: id.to_owned(),
@@ -925,6 +987,7 @@ impl DataService {
     /// stored versions, oldest first).
     async fn history_visible(
         &self,
+        backend: &std::sync::Arc<dyn forgebase_db::Backend>,
         ctx: &AccessContext,
         coll: &Collection,
         id: &str,
@@ -932,27 +995,26 @@ impl DataService {
         versions: &Rows,
     ) -> Result<bool, DataError> {
         let d = self.inner.backend.dialect();
-        if !self
-            .fetch_replica(&self.select_by_id(ctx, coll, id, pred)?, "records.versions")
+        if !Self::fetch_replica_on(backend, &self.select_by_id(ctx, coll, id, pred)?, "records.versions")
             .await?
             .is_empty()
         {
             return Ok(true);
         }
         // A live record the caller cannot see hides its history.
-        let live = self
-            .fetch_replica(
-                &Statement::new(
-                    format!(
-                        "SELECT 1 FROM {} WHERE {} = ?1",
-                        d.quote_ident(&coll.name),
-                        d.quote_ident("id")
-                    ),
-                    vec![id.into()],
+        let live = Self::fetch_replica_on(
+            backend,
+            &Statement::new(
+                format!(
+                    "SELECT 1 FROM {} WHERE {} = ?1",
+                    d.quote_ident(&coll.name),
+                    d.quote_ident("id")
                 ),
-                "records.versions",
-            )
-            .await?;
+                vec![id.into()],
+            ),
+            "records.versions",
+        )
+        .await?;
         if !live.is_empty() {
             return Ok(false);
         }
@@ -964,7 +1026,7 @@ impl DataService {
                 .and_then(|s| serde_json::from_str::<Map<String, Json>>(s).ok())
         });
         match last {
-            Some(data) => self.snapshot_visible(ctx, coll, &data, pred).await,
+            Some(data) => self.snapshot_visible(backend, ctx, coll, &data, pred).await,
             // Only a tombstone (versioning enabled late): no data to check a
             // tenant or a rule against, so only unrestricted callers see it.
             None => Ok(!versions.rows.is_empty()
@@ -979,6 +1041,7 @@ impl DataService {
     /// runs over a one-row derived table that rebuilds the record's columns.
     async fn snapshot_visible(
         &self,
+        backend: &std::sync::Arc<dyn forgebase_db::Backend>,
         ctx: &AccessContext,
         coll: &Collection,
         data: &Map<String, Json>,
@@ -1024,10 +1087,11 @@ impl DataService {
         }
         let cond = self.compile_predicate(ctx, &mut b, coll, p)?;
         let sql = format!("SELECT 1 FROM (SELECT {}) AS t WHERE {cond}", cols.join(", "));
-        Ok(!self
-            .fetch_replica(&Statement::new(sql, b.into_params()), "records.versions")
-            .await?
-            .is_empty())
+        Ok(
+            !Self::fetch_replica_on(backend, &Statement::new(sql, b.into_params()), "records.versions")
+                .await?
+                .is_empty(),
+        )
     }
 }
 
@@ -1155,6 +1219,10 @@ impl DataService {
                     Err(DataError::Forbidden(_) | DataError::Unauthenticated) => continue,
                     Err(e) => return Err(e),
                 };
+                // FB-171: the targets' set; a shared target of tenant data
+                // is read from control in this second query (ADR-0029 §3.6).
+                self.check_predicate_crossing(&target, pred.as_ref())?;
+                let backend = self.route(ctx, &target).await?;
                 let target_mask = self.mask(ctx, &target);
                 let mut ids: Vec<String> = Vec::new();
                 for r in recs.iter() {
@@ -1182,9 +1250,9 @@ impl DataService {
                     if let Some(p) = &pred {
                         sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, &target, p)?));
                     }
-                    let rows = self
-                        .fetch_replica(&Statement::new(sql, b.into_params()), "records.expand")
-                        .await?;
+                    let rows =
+                        Self::fetch_replica_on(&backend, &Statement::new(sql, b.into_params()), "records.expand")
+                            .await?;
                     for row in &rows.rows {
                         let rec = row_to_record(&target, &rows.columns, row, &target_mask);
                         if let Some(id) = rec.get("id").and_then(Json::as_str) {

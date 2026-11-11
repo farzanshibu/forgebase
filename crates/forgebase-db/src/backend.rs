@@ -342,6 +342,22 @@ pub trait Backend: Send + Sync + fmt::Debug {
         self.fetch_all(stmt)
     }
 
+    /// [`Backend::fetch_routed`] as `run_as` (FB-171): on a set with
+    /// replicas, the chosen replica's read-only transaction switches role
+    /// and sets the claims first, as [`Backend::fetch_all_as`] does on the
+    /// primary (a physical standby has the same roles; `SET ROLE` and
+    /// `set_config` are allowed in read-only transactions). Every other
+    /// backend runs [`Backend::fetch_all_as`].
+    fn fetch_routed_as<'a>(
+        &'a self,
+        stmt: &'a Statement,
+        intent: &'a ReadIntent,
+        run_as: &'a RunAs,
+    ) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let _ = intent;
+        self.fetch_all_as(stmt, run_as)
+    }
+
     /// Runs `statements` in one transaction as the database administrator
     /// (FB-153: role and login management, extensions): on PostgreSQL the
     /// URL given to [`crate::Database::set_admin_url`] (the bundled engine's
