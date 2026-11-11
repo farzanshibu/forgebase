@@ -120,6 +120,12 @@ struct DatabaseSummary {
     server_version: String,
     /// Server connections to this database (PostgreSQL only).
     connections: Option<u32>,
+    /// The backend a new project of this build gets (`postgres`, or `sqlite`
+    /// in a `-lite` build): the dashboard tells an SQLite project to convert
+    /// when it is `postgres` (FB-177).
+    default_backend: &'static str,
+    /// This build embeds the PostgreSQL engine (not a `-lite` build).
+    bundled_postgres: bool,
     /// The bundled engine, when this server runs it.
     engine: Option<crate::EngineReport>,
     /// Per accelerated feature: the engine it runs on and its extension
@@ -220,6 +226,8 @@ pub async fn system_info(State(state): State<AppState>) -> Result<Response, ApiE
             schema_version: db.schema_version,
             server_version: db.server_version,
             connections: db.connections,
+            default_backend: forgebase_core::config::DEFAULT_BACKEND.as_str(),
+            bundled_postgres: forgebase_core::config::BUNDLED_POSTGRES,
             engine: rt.engine.as_ref().map(|e| e()),
             features: feature_engines(&state).await,
         },

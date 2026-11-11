@@ -25,6 +25,8 @@ export const GLOSSARY = {
   view: { short: "View collection", text: "A read-only collection defined by a SQL query over other collections." },
   index: { short: "Index", text: "A sorted copy of one or more fields that makes filters and sorts on them fast." },
   explain: { short: "Explain plan", text: "How the database will run a query: which indexes it uses and which tables it scans in full." },
+  direct_login: { short: "Direct login", text: "A PostgreSQL login for one user or service account, for tools such as psql. It sees only what that principal may see." },
+  native_policy: { short: "Policy", text: "A PostgreSQL row-level security policy. ForgeBase generates the fb_* ones from your rules; any other is hand-written." },
   // Access
   acl: { short: "ACL", text: "Access control list: who may read or write one resource, such as a bucket or a prefix in it." },
   role: { short: "Role", text: "A named set of permissions you give to members, teams or service accounts." },

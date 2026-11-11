@@ -769,6 +769,12 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{text}");
         let d = &j["database"];
         assert_eq!(d["backend"], if pg { "postgres" } else { "sqlite" });
+        // FB-155: what a new project of this build gets, for the System studio's SQLite notice.
+        assert_eq!(
+            d["default_backend"],
+            forgebase_core::config::DEFAULT_BACKEND.as_str()
+        );
+        assert_eq!(d["bundled_postgres"], forgebase_core::config::BUNDLED_POSTGRES);
         assert!(d["server_version"].as_str().is_some_and(|v| !v.is_empty()), "{d}");
         if pg {
             assert_eq!(d["mode"], "managed");

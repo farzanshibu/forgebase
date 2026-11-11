@@ -51,8 +51,8 @@ export const STUDIOS: Studio[] = [
   // Build
   {
     path: "database", label: "Database", title: "Database", group: "build", docs: "docs/database.md",
-    summary: "Collections of records with a schema, plus SQL, indexes and slow queries.",
-    tabs: [{ to: "/database", label: "Collections" }, { to: "/database/sql", label: "SQL editor" }, { to: "/database/indexes", label: "Indexes" }, { to: "/database/slow", label: "Slow queries" }],
+    summary: "Collections of records with a schema, plus SQL, indexes, slow queries and, on PostgreSQL, policies, direct logins and extensions.",
+    tabs: [{ to: "/database", label: "Collections" }, { to: "/database/sql", label: "SQL editor" }, { to: "/database/indexes", label: "Indexes" }, { to: "/database/slow", label: "Slow queries" }, { to: "/database/policies", label: "Policies" }, { to: "/database/logins", label: "Direct logins" }, { to: "/database/extensions", label: "Extensions" }],
   },
   { path: "storage", label: "Storage", title: "Storage", group: "build", docs: "docs/adr/0018-object-storage.md", feature: "storage", summary: "Buckets that hold the files your app uploads, such as avatars or exports." },
   { path: "functions", label: "Functions", title: "Functions", term: "edge_function", group: "build", docs: "docs/adr/0017-functions.md", feature: "functions", summary: "Edge functions: your code, run next to your data on each request." },

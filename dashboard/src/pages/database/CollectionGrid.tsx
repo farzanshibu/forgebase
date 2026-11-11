@@ -4,7 +4,7 @@ import { Input } from "panelui-web/input";
 import { Table } from "panelui-web/table";
 import { deleteRecord, listRecords, patchRecord } from "../../api";
 import type { CollectionDef } from "../../api";
-import { Check, Sel } from "../../components/controls";
+import { Check, Sel, Toggle } from "../../components/controls";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { Pager } from "../../components/Pager";
@@ -13,7 +13,8 @@ import { Button, ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import RecordEditor from "./RecordEditor";
-import { PER_PAGE, display, parseCell, readGridState } from "./values";
+import { getDatabaseInfo } from "./info";
+import { PER_PAGE, display, fuzzyThresholdError, parseCell, readGridState } from "./values";
 
 const FILTER_HELP: [string, string][] = [
   ["=  !=", "equal, not equal: status = \"live\""],
@@ -26,14 +27,15 @@ const FILTER_HELP: [string, string][] = [
 export default function CollectionGrid({ collection, collections }: { collection: CollectionDef; collections: CollectionDef[] }) {
   const name = collection.name;
   const [params, setParams] = useSearchParams();
-  const { filter, sort, page, record } = readGridState(params);
+  const { filter, sort, page, record, search, fuzzy, threshold } = readGridState(params);
+  const trigram = useLoad(getDatabaseInfo, "database-info").data?.features?.trigram?.state === "active";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<unknown>();
   const [bulkField, setBulkField] = useState("");
   const [bulkValue, setBulkValue] = useState("");
 
   /** Change URL state; keeps the other keys and drops the ones set to "". */
-  const setState = (next: Partial<Record<"filter" | "sort" | "page" | "record", string>>, replace = false) =>
+  const setState = (next: Partial<Record<"filter" | "sort" | "page" | "record" | "search" | "fuzzy" | "ft", string>>, replace = false) =>
     setParams((p) => {
       const n = new URLSearchParams(p);
       for (const [k, v] of Object.entries(next)) {
@@ -45,8 +47,8 @@ export default function CollectionGrid({ collection, collections }: { collection
     }, { replace });
 
   const fields = collection.fields.filter((f) => !f.hidden && f.name !== "id");
-  const key = JSON.stringify([name, filter, sort, page]);
-  const { data, error, loading, reload } = useLoad((signal) => listRecords(name, { filter, sort, page, per_page: PER_PAGE }, signal), key);
+  const key = JSON.stringify([name, filter, sort, page, search, fuzzy, threshold]);
+  const { data, error, loading, reload } = useLoad((signal) => listRecords(name, { filter, sort, page, per_page: PER_PAGE, search: search || undefined, fuzzy: fuzzy && !!search, fuzzy_threshold: threshold.trim() === "" || fuzzyThresholdError(threshold) ? undefined : Number(threshold) }, signal), key);
 
   const toggleSort = (field: string) => setState({ page: "1", sort: sort === field ? `-${field}` : sort === `-${field}` ? "" : field });
   const sortMark = (field: string) => (sort === field ? " ▲" : sort === `-${field}` ? " ▼" : "");
@@ -80,11 +82,11 @@ export default function CollectionGrid({ collection, collections }: { collection
 
   const items = data?.items ?? [];
   const allSelected = items.length > 0 && items.every((r) => selected.has(String(r.id)));
-  const filtered = !!filter;
+  const filtered = !!filter || !!search;
 
   return (
     <div className="space-y-3">
-      <FilterForm key={filter} filter={filter} onApply={(f) => setState({ page: "1", filter: f })} />
+      <FilterForm key={`${filter}|${search}|${fuzzy}|${threshold}`} filter={filter} search={search} fuzzy={fuzzy} threshold={threshold} trigram={trigram} onApply={(a) => setState({ page: "1", filter: a.filter, search: a.search, fuzzy: a.fuzzy ? "1" : "", ft: a.fuzzy ? a.threshold : "" })} />
 
       <ErrorView error={error} onRetry={reload} />
       <ErrorView error={actionError} />
@@ -112,7 +114,7 @@ export default function CollectionGrid({ collection, collections }: { collection
       {loading && !data && !error && <SkeletonTable rows={5} columns={fields.length + 3} label="Loading records" />}
       {data && items.length === 0 && (
         filtered ? (
-          <EmptyState compact title="No records match this filter" why="Change the filter, or clear it to see every record." action={<Button onClick={() => setState({ page: "1", filter: "" })}>Clear filter</Button>} />
+          <EmptyState compact title="No records match this filter" why="Change the filter or the search, or clear them to see every record." action={<Button onClick={() => setState({ page: "1", filter: "", search: "", fuzzy: "", ft: "" })}>Clear filter</Button>} />
         ) : (
           <EmptyState title="No records yet" why={`Records are the rows of ${name}. Add the first one with the form, or import many from the Import / export tab.`} action={<Button tone="primary" onClick={() => setState({ record: "new" })}>Add record</Button>} docs="docs/database.md" />
         )
@@ -183,14 +185,20 @@ export default function CollectionGrid({ collection, collections }: { collection
 
 
 /** The filter box and its help. Keyed by the applied filter, so a link or "Clear filter" resets what is typed. */
-function FilterForm({ filter, onApply }: { filter: string; onApply: (filter: string) => void }) {
+function FilterForm({ filter, search, fuzzy, threshold, trigram, onApply }: { filter: string; search: string; fuzzy: boolean; threshold: string; trigram: boolean; onApply: (a: { filter: string; search: string; fuzzy: boolean; threshold: string }) => void }) {
   const [filterText, setFilterText] = useState(filter);
+  const [searchText, setSearchText] = useState(search);
+  const [fuzzyOn, setFuzzyOn] = useState(fuzzy);
+  const [thresholdText, setThresholdText] = useState(threshold);
+  const thresholdError = fuzzyOn ? fuzzyThresholdError(thresholdText) : undefined;
+  const apply = (f: string) => onApply({ filter: f, search: searchText.trim(), fuzzy: fuzzyOn && trigram, threshold: thresholdText.trim() });
   return (
       <form
         className="flex flex-wrap items-center gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          onApply(filterText.trim());
+          if (thresholdError) return;
+          apply(filterText.trim());
         }}
       >
         <Input size="sm"
@@ -200,8 +208,16 @@ function FilterForm({ filter, onApply }: { filter: string; onApply: (filter: str
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
         />
-        <Button type="submit">Apply filter</Button>
-        {filter && <Button type="button" onClick={() => onApply("")}>Clear filter</Button>}
+        <Input size="sm" aria-label="Search" className="w-56" placeholder="Search text" value={searchText} onChange={(e) => setSearchText(e.target.value)} />
+        {trigram && <Toggle checked={fuzzyOn} onChange={setFuzzyOn} label="Fuzzy" description="Match near spellings with trigrams. The field needs an index of kind trigram." />}
+        {trigram && fuzzyOn && (
+          <span className="inline-flex items-center gap-1 text-xs">
+            <Input size="sm" aria-label="Fuzzy threshold" aria-invalid={thresholdError ? true : undefined} className="w-20" inputMode="decimal" placeholder="0.3" value={thresholdText} onChange={(e) => setThresholdText(e.target.value)} />
+            {thresholdError && <span role="alert" className="text-destructive">{thresholdError}</span>}
+          </span>
+        )}
+        <Button type="submit" disabled={!!thresholdError}>Apply filter</Button>
+        {(filter || search) && <Button type="button" onClick={() => onApply({ filter: "", search: "", fuzzy: false, threshold: "" })}>Clear filter</Button>}
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer select-none">Filter help</summary>
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md border border-border p-2">

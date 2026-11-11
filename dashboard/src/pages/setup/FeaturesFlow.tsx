@@ -95,6 +95,7 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Feature map</h2>
             <p className="text-sm text-muted-foreground">Choose what this server runs. A feature that is off answers “disabled” and starts nothing.</p>
+            <p className="text-sm text-muted-foreground" data-testid="database-engines-note">The database engine is chosen when the project is created: PostgreSQL (the default) or SQLite (one file). <code>forgebase db convert --to postgres</code> moves an SQLite project.</p>
           </div>
           <ErrorPanel error={Object.keys(d.serverErr).some((k) => k.endsWith(".enabled")) ? d.saveErr : undefined} />
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

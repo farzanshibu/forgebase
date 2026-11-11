@@ -19,3 +19,4 @@ export * from "./customize";
 export * from "./billing";
 export * from "./backups";
 export * from "./setup";
+export * from "./dbAdmin";
