@@ -546,6 +546,15 @@ impl Topo {
         self.relogin().await;
     }
 
+    /// A crash of the server: the shutdown is attempted for at most 30 s and
+    /// its result ignored (the caller kills what it wants dead first).
+    pub async fn crash(&mut self) {
+        self.auth = None;
+        if let Some(s) = self.server.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(30), s.shutdown()).await;
+        }
+    }
+
     /// Stops the server gracefully and starts it again.
     pub async fn restart(&mut self) {
         self.stop().await;
@@ -601,5 +610,35 @@ pub async fn until(what: &str, timeout: Duration, mut f: impl AsyncFnMut() -> bo
         }
         assert!(start.elapsed() < timeout, "timed out: {what}");
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// What `postmaster.pid` of a data directory says: process id, port and
+/// socket directory.
+pub fn postmaster_info(data: &std::path::Path) -> Option<(u32, u16, PathBuf)> {
+    let text = std::fs::read_to_string(data.join("postmaster.pid")).ok()?;
+    let mut l = text.lines();
+    let pid = l.next()?.trim().parse().ok()?;
+    let port = l.nth(2)?.trim().parse().ok()?;
+    let sock = PathBuf::from(l.next()?.trim());
+    Some((pid, port, sock))
+}
+
+/// Runs `sql` with the engine's `psql` on the node whose data directory is
+/// `data`, as the engine's superuser over its socket; returns stdout
+/// (unaligned, tuples only).
+pub fn psql(data: &std::path::Path, db: &str, sql: &str) -> Result<String, String> {
+    let (_, port, sock) = postmaster_info(data).ok_or("node is not running")?;
+    let engine = forgebase_db::shard_testing::engine_dir().ok_or("no engine")?;
+    let out = std::process::Command::new(engine.join("bin").join("psql"))
+        .args(["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "forgebase_super", "-d", db, "-h"])
+        .arg(&sock)
+        .args(["-p", &port.to_string(), "-c", sql])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
     }
 }
