@@ -109,7 +109,12 @@ fn hooks(
 }
 
 /// Effective permissions with the personal-scope owner rule.
-pub(crate) fn effective(snap: &Snapshot, ctx: &AccessContext, org: Option<&str>, owner: Option<&str>) -> Arc<Effective> {
+pub(crate) fn effective(
+    snap: &Snapshot,
+    ctx: &AccessContext,
+    org: Option<&str>,
+    owner: Option<&str>,
+) -> Arc<Effective> {
     let principal = ctx.principal_key();
     let eff = snap.effective(&principal, &ctx.realm_id, org);
     if owner.is_some_and(|o| o == principal) {

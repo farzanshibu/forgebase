@@ -25,7 +25,13 @@ use forgebase_policy::store::{PolicyInput, RoleInput};
 use forgebase_schema::Collection;
 use serde_json::{Value as Json, json};
 
-fn rules(list: Option<&str>, view: Option<&str>, create: Option<&str>, update: Option<&str>, delete: Option<&str>) -> PolicyInput {
+fn rules(
+    list: Option<&str>,
+    view: Option<&str>,
+    create: Option<&str>,
+    update: Option<&str>,
+    delete: Option<&str>,
+) -> PolicyInput {
     PolicyInput {
         list_rule: list.map(str::to_owned),
         view_rule: view.map(str::to_owned),
@@ -97,10 +103,12 @@ async fn world(mode: NativeMode) -> Option<World> {
     );
     env.policy.put_policy(&admin(), "posts", &posts_rules).await.unwrap();
 
-    env.collection(json!({"id": "notes_c", "name": "notes", "options": {"tenant_scoped": true}, "fields": [
-        {"name": "title", "type": "text"},
-        {"name": "author", "type": "text"}
-    ]}))
+    env.collection(
+        json!({"id": "notes_c", "name": "notes", "options": {"tenant_scoped": true}, "fields": [
+            {"name": "title", "type": "text"},
+            {"name": "author", "type": "text"}
+        ]}),
+    )
     .await;
     env.policy
         .put_policy(
@@ -171,7 +179,14 @@ async fn world(mode: NativeMode) -> Option<World> {
     }
     // Record ACL: dave may list and view c1; carol is denied c2.
     env.policy
-        .put_acl(&admin(), "record", "cfg/c1", &pk("dave"), "data:cfg:read", Effect::Allow)
+        .put_acl(
+            &admin(),
+            "record",
+            "cfg/c1",
+            &pk("dave"),
+            "data:cfg:read",
+            Effect::Allow,
+        )
         .await
         .unwrap();
     env.policy
@@ -273,7 +288,11 @@ async fn native_view(env: &Env, ctx: &AccessContext, coll: &Collection, id: &str
 /// (rolled back): an update or delete must reach the row, an insert must
 /// pass `WITH CHECK`.
 async fn native_write(env: &Env, ctx: &AccessContext, action: Action, coll: &Collection, stmt: Statement) -> bool {
-    let mut tx = env.db.begin_as(TxMode::Normal, &run_as(env, ctx, action, coll)).await.unwrap();
+    let mut tx = env
+        .db
+        .begin_as(TxMode::Normal, &run_as(env, ctx, action, coll))
+        .await
+        .unwrap();
     let ok = match tx.execute(&stmt).await {
         Ok(r) => r.rows_affected == 1,
         Err(e) => {
@@ -298,8 +317,16 @@ async fn differential(w: &World) {
             let native = native_list(env, &ctx, &coll).await;
             assert_eq!(api, native, "list {name} as {who}");
             for id in &every {
-                let api = env.data.get_record(&ctx, name, id, &GetOptions::default()).await.is_ok();
-                assert_eq!(api, native_view(env, &ctx, &coll, id).await, "view {name}/{id} as {who}");
+                let api = env
+                    .data
+                    .get_record(&ctx, name, id, &GetOptions::default())
+                    .await
+                    .is_ok();
+                assert_eq!(
+                    api,
+                    native_view(env, &ctx, &coll, id).await,
+                    "view {name}/{id} as {who}"
+                );
 
                 let set = match name {
                     "cfg" => "\"k\" = \"k\"",
@@ -310,7 +337,10 @@ async fn differential(w: &World) {
                     &ctx,
                     Action::Update,
                     &coll,
-                    Statement::new(format!("UPDATE public.\"{name}\" SET {set} WHERE id = ?1"), vec![id.as_str().into()]),
+                    Statement::new(
+                        format!("UPDATE public.\"{name}\" SET {set} WHERE id = ?1"),
+                        vec![id.as_str().into()],
+                    ),
                 )
                 .await;
                 let current = env
@@ -321,7 +351,13 @@ async fn differential(w: &World) {
                 let field = if name == "cfg" { "k" } else { "title" };
                 let api = env
                     .data
-                    .update_record(&ctx, name, id, json!({ field: current[field].clone() }), UpdateOptions::default())
+                    .update_record(
+                        &ctx,
+                        name,
+                        id,
+                        json!({ field: current[field].clone() }),
+                        UpdateOptions::default(),
+                    )
                     .await
                     .is_ok();
                 assert_eq!(api, native, "update {name}/{id} as {who}");
@@ -331,7 +367,10 @@ async fn differential(w: &World) {
                     &ctx,
                     Action::Delete,
                     &coll,
-                    Statement::new(format!("DELETE FROM public.\"{name}\" WHERE id = ?1"), vec![id.as_str().into()]),
+                    Statement::new(
+                        format!("DELETE FROM public.\"{name}\" WHERE id = ?1"),
+                        vec![id.as_str().into()],
+                    ),
                 )
                 .await;
                 let before = env
@@ -350,7 +389,11 @@ async fn differential(w: &World) {
                     let marks: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
                     let mut tx = env.db.begin(TxMode::Normal).await.unwrap();
                     tx.execute(&Statement::new(
-                        format!("INSERT INTO public.\"{name}\" ({}) VALUES ({})", cols.join(", "), marks.join(", ")),
+                        format!(
+                            "INSERT INTO public.\"{name}\" ({}) VALUES ({})",
+                            cols.join(", "),
+                            marks.join(", ")
+                        ),
                         before.rows[0].clone(),
                     ))
                     .await
@@ -365,7 +408,15 @@ async fn differential(w: &World) {
                 "posts" => (
                     json!({"id": "new1", "title": "t", "owner": owner, "status": "draft", "score": 1}),
                     "id, created, updated, title, owner, status, score",
-                    vec!["new1".into(), "x".into(), "x".into(), "t".into(), owner.clone().into(), "draft".into(), Value::Integer(1)],
+                    vec![
+                        "new1".into(),
+                        "x".into(),
+                        "x".into(),
+                        "t".into(),
+                        owner.clone().into(),
+                        "draft".into(),
+                        Value::Integer(1),
+                    ],
                 ),
                 "notes" => (
                     json!({"id": "new1", "title": "t", "author": owner}),
@@ -391,7 +442,10 @@ async fn differential(w: &World) {
                 &ctx,
                 Action::Create,
                 &coll,
-                Statement::new(format!("INSERT INTO public.\"{name}\" ({cols}) VALUES ({})", marks.join(", ")), vals),
+                Statement::new(
+                    format!("INSERT INTO public.\"{name}\" ({cols}) VALUES ({})", marks.join(", ")),
+                    vals,
+                ),
             )
             .await;
             let api = env.data.create_record(&ctx, name, doc).await.is_ok();
@@ -410,13 +464,17 @@ async fn differential(w: &World) {
 
 #[tokio::test]
 async fn native_policies_give_the_rows_forgebase_rules_give() {
-    let Some(w) = world(NativeMode::Logins).await else { return };
+    let Some(w) = world(NativeMode::Logins).await else {
+        return;
+    };
     differential(&w).await;
 }
 
 #[tokio::test]
 async fn enforce_mode_gives_the_same_rows_and_runs_under_the_policies() {
-    let Some(w) = world(NativeMode::Enforce).await else { return };
+    let Some(w) = world(NativeMode::Enforce).await else {
+        return;
+    };
     differential(&w).await;
     let env = &w.env;
     // A restrictive policy written by hand narrows the API path in enforce
@@ -431,10 +489,20 @@ async fn enforce_mode_gives_the_same_rows_and_runs_under_the_policies() {
     tx.commit().await.unwrap();
     let alice = user("alice");
     assert!(!api_list(env, &alice, "posts").await.contains("p1"));
-    assert!(env.data.get_record(&user("carol"), "cfg", "c1", &GetOptions::default()).await.is_err());
+    assert!(
+        env.data
+            .get_record(&user("carol"), "cfg", "c1", &GetOptions::default())
+            .await
+            .is_err()
+    );
     // The view rule of posts follows `owner.level`: that read stays on the
     // server's session (the lookup would see the target's policies).
-    assert!(env.data.get_record(&alice, "posts", "p1", &GetOptions::default()).await.is_ok());
+    assert!(
+        env.data
+            .get_record(&alice, "posts", "p1", &GetOptions::default())
+            .await
+            .is_ok()
+    );
     assert!(
         env.data
             .update_record(&alice, "posts", "p1", json!({"title": "p1"}), UpdateOptions::default())
@@ -448,26 +516,43 @@ async fn enforce_mode_gives_the_same_rows_and_runs_under_the_policies() {
 
 #[tokio::test]
 async fn rule_changes_and_schema_changes_regenerate_policies() {
-    let Some(w) = world(NativeMode::Logins).await else { return };
+    let Some(w) = world(NativeMode::Logins).await else {
+        return;
+    };
     let env = &w.env;
     let posts = collection(env, "posts").await;
     let dave = user("dave");
-    assert_eq!(native_list(env, &dave, &posts).await, ["p1", "p5"].map(String::from).into());
+    assert_eq!(
+        native_list(env, &dave, &posts).await,
+        ["p1", "p5"].map(String::from).into()
+    );
     env.policy
         .put_policy(&admin(), "posts", &rules(Some("score > 50"), None, None, None, None))
         .await
         .unwrap();
-    assert_eq!(native_list(env, &dave, &posts).await, ["p2", "p5"].map(String::from).into());
+    assert_eq!(
+        native_list(env, &dave, &posts).await,
+        ["p2", "p5"].map(String::from).into()
+    );
     // A schema change (new field, then a rename) keeps the policies in step.
     let mut def = posts.clone();
-    def.fields.push(serde_json::from_value(json!({"name": "extra", "type": "text"})).unwrap());
+    def.fields
+        .push(serde_json::from_value(json!({"name": "extra", "type": "text"})).unwrap());
     def.name = "articles".into();
-    env.data.update_collection(&AccessContext::system(), "posts", def).await.unwrap();
+    env.data
+        .update_collection(&AccessContext::system(), "posts", def)
+        .await
+        .unwrap();
     let articles = collection(env, "articles").await;
-    assert_eq!(native_list(env, &dave, &articles).await, ["p2", "p5"].map(String::from).into());
+    assert_eq!(
+        native_list(env, &dave, &articles).await,
+        ["p2", "p5"].map(String::from).into()
+    );
     let views = env
         .db
-        .fetch_all(&Statement::raw("SELECT viewname FROM pg_views WHERE schemaname = 'api' ORDER BY 1"))
+        .fetch_all(&Statement::raw(
+            "SELECT viewname FROM pg_views WHERE schemaname = 'api' ORDER BY 1",
+        ))
         .await
         .unwrap();
     let names: Vec<&str> = views.rows.iter().map(|r| r[0].as_str().unwrap()).collect();
@@ -476,7 +561,10 @@ async fn rule_changes_and_schema_changes_regenerate_policies() {
     env.policy.delete_policy(&admin(), "articles").await.unwrap();
     assert!(native_list(env, &dave, &articles).await.is_empty());
     // Dropping the collection is not blocked by its api view.
-    env.data.delete_collection(&AccessContext::system(), "articles").await.unwrap();
+    env.data
+        .delete_collection(&AccessContext::system(), "articles")
+        .await
+        .unwrap();
 }
 
 /// Runs `sql` in a transaction whose session user is the direct login
@@ -503,7 +591,9 @@ async fn as_login(env: &Env, steps: &[&str], query: &str) -> Result<i64, String>
 
 #[tokio::test]
 async fn direct_logins_cannot_spoof_their_way_in() {
-    let Some(w) = world(NativeMode::Logins).await else { return };
+    let Some(w) = world(NativeMode::Logins).await else {
+        return;
+    };
     let env = &w.env;
     let mut tx = env.db.begin(TxMode::Normal).await.unwrap();
     tx.execute(&Statement::raw(
@@ -538,7 +628,10 @@ async fn direct_logins_cannot_spoof_their_way_in() {
     for (what, q) in [
         ("table", "SELECT count(*) FROM public.\"posts\""),
         ("system table", "SELECT count(*) FROM forgebase._forgebase_collections"),
-        ("system table on the path", "SELECT count(*) FROM _forgebase_collection_policies"),
+        (
+            "system table on the path",
+            "SELECT count(*) FROM _forgebase_collection_policies",
+        ),
     ] {
         assert!(as_login(env, &[], q).await.is_err(), "{what} must be refused");
     }
@@ -550,7 +643,11 @@ async fn direct_logins_cannot_spoof_their_way_in() {
         ))
         .await
         .unwrap();
-    let rel = rel.scalar().and_then(Value::as_str).expect("a relation helper exists").to_owned();
+    let rel = rel
+        .scalar()
+        .and_then(Value::as_str)
+        .expect("a relation helper exists")
+        .to_owned();
     assert_eq!(
         as_login(
             env,
@@ -603,12 +700,17 @@ async fn direct_logins_cannot_spoof_their_way_in() {
         .fetch_all_as(&Statement::raw("SELECT count(secret) FROM api.\"posts\""), &carol)
         .await
         .unwrap();
-    assert!(shown.scalar().and_then(Value::as_i64).unwrap() > 0, "carol is an editor");
+    assert!(
+        shown.scalar().and_then(Value::as_i64).unwrap() > 0,
+        "carol is an editor"
+    );
 }
 
 #[tokio::test]
 async fn off_mode_forces_rls_without_policies() {
-    let Some(env) = pg_env(NativeMode::Off).await else { return };
+    let Some(env) = pg_env(NativeMode::Off).await else {
+        return;
+    };
     env.collection(json!({"name": "things", "fields": [{"name": "t", "type": "text"}]}))
         .await;
     env.policy
@@ -621,7 +723,11 @@ async fn off_mode_forces_rls_without_policies() {
         .unwrap();
     let coll = collection(&env, "things").await;
     let anyone = user("alice");
-    assert_eq!(api_list(&env, &anyone, "things").await.len(), 1, "the API path is unchanged");
+    assert_eq!(
+        api_list(&env, &anyone, "things").await.len(),
+        1,
+        "the API path is unchanged"
+    );
     let flags = env
         .db
         .fetch_all(&Statement::raw(
@@ -632,7 +738,9 @@ async fn off_mode_forces_rls_without_policies() {
     assert_eq!(flags.rows[0], vec![Value::Integer(1), Value::Integer(1)]);
     let policies = env
         .db
-        .fetch_all(&Statement::raw("SELECT count(*) FROM pg_policies WHERE tablename = 'things'"))
+        .fetch_all(&Statement::raw(
+            "SELECT count(*) FROM pg_policies WHERE tablename = 'things'",
+        ))
         .await
         .unwrap();
     assert_eq!(policies.scalar().and_then(Value::as_i64), Some(0));

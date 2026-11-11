@@ -133,7 +133,10 @@ impl NativePolicies for Hook {
             let snap = svc.snapshot();
             // The collection and those whose relation paths may read it.
             let affected = catalog.iter().filter(|c| {
-                c.id == coll.id || c.fields.iter().any(|f| f.kind.relation_target() == Some(coll.id.as_str()))
+                c.id == coll.id
+                    || c.fields
+                        .iter()
+                        .any(|f| f.kind.relation_target() == Some(coll.id.as_str()))
             });
             for c in affected {
                 let g = generate(c, snap.policies.get(&c.id), catalog, self.mode);
@@ -173,17 +176,24 @@ impl PolicyService {
         if role.is_empty() {
             return Err(PolicyError::invalid(
                 "native_rls_unavailable",
-                format!("role {RLS_ROLE} does not exist (the bundled engine creates it; external servers need it created)"),
+                format!(
+                    "role {RLS_ROLE} does not exist (the bundled engine creates it; external servers need it created)"
+                ),
             ));
         }
         if self.inner.native.mode.set(mode).is_err() {
-            return Err(PolicyError::invalid("native_rls_enabled", "native row-level security is already on"));
+            return Err(PolicyError::invalid(
+                "native_rls_enabled",
+                "native row-level security is already on",
+            ));
         }
         if !data.set_native_policies(Arc::new(Hook {
             svc: Arc::downgrade(&self.inner),
             mode,
         })) {
-            return Err(PolicyError::Internal("a native policy hook is already installed".into()));
+            return Err(PolicyError::Internal(
+                "a native policy hook is already installed".into(),
+            ));
         }
         self.sync_native_rls().await
     }
@@ -287,6 +297,9 @@ impl PolicyService {
         if !complete {
             return None;
         }
-        Some(RunAs::new(RLS_ROLE, claims(&self.snapshot(), ctx, action, coll).to_string()))
+        Some(RunAs::new(
+            RLS_ROLE,
+            claims(&self.snapshot(), ctx, action, coll).to_string(),
+        ))
     }
 }

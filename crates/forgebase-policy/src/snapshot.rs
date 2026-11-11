@@ -306,8 +306,16 @@ pub fn policy_from_text(rules: [Option<&str>; 5], fields_json: &str) -> Collecti
         p.fields.insert(
             name.to_ascii_lowercase(),
             FieldRule {
-                read: f.read.as_deref().map_or(Ok(None), |t| rule_spec(Some(t))).unwrap_or_else(|_| locked()),
-                write: f.write.as_deref().map_or(Ok(None), |t| rule_spec(Some(t))).unwrap_or_else(|_| locked()),
+                read: f
+                    .read
+                    .as_deref()
+                    .map_or(Ok(None), |t| rule_spec(Some(t)))
+                    .unwrap_or_else(|_| locked()),
+                write: f
+                    .write
+                    .as_deref()
+                    .map_or(Ok(None), |t| rule_spec(Some(t)))
+                    .unwrap_or_else(|_| locked()),
             },
         );
     }

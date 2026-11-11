@@ -180,11 +180,24 @@ pub fn generate(
     let gate = |action: &str| {
         format!("(SELECT forgebase.gate({sc})) AND (SELECT forgebase.perm({name}, {action}, {sc})) <> 'denied'")
     };
-    add("fb_gate_select", true, "SELECT", Some(gate("forgebase.read_action()")), None);
+    add(
+        "fb_gate_select",
+        true,
+        "SELECT",
+        Some(gate("forgebase.read_action()")),
+        None,
+    );
     add("fb_gate_insert", true, "INSERT", None, Some(gate("'create'")));
-    add("fb_gate_update", true, "UPDATE", Some(gate("'update'")), Some(gate("'update'")));
+    add(
+        "fb_gate_update",
+        true,
+        "UPDATE",
+        Some(gate("'update'")),
+        Some(gate("'update'")),
+    );
     add("fb_gate_delete", true, "DELETE", Some(gate("'delete'")), None);
-    let acl = |action: &str, part: &str| format!("\"id\" = ANY ((SELECT (forgebase.acl({name}, {action})).{part})::text[])");
+    let acl =
+        |action: &str, part: &str| format!("\"id\" = ANY ((SELECT (forgebase.acl({name}, {action})).{part})::text[])");
     add(
         "fb_acl_deny_select",
         true,
@@ -215,7 +228,13 @@ pub fn generate(
         Some(format!("{read} IN ('create', 'update', 'delete')")),
         None,
     );
-    add("fb_perm_select", false, "SELECT", Some(perm("forgebase.read_action()")), None);
+    add(
+        "fb_perm_select",
+        false,
+        "SELECT",
+        Some(perm("forgebase.read_action()")),
+        None,
+    );
     add("fb_perm_insert", false, "INSERT", None, Some(perm("'create'")));
     add("fb_perm_update", false, "UPDATE", Some(perm("'update'")), None);
     add("fb_perm_delete", false, "DELETE", Some(perm("'delete'")), None);
@@ -243,7 +262,10 @@ pub fn generate(
                 Some(c.sql)
             }
             Err(e) => {
-                problems.push(format!("{} rule: {e}", ["list", "view", "create", "update", "delete"][i]));
+                problems.push(format!(
+                    "{} rule: {e}",
+                    ["list", "view", "create", "update", "delete"][i]
+                ));
                 Some("false".into())
             }
         }
@@ -376,7 +398,9 @@ fn write_trigger(coll: &Collection, writable: &[(String, Option<String>)]) -> Ve
         checks_ins.push_str(&refuse(name, rule, &format!("NEW.{c} IS NOT NULL")));
         checks_upd.push_str(&refuse(name, rule, &format!("NEW.{c} IS DISTINCT FROM OLD.{c}")));
         // A masked column reads as NULL: only a changed value is written.
-        sets.push(format!("{c} = CASE WHEN NEW.{c} IS DISTINCT FROM OLD.{c} THEN NEW.{c} ELSE {c} END"));
+        sets.push(format!(
+            "{c} = CASE WHEN NEW.{c} IS DISTINCT FROM OLD.{c} THEN NEW.{c} ELSE {c} END"
+        ));
     }
     let body = format!(
         "BEGIN \
@@ -410,7 +434,9 @@ fn write_trigger(coll: &Collection, writable: &[(String, Option<String>)]) -> Ve
         ),
         format!("ALTER FUNCTION {f}() OWNER TO {RLS_ROLE}"),
         format!("REVOKE ALL ON FUNCTION {f}() FROM PUBLIC"),
-        format!("CREATE TRIGGER fb_write INSTEAD OF INSERT OR UPDATE OR DELETE ON {v} FOR EACH ROW EXECUTE FUNCTION {f}()"),
+        format!(
+            "CREATE TRIGGER fb_write INSTEAD OF INSERT OR UPDATE OR DELETE ON {v} FOR EACH ROW EXECUTE FUNCTION {f}()"
+        ),
     ]
 }
 

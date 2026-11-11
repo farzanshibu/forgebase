@@ -327,7 +327,8 @@ mod tests {
 
     impl NativeRender for Fake {
         fn request(&self, name: &str) -> Option<String> {
-            name.strip_prefix("__rq_").map(|i| format!("(SELECT forgebase.req('r{i}'))"))
+            name.strip_prefix("__rq_")
+                .map(|i| format!("(SELECT forgebase.req('r{i}'))"))
         }
         fn now(&self) -> String {
             "(SELECT forgebase.now_text())".into()
@@ -345,7 +346,13 @@ mod tests {
     fn catalog() -> HashMap<String, Collection> {
         let mut users = Collection::base("users");
         users.id = "u".into();
-        users.fields = vec![Field::new("team", FieldKind::Text { min_length: None, max_length: None })];
+        users.fields = vec![Field::new(
+            "team",
+            FieldKind::Text {
+                min_length: None,
+                max_length: None,
+            },
+        )];
         let mut posts = Collection::base("posts");
         posts.id = "p".into();
         posts.fields = vec![
@@ -365,7 +372,13 @@ mod tests {
                     max: None,
                 },
             ),
-            Field::new("title", FieldKind::Text { min_length: None, max_length: None }),
+            Field::new(
+                "title",
+                FieldKind::Text {
+                    min_length: None,
+                    max_length: None,
+                },
+            ),
         ];
         HashMap::from([("u".into(), users), ("p".into(), posts)])
     }
@@ -392,7 +405,10 @@ mod tests {
             sql.contains("t.\"owner\" = (SELECT forgebase.jtext((SELECT forgebase.req('r0'))))"),
             "{sql}"
         );
-        assert!(sql.contains("CASE WHEN (SELECT forgebase.req('r0')) IS NULL OR"), "{sql}");
+        assert!(
+            sql.contains("CASE WHEN (SELECT forgebase.req('r0')) IS NULL OR"),
+            "{sql}"
+        );
         assert!(sql.contains("t.\"title\" = 'a''b'"), "{sql}");
     }
 
@@ -411,7 +427,10 @@ mod tests {
     fn numbers_and_items() {
         let (sql, _) = native("{:__rq_0} ?<= count");
         let sql = sql.unwrap();
-        assert!(sql.contains("jsonb_array_elements((SELECT forgebase.req('r0')))"), "{sql}");
+        assert!(
+            sql.contains("jsonb_array_elements((SELECT forgebase.req('r0')))"),
+            "{sql}"
+        );
         assert!(sql.contains("t.\"count\" >= (SELECT forgebase.jnum("), "{sql}");
     }
 
@@ -422,7 +441,11 @@ mod tests {
         assert_eq!(sql, "forgebase.fb_rel_0(t.\"owner\") = 'red'");
         let defined = fake.defined.lock().unwrap();
         assert_eq!(defined.len(), 1);
-        assert!(defined[0].contains("SELECT r.\"team\" FROM public.\"users\" AS r"), "{}", defined[0]);
+        assert!(
+            defined[0].contains("SELECT r.\"team\" FROM public.\"users\" AS r"),
+            "{}",
+            defined[0]
+        );
     }
 
     #[test]

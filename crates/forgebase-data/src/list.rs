@@ -364,7 +364,9 @@ impl DataService {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
-        let rows = self.read_rows(ctx, Action::List, &coll, &built.select, built.follows_relations).await?;
+        let rows = self
+            .read_rows(ctx, Action::List, &coll, &built.select, built.follows_relations)
+            .await?;
         let more = rows.rows.len() > built.per_page as usize;
         let mut items: Vec<Record> = Vec::with_capacity(rows.rows.len().min(built.per_page as usize));
         let mut last_keys: Option<Vec<Json>> = None;
@@ -432,7 +434,9 @@ impl DataService {
             ..ListQuery::default()
         };
         let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None)?;
-        let rows = self.read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations).await?;
+        let rows = self
+            .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
+            .await?;
         Ok(rows.scalar().and_then(Value::as_i64).unwrap_or(0).max(0) as u64)
     }
 
