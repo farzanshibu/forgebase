@@ -20,6 +20,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorCode, ErrorKind};
 
+/// `[database.replicas]`, `[database.sharding]`, `[[database.nodes]]` (FB-175).
+#[path = "topology_config.rs"]
+pub mod topology_config;
+
 /// Prefix of every environment variable ForgeBase reads.
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
@@ -688,6 +692,10 @@ pub struct DatabaseConfig {
     pub busy_timeout_ms: u64,
     /// Number of read-only connections in the read pool.
     pub read_pool_size: u32,
+    /// `[database.replicas]`, `[database.sharding]` and `[[database.nodes]]`
+    /// (FB-175, ADR-0029 §4.1).
+    #[serde(flatten)]
+    pub topology: topology_config::TopologyConfig,
 }
 
 /// Logging settings.
@@ -718,6 +726,7 @@ impl Config {
                 synchronous: Synchronous::Full,
                 busy_timeout_ms: 5_000,
                 read_pool_size: 8,
+                topology: topology_config::TopologyConfig::default(),
             },
             log: LogConfig {
                 level: "info".to_owned(),
@@ -991,6 +1000,7 @@ impl Config {
                 whole(1, 256, "", d.queue.push_concurrency as u64),
             );
         }
+        self.database.topology.problems(&mut out);
         out
     }
 
@@ -1081,6 +1091,7 @@ impl Config {
                 }
             }
         }
+        self.database.topology.apply(&o.topology);
         if let Some(v) = o.synchronous {
             self.database.synchronous = v;
         }
@@ -1235,6 +1246,8 @@ pub struct ConfigOverrides {
     pub database_backend: Option<DatabaseBackend>,
     /// `[database.postgres]` (and its environment variables).
     pub postgres: Option<PostgresOverrides>,
+    /// `[database.replicas]`, `[database.sharding]`, `[[database.nodes]]` (FB-175).
+    pub topology: topology_config::TopologyOverrides,
     /// SQLite `synchronous` mode.
     pub synchronous: Option<Synchronous>,
     /// SQLite busy timeout in milliseconds.
@@ -1367,6 +1380,18 @@ impl ConfigOverrides {
                 "GRAPH_ENABLED" => o.graph_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "IDENTITY_ENABLED" => o.identity_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "ACCESS_ENABLED" => o.access_enabled = Some(parse_bool(&value).map_err(bad)?),
+                // FB-175: `[database.replicas]` and `[database.sharding]`.
+                k if k.starts_with("DATABASE_REPLICAS_") || k.starts_with("DATABASE_SHARDING_") => {
+                    if !o.topology.env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                }
+                // URLs of `[[database.nodes]]` (`url_env`): secrets the server reads.
+                k if topology_config::is_node_url_env(k) => {
+                    if !value.trim().is_empty() {
+                        o.secrets_set.push(name.clone());
+                    }
+                }
                 // Read by the storage driver, never by the loader (ADR-0018).
                 "STORAGE_S3_ACCESS_KEY" | "STORAGE_S3_SECRET_KEY" | "STORAGE_S3_SESSION_TOKEN" => {
                     if !value.is_empty() {
@@ -1420,6 +1445,7 @@ impl ConfigOverrides {
                 put(x.trigram.is_some(), "database.postgres.extensions.trigram");
             }
         }
+        self.topology.keys(&mut put);
         put(self.synchronous.is_some(), "database.synchronous");
         put(self.busy_timeout_ms.is_some(), "database.busy_timeout_ms");
         put(self.read_pool_size.is_some(), "database.read_pool_size");
@@ -1930,6 +1956,9 @@ struct FileServer {
 struct FileDatabase {
     backend: Option<DatabaseBackend>,
     postgres: Option<PostgresOverrides>,
+    replicas: Option<topology_config::ReplicasOverrides>,
+    sharding: Option<topology_config::ShardingOverrides>,
+    nodes: Option<Vec<topology_config::NodeDecl>>,
     synchronous: Option<Synchronous>,
     busy_timeout_ms: Option<u64>,
     read_pool_size: Option<u32>,
@@ -1963,6 +1992,11 @@ impl From<FileConfig> for ConfigOverrides {
                 Vec::new()
             },
             postgres: f.database.postgres,
+            topology: topology_config::TopologyOverrides {
+                replicas: f.database.replicas,
+                sharding: f.database.sharding,
+                nodes: f.database.nodes,
+            },
             synchronous: f.database.synchronous,
             busy_timeout_ms: f.database.busy_timeout_ms,
             read_pool_size: f.database.read_pool_size,
