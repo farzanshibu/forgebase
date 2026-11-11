@@ -142,12 +142,22 @@ pub(crate) fn typed(json_sql: &str, ty: ScalarType) -> String {
     }
 }
 
+/// [`typed`] of a constant (a request reference): inside its own sub-select,
+/// so PostgreSQL computes it once per statement (an `InitPlan`), not once
+/// per row.
+fn typed_once(json_sql: &str, ty: ScalarType) -> String {
+    match ty {
+        ScalarType::Json => json_sql.to_owned(),
+        _ => format!("(SELECT {})", typed(json_sql, ty)),
+    }
+}
+
 /// [`Compiler`]'s rendering of a constant in native mode: a request
 /// reference or `@now` against an expression of type `ty`. `None` for
 /// ordinary literals.
 pub(crate) fn render_against(n: &dyn NativeRender, o: &Operand, ty: ScalarType) -> Option<String> {
     match o {
-        Operand::Param(p) => n.request(p).map(|sql| typed(&sql, ty)),
+        Operand::Param(p) => n.request(p).map(|sql| typed_once(&sql, ty)),
         Operand::Now => Some(match ty {
             ScalarType::Json => format!("to_jsonb({})", n.now()),
             _ => n.now(),
@@ -161,7 +171,7 @@ pub(crate) fn like_pattern(n: &dyn NativeRender, o: &Operand) -> Option<String> 
     match o {
         Operand::Param(p) => n
             .request(p)
-            .map(|sql| format!("('%' || forgebase.like_escape(forgebase.jtext({sql})) || '%')")),
+            .map(|sql| format!("(SELECT '%' || forgebase.like_escape(forgebase.jtext({sql})) || '%')")),
         Operand::Now => Some(format!("('%' || forgebase.like_escape({}) || '%')", n.now())),
         _ => None,
     }
@@ -378,7 +388,10 @@ mod tests {
     fn request_values_render_as_claims_and_literals_inline() {
         let (sql, _) = native("owner = {:__rq_0} && title = \"a'b\"");
         let sql = sql.unwrap();
-        assert!(sql.contains("t.\"owner\" = forgebase.jtext((SELECT forgebase.req('r0')))"), "{sql}");
+        assert!(
+            sql.contains("t.\"owner\" = (SELECT forgebase.jtext((SELECT forgebase.req('r0'))))"),
+            "{sql}"
+        );
         assert!(sql.contains("CASE WHEN (SELECT forgebase.req('r0')) IS NULL OR"), "{sql}");
         assert!(sql.contains("t.\"title\" = 'a''b'"), "{sql}");
     }
@@ -399,7 +412,7 @@ mod tests {
         let (sql, _) = native("{:__rq_0} ?<= count");
         let sql = sql.unwrap();
         assert!(sql.contains("jsonb_array_elements((SELECT forgebase.req('r0')))"), "{sql}");
-        assert!(sql.contains("t.\"count\" >= forgebase.jnum("), "{sql}");
+        assert!(sql.contains("t.\"count\" >= (SELECT forgebase.jnum("), "{sql}");
     }
 
     #[test]

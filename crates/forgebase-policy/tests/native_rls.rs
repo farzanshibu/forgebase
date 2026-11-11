@@ -706,6 +706,20 @@ async fn overhead() {
         }
         let update = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
         out.insert(mode.as_str(), (list, get, update));
+        if mode == NativeMode::Enforce {
+            let items = collection(&env, "items").await;
+            let plan = env
+                .db
+                .fetch_all_as(
+                    &Statement::raw("EXPLAIN (ANALYZE, COSTS OFF) SELECT count(*) FROM public.items"),
+                    &run_as(&env, &alice, Action::List, &items),
+                )
+                .await
+                .unwrap();
+            for r in &plan.rows {
+                println!("{}", r[0].as_str().unwrap_or_default());
+            }
+        }
     }
     for (mode, (list, get, update)) in &out {
         println!("native_rls={mode}: list {list:.3} ms, get {get:.3} ms, update {update:.3} ms per call");
