@@ -27,6 +27,7 @@
 //! [`forgebase_data::Action::QueueConsume`],
 //! [`forgebase_data::Action::QueueAdmin`]).
 
+mod access;
 mod consume;
 mod error;
 pub mod filter;

@@ -19,7 +19,7 @@ use axum::{Json, Router};
 use forgebase_api::http::{ApiJson, Query};
 use forgebase_api::principal::Access;
 use forgebase_api::{ApiError, ApiExtension};
-use forgebase_data::{AccessContext, Action};
+use forgebase_data::{AccessContext, Action, ResourceOp};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -56,10 +56,45 @@ pub fn api(e: QueueError) -> ApiError {
     }
 }
 
-/// Authorises first, then surfaces the body: an anonymous or forbidden caller
-/// gets `401`/`403` whatever they sent, never a `400` about their input.
+/// The body of a create call (the resource is named in it): a body that
+/// does not parse is answered after the plain check, so an anonymous or
+/// forbidden caller gets `401`/`403` whatever they sent; a parsed body is
+/// checked by the service against the named resource.
 fn body<T>(s: &QueueService, ctx: &AccessContext, action: Action, body: Body<T>) -> Result<T, ApiError> {
-    s.authorize(ctx, action).map_err(api)?;
+    match body {
+        Ok(b) => Ok(b.0),
+        Err(e) => {
+            s.authorize(ctx, action).map_err(api)?;
+            Err(e)
+        }
+    }
+}
+
+/// Authorises on the topic first, then surfaces the body: an anonymous or
+/// forbidden caller gets `401`/`403` whatever they sent, never a `400` about
+/// their input.
+fn topic_body<T>(
+    s: &QueueService,
+    ctx: &AccessContext,
+    action: Action,
+    topic: &str,
+    op: ResourceOp,
+    body: Body<T>,
+) -> Result<T, ApiError> {
+    s.authorize_topic(ctx, action, topic, op).map_err(api)?;
+    Ok(body?.0)
+}
+
+/// As [`topic_body`], on a subscription (its owner holds every permission).
+async fn sub_body<T>(
+    s: &QueueService,
+    ctx: &AccessContext,
+    action: Action,
+    sub: &str,
+    op: ResourceOp,
+    body: Body<T>,
+) -> Result<T, ApiError> {
+    s.authorize_subscription(ctx, action, sub, op).await.map_err(api)?;
     Ok(body?.0)
 }
 
@@ -256,7 +291,7 @@ async fn update_topic(
     Path(topic): Path<String>,
     b: Body<TopicPatch>,
 ) -> ApiResult {
-    let patch = body(&s, &ctx, Action::QueueAdmin, b)?;
+    let patch = topic_body(&s, &ctx, Action::QueueAdmin, &topic, ResourceOp::Update, b)?;
     Ok(Json(s.update_topic(&ctx, &topic, patch).await.map_err(api)?).into_response())
 }
 
@@ -297,7 +332,7 @@ async fn publish(
     Path(topic): Path<String>,
     b: Body<PublishRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::QueuePublish, b)?;
+    let req = topic_body(&s, &ctx, Action::QueuePublish, &topic, ResourceOp::Create, b)?;
     let results = s.publish(&ctx, &topic, req.messages).await.map_err(api)?;
     Ok(Json(PublishResponse { results }).into_response())
 }
@@ -399,7 +434,7 @@ async fn update_subscription(
     Path(sub): Path<String>,
     b: Body<SubscriptionPatch>,
 ) -> ApiResult {
-    let patch = body(&s, &ctx, Action::QueueAdmin, b)?;
+    let patch = sub_body(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
     Ok(Json(s.update_subscription(&ctx, &sub, patch).await.map_err(api)?).into_response())
 }
 
@@ -427,7 +462,7 @@ async fn pull(
     Path(sub): Path<String>,
     b: Body<PullRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::QueueConsume, b)?;
+    let req = sub_body(&s, &ctx, Action::QueueConsume, &sub, ResourceOp::List, b).await?;
     let messages = s.pull(&ctx, &sub, req).await.map_err(api)?;
     Ok(Json(PullResponse { messages }).into_response())
 }
@@ -445,7 +480,7 @@ async fn ack(
     Path(sub): Path<String>,
     b: Body<AckRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::QueueConsume, b)?;
+    let req = sub_body(&s, &ctx, Action::QueueConsume, &sub, ResourceOp::Update, b).await?;
     Ok(Json(s.ack(&ctx, &sub, &req.ack_ids).await.map_err(api)?).into_response())
 }
 
@@ -462,7 +497,7 @@ async fn nack(
     Path(sub): Path<String>,
     b: Body<AckRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::QueueConsume, b)?;
+    let req = sub_body(&s, &ctx, Action::QueueConsume, &sub, ResourceOp::Update, b).await?;
     Ok(Json(s.nack(&ctx, &sub, &req.ack_ids).await.map_err(api)?).into_response())
 }
 
@@ -479,7 +514,7 @@ async fn modify_deadline(
     Path(sub): Path<String>,
     b: Body<ModifyDeadlineRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::QueueConsume, b)?;
+    let req = sub_body(&s, &ctx, Action::QueueConsume, &sub, ResourceOp::Update, b).await?;
     let r = s
         .modify_deadline(&ctx, &sub, &req.ack_ids, req.ack_deadline_ms)
         .await
@@ -500,7 +535,7 @@ async fn seek(
     Path(sub): Path<String>,
     b: Body<SeekRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::QueueAdmin, b)?;
+    let req = sub_body(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
     Ok(Json(s.seek(&ctx, &sub, req).await.map_err(api)?).into_response())
 }
 
@@ -561,17 +596,9 @@ fn window(q: &Query) -> Result<Window, ApiError> {
     })
 }
 
-/// Checks access and that `sub` is a pull subscription.
-async fn stream_target(s: &QueueService, ctx: &AccessContext, sub: &str) -> Result<(), ApiError> {
-    s.authorize(ctx, Action::QueueConsume).map_err(api)?;
-    let found = s.subscription(&AccessContext::system(), sub).await.map_err(api)?;
-    if found.push.is_some() {
-        return Err(api(QueueError::conflict(
-            "push_subscription",
-            format!("subscription {sub:?} delivers by push and cannot be streamed"),
-        )));
-    }
-    Ok(())
+/// Checks access and that `sub` is a pull subscription; returns its stored name.
+async fn stream_target(s: &QueueService, ctx: &AccessContext, sub: &str) -> Result<String, ApiError> {
+    s.stream_subscription(ctx, sub).await.map_err(api)
 }
 
 /// Streaming pull over WebSocket. Query `max_messages` and `max_bytes` set the
@@ -596,9 +623,9 @@ async fn stream(
     ws: WebSocketUpgrade,
 ) -> ApiResult {
     let w = window(&q)?;
-    stream_target(&s, &ctx, &sub).await?;
+    let stored = stream_target(&s, &ctx, &sub).await?;
     Ok(ws
-        .on_upgrade(move |socket| ws_session(s, ctx, sub, w, socket))
+        .on_upgrade(move |socket| ws_session(s, ctx, Target { sub, stored }, w, socket))
         .into_response())
 }
 
@@ -606,7 +633,14 @@ fn frame(m: &StreamServerMessage) -> WsMessage {
     WsMessage::Text(serde_json::to_string(m).unwrap_or_default().into())
 }
 
-async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Window, socket: WebSocket) {
+/// A streamed subscription: the caller's name and the stored one.
+struct Target {
+    sub: String,
+    stored: String,
+}
+
+async fn ws_session(s: QueueService, ctx: AccessContext, t: Target, mut w: Window, socket: WebSocket) {
+    let Target { sub, stored } = t;
     let consumer = format!("ws-{}", uuid::Uuid::new_v4().simple());
     let (mut tx, mut rx) = socket.split();
     let mut wake = s.wake_rx();
@@ -618,7 +652,10 @@ async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Win
             break;
         }
         // Access can change while the stream is open.
-        if let Err(e) = s.authorize(&ctx, Action::QueueConsume) {
+        if let Err(e) = s
+            .authorize_subscription(&ctx, Action::QueueConsume, &sub, ResourceOp::List)
+            .await
+        {
             let a = api(e);
             let _ = tx
                 .send(frame(&StreamServerMessage::Error {
@@ -629,7 +666,7 @@ async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Win
             break;
         }
         wake.borrow_and_update();
-        match s.stream_batch(&sub, &consumer, w.max_messages, w.max_bytes).await {
+        match s.stream_batch(&stored, &consumer, w.max_messages, w.max_bytes).await {
             Ok(messages) if !messages.is_empty() => {
                 if tx
                     .send(frame(&StreamServerMessage::Messages { messages }))
@@ -672,7 +709,7 @@ async fn ws_session(s: QueueService, ctx: AccessContext, sub: String, mut w: Win
             () = tokio::time::sleep(poll) => {}
         }
     }
-    if let Err(e) = s.release_consumer(&sub, &consumer).await {
+    if let Err(e) = s.release_consumer(&stored, &consumer).await {
         tracing::warn!(error = %e, subscription = %sub, "stream leases not released");
     }
 }
@@ -747,7 +784,7 @@ async fn handle_client(
 )]
 async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>, q: Query) -> ApiResult {
     let w = window(&q)?;
-    stream_target(&s, &ctx, &sub).await?;
+    let stored = stream_target(&s, &ctx, &sub).await?;
     let state = SseState {
         consumer: format!("sse-{}", uuid::Uuid::new_v4().simple()),
         wake: s.wake_rx(),
@@ -755,6 +792,7 @@ async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): P
         s,
         ctx,
         sub,
+        stored,
         w,
         pending: VecDeque::new(),
         done: false,
@@ -771,14 +809,17 @@ async fn events(State(s): State<QueueService>, Access(ctx): Access, Path(sub): P
                     .data(serde_json::to_string(&m).unwrap_or_default());
                 return Some((Ok::<_, std::convert::Infallible>(ev), st));
             }
-            if let Err(e) = st.s.authorize(&st.ctx, Action::QueueConsume) {
+            if let Err(e) =
+                st.s.authorize_subscription(&st.ctx, Action::QueueConsume, &st.sub, ResourceOp::List)
+                    .await
+            {
                 st.done = true;
                 return Some((Ok(error_event(api(e))), st));
             }
             st.wake.borrow_and_update();
             match st
                 .s
-                .stream_batch(&st.sub, &st.consumer, st.w.max_messages, st.w.max_bytes)
+                .stream_batch(&st.stored, &st.consumer, st.w.max_messages, st.w.max_bytes)
                 .await
             {
                 Ok(batch) if !batch.is_empty() => st.pending.extend(batch),
@@ -806,6 +847,7 @@ struct SseState {
     s: QueueService,
     ctx: AccessContext,
     sub: String,
+    stored: String,
     consumer: String,
     w: Window,
     wake: tokio::sync::watch::Receiver<u64>,

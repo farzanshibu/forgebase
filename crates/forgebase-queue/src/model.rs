@@ -173,6 +173,8 @@ pub struct TopicPatch {
 pub struct Topic {
     /// Name.
     pub name: String,
+    /// Owning tenant (FB-141); `None` for an instance-wide topic.
+    pub tenant: Option<String>,
     /// Retention in milliseconds.
     pub retention_ms: i64,
     /// Size limit in bytes (`None`: no limit).
@@ -458,6 +460,8 @@ pub struct SubscriptionPatch {
 pub struct Subscription {
     /// Name.
     pub name: String,
+    /// Owning tenant (FB-141); `None` for an instance-wide subscription.
+    pub tenant: Option<String>,
     /// Topic.
     pub topic: String,
     /// Attribute filter.
@@ -590,6 +594,8 @@ pub struct NewSnapshot {
 pub struct Snapshot {
     /// Name.
     pub name: String,
+    /// Owning tenant (FB-141); `None` for an instance-wide snapshot.
+    pub tenant: Option<String>,
     /// Subscription.
     pub subscription: String,
     /// Topic.

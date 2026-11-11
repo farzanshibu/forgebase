@@ -391,7 +391,7 @@ pub static TABLES: &[TablePlacement] = &[
     per_set("_forgebase_job_queues", MoveStrategy::Stay),
     // HTTP workers register once and claim round-robin across sets.
     control("_forgebase_job_workers"),
-    // --- Queues (G16: `tenant` on topics and subscriptions, FB-141) ---
+    // --- Queues (G16: `tenant` on topics, subscriptions and snapshots since 0031_queue_rls) ---
     tenant("_forgebase_queue_topics", "tenant", COPY),
     tenant("_forgebase_queue_subscriptions", "tenant", REMAP),
     child(
@@ -422,13 +422,7 @@ pub static TABLES: &[TablePlacement] = &[
         "name",
         COPY,
     ),
-    child(
-        "_forgebase_queue_snapshots",
-        "subscription",
-        "_forgebase_queue_subscriptions",
-        "name",
-        REMAP,
-    ),
+    tenant("_forgebase_queue_snapshots", "tenant", REMAP),
     child(
         "_forgebase_queue_snapshot_items",
         "snapshot",
@@ -523,10 +517,7 @@ pub const TENANT_COLUMNS_NOT_KEYS: &[(&str, &str, &str)] = &[
 /// Tenant columns that the registry already uses as placement keys but that
 /// a package in flight adds: until it merges, [`problems`] accepts the
 /// missing column. `(table, column, package)`.
-pub const PENDING_TENANT_COLUMNS: &[(&str, &str, &str)] = &[
-    ("_forgebase_queue_topics", "tenant", "FB-141"),
-    ("_forgebase_queue_subscriptions", "tenant", "FB-141"),
-];
+pub const PENDING_TENANT_COLUMNS: &[(&str, &str, &str)] = &[];
 
 /// The registry entry of a system table.
 pub fn table(name: &str) -> Option<&'static TablePlacement> {
@@ -799,12 +790,11 @@ mod tests {
         assert_eq!(problems(&schema), Vec::<String>::new());
 
         // A new table, a removed one, a new tenant column on a control table,
-        // and a pending tenant column that is still missing (accepted).
+        // and a missing key column.
         let mut bad = schema.clone();
         bad.extend(schema_of(&[("_forgebase_new_thing", &["id"])]));
         bad.remove("_forgebase_admins");
         bad.get_mut("_forgebase_functions").unwrap().insert("tenant".into());
-        bad.get_mut("_forgebase_queue_topics").unwrap().remove("tenant");
         bad.get_mut("_forgebase_kv_entries").unwrap().remove("tenant");
         let found = problems(&bad);
         assert_eq!(found.len(), 4, "{found:#?}");

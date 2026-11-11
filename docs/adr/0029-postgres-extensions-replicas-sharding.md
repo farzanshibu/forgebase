@@ -1235,14 +1235,15 @@ ADR left open:
   round-robin), `_forgebase_storage_settings`, every audit log. API keys
   and the authorization audit keep their `tenant` column as data.
 - `tenant` by column: KV, graph nodes and edges, vector collections, storage
-  buckets, jobs, schedules and workflows (`tenant` from `0030_job_tenant`),
-  queue topics and subscriptions (FB-141's `tenant`: listed in
-  `PENDING_TENANT_COLUMNS` until it merges). By parent: vector fields,
-  items, values and `_forgebase_vector_fts` (via the item's `key`; logical
-  apply fires no triggers, so the keyword rows are copied), job events and
-  attempts (`renumber`), job deps, queue messages (`renumber`), deliveries,
-  snapshots and snapshot items (`remap`), dedup and dead letters, storage
-  objects, ACL, uploads and parts. `_forgebase_record_versions` by record.
+  buckets, jobs, schedules and workflows (`0030_job_tenant`), queue topics,
+  subscriptions (`remap`) and snapshots (`remap`) (`0031_queue_rls`). By
+  parent: vector fields, items, values and `_forgebase_vector_fts` (via the
+  item's `key`; logical apply fires no triggers, so the keyword rows are
+  copied), job events and attempts (`renumber`), job deps, queue messages
+  (`renumber`), deliveries and snapshot items (`remap`), dedup and dead
+  letters, storage objects, ACL, uploads and parts.
+  `_forgebase_record_versions` by record. `PENDING_TENANT_COLUMNS` (a key
+  column a package in flight adds, accepted while missing) is empty.
 - `control_replicated`: `_forgebase_resource_permissions`.
 
 **Router (`router.rs`).** `DbRouter::single(db)` (one fixed set, reads and
@@ -1284,7 +1285,7 @@ on the set's primary and derefs to its `Database`. Routing rules:
   unchanged.
 
 **Deviations.**
-- Migration number 0033 (god assigned it: FB-141 takes 0031, FB-137 0032).
+- Migration number 0033 (god assigned it: FB-141 took 0031, FB-137 takes 0032).
 - `for_tenant` is `async` (it waits during a freeze); §3.5 does not say.
 - On PostgreSQL an **uncached** read (`Statement::raw`) whose result has a
   `citext` column fails on a fresh read connection with "unnamed prepared
@@ -1317,9 +1318,7 @@ on the set's primary and derefs to its `Database`. Routing rules:
 - **FB-172 (jobs, queues, KV, vector, storage):** one loop per
   `sets()` entry; skip tenants whose `placement(t)` is `moving` or `frozen`
   (`try_for_tenant` returns `TenantMoving` for frozen ones);
-  `_forgebase_job_queues` is per set, keep its settings in step. FB-141's
-  queue `tenant` columns are pre-registered; if FB-141 keys tenants
-  differently, change the two `PENDING_TENANT_COLUMNS` entries.
+  `_forgebase_job_queues` is per set, keep its settings in step.
 - **FB-173 (fan-out, migrations):** `xact_journal` as described above;
   `insert_set` then migrate, replay the catalog, `apply_sequence_range(db,
   set.number)`, then `update_set(.., Active)` and `reload()`. Run
