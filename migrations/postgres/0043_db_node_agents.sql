@@ -2,7 +2,7 @@
 -- ADR-0029 §2.3): agents of `forgebase node join` and their commands.
 
 CREATE TABLE _forgebase_db_node_agents (
-    node_id        text   NOT NULL PRIMARY KEY REFERENCES _forgebase_db_nodes(id) ON DELETE CASCADE,
+    node_id        text   NOT NULL PRIMARY KEY REFERENCES _forgebase_db_nodes(id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
     key_hash       text   NOT NULL UNIQUE CHECK (length(key_hash) = 64),
     address        text,
     engine_version text   NOT NULL,
@@ -19,7 +19,7 @@ CREATE TABLE _forgebase_db_node_agents (
 
 CREATE TABLE _forgebase_db_node_commands (
     id         text NOT NULL PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 64),
-    node_id    text NOT NULL REFERENCES _forgebase_db_nodes(id) ON DELETE CASCADE,
+    node_id    text NOT NULL REFERENCES _forgebase_db_nodes(id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
     kind       text NOT NULL CHECK (kind IN ('rebuild', 'stop', 'promote', 'rejoin', 'follow')),
     args       text NOT NULL DEFAULT '{}',
     state      text NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'sent', 'done', 'failed', 'cancelled')),
