@@ -242,7 +242,7 @@ const DATABASE: &[SettingDef] = &[
         "database.postgres.tls_cert",
         "Certificate for TCP logins",
         Text,
-        "Bundled PostgreSQL only, with a listen address: a PEM certificate file (with its chain) for encrypted TCP logins. Empty (the default) uses a self-signed certificate ForgeBase generates in the data directory, which clients accept with sslmode=require. Set it together with the key file.",
+        "Bundled PostgreSQL only, with a listen address: a PEM certificate file (with its chain) for encrypted TCP logins, such as /etc/forgebase/pg.crt. Empty (the default) uses a self-signed certificate ForgeBase generates in the data directory, which clients accept with sslmode=require. Set it together with the key file.",
     )
     .env("FORGEBASE_DATABASE_POSTGRES_TLS_CERT")
     .example("/etc/forgebase/pg.crt")
@@ -251,7 +251,7 @@ const DATABASE: &[SettingDef] = &[
         "database.postgres.tls_key",
         "Private key for TCP logins",
         Text,
-        "Bundled PostgreSQL only, with a listen address: the PEM private key of the TLS certificate, readable by the server's user only.",
+        "Bundled PostgreSQL only, with a listen address: the PEM private key of the certificate, such as /etc/forgebase/pg.key, readable by the server's user only.",
     )
     .env("FORGEBASE_DATABASE_POSTGRES_TLS_KEY")
     .example("/etc/forgebase/pg.key")
