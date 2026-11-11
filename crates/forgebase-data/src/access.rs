@@ -288,6 +288,11 @@ pub enum Action {
     GraphRead,
     /// Create, change or delete graph nodes and edges (FB-51).
     GraphWrite,
+    /// Run read-only openCypher queries on the derived Apache AGE graph
+    /// (ADR-0029 §1.5, FB-163): `engine:graph_cypher`, not implied by
+    /// `engine:graph_read`. The caller's graph label and edge-type rules
+    /// (asked with [`Action::GraphRead`]) apply inside the query.
+    GraphCypher,
     /// Read jobs, job history, schedules, workers and queue statistics (FB-61).
     ReadJobs,
     /// Enqueue a background job (FB-61).

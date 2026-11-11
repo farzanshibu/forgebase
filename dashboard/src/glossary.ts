@@ -95,6 +95,16 @@ export const GLOSSARY = {
   scrape: { short: "Scrape", text: "One read of the server's metrics. The charts update on each scrape." },
   backup: { short: "Backup", text: "A copy of the data directory you can restore later, on this server or another." },
   request_id: { short: "Request id", text: "A unique id the server gives each request. Search the server log for it to find what happened." },
+  // Database topology (FB-176)
+  replica: { short: "Read replica", text: "A copy of your database on another server that follows the primary and answers reads. It spreads the load and can take over if the primary fails." },
+  primary: { short: "Primary", text: "The server that takes every write. Replicas copy it." },
+  lag: { short: "Replica lag", text: "How far a replica is behind the primary, as time and as bytes of changes it has not applied yet. Small is healthy." },
+  shard: { short: "Shard", text: "A separate database server that holds some of your tenants, so no single server has to hold them all. Each shard can have its own replicas." },
+  promote: { short: "Promote", text: "Make a replica the new primary. Do it when the primary has failed or you are moving to a new server. The old primary must be rebuilt as a replica before it rejoins." },
+  rebalance: { short: "Rebalance", text: "Move tenants between shards so each shard holds a fair share. ForgeBase shows the plan first and moves nothing until you confirm." },
+  freeze: { short: "Freeze", text: "While a tenant moves, its writes pause for a moment at the end (usually a second or two) so no change is lost. Reads and other tenants carry on." },
+  read_after: { short: "Read after", text: "A marker your app sends so a read sees its own earlier writes, even when a replica answers it." },
+  topology_set: { short: "Set", text: "A primary server with its replicas. Control is the first set; every shard is another." },
 } satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryTerm = keyof typeof GLOSSARY;

@@ -20,3 +20,4 @@ export * from "./billing";
 export * from "./backups";
 export * from "./setup";
 export * from "./dbAdmin";
+export * from "./topology";

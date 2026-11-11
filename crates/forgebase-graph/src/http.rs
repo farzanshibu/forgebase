@@ -21,6 +21,7 @@ use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{OpenApi, ToSchema};
 
+use crate::cypher::{CypherDropped, CypherQuery, CypherResult, CypherStatus};
 use crate::error::GraphError;
 use crate::model::*;
 use crate::service::GraphService;
@@ -40,6 +41,8 @@ struct HttpError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    /// More fields of the error object (`job_id` of `409 graph_materialising`).
+    extra: Option<(&'static str, serde_json::Value)>,
 }
 
 impl HttpError {
@@ -48,11 +51,15 @@ impl HttpError {
             status: StatusCode::BAD_REQUEST,
             code,
             message: message.into(),
+            extra: None,
         }
     }
 
     fn body(&self, request_id: &str) -> Response {
-        let body = json!({"error": {"code": self.code, "message": self.message, "request_id": request_id}});
+        let mut body = json!({"error": {"code": self.code, "message": self.message, "request_id": request_id}});
+        if let Some((k, v)) = &self.extra {
+            body["error"][*k] = v.clone();
+        }
         (self.status, Json(body)).into_response()
     }
 }
@@ -74,10 +81,15 @@ impl From<GraphError> for HttpError {
             tracing::error!(code = e.code(), error = %e, "graph request failed");
             "internal server error".to_owned()
         };
+        let extra = match &e {
+            GraphError::Materialising { job_id } => Some(("job_id", json!(job_id))),
+            _ => None,
+        };
         Self {
             status,
             code: e.code(),
             message,
+            extra,
         }
     }
 }
@@ -144,11 +156,13 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
                 status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 code: "unsupported_media_type",
                 message: "send the body as application/json".into(),
+                extra: None,
             }),
             Err(JsonRejection::BytesRejection(e)) if e.status() == StatusCode::PAYLOAD_TOO_LARGE => Err(HttpError {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 code: "payload_too_large",
                 message: "request body is too large".into(),
+                extra: None,
             }),
             Err(e) => Err(HttpError::bad_request("invalid_body", e.body_text())),
         }
@@ -448,6 +462,37 @@ async fn stats(State(g): State<GraphService>, Access(ctx): Access) -> ApiResult 
     ok(g.stats(&ctx).await?)
 }
 
+/// A read-only openCypher query on the tenant's derived Apache AGE graph
+/// (PostgreSQL with AGE; FB-163). Needs `engine:graph_cypher`; the caller's
+/// graph label and edge-type rules apply inside the query. The first query
+/// of a tenant builds the graph (`409 graph_materialising` with the job id).
+#[utoipa::path(
+    post, path = "/api/v1/graph/cypher", operation_id = "graph_cypher", tag = "graph",
+    request_body = CypherQuery,
+    responses(
+        (status = 200, description = "Columns and rows", body = CypherResult),
+        (status = 400, description = "Invalid or writing query (`cypher_invalid`, `cypher_read_only`, `cypher_error`, `cypher_timeout`), or no Apache AGE (`cypher_unsupported`)"),
+        (status = 403, description = "No `engine:graph_cypher`, or rules that cannot be applied (`cypher_rules_unsupported`)"),
+        (status = 409, description = "`graph_materialising` (with `job_id`): the tenant's graph is being built; or `tenant_moving`"),
+    )
+)]
+async fn cypher(State(g): State<GraphService>, Access(ctx): Access, Body(b): Body<CypherQuery>) -> ApiResult {
+    ok(g.cypher(&ctx, b).await?)
+}
+
+/// Drops the tenant's derived openCypher graph (rebuilt on next use; the
+/// REST graph is not touched). Needs `engine:graph_cypher`.
+#[utoipa::path(
+    post, path = "/api/v1/graph/cypher/drop", operation_id = "graph_cypher_drop", tag = "graph",
+    responses(
+        (status = 200, description = "Whether there was one", body = CypherDropped),
+        (status = 400, description = "No Apache AGE (`cypher_unsupported`)"),
+    )
+)]
+async fn cypher_drop(State(g): State<GraphService>, Access(ctx): Access) -> ApiResult {
+    ok(g.drop_cypher(&ctx).await?)
+}
+
 /// The graph routes, to be nested at `/api/v1/graph`.
 pub fn router(service: GraphService) -> Router {
     Router::new()
@@ -462,6 +507,8 @@ pub fn router(service: GraphService) -> Router {
         .route("/traverse", post(traverse))
         .route("/shortest-path", post(shortest_path))
         .route("/stats", get(stats))
+        .route("/cypher", post(cypher))
+        .route("/cypher/drop", post(cypher_drop))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(middleware::from_fn(with_request_id))
         .with_state(service)
@@ -474,12 +521,12 @@ pub fn router(service: GraphService) -> Router {
     paths(
         create_node, list_nodes, get_node, put_node, patch_node, delete_node, neighbors,
         create_edge, list_edges, get_edge, patch_edge, delete_edge,
-        traverse, shortest_path, stats,
+        traverse, shortest_path, stats, cypher, cypher_drop,
     ),
     components(schemas(
         Node, Edge, NewNode, NodeChange, NewEdge, EdgeChange, Direction, NodeFilter, TraverseQuery,
         TraversedNode, TraverseResult, PathQuery, PathResult, Neighbor, GraphStats, TypeCount,
-        NodePage, EdgePage, NeighborPage, NodeDeleted,
+        NodePage, EdgePage, NeighborPage, NodeDeleted, CypherQuery, CypherResult, CypherStatus, CypherDropped,
     )),
     tags((name = "graph", description = "Graph: nodes, typed edges, neighbours, traversal and shortest path")),
 )]

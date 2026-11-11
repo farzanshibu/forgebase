@@ -252,6 +252,11 @@ pub struct RunAs {
     /// `search_path` for the same span (FB-153: the SQL editor's "run as"
     /// resolves names to the `api` views); `None` keeps the current one.
     pub search_path: Option<String>,
+    /// More transaction-local settings for the same span, `(name, value)`,
+    /// applied with `set_config(name, value, true)` after the role (FB-163:
+    /// `statement_timeout` of an openCypher read). Names and values are
+    /// bound parameters.
+    pub settings: Vec<(String, String)>,
 }
 
 impl RunAs {
@@ -261,7 +266,22 @@ impl RunAs {
             role: role.into(),
             claims: claims.into(),
             search_path: None,
+            settings: Vec::new(),
         }
+    }
+
+    /// The session's own role (`SET ROLE NONE`): only the claims, the
+    /// search path and the settings apply (FB-163: privileged openCypher
+    /// reads).
+    pub fn session(claims: impl Into<String>) -> Self {
+        Self::new("none", claims)
+    }
+
+    /// The same with one more transaction-local setting.
+    #[must_use]
+    pub fn with_setting(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.settings.push((name.into(), value.into()));
+        self
     }
 
     /// The same with `search_path` set for the span.

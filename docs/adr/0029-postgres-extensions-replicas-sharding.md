@@ -3689,3 +3689,343 @@ directory means a restore is not finished.
 **For FB-178 (topology CI).** A chaos case: back up from a replica while a
 tenant moves (the manifest warns), restore, and check that every replica
 rebuilds and that `migrate_sets` finds every set at head.
+
+## Addendum: FB-175, topology configuration and admin API (2026-11-11)
+
+Built as §4 describes, plus the server wiring FB-168 left (its addendum,
+"For the next packages") and FB-168's `pg_hba.conf` follow-up. Without a
+replica or a shard nothing changes, on either backend.
+
+**Files.** `crates/forgebase-core/src/topology_config.rs` (a child module
+of `config`), `crates/forgebase-api/src/system_database.rs`,
+`crates/forgebase-server/src/replicas.rs`,
+`crates/forgebase-server/tests/topology_fb175.rs`. Shared edits:
+`forgebase-core` `config.rs` (the `DatabaseConfig::topology` field, flattened,
+and its hooks in the file shape, environment, layering, keys and
+validation) and `features.rs` (13 registry entries; the `tls_cert` /
+`tls_key` labels no longer use the TLS abbreviation and their help gives an
+example, which the registry copy test asks for); `forgebase-api` `lib.rs`
+(`RouterOptions::database_topology`, the route mount, the agent routes
+outside the auth layer) and `openapi.rs` (the fragment);
+`forgebase-pgengine` `hba.rs` and one line in `lib.rs`;
+`forgebase-server` `lib.rs` (construct, `open_sets` takes the replicas,
+jobs, attach, `database_topology`, stop) and `database.rs` (`engine_layout`
+follows `topology.json`; slot limits from `[database.replicas]`).
+
+**Configuration (§4.1).** `[database.replicas]` (`read_routing`,
+`read_your_writes`, `lsn_wait_ms`, `max_lag_ms`, `max_lag_bytes`,
+`health_interval_ms`, `slot_wal_keep_size`), `[database.sharding]`
+(`placement`, `project_affinity`, `move_freeze_timeout_ms`,
+`move_source_retention_hours`, `max_parallel_moves`) and `[[database.nodes]]`
+(`name`, `set`, `role`, `url_env`, `weight`), with the defaults of §4.1.
+Environment: `FORGEBASE_DATABASE_REPLICAS_<KEY>`,
+`FORGEBASE_DATABASE_SHARDING_<KEY>`; `FORGEBASE_DB_NODE_<NAME>_URL` is
+accepted as a secret (the loader never reads it). Validation says what to
+enter (ranges, `8GB`-style sizes, node names, `url_env` must name a
+variable: a URL in the file is refused). Registry: every key with plain
+help; `database.nodes` is read-only (edit the file), the rest editable.
+The server maps them onto `forgebase_db::RouterOptions` (replica options,
+placement policy, freeze timeout) and `slot_wal_keep_size` onto
+`EngineConfig::replication`.
+
+**API (§4.3).** Every route of the §4.3 table, plus three the screen
+needs: `PATCH /nodes/{id} {weight}` (read share; 0 takes a replica out of
+rotation), `GET /nodes/{id}/promote-check` (the dialog's estimate), and the
+FB-168 agent routes `…/agent/join`, `…/agent/nodes/{id}/commands`,
+`…/agent/nodes/{id}/heartbeat`. The HTTP layer lives in `forgebase-api`
+behind a `TopologyOps` trait the server implements (`forgebase-jobs`
+depends on `forgebase-api`, so the API cannot call jobs or the engine).
+- **Who:** administrators (`401` / `403`); the agent routes sit outside the
+  session layer and the server checks the join token or agent key; the
+  peer address (or the last `X-Forwarded-For` entry with
+  `trust_forwarded_for`) goes to `redeem_join`.
+- **MFA step-up:** promote, node and shard removal, move and running a
+  rebalance: when the administrator has a second factor, the request must
+  come from a session that passed it at most 10 minutes ago
+  (`403 mfa_step_up_required`); API keys and tokens of such an
+  administrator cannot run them.
+- **Audit:** every change and every join token (`db.topology.node.add`,
+  `.node.update`, `.node.remove`, `.node.promote`, `.node.rebuild`,
+  `.join_token` with the token id, `.shard.add`, `.shard.update`,
+  `.shard.remove`, `.tenant.move`, `.rebalance`, `.operation.cancel`);
+  refusals as `db.topology.refused` with the action and code. Reads are not
+  audited (deviation: the screen polls every 5 s).
+- **Errors:** the service's codes pass through (`node_not_found`,
+  `confirm_mismatch`, `node_exists`, `node_state`, `node_unsupported`,
+  `data_loss_unconfirmed`, `engine_mismatch`, `join_token_invalid`,
+  `agent_unauthorized`); new: `operation_in_progress` 409,
+  `tenant_moving` 409, `shard_not_empty` 409, `node_mismatch` 400,
+  `sharding_unsupported` 400, `node_unreachable` 503, `postgres_required`
+  400, `mfa_step_up_required` 403, `operation_not_found` 404,
+  `operation_not_cancellable` 409, `node_from_config` 409, `shard_exists`
+  409, `topology_unavailable` 503, `not_implemented` 501.
+- **SQLite:** `GET …/topology` shows one SQLite server; everything else
+  `400 postgres_required`.
+- **501 until FB-174:** `POST …/placements/{tenant}/move`,
+  `POST …/rebalance/plan`, `POST …/rebalance` (after the step-up, audited);
+  shard primaries of kind `local` or `remote`; local replicas of a shard.
+- **URLs:** an external node's URL is checked (it answers; for a replica:
+  same `system_identifier` as the set's primary and in recovery, else
+  `400 node_mismatch` / `503 node_unreachable`), then stored only as
+  `url_sealed` (`shards::seal_node_url`, bound to the node id). A remote
+  replica's reader URL is sealed at join from the `listen` its agent
+  reported. No answer contains a URL or `url_sealed`.
+
+**Operations.** Jobs of the reserved kinds `database.node.add`,
+`database.node.rebuild`, `database.promote`, `database.shard.add` on queue
+`database` (`GET …/operations` is that queue), 3 attempts, progress
+(`percent`, `stage`, `message`) on `jobs:<id>`. One change per set: an
+operation queued or running on the set refuses the next with `409
+operation_in_progress`. Cancel: queued always; running until the stage
+reaches `fencing`, `promoting`, `switching` or `activating`; handlers
+check it before their first change. Checkpoints: a node add retried after
+a lost lease rebuilds the row it made; a promote saves its checkpoint
+before the fence, so the attempt after a restart sees the node promoted
+and succeeds. `database.shard.drain`, `database.tenant.move` and
+`database.rebalance` are reserved names for FB-174.
+- `POST /nodes {kind: local}` → `service::add_local_replica`; `{kind:
+  external, url}` registers the node at once (`201`, no clone); `remote`
+  answers 400 pointing at join tokens.
+- `POST /nodes/{id}/rebuild`: a local node in `needs_rebuild` (an old
+  primary, or a lost slot) → `rejoin_local` (pg_rewind, else a fresh
+  clone); otherwise `rebuild_replica`.
+- `POST /join-tokens` needs the primary on TCP (`[database.postgres]
+  listen`), else `400 node_unsupported`; the command uses the request's
+  `Host`.
+- `POST /shards {name, node: {name, kind: external, url}, weight}`: the set
+  and its external primary rows synchronously, then
+  `forgebase_db::shards::activate_shard` (migrate, sequence ranges,
+  catalog replay from the data service) in the job. The `fb_control`
+  subscription is skipped (no control connection string for another host
+  yet; FB-174). `PATCH /shards/{id}` sets `active` / `draining`, weight,
+  `hosts_tenants`; `DELETE` refuses a shard with placements (`409
+  shard_not_empty`), unsubscribes it, retires its nodes and the set.
+- `GET /placements`: every environment (no placement row = control) and
+  every placement, with project and organization, filters `set`,
+  `project`, `q`, cursor pages by tenant id.
+
+**Server wiring (FB-168's list).** `replicas::Replicas` (one per server):
+`LocalReplicas::new(data_dir, &engine_config)`; `start_existing()` right
+after the primary starts (before the router opens), `stop()` (loops, every
+local replica, a promoted primary) before the engine stops. The router is
+built by `Replicas::open_router` with `ReplicaConnector`: local replicas
+over their socket as `forgebase_reader` (`DbOptions::read_only`), every
+other node through FB-171's `NodeConnector` (sealed URL). At start the
+control primary is the `ready` local primary of `topology.json`
+(`replicas::control_layout`, used by `database::engine_layout`, so `status`,
+`doctor` and backups follow it too). Loops: lost slots
+(`service::mark_lost_slots`, every minute), lag history (sampled every
+10 s from the router, the highest per minute, 60 minutes, in memory),
+`[[database.nodes]]` seeding at start (external, `origin = config`,
+updated when the variable's URL or weight changes, retired when no longer
+declared; refused for API edits with `409 node_from_config`). `pg_hba.conf`
+peers (agents' addresses, and the primary's listen address as the reader)
+are applied after each join and removal and at start.
+
+**`pg_hba.conf` (FB-168 follow-up).** `hba::HbaInput` gains `replication:
+replication::HbaInput`; `render` emits its `hostssl` lines before
+`hostnossl … reject` (the same text `splice_hba` produces, which the test
+checks), only with a TLS port. Peers persist in
+`<node>/replication-peers.json` (0600; `load_peers` at every start,
+`save_peers`), and `apply_peers(handle, peers)` rewrites the file and runs
+`pg_ctl reload` when it changed. FB-168's TCP test now uses it.
+
+**Promote of control's primary needs a restart.** `PoolSwitch::fence`
+closes a shard's pools (control's are the server's own `Database`, which
+cannot switch while it runs; the old primary's stop is the fence);
+`repoint` opens the new primary for the topology write and, for control,
+sets `restart_required` (shown in `GET …/topology`) and logs it. Until the
+restart, requests that touch control fail. On restart the server opens
+`postgres/nodes/<name>`, the promote job resumes from its checkpoint and
+succeeds, the old primary is a `needs_rebuild` node named `primary` and
+`…/rebuild` rejoins it. A supervised `forgebase serve` that restarts
+itself after a control promote is left as a follow-up (it touches the
+CLI).
+
+**Tests.** `forgebase-core` config and registry (env, file, keys,
+validation, copy test); `forgebase-pgengine` `hba` unit tests (peer lines
+before the rejects, equal to `splice_hba`, no lines without TLS, peers file
+round trip, 0600) and `tests/replicas.rs` cloning over TLS through
+`apply_peers`; `forgebase-api` route tests with a mock service on both
+backends (admins only on every route, SQLite `postgres_required`,
+`topology_unavailable`, input checks never reach the service, `202` /
+`201` shapes, `no-store` on tokens, 501s, error pass-through, OpenAPI
+paths); `forgebase-server` `tests/topology_fb175.rs` (PostgreSQL: local
+replica added through the API, read on the standby through the router,
+`operation_in_progress`, removal with confirmation and slot dropped,
+promote check, promote, restart onto `nodes/r1` with every commit, the job
+resuming, old primary rejoined, audit entries; MFA step-up with a session
+from before MFA, a fresh MFA session and an expired one; SQLite:
+`postgres_required`).
+
+**For the next packages.**
+- **FB-174:** wire `move_tenant`, `rebalance_plan`, `rebalance` in
+  `system_database.rs` (they already pass admin, step-up and audit; add the
+  `TopologyOps` methods) and the job kinds `database.tenant.move`,
+  `database.rebalance`, `database.shard.drain` in `replicas::register_jobs`
+  (the enqueue helper gives one-change-per-set and the `database` queue);
+  local and remote shard primaries in `add_shard`; local replicas of a
+  shard (`LocalReplicas` with that shard's primary handle); the
+  `fb_control` subscription in `run_shard_add` needs a control connection
+  string reachable from the shard; `PoolSwitch::repoint` for shard sets
+  reloads the router (the connector opens the new primary from its row).
+- **FB-176:** read `GET …/topology` (sets with tenant counts and sizes,
+  nodes with `in_rotation`, `lag_ms`, `lag_bytes`, `agent`, `origin`,
+  running `operations`, `restart_required`), `GET …/nodes/{id}`
+  (`lag_history`, empty after a restart), `…/promote-check` for the
+  dialog (`primary_reachable = false` → "old primary is down" and
+  `accept_data_loss`); confirmations are the typed node or shard name
+  (`confirm`); on `403 mfa_step_up_required` send the operator through
+  sign-in with the second factor and retry; operations stream on
+  `jobs:<id>` and show `cancellable`; nodes with `origin = config` are
+  read-only; show `restart_required` as a banner; SQLite: `backend =
+  "sqlite"`.
+
+## Addendum: FB-163, openCypher on Apache AGE (2026-11-11)
+
+Built as §1.5 describes, with decision 9a.1 (option B): label and edge-type
+rules are **enforced inside Cypher**, not refused. Where the code decides
+something the text left open, it is said here.
+
+**Rules inside Cypher.** Every table of a derived graph (each label table
+and the parents `_ag_label_vertex` / `_ag_label_edge`, which a `MATCH (n)`
+without a label scans) has row-level security with one policy, `fb_read`,
+that reads the request's claims (`forgebase.claims() -> 'graph'`) through
+`forgebase.graph_vis_all/labels/ids(kind)`:
+
+- a vertex is visible when its label id is in `v.labels` (names the caller
+  may read whole), or its `graphid` is in `v.ids` (rows of filtered names
+  that pass the rule, and rows of allowed names kept in the catch-all
+  table), or `v.all`;
+- an edge additionally needs its type (`e.*`) and **both ends** visible,
+  which is the REST rule (`GraphAccess::edge_sql`).
+
+The ids are computed per request from the canonical tables with the same
+compiled rules as the REST API (`Rules::compile`), joined to the map table,
+so Cypher sees exactly what REST shows (differential test). Only filtered
+names cost a scan; names allowed or denied whole cost nothing. Above
+100 000 ids (`MAX_VISIBLE_IDS`) the request gets `403
+cypher_rules_unsupported` (the only use of that code). AGE's
+`age.enforce_rls_in_traversal` (on; FB-160 patch 0002) applies the policies
+inside variable-length and shortest-path walks: a hidden node blocks a walk.
+Policies are `TO PUBLIC`: the server and reader roles bypass RLS (trusted,
+privileged callers), `forgebase_rls` and direct logins see what the claims
+allow (direct logins have none: nothing). **Cost, measured** (aarch64
+macOS, test engine, 5 000 nodes and 5 000 edges, `MATCH ({__id:
+'n1'})-[*1..12]->(b) RETURN count(DISTINCT b)`, mean of 5): 3.0 ms without
+rules, 48.7 ms with label rules (`rules_cost_of_variable_length_traversals_
+is_measured` prints it). The difference is AGE rebuilding its traversal
+cache through SPI on every statement once a label table has RLS (FB-160
+note), so it grows with the tenant's graph, not with the walk; plain `MATCH`
+patterns are unaffected beyond the policy itself.
+
+**Derived graph.** Names, catch-all labels and properties as §1.5, plus
+`__source` / `__target` on edges (so results carry ForgeBase ids without a
+map lookup). Representable label: `[A-Za-z][A-Za-z0-9_]{0,62}`; everything
+else (the empty label, `my-label`, non-ASCII) goes to `_fbnode` /
+`_fbedge`. Rows are written with plain SQL in set-based statements (`WITH b
+AS MATERIALIZED (… ag_catalog._graphid(label_id, nextval(seq)) …) INSERT …`),
+never Cypher writes or the CSV loaders. AGE's DDL functions name
+`graphid_ops` unqualified, so label and graph creation run with `ag_catalog`
+prepended to the transaction's `search_path` (restored afterwards).
+
+**Engine-setup DDL** (`EXTENSION_DDL`, `ext.graph.schema = 1`, applied by
+`setup_extensions` when AGE is in use): `_forgebase_graph_age_ids (tenant,
+kind, id, age_id graphid)` + an index on `(tenant, kind, age_id)`;
+`_forgebase_graph_age_state (tenant, graph, state materialising | ready |
+stale | failed, phase, cursor_id, job_id, placed, nodes, edges, done, error,
+started_at, updated_at)`; both with RLS enabled (no policies), placement
+class tenant, move strategy `Rebuild`, listed in the new
+`placement::EXTENSION_TABLES` (they exist only where AGE runs, so
+`placement::problems` does not require them). The visibility helpers and
+`forgebase.graph_cypher(graph, query, params, tag, ncols, lim)`: AGE requires
+a dollar-quoted query and a typed `agtype` parameter, which sqlx cannot bind;
+the plpgsql wrapper builds `SELECT json_build_array(agtype_out(c1)::text, …)
+FROM ag_catalog.cypher(%L, $tag$…$tag$, $1) AS (c1 agtype, …) LIMIT n` and
+passes the parameters with `EXECUTE … USING params::agtype`; it checks the
+graph name and tag shape and that the query does not contain the tag.
+`grants()` also gives `forgebase_rls` `USAGE` and `SELECT` on `ag_catalog`.
+
+**Same-transaction sync.** Every write path of the service calls
+`sync_node` / `sync_edge` after its canonical change, in its transaction,
+when the tenant's state is `materialising` or `ready` (one primary-key read
+otherwise): insert, property update (through the parent table), relabel (a
+new vertex in the other table, edges re-pointed, old vertex deleted), and
+delete (the vertex's edges and their map rows go with it). PostgreSQL has
+one writer, so the materialisation batches (1 000 rows, one transaction
+each, resumable from `phase` + `cursor_id`) never interleave with a write:
+a batch skips rows a write already synced, and edges are copied only once
+both ends are mapped. A failed write rolls back its AGE rows with it.
+
+**Materialisation.** First request: one write transaction drops leftovers,
+creates the graph (grants, parent policies) and the state row, then hands
+`graph.materialise` (payload `{"tenant"}`) to the `MaterialiseJobs` hook and
+answers `409 graph_materialising` with `error.job_id`. Without a hook (until
+the server wires it) a background task runs the same body and `job_id` is
+`null`. A `materialising` row without progress for 10 minutes is launched
+again (resumes). A step error marks the state `failed` (writes stop
+syncing); the next request starts over. `GET /graph/stats` gains `cypher:
+{state, graph, job_id, nodes, edges, done, error}` where AGE runs (absent
+elsewhere).
+
+**Moves.** The state row records the placement it was built for,
+`<set_id>@<moved_at>` (`''` without one). A move's flip changes it (and so
+does a move back within the retention window, which a set id alone would
+miss); `moving` and `frozen` do not, so the graph keeps answering and
+syncing during a move. A different value reads as `stale` and the next
+request rebuilds from the canonical tables; while the placement is not
+`active` a (re)build is refused with `409 tenant_moving`.
+`GraphService::mark_cypher_stale(tenant)` is the explicit hook for FB-174's
+switch (§3.8 step 4.7) on the source. (Keying on the placement epoch was
+tried first: every state change bumps it, which made a running move stop
+Cypher for the whole move.)
+
+**Execution.** `READ ONLY` transaction (`fetch_routed_as`), `SET LOCAL ROLE
+forgebase_rls` for non-privileged callers and `RunAs::session` (`SET ROLE
+NONE`) for privileged ones, claims `{v, principal, tenant, action:
+"graph_cypher", graph}`, `search_path = ag_catalog, pg_catalog`, and
+`statement_timeout` from the new `RunAs::settings`. Errors: tokenizer →
+`cypher_read_only` / `cypher_invalid`; engine `25006` → `cypher_read_only`;
+syntax and other statement errors → `cypher_error`; timeout →
+`cypher_timeout`; limits → `invalid_limit`, `invalid_timeout`. Result values
+are parsed from `agtype_out` text: vertices, edges and paths come back in
+ForgeBase shapes with ForgeBase ids; `NaN`/`Infinity` as strings.
+
+**Replicas.** The formal standby test passes (`tests/cypher_replica.rs`:
+`MATCH` and variable-length `MATCH` as `forgebase_rls` with rules on a hot
+standby), so Cypher reads route (`graph.cypher`, `fetch_routed_as`, taken
+verbatim from FB-171); a replica that has not replayed the graph yet (an
+error naming something that does not exist) is retried on the primary. The
+state check and the rule names read the primary.
+
+**Shards.** `GraphService::attach_router(router)`: every public call resolves
+the caller's tenant's set (`DbRouter::for_tenant`) and runs on it (also the
+materialise job, by tenant). Without shards nothing changes.
+
+**Permission.** `Action::GraphCypher` → `engine:graph_cypher` (from the
+action name), not implied by `engine:graph_read`; the label rules come from
+`GraphRead` (`list`), so a caller needs both. `drop` needs
+`engine:graph_cypher` too.
+
+**Files.** `forgebase-graph`: `src/age/{mod,tokenize,agtype}.rs` (new),
+`src/cypher.rs`, `src/routed.rs` (new), `service.rs`, `http.rs`, `error.rs`,
+`access.rs`, `model.rs`, `lib.rs`; tests `cypher.rs`, `cypher_off.rs`,
+`cypher_replica.rs`, `shards.rs`. `forgebase-db`: `backend.rs` (`RunAs::
+settings`, `with_setting`, `session`), `pg/mod.rs` (`set_run_as`),
+`pg/extensions.rs` (graph DDL v1, `forgebase_rls` grants), `placement.rs`;
+FB-171's `fetch_routed_as` files verbatim. `forgebase-data`:
+`Action::GraphCypher`. `forgebase-jobs`: `graph.` reserved prefix.
+`forgebase-api`: `RouterOptions::graph`.
+
+**Server wiring (not done here: `crates/forgebase-server/src/lib.rs` is
+FB-171's).** Build the service once, attach the router and the job hook,
+register the job, and hand it to the API (`RouterOptions::graph`); see the
+FB-163 done note for the exact lines. Until then the API builds a plain
+service: Cypher works, materialisation runs in a background task (`job_id:
+null`) and the graph service does not route by tenant on a sharded cluster.
+
+**Breaking.** `RunAs` has a new public field `settings` (struct literals
+need it; none in the tree). `GraphStats` has a new field `cypher`.
+`forgebase_data::Action` has a new variant (non-exhaustive).
+`RouterOptions` (API) has a new field `graph` (`..Default::default()`
+literals are unaffected). `RESERVED_PREFIXES` is `[&str; 9]`.

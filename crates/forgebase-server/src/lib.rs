@@ -45,6 +45,7 @@ pub mod database;
 mod function_services;
 mod job_results;
 mod lock;
+pub mod replicas;
 pub mod shards;
 
 use std::net::SocketAddr;
@@ -108,6 +109,8 @@ pub struct RunningServer {
     /// Two-phase commit recovery at start and every minute (FB-173,
     /// PostgreSQL); dropping it stops the loop.
     recovery: Option<forgebase_db::twophase::RecoveryTask>,
+    /// Managed replicas and the topology service (FB-175).
+    replicas: Arc<replicas::Replicas>,
 }
 
 /// Starts a server for `config` with no in-process job handlers (jobs are
@@ -277,9 +280,18 @@ async fn start_on(
     // FB-171 (ADR-0029 §3.5): the database sets. The router reads the
     // topology from the migrated control database and opens every other
     // set and the replicas; SQLite has one fixed set.
-    let router = match open_sets(&db, config, layout).await {
+    // FB-175: local replicas start after the primary; the router opens them.
+    let replicas = match replicas::Replicas::open(config, layout.root(), engine.clone()).await {
         Ok(r) => r,
         Err(e) => {
+            db.close().await;
+            return Err(e);
+        }
+    };
+    let router = match open_sets(&db, &replicas, layout).await {
+        Ok(r) => r,
+        Err(e) => {
+            replicas.stop().await;
             db.close().await;
             return Err(e);
         }
@@ -472,6 +484,11 @@ async fn start_on(
         .data()
         .set_relation_fanout(Arc::new(shards::JobFanout::new(jobs.clone())));
     let registry = shards::register_jobs(registry, state.data().clone());
+    // FB-175: the `database.*` topology operations.
+    let registry = replicas::register_jobs(registry, replicas.clone());
+    replicas
+        .attach(router.clone(), jobs.clone(), state.data().clone())
+        .await;
     // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
     jobs.attach_access(job_access);
     let jp = fn_policy.clone();
@@ -577,6 +594,31 @@ async fn start_on(
         Some(v) => forgebase_vector::register_jobs(registry, v.clone()),
         None => registry,
     };
+    // FB-163: the graph service the API mounts, routed per tenant set, with
+    // the `graph.materialise` job (ADR-0029 §1.5).
+    let graph = forgebase_graph::GraphService::new(state.data().clone()).with_jobs(Arc::new(GraphJobs(jobs.clone())));
+    graph.attach_router(router.clone());
+    let registry = registry.register(forgebase_graph::MATERIALISE_JOB, {
+        let graph = graph.clone();
+        move |ctx: forgebase_jobs::JobContext| {
+            let graph = graph.clone();
+            async move {
+                let tenant = ctx
+                    .payload()
+                    .get("tenant")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                match graph.materialise(&tenant).await {
+                    Ok(r) => Ok(serde_json::to_value(r).unwrap_or_default()),
+                    Err(e @ forgebase_graph::GraphError::CypherUnsupported) => {
+                        Err(forgebase_jobs::HandlerError::fatal(e.to_string()))
+                    }
+                    Err(e) => Err(forgebase_jobs::HandlerError::retry(e.to_string())),
+                }
+            }
+        }
+    });
     // FB-93: the engines JavaScript functions reach through `ctx`. A module
     // switched off (FB-91) leaves its `ctx` service unset.
     if let Some(f) = &functions {
@@ -620,10 +662,12 @@ async fn start_on(
     }
     let opts = RouterOptions {
         extensions,
+        graph: Some(graph.clone()),
         gates: vec![
             entitlements.rate_gate(),
             Arc::new(forgebase_customize::AgreementGate::new(customize.clone())),
         ],
+        database_topology: replicas.ops(),
         ..opts
     };
     let state = state.with_metrics_collector(subsystem_gauges(
@@ -755,6 +799,7 @@ async fn start_on(
         engine,
         router,
         recovery,
+        replicas,
     })
 }
 
@@ -762,13 +807,14 @@ async fn start_on(
 /// migrates every shard (FB-173: control first, at most four shards at a
 /// time; a shard that fails stays `migrating` and its tenants get `503
 /// shard_migrating`).
-async fn open_sets(db: &Database, config: &Config, layout: &DataLayout) -> Result<forgebase_db::DbRouter, ServerError> {
-    let path = forgebase_auth::AuthConfig::for_data_dir(layout.root()).master_key_path;
-    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
-        .await
-        .map_err(|e| ServerError::Backend(e.to_string()))?
-        .map_err(|e| ServerError::Backend(e.to_string()))?;
-    let router = shards::open_router(db, config, layout.root(), keyring).await?;
+async fn open_sets(
+    db: &Database,
+    replicas: &Arc<replicas::Replicas>,
+    layout: &DataLayout,
+) -> Result<forgebase_db::DbRouter, ServerError> {
+    // FB-175: the connector opens local replicas too; [database.replicas]
+    // and [database.sharding] become the router's options.
+    let router = replicas.open_router(db).await?;
     if router.is_sharded() {
         let report = forgebase_db::shards::migrate_sets(
             &router,
@@ -1241,6 +1287,8 @@ impl RunningServer {
             set.database().close().await;
         }
         self.db.close().await;
+        // FB-175: local replicas (and a promoted primary) before the engine.
+        self.replicas.stop().await;
         if let Some(engine) = self.engine.take()
             && let Err(e) = engine.stop().await
         {
@@ -1550,4 +1598,24 @@ async fn open_storage(
     svc.attach_router(router.clone());
     svc.attach_entitlements(entitlements.clone());
     Ok(svc)
+}
+
+/// FB-163: enqueues `graph.materialise` jobs for the graph service.
+#[derive(Debug)]
+struct GraphJobs(JobService);
+
+impl forgebase_graph::MaterialiseJobs for GraphJobs {
+    fn enqueue<'a>(&'a self, tenant: &'a str) -> forgebase_db::BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let job = forgebase_jobs::NewJob::new(
+                forgebase_graph::MATERIALISE_JOB,
+                serde_json::json!({ "tenant": tenant }),
+            );
+            self.0
+                .enqueue(&forgebase_data::AccessContext::system(), job)
+                .await
+                .map(|(job, _)| job.id)
+                .map_err(|e| e.to_string())
+        })
+    }
 }

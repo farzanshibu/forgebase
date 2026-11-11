@@ -5,6 +5,7 @@
  */
 import type { DbLogin, ExtensionInfo } from "../api";
 import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
+import { simpleView } from "./topologyMock";
 
 export interface PgState {
   backend: "postgres" | "sqlite";
@@ -62,6 +63,8 @@ export function installPg(mock: MockApi, init: Partial<PgState> = {}): PgState {
       },
     },
   }));
+  // The SQL editor asks whether the server is sharded (FB-176); a test that cares installs test/topologyMock.ts, which wins.
+  mock.onFallback("GET", "/api/system/database/topology", () => ({ status: 200, body: simpleView() }));
   mock.onFallback("GET", "/api/auth/service-accounts", () => ({ status: 200, body: { items: [] } }));
   const unavailable = (what: string): MockReply | undefined => st.backend === "postgres" ? undefined : envelope(400, `${what}_unavailable`, `${what} need PostgreSQL`);
   const route = (m: string, t: string, h: (r: MockRequest) => MockReply) => mock.on(m, t, (r) => unavailable(t.includes("extensions") ? "extensions" : "db_logins") ?? h(r));

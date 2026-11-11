@@ -13,7 +13,12 @@ export interface GraphEdge {
 }
 export interface Neighbor { direction: Direction; edge: GraphEdge; node: GraphNode }
 export interface Page<T> { items: T[]; next_after?: string | null }
-export interface GraphStats { nodes: number; edges: number; edge_types: { type: string; count: number }[] }
+export type CypherState = "none" | "materialising" | "ready" | "stale" | "failed";
+/** The derived openCypher graph (FB-163); present in the stats only where Apache AGE runs. */
+export interface CypherStatus { state: CypherState; graph: string; job_id?: string | null; nodes: number; edges: number; done: number; error?: string | null }
+export interface GraphStats { nodes: number; edges: number; edge_types: { type: string; count: number }[]; cypher?: CypherStatus | null }
+export interface CypherQuery { query: string; params?: Record<string, unknown>; limit?: number; timeout_ms?: number }
+export interface CypherResult { columns: string[]; rows: unknown[][]; truncated: boolean }
 export interface NewNode { id?: string; label?: string; properties?: Props }
 export interface NewEdge { id?: string; type: string; source: string; target: string; directed?: boolean; properties?: Props }
 export interface TraverseQuery {
@@ -32,6 +37,7 @@ export const GRAPH_OPERATIONS = [
   "get /api/v1/graph/edges", "post /api/v1/graph/edges",
   "get /api/v1/graph/edges/{id}", "patch /api/v1/graph/edges/{id}", "delete /api/v1/graph/edges/{id}",
   "post /api/v1/graph/traverse", "post /api/v1/graph/shortest-path",
+  "post /api/v1/graph/cypher", "post /api/v1/graph/cypher/drop",
 ] as const;
 
 function qs(o: Record<string, string | number | undefined>): string {
@@ -57,3 +63,5 @@ export const updateEdge = (id: string, properties: Props) => send<GraphEdge>("PA
 export const deleteEdge = (id: string) => send<void>("DELETE", `${G}/edges/${enc(id)}`);
 export const traverse = (q: TraverseQuery) => send<TraverseResult>("POST", `${G}/traverse`, q);
 export const shortestPath = (q: PathQuery) => send<PathResult>("POST", `${G}/shortest-path`, q);
+export const cypher = (q: CypherQuery) => send<CypherResult>("POST", `${G}/cypher`, q);
+export const dropCypherGraph = () => send<{ dropped: boolean }>("POST", `${G}/cypher/drop`);
