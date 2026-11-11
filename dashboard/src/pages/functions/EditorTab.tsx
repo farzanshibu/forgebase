@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getVersionSource, listFunctionVersions } from "../../api";
 import type { FunctionInfo, VersionSource } from "../../api";
-import { ErrorView, Loading } from "../../components/ui";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { SkeletonLines } from "../../components/Skeleton";
+import { toaster } from "../../toaster";
 import { useLoad } from "../../hooks";
 import SourceEditor from "./SourceEditor";
 
 /** Edit the active version's source and deploy the result as a new version. */
 export default function EditorTab({ info, onChanged }: { info: FunctionInfo; onChanged: () => void }) {
-  const [deployed, setDeployed] = useState<number>();
+  const nav = useNavigate();
   const key = `editor:${info.name}:${info.active_version}:${info.latest_version}`;
   const active = useLoad(async (s) => {
     const versions = await listFunctionVersions(info.name, s);
@@ -16,15 +18,14 @@ export default function EditorTab({ info, onChanged }: { info: FunctionInfo; onC
     return { version: v, source: await getVersionSource(info.name, v.version, s) };
   }, key);
 
-  if (active.error) return <ErrorView error={active.error} />;
-  if (active.loading || !active.data) return <Loading what="Loading source" />;
+  if (active.error) return <ErrorPanel error={active.error} onRetry={active.reload} />;
+  if (active.loading || !active.data) return <SkeletonLines lines={6} label="Loading source" />;
   const { version, source } = active.data;
   if (!version || !source) {
     return <p className="text-sm text-muted-foreground">The active version is a WebAssembly module, which has no source to edit. Upload a new module on the Versions tab, or create a JavaScript or TypeScript function.</p>;
   }
   return (
     <div className="space-y-3">
-      {deployed !== undefined && <p role="status" className="text-sm text-success">Deployed v{deployed} (active)</p>}
       <SourceEditor
         key={key}
         name={info.name}
@@ -33,7 +34,11 @@ export default function EditorTab({ info, onChanged }: { info: FunctionInfo; onC
         storageKey={info.name}
         capabilities={version.capabilities}
         config={version}
-        onDeployed={(d) => { setDeployed(d.version.version); onChanged(); }}
+        onDeployed={(d) => {
+          toaster.add({ title: `Version v${d.version.version} deployed`, description: "It is the active version. Try it here.", type: "success" });
+          onChanged();
+          nav(`/functions/f/${encodeURIComponent(info.name)}/test`);
+        }}
       />
     </div>
   );
