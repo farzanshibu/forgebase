@@ -1,6 +1,7 @@
 /**
  * ResourceRules: who may do what with one engine resource (a key-value namespace, a vector collection, a graph label,
- * a bucket). One panel for every studio that has such resources (FB-134 rules; FB-138 to FB-140 apply them).
+ * a bucket, a queue topic or subscription). One panel for every studio that has such resources: database, storage,
+ * vector, graph, queues and key-value (FB-134 rules; FB-138 to FB-141 apply them).
  *
  * Usage:
  *   <ResourceRules kind="kv_namespace" name={ns} noun="namespace" />
@@ -12,12 +13,12 @@
  */
 import { useState } from "react";
 import { Input } from "panelui-web/input";
-import { useLoad } from "../../hooks";
-import { SkeletonLines } from "../../components/Skeleton";
-import { Button, ErrorView, Panel } from "../../components/ui";
-import { Sel } from "../../components/controls";
-import { notify } from "../../toaster";
-import { OP_TEXT, deleteResourceRules, expand, getRuleKind, putResourceRules, toRow, toRules, type Mode, type Row, type RuleKind, type RuleKindInfo, type RuleOp, type RuleSet } from "./rules";
+import { useLoad } from "../hooks";
+import { SkeletonLines } from "./Skeleton";
+import { Button, ErrorView, Panel } from "./ui";
+import { Sel } from "./controls";
+import { notify } from "../toaster";
+import { OP_TEXT, deleteResourceRules, expand, getRuleKind, putResourceRules, toRow, toRules, type Mode, type Row, type RuleKind, type RuleKindInfo, type RuleOp, type RuleSet } from "./resourceRulesApi";
 
 export function ResourceRules({ kind, name, noun }: { kind: RuleKind; name: string; noun: string }) {
   const info = useLoad((s) => getRuleKind(kind, s), `rules:${kind}`);

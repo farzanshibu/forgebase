@@ -290,6 +290,20 @@ describe("Test panel", () => {
     expect(await within(result).findByText("[info] echo ran")).toBeInTheDocument();
   });
 
+  it("Find in logs search: a request id from an error lists the function run that carried it", async () => {
+    const { mock } = setup();
+    renderStudio("/functions/logs?request=req-echo");
+    const list = await screen.findByRole("list", { name: "Matching executions" });
+    expect(await within(list).findByRole("link", { name: "echo" })).toHaveAttribute("href", "/functions/f/echo/logs?request=req-echo");
+    expect(mock.problems).toEqual([]);
+  });
+
+  it("Find in logs search: says so when no run has the id", async () => {
+    setup();
+    renderStudio("/functions/logs?request=nope-123");
+    expect(await screen.findByRole("region", { name: "No function run has this request id" })).toBeInTheDocument();
+  });
+
   it("shows a failing run as an error with its message, what to do and the request id", async () => {
     const { st } = setup();
     st.invokeReply = { status: 500, headers: { "x-request-id": "req-echo" }, body: { error: { code: "function_error", message: "ReferenceError: nope is not defined" } } };

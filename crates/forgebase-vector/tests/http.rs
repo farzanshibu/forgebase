@@ -294,7 +294,11 @@ async fn rest_flow_create_upsert_retrieve_search_hybrid_rebuild_stats() {
         if st["indexes"][0]["state"] == "ready" && st["indexes"][0]["last_rebuild"]["reason"] == "manual" {
             assert_eq!(st["items"], 3);
             assert_eq!(st["indexes"][0]["indexed_vectors"], 3);
-            assert_eq!(st["indexes"][0]["engine"], "usearch");
+            // USearch, or pgvector's HNSW in PostgreSQL (FB-162).
+            assert!(
+                matches!(st["indexes"][0]["engine"].as_str(), Some("usearch" | "pgvector")),
+                "{st}"
+            );
             ready = true;
             break;
         }

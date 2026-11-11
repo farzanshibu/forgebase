@@ -95,7 +95,7 @@ describe("Service accounts", () => {
     // the sheet opens on this account
     expect(within(keyForm).getByRole("combobox", { name: /Service account/ })).toHaveTextContent("ci-bot");
     await userEvent.type(within(keyForm).getByLabelText(/^App name/), "ci");
-    await userEvent.click(within(within(keyForm).getByRole("group", { name: "Key-value" })).getByRole("checkbox", { name: "Read keys" }));
+    await userEvent.click(within(within(keyForm).getByRole("group", { name: "Key-value" })).getByRole("checkbox", { name: "Key-value: Read keys" }));
     await userEvent.click(within(keyForm).getByRole("button", { name: "Create key" }));
     const dlg = await screen.findByRole("dialog");
     expect(within(dlg).getByLabelText("Secret")).toHaveTextContent("fbk_k2_SECRETVALUE");
@@ -137,10 +137,10 @@ describe("Create API key", () => {
     await userEvent.type(within(form).getByLabelText(/^App name/), "web");
     const records = area(form, "Records");
     expect(within(form).getByText("collections:read")).toBeInTheDocument(); // the scope string shows under the checkbox
-    await userEvent.click(records.getByRole("checkbox", { name: "Read records" }));
-    await userEvent.click(records.getByRole("checkbox", { name: "All collections" }));
+    await userEvent.click(records.getByRole("checkbox", { name: "Records: Read records" }));
+    await userEvent.click(records.getByRole("checkbox", { name: "Records: all collections" }));
     expect(records.getByText(/Pick at least one collection/)).toBeInTheDocument();
-    await userEvent.click(records.getByRole("checkbox", { name: "posts" }));
+    await userEvent.click(records.getByRole("checkbox", { name: "Records: only posts" }));
     // under the checkbox and in the summary line
     expect(within(form).getAllByText("collections:read:posts", { selector: "code" })).toHaveLength(2);
     await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
@@ -162,8 +162,8 @@ describe("Create API key", () => {
     await userEvent.type(within(form).getByLabelText(/^App name/), "web");
     expect(within(form).getByRole("button", { name: "Create key" })).toBeDisabled();
     const files = area(form, "Files");
-    await userEvent.click(files.getByRole("checkbox", { name: "Upload and delete files" }));
-    expect(files.getByRole("checkbox", { name: "Download and list files" })).not.toBeChecked();
+    await userEvent.click(files.getByRole("checkbox", { name: "Files: Upload and delete files" }));
+    expect(files.getByRole("checkbox", { name: "Files: Download and list files" })).not.toBeChecked();
     expect(within(form).getByRole("button", { name: "Create key" })).toBeEnabled();
     await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
     await screen.findByRole("dialog");
@@ -173,7 +173,7 @@ describe("Create API key", () => {
   it("binds the key to a tenant, with an expiry of never", async () => {
     const form = await openDialog();
     await userEvent.type(within(form).getByLabelText(/^App name/), "tenant-app");
-    await userEvent.click(area(form, "Records").getByRole("checkbox", { name: "Read records" }));
+    await userEvent.click(area(form, "Records").getByRole("checkbox", { name: "Records: Read records" }));
     await userEvent.type(within(form).getByLabelText(/Tenant/), "acme");
     await userEvent.click(within(form).getByRole("combobox", { name: /Expires/ }));
     await userEvent.click(await screen.findByRole("option", { name: "Never expires" }));
@@ -186,7 +186,7 @@ describe("Create API key", () => {
     fake.rejectTenant = true;
     const form = await openDialog();
     await userEvent.type(within(form).getByLabelText(/^App name/), "web");
-    await userEvent.click(area(form, "Records").getByRole("checkbox", { name: "Read records" }));
+    await userEvent.click(area(form, "Records").getByRole("checkbox", { name: "Records: Read records" }));
     await userEvent.type(within(form).getByLabelText(/Tenant/), "nope");
     await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
     expect(await within(form).findByText("This tenant does not exist")).toBeInTheDocument();
@@ -203,7 +203,7 @@ describe("Create API key", () => {
     const form = await screen.findByRole("form", { name: "New personal token" });
     expect(within(form).queryByRole("combobox", { name: /Service account/ })).not.toBeInTheDocument();
     await userEvent.type(within(form).getByLabelText(/^Name/), "cli");
-    await userEvent.click(within(within(form).getByRole("group", { name: "Records" })).getByRole("checkbox", { name: "Read records" }));
+    await userEvent.click(within(within(form).getByRole("group", { name: "Records" })).getByRole("checkbox", { name: "Records: Read records" }));
     await userEvent.click(within(form).getByRole("button", { name: "Create token" }));
     const dlg = await screen.findByRole("dialog");
     expect(within(dlg).getByLabelText("Secret")).toHaveTextContent("fbp_p2_PATSECRET");

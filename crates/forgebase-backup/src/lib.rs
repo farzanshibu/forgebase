@@ -6,6 +6,9 @@
 //! * [`verify`](verify::verify): manifest, hashes and database integrity of a backup.
 //! * [`restore`](restore::restore): verified restore into a stopped data
 //!   directory; the replaced data is kept, an interrupted restore is rolled back.
+//! * [`pg`]: the PostgreSQL side (FB-150): `pg_basebackup` backups of the bundled
+//!   engine, `pg_dump` backups of an external server, `pg_verifybackup`.
+//! * [`pre_migration`]: the snapshot taken before a schema change on PostgreSQL.
 //! * [`SnapshotStore`]: timestamped snapshots with retention and point-in-time
 //!   lookup.
 //! * [`transfer`]: export and import of collections and configuration with
@@ -21,6 +24,8 @@ pub mod error;
 mod fsutil;
 pub mod http;
 pub mod manifest;
+pub mod pg;
+pub mod pre_migration;
 pub mod restore;
 pub mod snapshots;
 pub mod transfer;
@@ -35,9 +40,10 @@ pub use backup::BackupOptions;
 pub use error::{BackupError, Result};
 pub use http::extension;
 pub use manifest::Manifest;
+pub use pg::{DumpPlan, Password, PgEndpoint, PgSource};
 pub use restore::{RestoreOptions, RestoreReport};
 pub use snapshots::{Retention, Snapshot, SnapshotStore};
-pub use verify::{VerifyReport, verify};
+pub use verify::{VerifyOptions, VerifyReport, verify, verify_with};
 
 /// Handle the REST API and the server use to take and manage snapshots.
 #[derive(Debug, Clone)]
@@ -45,13 +51,27 @@ pub struct BackupService {
     db: Database,
     layout: DataLayout,
     store: SnapshotStore,
+    pg: Option<PgSource>,
 }
 
 impl BackupService {
     /// A service for the data directory `layout` backed by `db`.
     pub fn new(db: Database, layout: DataLayout) -> Self {
         let store = SnapshotStore::new(&layout);
-        Self { db, layout, store }
+        Self {
+            db,
+            layout,
+            store,
+            pg: None,
+        }
+    }
+
+    /// Gives the service the engine's tools and the way into the PostgreSQL
+    /// cluster (required to take snapshots on PostgreSQL).
+    #[must_use]
+    pub fn with_pg(mut self, pg: PgSource) -> Self {
+        self.pg = Some(pg);
+        self
     }
 
     /// The snapshot store.
@@ -65,7 +85,10 @@ impl BackupService {
     }
 
     /// Takes a snapshot now and applies `retention`.
-    pub async fn snapshot(&self, opts: BackupOptions, retention: Option<Retention>) -> Result<Manifest> {
+    pub async fn snapshot(&self, mut opts: BackupOptions, retention: Option<Retention>) -> Result<Manifest> {
+        if opts.pg.is_none() {
+            opts.pg.clone_from(&self.pg);
+        }
         self.store.create(&self.db, &self.layout, opts, retention).await
     }
 }

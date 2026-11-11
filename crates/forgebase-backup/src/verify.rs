@@ -11,7 +11,8 @@ use serde::Serialize;
 use crate::backup::spawn;
 use crate::error::BackupError;
 use crate::fsutil::{join_rel, safe_rel, sha256_file, walk_files};
-use crate::manifest::{DB_FILE, FileKind, MANIFEST, Manifest};
+use crate::manifest::{DB_FILE, DUMP_FILE, FileKind, MANIFEST, Manifest, Method, PG_DIR};
+use crate::pg::PgSource;
 
 /// Outcome of [`verify`].
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -30,8 +31,24 @@ pub struct VerifyReport {
     pub warnings: Vec<String>,
 }
 
+/// What [`verify_with`] may use.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyOptions {
+    /// The engine's tools (`pg_verifybackup`, `pg_restore --list`) for a
+    /// PostgreSQL backup. Without them a PostgreSQL backup is checked by its
+    /// hashes and structure only, and the report says so.
+    pub pg: Option<PgSource>,
+    /// Where the tools may put a private passfile (default: the system temp dir).
+    pub tmp: Option<std::path::PathBuf>,
+}
+
 /// Verifies the backup directory `dir`. Never fails: problems are reported.
 pub async fn verify(dir: &Path) -> VerifyReport {
+    verify_with(dir, &VerifyOptions::default()).await
+}
+
+/// [`verify`] with the engine's tools.
+pub async fn verify_with(dir: &Path, opts: &VerifyOptions) -> VerifyReport {
     let mut report = VerifyReport {
         ok: false,
         manifest: None,
@@ -66,7 +83,9 @@ pub async fn verify(dir: &Path) -> VerifyReport {
         Err(e) => report.problems.push(e.to_string()),
     }
 
-    if manifest.files.iter().filter(|f| f.kind == FileKind::Database).count() != 1
+    if let Some(engine) = manifest.engine.as_ref().filter(|e| e.is_postgres()) {
+        check_postgres(dir, &manifest, engine.method, opts, &mut report).await;
+    } else if manifest.files.iter().filter(|f| f.kind == FileKind::Database).count() != 1
         || !manifest.files.iter().any(|f| f.path == DB_FILE)
     {
         report
@@ -75,12 +94,12 @@ pub async fn verify(dir: &Path) -> VerifyReport {
     } else if report.problems.is_empty() {
         check_database(dir, &manifest, &mut report).await;
     }
-    if !manifest.includes_indexes {
+    if !manifest.includes_indexes && !manifest.database_only {
         report
             .warnings
             .push("indexes are not part of this backup; they are rebuilt after restore".into());
     }
-    if !manifest.master_key.included {
+    if !manifest.master_key.included && !manifest.database_only {
         report.warnings.push(
             "the master key is not part of this backup; restore needs the original key (--master-key) or an existing one"
                 .into(),
@@ -89,6 +108,69 @@ pub async fn verify(dir: &Path) -> VerifyReport {
     report.ok = report.problems.is_empty();
     report.manifest = Some(manifest);
     report
+}
+
+async fn check_postgres(dir: &Path, m: &Manifest, method: Method, opts: &VerifyOptions, report: &mut VerifyReport) {
+    let engine = m.engine_info();
+    let tmp = opts.tmp.clone().unwrap_or_else(std::env::temp_dir);
+    match method {
+        Method::Basebackup => {
+            let pgdir = dir.join(PG_DIR);
+            for must in ["PG_VERSION", "backup_manifest", "global/pg_control"] {
+                if !m.files.iter().any(|f| f.path == format!("{PG_DIR}/{must}")) {
+                    report
+                        .problems
+                        .push(format!("{PG_DIR}/{must} is not part of the backup"));
+                }
+            }
+            let major = std::fs::read_to_string(pgdir.join("PG_VERSION"))
+                .ok()
+                .and_then(|t| t.trim().parse::<u32>().ok());
+            if let (Some(want), Some(got)) = (engine.major, major)
+                && want != got
+            {
+                report
+                    .problems
+                    .push(format!("the cluster is PostgreSQL {got} but the manifest says {want}"));
+            }
+            if !report.problems.is_empty() {
+                return;
+            }
+            match &opts.pg {
+                Some(src) => match src.verifybackup(&pgdir, &tmp).await {
+                    Ok(p) => report.problems.extend(p),
+                    Err(e) => report.problems.push(format!("pg_verifybackup could not run: {e}")),
+                },
+                None => report.warnings.push(
+                    "pg_verifybackup was not run (no engine tools available here); only the file hashes were checked"
+                        .into(),
+                ),
+            }
+        }
+        Method::Dump => {
+            if m.files.iter().filter(|f| f.kind == FileKind::Dump).count() != 1
+                || !m.files.iter().any(|f| f.path == DUMP_FILE)
+            {
+                report
+                    .problems
+                    .push(format!("manifest does not list exactly one {DUMP_FILE}"));
+                return;
+            }
+            match &opts.pg {
+                Some(src) => {
+                    if let Err(e) = src.list_dump(&dir.join(DUMP_FILE), &tmp).await {
+                        report.problems.push(format!("the dump cannot be read: {e}"));
+                    }
+                }
+                None => report
+                    .warnings
+                    .push("pg_restore --list was not run (no engine tools available here)".into()),
+            }
+        }
+        Method::Vacuum => report
+            .problems
+            .push("a PostgreSQL backup cannot have been made with VACUUM INTO".into()),
+    }
 }
 
 fn check_files(dir: &Path, m: &Manifest) -> (Vec<String>, usize, u64) {

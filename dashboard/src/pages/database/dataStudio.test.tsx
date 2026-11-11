@@ -9,7 +9,7 @@ import { makeCollection } from "../../test/mockApi";
 import { pick } from "../../test/pick";
 import RecordForm from "./RecordForm";
 import { controlFor, toBody, toDraft } from "./recordDraft";
-import { expand, toRules } from "./rules";
+import { expand, toRules } from "../../components/resourceRulesApi";
 
 afterEach(() => {
   vi.unstubAllGlobals();

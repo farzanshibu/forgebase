@@ -112,3 +112,47 @@ These were taken with a separate crawler (not committed), at 1280×860 unless th
 - `journey-*-{light,dark}.png`: from the e2e script.
 - `report-{anon,empty,data}.json`: per-route axe results (serious and critical only), page
   text, and browser console errors.
+
+## Screens added by FB-100 to FB-102 (what to look at)
+
+The journey script covers the first run. These screens came after it. Check each by hand
+on a server with some data, in light and dark, and at 768 px wide. The unit tests in
+`dashboard/src` cover their behavior; this list covers what a person sees.
+
+**Sign-in (FB-137).** Two choices under "Sign in as": *Instance administrator* (the account made at
+setup, signs in at `/api/auth/admins/login`) and *Realm administrator* (a normal user of one realm who
+holds `identity:admin` there; adds a Realm field and signs in at `/api/auth/login`). A realm
+administrator's nav has no System, Billing or Features and settings; opening one by address
+shows "is for platform administrators" with the realm name.
+
+**Data studios (FB-100).**
+- Database: header with **New collection**; a collection opens with **Add record** and **Use from code**.
+  Grid filter, sort, page and the open record are in the address (`?filter=&sort=&page=&record=`).
+  The record form has one control per field type, required marks, errors under the field and an
+  **Edit as JSON** switch. Delete asks for the collection's name. SQL: **Show secrets**.
+- Storage: **New bucket** in the header (also `?new=1`), optional Tenant, a Scope column, **Rules**
+  tab per bucket, quota says "No quota applies to administrators" for an administrator.
+- Key-value: **New key** with TTL, **Rules** tab for the namespace, Flush asks for the namespace name.
+- Vector: **New collection** shows the request it sends, **Load sample**; Graph: **New node** and edge
+  sheets with a live request body, **Load sample**.
+- Rules (all five studios and Queues): one editor, Locked / Everyone / Expression per operation, the
+  `@request` help, **Save rules**.
+
+**Functions, jobs, queues (FB-101).**
+- Functions: **New function** is one page (template cards, settings, source). **Test** shows the
+  request id with **Copy request id** and **Find in logs**. Any error panel with a request id links
+  **Find in logs** to *Functions › Find a request in the logs* (`/functions/logs?request=<id>`), which
+  lists the function runs that carried it.
+- Jobs: tenant and creator columns, a Workers panel, the reserved-kind explanation, confirm
+  dialogs. Queues: **New topic** with tenant, **New subscription**, rules for topics and subscriptions.
+
+**Users, access, billing, system (FB-102).**
+- Authentication: tab **API keys** (keys for apps, then personal tokens); **Create API key** is a side sheet (`?new=1`) that ends
+  with the one-time secret and a curl example; Service accounts have New, Delete-by-name and a Keys panel.
+- Access and Identity: Realm administrators panel, organization delete by slug, Client apps for platform
+  administrators only.
+- Billing: four groups (Catalog, Customers, Money, Settings), each with its own page tabs.
+- System: health plus the database card (backend, mode, version, extension features active, portable
+  or off); **Features and settings** is one form with one Save.
+
+Known gap: the server has no delete-realm route, so the dashboard cannot delete a realm.

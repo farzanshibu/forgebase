@@ -28,6 +28,18 @@
 //! with a `source_collection` (items keyed by record id) re-checks every hit
 //! against that collection's View rule as the caller, drops the metadata keys
 //! the caller may not read there and refuses filters on them.
+//!
+//! Storage engines (ADR-0029 §1.4, FB-162). On PostgreSQL whose
+//! `_forgebase_meta` `ext.vector.engine` is `extension` (FB-161's pin) and
+//! whose pgvector passes the layout check ([`crate::pg::probe`]), the
+//! canonical vectors live in the `vec` column and every field has a partial
+//! HNSW index in PostgreSQL: no index files, no in-memory index, no save
+//! loop, no warm-up. Anything else (SQLite, PostgreSQL without pgvector, a
+//! failed layout check, which logs a warning) uses the portable engine
+//! above. The engine is resolved when the service opens, and stray vectors
+//! of an interrupted conversion are moved to it then (reconcile); every
+//! operation holds the engine's read lock, [`VectorService::convert`] its
+//! write lock.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -50,6 +62,7 @@ use crate::filter::{Filter, ItemRule, item_schema};
 use crate::index::FieldIndex;
 use crate::metric::{self, Scored, TopK};
 use crate::model::*;
+use crate::pg::{self, Pgv};
 use crate::store::{self, CollectionRow};
 
 type Result<T> = std::result::Result<T, VectorError>;
@@ -102,6 +115,29 @@ pub struct VectorService {
     inner: Arc<Inner>,
 }
 
+/// Where the vectors live (FB-162).
+#[derive(Debug, Clone)]
+enum Storage {
+    Portable,
+    Pgvector(Arc<Pgv>),
+}
+
+impl Storage {
+    fn pg(&self) -> Option<&Pgv> {
+        match self {
+            Storage::Portable => None,
+            Storage::Pgvector(p) => Some(p),
+        }
+    }
+
+    fn kind(&self) -> VectorEngine {
+        match self {
+            Storage::Portable => VectorEngine::Portable,
+            Storage::Pgvector(_) => VectorEngine::Pgvector,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     data: DataService,
@@ -109,6 +145,9 @@ struct Inner {
     root: PathBuf,
     config: VectorConfig,
     collections: RwLock<HashMap<(String, String), Arc<Coll>>>,
+    /// The storage engine: read-locked by every operation for its whole
+    /// run, write-locked by a conversion.
+    storage: tokio::sync::RwLock<Storage>,
     /// Serialises creating and dropping collections.
     catalog: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -358,12 +397,25 @@ impl VectorService {
     /// Opens the engine on a migrated database. `indexes_dir` is the data
     /// directory's `indexes/`; files go to its `vector/` subdirectory.
     /// Indexes are loaded lazily (first use) or by [`Self::start_background`].
+    ///
+    /// On PostgreSQL it first resolves the storage engine (FB-162): the
+    /// pinned `ext.vector.engine` and pgvector's layout decide; vectors an
+    /// interrupted conversion left in the other column are moved to the
+    /// engine in use, and on pgvector missing or invalid HNSW indexes are
+    /// built in the background (searches are exact meanwhile) and indexes
+    /// of dropped fields removed.
     pub async fn open(data: DataService, indexes_dir: PathBuf, config: VectorConfig) -> Result<Self> {
         describe_metrics();
         data.register_resource_schema(item_schema());
         let root = indexes_dir.join("vector");
         std::fs::create_dir_all(&root)?;
-        let rows = store::load_all(data.backend().as_ref()).await?;
+        let backend = Arc::clone(data.backend());
+        let storage = Self::resolve(backend.as_ref(), config.batch).await?;
+        let pg_indexes = match &storage {
+            Storage::Pgvector(_) => pg::indexes(backend.as_ref()).await?,
+            Storage::Portable => HashMap::new(),
+        };
+        let rows = store::load_all(backend.as_ref()).await?;
         let mut collections = HashMap::new();
         for (row, fields) in rows {
             let dir = root.join(row.id.to_string());
@@ -375,7 +427,16 @@ impl VectorService {
                 .unwrap_or(config.exact_threshold);
             let map = fields
                 .into_iter()
-                .map(|f| (f.name.clone(), Arc::new(FieldIndex::unloaded(f, &dir))))
+                .map(|f| {
+                    let idx = match &storage {
+                        Storage::Portable => FieldIndex::unloaded(f, &dir),
+                        Storage::Pgvector(_) => {
+                            let valid = pg_indexes.get(&pg::spec(row.id, &f).name).is_some_and(|i| i.valid);
+                            FieldIndex::on_postgres(f, &dir, valid)
+                        }
+                    };
+                    (idx.def.name.clone(), Arc::new(idx))
+                })
                 .collect();
             collections.insert(
                 (row.tenant.clone(), row.name.clone()),
@@ -388,18 +449,114 @@ impl VectorService {
                 }),
             );
         }
-        Ok(Self {
+        let svc = Self {
             inner: Arc::new(Inner {
                 data,
                 engine: Arc::new(Usearch),
                 root,
                 config,
                 collections: RwLock::new(collections),
+                storage: tokio::sync::RwLock::new(storage.clone()),
                 catalog: tokio::sync::Mutex::new(()),
                 tasks: Mutex::new(Vec::new()),
                 stopping: AtomicBool::new(false),
             }),
-        })
+        };
+        match &storage {
+            Storage::Pgvector(_) => svc.repair_indexes(&pg_indexes),
+            Storage::Portable if pg::has_vec_column(backend.as_ref()).await? => {
+                // HNSW indexes of a pgvector past (a conversion to portable
+                // that stopped before dropping them) only slow writes down.
+                let names: Vec<String> = pg::indexes(backend.as_ref()).await?.into_keys().collect();
+                if !names.is_empty() {
+                    let db = Arc::clone(&backend);
+                    svc.track(tokio::spawn(async move {
+                        if let Err(e) = pg::drop_indexes(db.as_ref(), &names).await {
+                            tracing::warn!(error = %e, "dropping leftover pgvector indexes failed");
+                        }
+                    }));
+                }
+            }
+            Storage::Portable => {}
+        }
+        Ok(svc)
+    }
+
+    /// The storage engine of this database (FB-162). See the module docs.
+    async fn resolve(db: &dyn Backend, batch: usize) -> Result<Storage> {
+        if db.dialect().name() != "postgres" {
+            return Ok(Storage::Portable);
+        }
+        let pinned = pg::stored_engine(db).await?.as_deref() == Some("extension");
+        let probe = pg::probe(db).await?;
+        let rows = pg::batch_rows(batch, pg::max_dimension(db).await?);
+        if !pinned {
+            // Vectors a conversion to pgvector left in `vec` before its last
+            // batch (which records the engine) go back.
+            if let Ok(pgv) = &probe {
+                let n = pg::move_all(db, pgv, VectorEngine::Portable, rows, false).await?;
+                if n > 0 {
+                    tracing::info!(
+                        vectors = n,
+                        "vectors of an unfinished conversion moved back to the portable engine"
+                    );
+                }
+            }
+            return Ok(Storage::Portable);
+        }
+        match probe {
+            Err(problems) => {
+                tracing::warn!(
+                    ?problems,
+                    "this database keeps its vectors in pgvector, but pgvector cannot be used as FB-162 expects; \
+                     vectors use the portable engine"
+                );
+                Ok(Storage::Portable)
+            }
+            Ok(pgv) => {
+                // Vectors written portably under a pgvector pin (databases set
+                // up between FB-161 and FB-162, an unfinished conversion back).
+                let n = pg::move_all(db, &pgv, VectorEngine::Pgvector, rows, false).await?;
+                if n > 0 {
+                    tracing::info!(vectors = n, "portable vectors moved to pgvector");
+                }
+                Ok(Storage::Pgvector(Arc::new(pgv)))
+            }
+        }
+    }
+
+    /// pgvector: builds every missing or invalid index in the background and
+    /// drops `fbv_` indexes no field owns (`existing`: what the database has).
+    fn repair_indexes(&self, existing: &HashMap<String, pg::IndexInfo>) {
+        let mut wanted = HashSet::new();
+        for coll in self.all_collections() {
+            for f in coll.fields() {
+                let spec = pg::spec(coll.row.id, &f.def);
+                wanted.insert(spec.name.clone());
+                if spec.elem.is_some() && !f.pg_valid.load(Ordering::Relaxed) {
+                    let detail = if existing.contains_key(&spec.name) {
+                        "the index is invalid (an interrupted build)"
+                    } else {
+                        "no HNSW index"
+                    };
+                    self.start_pg_build(&coll, &f, "missing", detail.into());
+                }
+            }
+        }
+        let orphans: Vec<String> = existing.keys().filter(|n| !wanted.contains(*n)).cloned().collect();
+        if !orphans.is_empty() {
+            let db = Arc::clone(self.inner.data.backend());
+            self.track(tokio::spawn(async move {
+                if let Err(e) = pg::drop_indexes(db.as_ref(), &orphans).await {
+                    tracing::warn!(error = %e, "dropping pgvector indexes of dropped fields failed");
+                }
+            }));
+        }
+    }
+
+    /// The storage engine in use (FB-162).
+    pub async fn storage_engine(&self) -> VectorEngine {
+        self.inner.storage.read().await.kind()
     }
 
     fn db(&self) -> &dyn Backend {
@@ -570,6 +727,11 @@ impl VectorService {
         self.track(tokio::spawn(async move {
             for coll in svc.all_collections() {
                 if svc.inner.stopping.load(Ordering::Relaxed) {
+                    return;
+                }
+                // pgvector's indexes live in PostgreSQL: nothing to load.
+                let storage = svc.inner.storage.read().await;
+                if storage.pg().is_some() {
                     return;
                 }
                 let _w = coll.write.lock().await;
@@ -770,7 +932,7 @@ impl VectorService {
             return Ok(());
         }
         let pending: Vec<u64> = f.status().pending.take().unwrap_or_default().into_iter().collect();
-        let current = store::vectors_by_keys(self.db(), cid, &f.def.name, &pending).await?;
+        let current = store::vectors_by_keys(self.db(), cid, &f.def.name, &pending, None).await?;
         let (seq, _) = store::change_seq(self.db(), cid).await?;
         let idx = Arc::clone(&fresh);
         let dim = f.def.dimension;
@@ -809,6 +971,138 @@ impl VectorService {
         }
         tracing::info!(collection = %coll.row.name, field = %f.def.name, vectors, reason, "vector index rebuilt");
         Ok(())
+    }
+
+    /// pgvector: (re)builds the HNSW index of `f` in the background on the
+    /// maintenance connection (`REINDEX INDEX CONCURRENTLY` for a valid
+    /// index, else `CREATE INDEX CONCURRENTLY`); the old index serves
+    /// meanwhile. Progress comes from `pg_stat_progress_create_index`. A
+    /// field that is already building is left alone.
+    fn start_pg_build(&self, coll: &Arc<Coll>, f: &Arc<FieldIndex>, reason: &'static str, detail: String) {
+        let generation = {
+            let mut st = f.status();
+            if st.state == IndexState::Building {
+                return;
+            }
+            st.state = IndexState::Building;
+            st.reason = Some(format!("{reason}: {detail}"));
+            st.generation += 1;
+            st.generation
+        };
+        f.done.store(0, Ordering::Relaxed);
+        f.total.store(0, Ordering::Relaxed);
+        metrics::counter!("forgebase_vector_rebuilds_total", "reason" => reason).increment(1);
+        metrics::gauge!("forgebase_vector_rebuilds_running").increment(1.0);
+        let svc = self.clone();
+        let coll = Arc::clone(coll);
+        let f = Arc::clone(f);
+        self.track(tokio::spawn(async move {
+            let started = Instant::now();
+            let r = svc.run_pg_build(&coll, &f, generation, reason, &detail, started).await;
+            metrics::gauge!("forgebase_vector_rebuilds_running").decrement(1.0);
+            if let Err(e) = r {
+                tracing::error!(collection = %coll.row.name, field = %f.def.name, error = %e, "pgvector index build failed");
+                let mut st = f.status();
+                if st.generation == generation {
+                    if f.pg_valid.load(Ordering::Relaxed) {
+                        st.state = IndexState::Ready;
+                        st.reason = Some(format!("last rebuild failed: {e}"));
+                    } else {
+                        st.state = IndexState::Failed;
+                        st.reason = Some(format!("index build failed: {e}"));
+                    }
+                }
+            }
+        }));
+    }
+
+    async fn run_pg_build(
+        &self,
+        coll: &Arc<Coll>,
+        f: &Arc<FieldIndex>,
+        generation: u64,
+        reason: &'static str,
+        detail: &str,
+        started: Instant,
+    ) -> Result<()> {
+        // A conversion waits for running builds.
+        let storage = self.inner.storage.read().await;
+        let Some(pgv) = storage.pg() else {
+            return Ok(());
+        };
+        if self.superseded(coll, f, generation) {
+            return Ok(());
+        }
+        let db = self.db();
+        let spec = pg::spec(coll.row.id, &f.def);
+        let total = store::count_vectors(db, coll.row.id, &f.def.name).await?;
+        f.total.store(total, Ordering::Relaxed);
+        let application = format!("forgebase vector build {}", spec.name);
+        let build = pg::build(db, pgv, &spec, Some(&application));
+        tokio::pin!(build);
+        let mut tick = tokio::time::interval(Duration::from_millis(200));
+        let r = loop {
+            tokio::select! {
+                r = &mut build => break r,
+                _ = tick.tick() => {
+                    if let Ok(Some(n)) = pg::build_progress(db, &application).await {
+                        f.done.store(n.min(total), Ordering::Relaxed);
+                    }
+                }
+            }
+        };
+        r?;
+        let info = pg::indexes(db).await?.remove(&spec.name);
+        let valid = info.as_ref().is_some_and(|i| i.valid);
+        f.pg_valid.store(valid, Ordering::Relaxed);
+        f.pg_bytes.store(info.map(|i| i.bytes).unwrap_or(0), Ordering::Relaxed);
+        f.pg_indexed.store(total, Ordering::Relaxed);
+        if self.superseded(coll, f, generation) {
+            return Ok(());
+        }
+        {
+            let mut st = f.status();
+            st.state = if valid { IndexState::Ready } else { IndexState::Failed };
+            st.reason = (!valid).then(|| "the index build left an invalid index".to_owned());
+            st.last_rebuild = Some(RebuildInfo {
+                reason: reason.to_owned(),
+                detail: detail.to_owned(),
+                vectors: total,
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                finished: now(),
+            });
+        }
+        f.done.store(total, Ordering::Relaxed);
+        tracing::info!(collection = %coll.row.name, field = %f.def.name, index = %spec.name, vectors = total, reason, "pgvector index built");
+        Ok(())
+    }
+
+    /// pgvector: builds the index of a new field now (it has no vectors; the
+    /// build still scans the table, concurrently with writes). A failure
+    /// leaves the field searchable exactly, with the reason.
+    async fn build_new_field(&self, pgv: &Pgv, cid: i64, f: &FieldIndex) {
+        let spec = pg::spec(cid, &f.def);
+        if spec.elem.is_none() {
+            return;
+        }
+        match pg::build(self.db(), pgv, &spec, None).await {
+            Ok(()) => f.pg_valid.store(true, Ordering::Relaxed),
+            Err(e) => {
+                tracing::error!(field = %f.def.name, error = %e, "creating the pgvector index failed; searches are exact");
+                let mut st = f.status();
+                st.state = IndexState::Failed;
+                st.reason = Some(format!("index build failed: {e}"));
+            }
+        }
+    }
+
+    /// pgvector: drops the indexes of fields that are gone (left for the
+    /// next start's clean-up when it fails).
+    async fn drop_field_indexes(&self, cid: i64, fields: &[VectorField]) {
+        let names: Vec<String> = fields.iter().map(|f| pg::spec(cid, f).name).collect();
+        if let Err(e) = pg::drop_indexes(self.db(), &names).await {
+            tracing::warn!(error = %e, "dropping pgvector indexes failed; the next start drops them");
+        }
     }
 
     /// The serving index of `f`, loading it first if needed.
@@ -963,6 +1257,7 @@ impl VectorService {
             defs.push(d);
         }
         let exact_threshold = new.exact_threshold.unwrap_or(self.inner.config.exact_threshold);
+        let storage = self.inner.storage.read().await;
         let _cat = self.inner.catalog.lock().await;
         if self.coll(ctx, &new.name).is_ok() {
             return Err(VectorError::CollectionExists(new.name));
@@ -986,10 +1281,15 @@ impl VectorService {
         let dir = self.inner.root.join(id.to_string());
         let mut fields = BTreeMap::new();
         for d in defs {
-            fields.insert(
-                d.name.clone(),
-                Arc::new(FieldIndex::empty(d, &dir, self.inner.engine.as_ref())?),
-            );
+            let idx = match storage.pg() {
+                None => FieldIndex::empty(d, &dir, self.inner.engine.as_ref())?,
+                Some(pgv) => {
+                    let idx = FieldIndex::on_postgres(d, &dir, false);
+                    self.build_new_field(pgv, id, &idx).await;
+                    idx
+                }
+            };
+            fields.insert(idx.def.name.clone(), Arc::new(idx));
         }
         let coll = Arc::new(Coll {
             row: CollectionRow {
@@ -1016,6 +1316,7 @@ impl VectorService {
     /// Drops a collection, its items, vectors and index files.
     pub async fn delete_collection(&self, ctx: &AccessContext, name: &str) -> Result<()> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Delete)?;
+        let storage = self.inner.storage.read().await;
         let _cat = self.inner.catalog.lock().await;
         let coll = self.coll(ctx, name)?;
         let _w = coll.write.lock().await;
@@ -1023,6 +1324,10 @@ impl VectorService {
         let r = store::delete_collection(&mut *tx, coll.row.id).await;
         finish(tx, r).await?;
         coll.dropped.store(true, Ordering::Relaxed);
+        if storage.pg().is_some() {
+            let defs: Vec<VectorField> = coll.fields().iter().map(|f| f.def.clone()).collect();
+            self.drop_field_indexes(coll.row.id, &defs).await;
+        }
         self.inner
             .collections
             .write()
@@ -1052,6 +1357,7 @@ impl VectorService {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
         let coll = self.coll(ctx, name)?;
         let def = self.field_def(&spec)?;
+        let storage = self.inner.storage.read().await;
         let _w = coll.write.lock().await;
         {
             let fields = coll.fields.read().unwrap_or_else(|p| p.into_inner());
@@ -1065,7 +1371,9 @@ impl VectorService {
                 return Err(VectorError::FieldExists(def.name));
             }
         }
-        self.ensure_loaded(&coll).await?;
+        if storage.pg().is_none() {
+            self.ensure_loaded(&coll).await?;
+        }
         let mut tx = self.db().begin(TxMode::Normal).await?;
         let r = async {
             store::insert_field(&mut *tx, coll.row.id, &def).await?;
@@ -1074,7 +1382,14 @@ impl VectorService {
         .await;
         finish(tx, r).await?;
         let dir = self.inner.root.join(coll.row.id.to_string());
-        let idx = Arc::new(FieldIndex::empty(def.clone(), &dir, self.inner.engine.as_ref())?);
+        let idx = Arc::new(match storage.pg() {
+            None => FieldIndex::empty(def.clone(), &dir, self.inner.engine.as_ref())?,
+            Some(pgv) => {
+                let idx = FieldIndex::on_postgres(def.clone(), &dir, false);
+                self.build_new_field(pgv, coll.row.id, &idx).await;
+                idx
+            }
+        });
         coll.fields
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1086,9 +1401,12 @@ impl VectorService {
     pub async fn delete_field(&self, ctx: &AccessContext, name: &str, field: &str) -> Result<()> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
         let coll = self.coll(ctx, name)?;
+        let storage = self.inner.storage.read().await;
         let _w = coll.write.lock().await;
         let f = coll.field(field)?;
-        self.ensure_loaded(&coll).await?;
+        if storage.pg().is_none() {
+            self.ensure_loaded(&coll).await?;
+        }
         let mut tx = self.db().begin(TxMode::Normal).await?;
         let r = async {
             store::delete_field(&mut *tx, coll.row.id, &f.def.name).await?;
@@ -1101,6 +1419,9 @@ impl VectorService {
             .unwrap_or_else(|p| p.into_inner())
             .remove(&f.def.name);
         f.status().generation += 1;
+        if storage.pg().is_some() {
+            self.drop_field_indexes(coll.row.id, std::slice::from_ref(&f.def)).await;
+        }
         let fi = Arc::clone(&f);
         let _ = blocking(move || {
             fi.remove_files();
@@ -1182,11 +1503,15 @@ impl VectorService {
             });
         }
 
+        let storage = self.inner.storage.read().await;
+        let pgv = storage.pg();
         let _w = coll.write.lock().await;
         if coll.dropped.load(Ordering::Relaxed) {
             return Err(VectorError::CollectionNotFound(name.to_owned()));
         }
-        self.ensure_loaded(&coll).await?;
+        if pgv.is_none() {
+            self.ensure_loaded(&coll).await?;
+        }
         let ts = now();
         let cid = coll.row.id;
         let dialect = self.db().dialect();
@@ -1230,9 +1555,8 @@ impl VectorService {
                 if version == 1 {
                     created += 1;
                 }
-                let blobs: Vec<(&str, Vec<u8>)> =
-                    p.vectors.iter().map(|(f, v)| (f.as_str(), metric::encode(v))).collect();
-                store::replace_vectors(&mut *tx, cid, k, &blobs).await?;
+                let vectors: Vec<(&str, &[f32])> = p.vectors.iter().map(|(f, v)| (f.as_str(), v.as_slice())).collect();
+                store::replace_vectors(&mut *tx, cid, k, &vectors, pgv).await?;
                 keys.push(k);
             }
             store::bump(&mut *tx, cid, &ts).await?;
@@ -1242,8 +1566,10 @@ impl VectorService {
         let (keys, created) = finish(tx, r).await?;
         let total = prepared.len() as u64;
         let ids: Vec<String> = prepared.iter().map(|p| p.id.clone()).collect();
-        let changes = keys.into_iter().zip(prepared.into_iter().map(|p| p.vectors)).collect();
-        self.apply(&coll, changes).await;
+        if pgv.is_none() {
+            let changes = keys.into_iter().zip(prepared.into_iter().map(|p| p.vectors)).collect();
+            self.apply(&coll, changes).await;
+        }
         metrics::counter!("forgebase_vector_upserts_total").increment(total);
         Ok(UpsertResult {
             ids,
@@ -1258,6 +1584,7 @@ impl VectorService {
         let coll = self.coll(ctx, name)?;
         check_id(id).map_err(|_| VectorError::ItemNotFound(id.to_owned()))?;
         let filter = self.rule_filter(rule)?;
+        let storage = self.inner.storage.read().await;
         let mut row = store::get_item(self.db(), coll.row.id, id, filter.as_ref())
             .await?
             .ok_or_else(|| VectorError::ItemNotFound(id.to_owned()))?;
@@ -1268,7 +1595,7 @@ impl VectorService {
             sc.strip(&mut row.metadata);
         }
         let mut vectors = BTreeMap::new();
-        for (field, bytes) in store::item_vectors(self.db(), coll.row.id, row.key).await? {
+        for (field, bytes) in store::item_vectors(self.db(), coll.row.id, row.key, storage.pg()).await? {
             if let Ok(f) = coll.field(&field) {
                 vectors.insert(field, metric::decode(&bytes, f.def.dimension)?);
             }
@@ -1300,8 +1627,11 @@ impl VectorService {
         for id in &ids {
             check_id(id)?;
         }
+        let storage = self.inner.storage.read().await;
         let _w = coll.write.lock().await;
-        self.ensure_loaded(&coll).await?;
+        if storage.pg().is_none() {
+            self.ensure_loaded(&coll).await?;
+        }
         let cid = coll.row.id;
         let dialect = self.db().dialect();
         let mut tx = self.db().begin(TxMode::Normal).await?;
@@ -1315,7 +1645,7 @@ impl VectorService {
         .await;
         let keys = finish(tx, r).await?;
         let n = keys.len() as u64;
-        if n > 0 {
+        if n > 0 && storage.pg().is_none() {
             self.apply(&coll, keys.into_iter().map(|k| (k, BTreeMap::new())).collect())
                 .await;
         }
@@ -1384,7 +1714,7 @@ impl VectorService {
     async fn exact_keys(&self, cid: i64, f: &FieldIndex, q: &[f32], k: usize, keys: &[u64]) -> Result<Vec<Scored>> {
         let mut top = TopK::new(k);
         for chunk in keys.chunks(self.inner.config.batch.max(1)) {
-            for (key, bytes) in store::vectors_by_keys(self.db(), cid, &f.def.name, chunk).await? {
+            for (key, bytes) in store::vectors_by_keys(self.db(), cid, &f.def.name, chunk, None).await? {
                 let v = metric::decode(&bytes, f.def.dimension)?;
                 top.push(key, metric::distance(f.def.metric, q, &v));
             }
@@ -1441,6 +1771,7 @@ impl VectorService {
     #[allow(clippy::too_many_arguments)]
     async fn knn(
         &self,
+        pgv: Option<&Pgv>,
         coll: &Arc<Coll>,
         f: &Arc<FieldIndex>,
         q: &[f32],
@@ -1449,6 +1780,9 @@ impl VectorService {
         mode: FilterMode,
         exact: bool,
     ) -> Result<Knn> {
+        if let Some(pgv) = pgv {
+            return self.knn_pg(pgv, coll, f, q, k, filter, mode, exact).await;
+        }
         let cid = coll.row.id;
         let cfg = &self.inner.config;
         let threshold = coll.exact_threshold as usize;
@@ -1538,6 +1872,151 @@ impl VectorService {
         })
     }
 
+    /// The kNN on pgvector (ADR-0029 §1.4). Same strategies and rules as
+    /// the portable path: `exact` (explicit, small sets, small filtered
+    /// sets) orders by the distance on the uncast column; `ann` uses the
+    /// field's HNSW index with `hnsw.ef_search` = max(`expansion_search`,
+    /// `k`); `filtered_ann` (pre/auto) and `post_filter` run an iterative
+    /// scan (`relaxed_order`, re-sorted) with the compiled filter in the same
+    /// `WHERE`. When fewer than `k` come back, pre/auto search the matching
+    /// set exactly if it is small enough, and both widen the scan
+    /// (ADR-0012's over-fetch loop: `hnsw.max_scan_tuples`, or `ef_search`
+    /// before pgvector 0.8) until `k` match or the whole field was scanned.
+    /// `candidates` is reported where it was counted (exact strategies).
+    #[allow(clippy::too_many_arguments)]
+    async fn knn_pg(
+        &self,
+        pgv: &Pgv,
+        coll: &Coll,
+        f: &FieldIndex,
+        q: &[f32],
+        k: usize,
+        filter: Option<&Filter>,
+        mode: FilterMode,
+        exact: bool,
+    ) -> Result<Knn> {
+        let db = self.db();
+        let cid = coll.row.id;
+        let name = f.def.name.as_str();
+        let cfg = &self.inner.config;
+        let threshold = u64::from(coll.exact_threshold);
+        let spec = pg::spec(cid, &f.def);
+        let exact_knn = |strategy: Strategy, candidates: Option<u64>| async move {
+            Ok::<_, VectorError>(Knn {
+                hits: pg::exact(db, pgv, cid, &f.def, q, k, filter).await?,
+                strategy,
+                candidates,
+            })
+        };
+        if exact {
+            let n = pg::count_upto(db, cid, name, filter, cfg.max_exact_scan + 1).await?;
+            if n > cfg.max_exact_scan {
+                return Err(VectorError::invalid(
+                    "exact_too_large",
+                    format!("an exact search scans at most {} vectors", cfg.max_exact_scan),
+                ));
+            }
+            return exact_knn(Strategy::Exact, filter.map(|_| n)).await;
+        }
+        if spec.elem.is_none() || !f.pg_valid.load(Ordering::Relaxed) {
+            let n = pg::count_upto(db, cid, name, filter, cfg.max_exact_scan + 1).await?;
+            if n > cfg.max_exact_scan {
+                if spec.elem.is_none() {
+                    return Err(VectorError::invalid(
+                        "exact_too_large",
+                        format!(
+                            "fields wider than {} dimensions have exact search only on pgvector, over at most {} vectors",
+                            pg::MAX_HALFVEC_DIMS,
+                            cfg.max_exact_scan
+                        ),
+                    ));
+                }
+                let reason = f.status().reason.clone().unwrap_or_else(|| "building".into());
+                return Err(VectorError::IndexNotReady(
+                    format!("{}.{}", coll.row.name, f.def.name),
+                    reason,
+                ));
+            }
+            let strategy = if spec.elem.is_none() {
+                Strategy::Exact
+            } else {
+                Strategy::ExactFallback
+            };
+            return exact_knn(strategy, filter.map(|_| n)).await;
+        }
+        let ef_search = f.def.expansion_search.max(u32::try_from(k).unwrap_or(u32::MAX));
+        let Some(flt) = filter else {
+            if pg::count_upto(db, cid, name, None, threshold + 1).await? <= threshold {
+                return exact_knn(Strategy::Exact, None).await;
+            }
+            // Without an iterative scan pgvector returns up to ef_search >= k rows.
+            let scan = pg::Scan {
+                ef_search,
+                iterative: false,
+                max_scan_tuples: pg::DEFAULT_MAX_SCAN_TUPLES,
+            };
+            return Ok(Knn {
+                hits: pg::ann(db, pgv, &spec, q, k, None, scan).await?,
+                strategy: Strategy::Ann,
+                candidates: None,
+            });
+        };
+        if mode != FilterMode::Post {
+            let m = pg::count_upto(db, cid, name, Some(flt), threshold + 1).await?;
+            if m <= threshold {
+                return exact_knn(Strategy::Exact, Some(m)).await;
+            }
+        }
+        let strategy = if mode == FilterMode::Post {
+            Strategy::PostFilter
+        } else {
+            Strategy::FilteredAnn
+        };
+        let mut scan = pg::Scan {
+            ef_search,
+            iterative: pgv.iterative,
+            max_scan_tuples: pg::DEFAULT_MAX_SCAN_TUPLES,
+        };
+        let mut hits = pg::ann(db, pgv, &spec, q, k, Some(flt), scan).await?;
+        if hits.len() >= k {
+            return Ok(Knn {
+                hits,
+                strategy,
+                candidates: None,
+            });
+        }
+        if mode != FilterMode::Post {
+            // The scan ran out of matching candidates: exact over the
+            // matching set, so a selective filter never loses hits.
+            let n = pg::count_upto(db, cid, name, Some(flt), cfg.max_exact_scan + 1).await?;
+            if n <= cfg.max_exact_scan {
+                return exact_knn(Strategy::Exact, Some(n)).await;
+            }
+        }
+        let total = store::count_vectors(db, cid, name).await?.max(1);
+        for _ in 0..8 {
+            let exhausted = if scan.iterative {
+                scan.max_scan_tuples >= total
+            } else {
+                scan.ef_search >= pg::MAX_EF_SEARCH
+            };
+            if hits.len() >= k || exhausted {
+                break;
+            }
+            if scan.iterative {
+                scan.max_scan_tuples = scan.max_scan_tuples.saturating_mul(4).min(total);
+            } else {
+                scan.ef_search = scan.ef_search.saturating_mul(4).min(pg::MAX_EF_SEARCH);
+            }
+            hits = pg::ann(db, pgv, &spec, q, k, Some(flt), scan).await?;
+        }
+        Ok(Knn {
+            hits,
+            strategy,
+            candidates: None,
+        })
+    }
+
     fn record(f: &FieldIndex, strategy: Strategy, took: Duration) {
         let c = &f.counters;
         c.searches.fetch_add(1, Ordering::Relaxed);
@@ -1576,13 +2055,15 @@ impl VectorService {
             sc.check_filter(filter.as_ref())?;
         }
         let filter = Filter::restrict(dialect, filter, rule)?;
+        let storage = self.inner.storage.read().await;
+        let pgv = storage.pg();
         let mut want = k;
         let (knn, mut items, mut vectors, kept) = loop {
             let knn = self
-                .knn(&coll, &f, &q, want, filter.as_ref(), req.filter_mode, req.exact)
+                .knn(pgv, &coll, &f, &q, want, filter.as_ref(), req.filter_mode, req.exact)
                 .await?;
             let keys: Vec<u64> = knn.hits.iter().map(|s| s.key).collect();
-            let (items, vectors) = self.hydrate(&coll, &f, &keys, req.include_vectors).await?;
+            let (items, vectors) = self.hydrate(pgv, &coll, &f, &keys, req.include_vectors).await?;
             let Some(sc) = source.as_mut() else {
                 break (knn, items, vectors, keys);
             };
@@ -1636,6 +2117,7 @@ impl VectorService {
 
     async fn hydrate(
         &self,
+        pgv: Option<&Pgv>,
         coll: &Coll,
         f: &FieldIndex,
         keys: &[u64],
@@ -1644,7 +2126,7 @@ impl VectorService {
         let items = store::items_by_keys(self.db(), coll.row.id, keys).await?;
         let mut vectors = HashMap::new();
         if with_vectors {
-            for (k, bytes) in store::vectors_by_keys(self.db(), coll.row.id, &f.def.name, keys).await? {
+            for (k, bytes) in store::vectors_by_keys(self.db(), coll.row.id, &f.def.name, keys, pgv).await? {
                 vectors.insert(k, metric::decode(&bytes, f.def.dimension)?);
             }
         }
@@ -1698,12 +2180,14 @@ impl VectorService {
             (None, false) => req.field.as_deref().map(|n| coll.field(n)).transpose()?,
         };
 
+        let storage = self.inner.storage.read().await;
+        let pgv = storage.pg();
         let mut vector_strategy = None;
         let mut by_vector: Vec<(u64, f32)> = Vec::new();
         if let (Some(v), Some(f)) = (&req.vector, &field) {
             let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, v)?;
             let knn = self
-                .knn(&coll, f, &q, candidates, filter.as_ref(), req.filter_mode, false)
+                .knn(pgv, &coll, f, &q, candidates, filter.as_ref(), req.filter_mode, false)
                 .await?;
             Self::record(f, knn.strategy, started.elapsed());
             vector_strategy = Some(knn.strategy);
@@ -1737,7 +2221,7 @@ impl VectorService {
             .collect();
         let keys: Vec<u64> = fused.iter().map(|(k, _)| *k).collect();
         let (mut items, mut vectors) = match &field {
-            Some(f) => self.hydrate(&coll, f, &keys, req.include_vectors).await?,
+            Some(f) => self.hydrate(pgv, &coll, f, &keys, req.include_vectors).await?,
             None => (
                 store::items_by_keys(self.db(), coll.row.id, &keys).await?,
                 HashMap::new(),
@@ -1798,6 +2282,20 @@ impl VectorService {
             Some(n) => vec![coll.field(n)?],
             None => coll.fields(),
         };
+        let storage = self.inner.storage.read().await;
+        if let Some(pgv) = storage.pg() {
+            let mut out = Vec::with_capacity(targets.len());
+            for f in &targets {
+                if pg::spec(coll.row.id, &f.def).elem.is_some() {
+                    self.start_pg_build(&coll, f, "manual", "requested by an administrator".into());
+                }
+            }
+            let info = pg::indexes(self.db()).await?;
+            for f in &targets {
+                out.push(self.pg_index_status(pgv, &coll, f, &info).await?);
+            }
+            return Ok(out);
+        }
         {
             let _w = coll.write.lock().await;
             // A file that loads keeps serving while the rebuild runs; one that
@@ -1812,6 +2310,64 @@ impl VectorService {
             out.push(self.index_status(&coll, f).await?);
         }
         Ok(out)
+    }
+
+    /// [`IndexStatus`] of a pgvector field (`info`: the `fbv_` indexes).
+    async fn pg_index_status(
+        &self,
+        pgv: &Pgv,
+        coll: &Coll,
+        f: &FieldIndex,
+        info: &HashMap<String, pg::IndexInfo>,
+    ) -> Result<IndexStatus> {
+        let canonical = store::count_vectors(self.db(), coll.row.id, &f.def.name).await?;
+        let spec = pg::spec(coll.row.id, &f.def);
+        let index = info.get(&spec.name);
+        let valid = index.is_some_and(|i| i.valid);
+        let bytes = index.map(|i| i.bytes).unwrap_or(0);
+        let indexed = if valid { canonical } else { 0 };
+        f.pg_bytes.store(bytes, Ordering::Relaxed);
+        f.pg_indexed.store(indexed, Ordering::Relaxed);
+        let st = f.status();
+        let searches = f.counters.searches.load(Ordering::Relaxed);
+        #[allow(clippy::cast_precision_loss)]
+        let mean = if searches == 0 {
+            0.0
+        } else {
+            f.counters.micros.load(Ordering::Relaxed) as f64 / searches as f64 / 1000.0
+        };
+        Ok(IndexStatus {
+            field: f.def.name.clone(),
+            state: st.state,
+            serving: if valid { "ann" } else { "exact" }.to_owned(),
+            reason: st.reason.clone().or_else(|| {
+                spec.elem.is_none().then(|| {
+                    format!(
+                        "pgvector indexes at most {} dimensions: exact search",
+                        pg::MAX_HALFVEC_DIMS
+                    )
+                })
+            }),
+            progress: (st.state == IndexState::Building).then(|| f.progress()),
+            canonical_vectors: canonical,
+            indexed_vectors: indexed,
+            memory_bytes: bytes,
+            serialized_bytes: bytes,
+            capacity: 0,
+            engine: "pgvector".to_owned(),
+            engine_version: pgv.version.clone(),
+            quantization: f.def.quantization,
+            connectivity: spec.m,
+            expansion_search: f.def.expansion_search.min(pg::MAX_EF_SEARCH),
+            dirty: false,
+            last_saved: None,
+            last_rebuild: st.last_rebuild.clone(),
+            last_recall: st.last_recall.clone(),
+            searches,
+            ann_searches: f.counters.ann.load(Ordering::Relaxed),
+            exact_searches: f.counters.exact.load(Ordering::Relaxed),
+            mean_search_ms: mean,
+        })
     }
 
     async fn index_status(&self, coll: &Coll, f: &FieldIndex) -> Result<IndexStatus> {
@@ -1860,9 +2416,20 @@ impl VectorService {
         let coll = self.coll(ctx, name)?;
         let (items, with_text) = store::count_items(self.db(), coll.row.id, None).await?;
         let (seq, _) = store::change_seq(self.db(), coll.row.id).await?;
+        let storage = self.inner.storage.read().await;
         let mut indexes = Vec::new();
-        for f in coll.fields() {
-            indexes.push(self.index_status(&coll, &f).await?);
+        match storage.pg() {
+            None => {
+                for f in coll.fields() {
+                    indexes.push(self.index_status(&coll, &f).await?);
+                }
+            }
+            Some(pgv) => {
+                let info = pg::indexes(self.db()).await?;
+                for f in coll.fields() {
+                    indexes.push(self.pg_index_status(pgv, &coll, &f, &info).await?);
+                }
+            }
         }
         Ok(CollectionStats {
             collection: coll.row.name.clone(),
@@ -1907,6 +2474,10 @@ impl VectorService {
                     let es = l.stats();
                     s.indexed_vectors += es.len;
                     s.memory_bytes += es.memory_bytes;
+                } else if f.pg_valid.load(Ordering::Relaxed) {
+                    // pgvector: as last seen by a stats call or a build.
+                    s.indexed_vectors += f.pg_indexed.load(Ordering::Relaxed);
+                    s.memory_bytes += f.pg_bytes.load(Ordering::Relaxed);
                 }
             }
         }
@@ -1920,7 +2491,7 @@ impl VectorService {
         let coll = self.coll(ctx, name)?;
         let deadline = Instant::now() + timeout;
         loop {
-            {
+            if self.inner.storage.read().await.pg().is_none() {
                 let _w = coll.write.lock().await;
                 self.ensure_loaded(&coll).await?;
             }
@@ -1933,6 +2504,55 @@ impl VectorService {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// pgvector recall check: both orders come from SQL (the HNSW index, and
+    /// the distance on the uncast column), and the comparison runs in SQL
+    /// too ([`pg::recall_exact`]).
+    async fn pg_recall(&self, pgv: &Pgv, coll: &Coll, f: &FieldIndex, samples: u32, k: u32) -> Result<RecallReport> {
+        let db = self.db();
+        let cid = coll.row.id;
+        let spec = pg::spec(cid, &f.def);
+        if spec.elem.is_none() || !f.pg_valid.load(Ordering::Relaxed) {
+            let reason = f.status().reason.clone().unwrap_or_else(|| "building".into());
+            return Err(VectorError::IndexNotReady(
+                format!("{}.{}", coll.row.name, f.def.name),
+                reason,
+            ));
+        }
+        let keys = pg::keys(db, cid, &f.def.name).await?;
+        let n = keys.len();
+        if n == 0 {
+            return Err(VectorError::invalid("no_vectors", "the field has no vectors"));
+        }
+        if n as u64 > self.inner.config.max_exact_scan {
+            return Err(VectorError::invalid(
+                "exact_too_large",
+                format!(
+                    "a recall check scans at most {} vectors",
+                    self.inner.config.max_exact_scan
+                ),
+            ));
+        }
+        let count = (samples as usize).min(n);
+        let picked: Vec<u64> = (0..count).map(|s| keys[s * n / count]).collect();
+        let k = k as usize;
+        let ef_search = f.def.expansion_search.max(u32::try_from(k).unwrap_or(u32::MAX));
+        let t = Instant::now();
+        let ann = pg::recall_ann(db, pgv, &spec, &picked, k, ef_search).await?;
+        let ann_t = t.elapsed();
+        let t = Instant::now();
+        let recall = pg::recall_exact(db, pgv, cid, &f.def, &picked, &ann, k).await?;
+        let exact_t = t.elapsed();
+        Ok(RecallReport {
+            field: f.def.name.clone(),
+            k: u32::try_from(k).unwrap_or(u32::MAX),
+            samples: u32::try_from(count).unwrap_or(u32::MAX),
+            recall,
+            ann_ms: ms(ann_t),
+            exact_ms: ms(exact_t),
+            measured: now(),
+        })
     }
 
     /// Recall check: stored vectors as queries, ANN results compared with
@@ -1948,6 +2568,12 @@ impl VectorService {
                 "invalid_request",
                 format!("samples must be 1 to {MAX_RECALL_SAMPLES}, k 1 to 100"),
             ));
+        }
+        let storage = self.inner.storage.read().await;
+        if let Some(pgv) = storage.pg() {
+            let report = self.pg_recall(pgv, &coll, &f, samples, k).await?;
+            f.status().last_recall = Some(report.clone());
+            return Ok(report);
         }
         let ix = self.serving(&coll, &f).await?.ok_or_else(|| {
             VectorError::IndexNotReady(format!("{}.{}", coll.row.name, f.def.name), "rebuilding".into())
@@ -2034,6 +2660,194 @@ impl VectorService {
         })
         .await?;
         f.status().last_recall = Some(report.clone());
+        Ok(report)
+    }
+
+    /// The query plan PostgreSQL makes for the index scan of a search on
+    /// pgvector (FB-162), one line per plan node: the ANN statement of
+    /// `req` (with its filter: the iterative scan) whether or not the
+    /// search would pick it. Administrators only; `400 explain_unsupported`
+    /// on the portable engine.
+    pub async fn explain_search(&self, ctx: &AccessContext, name: &str, req: SearchRequest) -> Result<Vec<String>> {
+        self.allow(ctx, Action::VectorAdmin, name, ResourceOp::View)?;
+        let coll = self.coll(ctx, name)?;
+        let f = coll.pick(req.field.as_deref())?;
+        let k = Self::check_k(req.k)?;
+        let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, &req.vector)?;
+        let filter = Filter::parse(self.db().dialect(), req.filter.as_deref(), &req.params)?;
+        let storage = self.inner.storage.read().await;
+        let Some(pgv) = storage.pg() else {
+            return Err(VectorError::invalid(
+                "explain_unsupported",
+                "search plans exist on pgvector only",
+            ));
+        };
+        let spec = pg::spec(coll.row.id, &f.def);
+        let scan = pg::Scan {
+            ef_search: f.def.expansion_search.max(u32::try_from(k).unwrap_or(u32::MAX)),
+            iterative: pgv.iterative && filter.is_some(),
+            max_scan_tuples: pg::DEFAULT_MAX_SCAN_TUPLES,
+        };
+        let Some(stmt) = pg::ann_statement(self.db(), pgv, &spec, &q, k, filter.as_ref(), scan)? else {
+            return Err(VectorError::invalid(
+                "explain_unsupported",
+                format!("{} has no HNSW index (exact search only)", f.def.name),
+            ));
+        };
+        Ok(self.db().explain(&stmt).await?.into_iter().map(|p| p.detail).collect())
+    }
+
+    // ------------------------------------------------------------- convert
+
+    /// `vector.convert` (ADR-0029 §1.4): moves every canonical vector to
+    /// `to`'s storage. To pgvector: `vector` bytea -> `vec` in batches, then
+    /// every field's HNSW index is built (concurrently) and the index files
+    /// are deleted. To portable: `vec` -> bytea, the HNSW indexes are
+    /// dropped and USearch rebuilds the in-memory indexes in the background.
+    /// The last batch's transaction records `ext.vector.engine` (FB-161):
+    /// a conversion that stops earlier leaves the database on its old
+    /// engine, and the next start moves the converted vectors back. Holds
+    /// the engine's write lock: every other vector operation waits.
+    /// Instance-wide (no tenant), `engine:vector_admin`.
+    ///
+    /// # Errors
+    /// `400 pgvector_unavailable` when converting to pgvector without a
+    /// usable pgvector (with the layout problems), database errors.
+    pub async fn convert(&self, ctx: &AccessContext, to: VectorEngine) -> Result<ConvertReport> {
+        self.authorize(ctx, Action::VectorAdmin)?;
+        if ctx.tenant.is_some() {
+            return Err(VectorError::invalid(
+                "invalid_request",
+                "vector.convert is instance-wide; call it without a tenant",
+            ));
+        }
+        let db = self.db();
+        if db.dialect().name() != "postgres" {
+            return match to {
+                VectorEngine::Portable => Ok(ConvertReport {
+                    from: VectorEngine::Portable,
+                    to,
+                    vectors: 0,
+                    indexes: 0,
+                }),
+                VectorEngine::Pgvector => Err(VectorError::invalid(
+                    "pgvector_unavailable",
+                    "pgvector needs PostgreSQL",
+                )),
+            };
+        }
+        let probe = pg::probe(db).await?;
+        if let (VectorEngine::Pgvector, Err(problems)) = (to, &probe) {
+            return Err(VectorError::invalid("pgvector_unavailable", problems.join("; ")));
+        }
+        let mut storage = self.inner.storage.write().await;
+        let from = storage.kind();
+        let colls = self.all_collections();
+        // Portable rebuilds stop at their next check (their field is replaced).
+        for c in &colls {
+            let _w = c.write.lock().await;
+            for f in c.fields() {
+                f.status().generation += 1;
+            }
+        }
+        let batch = pg::batch_rows(self.inner.config.batch, pg::max_dimension(db).await?);
+        let report = match (to, probe) {
+            (VectorEngine::Pgvector, Ok(pgv)) => {
+                let pgv = Arc::new(pgv);
+                let vectors = pg::move_all(db, &pgv, VectorEngine::Pgvector, batch, true).await?;
+                *storage = Storage::Pgvector(Arc::clone(&pgv));
+                let existing = pg::indexes(db).await?;
+                let mut indexes = 0;
+                for c in &colls {
+                    let _w = c.write.lock().await;
+                    let dir = self.inner.root.join(c.row.id.to_string());
+                    let mut fields = BTreeMap::new();
+                    for f in c.fields() {
+                        let spec = pg::spec(c.row.id, &f.def);
+                        let mut valid = existing.get(&spec.name).is_some_and(|i| i.valid);
+                        if spec.elem.is_some() && !valid {
+                            pg::build(db, &pgv, &spec, None).await?;
+                            indexes += 1;
+                            valid = true;
+                        }
+                        fields.insert(
+                            f.def.name.clone(),
+                            Arc::new(FieldIndex::on_postgres(f.def.clone(), &dir, valid)),
+                        );
+                    }
+                    *c.fields.write().unwrap_or_else(|p| p.into_inner()) = fields;
+                    let _ = blocking(move || {
+                        if let Err(e) = std::fs::remove_dir_all(&dir)
+                            && e.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(path = %dir.display(), error = %e, "could not delete vector index files");
+                        }
+                        Ok(())
+                    })
+                    .await;
+                }
+                ConvertReport {
+                    from,
+                    to,
+                    vectors,
+                    indexes,
+                }
+            }
+            (VectorEngine::Pgvector, Err(_)) => {
+                return Err(VectorError::Internal("pgvector probe changed".into()));
+            }
+            (VectorEngine::Portable, probe) => {
+                let vectors = match &probe {
+                    Ok(pgv) => pg::move_all(db, pgv, VectorEngine::Portable, batch, true).await?,
+                    Err(problems) if pg::has_vec_column(db).await? => {
+                        return Err(VectorError::invalid(
+                            "pgvector_unavailable",
+                            format!(
+                                "the vectors in column vec need pgvector to be moved: {}",
+                                problems.join("; ")
+                            ),
+                        ));
+                    }
+                    Err(_) => {
+                        pg::record_engine(db, VectorEngine::Portable).await?;
+                        0
+                    }
+                };
+                let names: Vec<String> = match &probe {
+                    Ok(_) => pg::indexes(db).await?.into_keys().collect(),
+                    Err(_) => Vec::new(),
+                };
+                pg::drop_indexes(db, &names).await?;
+                *storage = Storage::Portable;
+                for c in &colls {
+                    let _w = c.write.lock().await;
+                    let dir = self.inner.root.join(c.row.id.to_string());
+                    let fields = c
+                        .fields()
+                        .into_iter()
+                        .map(|f| (f.def.name.clone(), Arc::new(FieldIndex::unloaded(f.def.clone(), &dir))))
+                        .collect();
+                    *c.fields.write().unwrap_or_else(|p| p.into_inner()) = fields;
+                    // USearch rebuilds from the canonical vectors (files of an
+                    // older portable past are stale or match exactly).
+                    self.ensure_loaded(c).await?;
+                }
+                ConvertReport {
+                    from,
+                    to,
+                    vectors,
+                    indexes: names.len() as u64,
+                }
+            }
+        };
+        drop(storage);
+        tracing::info!(
+            from = report.from.as_str(),
+            to = report.to.as_str(),
+            vectors = report.vectors,
+            indexes = report.indexes,
+            "vector storage converted"
+        );
         Ok(report)
     }
 }

@@ -33,6 +33,9 @@ export const GLOSSARY = {
   api_key: { short: "API key", text: "A secret your app or server sends in the X-API-Key header. It carries scopes that limit what it can do." },
   pat: { short: "PAT", text: "Personal access token: an API key tied to one person's account." },
   oidc: { short: "OIDC", text: "OpenID Connect: the standard sign-in protocol ForgeBase speaks to client apps and identity providers." },
+  tenant: { short: "Tenant", text: "One customer or team inside a realm. A tenant's keys, buckets, topics and jobs are its own; an administrator can see all of them." },
+  consent: { short: "Consent", text: "A person's recorded yes to let a client app use their account for the scopes it asks for. They can withdraw it at any time." },
+  role_set: { short: "Role set", text: "A named bundle of roles you give to a member or team in one step. A deny in any role of the set still wins." },
   realm: { short: "Realm", text: "A separate space of users, settings and branding. Each tenant usually has its own realm." },
   mfa: { short: "MFA", text: "Multi-factor authentication: a second proof, such as a one-time code, on top of the password." },
   impersonation: { short: "Impersonation", text: "Acting as another user to see what they see. Every action is logged under your name." },
@@ -59,6 +62,7 @@ export const GLOSSARY = {
   job: { short: "Job", text: "A unit of background work, run by a worker, with retries, progress and a result." },
   workflow: { short: "Workflow", text: "Jobs joined into steps, where each step starts when the ones it depends on finish." },
   cron: { short: "Cron", text: "A schedule written as minute, hour, day of month, month and weekday, such as 0 3 * * * for 03:00 daily." },
+  reserved_kind: { short: "Reserved kind", text: "A job or queue kind whose name starts with a prefix the server keeps for its own work. Only an administrator can enqueue it; anyone else gets 403." },
   idempotency_key: { short: "Idempotency key", text: "A unique key per request, so sending it twice does the work only once." },
   // Key-value
   ttl: { short: "TTL", text: "Time to live: how long a key is kept before the server deletes it on its own." },

@@ -52,6 +52,17 @@ export const login = (email: string, password: string) =>
     body: { email, password, cookie: true, device_name: "Admin dashboard" },
     ...quiet,
   });
+/**
+ * Sign-in as a user of a realm (`/api/auth/login`): how a realm administrator signs in, since they are users holding
+ * `identity:admin` in their realm and not instance administrators. `realm` is sent in X-ForgeBase-Realm; empty means the default realm.
+ */
+export const userLogin = (email: string, password: string, realm?: string) =>
+  request<LoginResult>("/api/auth/login", {
+    method: "POST",
+    body: { email, password, cookie: true, device_name: "Admin dashboard" },
+    headers: realm ? { "X-ForgeBase-Realm": realm } : undefined,
+    ...quiet,
+  });
 export const mfaVerify = (mfa_token: string, code: string) =>
   request<LoginSession>("/api/auth/mfa/verify", { method: "POST", body: { mfa_token, code }, ...quiet });
 export const me = (signal?: AbortSignal) => request<MeResponse>("/api/auth/me", { signal, ...quiet });

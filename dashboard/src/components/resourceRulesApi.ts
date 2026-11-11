@@ -1,7 +1,7 @@
 /** Types and helpers behind ResourceRules: the policy-engine routes and the mapping between stored rules and the editor's rows. */
-import { get, send } from "../../api/client";
+import { get, send } from "../api/client";
 
-export type RuleKind = "kv_namespace" | "vector_collection" | "graph_label" | "graph_edge_type" | "bucket";
+export type RuleKind = "kv_namespace" | "vector_collection" | "graph_label" | "graph_edge_type" | "bucket" | "queue_topic" | "queue_subscription";
 export type RuleOp = "list" | "view" | "create" | "update" | "delete";
 export type RuleSet = Record<string, string | null>;
 

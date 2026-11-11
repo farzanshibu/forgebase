@@ -89,13 +89,33 @@ describe("ErrorPanel", () => {
     expect(ErrorView).toBe(ErrorPanel);
   });
 
-  it("points a switched-off feature at Features & settings", () => {
+  it("points a switched-off feature at Features and settings", () => {
     render(
       <MemoryRouter>
         <ErrorPanel error={api(404, "feature_disabled", "Storage is switched off")} />
       </MemoryRouter>,
     );
     expect(screen.getByRole("region", { name: "Feature disabled" })).toHaveTextContent("Storage is switched off");
-    expect(screen.getByRole("link", { name: /Features & settings/ })).toHaveAttribute("href", "/system/features");
+    expect(screen.getByRole("link", { name: /Features and settings/ })).toHaveAttribute("href", "/system/features");
+  });
+});
+
+describe("ErrorPanel: Find in logs", () => {
+  it("links the request id to the logs search, prefilled", () => {
+    render(
+      <MemoryRouter>
+        <ErrorPanel error={api(500, "internal", "internal server error")} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "Find in logs" })).toHaveAttribute("href", "/functions/logs?request=req-42");
+  });
+
+  it("has no link without a request id", () => {
+    render(
+      <MemoryRouter>
+        <ErrorPanel error={new ApiError({ status: 500, code: "internal", message: "boom" })} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole("link", { name: "Find in logs" })).not.toBeInTheDocument();
   });
 });

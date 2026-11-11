@@ -94,6 +94,10 @@ path = "../../tests/integration/setup_e2e.rs"
 
 # FB-148: init --database, the backend marker, status, doctor, db status/psql.
 [[test]]
+name = "backup_pg_e2e"
+path = "tests/backup_pg_e2e.rs"
+
+[[test]]
 name = "database_e2e"
 path = "tests/database_e2e.rs"
 

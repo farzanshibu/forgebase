@@ -235,6 +235,11 @@ impl Backend for SetHandle {
     fn set_slow_query_threshold(&self, threshold: Duration) {
         self.db.set_slow_query_threshold(threshold);
     }
+
+    /// On the set's primary.
+    fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.db.maintenance(statements)
+    }
 }
 
 /// Opens the primary [`Database`] of a set other than control. The server

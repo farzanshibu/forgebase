@@ -1,4 +1,4 @@
-import ResourceRules from "../database/ResourceRules";
+import ResourceRules from "../../components/ResourceRules";
 
 /** Namespace rules (FB-138): who may read, write or administer keys in this namespace. Rules see `@request` only; keys have no item fields. */
 export default function Rules({ ns }: { ns: string }) {

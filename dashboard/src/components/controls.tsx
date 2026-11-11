@@ -99,7 +99,7 @@ export function Check({ checked, onChange, label, description, disabled, name, i
       label={label}
       description={description}
       className={className}
-      control={<Checkbox id={cid} size="sm" checked={checked} onCheckedChange={(v) => onChange(v === true)} disabled={disabled} name={name} label={label ? undefined : ariaLabel} {...aria} className="mt-0.5" />}
+      control={<Checkbox id={cid} size="sm" checked={checked} onCheckedChange={(v) => onChange(v === true)} disabled={disabled} name={name} label={ariaLabel} {...aria} className="mt-0.5" />}
     />
   );
 }
@@ -114,7 +114,7 @@ export function Toggle({ checked, onChange, label, description, disabled, name, 
       label={label}
       description={description}
       className={className}
-      control={<Switch id={cid} size="sm" checked={checked} onCheckedChange={(v) => onChange(v)} disabled={disabled} name={name} pending={pending} label={label ? undefined : ariaLabel} {...aria} />}
+      control={<Switch id={cid} size="sm" checked={checked} onCheckedChange={(v) => onChange(v)} disabled={disabled} name={name} pending={pending} label={ariaLabel} {...aria} />}
     />
   );
 }
