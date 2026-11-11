@@ -9,6 +9,7 @@
  *   docsHref("docs/database.md", "0.3.0")       // GitHub docs at v0.3.0 (decision Q2)
  */
 import type { ServerFeature } from "./api";
+import type { GlossaryTerm } from "./glossary";
 
 export type StudioGroup = "build" | "users" | "operate";
 
@@ -33,6 +34,8 @@ export interface Studio {
   docs: string;
   /** The fb92 feature id that switches it on and off (GET /api/system/features). */
   feature?: string;
+  /** The glossary term PageHeader explains next to the title. */
+  term?: GlossaryTerm;
   /** Sections, for the palette's "Go to" list. Pages keep their own RouteTabs. */
   tabs?: StudioTab[];
 }
@@ -52,41 +55,41 @@ export const STUDIOS: Studio[] = [
     tabs: [{ to: "/database", label: "Collections" }, { to: "/database/sql", label: "SQL editor" }, { to: "/database/indexes", label: "Indexes" }, { to: "/database/slow", label: "Slow queries" }],
   },
   { path: "storage", label: "Storage", title: "Storage", group: "build", docs: "docs/adr/0018-object-storage.md", feature: "storage", summary: "Buckets that hold the files your app uploads, such as avatars or exports." },
-  { path: "functions", label: "Functions", title: "Functions", group: "build", docs: "docs/adr/0017-functions.md", feature: "functions", summary: "Edge functions: your code, run next to your data on each request." },
+  { path: "functions", label: "Functions", title: "Functions", term: "edge_function", group: "build", docs: "docs/adr/0017-functions.md", feature: "functions", summary: "Edge functions: your code, run next to your data on each request." },
   {
     path: "redis", label: "Key-value", title: "Key-value", group: "build", docs: "docs/adr/0005-kv.md", feature: "kv",
     summary: "Redis compatible key-value store for caches, counters and sessions.",
-    tabs: [{ to: "/redis", label: "Keys" }, { to: "/redis/console", label: "Console" }, { to: "/redis/pubsub", label: "Pub/Sub" }, { to: "/redis/stats", label: "Memory and stats" }],
+    tabs: [{ to: "/redis", label: "Keys" }, { to: "/redis/console", label: "Console" }, { to: "/redis/pubsub", label: "Pub/Sub" }, { to: "/redis/stats", label: "Memory and stats" }, { to: "/redis/rules", label: "Rules" }],
   },
-  { path: "vector", label: "Vector", title: "Vector", group: "build", docs: "docs/adr/0012-vector.md", feature: "vector", summary: "Store embeddings and find the most similar ones." },
+  { path: "vector", label: "Vector", title: "Vector", term: "embedding", group: "build", docs: "docs/adr/0012-vector.md", feature: "vector", summary: "Store embeddings and find the most similar ones." },
   {
-    path: "graph", label: "Graph", title: "Graph", group: "build", docs: "docs/adr/0006-graph.md", feature: "graph",
+    path: "graph", label: "Graph", title: "Graph", term: "node", group: "build", docs: "docs/adr/0006-graph.md", feature: "graph",
     summary: "Nodes and the edges between them, with traversals and path search.",
     tabs: [{ to: "/graph", label: "Graphs" }, { to: "/graph/nodes", label: "Nodes" }, { to: "/graph/edges", label: "Edges" }, { to: "/graph/explorer", label: "Explorer" }, { to: "/graph/query", label: "Query runner" }],
   },
   {
-    path: "queues", label: "Queues", title: "Queues", group: "build", docs: "docs/adr/0022-queues-pubsub.md", feature: "queues",
+    path: "queues", label: "Queues", title: "Queues", term: "topic", group: "build", docs: "docs/adr/0022-queues-pubsub.md", feature: "queues",
     summary: "Durable topics and subscriptions that carry messages between services.",
     tabs: [{ to: "/queues", label: "Topics" }, { to: "/queues/subscriptions", label: "Subscriptions" }, { to: "/queues/inspector", label: "Pub/Sub inspector" }],
   },
   {
-    path: "jobs", label: "Jobs", title: "Jobs", group: "build", docs: "docs/adr/0007-jobs.md", feature: "jobs",
+    path: "jobs", label: "Jobs", title: "Jobs", term: "job", group: "build", docs: "docs/adr/0007-jobs.md", feature: "jobs",
     summary: "Background jobs with retries and progress, workflows and schedules.",
     tabs: [{ to: "/jobs", label: "Queues and jobs" }, { to: "/jobs/workflows", label: "Workflows" }, { to: "/jobs/schedules", label: "Schedules" }],
   },
   // Users and access
   {
-    path: "auth", label: "Authentication", title: "Authentication", group: "users", docs: "docs/adr/0004-auth.md",
+    path: "auth", label: "Authentication", title: "Authentication", term: "api_key", group: "users", docs: "docs/adr/0004-auth.md",
     summary: "Users, sessions, API keys and the audit log.",
-    tabs: [{ to: "/auth", label: "Users" }, { to: "/auth/service-accounts", label: "Service accounts" }, { to: "/auth/keys", label: "API keys & tokens" }, { to: "/auth/audit", label: "Audit log" }, { to: "/auth/admins", label: "Admins" }],
+    tabs: [{ to: "/auth", label: "Users" }, { to: "/auth/service-accounts", label: "Service accounts" }, { to: "/auth/keys", label: "API keys" }, { to: "/auth/audit", label: "Audit log" }, { to: "/auth/admins", label: "Admins" }],
   },
   {
-    path: "access", label: "Access", title: "Access", group: "users", docs: "docs/adr/0008-policy.md", feature: "access",
+    path: "access", label: "Access", title: "Access", term: "role", group: "users", docs: "docs/adr/0008-policy.md", feature: "access",
     summary: "Organizations, roles and the rules that decide who can do what.",
     tabs: [{ to: "/access", label: "Organizations" }, { to: "/access/realm", label: "Realm" }, { to: "/access/rules", label: "Collection rules" }, { to: "/access/tester", label: "Rule tester" }],
   },
   {
-    path: "identity", label: "Identity", title: "Identity and tenants", group: "users", docs: "docs/adr/0019-identity-provider.md", feature: "identity",
+    path: "identity", label: "Identity", title: "Identity and tenants", term: "tenant", group: "users", docs: "docs/adr/0019-identity-provider.md", feature: "identity",
     summary: "Realms, client apps, sign-in providers, branding and legal agreements.",
     tabs: [
       { to: "/identity", label: "Realms" }, { to: "/identity/providers", label: "Identity providers" }, { to: "/identity/clients", label: "Client apps" },
@@ -95,15 +98,9 @@ export const STUDIOS: Studio[] = [
     ],
   },
   {
-    path: "billing", label: "Billing", title: "Billing", group: "users", docs: "docs/adr/0021-billing.md", feature: "billing",
+    path: "billing", label: "Billing", title: "Billing", term: "entitlement", group: "users", docs: "docs/adr/0021-billing.md", feature: "billing",
     summary: "Plans, subscriptions, invoices, payments and credits.",
-    tabs: [
-      { to: "/billing", label: "Revenue" }, { to: "/billing/catalog", label: "Catalog" }, { to: "/billing/customers", label: "Customers" },
-      { to: "/billing/subscriptions", label: "Subscriptions" }, { to: "/billing/orders", label: "Orders" }, { to: "/billing/usage", label: "Usage meters" },
-      { to: "/billing/invoices", label: "Invoices" }, { to: "/billing/payments", label: "Payments" }, { to: "/billing/stores", label: "Stores" },
-      { to: "/billing/coupons", label: "Coupons" }, { to: "/billing/dunning", label: "Dunning" }, { to: "/billing/credits", label: "Credits" },
-      { to: "/billing/settings", label: "Providers and settings" },
-    ],
+    tabs: [{ to: "/billing/catalog", label: "Catalog" }, { to: "/billing/customers", label: "Customers" }, { to: "/billing", label: "Money" }, { to: "/billing/settings", label: "Settings" }],
   },
   // Operate
   {
@@ -162,9 +159,16 @@ export function isStudioDisabled(s: Studio, features: ServerFeature[] | undefine
   return atPath.length > 0 && atPath.every((f) => !on(f));
 }
 
-/** The studios the nav and the palette show: every studio whose feature is on. */
-export function visibleStudios(features: ServerFeature[] | undefined): Studio[] {
-  return STUDIOS.filter((s) => !isStudioDisabled(s, features));
+/** Studios that change the whole server: a realm administrator (FB-137) does not see them (their pages say "for platform administrators"). */
+export const PLATFORM_ONLY: readonly string[] = ["billing", "system", "system/features"];
+
+/**
+ * The studios the nav and the palette show: every studio whose feature is on. A realm administrator (`platform:
+ * false`) does not get the platform-only ones (Billing, System, Features and settings).
+ */
+export function visibleStudios(features: ServerFeature[] | undefined, opts: { platform?: boolean } = {}): Studio[] {
+  const platform = opts.platform ?? true;
+  return STUDIOS.filter((s) => !isStudioDisabled(s, features) && (platform || !PLATFORM_ONLY.includes(s.path)));
 }
 
 export const DOCS_REPO = "https://github.com/farzanshibu/forgebase";

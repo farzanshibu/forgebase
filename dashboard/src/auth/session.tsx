@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ApiError, endImpersonation as apiEndImpersonation, impersonate as apiImpersonate, isMfaChallenge, login, logout, me, mfaVerify,
+  ApiError, endImpersonation as apiEndImpersonation, impersonate as apiImpersonate, isMfaChallenge, login, logout, me, mfaVerify, userLogin,
   setCsrfToken, setTokenSource, setUnauthorizedHandler, type AdminInfo, type AdminScope, type LoginSession, type MeResponse,
 } from "../api";
 
@@ -13,6 +13,12 @@ export interface ImpersonationState {
   expiresAt: string;
 }
 
+export interface SignInOptions {
+  as?: "admin" | "user";
+  /** Realm to sign in to when `as` is "user"; empty means the default realm. */
+  realm?: string;
+}
+
 export interface Session {
   status: "loading" | "anonymous" | "authenticated";
   admin: AdminInfo | null;
@@ -22,7 +28,8 @@ export interface Session {
   mfaRequired?: boolean;
   /** True after a 401 ended a signed-in session. */
   expiredNotice: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  /** `as: "user"` signs in as a user of `realm` (a realm administrator); the default is an instance administrator. */
+  signIn: (email: string, password: string, opts?: SignInOptions) => Promise<void>;
   submitMfa: (code: string) => Promise<void>;
   signOut: () => Promise<void>;
   /** Take over a session another call created (the first-run setup answers like a sign-in). */
@@ -50,6 +57,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [admin, setAdmin] = useState<AdminInfo | null>(null);
   const [adminScope, setAdminScope] = useState<AdminScope | null>(null);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [mfaAs, setMfaAs] = useState<"admin" | "user">("admin");
   const [expiredNotice, setExpiredNotice] = useState(false);
   const [impersonation, setImpersonation] = useState<ImpersonationState | null>(null);
   const token = useRef<string | null>(null);
@@ -123,23 +131,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [impersonation, clearImpersonation]);
 
   const finish = useCallback(
-    async (s: LoginSession) => {
+    async (s: LoginSession, as: "admin" | "user" = "admin") => {
       setCsrfToken(s.csrf_token ?? null);
       setMfaToken(null);
       setExpiredNotice(false);
-      if (!(await loadAdmin())) throw new ApiError({ status: 403, code: "forbidden", message: "This account is not an administrator" });
+      if (!(await loadAdmin()))
+        throw new ApiError({
+          status: 403,
+          code: "forbidden",
+          message: as === "user" ? "This account is not a realm administrator" : "This account is not an administrator",
+        });
     },
     [loadAdmin],
   );
 
   const signIn = useCallback(
-    async (email: string, password: string) => {
-      const r = await login(email, password);
+    async (email: string, password: string, opts: SignInOptions = {}) => {
+      const as = opts.as ?? "admin";
+      const r = as === "user" ? await userLogin(email, password, opts.realm?.trim()) : await login(email, password);
       if (isMfaChallenge(r)) {
         setMfaToken(r.mfa_token);
+        setMfaAs(as);
         return;
       }
-      await finish(r);
+      await finish(r, as);
     },
     [finish],
   );
@@ -147,9 +162,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const submitMfa = useCallback(
     async (code: string) => {
       if (!mfaToken) throw new Error("No sign-in is waiting for a code");
-      await finish(await mfaVerify(mfaToken, code));
+      await finish(await mfaVerify(mfaToken, code), mfaAs);
     },
-    [finish, mfaToken],
+    [finish, mfaToken, mfaAs],
   );
 
   const signOut = useCallback(async () => {

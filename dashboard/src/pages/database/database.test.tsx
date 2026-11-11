@@ -196,7 +196,7 @@ describe("schema designer", () => {
     await pick(screen.getByLabelText("Field 1 type"), "number");
     await userEvent.click(screen.getByLabelText("Field 1 required"));
     await userEvent.type(screen.getByLabelText("Field 1 min"), "0");
-    await userEvent.click(screen.getByRole("checkbox", { name: "Whole numbers only" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Field 1 whole numbers only" }));
     await userEvent.click(screen.getByRole("button", { name: "Create collection" }));
     await waitFor(() => expect(mock.collections.map((c) => c.name)).toContain("orders"));
     const sent = mock.bodies["post /api/v1/collections"]![0] as { fields: Record<string, unknown>[] };
