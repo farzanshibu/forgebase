@@ -382,6 +382,7 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, db: 
             if config.storage.driver == forgebase_core::StorageDriverKind::Local {
                 check_blobs(r, db, layout).await;
             }
+            check_two_phase(r, db).await;
         }
     }
 }
@@ -751,4 +752,34 @@ fn loose_permissions(path: &Path) -> Option<u32> {
 #[cfg(not(unix))]
 fn loose_permissions(_path: &Path) -> Option<u32> {
     None
+}
+
+/// In-doubt two-phase schema transactions on control (ADR-0029 §3.7,
+/// FB-173): prepared parts older than the recovery grace and decided
+/// transactions not finished on every set. Shards are reached by the
+/// server (it resolves both at start and every minute); doctor reads
+/// control, where the journal lives. Fails when the topology has shards but
+/// control cannot prepare transactions.
+async fn check_two_phase(r: &mut Report, db: &Database) {
+    use forgebase_db::twophase::{self, Participant};
+    if db.kind() != forgebase_db::BackendKind::Postgres {
+        return;
+    }
+    if let Ok(topology) = forgebase_db::topology::load(db).await
+        && topology.is_sharded()
+        && db.max_prepared_transactions().await.unwrap_or(0) <= 0
+    {
+        r.push(
+            "two_phase",
+            Level::Fail,
+            "the cluster has shards but control has max_prepared_transactions = 0; set it above 0 (16) and restart",
+        );
+        return;
+    }
+    let nodes = [Participant::new(forgebase_db::topology::CONTROL_SET_ID, 0, db.clone())];
+    match twophase::in_doubt(db, &nodes, twophase::RECOVERY_GRACE).await {
+        Ok(list) if list.is_empty() => r.push("two_phase", Level::Ok, "no in-doubt schema transactions"),
+        Ok(list) => r.push("two_phase", Level::Warn, twophase::describe_in_doubt(&list)),
+        Err(e) => r.push("two_phase", Level::Warn, format!("could not read the transaction journal: {e}")),
+    }
 }

@@ -900,3 +900,76 @@ mod tests {
         assert!(report.is_empty());
     }
 }
+
+/// One line for `forgebase doctor` describing [`in_doubt`]'s findings.
+pub fn describe_in_doubt(list: &[InDoubt]) -> String {
+    let parts: Vec<String> = list
+        .iter()
+        .map(|d| match d {
+            InDoubt::Prepared {
+                set_id,
+                node_gid,
+                age_secs,
+                journal,
+                purpose,
+            } => {
+                let next = match journal {
+                    Some(_) => "recovery commits it",
+                    None => "recovery rolls it back",
+                };
+                let what = purpose.as_deref().map(|p| format!(" ({p})")).unwrap_or_default();
+                format!("{node_gid}{what} on set {set_id} prepared {age_secs:.0} s ago: {next}")
+            }
+            InDoubt::Stuck {
+                gid,
+                nodes,
+                created_at,
+                purpose,
+            } => format!(
+                "{gid} ({purpose}) decided at {created_at} is not finished on every set of [{}]: a set is unreachable",
+                nodes.join(", ")
+            ),
+            InDoubt::Unreachable { set_id, error } => format!("set {set_id} could not be read: {error}"),
+        })
+        .collect();
+    format!(
+        "{} in-doubt schema transaction(s): {}; the server resolves them at start and every minute",
+        list.len(),
+        parts.join("; ")
+    )
+}
+
+#[cfg(test)]
+mod describe_tests {
+    use super::*;
+
+    #[test]
+    fn doctor_lines_say_what_recovery_does() {
+        let line = describe_in_doubt(&[
+            InDoubt::Prepared {
+                set_id: "s1".into(),
+                node_gid: "fb_x_1".into(),
+                age_secs: 75.2,
+                journal: Some(XactState::Committing),
+                purpose: Some("create collection".into()),
+            },
+            InDoubt::Prepared {
+                set_id: "control".into(),
+                node_gid: "fb_y_0".into(),
+                age_secs: 40.0,
+                journal: None,
+                purpose: None,
+            },
+            InDoubt::Stuck {
+                gid: "fb_z".into(),
+                nodes: vec!["control".into(), "s2".into()],
+                created_at: "2026-11-11T00:00:00Z".into(),
+                purpose: "native policies".into(),
+            },
+        ]);
+        assert!(line.starts_with("3 in-doubt"), "{line}");
+        assert!(line.contains("fb_x_1 (create collection) on set s1 prepared 75 s ago: recovery commits it"));
+        assert!(line.contains("fb_y_0 on set control prepared 40 s ago: recovery rolls it back"));
+        assert!(line.contains("[control, s2]"));
+    }
+}
