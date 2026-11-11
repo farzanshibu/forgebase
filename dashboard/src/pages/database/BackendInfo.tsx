@@ -7,13 +7,16 @@
  * switched off in Features and settings.
  */
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useLoad } from "../../hooks";
-import { BACKEND_NAME, getDatabaseInfo, type DatabaseFeature } from "./info";
+import { BACKEND_NAME, TOPOLOGY_PATH, getDatabaseInfo, type DatabaseFeature, type DatabaseInfo } from "./info";
 
 const STATE_TEXT: Record<DatabaseFeature["state"], string> = { active: "on the extension", portable: "portable", off: "off" };
 
-export default function BackendInfo({ children }: { children?: ReactNode }) {
-  const { data } = useLoad(getDatabaseInfo, "database-info");
+/** `info` is the studio's already loaded answer; without it the line loads its own. */
+export default function BackendInfo({ children, info }: { children?: ReactNode; info?: DatabaseInfo }) {
+  const own = useLoad(getDatabaseInfo, "database-info");
+  const data = info ?? own.data;
   // A failed or absent answer hides the line: the studio works without it.
   if (!data) return <div data-slot="database-backend">{children}</div>;
   const name = BACKEND_NAME[data.backend] ?? data.backend;
@@ -22,6 +25,7 @@ export default function BackendInfo({ children }: { children?: ReactNode }) {
     data.server_version ? `${name} ${data.server_version}` : name,
     data.mode ? (data.mode === "managed" ? "bundled engine" : "external server") : undefined,
     typeof data.connections === "number" ? `${data.connections} connections` : undefined,
+    data.engine?.version ? `engine ${data.engine.version} (${data.engine.state})` : undefined,
   ].filter(Boolean);
   return (
     <div data-slot="database-backend" aria-label="Database backend" className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -34,6 +38,11 @@ export default function BackendInfo({ children }: { children?: ReactNode }) {
             </li>
           ))}
         </ul>
+      )}
+      {data.backend === "postgres" && (
+        <Link to={TOPOLOGY_PATH} data-slot="topology-link" className="text-primary hover:underline" title="Primary, replicas and shards (coming with the topology screen)">
+          Topology
+        </Link>
       )}
       {children}
     </div>

@@ -28,6 +28,8 @@ const GROUP_TITLES: Record<string, string> = {
   "postgres.extensions": "PostgreSQL extensions",
 };
 
+const groupRank = (g: string) => (g === "" ? 0 : g === "postgres" ? 1 : g === "postgres.extensions" ? 2 : 3);
+
 /**
  * A feature's settings in groups. `database.postgres.pool_size` and `database.postgres.extensions.vector` sit in "PostgreSQL" and
  * "PostgreSQL extensions"; a key one level under the feature (`storage.max_object_bytes`) is in the unnamed first group.
@@ -41,6 +43,7 @@ export function groupSettings(f: ServerFeature): { title: string | null; rows: F
     groups.set(g, [...(groups.get(g) ?? []), s]);
   }
   return [...groups.entries()]
-    .sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : 0))
+    // The unnamed group first, then PostgreSQL (the default backend) before anything else.
+    .sort(([a], [b]) => groupRank(a) - groupRank(b))
     .map(([g, rows]) => ({ title: g === "" ? null : (GROUP_TITLES[g] ?? g.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase())), rows }));
 }

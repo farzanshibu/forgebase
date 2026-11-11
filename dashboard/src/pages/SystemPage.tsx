@@ -8,7 +8,7 @@ import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { SkeletonCards } from "../components/Skeleton";
 import { Button } from "../components/ui";
-import { BACKEND_NAME, type DatabaseFeature, type DatabaseInfo } from "./database/info";
+import { BACKEND_NAME, SQLITE_NOTICE, showSqliteNotice, type DatabaseFeature, type DatabaseInfo } from "./database/info";
 
 const REFRESH_MS = 5000;
 
@@ -95,6 +95,11 @@ function DatabaseCard({ info }: { info: SystemInfo }) {
           {db.journal_mode && <Row label="Journal mode" value={db.journal_mode} />}
           <Row label="Schema version" value={db.schema_version} />
         </dl>
+        {showSqliteNotice(db) && (
+          <p role="status" data-testid="sqlite-notice" className="mt-3 rounded-md border border-warning/40 bg-warning/10 p-2 text-sm">
+            {SQLITE_NOTICE.split("`")[0]}<code>{SQLITE_NOTICE.split("`")[1]}</code>{SQLITE_NOTICE.split("`")[2]}
+          </p>
+        )}
       </Card>
       {features.length > 0 && (
         <Card title="Extension features">

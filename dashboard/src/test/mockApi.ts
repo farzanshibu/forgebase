@@ -84,6 +84,8 @@ export class MockApi {
   slow = { threshold_ms: 100, items: [{ sql: "SELECT * FROM t WHERE x = ?", param_count: 1, duration_ms: 250.5, at: NOW, rows: 3, label: null }] };
   /** `method path` of every request received. */
   calls: string[] = [];
+  /** The query string of every request, in order, next to its `method path` in `calls`. */
+  queries: URLSearchParams[] = [];
   /** Request bodies by `method path`. */
   bodies: Record<string, unknown[]> = {};
   headers: Record<string, string>[] = [];
@@ -114,6 +116,7 @@ export class MockApi {
     const method = (init.method ?? "GET").toUpperCase();
     const headers = (init.headers ?? {}) as Record<string, string>;
     this.calls.push(`${method.toLowerCase()} ${u.pathname}`);
+    this.queries.push(u.searchParams);
     this.headers.push(headers);
     const custom = this.matchCustom(method, u.pathname);
     if (custom) {
