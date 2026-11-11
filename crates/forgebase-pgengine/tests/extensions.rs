@@ -172,10 +172,7 @@ async fn the_managed_engine_creates_grants_and_reports_its_extensions() {
         write(&db, "SELECT cron.unschedule('fb161')").await;
     }
     if has_age {
-        assert_eq!(
-            scalar(&db, &owner("age")).await,
-            Value::Text("forgebase_super".into())
-        );
+        assert_eq!(scalar(&db, &owner("age")).await, Value::Text("forgebase_super".into()));
         // The server role's sessions load AGE from $libdir/plugins (the
         // setting exists only once the library is loaded); FB-160's
         // patch 0002 (apache/age#2561) adds it, on by default.

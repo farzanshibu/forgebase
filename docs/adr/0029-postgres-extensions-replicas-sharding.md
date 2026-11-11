@@ -2270,3 +2270,161 @@ has three new fields (all `Default`); `Backend` has a new defaulted method.
   (PostgreSQL with `database.features.trigram.state = active` only); list
   screens may offer a fuzzy toggle with a threshold slider. `explain` shows
   the trigram index in `indexes_used`.
+
+## Addendum: FB-160, Apache AGE in the engine build (2026-11-11)
+
+Built as §1.3 describes, with the three fixes of decision 9a.1 (option B)
+carried as patches. Where the build decides something the text left open,
+it is said here.
+
+**Files.** `deploy/postgres-engine/age/{patches/0001..0003-*.patch,
+make-args, post-install.sh, README.md, proposed/0004-*.patch}`;
+`THIRD_PARTY_LICENSES/postgres/age/{age.txt, NOTICE}` (and one row in
+`THIRD_PARTY_LICENSES/postgres/README.md`); `engine.lock` (`age` appended to
+`contents.extensions`, `[sources.age]`, three `[[sources.age.patches]]`);
+`deploy/postgres-engine/smoke.sh` (the AGE checks FB-130 left to FB-160);
+one step in `.github/workflows/postgres-engine.yml` (Bison 3 on the macOS
+runners). Test-only Rust: `crates/forgebase-pgengine/tests/extensions.rs`
+asserted that no engine ships AGE ("before FB-160"); both tests now branch on
+`EngineDir::has_plugin("age")` and check the AGE side (owner
+`forgebase_super`, both roles preload it, `graph = "on"` accepted). No
+production Rust changed. `build-unix.sh` and `engine.py` are unchanged: the
+FB-130 hook does everything.
+
+**Source.** `apache-age-1.8.0-src.tar.gz` from
+`archive.apache.org/dist/age/PG18/1.8.0/` (keeps every release;
+`downloads.apache.org` drops 1.8.0 once a newer PG18 release is out). Its
+SHA-512 matched the ASF `.sha512` fetched from `downloads.apache.org` (a
+different server); the build checks the SHA-256 in `engine.lock`. The `.asc`
+signature was not checked (no gpg on the build machine). Nothing else is
+fetched: the patches are in the repository.
+
+**Patches.** Applied in name order by `build-unix.sh` (`patch -p1
+--forward`). `age/post-install.sh` fails the build when `patches/` and
+`[[sources.age.patches]]` differ (names, order or SHA-256), before anything
+is packed. I reviewed each diff against the 1.8.0 source:
+
+| Patch | Upstream | Fixes | Review |
+|---|---|---|---|
+| `0001-pr2475-detach-delete-rls-segfault.patch` (SHA-256 `f62d9ad5…`) | apache/age#2475, commit `2e4b4ad91359b6e4dedbe787b83176f565bf7727`, verbatim | `DETACH DELETE` of a vertex with an edge whose label has an RLS policy calling a SQL function crashed the backend: the connected-edge check runs at executor shutdown with no active snapshot | 25 lines in `cypher_delete.c`: pushes `es_snapshot` when none is active and pops it at the end; the function has no early return between push and pop, and an error unwinds the snapshot stack at abort. Plus the upstream regression test |
+| `0002-pr2561-rls-and-select-acl-in-traversals.patch` (`8ae84d4a…`) | apache/age#2561, commit `3eeb20bd967875cb32158d495396916d85697a51`, verbatim | variable-length and shortest-path traversals fill the global graph cache with a raw heap scan that skipped RLS and `SELECT` privileges | `age_global_graph.c`: label tables with RLS active for the current role load through an SPI read-only cursor (the planner applies the policies), others keep the heap scan after an explicit table/column `SELECT` check; edges to invisible vertices are dropped; a cache loaded through RLS is rebuilt every statement, others are keyed on role and the new GUC and invalidated by ACL/policy/role catalog changes; error paths free the label lists. New GUC `age.enforce_rls_in_traversal` (default `on`, `PGC_SUSET`). Applies cleanly; compiles without new warnings |
+| `0003-pr2578-utility-commands-without-age.patch` (`46da0aa2…`) | apache/age#2578, commit `6e073cf40917731b4cd5b2654e4a93da005a2295`, **backported** | with AGE loaded in a session, `TRUNCATE` in a database without the extension failed reading AGE's catalog (`schema "ag_catalog" does not exist`) | upstream guards three branches of `ag_ProcessUtility_hook` (TRUNCATE, VACUUM FULL, CLUSTER) with `is_age_extension_exists()`; 1.8.0 has only the TRUNCATE branch (VACUUM/CLUSTER came with master commit `0e30566226`, #2551, after 1.8.0), so the backport keeps that hunk and the upstream tests unchanged. The patch header says so |
+
+Failing before, proven: the smoke checks run on the same engine with an
+unpatched 1.8.0 `age.dylib` gave a variable-length `MATCH` count of 2 (the
+RLS-hidden vertex was visible; 1 expected), `DETACH DELETE` killed the
+backend (`terminated by signal 11`), and `TRUNCATE` in a database without AGE
+failed with `schema "ag_catalog" does not exist`. With the patches: 1, ok, ok.
+AGE's own regression suite (43 tests, run with the build's `pg_regress`
+against the extracted engine): 41 pass, including `security` (0001),
+`rls_vle` (0002) and `drop` (0003). `cypher_merge` failed on a sort-order
+difference from the temp instance's locale and passes with `--no-locale` (as
+upstream CI runs it). `age_load` fails on macOS only: the CSV loaders accept
+a file when its resolved path starts with `/tmp/age/`, and macOS resolves
+`/tmp` to `/private/tmp`. Upstream behaviour, not patched; ForgeBase does not
+use the CSV loaders (§1.5 writes label tables with SQL).
+
+**A fourth fix found in review, not applied.** apache/age#2581 (commit
+`06ce678d74210539705c77e2dc7c9fa861e2a331`, master only, 9 lines in
+`ag_catalog.c`): with AGE loaded in a session, `post_parse_analyze` runs for
+the `ROLLBACK` of a failed transaction; when that backend's caches were reset
+meanwhile (shared invalidation queue overflow), `is_age_extension_exists()`
+reads `pg_extension` in the aborted transaction, the locks leak into the
+PGPROC, and every later backend on it fails with "failed to re-find shared
+lock object" until restart. 1.8.0 has the same code and ForgeBase's
+per-role preload reaches it. Decision 9a.1 lists three patches, so it is
+**not** carried: `age/proposed/0004-pr2581-no-catalog-read-outside-transaction.patch`
+(upstream commit verbatim, SHA-256 `de29e981…`, applies on top of 0003) is
+ready. To carry it: move it to `patches/`, add a `[[sources.age.patches]]`
+table, rebuild. Recommended.
+
+**Build.** PGXS through the FB-130 hook. AGE's grammar is a GLR grammar
+built with `-Werror -Wno-error=conflicts-sr`, which needs GNU Bison 3; macOS
+ships 2.3. `age/make-args` sets `BISON` to the first Bison 3 among Homebrew's
+two prefixes and `bison` on `PATH` (the build stops with a message when
+there is none) and `YFLAGS=-Wno-deprecated` (Bison 3 reports AGE's
+`%name-prefix` and `%pure-parser` as deprecated, an error under `-Werror`;
+PostgreSQL's configure adds `-Wno-deprecated` only when it found Bison 3
+itself). Flex 2.6.4 and Perl are the ones PostgreSQL's build uses. Local
+build: Homebrew `bison` 3.8.2 installed (keg-only, nothing linked into
+`PATH`). CI: the new step installs it on the macOS runners; Alpine's image
+already has bison 3.8.
+
+**`lib/plugins/age.*` is a link** (`../age.<so|dylib>`), not a copy:
+PostgreSQL's loader recognises an already loaded library by inode, so the
+extension's `$libdir/age` and the roles' `$libdir/plugins/age` are one
+loaded module. Two copies would be loaded twice and install AGE's hooks
+twice in one backend. The archive format already carries links;
+`forgebase-pgengine`'s `has_plugin` follows them.
+
+**Licences.** `share/licenses/age.txt` (upstream `LICENSE`: Apache-2.0 with
+the PostgreSQL-licensed parts appended) and `age-NOTICE.txt` (upstream
+`NOTICE`). `post-install.sh` compares both with the tarball's files byte for
+byte. Windows ships neither (no AGE).
+
+**Windows.** Unchanged: `build-windows.ps1` never builds AGE and writes
+`graph_cypher = false`; `[sources.age] os = ["linux", "macos"]`, so Windows
+neither fetches it nor needs its licence. `smoke.sh` now fails when the
+manifest's `graph_cypher` and the presence of `lib/plugins/age.*` disagree.
+
+**Size (aarch64-apple-darwin, local build).** Archive 7,857,850 bytes
+(FB-130: 7,661,698; +196,152, +0.19 MiB). Unpacked 30,912,449 bytes in 945
+files and 1 link (FB-130: 30,097,121 in 938); AGE's 7 files are 815,082
+bytes (`age.dylib` 606,128 stripped, SQL 196,063, licences 12,891), the other
+246 bytes are the licence README row: the rest of the engine is unchanged.
+§1.3's estimate of 3–4 MB was high. Idle RSS of the smoke primary: 84,464
+KiB in 10 processes, postmaster 25,408 KiB (FB-130: about 73 MiB, postmaster
+25 MiB); AGE is not loaded by the postmaster, so the difference is run to run
+noise.
+
+**Smoke test** (`smoke.sh`, from the archive, passed): `CREATE EXTENSION
+age`, `create_graph`; a role `fb_graph` (not a superuser) with
+`session_preload_libraries = '$libdir/plugins/age'`, as `forgebase_server`
+has; as that role `MATCH (a:Person)-[:KNOWS]->(b:Person)` and a
+variable-length `MATCH` under RLS (0002); `DETACH DELETE` under a policy
+calling a SQL function (0001); `TRUNCATE` in a database without AGE (0003);
+`pg_dump` with a graph; and, on the hot standby started from
+`pg_basebackup`, the same `MATCH` and variable-length `MATCH` as `fb_graph`.
+§1.2 said plain `MATCH` on a standby is not covered upstream; it works here.
+FB-163 keeps its formal standby test.
+
+**musl.** Not decided here: there is no Linux build on this machine (no
+Docker daemon running), so neither Linux target has been built with AGE. The
+evidence so far: AGE's sources use no glibc-only interface (no
+`execinfo.h`, `qsort_r`, `mallinfo`, `backtrace`; the one `uint` is defined
+by musl under `_GNU_SOURCE`, which PostgreSQL sets on Linux); the Alpine
+image has bison 3.8, flex and perl; `age.so` needs only libc, which the
+build's NEEDED check allows. The engine workflow decides: if AGE fails to
+build or `smoke.sh` fails on a musl target, that target ships without AGE as
+Windows does. That fallback needs a small `build-unix.sh` change (not made:
+skip an extension whose `[sources.<name>] os` lacks the target's OS, then set
+`[sources.age] os = ["macos"]`); the manifest then says
+`graph_cypher = false` and the server reports graph as portable.
+
+**CI must prove** (nothing below ran here): the AGE build and `smoke.sh` on
+x86_64 and aarch64 musl (Alpine 3.20) and on `x86_64-apple-darwin`
+(`macos-15-intel`, Bison from `/usr/local/opt/bison`); the distro matrix with
+AGE (`distros.sh` runs the same `smoke.sh`, so every distro runs the Cypher
+and standby checks); that `shellcheck` accepts `smoke.sh` (it does here).
+
+**Notes for FB-163 (openCypher service).**
+- AGE loads in every `forgebase_server`/`forgebase_reader` session
+  (`current_setting('age.enforce_rls_in_traversal')` answers `on` for both
+  roles in the pgengine test). `SET LOCAL search_path = ag_catalog, …` per
+  transaction as planned.
+- `age.enforce_rls_in_traversal` is on by default and superuser-only to
+  change: label rules compiled to RLS apply inside variable-length and
+  shortest-path traversals. Cost: a graph whose labels use RLS rebuilds the
+  traversal cache through SPI on every statement; measure it.
+- With the GUC on, traversals also check `SELECT` on every label table (or
+  every column): grant the reader role `SELECT` on the derived graph's
+  tables, or traversals fail with `permission denied`.
+- RLS policies can read agtype properties with `properties->>'"key"'` (the
+  smoke test's `OWNS` policy does).
+- `DETACH DELETE` under function policies is fixed, but §1.5 writes label
+  tables with SQL anyway.
+- `MATCH` and variable-length `MATCH` on a hot standby work as a
+  preloading non-superuser (smoke test).
+- Do not use AGE's CSV loaders (`load_labels_from_file`): restricted to
+  `/tmp/age/`, unusable on macOS.
+- Carry #2581 before openCypher sees real traffic (above).
