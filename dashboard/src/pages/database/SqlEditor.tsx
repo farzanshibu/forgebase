@@ -43,7 +43,7 @@ export default function SqlEditor() {
   const [history, setHistory] = useState(loadHistory);
   const tables = useLoad(sqlTables, "sql-tables");
   // "Run on" shows only when the server is sharded (FB-171): a failed or single-server answer hides it.
-  const topology = useLoad(async (s) => { try { return await getTopology(s); } catch { return undefined; } }, "sql-topology");
+  const topology = useLoad(async (s) => { if (!postgres) return undefined; try { return await getTopology(s); } catch { return undefined; } }, `sql-topology:${postgres}`);
   const shardSets = postgres && topology.data?.backend === "postgres" && topology.data.sets.some((s) => s.kind === "shard") ? topology.data.sets : [];
 
   async function go(kind: "run" | "explain", text = sql, secrets = showSecrets) {
