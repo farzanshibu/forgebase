@@ -618,6 +618,20 @@ impl StorageService {
         version: Option<&str>,
         filter: Option<&Predicate>,
     ) -> Result<ObjectRow> {
+        self.find_row_on(bucket_id, key, version, filter, None).await
+    }
+
+    /// [`Self::find_row`], on a replica when `replica` names the call site
+    /// (metadata reads only: the content path and every write read the
+    /// primary, ADR-0029 §2.5).
+    pub(crate) async fn find_row_on(
+        &self,
+        bucket_id: &str,
+        key: &str,
+        version: Option<&str>,
+        filter: Option<&Predicate>,
+        replica: Option<&'static str>,
+    ) -> Result<ObjectRow> {
         let d = self.inner.db.dialect();
         let stmt = match version {
             Some(v) => rules::statement(
@@ -637,7 +651,10 @@ impl StorageService {
                 filter,
             )?,
         };
-        let rows = self.inner.db.fetch_all(&stmt).await?;
+        let rows = match replica {
+            Some(what) => self.fetch_replica(what, &stmt).await?,
+            None => self.inner.db.fetch_all(&stmt).await?,
+        };
         rows.rows
             .first()
             .map(|r| ObjectRow::decode(r))
@@ -654,7 +671,9 @@ impl StorageService {
     ) -> Result<ObjectInfo> {
         let b = self.bucket_row(ctx, bucket).await?;
         let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
-        let row = self.find_row(&b.id, key, version, access.filter()).await?;
+        let row = self
+            .find_row_on(&b.id, key, version, access.filter(), Some("storage.head"))
+            .await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -741,7 +760,7 @@ impl StorageService {
                 vec![b.id.as_str().into(), plen.into(), prefix.into(), lower.as_str().into()],
                 access.filter(),
             )?;
-            let rows = self.inner.db.fetch_all(&stmt).await?;
+            let rows = self.fetch_replica("storage.list_objects", &stmt).await?;
             if rows.is_empty() {
                 break;
             }
@@ -792,7 +811,7 @@ impl StorageService {
             vec![b.id.as_str().into(), key.into()],
             access.filter(),
         )?;
-        let rows = self.inner.db.fetch_all(&stmt).await?;
+        let rows = self.fetch_replica("storage.list_versions", &stmt).await?;
         Ok(rows.rows.iter().map(|r| ObjectRow::decode(r).info()).collect())
     }
 

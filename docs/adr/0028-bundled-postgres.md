@@ -3361,3 +3361,334 @@ trip, damage vs hashes and `pg_verifybackup`, swap/crash/rollback, refusals
 incl. FB-179, snapshots and the migrate hook, external logical round trip),
 `forgebase-cli/tests/backup_e2e.rs` (3, both backends), unit tests in
 `pg.rs`.
+
+## Addendum: FB-151 — `forgebase db convert`
+
+Built as §6.4 describes, with the FB-158 rows for FB-151 (ADR-0029). Where
+the code differs from the text above, or decides something it left open, it
+is said here.
+
+**Files.** `crates/forgebase-convert/**` (new crate: `lib.rs` orchestration,
+`canon.rs` canonical encoding and SHA-256, `copytext.rs` the `COPY` text
+format, `pg.rs` / `sqlite.rs` the copy connections and catalog reads,
+`plan.rs` table pairing, `schema.rs` target collections and indexes,
+`refusals.rs` the `--to sqlite` list, `extensions.rs` extension data to
+portable rows; `tests/convert.rs`); `crates/forgebase-cli/src/convert.rs`
+(new) and `tests/convert_e2e.rs` (new). Shared edits: `mod convert` in
+`main.rs`, the `DbCommand::Convert` variant in `db.rs` (the command is
+`forgebase db convert`, so the variant lives next to `db dump`, not in
+`main.rs`'s `Command`), the workspace dependency line, the CLI's
+`Cargo.toml` (dependency, `toml_edit`, the `[[test]]` entry). No
+migration. The workspace `members` is `crates/*`, so no members edit.
+
+**Command.** `forgebase db convert --to postgres|sqlite [--no-backup]
+[--no-prepare] [--json]`. `--to postgres` goes to the bundled engine, or to
+the external server when `[database.postgres] mode = "external"` (URL from
+`FORGEBASE_DATABASE_URL`, never written by convert). Steps, in order:
+data-directory lock (a running server is refused); refuse the same backend,
+a missing project, an existing target (`forgebase.db`, `postgres/data`, or
+an external database with tables in `public`/`forgebase`), a managed source
+with `postgres/nodes/*` (replicas or sets); open the source with
+`open_owned` (the bundled engine started for the run); a snapshot labelled
+`before db convert` (`BackupOptions{pg}`, FB-150's note); migrate the source
+(SQLite pre-migration snapshot / FB-150 hook); `--to sqlite` brings
+extension data to portable rows (below); create and migrate the target
+(`Engine::prepare` = `initdb` + start, or a new file); `forgebase_convert::
+convert`; close both, stop the new engine; rename the old database
+(`forgebase.db` + `-wal`/`-shm` → `forgebase.db.pre-postgres`,
+`postgres/data` → `postgres/data.pre-sqlite`; `.<unix time>` appended when
+the name is taken; never deleted; an external source is left as is);
+write the marker after the data (`database::write_marker`); set
+`[database] backend` in the config file with `features::set_keys`
+(comments kept; a contradicting `FORGEBASE_DATABASE_BACKEND` is named). A
+failed run removes the target it made (the new file, the new cluster, or on
+an external server the tables in `public` and schema `forgebase`, which
+were empty before) and leaves the source as it was.
+
+**Copy (library).** `convert(source, target, progress)` takes both
+`Database` handles (migrated) and a copy connection for each
+(`Conn::Sqlite(path)` / `Conn::Postgres(url)`).
+- Preconditions: source has no pending migration; target at the same
+  version; target has no collections. SQLite source: `integrity_check`, no
+  foreign-key violations, `validate_postgres_names(None)` on every
+  collection (FB-144's note). PostgreSQL source: the refusal list.
+- *Decided here:* collection tables and their indexes are **made by the
+  data core on the target** — `create_collection` in relation order (a
+  relation cycle is created without its closing fields, which
+  `update_collection` adds once their target exists; views last) and
+  `create_index` for every `manual` row of `_forgebase_indexes`
+  (b-tree, unique, partial, expression, full text). No DDL is translated,
+  so the target holds exactly what that engine would have made, including
+  automatic and tenant indexes. A source whose automatic index names
+  differ from what the target derives (names longer than 63 bytes,
+  fitted on PostgreSQL) is refused. The catalog rows these calls write are
+  then replaced by the source's rows (next point).
+- Tables: the PostgreSQL catalog (`forgebase` and `public` base tables) is
+  the list; every table and column must exist on both sides
+  (`_forgebase_migrations` is not copied: each engine keeps its own ledger;
+  SQLite's `sqlite_*`, FTS5 tables and their shadow tables are engine
+  internals). A PostgreSQL-only column must be NULL in every row (`vec`
+  after `vector.convert`). `_rowid` ↔ SQLite `rowid` for
+  `ROWID_TABLES` (`_forgebase_jobs`, `_forgebase_job_workflows`).
+  `_forgebase_meta` rows `ext.%` (FB-161 pins) are not copied: the target's
+  first start decides the engines again.
+- One transaction on the target for everything: `TRUNCATE` (PostgreSQL) /
+  `DELETE` (SQLite) of every copied table, then the rows. PostgreSQL:
+  `COPY … FROM STDIN` (text format, 1 MiB chunks) as `forgebase_super` with
+  `SET LOCAL session_replication_role = replica` (triggers and FK triggers
+  off; the source's foreign keys were checked); a role that is not a
+  superuser gets `ALTER TABLE … DISABLE TRIGGER USER` per table and
+  `SET CONSTRAINTS ALL DEFERRED` (checked before the commit). SQLite: the
+  copy connection runs with `foreign_keys` off, drops the triggers of
+  `_forgebase*` tables for the copy (append-only guards, the vector FTS
+  sync) and recreates them from `sqlite_master`, keeps collection-table
+  triggers (full-text sync fills the new FTS5 tables as rows arrive), and
+  runs `PRAGMA foreign_key_check` before the commit. The PostgreSQL source
+  is read in one `REPEATABLE READ READ ONLY` transaction with `COPY (SELECT
+  …) TO STDOUT`.
+- Types by the PostgreSQL column (`canon::Kind`): integers, `boolean`
+  (0/1), `double precision`, text types (`citext` too), `jsonb`/`json`
+  (SQLite JSON text; `jsonb` output is compacted on the way back, key
+  order is `jsonb`'s), `bytea` (BLOB; hex both ways); anything else as its
+  text form.
+- Derived: `_forgebase_vector_fts` is rebuilt from
+  `_forgebase_vector_items.content` (contentless FTS5 on SQLite cannot be
+  read). Identity sequences: `setval` past `max(col)` and past SQLite's
+  `sqlite_sequence` (deleted ids are not handed out again);
+  `--to sqlite` raises `sqlite_sequence` to the PostgreSQL sequence's last
+  value.
+- Verification, inside the same transaction: per table the row count and
+  SHA-256 over the rows in primary-key order (text keys in byte order:
+  `COLLATE "C"` / `COLLATE BINARY`; a table without a key hashes its
+  sorted row digests) in a canonical encoding: tagged, length-prefixed
+  values; JSON with sorted keys, no whitespace and integral numbers as
+  integers (so `jsonb`'s normalisation compares equal); floats by bit
+  pattern. Any difference rolls the transaction back (`Mismatch`).
+- Report: per-table rows and SHA-256 (system tables first), collections and
+  indexes made, derived rows, sequences, and `manual`: raw-SQL objects not
+  recreated — SQLite indexes and triggers on collection tables and views
+  that the target does not have, PostgreSQL indexes on collection tables
+  that SQLite does not have — with their SQL.
+
+**`--to sqlite` refusals** (all listed in one error): more than one
+non-retired database set; replicas; row-level security policies not named
+`fb_*` (FB-152's own are regenerated, not copied); functions in `public`
+that no extension owns; non-internal triggers on collection tables; enum,
+domain, range and multirange types and free-standing sequences in
+`public`; views and materialized views in `public` that are not view
+collections; trigram indexes (FB-166: `pg_trgm` only; fuzzy search is
+PostgreSQL only, so the index is dropped by hand first); columns of
+extension types other than `citext`; vectors in
+pgvector, pgmq subscription queues, pg_cron `fbsched_*` jobs (each message
+names the job kind or setting that moves it). A derived Apache AGE graph is
+**not** refused: it is not copied, and the report says so.
+
+**Extension data (`prepare_portable`, `--to sqlite` unless
+`--no-prepare`).** On the source, with the services' own conversions:
+`VectorService::convert(Portable)` when vectors sit in `vec` or the pin
+says `extension`; `QueueService::convert(Portable)` when `pgmq.q_fbs_*`
+queues exist or the pin says `extension`; pg_cron released by
+`attach_pgcron` on a handle without the extension setup (the cron feature
+is not active there, so FB-165's release removes `fbsched_*` jobs and
+hands the schedules back to the tick). The source stays a valid
+PostgreSQL project on the portable engines. `--to postgres` lands
+everything portable and copies no `ext.*` pin, so the first start in
+`auto` mode pins and moves vectors to pgvector and deliveries to pgmq
+(FB-162/FB-164 reconcile) and attaches pg_cron.
+
+**Tests.** `crates/forgebase-convert`: unit tests (canonical encoding,
+`COPY` text codec, pairing); `tests/convert.rs` — a SQLite database built
+by the data core (collections of every field storage, a relation cycle, a
+view, manual b-tree and full-text indexes, unicode/tab/newline/backslash
+text, JSON, booleans, numbers), the graph, jobs (jobs and a schedule),
+queue (topic, subscription, an owed delivery) and vector (collection,
+vectors with text) services and a raw `bytea` row; converted to
+PostgreSQL and back to SQLite: every table's count and SHA-256 equal at
+both steps, the raw-SQL index reported, a second conversion into the now
+non-empty target refused; then the services run against both results
+(full-text search, filters, JSON, the view, a unique index, new ids after
+the copied ones, the delivery pulled, a vector search, a new job);
+refusals for PostgreSQL-only objects (with a trigram index where the engine
+has `pg_trgm`) and for a SQLite source with a
+dangling relation; a project born on PostgreSQL after the server's
+extension setup (vectors in pgvector, deliveries and a lease in pgmq):
+`--to sqlite` refused naming `vector.convert` / `queue.convert`, then
+`prepare_portable` and the conversion, no `ext.*` pin copied, the services
+on the result. Also fixed on the way: a stored view definition carries the
+fields derived from its query, which `create_collection` refuses, so they
+are cleared and the target derives them again. `crates/forgebase-cli/tests/convert_e2e.rs`: refusals
+(no project, same backend, a lite build without an engine) and, on
+PostgreSQL, the full CLI round trip (marker, kept files, config, status,
+admin login data, the snapshot, equal hashes, doctor).
+
+**Results** (after merging `main` with FB-166). `forgebase-convert`: 9 unit
+and 4 integration tests green on Homebrew PostgreSQL 18
+(`FORGEBASE_PG_ENGINE_DIR`) and on the bundled engine
+(`FORGEBASE_TEST_PG_ENGINE`; pgvector, pgmq and pg_trgm present there, so
+the extension and trigram paths run; Homebrew has none of them, so the
+extension test checks the plain path). `forgebase-cli`: all 14 test targets
+green with `FORGEBASE_TEST_BACKEND=sqlite` and `=postgres` (101 tests each;
+`convert_e2e`'s CLI round trip also run on the bundled engine). `cargo fmt
+--check` and `clippy -p forgebase-convert -p forgebase-cli --all-targets
+-D warnings` clean.
+
+**For FB-177 (docs).** Document `forgebase db convert` (flags above), that
+the server must be stopped, the snapshot, the kept files and how to go back
+(`db convert` the other way, or put `forgebase.db.pre-postgres` back and
+write `sqlite` into `forgebase.backend`), the `manual` list (raw SQL from
+the SQL editor is not translated), the refusal list, and that extension
+data is converted in the source first for `--to sqlite`.
+**For FB-179 (multi-set).** `--to sqlite` refuses more than one set or any
+replica (`_forgebase_db_sets`, `_forgebase_db_nodes`, `postgres/nodes/*`);
+`--to postgres` creates a single set (the control set the migrations seed).
+A multi-set conversion would run `convert` per set into each set's
+database; the library takes any two `Database` handles and URLs.
+
+## Addendum (FB-153): direct logins, the SQL editor's role, TCP with TLS, extensions
+
+Written 2026-11-11 by FB-153 (rls-coverage §3.5–§3.6, G11). Human decision
+(2026-11-11), kept: direct logins use the Unix socket and `forgebase db
+psql`; TCP stays **off** by default and only an operator's explicit
+`[database.postgres] listen` turns it on, with TLS required on every TCP
+login.
+
+**What exists.**
+- *Migration pair 0042 `db_logins`* (the SQLite twin is a no-op). Table
+  `_forgebase_db_logins` (name, role, principal, tenant, readonly, admin,
+  limits, `valid_until`, `claims` jsonb, audit columns; row-level security on,
+  no policies). `forgebase.claims()` gains the login branch: a session whose
+  login role is neither superuser nor `BYPASSRLS` gets the `claims` of its row
+  (`role_name = session_user`), anything else `NULL`.
+  `forgebase.is_secret_column(table, column)` and
+  `forgebase.fb_editor_grants()` (re-grants `forgebase_sql_admin` `SELECT` on
+  every non-secret column of every `forgebase` table; the server reruns it at
+  each start, so tables of later migrations are covered). On a superuser
+  cluster it also creates `forgebase_sql_admin` and `forgebase_login_write`.
+- *Roles* (bootstrap, every start): `forgebase_login_write` (member of
+  `forgebase_login`); `forgebase_sql_admin` granted to `forgebase_owner` (so the
+  server owns what the editor creates) and to the reader `WITH INHERIT FALSE,
+  SET TRUE`; both login groups granted to the server and the reader the same
+  way ("run as"); `USAGE` on `forgebase` and `USAGE, CREATE` on `public` for
+  the editor's role; `CONNECT` on the database for `forgebase_login`.
+- *Generated per collection* (`native::generate`, every mode): `REVOKE ALL`
+  then `SELECT`/`UPDATE` of every column except `password`, `token_key` and
+  password fields, plus `INSERT`, `DELETE`, for `forgebase_sql_admin` (built from
+  the table's real columns); views get `SELECT`. `api` views: `SELECT` to
+  `forgebase_login`, writes to `forgebase_login_write` only.
+- *Logins* (`forgebase_policy::logins`): `create_db_login`, `list`, `get`,
+  `rotate` (new password, optional expiry; sessions stay), `delete` (row
+  first, then `NOLOGIN`, terminate sessions, `REASSIGN/DROP OWNED`, `DROP
+  ROLE`). Role `fbu_<name>`, `CONNECTION LIMIT` 10, `statement_timeout`
+  30 s, `idle_in_transaction_session_timeout` 60 s, `search_path = api`;
+  `--admin` logins: member of `forgebase_sql_admin`, `role` and
+  `search_path = public, forgebase` set on the role, platform administrators
+  only. The password (24 random bytes, base64url) is returned once; ForgeBase
+  computes the SCRAM-SHA-256 verifier itself (RFC 7677 vector in the unit
+  test), so the password never reaches PostgreSQL or its log. Every change is
+  audited (`db.login.create|rotate|delete` in `_forgebase_auth_audit`).
+- *Claims refresh*: `PolicyService::reload` (every snapshot reload: policy
+  writes, auth changes, suspensions) rewrites every login's claims, serialised
+  by a mutex and always from the newest snapshot; the native-policy hook does
+  it inside each collection change's schema transaction; startup does it after
+  `enable_native_rls`. A login whose principal or tenant is gone gets `NULL`.
+- *Login claims* (`logins::login_claims`): the FB-152 claims for every
+  collection with policies and the actions list, create, update, delete,
+  merged; no `action` (so `read_action()` is `list`); `login: true`.
+- *SQL editor* (`forgebase-data` `sql.rs`): after `enable_sql_editor_role`
+  (called by `enable_native_rls`, PostgreSQL, when both pools may `SET ROLE`
+  to it) every statement runs as `forgebase_sql_admin` through
+  `fetch_all_as`/`execute_as`. Exceptions: `CREATE|ALTER|DROP POLICY` (needs
+  the owner) and calls with `show_secrets` run as the pools' own roles.
+  Refused: policies named `fb_*`, writes naming `api.` objects. Privilege and
+  policy refusals (also from the read/write probe, which plans views with
+  their owner's rights) are 403.
+- *Run as*: `POST /api/v1/sql` and `/sql/batch` take `"run_as": {"principal",
+  "tenant"}`; `PolicyService::run_as_claims` (administrators, native RLS on)
+  computes the login claims; statements run as `forgebase_login` (reads) or
+  `forgebase_login_write` (writes) with `search_path = api, forgebase`
+  (`RunAs::with_search_path`, new), so they see exactly what a direct login
+  bound to that user sees. DDL is refused (`run_as_ddl`); each call is audited
+  (`sql.run_as`).
+- *Network* (`forgebase-pgengine::hba`): `pg_hba.conf` is rewritten every
+  start: `local all all scram-sha-256` (+ replication); without `listen` no
+  `host` line at all and `listen_addresses = ''`. With `listen` (any address
+  now): `ssl = on`, `hostnossl … reject`, ForgeBase's own roles `hostssl` on
+  loopback only, `+forgebase_login` `hostssl` to database `forgebase` from
+  loopback (loopback listen) or anywhere (other addresses), a final reject.
+  Windows (no socket) keeps loopback `host` lines. Certificate:
+  `[database.postgres] tls_cert`/`tls_key` (both or neither, read-only
+  settings, `FORGEBASE_DATABASE_POSTGRES_TLS_CERT|KEY`) or a self-signed ECDSA
+  P-256 certificate generated once under `<node>/tls/` (key 0600, SAN
+  `localhost` and the listen IP; built with `ring` and a small DER writer, no
+  new crate). `ssl`, `ssl_cert_file`, `ssl_key_file` joined the deny list.
+- *Extensions* (`/api/v1/system/extensions`): `GET` lists the allow list of
+  §1 plus the FB-161 feature extensions with available/installed versions and
+  `managed_by` (`api`, `schema` for `citext`/`unaccent`, `feature:<name>`);
+  `POST {name}` creates an allowed one in `public` as the administrator
+  (`Backend::admin_batch`); `DELETE` drops with `RESTRICT`. Feature extensions
+  (vector, age, pgmq, pg_cron, pg_trgm) are 409 `extension_managed`;
+  anything else 400 `extension_not_allowed`. Audited
+  (`db.extension.create|drop`).
+- *Administrator statements*: `Backend::admin_batch(&[String])` runs
+  statements in one transaction on a fresh connection as the URL given to
+  `Database::set_admin_url` (the bundled engine's `forgebase_super`; logging
+  silenced for superusers), else on the writer.
+- *CLI*: `forgebase db login create <name> [--as <principal>] [--tenant]
+  [--readonly] [--admin] [--connection-limit] [--statement-timeout-ms]
+  [--valid-until] [--json]`, `list`, `rotate`, `delete`; `forgebase db psql
+  --as <login>` (psql asks for the password, or `PGPASSWORD`/`~/.pgpass`). The
+  default `db psql` session is now `forgebase_sql_admin` (`PGOPTIONS -c role`).
+
+**Deviations from rls-coverage §3.5 and the text above.**
+1. *`show_secrets` on PostgreSQL* is the audited way to see secrets and runs
+   as the pools' own roles; the editor's role is the boundary for everything
+   else (it closes the name guard's gaps: `SELECT *`, views, built names).
+   Consequence: `SELECT *` of a table with secret columns is 403 on
+   PostgreSQL without `show_secrets` (FB-135's server test now expects that).
+2. *Run as* uses the direct-login groups through the `api` views rather than
+   `forgebase_rls` on the tables: `forgebase_rls` has every column, secrets
+   included (FB-152 deviation 1), and "what a login sees" is the point.
+3. *Tenant gate of logins* counts memberships only, not environment ACL
+   entries shared with non-members for one permission key: a login may see
+   less than the API, never more.
+4. *Logins are writable unless `--readonly`*, as the spec says. Writes go
+   through the `api` triggers, so they skip validation, change events and
+   versions (FB-152 deviation 7).
+5. *MFA*: the endpoints need an administrator session, which passed MFA at
+   sign-in when MFA is on; there is no extra step-up.
+6. *Entitlement*: creating a non-admin login asks the entitlement hook with
+   permission `db:direct_access` for the bound principal's subject.
+7. *Collection DDL in the editor*: the editor's role does not own collection
+   tables, so `ALTER`/`DROP` of a collection table or a new index on it is
+   refused on PostgreSQL (use the collections and indexes APIs).
+
+**Tests.** `forgebase-policy/tests/db_logins.rs` (driver logins see only their
+rows; spoofing; writes under the rules; claims follow a rule change and a
+suspension; read-only logins; a deleted principal sees nothing; delete ends
+sessions; validation, conflicts, rotation, audit; run as reads and writes,
+DDL refused, audit; editor role vs secret columns, `*` and views); unit tests
+in `logins.rs` (SCRAM vector, names, times, principals), `hba.rs` (no TCP
+line by default, TLS-only rules, Windows, DER time, certificate shape);
+`forgebase-data/tests/sql_roles.rs` (editor role on both pools, system secret
+columns, `show_secrets`, `fb_*` and `api` guards, hand-written policies);
+`forgebase-pgengine/tests/network.rs` (the default opens no TCP port; listen
++ TLS: encrypted loopback login, plain TCP refused, a named login over TLS,
+the generated certificate survives a restart, a configured one replaces it, a
+missing one refuses the start); `forgebase-server/tests/security_fb153.rs`
+(HTTP + SCRAM logins over the socket, editor and run as, extensions, gates);
+`forgebase-cli/tests/database_e2e.rs` (db login and `db psql --as`).
+
+**For FB-155 (Database Studio).**
+- "Run as" selector: send `run_as: {principal, tenant}` with `/sql` and
+  `/sql/batch`; list candidates from the auth users and service accounts;
+  show that DDL is refused with it (`run_as_ddl`) and that it is audited.
+- `SELECT *` on auth collections and secret-holding system tables is 403 on
+  PostgreSQL: offer "show secrets" (audited) or expand the column list.
+- Logins page over `/api/v1/system/db-logins`: show the password once, the
+  `psql` hint, `has_claims` (false = sees nothing), rotate and delete.
+- Extensions page over `/api/v1/system/extensions` with `managed_by`.
+
+**For FB-173 (shards).** Logins are cluster-wide roles: create them on every
+node with the same verifier. `_forgebase_db_logins` is placed
+`control_replicated` (as `_forgebase_resource_permissions`), because a
+shard's `forgebase.claims()` reads it there.

@@ -2271,6 +2271,518 @@ has three new fields (all `Default`); `Backend` has a new defaulted method.
   screens may offer a fuzzy toggle with a threshold slider. `explain` shows
   the trigram index in `indexes_used`.
 
+## Addendum: FB-173, schema fan-out, migrations and native RLS across shards (2026-11-11)
+
+Built as §3.7 and §3.10 describe, on FB-170's router and FB-152's policy
+compiler. Without shards nothing changes: every path below checks
+`DbRouter::is_sharded()` (more than one routable set) and otherwise commits
+its one transaction as before, so SQLite and single-server PostgreSQL
+behave exactly as today. Where the code differs from the text above, or
+decides something it left open, it is said here.
+
+**Files.** New: `crates/forgebase-db/src/{twophase.rs, shards.rs,
+shard_testing.rs, pg/twophase.rs}`, `crates/forgebase-migrations/src/multi.rs`,
+`crates/forgebase-policy/src/native/fanout.rs`, the migration pair
+`migrations/{system,postgres}/0041_index_builds.sql`, and the tests
+`crates/forgebase-db/tests/{twophase.rs, shard_rollout.rs}`,
+`crates/forgebase-data/tests/shards.rs`,
+`crates/forgebase-policy/tests/shards.rs`. Changed: the schema path of
+`crates/forgebase-data/src/collections.rs`; small shared edits listed at the
+end.
+
+**Two-phase commit (`forgebase_db::twophase`).**
+- `WriteTx::prepare(gid)` ends a transaction with `PREPARE TRANSACTION`
+  (default: roll back and refuse, so SQLite never prepares). The engine
+  side (`pg/twophase.rs`) checks the identifier (`[a-z0-9_]`, ≤ 199 bytes),
+  runs `COMMIT PREPARED` / `ROLLBACK PREPARED` on the writer outside a
+  transaction block (`Ok(false)` for an unknown identifier, `42704`), and
+  bumps the schema generation after a commit (prepared DDL becomes visible
+  then). `55000 prepared transactions are disabled` becomes a message that
+  names `max_prepared_transactions`.
+- Identifiers: transaction `fb_<32 hex>`, part `fb_<32 hex>_<set number>`
+  (≤ 41 bytes; the journal's 180-character limit is far away).
+- `TwoPhase::new(control, purpose)` → `prepare(participant, tx)` per node →
+  `commit()` (journal row `committing` in its own control transaction:
+  that row is the decision; then `COMMIT PREPARED` on every part; then
+  `committed` with `resolved_at`) or `abort()`. A part whose `COMMIT
+  PREPARED` fails is reported in `Committed.pending` and left to recovery;
+  the change counts as committed. If the journal insert fails, the row is
+  read back: absent → roll back everything; present → go on; unreadable →
+  `TwoPhaseError::Unknown` (`schema_change_in_doubt`, 503) and recovery
+  decides. Dropped undecided (a cancelled request), the coordinator rolls
+  its prepared parts back in the background.
+- `run(control, participants, purpose, mode, &dyn NodeWork)` is the
+  one-call form; one participant is one ordinary transaction (`Ok(None)`).
+  Parts run one after the other (fewer simultaneous locks; schema changes
+  are rare).
+- `check_supported` refuses a node with `max_prepared_transactions = 0`
+  (`TwoPhaseError::Unsupported`, `sharding_unsupported`, 400); the
+  coordinators check every node before preparing anything.
+- **Recovery** (`recover(control, nodes, grace)`): reads each node's
+  `pg_prepared_xacts` (`fb_` prefix, this database); a part whose
+  transaction has a journal row is committed, one without a row is rolled
+  back once older than `grace` (30 s, `RECOVERY_GRACE`) **and** not in
+  flight in this process (an in-process registry of live coordinators,
+  so the minute loop never rolls back a coordinator between its prepares
+  and its journal row). A `committing` row is closed (`committed`) only
+  when every set it names was read and holds no part; committed rows are
+  pruned after 7 days. Unreachable sets are reported, never fatal.
+  `spawn_recovery(router, 60 s)` runs it at start and every minute
+  (`RecoveryTask`, aborted on drop).
+- `in_doubt(control, nodes, grace)` (doctor): prepared parts older than the
+  grace (with the journal state: recovery commits / rolls back), decided
+  rows still `committing` after 5 minutes (`Stuck`), unreadable sets;
+  `describe_in_doubt` renders one line.
+- Deviation: control's own part is prepared like the others (control is
+  shard 0 and holds catalog rows and tenant tables), and the journal row is
+  written in a separate control transaction after every part, control's
+  included, is prepared.
+
+**Collection DDL on every shard (`forgebase-data`).**
+- `DataService::attach_shards(router)` (once). Create, update and delete
+  collection keep doing everything on control in their transaction
+  (catalog rows, history, index rows, native policies), then
+  `finish_schema` prepares that transaction and repeats the **DDL step**
+  (`ShardStep`) on each shard in its own `SchemaChange` transaction, then
+  commits all as one two-phase transaction. Any failure (a stray table on
+  one shard, a deferred constraint) rolls back everywhere.
+- The step re-runs the DDL generator on each node rather than replaying
+  control's statement log: constraint names and dependent views are read
+  from that node's catalog (after a rename, PostgreSQL's generated
+  constraint names differ between a table created long ago and one
+  replayed under its new name). Control's catalog snapshot and its
+  managed-index rows are passed in (`alter_table(…, managed,
+  catalog_rows = false)`): shards have the `_forgebase_indexes` table but
+  no rows (class `control`). Each shard part also runs
+  `NativePolicies::before_change` / `after_change` and
+  `verify_collections` against control's catalog.
+- **Catalog replay** (`DataService::replay_catalog(target)`, also
+  `forgebase_db::shards::CatalogReplay`): one transaction on the new shard;
+  tables in creation order without relation columns to other collections,
+  then those columns (`ALTER TABLE … ADD COLUMN … REFERENCES`), so relation
+  cycles replay; tenant, automatic and managed indexes; views from
+  `pg_get_viewdef` on control (in creation order); `verify_collections`;
+  native policies per collection.
+- **Per-set index builds** (§3.7). The index manager's `create_index`
+  builds control's copy as before, then each shard with `CREATE INDEX
+  CONCURRENTLY IF NOT EXISTS` on a connection of its own
+  (`Database::run_autocommit`), recording `_forgebase_index_builds
+  (index_name, set_id, state building|ready|failed, error)` on control
+  (migration 0041; placement class `control`; RLS enabled as FB-152 asks of
+  post-0040 tables). A failed build drops the invalid index on that shard
+  and records the error; the call itself succeeds (control has the index).
+  No row = built with its collection (schema transaction or replay).
+  `drop_index` drops on every shard (`DROP INDEX CONCURRENTLY IF EXISTS`);
+  rows go with the catalog row (FK cascade). `DataService::index_builds`
+  reads them. Indexes that a schema change adds (automatic indexes) are
+  built inside the two-phase transaction, not concurrently.
+
+**Native policies on every shard (`forgebase-policy`, `native/fanout.rs`).**
+- Rule changes (`put_policy`, `delete_policy`): `regenerate_in` now returns
+  the generated statements; `commit_native` prepares control's transaction
+  and applies the **same** statements on every shard (generated once;
+  relation helpers are named by a hash, so equal everywhere) in one
+  two-phase transaction (journal purpose `native policies`).
+- Schema changes: the data-core hook runs inside each shard's part (above).
+- Startup (`sync_native_rls`): control, then each shard on its own, each
+  with its own fingerprint in its per-set `_forgebase_meta` (idempotent, so
+  no two-phase commit is needed).
+- Roles: `forgebase_rls` / `forgebase_login` come from migration 0040 on
+  every node. Direct logins (FB-153): `create_login_role(db, LoginRole {
+  name, verifier })` on the tenant's shard primary (`LOGIN`, no other
+  attribute, member of `forgebase_login`; name and SCRAM verifier checked
+  and inlined, the password never reaches ForgeBase), `drop_login_role`,
+  `login_role_verifier` (`pg_authid`, superuser), `copy_login_role(from,
+  to, name, verifier)` for a move (same verifier).
+
+**Migrations over every set (`forgebase_migrations::multi`,
+`forgebase_db::shards::migrate_sets`).**
+- `migrate_all(control, shards, MultiOptions { max_parallel: 4 }, hooks)`:
+  control first; if it fails, no shard is touched (`Skipped`); then shards
+  through `buffer_unordered(4)`, each with its own `_forgebase_migrations`
+  and pre-migration snapshot (`<backups>/sets/<set id>`, FB-150's
+  provider); a failing shard does not stop the others. Shards already at
+  head are not announced. The node trait returns `NodeError { code,
+  message }` (a node can fail for reasons other than a migration).
+- `migrate_sets(router, backups, options)`: marks a shard with pending
+  migrations `migrating` (`topology::update_set` + `reload`) before, and
+  back to its previous state after; a failure leaves it `migrating`. A set
+  left `migrating` by a crashed run that is now at head is made `active`.
+- Routing: `for_tenant` / `try_for_tenant` answer
+  `RouterError::SetMigrating` (`shard_migrating`, 503) for tenants placed
+  on a `migrating` set; control and its tenants are unaffected.
+
+**New shard (`shards::activate_shard(router, set, db, ShardSetup)`).**
+Refuses a non-shard, SQLite, and nodes (control or the shard) with
+`max_prepared_transactions = 0` (`RouterError::Unsupported`,
+`sharding_unsupported`, 400) before changing anything; migrates the
+shard; confines control's sequences to set 0 when it is the first shard;
+applies the shard's range; replays the catalog; publishes and subscribes
+(`control_conninfo`); marks it `active`; reloads. Safe to run again. The
+caller (FB-174's `database.shard.add`) provisions the node and inserts
+the set and node rows first.
+
+**`control_replicated` (§3.2).** `ensure_control_publication(control)`:
+`CREATE` / `ALTER PUBLICATION fb_control FOR TABLE` the registry's
+`control_replicated` tables that exist (today
+`_forgebase_resource_permissions`; FB-153 adds `_forgebase_db_logins` to
+the registry and it is picked up). `subscribe_to_control(shard, control,
+k, conninfo)`: the slot `fb_control_<k>` is created on control first
+(`pg_create_logical_replication_slot`, which also works when both
+databases are in one cluster), then `CREATE SUBSCRIPTION fb_control_<k> …
+WITH (create_slot = false, copy_data = true, origin = none)`.
+`unsubscribe_from_control` detaches and drops both;
+`control_subscription` reports enabled and tables ready. Foreign keys on
+the shard's copies are not checked by the apply worker (replica role).
+
+**Doctor.** `forgebase doctor` gains `two_phase`: control's prepared parts
+and stuck journal rows (warn, with what recovery will do), and a fail when
+the topology has shards but control has `max_prepared_transactions = 0`.
+It reads control only: shards are reached by the server's connector.
+
+**Tests** (real, separate clusters from `shard_testing::TestCluster`:
+`initdb` in a temporary directory, Unix socket only,
+`max_prepared_transactions = 16`, `wal_level = logical`, stopped in `Drop`
+and by a watchdog; `Sharded` adds a router, a map connector and
+`provision`): commit on three nodes; a failure on one rolls back all with
+no journal row; abort and drop; crash of a node after its prepare without
+a decision (rolled back after the grace, kept before it); crash after the
+decision (recovery commits on restart and closes the row; the row stays
+open while the node is down); in-flight coordinators skipped; stuck rows
+reported; `max_prepared_transactions = 0` refused; activation (migrated,
+sequence ranges on both sides, ACL rows replicated, idempotent,
+unsubscribe); `migrate_sets` re-applying a migration with
+`shard_migrating` meanwhile; refusal before any change; collection create /
+update (rename with a view) / delete on three nodes; a stray table on one
+shard rolling back a create everywhere; replay with a relation cycle,
+tenant scope, a view and a manual index; per-set index builds with one
+failing on duplicates; policies equal on control and shard after replay,
+rule changes, schema changes and startup sync; login roles and verifiers.
+Migration-runner ordering and the four-at-a-time cap are unit tests with
+fake nodes.
+
+**Shared edits outside Owns.** `forgebase-db`: `backend.rs`
+(`WriteTx::prepare`), `pg/mod.rs` (module line, `prepare` in `PgTx`'s
+impl), `routing/replicas.rs` (`TokenTx` forwards `prepare`), `router.rs`
+(two `RouterError` variants, the `migrating` check in `State::route`),
+`placement.rs` (`_forgebase_index_builds`), `lib.rs` (modules),
+`Cargo.toml` (`time`). `forgebase-migrations`: `lib.rs` / `postgres.rs`
+(0041, `pub mod multi`), `Cargo.toml` (`futures-util`). `forgebase-data`:
+`lib.rs` (the `shards` field, `IndexBuild` re-export), `indexes.rs` (one
+call after `create_index` and `drop_index`). `forgebase-policy`:
+`native/mod.rs` (module, `sync_native_rls` per set, `regenerate_in`
+returns statements), `store.rs` (`write_native` commits through
+`commit_native`). `forgebase-cli`: `doctor.rs` (`check_two_phase`).
+`Database::run_autocommit` overlaps FB-162's `Backend::maintenance`
+(same idea, its own connection); once both are on main one can call the
+other.
+
+**Server wiring (not done here; FB-171 / god).** After `DbRouter::open`:
+`data.attach_shards(router.clone())` before `enable_native_rls` (so the
+startup sync covers shards); `let recovery =
+forgebase_db::twophase::spawn_recovery(router.clone(),
+twophase::RECOVERY_INTERVAL)` kept in the server handle;
+`forgebase_db::shards::migrate_sets(&router, Some(&backups_dir),
+MultiOptions::default())` after control's `migrate` and before serving
+shard tenants (log `report.failed()`).
+
+**For FB-174 (moves, add/drain/remove).** Add = provision the node, insert
+the set and node rows, `activate_shard(router, &set, &db, ShardSetup {
+backups_dir, replay: Some(&data_service), control_conninfo })`. Remove /
+drain: `unsubscribe_from_control` before stopping the node. A move: the
+target already has every collection's schema and policies (replay or
+fan-out); recreate the tenant's direct logins with `copy_login_role`.
+`_forgebase_index_builds` rows of a retired set go with the set (FK
+cascade). Schema changes during a move run on both sets as on every other
+(the freeze only concerns the tenant's rows).
+
+**For FB-178 (topology tests in CI).** `forgebase_db::shard_testing`
+(feature `testing`, Unix) starts clusters from `FORGEBASE_TEST_PG_ENGINE`
+or `FORGEBASE_PG_ENGINE_DIR`; each test takes 15–60 s (initdb and
+migrations per cluster); the suites above skip without an engine. Socket
+paths must stay under 104 bytes: set `FORGEBASE_TEST_PG_TMP` to a short
+directory.
+
+## Addendum: FB-160, Apache AGE in the engine build (2026-11-11)
+
+Built as §1.3 describes, with the three fixes of decision 9a.1 (option B)
+carried as patches. Where the build decides something the text left open,
+it is said here.
+
+**Files.** `deploy/postgres-engine/age/{patches/0001..0004-*.patch,
+make-args, post-install.sh, README.md}`;
+`THIRD_PARTY_LICENSES/postgres/age/{age.txt, NOTICE}` (and one row in
+`THIRD_PARTY_LICENSES/postgres/README.md`); `engine.lock` (`age` appended to
+`contents.extensions`, `[sources.age]`, four `[[sources.age.patches]]`,
+and the local `[archives."aarch64-apple-darwin"]` pin now names the r1
+archive with AGE: AGE joins r1, no new revision);
+`deploy/postgres-engine/smoke.sh` (the AGE checks FB-130 left to FB-160);
+one step in `.github/workflows/postgres-engine.yml` (Bison 3 on the macOS
+runners). Test-only Rust: `crates/forgebase-pgengine/tests/extensions.rs`
+asserted that no engine ships AGE ("before FB-160"); both tests now branch on
+`EngineDir::has_plugin("age")` and check the AGE side (owner
+`forgebase_super`, both roles preload it, `graph = "on"` accepted). No
+production Rust changed. `build-unix.sh` and `engine.py` are unchanged: the
+FB-130 hook does everything.
+
+**Source.** `apache-age-1.8.0-src.tar.gz` from
+`archive.apache.org/dist/age/PG18/1.8.0/` (keeps every release;
+`downloads.apache.org` drops 1.8.0 once a newer PG18 release is out). Its
+SHA-512 matched the ASF `.sha512` fetched from `downloads.apache.org` (a
+different server); the build checks the SHA-256 in `engine.lock`. The `.asc`
+signature was not checked (no gpg on the build machine). Nothing else is
+fetched: the patches are in the repository.
+
+**Patches.** Applied in name order by `build-unix.sh` (`patch -p1
+--forward`). `age/post-install.sh` fails the build when `patches/` and
+`[[sources.age.patches]]` differ (names, order or SHA-256), before anything
+is packed. I reviewed each diff against the 1.8.0 source:
+
+| Patch | Upstream | Fixes | Review |
+|---|---|---|---|
+| `0001-pr2475-detach-delete-rls-segfault.patch` (SHA-256 `f62d9ad5…`) | apache/age#2475, commit `2e4b4ad91359b6e4dedbe787b83176f565bf7727`, verbatim | `DETACH DELETE` of a vertex with an edge whose label has an RLS policy calling a SQL function crashed the backend: the connected-edge check runs at executor shutdown with no active snapshot | 25 lines in `cypher_delete.c`: pushes `es_snapshot` when none is active and pops it at the end; the function has no early return between push and pop, and an error unwinds the snapshot stack at abort. Plus the upstream regression test |
+| `0002-pr2561-rls-and-select-acl-in-traversals.patch` (`8ae84d4a…`) | apache/age#2561, commit `3eeb20bd967875cb32158d495396916d85697a51`, verbatim | variable-length and shortest-path traversals fill the global graph cache with a raw heap scan that skipped RLS and `SELECT` privileges | `age_global_graph.c`: label tables with RLS active for the current role load through an SPI read-only cursor (the planner applies the policies), others keep the heap scan after an explicit table/column `SELECT` check; edges to invisible vertices are dropped; a cache loaded through RLS is rebuilt every statement, others are keyed on role and the new GUC and invalidated by ACL/policy/role catalog changes; error paths free the label lists. New GUC `age.enforce_rls_in_traversal` (default `on`, `PGC_SUSET`). Applies cleanly; compiles without new warnings |
+| `0003-pr2578-utility-commands-without-age.patch` (`46da0aa2…`) | apache/age#2578, commit `6e073cf40917731b4cd5b2654e4a93da005a2295`, **backported** | with AGE loaded in a session, `TRUNCATE` in a database without the extension failed reading AGE's catalog (`schema "ag_catalog" does not exist`) | upstream guards three branches of `ag_ProcessUtility_hook` (TRUNCATE, VACUUM FULL, CLUSTER) with `is_age_extension_exists()`; 1.8.0 has only the TRUNCATE branch (VACUUM/CLUSTER came with master commit `0e30566226`, #2551, after 1.8.0), so the backport keeps that hunk and the upstream tests unchanged. The patch header says so |
+
+Failing before, proven: the smoke checks run on the same engine with an
+unpatched 1.8.0 `age.dylib` gave a variable-length `MATCH` count of 2 (the
+RLS-hidden vertex was visible; 1 expected), `DETACH DELETE` killed the
+backend (`terminated by signal 11`), and `TRUNCATE` in a database without AGE
+failed with `schema "ag_catalog" does not exist`. With the patches: 1, ok, ok.
+AGE's own regression suite (43 tests, run with the build's `pg_regress`
+against the extracted engine): 41 pass, including `security` (0001),
+`rls_vle` (0002) and `drop` (0003). `cypher_merge` failed on a sort-order
+difference from the temp instance's locale and passes with `--no-locale` (as
+upstream CI runs it). `age_load` fails on macOS only: the CSV loaders accept
+a file when its resolved path starts with `/tmp/age/`, and macOS resolves
+`/tmp` to `/private/tmp`. Upstream behaviour, not patched; ForgeBase does not
+use the CSV loaders (§1.5 writes label tables with SQL).
+
+**A fourth fix found in review, carried: #2581 (human decision 2026-11-11).**
+apache/age#2581 (commit `06ce678d74210539705c77e2dc7c9fa861e2a331`, master
+only, 9 lines in `ag_catalog.c`): with AGE loaded in a session,
+`post_parse_analyze` runs for the `ROLLBACK` of a failed transaction; when
+that backend's caches were reset meanwhile (shared invalidation queue
+overflow), `is_age_extension_exists()` reads `pg_extension` in the aborted
+transaction, the locks leak into the PGPROC, and every later backend on it
+fails with "failed to re-find shared lock object" until restart. 1.8.0 has
+the same code and ForgeBase's per-role preload reaches it. FB-160b carries it
+as `patches/0004-pr2581-no-catalog-read-outside-transaction.patch`
+(SHA-256 `de29e981…`, upstream commit verbatim; re-reviewed: the code diff is
+byte-identical to the PR head `4556939f` and to the merged commit, it returns
+false outside a live transaction and caches nothing), with its
+`[[sources.age.patches]]` table in `engine.lock`. #2581 carried, human decision 2026-11-11.
+Failing before, proven: the new smoke check (session stopped while the
+invalidation queue overflows, then `ROLLBACK`) on the unpatched 1.8.0 engine
+fails with `ERROR: ResourceOwnerEnlarge called after release started`; with
+0004 it passes and 99 concurrent connections take every free PGPROC without a
+`failed to re-find shared lock object`. The aarch64-apple-darwin r1 archive
+was rebuilt and re-pinned (SHA-256 `907d08d9…`, 7,857,923 bytes, +73 bytes).
+
+**Build.** PGXS through the FB-130 hook. AGE's grammar is a GLR grammar
+built with `-Werror -Wno-error=conflicts-sr`, which needs GNU Bison 3; macOS
+ships 2.3. `age/make-args` sets `BISON` to the first Bison 3 among Homebrew's
+two prefixes and `bison` on `PATH` (the build stops with a message when
+there is none) and `YFLAGS=-Wno-deprecated` (Bison 3 reports AGE's
+`%name-prefix` and `%pure-parser` as deprecated, an error under `-Werror`;
+PostgreSQL's configure adds `-Wno-deprecated` only when it found Bison 3
+itself). Flex 2.6.4 and Perl are the ones PostgreSQL's build uses. Local
+build: Homebrew `bison` 3.8.2 installed (keg-only, nothing linked into
+`PATH`). CI: the new step installs it on the macOS runners; Alpine's image
+already has bison 3.8.
+
+**`lib/plugins/age.*` is a link** (`../age.<so|dylib>`), not a copy:
+PostgreSQL's loader recognises an already loaded library by inode, so the
+extension's `$libdir/age` and the roles' `$libdir/plugins/age` are one
+loaded module. Two copies would be loaded twice and install AGE's hooks
+twice in one backend. The archive format already carries links;
+`forgebase-pgengine`'s `has_plugin` follows them.
+
+**Licences.** `share/licenses/age.txt` (upstream `LICENSE`: Apache-2.0 with
+the PostgreSQL-licensed parts appended) and `age-NOTICE.txt` (upstream
+`NOTICE`). `post-install.sh` compares both with the tarball's files byte for
+byte. Windows ships neither (no AGE).
+
+**Windows.** Unchanged: `build-windows.ps1` never builds AGE and writes
+`graph_cypher = false`; `[sources.age] os = ["linux", "macos"]`, so Windows
+neither fetches it nor needs its licence. `smoke.sh` now fails when the
+manifest's `graph_cypher` and the presence of `lib/plugins/age.*` disagree.
+
+**Size (aarch64-apple-darwin, local build).** Archive 7,857,850 bytes
+(FB-130: 7,661,698; +196,152, +0.19 MiB). Unpacked 30,912,449 bytes in 945
+files and 1 link (FB-130: 30,097,121 in 938); AGE's 7 files are 815,082
+bytes (`age.dylib` 606,128 stripped, SQL 196,063, licences 12,891), the other
+246 bytes are the licence README row: the rest of the engine is unchanged.
+§1.3's estimate of 3–4 MB was high. Idle RSS of the smoke primary: 84,464
+KiB in 10 processes, postmaster 25,408 KiB (FB-130: about 73 MiB, postmaster
+25 MiB); AGE is not loaded by the postmaster, so the difference is run to run
+noise.
+
+**Smoke test** (`smoke.sh`, from the archive, passed): `CREATE EXTENSION
+age`, `create_graph`; a role `fb_graph` (not a superuser) with
+`session_preload_libraries = '$libdir/plugins/age'`, as `forgebase_server`
+has; as that role `MATCH (a:Person)-[:KNOWS]->(b:Person)` and a
+variable-length `MATCH` under RLS (0002); `DETACH DELETE` under a policy
+calling a SQL function (0001); `TRUNCATE` in a database without AGE (0003);
+`pg_dump` with a graph; and, on the hot standby started from
+`pg_basebackup`, the same `MATCH` and variable-length `MATCH` as `fb_graph`.
+§1.2 said plain `MATCH` on a standby is not covered upstream; it works here.
+FB-163 keeps its formal standby test.
+
+**musl.** Not decided here: there is no Linux build on this machine (no
+Docker daemon running), so neither Linux target has been built with AGE. The
+evidence so far: AGE's sources use no glibc-only interface (no
+`execinfo.h`, `qsort_r`, `mallinfo`, `backtrace`; the one `uint` is defined
+by musl under `_GNU_SOURCE`, which PostgreSQL sets on Linux); the Alpine
+image has bison 3.8, flex and perl; `age.so` needs only libc, which the
+build's NEEDED check allows. The engine workflow decides: if AGE fails to
+build or `smoke.sh` fails on a musl target, that target ships without AGE as
+Windows does. That fallback needs a small `build-unix.sh` change (not made:
+skip an extension whose `[sources.<name>] os` lacks the target's OS, then set
+`[sources.age] os = ["macos"]`); the manifest then says
+`graph_cypher = false` and the server reports graph as portable.
+
+**CI must prove** (nothing below ran here): the AGE build and `smoke.sh` on
+x86_64 and aarch64 musl (Alpine 3.20) and on `x86_64-apple-darwin`
+(`macos-15-intel`, Bison from `/usr/local/opt/bison`); the distro matrix with
+AGE (`distros.sh` runs the same `smoke.sh`, so every distro runs the Cypher
+and standby checks); that `shellcheck` accepts `smoke.sh` (it does here).
+
+**Notes for FB-163 (openCypher service).**
+- AGE loads in every `forgebase_server`/`forgebase_reader` session
+  (`current_setting('age.enforce_rls_in_traversal')` answers `on` for both
+  roles in the pgengine test). `SET LOCAL search_path = ag_catalog, …` per
+  transaction as planned.
+- `age.enforce_rls_in_traversal` is on by default and superuser-only to
+  change: label rules compiled to RLS apply inside variable-length and
+  shortest-path traversals. Cost: a graph whose labels use RLS rebuilds the
+  traversal cache through SPI on every statement; measure it.
+- With the GUC on, traversals also check `SELECT` on every label table (or
+  every column): grant the reader role `SELECT` on the derived graph's
+  tables, or traversals fail with `permission denied`.
+- RLS policies can read agtype properties with `properties->>'"key"'` (the
+  smoke test's `OWNS` policy does).
+- `DETACH DELETE` under function policies is fixed, but §1.5 writes label
+  tables with SQL anyway.
+- `MATCH` and variable-length `MATCH` on a hot standby work as a
+  preloading non-superuser (smoke test).
+- Do not use AGE's CSV loaders (`load_labels_from_file`): restricted to
+  `/tmp/age/`, unusable on macOS.
+- Carry #2581 before openCypher sees real traffic (above).
+
+## Addendum: FB-169, replica reads in the services (2026-11-11)
+
+The §2.5 table, as code. Every call site below passes `ReadIntent::replica("<what>")`
+to `Backend::fetch_routed` (FB-167); everything else keeps `fetch_all`. Without
+replicas (SQLite, an unrouted PostgreSQL, a set with no healthy standby) a
+routed read is the plain read, so nothing changes. A request needs nothing
+more: the request scope (`X-ForgeBase-Read-After`, the principal's recent
+commits, `X-ForgeBase-Consistency: strong`) already decides whether a replica
+is eligible.
+
+**Files.** `forgebase-db`: `routing/via.rs` (new), `routing/testing.rs`
+(`RoutedCluster`), `backend.rs` and `router.rs` (`sample_commit_token`).
+`forgebase-data` `lib.rs`, `list.rs`, `records.rs`, `sql.rs`;
+`forgebase-vector` `service.rs`; `forgebase-graph` `service.rs`;
+`forgebase-storage` `service.rs`, `objects.rs`, `http.rs`; `forgebase-queue`
+`ops.rs`, `service.rs`, `pgmq/mod.rs`; `forgebase-jobs` `service.rs`;
+`forgebase-realtime` `outbox.rs`, `conn.rs`; the JavaScript and Rust SDK
+realtime clients. One `tests/replica_reads.rs` per crate. No migration.
+
+**Helper.** `forgebase_db::ReadVia` is a `Backend` view whose `fetch_all` goes
+through `fetch_routed`; everything else (transactions, `fetch_all_as`,
+`explain`, `maintenance`) is the inner backend's. The vector, graph and jobs
+services hand one to the helpers that run a call's reads, so a call site is one
+line, not a signature change. `DataService::fetch_replica(stmt, what)` and
+`QueueService::read_replica` / `StorageService::read_replica` do the same for
+single statements.
+
+**Call sites (reads a replica may serve).**
+
+| Area | Call sites (`what`) |
+|---|---|
+| Records | `records.list` (list, search, count), `records.view`, `records.aggregate`, `records.expand`, `records.versions` (the versions and its visibility probes) |
+| SQL editor | `sql.editor`: a read statement when the request body has `read_from_replica: true` (not with `show_secrets`) |
+| Vector | `vector.get`, `vector.list` / `vector.get_collection` (item counts), `vector.stats` (counts, change sequence), `vector.search` and `vector.hybrid` on pgvector; hybrid keyword-only on every engine |
+| Graph | `graph.get` (node, edge), `graph.list`, `graph.neighbors`, `graph.traverse`, `graph.shortest_path`, `graph.stats` |
+| Storage | `storage.head`, `storage.list_objects`, `storage.list_versions`, `storage.list_buckets`, `storage.bucket_usage`, `storage.stats` |
+| Queue | `queue.messages` (browser), `queue.dead_letters`, `queue.topic_metrics`, `queue.subscription_metrics`, `queue.backlog`, `queue.metrics` (rate buckets), the pgmq metrics and backlog reads |
+| Jobs | `jobs.get`, `jobs.list`, `jobs.events`, `jobs.attempts`, `jobs.stats` |
+
+"Dashboard statistics" are the aggregate, count and stats calls above; the
+dashboard adds no query of its own.
+
+**Primary only, kept (tested).**
+- Every write and everything inside a write transaction; the catalogue
+  (collection and index definitions, `fulltext_index` and `trigram_indexes`,
+  reloads after DDL), policy snapshots.
+- Reads as the RLS role (`fetch_all_as`): the role switch needs the primary's
+  session. A native-RLS list stays on the primary.
+- Graph rule names and access checks (`names`, `access`): a stale replica must
+  never decide what a caller may see. Storage bucket rows and ACLs
+  (`stored_bucket`, `load_acl`, `get_acl`), object *content* reads
+  (`get_object`, signed URLs), uploads, multipart state.
+- Queue claims, acks, nacks, deadline changes, releases, seeks, snapshots
+  (pull path), publish, maintenance; pgmq reads fall back to the primary
+  when a replica has not replayed a queue table yet (a statement error).
+- Job claims, heartbeats, progress, checkpoints, completion, results,
+  schedules (pg_cron, FB-165: primary only), workers.
+- Vector writes, DDL, index builds, the progress poll, convert, reconcile; and
+  kNN search and hybrid-with-a-vector on the portable engine: its in-process
+  index follows the primary, so mixing it with replica store reads could drop
+  hits. pgvector's HNSW is WAL-logged and replicates, so it routes.
+- Realtime: the outbox tail, replay and the pruner (§2.5 "always primary").
+
+**Realtime commit position (§2.6).** `Backend::sample_commit_token()` is a new
+defaulted method: `None` everywhere except a `SetHandle` with replicas, which
+answers `<set>/<current WAL insert LSN>`. `outbox::read_after` calls it once
+per page, after the read (so the position is at or after every event of the
+page) and stamps each event: `Event::commit`. A frame of a record event carries
+it as `"commit"`; the JavaScript client and the Rust client feed it to their
+commit tokens, so "event received, then read the record" sees the record. An
+empty page samples nothing; a failed sample leaves the page unstamped.
+
+**Tests.** `forgebase-db` `routing::testing::RoutedCluster` (feature
+`testing`): a migrated primary, one standby, a control `SetHandle` routing over
+it, `lag()` (pause replay), `sync()`, `catch_up()`, `replica_reads()` and
+`fallbacks()`. Each crate's `tests/replica_reads.rs` pauses replay, writes on the
+primary and checks, per call site, that the read saw the standby's older state
+and that the standby's read counter moved; that a strong request and a
+request's own writes see the primary; and that every primary-only path
+(writes, claims, acks, catalogue, authorisation reads) leaves the counter
+unchanged and fails nothing over (`fallbacks() == 0`). They need a PostgreSQL
+engine (`FORGEBASE_PG_ENGINE_DIR`) and skip without one; SQLite has no replicas
+and its behaviour is the unchanged suites.
+
+**Breaking.** `Backend` has a new defaulted method (`sample_commit_token`).
+`forgebase_realtime::Event` has a new public field `commit`. `SqlOptions` has a
+new field `read_from_replica` (struct literals need `..Default::default()`).
+Record-event frames may carry `commit` (additive).
+
+**New API flag.** `POST /sql` and `/sql/batch` bodies accept
+`read_from_replica` (boolean, default false); only a single read statement
+without `show_secrets` uses it. OpenAPI fixtures need regenerating.
+
+**Dashboard follow-ups.** The SQL editor gets a "Read from replica" toggle
+(shown when `/api/system/database` reports healthy replicas) that sends
+`read_from_replica: true`; results are as of the replica's replay position, so
+show the lag note. Nothing else changes for the dashboard: its record lists,
+statistics, queue and job screens are routed by the server.
+
+**Notes for next packages.**
+- FB-171 (server): build `RouterOptions { replicas, .. }` and a connector that
+  implements `connect_replica`; the services take the control `SetHandle` as their
+  `Backend` as before. Each `DataService` is per set, so the services already
+  route within their own set. `attach_pgcron` stays on the primary handle.
+  The realtime dispatcher per set stamps pages with that set's token.
+- FB-172 (tenant moves): after a move the target's replicas are behind until
+  they replay the copy: the move's last write returns a token; a read after it
+  routes correctly through the same scope. Queue metrics may briefly read old
+  counts (rates and backlog are not exact by design).
+- FB-163 (Cypher on AGE): `graph.*` call sites already route; Cypher `MATCH`
+  reads on replicas need the AGE graph on the standby (physical replication
+  carries it); the stale marking after a move reads the primary.
+
 ## Addendum: FB-168, managed replicas and `forgebase node` (2026-11-11)
 
 Built as §2.2, §2.3 and §2.8 describe, in `forgebase-pgengine` and the

@@ -76,7 +76,9 @@ read_pool_size = 8          # FORGEBASE_DB_READ_POOL_SIZE
 # [database.postgres]
 # mode = "managed"          # FORGEBASE_DATABASE_POSTGRES_MODE
 # pool_size = 16            # FORGEBASE_DATABASE_POSTGRES_POOL_SIZE
-# listen = ""               # "127.0.0.1:5433" also accepts TCP logins (loopback only)
+# listen = ""               # "0.0.0.0:5433" also accepts TCP logins, TLS only (FB-153)
+# tls_cert = ""             # PEM certificate for TCP logins ("" = self-signed, generated)
+# tls_key = ""
 
 [log]
 level = "info"              # FORGEBASE_LOG_LEVEL (tracing filter syntax)
@@ -440,9 +442,14 @@ pub struct PostgresConfig {
     pub url: Option<DatabaseUrl>,
     /// Connections of the read pool; the writer stays one connection.
     pub pool_size: u32,
-    /// Managed only: `""` (Unix socket only, the default) or a loopback
-    /// `host:port` that also accepts TCP logins.
+    /// Managed only: `""` (Unix socket only, the default: no TCP port) or a
+    /// `host:port` that also accepts TCP logins, always with TLS (FB-153).
     pub listen: String,
+    /// Managed only: PEM certificate (chain) for TCP logins; `""` = a
+    /// self-signed one ForgeBase generates (absolute once loaded).
+    pub tls_cert: String,
+    /// Managed only: PEM private key of `tls_cert` (absolute once loaded).
+    pub tls_key: String,
     /// Managed only: an installed engine directory used instead of the
     /// embedded one (absolute once loaded; `""` = the embedded engine).
     pub engine_dir: String,
@@ -462,6 +469,8 @@ impl Default for PostgresConfig {
             url: None,
             pool_size: DEFAULT_PG_POOL_SIZE,
             listen: String::new(),
+            tls_cert: String::new(),
+            tls_key: String::new(),
             engine_dir: String::new(),
             native_rls: NativeRls::Logins,
             settings: std::collections::BTreeMap::new(),
@@ -826,10 +835,17 @@ impl Config {
                 whole(1, 64, "", u64::from(d.database.postgres.pool_size)),
             );
         }
-        if !pg.listen.trim().is_empty() && !is_loopback_listen(&pg.listen) {
+        if !pg.listen.trim().is_empty() && !is_listen_address(&pg.listen) {
             invalid(
                 "database.postgres.listen",
-                "must be empty (Unix socket only) or a loopback address with a port, such as 127.0.0.1:5433".into(),
+                "must be empty (Unix socket only) or an address with a port, such as 127.0.0.1:5433 or 0.0.0.0:5433"
+                    .into(),
+            );
+        }
+        if pg.tls_cert.is_empty() != pg.tls_key.is_empty() {
+            invalid(
+                "database.postgres.tls_cert",
+                "set tls_cert and tls_key together, or neither (a self-signed certificate is generated)".into(),
             );
         }
         if let Some(url) = &pg.url
@@ -1026,6 +1042,16 @@ impl Config {
             }
             if let Some(v) = &pg.listen {
                 v.trim().clone_into(&mut c.listen);
+            }
+            for (src, dst) in [(&pg.tls_cert, &mut c.tls_cert), (&pg.tls_key, &mut c.tls_key)] {
+                if let Some(v) = src {
+                    let v = v.trim();
+                    *dst = if v.is_empty() {
+                        String::new()
+                    } else {
+                        normalize(&base_dir.join(v)).display().to_string()
+                    };
+                }
             }
             if let Some(v) = &pg.engine_dir {
                 let v = v.trim();
@@ -1299,6 +1325,8 @@ impl ConfigOverrides {
                 "DATABASE_POSTGRES_POOL_SIZE" => o.pg().pool_size = Some(parse_num(&value).map_err(bad)?),
                 "DATABASE_POSTGRES_LISTEN" => o.pg().listen = Some(value),
                 "DATABASE_POSTGRES_ENGINE_DIR" => o.pg().engine_dir = Some(value),
+                "DATABASE_POSTGRES_TLS_CERT" => o.pg().tls_cert = Some(value),
+                "DATABASE_POSTGRES_TLS_KEY" => o.pg().tls_key = Some(value),
                 "DATABASE_POSTGRES_NATIVE_RLS" => o.pg().native_rls = Some(value.parse().map_err(bad)?),
                 "DATABASE_POSTGRES_EXTENSIONS_VECTOR" => o.ext().vector = Some(value.parse().map_err(bad)?),
                 "DATABASE_POSTGRES_EXTENSIONS_GRAPH" => o.ext().graph = Some(value.parse().map_err(bad)?),
@@ -1380,6 +1408,8 @@ impl ConfigOverrides {
             put(pg.pool_size.is_some(), "database.postgres.pool_size");
             put(pg.listen.is_some(), "database.postgres.listen");
             put(pg.engine_dir.is_some(), "database.postgres.engine_dir");
+            put(pg.tls_cert.is_some(), "database.postgres.tls_cert");
+            put(pg.tls_key.is_some(), "database.postgres.tls_key");
             put(pg.native_rls.is_some(), "database.postgres.native_rls");
             put(pg.settings.is_some(), "database.postgres.settings");
             if let Some(x) = &pg.extensions {
@@ -1672,6 +1702,10 @@ pub struct PostgresOverrides {
     pub pool_size: Option<u32>,
     /// TCP listen address of the bundled engine (`""` = socket only).
     pub listen: Option<String>,
+    /// TLS certificate for TCP logins (relative to the config file's directory).
+    pub tls_cert: Option<String>,
+    /// TLS private key for TCP logins (relative to the config file's directory).
+    pub tls_key: Option<String>,
     /// Shared engine directory (relative to the config file's directory).
     pub engine_dir: Option<String>,
     /// Native row-level security mode.
@@ -1729,11 +1763,11 @@ where
     ))
 }
 
-fn is_loopback_listen(value: &str) -> bool {
+fn is_listen_address(value: &str) -> bool {
     value
         .trim()
         .parse::<std::net::SocketAddr>()
-        .is_ok_and(|a| a.ip().is_loopback() && a.port() != 0)
+        .is_ok_and(|a| a.port() != 0)
 }
 
 fn is_postgres_url(url: &str) -> bool {

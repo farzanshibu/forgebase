@@ -1313,11 +1313,13 @@ dependencies = [
  "forgebase-api",
  "forgebase-auth",
  "forgebase-backup",
+ "forgebase-convert",
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
  "forgebase-observability",
  "forgebase-pgengine",
+ "forgebase-policy",
  "forgebase-server",
  "fs4",
  "futures-util",
@@ -1328,8 +1330,34 @@ dependencies = [
  "time",
  "tokio",
  "tokio-tungstenite",
+ "toml_edit",
  "tracing",
  "wat",
+]
+
+[[package]]
+name = "forgebase-convert"
+version = "0.2.0"
+dependencies = [
+ "forgebase-auth",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-graph",
+ "forgebase-jobs",
+ "forgebase-migrations",
+ "forgebase-queue",
+ "forgebase-schema",
+ "forgebase-vector",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1428,6 +1456,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "thiserror",
+ "time",
  "tokio",
  "tracing",
  "uuid",
@@ -1585,6 +1614,7 @@ version = "0.2.0"
 dependencies = [
  "forgebase-core",
  "forgebase-db",
+ "futures-util",
  "serde_json",
  "sha2 0.11.1",
  "sqlx",
@@ -1611,10 +1641,12 @@ dependencies = [
 name = "forgebase-pgengine"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "forgebase-core",
  "forgebase-db",
  "getrandom 0.4.3",
  "object",
+ "ring",
  "rustix",
  "serde",
  "serde_json",
@@ -1637,15 +1669,18 @@ name = "forgebase-policy"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "forgebase-auth",
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
  "forgebase-query",
  "forgebase-schema",
+ "hmac",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1793,6 +1828,7 @@ dependencies = [
  "metrics",
  "redis",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",

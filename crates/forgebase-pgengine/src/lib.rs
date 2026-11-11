@@ -12,7 +12,9 @@
 //! 3. `initdb` on first start (builtin C.UTF-8 locale, SCRAM, checksums) with
 //!    passwords from `postgres/roles.secret` (0600);
 //! 4. stop a postmaster left running by a killed server;
-//! 5. write `forgebase-postgres.conf` (Unix socket only by default, the
+//! 5. write `pg_hba.conf` ([`hba`]: no TCP line unless `listen` is set,
+//!    TLS-only TCP logins when it is) and `forgebase-postgres.conf` (Unix
+//!    socket only by default, the
 //!    ADR-0029 replication, prepared-transaction and pg_cron settings; pg_cron
 //!    is skipped with a warning when the engine lacks it);
 //! 6. spawn `postgres` with its stderr in `tracing` (target
@@ -42,6 +44,7 @@ mod discover;
 mod error;
 mod extensions;
 mod fsutil;
+pub mod hba;
 pub mod interp;
 mod layout;
 #[cfg(test)]
@@ -51,9 +54,9 @@ pub mod replication;
 mod secret;
 pub mod standby;
 
-pub use cluster::{DATABASE, OWNER_ROLE, RLS_ROLE, SEARCH_PATH, SQL_ADMIN_ROLE};
+pub use cluster::{DATABASE, LOGIN_ROLE, LOGIN_WRITE_ROLE, OWNER_ROLE, RLS_ROLE, SEARCH_PATH, SQL_ADMIN_ROLE};
 pub use conf::{DENY as DENIED_SETTINGS, DENY_PREFIXES as DENIED_SETTING_PREFIXES};
-pub use config::{ENGINE_DIR_ENV, EngineConfig, EngineSource, ExtensionMode, RestartPolicy};
+pub use config::{ENGINE_DIR_ENV, EngineConfig, EngineSource, ExtensionMode, RestartPolicy, TlsFiles};
 pub use discover::{EngineDir, EngineOrigin, HAS_EMBEDDED, MIN_MAJOR, PgVersion, embedded_archive};
 pub use error::{EngineError, Result};
 pub use extensions::AGE_PRELOAD;
@@ -183,10 +186,29 @@ impl Engine {
 
         let endpoint = endpoint(layout, cfg)?;
         process::clear_stale(&pgdata, cfg.stop_timeout).await?;
+        // FB-153: TCP only when the operator set `listen`, and then always
+        // with TLS; pg_hba.conf is rewritten every start.
+        let tls = match cfg.listen {
+            Some(addr) => Some(hba::ensure_certificate(
+                cfg.tls.as_ref(),
+                &layout.node_dir().join("tls"),
+                addr,
+            )?),
+            None => None,
+        };
+        hba::write(
+            &pgdata,
+            &hba::HbaInput {
+                socket: endpoint.socket_dir.is_some(),
+                tcp: endpoint.tcp,
+                tls: cfg.listen.is_some(),
+            },
+        )?;
         let settings = conf::settings(&conf::ConfInput {
             socket_dir: endpoint.socket_dir.as_deref(),
             port: endpoint.port,
             listen: endpoint.tcp,
+            tls: tls.as_ref().map(|(c, k)| (c.as_path(), k.as_path())),
             preload: preload.clone(),
             cron,
             standby: layout.kind() == NodeKind::Standby,

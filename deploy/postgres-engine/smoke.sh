@@ -7,9 +7,12 @@
 #
 # initdb; start with the FB-132 preload settings; CREATE EXTENSION for every
 # shipped extension; an HNSW vector query; pg_trgm; pgmq send/read; a pg_cron
-# job that fires; TLS library check; pg_dump/pg_restore; pg_basebackup,
-# pg_verifybackup and a hot standby started from the backup; stop. Prints
-# idle memory (RSS) of the primary.
+# job that fires; TLS library check; Apache AGE where the engine ships it
+# (lib/plugins/age.*: create_graph, MATCH and a variable-length MATCH as a
+# non-superuser that preloads $libdir/plugins/age, and the four carried
+# patches); pg_dump/pg_restore; pg_basebackup, pg_verifybackup and a hot
+# standby started from the backup (with MATCH on it when AGE ships); stop.
+# Prints idle memory (RSS) of the primary.
 #
 # <work dir> must be short: the Unix socket path is limited to ~103 bytes.
 # Env: PORT (default 54329), SMOKE_SKIP_STANDBY=1.
@@ -28,6 +31,16 @@ rm -rf "$DATA" "$W/standby" "$W/dump"
 
 say() { printf '\n--- %s\n' "$*"; }
 q() { "$BIN/psql" -X -q -A -t -v ON_ERROR_STOP=1 -h "$SOCK" -p "$PORT" -U postgres -d postgres "$@"; }
+# As the AGE smoke role (not a superuser; loads AGE through its role's
+# session_preload_libraries, as forgebase_server does): gq <port> <db> [psql args]
+gq() { p=$1 d=$2; shift 2; "$BIN/psql" -X -q -A -t -v ON_ERROR_STOP=1 -h "$SOCK" -p "$p" -U fb_graph -d "$d" "$@"; }
+AGE=0
+for f in "$E/lib/plugins/age.so" "$E/lib/plugins/age.dylib"; do [ -e "$f" ] && AGE=1; done
+# The manifest's graph_cypher must say what the archive holds.
+if [ -f "$E/forgebase-engine.json" ]; then
+  if grep -q '"graph_cypher": true' "$E/forgebase-engine.json"; then want=1; else want=0; fi
+  [ "$want" = "$AGE" ] || { echo "SMOKE FAIL: manifest graph_cypher is $([ $want = 1 ] && echo true || echo false) but lib/plugins/age.* is $([ $AGE = 1 ] && echo present || echo absent)" >&2; exit 1; }
+fi
 fail() { echo "SMOKE FAIL: $*" >&2; [ -f "$LOG" ] && tail -30 "$LOG" >&2; stop_all; exit 1; }
 stop_all() {
   [ -f "$W/standby/postmaster.pid" ] && "$BIN/pg_ctl" -D "$W/standby" -m fast -w stop >/dev/null 2>&1 || true
@@ -109,6 +122,110 @@ say "TLS library and settings"
 q -c "SHOW ssl_library" | sed 's/^/  ssl_library = /'
 q -c "SELECT current_setting('server_version'), current_setting('data_checksums')" | sed 's/^/  /'
 
+if [ "$AGE" = 1 ]; then
+  say "Apache AGE: create_graph, MATCH, variable-length MATCH, carried patches"
+  q <<'SQL' || fail "AGE setup"
+CREATE EXTENSION age;
+LOAD 'age';
+SET search_path = ag_catalog, "$user", public;
+SELECT create_graph('smoke');
+SELECT * FROM cypher('smoke', $$
+  CREATE (:Person {name: 'alice'})-[:KNOWS]->(:Person {name: 'bob'})-[:SECRET]->(:Person {name: 'carol'})
+$$) AS (a agtype);
+SELECT * FROM cypher('smoke', $$
+  CREATE (:Person {name: 'dave'})-[:OWNS {owner: 'fb_graph'}]->(:Person {name: 'erin'})
+$$) AS (a agtype);
+CREATE ROLE fb_graph LOGIN;
+ALTER ROLE fb_graph SET session_preload_libraries = '$libdir/plugins/age';
+ALTER ROLE fb_graph SET search_path = ag_catalog, "$user", public;
+GRANT USAGE ON SCHEMA ag_catalog, smoke TO fb_graph;
+GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO fb_graph;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA smoke TO fb_graph;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA smoke TO fb_graph;
+-- 0002 (apache/age#2561): RLS without a policy hides every SECRET edge from
+-- fb_graph, also inside variable-length traversals.
+ALTER TABLE smoke."SECRET" ENABLE ROW LEVEL SECURITY;
+-- 0001 (apache/age#2475): an edge policy calling a SQL function crashed
+-- DETACH DELETE.
+CREATE FUNCTION smoke_owner() RETURNS text LANGUAGE sql STABLE AS $$ SELECT current_user::text $$;
+ALTER TABLE smoke."OWNS" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY owns_owner ON smoke."OWNS" FOR ALL
+  USING (properties->>'"owner"' = smoke_owner()) WITH CHECK (properties->>'"owner"' = smoke_owner());
+CREATE DATABASE smoke_noage OWNER fb_graph;
+SQL
+  got=$(gq "$PORT" postgres -c "SELECT * FROM cypher('smoke', \$\$ MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name \$\$) AS (a agtype, b agtype)") \
+    || fail "AGE MATCH as a preloading non-superuser"
+  [ "$got" = '"alice"|"bob"' ] || fail "AGE MATCH returned '$got'"
+  echo "  MATCH as fb_graph (\$libdir/plugins/age preloaded): $got"
+  got=$(gq "$PORT" postgres -c "SELECT * FROM cypher('smoke', \$\$ MATCH (:Person {name: 'alice'})-[*1..3]->(x) RETURN count(x) \$\$) AS (n agtype)") \
+    || fail "AGE variable-length MATCH"
+  [ "$got" = 1 ] || fail "variable-length MATCH saw $got vertices (1 expected: the SECRET edge is hidden by RLS; patch 0002)"
+  echo "  variable-length MATCH under RLS: $got (SECRET edge hidden)"
+  gq "$PORT" postgres -c "SELECT * FROM cypher('smoke', \$\$ MATCH (p:Person {name: 'dave'}) DETACH DELETE p \$\$) AS (a agtype)" \
+    || fail "DETACH DELETE under a function-based edge policy (patch 0001)"
+  got=$(q -c "SELECT count(*) FROM smoke.\"OWNS\"")
+  [ "$got" = 0 ] || fail "DETACH DELETE left $got OWNS edges"
+  echo "  DETACH DELETE under a function-based edge policy: ok"
+  gq "$PORT" smoke_noage -c "CREATE TABLE t (id int); INSERT INTO t VALUES (1); TRUNCATE t" \
+    || fail "TRUNCATE in a database without AGE while AGE is preloaded (patch 0003)"
+  echo "  TRUNCATE in a database without AGE, AGE preloaded: ok"
+
+  # 0004 (apache/age#2581): the ROLLBACK of a failed transaction, parsed after
+  # the backend's caches were reset, read pg_extension with the resource owner
+  # already released; the locks leaked into the backend's PGPROC and every
+  # later backend on that slot failed at connect ("failed to re-find shared
+  # lock object") until a restart. Session A (fb_graph, AGE preloaded) fails a
+  # statement inside BEGIN and waits; it is stopped (SIGSTOP) while another
+  # session overflows the shared invalidation queue, so it resets its caches
+  # on SIGCONT; then it gets its ROLLBACK. Then every free PGPROC is taken at
+  # once (the free list is FIFO) and no connection may fail.
+  say "AGE: ROLLBACK after a cache reset leaves no leaked locks (patch 0004)"
+  fifo=$W/a.fifo; aout=$W/a.out
+  rm -f "$fifo" "$aout"; mkfifo "$fifo"
+  "$BIN/psql" -X -q -A -t -h "$SOCK" -p "$PORT" -U fb_graph -d postgres <"$fifo" >"$aout" 2>&1 &
+  apsql=$!
+  exec 3>"$fifo"
+  echo "SELECT pg_backend_pid();" >&3
+  apid=""; n=0
+  while [ "$n" -lt 100 ] && [ -z "$apid" ]; do
+    apid=$(grep -m1 -E '^[0-9]+$' "$aout" 2>/dev/null || true); n=$((n + 1)); [ -n "$apid" ] || sleep 0.1
+  done
+  [ -n "$apid" ] || { exec 3>&-; fail "patch 0004: session A did not report its pid"; }
+  echo "BEGIN; SELECT 1/0;" >&3
+  sleep 0.5
+  kill -STOP "$apid"
+  q <<'SQL' || { kill -CONT "$apid"; exec 3>&-; fail "patch 0004: the invalidation queue overflow did not run"; }
+DO $$ BEGIN
+  FOR i IN 1..1000 LOOP EXECUTE format('CREATE TABLE age_inval_%s (a int)', i); END LOOP;
+  FOR i IN 1..1000 LOOP EXECUTE format('DROP TABLE age_inval_%s', i); END LOOP;
+END $$;
+SQL
+  kill -CONT "$apid"
+  sleep 0.5
+  echo "ROLLBACK;" >&3
+  echo '\q' >&3
+  exec 3>&-
+  wait "$apsql" || true
+  grep -q 'division by zero' "$aout" || fail "patch 0004: session A did not fail as arranged: $(cat "$aout")"
+  grep -q 'ResourceOwnerEnlarge' "$aout" && fail "patch 0004: ROLLBACK read the catalog outside a transaction: $(cat "$aout")"
+  max=$(q -c "SHOW max_connections")
+  used=$(q -c "SELECT count(*) FROM pg_stat_activity WHERE backend_type IN ('client backend', 'walsender')")
+  free=$((max - used)); n=0
+  rm -f "$W"/sat.*
+  while [ "$n" -lt "$free" ]; do
+    "$BIN/psql" -X -q -A -t -h "$SOCK" -p "$PORT" -U postgres -d postgres -c "SELECT pg_sleep(4)" >"$W/sat.$n" 2>&1 &
+    n=$((n + 1))
+  done
+  wait || true
+  if cat "$W"/sat.* | grep -q "failed to re-find shared"; then
+    fail "patch 0004: a backend failed at connect after the ROLLBACK ($(cat "$W"/sat.* | grep -m1 'failed to re-find')): locks leaked into a PGPROC"
+  fi
+  [ "$(cat "$W"/sat.* | grep -c 'FATAL\|ERROR')" = 0 ] || fail "patch 0004: $(cat "$W"/sat.* | grep -m1 'FATAL\|ERROR')"
+  [ "$(q -c "SELECT 1")" = 1 ] || fail "patch 0004: connect after the saturation"
+  echo "  ROLLBACK after a cache reset: ok; $free concurrent connections took every free PGPROC, none failed"
+  q -c "SELECT extversion FROM pg_extension WHERE extname = 'age'" | sed 's/^/  age /'
+fi
+
 say "idle memory"
 sleep 5
 pm=$(head -1 "$DATA/postmaster.pid")
@@ -141,6 +258,15 @@ if [ "${SMOKE_SKIP_STANDBY:-0}" != 1 ]; then
     || fail "standby is not in recovery"
   echo "  standby replays and answers vector queries: $("$BIN/psql" -X -A -t -h "$SOCK" -p "$PORT2" -U postgres -d postgres \
     -c "SELECT id FROM items ORDER BY embedding <-> '[1,1,1]' LIMIT 1")"
+  if [ "$AGE" = 1 ]; then
+    got=$(gq "$PORT2" postgres -c "SELECT * FROM cypher('smoke', \$\$ MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name \$\$) AS (a agtype, b agtype)") \
+      || { tail -20 "$W/standby.log"; fail "AGE MATCH on the standby"; }
+    [ "$got" = '"alice"|"bob"' ] || fail "AGE MATCH on the standby returned '$got'"
+    got=$(gq "$PORT2" postgres -c "SELECT * FROM cypher('smoke', \$\$ MATCH (:Person {name: 'alice'})-[*1..3]->(x) RETURN count(x) \$\$) AS (n agtype)") \
+      || { tail -20 "$W/standby.log"; fail "AGE variable-length MATCH on the standby"; }
+    [ "$got" = 1 ] || fail "variable-length MATCH on the standby saw $got vertices"
+    echo "  standby answers MATCH and variable-length MATCH as fb_graph"
+  fi
   "$BIN/pg_ctl" -D "$W/standby" -m fast -w stop >/dev/null || fail "standby stop"
 fi
 

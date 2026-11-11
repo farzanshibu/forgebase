@@ -62,6 +62,8 @@ use crate::filter::{Filter, ItemRule, item_schema};
 use crate::index::FieldIndex;
 use crate::metric::{self, Scored, TopK};
 use crate::model::*;
+use forgebase_db::{ReadIntent, ReadVia};
+
 use crate::pg::{self, Pgv};
 use crate::store::{self, CollectionRow};
 
@@ -561,6 +563,19 @@ impl VectorService {
 
     fn db(&self) -> &dyn Backend {
         self.inner.data.backend().as_ref()
+    }
+
+    /// The reads of one §2.5 call site (ADR-0029): through the replica
+    /// router when `replica`, else the primary. The portable engine's
+    /// in-process index follows the primary, so searches over it keep the
+    /// store reads there too (FB-169).
+    fn rdb(&self, what: &'static str, replica: bool) -> ReadVia<'_> {
+        let intent = if replica {
+            ReadIntent::replica(what)
+        } else {
+            ReadIntent::primary(what)
+        };
+        ReadVia::new(self.db(), intent)
     }
 
     fn engine(&self) -> Arc<dyn AnnEngine> {
@@ -1161,14 +1176,15 @@ impl VectorService {
                 Err(e) => return Err(e),
             };
             let filter = self.rule_filter(rule)?;
-            out.push(self.describe(&c, filter.as_ref()).await?);
+            out.push(self.describe(&c, filter.as_ref(), "vector.list").await?);
         }
         Ok(out)
     }
 
-    async fn describe(&self, c: &Coll, filter: Option<&Filter>) -> Result<VectorCollection> {
-        let (items, _) = store::count_items(self.db(), c.row.id, filter).await?;
-        let (_, updated) = store::change_seq(self.db(), c.row.id).await?;
+    async fn describe(&self, c: &Coll, filter: Option<&Filter>, what: &'static str) -> Result<VectorCollection> {
+        let db = self.rdb(what, true);
+        let (items, _) = store::count_items(&db, c.row.id, filter).await?;
+        let (_, updated) = store::change_seq(&db, c.row.id).await?;
         Ok(c.definition(items, updated))
     }
 
@@ -1177,7 +1193,7 @@ impl VectorService {
         let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
         let c = self.coll(ctx, name)?;
         let filter = self.rule_filter(rule)?;
-        self.describe(&c, filter.as_ref()).await
+        self.describe(&c, filter.as_ref(), "vector.get_collection").await
     }
 
     fn field_def(&self, spec: &FieldSpec) -> Result<VectorField> {
@@ -1585,7 +1601,8 @@ impl VectorService {
         check_id(id).map_err(|_| VectorError::ItemNotFound(id.to_owned()))?;
         let filter = self.rule_filter(rule)?;
         let storage = self.inner.storage.read().await;
-        let mut row = store::get_item(self.db(), coll.row.id, id, filter.as_ref())
+        let db = self.rdb("vector.get", true);
+        let mut row = store::get_item(&db, coll.row.id, id, filter.as_ref())
             .await?
             .ok_or_else(|| VectorError::ItemNotFound(id.to_owned()))?;
         if let Some(mut sc) = self.source_check(ctx, &coll)? {
@@ -1595,7 +1612,7 @@ impl VectorService {
             sc.strip(&mut row.metadata);
         }
         let mut vectors = BTreeMap::new();
-        for (field, bytes) in store::item_vectors(self.db(), coll.row.id, row.key, storage.pg()).await? {
+        for (field, bytes) in store::item_vectors(&db, coll.row.id, row.key, storage.pg()).await? {
             if let Ok(f) = coll.field(&field) {
                 vectors.insert(field, metric::decode(&bytes, f.def.dimension)?);
             }
@@ -1779,9 +1796,10 @@ impl VectorService {
         filter: Option<&Filter>,
         mode: FilterMode,
         exact: bool,
+        what: &'static str,
     ) -> Result<Knn> {
         if let Some(pgv) = pgv {
-            return self.knn_pg(pgv, coll, f, q, k, filter, mode, exact).await;
+            return self.knn_pg(pgv, coll, f, q, k, filter, mode, exact, what).await;
         }
         let cid = coll.row.id;
         let cfg = &self.inner.config;
@@ -1894,8 +1912,10 @@ impl VectorService {
         filter: Option<&Filter>,
         mode: FilterMode,
         exact: bool,
+        what: &'static str,
     ) -> Result<Knn> {
-        let db = self.db();
+        let via = self.rdb(what, true);
+        let db: &dyn Backend = &via;
         let cid = coll.row.id;
         let name = f.def.name.as_str();
         let cfg = &self.inner.config;
@@ -2060,10 +2080,22 @@ impl VectorService {
         let mut want = k;
         let (knn, mut items, mut vectors, kept) = loop {
             let knn = self
-                .knn(pgv, &coll, &f, &q, want, filter.as_ref(), req.filter_mode, req.exact)
+                .knn(
+                    pgv,
+                    &coll,
+                    &f,
+                    &q,
+                    want,
+                    filter.as_ref(),
+                    req.filter_mode,
+                    req.exact,
+                    "vector.search",
+                )
                 .await?;
             let keys: Vec<u64> = knn.hits.iter().map(|s| s.key).collect();
-            let (items, vectors) = self.hydrate(pgv, &coll, &f, &keys, req.include_vectors).await?;
+            let (items, vectors) = self
+                .hydrate(pgv, &coll, &f, &keys, req.include_vectors, "vector.search")
+                .await?;
             let Some(sc) = source.as_mut() else {
                 break (knn, items, vectors, keys);
             };
@@ -2122,11 +2154,13 @@ impl VectorService {
         f: &FieldIndex,
         keys: &[u64],
         with_vectors: bool,
+        what: &'static str,
     ) -> Result<(HashMap<u64, store::ItemRow>, HashMap<u64, Vec<f32>>)> {
-        let items = store::items_by_keys(self.db(), coll.row.id, keys).await?;
+        let db = self.rdb(what, pgv.is_some());
+        let items = store::items_by_keys(&db, coll.row.id, keys).await?;
         let mut vectors = HashMap::new();
         if with_vectors {
-            for (k, bytes) in store::vectors_by_keys(self.db(), coll.row.id, &f.def.name, keys, pgv).await? {
+            for (k, bytes) in store::vectors_by_keys(&db, coll.row.id, &f.def.name, keys, pgv).await? {
                 vectors.insert(k, metric::decode(&bytes, f.def.dimension)?);
             }
         }
@@ -2187,7 +2221,17 @@ impl VectorService {
         if let (Some(v), Some(f)) = (&req.vector, &field) {
             let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, v)?;
             let knn = self
-                .knn(pgv, &coll, f, &q, candidates, filter.as_ref(), req.filter_mode, false)
+                .knn(
+                    pgv,
+                    &coll,
+                    f,
+                    &q,
+                    candidates,
+                    filter.as_ref(),
+                    req.filter_mode,
+                    false,
+                    "vector.hybrid",
+                )
                 .await?;
             Self::record(f, knn.strategy, started.elapsed());
             vector_strategy = Some(knn.strategy);
@@ -2200,7 +2244,8 @@ impl VectorService {
         let mut by_text: Vec<(u64, f64)> = Vec::new();
         if let Some(t) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
             let expr = match_query(self.db().dialect(), t, req.text_operator)?;
-            by_text = store::keyword(self.db(), coll.row.id, &expr, filter.as_ref(), candidates).await?;
+            let db = self.rdb("vector.hybrid", pgv.is_some() || req.vector.is_none());
+            by_text = store::keyword(&db, coll.row.id, &expr, filter.as_ref(), candidates).await?;
         }
 
         let vk: Vec<u64> = by_vector.iter().map(|(k, _)| *k).collect();
@@ -2221,9 +2266,12 @@ impl VectorService {
             .collect();
         let keys: Vec<u64> = fused.iter().map(|(k, _)| *k).collect();
         let (mut items, mut vectors) = match &field {
-            Some(f) => self.hydrate(pgv, &coll, f, &keys, req.include_vectors).await?,
+            Some(f) => {
+                self.hydrate(pgv, &coll, f, &keys, req.include_vectors, "vector.hybrid")
+                    .await?
+            }
             None => (
-                store::items_by_keys(self.db(), coll.row.id, &keys).await?,
+                store::items_by_keys(&self.rdb("vector.hybrid", true), coll.row.id, &keys).await?,
                 HashMap::new(),
             ),
         };
@@ -2414,8 +2462,9 @@ impl VectorService {
     pub async fn stats(&self, ctx: &AccessContext, name: &str) -> Result<CollectionStats> {
         self.allow(ctx, Action::VectorRead, name, ResourceOp::View)?;
         let coll = self.coll(ctx, name)?;
-        let (items, with_text) = store::count_items(self.db(), coll.row.id, None).await?;
-        let (seq, _) = store::change_seq(self.db(), coll.row.id).await?;
+        let db = self.rdb("vector.stats", true);
+        let (items, with_text) = store::count_items(&db, coll.row.id, None).await?;
+        let (seq, _) = store::change_seq(&db, coll.row.id).await?;
         let storage = self.inner.storage.read().await;
         let mut indexes = Vec::new();
         match storage.pg() {

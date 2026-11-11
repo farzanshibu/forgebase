@@ -604,7 +604,7 @@ impl Conn {
                 result.push((i, false));
                 continue;
             };
-            let v = json!({
+            let mut v = json!({
                 "type": ev.kind(),
                 "id": s.id,
                 "cursor": ev.seq,
@@ -614,6 +614,10 @@ impl Conn {
                 "timestamp": ev.created_at,
                 "data": data,
             });
+            if let (Some(c), Some(o)) = (&ev.commit, v.as_object_mut()) {
+                // The read-after token for "event received, then read".
+                o.insert("commit".into(), Json::String(c.clone()));
+            }
             emit(svc, out, slow, Outbound::of(v, Some(ev.seq))).await?;
             svc.inner.counters.events_delivered.fetch_add(1, Ordering::SeqCst);
             metrics::counter!("forgebase_realtime_events_delivered_total").increment(1);

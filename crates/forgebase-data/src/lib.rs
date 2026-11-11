@@ -47,7 +47,7 @@ pub use access::{
     SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped, reads_tenant_data,
 };
 pub use changes::{ChangeHook, ChangeOp, GuardRejection, PendingWrite, RecordChange, RowSnapshot, WriteGuard};
-pub use collections::SchemaChange;
+pub use collections::{IndexBuild, SchemaChange};
 pub use error::DataError;
 pub use indexes::{
     IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexOrigin, IndexRecommendation, IndexStats, QueryPlan,
@@ -55,7 +55,10 @@ pub use indexes::{
 pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, ListResult};
 pub use native::NativePolicies;
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
-pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};
+pub use sql::{
+    ColumnInfo, LOGIN_GROUP, LOGIN_WRITE_GROUP, RUN_AS_EVENT, SQL_ADMIN_ROLE, SqlOptions, SqlResult, SqlRunAs,
+    SqlStatement, TableInfo,
+};
 
 pub use forgebase_db as db;
 pub use forgebase_query as query;
@@ -94,6 +97,12 @@ struct Inner {
     /// Native row-level security generator (FB-152, PostgreSQL), installed
     /// once at startup.
     native: OnceLock<Arc<dyn native::NativePolicies>>,
+    /// The database sets (FB-173, ADR-0029 §3.7): once sharded, schema
+    /// changes run on control and every shard as one two-phase commit.
+    shards: OnceLock<forgebase_db::DbRouter>,
+    /// Role the SQL editor's statements run as on PostgreSQL (FB-153,
+    /// `forgebase_sql_admin`); `None`: the pools' own roles.
+    sql_role: RwLock<Option<String>>,
 }
 
 impl DataService {
@@ -119,6 +128,8 @@ impl DataService {
                 change_hook: OnceLock::new(),
                 write_guard: OnceLock::new(),
                 native: OnceLock::new(),
+                shards: OnceLock::new(),
+                sql_role: RwLock::new(None),
             }),
         })
     }
@@ -274,6 +285,11 @@ impl DataService {
     /// unless the statement follows relation paths (the lookups would see
     /// the target table's policies; the data core reads targets with full
     /// visibility, rls-coverage §3.4).
+    ///
+    /// ADR-0029 §2.5: record reads may go to a replica (`what` names the call
+    /// site: `records.list`, `records.view`, `records.aggregate`). A read as
+    /// the RLS role stays on the primary: the role switch needs the writer's
+    /// session.
     pub(crate) async fn read_rows(
         &self,
         ctx: &AccessContext,
@@ -281,6 +297,7 @@ impl DataService {
         coll: &Collection,
         stmt: &Statement,
         follows_relations: bool,
+        what: &'static str,
     ) -> Result<Rows, DataError> {
         let run_as = if follows_relations {
             None
@@ -289,8 +306,16 @@ impl DataService {
         };
         Ok(match run_as {
             Some(r) => self.inner.backend.fetch_all_as(stmt, &r).await?,
-            None => self.inner.backend.fetch_all(stmt).await?,
+            None => self.fetch_replica(stmt, what).await?,
         })
+    }
+
+    /// A plain read that may be served by a replica (ADR-0029 §2.5).
+    pub(crate) async fn fetch_replica(&self, stmt: &Statement, what: &'static str) -> Result<Rows, DbError> {
+        self.inner
+            .backend
+            .fetch_routed(stmt, &forgebase_db::ReadIntent::replica(what))
+            .await
     }
 }
 

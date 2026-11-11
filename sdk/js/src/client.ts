@@ -65,6 +65,7 @@ export class ForgeBase {
     this.realtime = new RealtimeClient({
       baseUrl: this.transport.baseUrl,
       fetch: options.fetch,
+      commitTokens: this.transport.commitTokens,
       ...options.realtime,
       sleep: options.retry?.sleep,
       random: options.retry?.random,

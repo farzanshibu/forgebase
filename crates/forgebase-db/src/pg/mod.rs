@@ -23,6 +23,7 @@ pub(crate) mod error;
 pub(crate) mod extensions;
 pub(crate) mod listen;
 pub(crate) mod placeholders;
+pub(crate) mod twophase;
 pub(crate) mod types;
 
 use std::collections::HashMap;
@@ -97,6 +98,8 @@ struct PgInner {
     extensions: RwLock<Option<Arc<extensions::ExtensionReport>>>,
     /// Takes the pre-migration snapshot (FB-150).
     pre_migration: Mutex<Option<Arc<dyn crate::PreMigrationSnapshot>>>,
+    /// The administrator's URL for [`Backend::admin_batch`] (FB-153).
+    admin_url: RwLock<Option<SecretString>>,
 }
 
 /// A failure while running a statement: the driver's (the server may have
@@ -207,6 +210,7 @@ impl PgDatabase {
                 indeterminate: Mutex::new(HashMap::new()),
                 extensions: RwLock::new(None),
                 pre_migration: Mutex::new(None),
+                admin_url: RwLock::new(None),
             }),
         })
     }
@@ -691,6 +695,51 @@ impl PgDatabase {
         })
     }
 
+    /// Sets the administrator URL [`Backend::admin_batch`] logs in with.
+    pub(crate) fn set_admin_url(&self, url: Option<SecretString>) {
+        *self.inner.admin_url.write().unwrap_or_else(|p| p.into_inner()) = url;
+    }
+
+    async fn admin_batch_impl(&self, statements: &[String]) -> Result<(), DbError> {
+        let url = self.inner.admin_url.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let Some(url) = url else {
+            let mut tx = self.begin_tx(TxMode::Normal).await?;
+            for s in statements {
+                if let Err(e) = WriteTx::execute(&mut tx, &Statement::raw(s.clone())).await {
+                    let _ = WriteTx::rollback(Box::new(tx)).await;
+                    return Err(e);
+                }
+            }
+            return WriteTx::commit(Box::new(tx)).await;
+        };
+        let opts = sqlx::ConnectOptions::disable_statement_logging(base_options(&url)?);
+        let mut conn = sqlx::PgConnection::connect_with(&opts)
+            .await
+            .map_err(|e| self.classify(e))?;
+        let run = async {
+            let su: bool = sqlx::query_scalar("SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user")
+                .fetch_one(&mut conn)
+                .await?;
+            sqlx::raw_sql("BEGIN").execute(&mut conn).await?;
+            if su {
+                sqlx::raw_sql(
+                    "SET LOCAL log_statement = 'none'; SET LOCAL log_min_error_statement = 'panic'; \
+                     SET LOCAL log_min_duration_statement = -1",
+                )
+                .execute(&mut conn)
+                .await?;
+            }
+            for s in statements {
+                sqlx::raw_sql(AssertSqlSafe(s.clone())).execute(&mut conn).await?;
+            }
+            sqlx::raw_sql("COMMIT").execute(&mut conn).await?;
+            Ok::<(), sqlx::Error>(())
+        }
+        .await;
+        let _ = conn.close().await;
+        run.map_err(|e| self.classify(e))
+    }
+
     /// [`PgDatabase::begin_tx`] with every statement run as `run_as`.
     async fn begin_tx_as(&self, mode: TxMode, run_as: &RunAs) -> Result<PgTx, DbError> {
         run_as.check()?;
@@ -709,12 +758,24 @@ impl PgDatabase {
 /// in one round trip (`set_config(.., true)` is transaction-local). Both
 /// values are bound parameters, never SQL text.
 async fn set_run_as(conn: &mut sqlx::PgConnection, run_as: &RunAs) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true)")
+    match &run_as.search_path {
+        None => sqlx::query("SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true)")
+            .bind(run_as.claims.as_str())
+            .bind(run_as.role.as_str())
+            .execute(conn)
+            .await
+            .map(|_| ()),
+        Some(path) => sqlx::query(
+            "SELECT set_config('forgebase.claims', $1, true), set_config('role', $2, true), \
+             set_config('search_path', $3, true)",
+        )
         .bind(run_as.claims.as_str())
         .bind(run_as.role.as_str())
+        .bind(path.as_str())
         .execute(conn)
         .await
-        .map(|_| ())
+        .map(|_| ()),
+    }
 }
 
 /// Back to the transaction's own identity after one statement ran as
@@ -1199,6 +1260,10 @@ impl Backend for PgDatabase {
         Box::pin(self.read_with(stmt, Some(run_as)))
     }
 
+    fn admin_batch<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        Box::pin(self.admin_batch_impl(statements))
+    }
+
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
         Box::pin(async move { Ok(Box::new(self.begin_tx(mode).await?) as Box<dyn WriteTx>) })
     }
@@ -1455,6 +1520,10 @@ impl WriteTx for PgTx {
 
     fn rollback(self: Box<Self>) -> BoxFuture<'static, Result<(), DbError>> {
         Box::pin((*self).finish(false))
+    }
+
+    fn prepare(self: Box<Self>, gid: String) -> BoxFuture<'static, Result<(), DbError>> {
+        Box::pin((*self).finish_prepare(gid))
     }
 }
 

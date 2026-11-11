@@ -255,10 +255,15 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_teams"),
     // Record ACL: native RLS (`forgebase.acl()`) reads it on every shard.
     replicated("_forgebase_resource_permissions"),
+    // Direct logins' claims: `forgebase.claims()` reads them on every shard
+    // a login connects to (FB-153).
+    replicated("_forgebase_db_logins"),
     // --- Data-core catalog (control; DDL fans out to every set, FB-173) ---
     control("_forgebase_collection_policies"),
     control("_forgebase_collections"),
     control("_forgebase_indexes"),
+    // Per-set state of index builds (FB-173), read and written on control.
+    control("_forgebase_index_builds"),
     control("_forgebase_schema_history"),
     // Prior versions of collection records: with the record's tenant.
     TablePlacement {
@@ -489,6 +494,11 @@ pub const TENANT_COLUMN_NAMES: &[&str] = &["tenant", "_tenant"];
 /// Tables with a tenant column that is deliberately **not** their placement
 /// key, with the reason.
 pub const TENANT_COLUMNS_NOT_KEYS: &[(&str, &str, &str)] = &[
+    (
+        "_forgebase_db_logins",
+        "tenant",
+        "the one tenant a direct login is bound to (FB-153); logins are control rows copied to every shard",
+    ),
     (
         "_forgebase_auth_api_keys",
         "tenant",

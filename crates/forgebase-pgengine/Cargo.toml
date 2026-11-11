@@ -14,10 +14,14 @@ build = "build.rs"
 bundled-postgres = []
 
 [dependencies]
+# PEM of the generated TLS certificate (FB-153).
+base64.workspace = true
 # Managed replicas (FB-168): node rows, join tokens and agents on control.
 forgebase-core.workspace = true
 forgebase-db.workspace = true
 getrandom.workspace = true
+# Self-signed ECDSA P-256 certificate for TCP logins (FB-153).
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

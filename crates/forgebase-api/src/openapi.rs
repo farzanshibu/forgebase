@@ -16,7 +16,7 @@ use utoipa::openapi::security::{
 use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder};
 
 use crate::error::{ErrorDetail, ErrorEnvelope};
-use crate::v1::{collections, indexes, records, schemas, sql, transfer};
+use crate::v1::{collections, db_logins, extensions, indexes, records, schemas, sql, transfer};
 use forgebase_policy::http::docs as pd;
 
 /// Liveness probe.
@@ -117,6 +117,8 @@ fn doc_openapi() {}
         indexes::set_threshold,
         sql::execute, sql::batch, sql::explain, sql::tables, sql::table,
         transfer::export, transfer::import,
+        db_logins::list, db_logins::create, db_logins::get, db_logins::rotate, db_logins::delete,
+        extensions::list, extensions::create, extensions::drop,
         pd::list_realms, pd::create_realm, pd::list_orgs, pd::create_org, pd::get_org, pd::update_org,
         pd::delete_org, pd::list_org_projects, pd::create_org_project, pd::list_personal_projects,
         pd::create_personal_project, pd::get_project, pd::delete_project, pd::create_environment,
@@ -143,6 +145,10 @@ fn doc_openapi() {}
         schemas::SqlResultSchema, schemas::SqlBatchResult, schemas::ColumnInfoSchema, schemas::TableInfoSchema,
         schemas::TableList, schemas::SlowQueryLabelSchema, schemas::SlowQuerySchema, schemas::SlowQueryLog,
         schemas::ThresholdBody, schemas::ImportResult,
+        sql::RunAsBody, db_logins::DbLoginList, db_logins::RotateBody,
+        forgebase_policy::logins::LoginSpec, forgebase_policy::logins::DbLogin,
+        forgebase_policy::logins::LoginSecret,
+        extensions::ExtensionInfo, extensions::ExtensionList, extensions::CreateExtension,
     )),
     tags(
         (name = "system", description = "Health, metrics and instance information"),

@@ -434,6 +434,9 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
         None => tracing::info!("no config file; using defaults, environment and flags"),
     }
     // FB-91: with the loader's layers, so the feature registry knows each setting's source.
+    // Handlers first: a SIGTERM/SIGINT during startup (even after /health answers) is
+    // queued and handled as a graceful shutdown once startup finished.
+    let signals = forgebase_server::ShutdownSignals::install();
     let server = forgebase_server::start_loaded(&loaded).await?;
     let addr = server.local_addr();
     println!("ForgeBase {} listening on http://{addr}", build::VERSION);
@@ -469,7 +472,7 @@ pub async fn serve(g: &GlobalArgs) -> anyhow::Result<ExitCode> {
             .unwrap_or_else(|| format!("http://{addr}"));
         println!("First run: create the administrator at {}", setup_link(&base, token));
     }
-    server.run_until_signal().await?;
+    server.run_until_signals(signals).await?;
     Ok(ExitCode::SUCCESS)
 }
 

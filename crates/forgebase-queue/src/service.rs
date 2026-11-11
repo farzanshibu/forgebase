@@ -1314,14 +1314,16 @@ impl QueueService {
         let t = self.topic_for(ctx, topic).await?;
         let limit = limit.clamp(1, 500);
         let rows = self
-            .backend()
-            .fetch_all(&Statement::new(
-                format!(
-                    "SELECT {MESSAGE_COLS} FROM _forgebase_queue_messages m WHERE m.topic = ?1 AND m.seq > ?2 \
-                     ORDER BY m.seq LIMIT ?3"
+            .read_replica(
+                "queue.messages",
+                &Statement::new(
+                    format!(
+                        "SELECT {MESSAGE_COLS} FROM _forgebase_queue_messages m WHERE m.topic = ?1 AND m.seq > ?2 \
+                         ORDER BY m.seq LIMIT ?3"
+                    ),
+                    vec![t.name.as_str().into(), after.into(), (limit + 1).into()],
                 ),
-                vec![t.name.as_str().into(), after.into(), (limit + 1).into()],
-            ))
+            )
             .await?;
         let page = usize::try_from(limit).unwrap_or(500);
         let all: Vec<Row<'_>> = Row::all(&rows).collect();

@@ -233,10 +233,28 @@ const DATABASE: &[SettingDef] = &[
         "database.postgres.listen",
         "Direct TCP logins",
         Text,
-        "Bundled PostgreSQL only: empty (the default) accepts logins through a Unix socket in the data directory only. A loopback address with a port, such as 127.0.0.1:5433, also lets programs on this machine log in over TCP. Other hosts need TLS (Transport Layer Security), which this version does not set up, so it is set where the server starts, not here.",
+        "Bundled PostgreSQL only: empty (the default) accepts logins through a Unix socket in the data directory only, and no network port is open. An address with a port, such as 127.0.0.1:5433 (this machine) or 0.0.0.0:5433 (other hosts too), also accepts logins over TCP, always encrypted with TLS (Transport Layer Security). Only named direct logins may log in from other hosts. It opens a network port, so it is set where the server starts, not here.",
     )
     .env("FORGEBASE_DATABASE_POSTGRES_LISTEN")
     .example("127.0.0.1:5433")
+    .read_only(),
+    SettingDef::new(
+        "database.postgres.tls_cert",
+        "TLS certificate for TCP logins",
+        Text,
+        "Bundled PostgreSQL only, with a listen address: a PEM certificate file (with its chain) for encrypted TCP logins. Empty (the default) uses a self-signed certificate ForgeBase generates in the data directory, which clients accept with sslmode=require. Set it together with the key file.",
+    )
+    .env("FORGEBASE_DATABASE_POSTGRES_TLS_CERT")
+    .example("/etc/forgebase/pg.crt")
+    .read_only(),
+    SettingDef::new(
+        "database.postgres.tls_key",
+        "TLS key for TCP logins",
+        Text,
+        "Bundled PostgreSQL only, with a listen address: the PEM private key of the TLS certificate, readable by the server's user only.",
+    )
+    .env("FORGEBASE_DATABASE_POSTGRES_TLS_KEY")
+    .example("/etc/forgebase/pg.key")
     .read_only(),
     SettingDef::new(
         "database.postgres.engine_dir",
@@ -2196,7 +2214,8 @@ mod tests {
             "postgres://u:***@db/x?host=/s"
         );
         let mut c = loaded.config.clone();
-        c.database.postgres.listen = "0.0.0.0:5433".into();
+        // FB-153: any address with a port is fine; port 0 is not.
+        c.database.postgres.listen = "0.0.0.0:0".into();
         c.database.postgres.settings.insert("bad name".into(), "x".into());
         let fields: Vec<_> = c
             .problems()

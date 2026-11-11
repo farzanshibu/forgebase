@@ -26,16 +26,19 @@ dotenvy.workspace = true
 forgebase-api.workspace = true
 forgebase-auth.workspace = true
 forgebase-backup.workspace = true
+forgebase-convert.workspace = true
 forgebase-core.workspace = true
 forgebase-data.workspace = true
 forgebase-db.workspace = true
 forgebase-observability.workspace = true
 forgebase-pgengine.workspace = true
+forgebase-policy.workspace = true
 forgebase-server.workspace = true
 fs4.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
+toml_edit.workspace = true
 # process: `forgebase db psql` runs the engine's psql.
 tokio = { workspace = true, features = ["process"] }
 tracing.workspace = true
@@ -55,6 +58,10 @@ wat.workspace = true
 [[test]]
 name = "server_lifecycle"
 path = "../../tests/integration/server_lifecycle.rs"
+
+[[test]]
+name = "serve_signal_e2e"
+path = "../../tests/integration/serve_signal_e2e.rs"
 
 [[test]]
 name = "cli_e2e"
@@ -102,6 +109,11 @@ path = "tests/backup_pg_e2e.rs"
 [[test]]
 name = "database_e2e"
 path = "tests/database_e2e.rs"
+
+# FB-151: db convert --to postgres|sqlite.
+[[test]]
+name = "convert_e2e"
+path = "tests/convert_e2e.rs"
 
 # FB-168: `forgebase node join` against the agent endpoints.
 [[test]]

@@ -15,13 +15,14 @@
 //! forgebase functions deploy <NAME> <FILE.wasm>   deploy a function version (also: logs <NAME> [--follow])
 //! forgebase queues publish|pull|tail   publish to a topic, pull from a subscription, follow a topic
 //! forgebase jobs watch <ID>            follow a long-running job's progress until it finishes
-//! forgebase db status|psql             the database engine; psql on the bundled PostgreSQL
+//! forgebase db status|psql|dump|convert  the database engine; convert moves a project between SQLite and PostgreSQL
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
 
 mod admin;
 mod commands;
+mod convert;
 mod dataops;
 mod db;
 mod doctor;

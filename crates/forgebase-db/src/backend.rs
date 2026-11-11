@@ -249,6 +249,9 @@ pub struct RunAs {
     pub role: String,
     /// The caller's claims as JSON text (read back by `forgebase.claims()`).
     pub claims: String,
+    /// `search_path` for the same span (FB-153: the SQL editor's "run as"
+    /// resolves names to the `api` views); `None` keeps the current one.
+    pub search_path: Option<String>,
 }
 
 impl RunAs {
@@ -257,7 +260,15 @@ impl RunAs {
         Self {
             role: role.into(),
             claims: claims.into(),
+            search_path: None,
         }
+    }
+
+    /// The same with `search_path` set for the span.
+    #[must_use]
+    pub fn with_search_path(mut self, path: impl Into<String>) -> Self {
+        self.search_path = Some(path.into());
+        self
     }
 
     /// Refuses role names that are not plain identifiers.
@@ -303,6 +314,15 @@ pub trait Backend: Send + Sync + fmt::Debug {
         self.fetch_all(stmt)
     }
 
+    /// The primary's current commit position as a token (`<set>/<lsn>`,
+    /// ADR-0029 §2.6): realtime stamps each dispatched page with it so a
+    /// client that reads after an event sees the change. `None` unless the
+    /// backend is a set with replicas (SQLite, an unrouted PostgreSQL, and a
+    /// set without replicas have nothing to wait for).
+    fn sample_commit_token(&self) -> BoxFuture<'_, Result<Option<crate::routing::CommitToken>, DbError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Starts a write transaction on the single writer.
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>>;
 
@@ -320,6 +340,21 @@ pub trait Backend: Send + Sync + fmt::Debug {
     fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
         let _ = run_as;
         self.fetch_all(stmt)
+    }
+
+    /// Runs `statements` in one transaction as the database administrator
+    /// (FB-153: role and login management, extensions): on PostgreSQL the
+    /// URL given to [`crate::Database::set_admin_url`] (the bundled engine's
+    /// `forgebase_super`), else the writer's own role. A superuser session
+    /// writes none of them to the server log. Default (SQLite):
+    /// [`DbError::Unsupported`].
+    fn admin_batch<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        let _ = statements;
+        Box::pin(async {
+            Err(DbError::Unsupported(
+                "administrator statements need the PostgreSQL backend".into(),
+            ))
+        })
     }
 
     /// The engine's query plan for a statement (not executed).
@@ -388,4 +423,20 @@ pub trait WriteTx: Send {
 
     /// Rolls back.
     fn rollback(self: Box<Self>) -> BoxFuture<'static, Result<(), DbError>>;
+
+    /// Ends the transaction with `PREPARE TRANSACTION '<gid>'` (first phase
+    /// of a two-phase commit across database sets, ADR-0029 §3.7, FB-173):
+    /// its changes survive a crash and are finished later with
+    /// [`crate::Database::commit_prepared`] or
+    /// [`crate::Database::rollback_prepared`] on any connection. `gid` is
+    /// lower-case letters, digits and `_`, at most 200 bytes. The default
+    /// (SQLite) rolls back and refuses.
+    fn prepare(self: Box<Self>, gid: String) -> BoxFuture<'static, Result<(), DbError>> {
+        let _ = gid;
+        let rollback = self.rollback();
+        Box::pin(async move {
+            let _ = rollback.await;
+            Err(DbError::Unsupported("two-phase commit needs PostgreSQL".into()))
+        })
+    }
 }
