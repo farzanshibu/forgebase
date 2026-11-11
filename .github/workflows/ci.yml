@@ -206,7 +206,7 @@ jobs:
     name: functions JavaScript engine (reproducible build)
     # The committed artifact is built on arm64 macOS; the same pinned wasi-sdk
     # binary here makes the check byte-exact.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4

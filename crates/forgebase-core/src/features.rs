@@ -746,6 +746,15 @@ const KV: &[SettingDef] = &[SettingDef::new(
 )
 .env("FORGEBASE_KV_TENANT_MAX_BYTES")];
 
+const BACKUP: &[SettingDef] = &[SettingDef::new(
+    "backup.source",
+    "Cluster backup source",
+    Enum,
+    "Where a cluster backup copies each database set's data from: primary reads the set's primary; replica reads a healthy replica of the set, so the backup does not load the primary. A single-set backup always reads the primary. Use replica once each set has a replica.",
+)
+.options(&["primary", "replica"])
+.env("FORGEBASE_BACKUP_SOURCE")];
+
 const VECTOR: &[SettingDef] = &[SettingDef::new(
     "vector.enabled",
     "Vector search",
@@ -1067,7 +1076,7 @@ pub const FEATURES: &[FeatureDef] = &[
         studio_path: Some("/system"),
         docs: "docs/adr/0024-backup-restore.md#adr-0024-backup-restore-snapshots-exportimport-and-doctor",
         routes: &[],
-        settings: &[],
+        settings: BACKUP,
     },
 ];
 
