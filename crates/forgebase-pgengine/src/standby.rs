@@ -473,7 +473,9 @@ pub enum RejoinHow {
 
 /// Rewinds the stopped cluster of `layout` to `source` (a superuser or the
 /// replicator with the rewind grants, database `postgres`) with
-/// `pg_rewind`. The target must be stopped.
+/// `pg_rewind`. The target must be stopped, and both clusters need
+/// `full_page_writes = on` (ForgeBase's default; only the tests' fast mode
+/// turns it off) and data checksums (`initdb --data-checksums`).
 ///
 /// # Errors
 /// The engine has no `pg_rewind`, or it fails (last lines in the message).
@@ -788,7 +790,18 @@ impl LocalReplicas {
             let mut c = replication::connect(&p.url_for(Role::Super, "postgres")).await?;
             replication::drop_slot(&mut c, &replication::slot_name(name)).await?;
         }
-        let dir = self.layout(name)?.node_dir();
+        let layout = self.layout(name)?;
+        if layout.is_primary_layout() {
+            // The old primary lives in `postgres/data`; `postgres/` itself
+            // holds the engine, roles.secret and every other node.
+            let pgdata = layout.pgdata();
+            if pgdata.exists() {
+                fsutil::remove_tree(&pgdata).map_err(|e| EngineError::io("remove", &pgdata, e))?;
+            }
+            let _ = std::fs::remove_file(passfile(&layout));
+            return Ok(());
+        }
+        let dir = layout.node_dir();
         if dir.exists() {
             fsutil::remove_tree(&dir).map_err(|e| EngineError::io("remove", &dir, e))?;
         }

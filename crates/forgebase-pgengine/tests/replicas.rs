@@ -56,6 +56,8 @@ fn config(dir: &Path, port: u16) -> EngineConfig {
     };
     // Acknowledged means flushed on the primary, even in the fast test mode.
     cfg.settings.insert("synchronous_commit".into(), "on".into());
+    // pg_rewind needs full-page writes (the fast test mode turns them off).
+    cfg.settings.insert("full_page_writes".into(), "on".into());
     cfg
 }
 
@@ -401,7 +403,14 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
     service::remove_replica(&control, &replicas, Some(&new), &out.old_primary, "primary")
         .await
         .expect("remove");
-    assert!(!tmp.path().join("postgres/data").exists() || replicas.get("primary").await.is_none());
+    assert!(!tmp.path().join("postgres/data").exists(), "the old primary's data is gone");
+    assert!(replicas.get("primary").await.is_none());
+    // The new primary's own directory, the engine and roles.secret stay.
+    assert!(tmp.path().join("postgres/nodes/r1/data/PG_VERSION").is_file());
+    assert!(tmp.path().join("postgres/roles.secret").is_file());
+    let mut c = conn(&new, Role::Server).await;
+    let one: i32 = sqlx::query_scalar("SELECT 1").fetch_one(&mut c).await.expect("new primary answers");
+    assert_eq!(one, 1);
     let names: Vec<String> = service::nodes(&control, None)
         .await
         .expect("nodes")

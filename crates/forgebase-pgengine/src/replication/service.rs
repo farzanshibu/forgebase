@@ -1715,7 +1715,7 @@ pub async fn heartbeat(control: &dyn Backend, node_id: &str, agent_key: &str, hb
     let mut tx = control.begin(TxMode::Normal).await?;
     tx.execute(&Statement::new(
         "UPDATE _forgebase_db_node_agents SET state = ?2, replay_lsn = ?3, disk_free = ?4, engine_version = ?5, \
-         last_seen_at = ?6, updated_at = ?6, detail = CASE WHEN ?7 IS NULL THEN detail ELSE ?7 END WHERE node_id = ?1",
+         last_seen_at = ?6, updated_at = ?6, detail = COALESCE(CAST(?7 AS TEXT), detail) WHERE node_id = ?1",
         vec![
             node_id.into(),
             hb.state.as_str().into(),
