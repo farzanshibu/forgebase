@@ -135,6 +135,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "db_logins",
         include_str!("../../../migrations/postgres/0042_db_logins.sql"),
     ),
+    Migration::new(
+        43,
+        "db_node_agents",
+        include_str!("../../../migrations/postgres/0043_db_node_agents.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

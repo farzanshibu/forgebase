@@ -91,7 +91,7 @@ impl QueueService {
     /// conversion cannot move deliveries under it. Never call it again
     /// while holding the guard (a waiting conversion would deadlock).
     pub(crate) async fn store(&self) -> Result<RwLockReadGuard<'_, DeliveryEngine>> {
-        let slot = &self.inner.engine;
+        let slot = &self.engine;
         if let Ok(g) = RwLockReadGuard::try_map(slot.read().await, Option::as_ref) {
             return Ok(g);
         }
@@ -294,7 +294,24 @@ impl QueueService {
     /// # Errors
     /// `400 pgmq_unavailable` when pgmq cannot hold deliveries here;
     /// authorisation and database errors.
+    ///
+    /// Sharded (FB-172): every set is converted, one after the other; the
+    /// report adds up the sets (`from` is control's).
     pub async fn convert(&self, ctx: &AccessContext, to: DeliveryEngine) -> Result<ConvertReport> {
+        let mut views = self.views().into_iter();
+        let Some(first) = views.next() else {
+            return self.convert_here(ctx, to).await;
+        };
+        let mut report = first.convert_here(ctx, to).await?;
+        for view in views {
+            let r = view.convert_here(ctx, to).await?;
+            report.subscriptions += r.subscriptions;
+            report.deliveries += r.deliveries;
+        }
+        Ok(report)
+    }
+
+    async fn convert_here(&self, ctx: &AccessContext, to: DeliveryEngine) -> Result<ConvertReport> {
         self.allow(ctx, Action::QueueAdmin)?;
         if ctx.tenant.is_some() {
             return Err(QueueError::invalid(
@@ -316,7 +333,7 @@ impl QueueService {
                 return Err(QueueError::invalid("pgmq_unavailable", problems.join("; ")));
             }
         }
-        let mut slot = self.inner.engine.write().await;
+        let mut slot = self.engine.write().await;
         let from = match *slot {
             Some(e) => e,
             None => self.resolve().await?,

@@ -139,6 +139,19 @@ impl DataService {
         action: Action,
         name: &str,
     ) -> Result<(Collection, Option<Predicate>), DataError> {
+        self.resolve_spanning(ctx, action, name, false)
+    }
+
+    /// [`Self::resolve`]; with `span`, a privileged caller without a tenant
+    /// may name tenant data on a sharded cluster (realtime fan-in, ADR-0029
+    /// §3.5: live events from every set, no replay).
+    pub(crate) fn resolve_spanning(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        name: &str,
+        span: bool,
+    ) -> Result<(Collection, Option<Predicate>), DataError> {
         let coll = match self.collection(name) {
             Ok(c) => c,
             Err(DataError::CollectionNotFound(_)) if !ctx.is_privileged() => {
@@ -165,6 +178,21 @@ impl DataService {
                 "tenant_required",
                 format!("{name} is tenant-scoped: select a tenant (X-ForgeBase-Tenant header)"),
             ));
+        }
+        // FB-171 (ADR-0029 §3.6): on a sharded cluster tenant data lives on
+        // the tenant's set, so a privileged caller without a tenant cannot
+        // see every tenant's rows any more; and rules may not follow a
+        // relation from tenant data to a shared collection.
+        if self.is_sharded() {
+            if record_action
+                && !span
+                && Self::tenant_placed(&coll)
+                && ctx.tenant.as_deref().is_none_or(str::is_empty)
+                && !ctx.is_system()
+            {
+                return Err(crate::shards::tenant_required_sharded(name));
+            }
+            self.check_predicate_crossing(&coll, pred.as_ref())?;
         }
         Ok((coll, pred))
     }
@@ -222,6 +250,9 @@ impl DataService {
         let cat = self.catalog();
         let mut b = SqlBuilder::new(self.inner.backend.dialect());
         forgebase_query::Compiler::new(&*cat, &opts).filter(&mut b, coll, "t", &p.filter)?;
+        // FB-171: on a sharded cluster a rule may not follow a relation from
+        // tenant data to a shared collection (ADR-0029 §3.6).
+        self.check_crossing(coll, &p.filter, "rule")?;
         Ok(())
     }
 

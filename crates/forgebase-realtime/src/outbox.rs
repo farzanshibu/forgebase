@@ -10,7 +10,6 @@ use std::sync::Arc;
 use forgebase_data::db::{Backend, Rows, Statement, TxMode, Value};
 use forgebase_data::{ChangeHook, ChangeOp, RecordChange, RowSnapshot};
 use serde_json::Value as Json;
-use tokio::sync::Notify;
 
 use crate::RealtimeError;
 
@@ -59,7 +58,7 @@ impl Event {
 /// dispatcher after commit.
 #[derive(Debug)]
 pub(crate) struct OutboxHook {
-    pub(crate) notify: Arc<Notify>,
+    pub(crate) wakers: Arc<crate::Wakers>,
 }
 
 impl ChangeHook for OutboxHook {
@@ -82,7 +81,7 @@ impl ChangeHook for OutboxHook {
     }
 
     fn committed(&self) {
-        self.notify.notify_one();
+        self.wakers.wake_all();
     }
 }
 

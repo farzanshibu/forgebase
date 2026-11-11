@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use forgebase_auth::crypto::Keyring;
 use forgebase_data::{AccessContext, Action, DataService, ResourceKind, ResourceOp};
-use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, DbRouter, Rows, SetHandle, Statement, TxMode, Value, WriteTx};
 use forgebase_entitlements::{EntitlementError, EntitlementService, UsageRequest, parse_subject, subject_key};
 use forgebase_functions::{Fetcher, FunctionService};
 use forgebase_jobs::{Clock, SystemClock};
@@ -40,9 +40,18 @@ pub(crate) type Result<T> = std::result::Result<T, QueueError>;
 pub(crate) const SYSTEM_PUBLISHER: &str = "system:queue";
 
 /// The queue service. Cheap to clone.
+///
+/// With a router ([`QueueService::attach_router`], FB-172) every call runs
+/// on the database set of the topic or subscription it is about; a clone
+/// made by [`QueueService::on_set`] is a *view* bound to one set.
 #[derive(Clone)]
 pub struct QueueService {
     pub(crate) inner: Arc<Inner>,
+    /// The set this view is bound to (`None`: the data core's database,
+    /// i.e. control).
+    pub(crate) set: Option<SetHandle>,
+    /// Where this set's deliveries are stored (FB-164), resolved on first use.
+    pub(crate) engine: Arc<crate::pgmq::EngineSlot>,
 }
 
 impl std::fmt::Debug for QueueService {
@@ -69,8 +78,11 @@ pub(crate) struct Inner {
     /// `true` once streams must end (server shutdown).
     pub(crate) closed: watch::Sender<bool>,
     pub(crate) background: Mutex<Option<(watch::Sender<bool>, JoinHandle<()>)>>,
-    /// Where deliveries are stored, resolved on first use (FB-164).
-    pub(crate) engine: crate::pgmq::EngineSlot,
+    /// The delivery engine of every set (by set id), resolved on first use
+    /// (FB-164: each database pins its own).
+    pub(crate) engines: Mutex<std::collections::HashMap<String, Arc<crate::pgmq::EngineSlot>>>,
+    /// The database sets (FB-172); none: one database.
+    pub(crate) router: OnceLock<DbRouter>,
 }
 
 /// Reads through the read pool or inside a write transaction.
@@ -578,7 +590,13 @@ impl QueueService {
     pub fn with_clock(data: DataService, keyring: Keyring, settings: QueueSettings, clock: Arc<dyn Clock>) -> Self {
         let (wake, _) = watch::channel(0);
         let (closed, _) = watch::channel(false);
+        let engine: Arc<crate::pgmq::EngineSlot> = Arc::new(tokio::sync::RwLock::new(None));
+        let engines = [(forgebase_db::topology::CONTROL_SET_ID.to_owned(), engine.clone())]
+            .into_iter()
+            .collect();
         Self {
+            set: None,
+            engine,
             inner: Arc::new(Inner {
                 data,
                 clock,
@@ -590,7 +608,8 @@ impl QueueService {
                 wake,
                 closed,
                 background: Mutex::new(None),
-                engine: tokio::sync::RwLock::new(None),
+                engines: Mutex::new(engines),
+                router: OnceLock::new(),
             }),
         }
     }
@@ -622,7 +641,10 @@ impl QueueService {
     }
 
     pub(crate) fn backend(&self) -> &dyn Backend {
-        self.inner.data.backend().as_ref()
+        match &self.set {
+            Some(set) => set,
+            None => self.inner.data.backend().as_ref(),
+        }
     }
 
     pub(crate) fn allow(&self, ctx: &AccessContext, action: Action) -> Result<()> {
@@ -651,6 +673,20 @@ impl QueueService {
         sub: &str,
         op: ResourceOp,
     ) -> Result<()> {
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .authorize_subscription_here(ctx, action, sub, op)
+            .await
+    }
+
+    /// [`Self::authorize_subscription`] on this view's set.
+    pub(crate) async fn authorize_subscription_here(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        sub: &str,
+        op: ResourceOp,
+    ) -> Result<()> {
         self.sub_for(&mut Db::Ro(self.backend()), ctx, action, op, sub)
             .await
             .map(|_| ())
@@ -659,6 +695,14 @@ impl QueueService {
     /// Checks that `ctx` may stream subscription `sub` and that it is a pull
     /// subscription; returns its stored name.
     pub(crate) async fn stream_subscription(&self, ctx: &AccessContext, sub: &str) -> Result<String> {
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .stream_subscription_here(ctx, sub)
+            .await
+    }
+
+    /// [`Self::stream_subscription`] on this view's set.
+    pub(crate) async fn stream_subscription_here(&self, ctx: &AccessContext, sub: &str) -> Result<String> {
         let s = self
             .sub_for(
                 &mut Db::Ro(self.backend()),
@@ -706,6 +750,14 @@ impl QueueService {
 
     /// Creates a topic.
     pub async fn create_topic(&self, ctx: &AccessContext, new: NewTopic) -> Result<Topic> {
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .create_topic_here(ctx, new)
+            .await
+    }
+
+    /// [`Self::create_topic`] on this view's set.
+    pub(crate) async fn create_topic_here(&self, ctx: &AccessContext, new: NewTopic) -> Result<Topic> {
         self.check(
             ctx,
             Action::QueueAdmin,
@@ -829,6 +881,14 @@ impl QueueService {
 
     /// One topic.
     pub async fn topic(&self, ctx: &AccessContext, name: &str) -> Result<Topic> {
+        self.at_topic(ctx.tenant.as_deref(), name)
+            .await?
+            .topic_here(ctx, name)
+            .await
+    }
+
+    /// [`Self::topic`] on this view's set.
+    pub(crate) async fn topic_here(&self, ctx: &AccessContext, name: &str) -> Result<Topic> {
         self.check(
             ctx,
             Action::QueueRead,
@@ -849,25 +909,28 @@ impl QueueService {
     /// ones), by name: every one with `engine:queue_read`, else those the
     /// caller may list (resource keys and rules).
     pub async fn topics(&self, ctx: &AccessContext) -> Result<Vec<Topic>> {
+        self.at_tenant(ctx.tenant.as_deref()).await?.topics_here(ctx).await
+    }
+
+    /// [`Self::topics`] on this view's set.
+    pub(crate) async fn topics_here(&self, ctx: &AccessContext) -> Result<Vec<Topic>> {
         let plain = self.allow(ctx, Action::QueueRead);
         let rows = match &ctx.tenant {
             Some(t) => {
-                self.backend()
-                    .fetch_all(&Statement::new(
-                        format!(
-                            "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant = ?1 OR tenant IS NULL \
+                self.fetch_listing(&Statement::new(
+                    format!(
+                        "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant = ?1 OR tenant IS NULL \
                              ORDER BY name"
-                        ),
-                        vec![t.as_str().into()],
-                    ))
-                    .await?
+                    ),
+                    vec![t.as_str().into()],
+                ))
+                .await?
             }
             None => {
-                self.backend()
-                    .fetch_all(&Statement::raw(format!(
-                        "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant IS NULL ORDER BY name"
-                    )))
-                    .await?
+                self.fetch_listing(&Statement::raw(format!(
+                    "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant IS NULL ORDER BY name"
+                )))
+                .await?
             }
         };
         let rows: Vec<TopicRow> = Row::all(&rows).map(|r| TopicRow::from_row(&r)).collect::<Result<_>>()?;
@@ -897,6 +960,14 @@ impl QueueService {
 
     /// Changes a topic's limits, schema or labels.
     pub async fn update_topic(&self, ctx: &AccessContext, name: &str, patch: TopicPatch) -> Result<Topic> {
+        self.at_topic(ctx.tenant.as_deref(), name)
+            .await?
+            .update_topic_here(ctx, name, patch)
+            .await
+    }
+
+    /// [`Self::update_topic`] on this view's set.
+    pub(crate) async fn update_topic_here(&self, ctx: &AccessContext, name: &str, patch: TopicPatch) -> Result<Topic> {
         self.check(
             ctx,
             Action::QueueAdmin,
@@ -976,6 +1047,14 @@ impl QueueService {
     /// Deletes a topic and its messages. A topic with subscriptions is only
     /// deleted with `force`, which deletes them too.
     pub async fn delete_topic(&self, ctx: &AccessContext, name: &str, force: bool) -> Result<()> {
+        self.at_topic(ctx.tenant.as_deref(), name)
+            .await?
+            .delete_topic_here(ctx, name, force)
+            .await
+    }
+
+    /// [`Self::delete_topic`] on this view's set.
+    pub(crate) async fn delete_topic_here(&self, ctx: &AccessContext, name: &str, force: bool) -> Result<()> {
         self.check(
             ctx,
             Action::QueueAdmin,
@@ -1195,6 +1274,19 @@ impl QueueService {
     /// (`duplicate: true`). Usage is metered through the quota engine when one
     /// is attached; a refusal publishes nothing.
     pub async fn publish(&self, ctx: &AccessContext, topic: &str, messages: Vec<NewMessage>) -> Result<Vec<Published>> {
+        self.at_topic(ctx.tenant.as_deref(), topic)
+            .await?
+            .publish_here(ctx, topic, messages)
+            .await
+    }
+
+    /// [`Self::publish`] on this view's set.
+    pub(crate) async fn publish_here(
+        &self,
+        ctx: &AccessContext,
+        topic: &str,
+        messages: Vec<NewMessage>,
+    ) -> Result<Vec<Published>> {
         self.check(
             ctx,
             Action::QueuePublish,
@@ -1303,6 +1395,20 @@ impl QueueService {
     /// those whose record the caller may not see are left out, so a page may
     /// hold fewer than `limit` items (follow `next_after`).
     pub async fn messages(&self, ctx: &AccessContext, topic: &str, after: i64, limit: i64) -> Result<MessagePage> {
+        self.at_topic(ctx.tenant.as_deref(), topic)
+            .await?
+            .messages_here(ctx, topic, after, limit)
+            .await
+    }
+
+    /// [`Self::messages`] on this view's set.
+    pub(crate) async fn messages_here(
+        &self,
+        ctx: &AccessContext,
+        topic: &str,
+        after: i64,
+        limit: i64,
+    ) -> Result<MessagePage> {
         self.check(
             ctx,
             Action::QueueRead,
@@ -1404,6 +1510,18 @@ impl QueueService {
     /// Creates a subscription. A webhook push subscription's signing secret is
     /// in the response (`push_secret`) and never shown again.
     pub async fn create_subscription(&self, ctx: &AccessContext, new: NewSubscription) -> Result<Subscription> {
+        self.at_topic(ctx.tenant.as_deref(), &new.topic)
+            .await?
+            .create_subscription_here(ctx, new)
+            .await
+    }
+
+    /// [`Self::create_subscription`] on this view's set.
+    pub(crate) async fn create_subscription_here(
+        &self,
+        ctx: &AccessContext,
+        new: NewSubscription,
+    ) -> Result<Subscription> {
         self.check(
             ctx,
             Action::QueueAdmin,
@@ -1590,6 +1708,14 @@ impl QueueService {
 
     /// One subscription.
     pub async fn subscription(&self, ctx: &AccessContext, name: &str) -> Result<Subscription> {
+        self.at_sub(ctx.tenant.as_deref(), name)
+            .await?
+            .subscription_here(ctx, name)
+            .await
+    }
+
+    /// [`Self::subscription`] on this view's set.
+    pub(crate) async fn subscription_here(&self, ctx: &AccessContext, name: &str) -> Result<Subscription> {
         let s = self
             .sub_for(
                 &mut Db::Ro(self.backend()),
@@ -1606,6 +1732,19 @@ impl QueueService {
     /// every one with `engine:queue_read`, else those the caller owns or may
     /// list (resource keys and rules).
     pub async fn subscriptions(&self, ctx: &AccessContext, topic: Option<&str>) -> Result<Vec<Subscription>> {
+        let view = match topic {
+            Some(t) => self.at_topic(ctx.tenant.as_deref(), t).await?,
+            None => self.at_tenant(ctx.tenant.as_deref()).await?,
+        };
+        view.subscriptions_here(ctx, topic).await
+    }
+
+    /// [`Self::subscriptions`] on this view's set.
+    pub(crate) async fn subscriptions_here(
+        &self,
+        ctx: &AccessContext,
+        topic: Option<&str>,
+    ) -> Result<Vec<Subscription>> {
         let plain = self.allow(ctx, Action::QueueRead);
         let topic = match topic {
             Some(t) => match find_topic(&mut Db::Ro(self.backend()), ctx.tenant.as_deref(), t).await? {
@@ -1618,8 +1757,7 @@ impl QueueService {
             None => None,
         };
         let rows = self
-            .backend()
-            .fetch_all(&Statement::new(
+            .fetch_listing(&Statement::new(
                 format!(
                     "SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions \
                      WHERE (tenant IS NULL OR tenant = ?1) AND (CAST(?2 AS TEXT) IS NULL OR topic = ?2) ORDER BY name"
@@ -1655,6 +1793,19 @@ impl QueueService {
     /// Changes a subscription. A new webhook endpoint gets a new signing
     /// secret, returned in this response only.
     pub async fn update_subscription(
+        &self,
+        ctx: &AccessContext,
+        name: &str,
+        patch: SubscriptionPatch,
+    ) -> Result<Subscription> {
+        self.at_sub(ctx.tenant.as_deref(), name)
+            .await?
+            .update_subscription_here(ctx, name, patch)
+            .await
+    }
+
+    /// [`Self::update_subscription`] on this view's set.
+    pub(crate) async fn update_subscription_here(
         &self,
         ctx: &AccessContext,
         name: &str,
@@ -1790,6 +1941,14 @@ impl QueueService {
 
     /// Deletes a subscription with its deliveries, snapshots and dead letters.
     pub async fn delete_subscription(&self, ctx: &AccessContext, name: &str) -> Result<()> {
+        self.at_sub(ctx.tenant.as_deref(), name)
+            .await?
+            .delete_subscription_here(ctx, name)
+            .await
+    }
+
+    /// [`Self::delete_subscription`] on this view's set.
+    pub(crate) async fn delete_subscription_here(&self, ctx: &AccessContext, name: &str) -> Result<()> {
         let found = self
             .sub_for(
                 &mut Db::Ro(self.backend()),

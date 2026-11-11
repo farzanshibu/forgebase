@@ -707,13 +707,30 @@ impl VectorEngine {
 /// Outcome of `vector.convert`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConvertReport {
-    /// The engine before.
+    /// The engine before (sharded: control's, or the one set converted).
     pub from: VectorEngine,
     /// The engine now.
     pub to: VectorEngine,
-    /// Canonical vectors moved between the columns.
+    /// Canonical vectors moved between the columns (sharded: every set).
     pub vectors: u64,
     /// HNSW indexes built (to pgvector) or dropped (to portable).
+    pub indexes: u64,
+    /// Sharded (FB-172): one entry per database set converted, control
+    /// first. Empty (and left out) on one set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sets: Vec<SetConvertReport>,
+}
+
+/// What `vector.convert` did on one database set (FB-172).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetConvertReport {
+    /// Set id.
+    pub set: String,
+    /// The set's engine before.
+    pub from: VectorEngine,
+    /// Canonical vectors moved on the set.
+    pub vectors: u64,
+    /// HNSW indexes built or dropped on the set.
     pub indexes: u64,
 }
 

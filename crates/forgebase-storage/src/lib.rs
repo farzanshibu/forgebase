@@ -3,7 +3,7 @@
 //! | Piece | Where |
 //! |---|---|
 //! | Driver interface; local filesystem and S3-compatible (SigV4) drivers | [`driver`], [`local`], [`s3`], [`sigv4`] |
-//! | Buckets, ACLs, bucket policies, authorization, storage quota | [`service`] |
+//! | Buckets, ACLs, bucket policies, authorization, storage quota; routing over database sets (FB-172) | [`service`] |
 //! | Streaming put/get, ranges, checksums, deduplication, versions, copy/move | [`objects`] |
 //! | Multipart and resumable uploads | [`uploads`] |
 //! | Object rules over object fields (FB-140) | [`rules`] |

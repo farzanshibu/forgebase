@@ -1,15 +1,20 @@
 # ForgeBase
 
-ForgeBase is a single-binary backend with an embedded database, an admin
-dashboard, and the APIs for auth, data, realtime, storage, jobs, functions and
-billing. It is single-node.
+ForgeBase is a single-binary backend with an embedded PostgreSQL database, an
+admin dashboard, and the APIs for auth, data, realtime, storage, jobs,
+functions and billing. SQLite is the optional one-file alternative.
 
 ## What is in this repository
 
 - `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `backup`,
   `restore`, `export`, `import`, `version`, `admin`, `functions`.
-- Embedded SQLite database in WAL mode, one writer and a read pool, with
-  checksummed system migrations and pre-migration snapshots.
+- PostgreSQL 18 as the default database: the engine is embedded in the
+  standard release, runs as a child of `forgebase serve` and listens on a Unix
+  socket only (TCP is off). Or point ForgeBase at your own PostgreSQL server.
+- SQLite (one file, WAL mode, one writer and a read pool) when you pick it with
+  `forgebase init --database sqlite`; it is the default of the `-lite` release,
+  which leaves the PostgreSQL engine out.
+- Checksummed system migrations and pre-migration snapshots on both engines.
 - HTTP API: health probes, Prometheus metrics, `/api/system/*`, `/api/auth/*`,
   `/api/v1/*` (collections, KV, graph, vector, storage, jobs, realtime,
   credits, billing, customization) and the OpenAPI document at
@@ -28,7 +33,7 @@ Status of each work package, and what is still to do, is in
 
 - [Architecture](docs/architecture.md): crates and how a request flows.
 - [API](docs/api.md): conventions, auth, errors, pagination, OpenAPI.
-- [Database](docs/database.md): storage engine, multi-model data, migrations, backups.
+- [Database](docs/database.md): PostgreSQL and SQLite, multi-model data, migrations, backups.
 - [Security](docs/security.md): threat model summary (draft) and open items.
 - [Deployment](docs/deployment.md): binary, Docker, systemd, configuration, upgrades.
 - [SDKs](docs/sdk.md): JavaScript SDK, and the status of the Rust SDK.
@@ -69,6 +74,22 @@ Stop the server with Ctrl-C (SIGTERM also works).
 
 `init` writes `forgebase.toml` in the project directory. It does not overwrite an
 existing file.
+
+**Database.** The standard release uses PostgreSQL by default. On a terminal,
+`init` asks `Database: [1] PostgreSQL (default, bundled server) [2] SQLite (one
+file)`; scripts pass the choice:
+
+```sh
+forgebase init                      # PostgreSQL (the bundled server)
+forgebase init --database sqlite    # one file, <data dir>/forgebase.db
+forgebase init --database-url postgres://…   # a PostgreSQL server you run
+```
+
+PostgreSQL cannot run as root: run as an unprivileged user, or use
+`--database sqlite`. The `-lite` release has no PostgreSQL engine and
+defaults to SQLite (`forgebase --version` says `lite`). An existing SQLite
+project stays SQLite after an upgrade; `forgebase db convert --to postgres`
+moves it. See [Upgrading to 0.3](docs/release-notes/0.3.md#upgrading-to-03).
 
 ## Commands
 

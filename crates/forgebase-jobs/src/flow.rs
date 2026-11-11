@@ -62,6 +62,14 @@ impl JobService {
     /// their parents. Parents' results reach a step through
     /// [`crate::ClaimedJob::parents`] / [`crate::JobContext::parents`].
     pub async fn create_workflow(&self, ctx: &AccessContext, new: NewWorkflow) -> Result<WorkflowDetail> {
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .create_workflow_here(ctx, new)
+            .await
+    }
+
+    /// [`Self::create_workflow`] on this view's set.
+    pub(crate) async fn create_workflow_here(&self, ctx: &AccessContext, new: NewWorkflow) -> Result<WorkflowDetail> {
         self.allow(ctx, Action::EnqueueJob)?;
         let order = new.order()?;
         let now = self.now();
@@ -132,6 +140,11 @@ impl JobService {
 
     /// A workflow with its jobs and their dependencies.
     pub async fn workflow(&self, ctx: &AccessContext, id: &str) -> Result<WorkflowDetail> {
+        self.at_workflow(ctx, id).await?.workflow_here(ctx, id).await
+    }
+
+    /// [`Self::workflow`] on this view's set.
+    pub(crate) async fn workflow_here(&self, ctx: &AccessContext, id: &str) -> Result<WorkflowDetail> {
         self.allow(ctx, Action::ReadJobs)?;
         let workflow = fetch_workflow(self.backend(), id)
             .await?
@@ -161,6 +174,20 @@ impl JobService {
 
     /// Workflows, newest first, optionally of one state.
     pub async fn workflows(
+        &self,
+        ctx: &AccessContext,
+        status: Option<WorkflowStatus>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<WorkflowPage> {
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .workflows_here(ctx, status, limit, offset)
+            .await
+    }
+
+    /// [`Self::workflows`] on this view's set.
+    pub(crate) async fn workflows_here(
         &self,
         ctx: &AccessContext,
         status: Option<WorkflowStatus>,
@@ -215,6 +242,11 @@ impl JobService {
     /// Cancels a running (or compensating) workflow: waiting jobs at once,
     /// running ones cooperatively. No compensations run.
     pub async fn cancel_workflow(&self, ctx: &AccessContext, id: &str) -> Result<WorkflowDetail> {
+        self.at_workflow(ctx, id).await?.cancel_workflow_here(ctx, id).await
+    }
+
+    /// [`Self::cancel_workflow`] on this view's set.
+    pub(crate) async fn cancel_workflow_here(&self, ctx: &AccessContext, id: &str) -> Result<WorkflowDetail> {
         self.allow(ctx, Action::ManageJobs)?;
         let scope = self.access().scope(ctx);
         let now = self.now();

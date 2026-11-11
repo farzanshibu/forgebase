@@ -352,13 +352,17 @@ impl FunctionService {
                 "a write guard is already installed on this data service".into(),
             ));
         }
-        // After-hooks see changes from now on, not the outbox's history.
-        let backend = svc.backend();
-        if store::cursor(backend.as_ref(), AFTER_CURSOR).await?.is_none() {
-            let (_, head) = forgebase_realtime::outbox::bounds(backend.as_ref())
-                .await
-                .map_err(|e| FunctionError::Internal(e.to_string()))?;
-            store::set_cursor(backend.as_ref(), AFTER_CURSOR, head, &now()).await?;
+        // After-hooks see changes from now on, not the outbox's history. The
+        // cursor is per set (FB-171: `_forgebase_function_cursors` is a
+        // per-set table, next to the set's outbox); a set opened later has
+        // no cursor yet and is read from its start.
+        for (set, backend) in svc.outbox_sets() {
+            if store::cursor(backend.as_ref(), AFTER_CURSOR).await?.is_none() {
+                let (_, head) = forgebase_realtime::outbox::bounds(backend.as_ref())
+                    .await
+                    .map_err(|e| FunctionError::Internal(format!("set {set}: {e}")))?;
+                store::set_cursor(backend.as_ref(), AFTER_CURSOR, head, &now()).await?;
+            }
         }
         Ok(svc)
     }
@@ -428,6 +432,27 @@ impl FunctionService {
 
     pub(crate) fn backend(&self) -> Arc<dyn Backend> {
         self.inner.data.backend().clone()
+    }
+
+    /// Every set's outbox (FB-171): the data service's router sets, control
+    /// first (control as the service's own backend), or the one backend.
+    fn outbox_sets(&self) -> Vec<(String, Arc<dyn Backend>)> {
+        let data = &self.inner.data;
+        match data.shard_router() {
+            Some(r) => r
+                .sets()
+                .into_iter()
+                .map(|h| {
+                    let b: Arc<dyn Backend> = if h.is_control() {
+                        data.backend().clone()
+                    } else {
+                        Arc::new(h.clone())
+                    };
+                    (h.id().to_owned(), b)
+                })
+                .collect(),
+            None => vec![(forgebase_db::topology::CONTROL_SET_ID.to_owned(), self.backend())],
+        }
     }
 
     pub(crate) fn registry(&self) -> Arc<Registry> {
@@ -1321,11 +1346,28 @@ impl FunctionService {
     /// after-hook functions, from the stored cursor on. Returns the number of
     /// hook executions. The background task calls this; tests may call it
     /// directly.
+    ///
+    /// Each database set (FB-171) has its own outbox and its own cursor,
+    /// stored on that set; sets are read one after the other, so hooks run
+    /// in commit order within a set. A set that cannot be read is skipped
+    /// (and retried next time); control's failure is returned.
     pub async fn run_after_hooks(&self) -> Result<usize> {
         // Once-only delivery: a second caller waits, then starts from the
         // cursor the first one stored.
         let _pass = self.inner.after_lock.lock().await;
-        let backend = self.backend();
+        let mut runs = 0;
+        for (set, backend) in self.outbox_sets() {
+            match self.run_after_hooks_on(&backend).await {
+                Ok(n) => runs += n,
+                Err(e) if set == forgebase_db::topology::CONTROL_SET_ID => return Err(e),
+                Err(e) => tracing::warn!(set = %set, error = %e, "after-hooks of a database set failed; retrying"),
+            }
+        }
+        Ok(runs)
+    }
+
+    /// One set's pass of [`FunctionService::run_after_hooks`].
+    async fn run_after_hooks_on(&self, backend: &Arc<dyn Backend>) -> Result<usize> {
         let mut cursor = store::cursor(backend.as_ref(), AFTER_CURSOR).await?.unwrap_or(0);
         let mut runs = 0;
         loop {

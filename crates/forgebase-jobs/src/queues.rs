@@ -10,6 +10,12 @@
 //! Non-privileged callers see and change only settings of their tenant, and
 //! only those they created unless they hold `engine:read_jobs:all`, like
 //! jobs (FB-142); queue counts include only the jobs they may see.
+//!
+//! Sharded (FB-172): the settings of a tenant are read and written on the
+//! tenant's set, where its claims check them (`_forgebase_job_queues` is a
+//! per-set table, ADR-0029 FB-170 addendum). Every change is mirrored to
+//! control, which keeps the settings of every tenant, so a move can copy
+//! them to the target ([`JobService::copy_queue_settings`]).
 
 use std::collections::BTreeMap;
 
@@ -79,6 +85,11 @@ impl JobService {
     /// Every queue that has settings or jobs the caller may see, by tenant
     /// and name.
     pub async fn queues(&self, ctx: &AccessContext) -> Result<Vec<QueueInfo>> {
+        self.at_tenant(ctx.tenant.as_deref()).await?.queues_here(ctx).await
+    }
+
+    /// [`Self::queues`] on this view's set.
+    pub(crate) async fn queues_here(&self, ctx: &AccessContext) -> Result<Vec<QueueInfo>> {
         self.allow(ctx, Action::ReadJobs)?;
         self.queue_infos(&self.access().scope(ctx), None).await
     }
@@ -86,6 +97,11 @@ impl JobService {
     /// One queue of the caller's tenant (a queue without settings or jobs has
     /// default settings).
     pub async fn queue(&self, ctx: &AccessContext, name: &str) -> Result<QueueInfo> {
+        self.at_tenant(ctx.tenant.as_deref()).await?.queue_here(ctx, name).await
+    }
+
+    /// [`Self::queue`] on this view's set.
+    pub(crate) async fn queue_here(&self, ctx: &AccessContext, name: &str) -> Result<QueueInfo> {
         self.allow(ctx, Action::ReadJobs)?;
         check_name("queue", name, 64)?;
         let tenant = ctx.tenant.as_deref();
@@ -169,6 +185,14 @@ impl JobService {
     /// removed; `paused` left out keeps its value. Takes effect at the next
     /// claim of any worker.
     pub async fn set_queue(&self, ctx: &AccessContext, name: &str, settings: QueueSettings) -> Result<QueueInfo> {
+        let view = self.at_tenant(ctx.tenant.as_deref()).await?;
+        let out = view.set_queue_here(ctx, name, settings).await?;
+        view.mirror_queue(&queue_key(ctx.tenant.as_deref(), name)).await?;
+        Ok(out)
+    }
+
+    /// [`Self::set_queue`] on this view's set.
+    async fn set_queue_here(&self, ctx: &AccessContext, name: &str, settings: QueueSettings) -> Result<QueueInfo> {
         self.allow(ctx, Action::ManageJobs)?;
         check_name("queue", name, 64)?;
         settings.validate()?;
@@ -214,6 +238,14 @@ impl JobService {
     }
 
     async fn set_paused(&self, ctx: &AccessContext, name: &str, paused: bool) -> Result<QueueInfo> {
+        let view = self.at_tenant(ctx.tenant.as_deref()).await?;
+        let out = view.set_paused_here(ctx, name, paused).await?;
+        view.mirror_queue(&queue_key(ctx.tenant.as_deref(), name)).await?;
+        Ok(out)
+    }
+
+    /// [`Self::set_paused`] on this view's set.
+    async fn set_paused_here(&self, ctx: &AccessContext, name: &str, paused: bool) -> Result<QueueInfo> {
         self.allow(ctx, Action::ManageJobs)?;
         check_name("queue", name, 64)?;
         let now = self.now();
@@ -239,6 +271,13 @@ impl JobService {
 
     /// Removes the settings of a queue (its jobs stay; it has no limits then).
     pub async fn delete_queue(&self, ctx: &AccessContext, name: &str) -> Result<()> {
+        let view = self.at_tenant(ctx.tenant.as_deref()).await?;
+        view.delete_queue_here(ctx, name).await?;
+        view.mirror_queue(&queue_key(ctx.tenant.as_deref(), name)).await
+    }
+
+    /// [`Self::delete_queue`] on this view's set.
+    async fn delete_queue_here(&self, ctx: &AccessContext, name: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
         check_name("queue", name, 64)?;
         let key = queue_key(ctx.tenant.as_deref(), name);
@@ -287,6 +326,87 @@ fn not_yours(name: &str) -> JobError {
 
 /// Creates the settings row `key` for the caller (its tenant and principal),
 /// or checks that the caller may change the existing one.
+impl JobService {
+    /// Copies the stored settings `key` of this view's set to control
+    /// (sharded only, and only from another set).
+    async fn mirror_queue(&self, key: &str) -> Result<()> {
+        if self.sharded().is_none() || self.on_control() {
+            return Ok(());
+        }
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                format!("SELECT {QUEUE_COLS} FROM _forgebase_job_queues WHERE name = ?1"),
+                vec![key.into()],
+            ))
+            .await?;
+        let control = self.control_view();
+        let mut tx = control.begin().await?;
+        let r = write_settings_row(&mut *tx, key, &rows).await;
+        finish(tx, r).await
+    }
+
+    /// Copies the queue settings of `tenant` from control to the set the
+    /// tenant is placed on now (sharded only). A tenant move (FB-174) calls
+    /// it after the switch: `_forgebase_job_queues` is per set and does not
+    /// travel with the tenant's rows. Returns how many settings were copied.
+    pub async fn copy_queue_settings(&self, tenant: &str) -> Result<usize> {
+        let target = self.at_tenant(Some(tenant)).await?;
+        if target.sharded().is_none() || target.on_control() {
+            return Ok(0);
+        }
+        let rows = self
+            .control_view()
+            .backend()
+            .fetch_all(&Statement::new(
+                format!("SELECT {QUEUE_COLS} FROM _forgebase_job_queues WHERE tenant = ?1"),
+                vec![tenant.into()],
+            ))
+            .await?;
+        let mut tx = target.begin().await?;
+        let r = async {
+            for i in 0..rows.len() {
+                let key = Row::new(&rows, i).text("name");
+                let one = forgebase_db::Rows {
+                    columns: rows.columns.clone(),
+                    rows: vec![rows.rows[i].clone()],
+                };
+                write_settings_row(&mut *tx, &key, &one).await?;
+            }
+            Ok::<_, JobError>(rows.len())
+        }
+        .await;
+        finish(tx, r).await
+    }
+}
+
+/// Makes the settings row `key` equal `rows` (one row of [`QUEUE_COLS`], or
+/// none: deleted). The rate window is not copied: it restarts.
+async fn write_settings_row(tx: &mut dyn WriteTx, key: &str, rows: &forgebase_db::Rows) -> Result<()> {
+    if rows.is_empty() {
+        tx.execute(&Statement::new(
+            "DELETE FROM _forgebase_job_queues WHERE name = ?1",
+            vec![key.into()],
+        ))
+        .await?;
+        return Ok(());
+    }
+    let values: Vec<Value> = rows.rows[0].clone();
+    tx.execute(&Statement::new(
+        format!(
+            "INSERT INTO _forgebase_job_queues ({QUEUE_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT (name) DO UPDATE SET tenant = excluded.tenant, created_by = excluded.created_by, \
+             concurrency = excluded.concurrency, rate_limit = excluded.rate_limit, \
+             rate_period_ms = excluded.rate_period_ms, paused = excluded.paused, \
+             default_priority = excluded.default_priority, default_timeout_ms = excluded.default_timeout_ms, \
+             created_at = excluded.created_at, updated_at = excluded.updated_at"
+        ),
+        values,
+    ))
+    .await?;
+    Ok(())
+}
+
 async fn upsert(tx: &mut dyn WriteTx, scope: &Scope, ctx: &AccessContext, key: &str, now: i64) -> Result<()> {
     if let Some(owner) = owner_of(tx, key).await? {
         if !scope.sees(&owner, None) {

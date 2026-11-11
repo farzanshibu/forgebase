@@ -16,10 +16,10 @@
 //! are collected in an [`Fx`] and applied after the transaction committed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use forgebase_data::{AccessContext, Action, DataService};
-use forgebase_db::{Backend, ReadVia, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, DbRouter, ReadVia, Rows, SetHandle, Statement, TxMode, Value, WriteTx};
 use serde_json::Value as Json;
 use tokio::sync::{Notify, watch};
 
@@ -33,6 +33,7 @@ use crate::model::{
     NewJob, NewSchedule, NewWorker, Policy, QueueStats, Resolved, Schedule, SchedulePatch, WORKER_ONLINE_MS, Worker,
     backoff_ms, check_name, check_payload, iso, jitter,
 };
+use crate::sets::{Table, tenant_guard};
 use crate::tasks::{
     Attempt, Checkpoint, JobUpdate, MAX_CHECKPOINT_BYTES, MAX_CHILDREN, MAX_INLINE_RESULT_BYTES, MAX_RESULT_BYTES,
     ParentResult, Progress, ProgressReport, WorkflowUpdate,
@@ -46,24 +47,39 @@ pub fn now_ms() -> i64 {
 }
 
 /// The job queue. Cheap to clone.
+///
+/// With a router ([`JobService::attach_router`], FB-172) every call runs on
+/// the database set of its tenant (ADR-0029 §3.5); a clone made by
+/// [`JobService::on_set`] is a *view* bound to one set, which the worker
+/// pool runs one claim loop on per set.
 #[derive(Debug, Clone)]
 pub struct JobService {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
+    /// The set this view is bound to (`None`: the data core's database,
+    /// i.e. control).
+    pub(crate) set: Option<SetHandle>,
 }
 
 #[derive(Debug)]
-struct Inner {
-    data: DataService,
-    clock: Arc<dyn Clock>,
-    wake: Notify,
-    sink: RwLock<Option<Arc<dyn JobEventSink>>>,
-    store: RwLock<Option<Arc<dyn ResultStore>>>,
+pub(crate) struct Inner {
+    pub(crate) data: DataService,
+    pub(crate) clock: Arc<dyn Clock>,
+    /// Wake-ups of the claim loops, one per set (by set id).
+    pub(crate) wakes: Mutex<HashMap<String, Arc<Notify>>>,
+    pub(crate) sink: RwLock<Option<Arc<dyn JobEventSink>>>,
+    pub(crate) store: RwLock<Option<Arc<dyn ResultStore>>>,
     /// Cancellation signals of the handlers running in this process.
-    local: Mutex<HashMap<String, Arc<watch::Sender<bool>>>>,
+    pub(crate) local: Mutex<HashMap<String, Arc<watch::Sender<bool>>>>,
     /// Tenancy, kinds and channel owners (FB-142).
-    access: RwLock<JobAccess>,
-    /// Schedules run on pg_cron ([`crate::attach_pgcron`], FB-165).
-    pgcron: std::sync::atomic::AtomicBool,
+    pub(crate) access: RwLock<JobAccess>,
+    /// Sets (by id) whose schedules run on pg_cron ([`crate::attach_pgcron`], FB-165).
+    pub(crate) pgcron: Mutex<BTreeSet<String>>,
+    /// The database sets (FB-172); none: one database.
+    pub(crate) router: OnceLock<DbRouter>,
+    /// Tenant of jobs, schedules and workflows looked up by id (FB-172).
+    pub(crate) homes: Mutex<HashMap<String, Option<String>>>,
+    /// Where the next round-robin claim starts (FB-172).
+    pub(crate) turn: std::sync::atomic::AtomicUsize,
 }
 
 /// Who creates a job: recorded in `created_by`, `tenant` and `context`.
@@ -133,6 +149,9 @@ pub(crate) struct Fx {
     pub wake: bool,
     /// Result-store keys to delete.
     pub drop_objects: Vec<String>,
+    /// Tenants this set's maintenance and claims skip: moving in or out
+    /// (ADR-0029 §3.5 "Background loops", FB-172). Empty without shards.
+    pub excluded: Vec<String>,
 }
 
 impl Fx {
@@ -144,6 +163,7 @@ impl Fx {
             cancel: Vec::new(),
             wake: false,
             drop_objects: Vec::new(),
+            excluded: Vec::new(),
         }
     }
 
@@ -166,13 +186,17 @@ impl JobService {
             inner: Arc::new(Inner {
                 data,
                 clock,
-                wake: Notify::new(),
+                wakes: Mutex::new(HashMap::new()),
                 sink: RwLock::new(None),
                 store: RwLock::new(None),
                 local: Mutex::new(HashMap::new()),
                 access: RwLock::new(JobAccess::new()),
-                pgcron: std::sync::atomic::AtomicBool::new(false),
+                pgcron: Mutex::new(BTreeSet::new()),
+                router: OnceLock::new(),
+                homes: Mutex::new(HashMap::new()),
+                turn: std::sync::atomic::AtomicUsize::new(0),
             }),
+            set: None,
         }
     }
 
@@ -285,7 +309,10 @@ impl JobService {
     }
 
     pub(crate) fn backend(&self) -> &dyn Backend {
-        self.inner.data.backend().as_ref()
+        match &self.set {
+            Some(set) => set,
+            None => self.inner.data.backend().as_ref(),
+        }
     }
 
     /// Column that orders job and workflow rows by insertion
@@ -296,7 +323,9 @@ impl JobService {
 
     /// Effects of a new transaction.
     pub(crate) fn fx(&self) -> Fx {
-        Fx::new(self.row_order())
+        let mut fx = Fx::new(self.row_order());
+        fx.excluded = self.excluded();
+        fx
     }
 
     pub(crate) fn allow(&self, ctx: &AccessContext, action: Action) -> Result<()> {
@@ -312,20 +341,42 @@ impl JobService {
 
     /// Resolves when new work may be available (a job was enqueued, retried or
     /// released in this process). The worker pool waits on it between polls.
+    ///
+    /// Per set (FB-172): a view waits for work on its own set.
     pub async fn work_available(&self) {
-        self.inner.wake.notified().await;
+        let notify = self.wake_handle();
+        notify.notified().await;
+    }
+
+    fn wake_handle(&self) -> Arc<Notify> {
+        self.inner
+            .wakes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(self.set_id().to_owned())
+            .or_default()
+            .clone()
     }
 
     fn wake(&self) {
-        self.inner.wake.notify_one();
+        self.wake_handle().notify_one();
     }
 
     pub(crate) fn pgcron_flag(&self) -> bool {
-        self.inner.pgcron.load(std::sync::atomic::Ordering::Relaxed)
+        self.inner
+            .pgcron
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(self.set_id())
     }
 
     pub(crate) fn set_pgcron(&self, on: bool) {
-        self.inner.pgcron.store(on, std::sync::atomic::Ordering::Relaxed);
+        let mut sets = self.inner.pgcron.lock().unwrap_or_else(|p| p.into_inner());
+        if on {
+            sets.insert(self.set_id().to_owned());
+        } else {
+            sets.remove(self.set_id());
+        }
     }
 
     pub(crate) fn wake_pool(&self) {
@@ -424,6 +475,14 @@ impl JobService {
     /// tenant's key never matches, and another caller's in the same tenant
     /// is a conflict.
     pub async fn enqueue(&self, ctx: &AccessContext, new: NewJob) -> Result<(Job, bool)> {
+        let view = self.at_tenant(ctx.tenant.as_deref()).await?;
+        let (job, created) = view.enqueue_here(ctx, new).await?;
+        view.remember_home(Table::Jobs, &job.id, job.tenant.as_deref());
+        Ok((job, created))
+    }
+
+    /// [`Self::enqueue`] on this view's set.
+    pub(crate) async fn enqueue_here(&self, ctx: &AccessContext, new: NewJob) -> Result<(Job, bool)> {
         self.allow(ctx, Action::EnqueueJob)?;
         let now = self.now();
         let resolved = new.resolve(now)?;
@@ -450,6 +509,11 @@ impl JobService {
 
     /// One job.
     pub async fn get(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
+        self.at_job(ctx, id).await?.get_here(ctx, id).await
+    }
+
+    /// [`Self::get`] on this view's set.
+    pub(crate) async fn get_here(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         fetch_job(&self.reader("jobs.get"), id)
@@ -459,6 +523,14 @@ impl JobService {
 
     /// Jobs, newest first.
     pub async fn list(&self, ctx: &AccessContext, filter: JobFilter) -> Result<JobPage> {
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .list_here(ctx, filter)
+            .await
+    }
+
+    /// [`Self::list`] on this view's set.
+    pub(crate) async fn list_here(&self, ctx: &AccessContext, filter: JobFilter) -> Result<JobPage> {
         self.allow(ctx, Action::ReadJobs)?;
         let mut params: Vec<Value> = Vec::new();
         let mut where_sql = self.access().scope(ctx).sql("", true, &mut params);
@@ -513,6 +585,11 @@ impl JobService {
 
     /// The history of a job, oldest first.
     pub async fn events(&self, ctx: &AccessContext, id: &str) -> Result<Vec<JobEvent>> {
+        self.at_job(ctx, id).await?.events_here(ctx, id).await
+    }
+
+    /// [`Self::events`] on this view's set.
+    pub(crate) async fn events_here(&self, ctx: &AccessContext, id: &str) -> Result<Vec<JobEvent>> {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         let rows = self
@@ -540,6 +617,11 @@ impl JobService {
 
     /// The attempts of a job with their timings, oldest first.
     pub async fn attempts(&self, ctx: &AccessContext, id: &str) -> Result<Vec<Attempt>> {
+        self.at_job(ctx, id).await?.attempts_here(ctx, id).await
+    }
+
+    /// [`Self::attempts`] on this view's set.
+    pub(crate) async fn attempts_here(&self, ctx: &AccessContext, id: &str) -> Result<Vec<Attempt>> {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         let rows = self
@@ -572,6 +654,11 @@ impl JobService {
 
     /// The last checkpoint of a job.
     pub async fn checkpoint(&self, ctx: &AccessContext, id: &str) -> Result<Checkpoint> {
+        self.at_job(ctx, id).await?.checkpoint_here(ctx, id).await
+    }
+
+    /// [`Self::checkpoint`] on this view's set.
+    pub(crate) async fn checkpoint_here(&self, ctx: &AccessContext, id: &str) -> Result<Checkpoint> {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         let rows = self
@@ -595,6 +682,11 @@ impl JobService {
     /// The result of a succeeded job, read from the result store when it is
     /// kept there. `None` when the handler returned none.
     pub async fn result(&self, ctx: &AccessContext, id: &str) -> Result<Option<Json>> {
+        self.at_job(ctx, id).await?.result_here(ctx, id).await
+    }
+
+    /// [`Self::result`] on this view's set.
+    pub(crate) async fn result_here(&self, ctx: &AccessContext, id: &str) -> Result<Option<Json>> {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         let rows = self
@@ -636,7 +728,41 @@ impl JobService {
     }
 
     /// Counts per state and queue, of the jobs the caller may see.
+    ///
+    /// Sharded (FB-172): a caller with a tenant counts its set; one without
+    /// gets the sum over every set (dashboard statistics, ADR-0029 §3.6).
     pub async fn stats(&self, ctx: &AccessContext) -> Result<JobStats> {
+        if ctx.tenant.is_some() {
+            return self.at_tenant(ctx.tenant.as_deref()).await?.stats_here(ctx).await;
+        }
+        let mut views = self.views().into_iter();
+        let Some(first) = views.next() else {
+            return self.stats_here(ctx).await;
+        };
+        let mut all = first.stats_here(ctx).await?;
+        for view in views {
+            let more = view.stats_here(ctx).await?;
+            for (status, n) in more.totals {
+                *all.totals.entry(status).or_insert(0) += n;
+            }
+            for q in more.queues {
+                match all.queues.iter_mut().find(|a| a.queue == q.queue) {
+                    Some(a) => {
+                        a.queued += q.queued;
+                        a.running += q.running;
+                        a.succeeded += q.succeeded;
+                        a.dead += q.dead;
+                        a.cancelled += q.cancelled;
+                    }
+                    None => all.queues.push(q),
+                }
+            }
+        }
+        all.queues.sort_by(|a, b| a.queue.cmp(&b.queue));
+        Ok(all)
+    }
+
+    async fn stats_here(&self, ctx: &AccessContext) -> Result<JobStats> {
         self.allow(ctx, Action::ReadJobs)?;
         let mut params = Vec::new();
         let scope = self.access().scope(ctx).sql("", true, &mut params);
@@ -687,6 +813,11 @@ impl JobService {
     /// Unfinished child jobs are cancelled too, and jobs that depend on a
     /// cancelled job are cancelled with it.
     pub async fn cancel(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
+        self.at_job(ctx, id).await?.cancel_here(ctx, id).await
+    }
+
+    /// [`Self::cancel`] on this view's set.
+    pub(crate) async fn cancel_here(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
         self.visible(ctx, id).await?;
         let now = self.now();
@@ -703,6 +834,11 @@ impl JobService {
     /// Moves a dead or cancelled job back to the queue with a fresh attempt
     /// count. Its checkpoint is kept, so the next attempt resumes from it.
     pub async fn retry(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
+        self.at_job(ctx, id).await?.retry_here(ctx, id).await
+    }
+
+    /// [`Self::retry`] on this view's set.
+    pub(crate) async fn retry_here(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
         self.visible(ctx, id).await?;
         let mut fx = self.fx();
@@ -713,6 +849,11 @@ impl JobService {
 
     /// Deletes a finished job and its history (and its stored result).
     pub async fn delete(&self, ctx: &AccessContext, id: &str) -> Result<()> {
+        self.at_job(ctx, id).await?.delete_here(ctx, id).await
+    }
+
+    /// [`Self::delete`] on this view's set.
+    pub(crate) async fn delete_here(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
         self.visible(ctx, id).await?;
         let mut fx = self.fx();
@@ -728,6 +869,11 @@ impl JobService {
     /// may not take its id over (`409 worker_id_taken`), except privileged
     /// callers and, in the same tenant, holders of `engine:read_jobs:all`.
     pub async fn register_worker(&self, ctx: &AccessContext, new: NewWorker) -> Result<Worker> {
+        self.control_view().register_worker_here(ctx, new).await
+    }
+
+    /// [`Self::register_worker`] on this view's set.
+    pub(crate) async fn register_worker_here(&self, ctx: &AccessContext, new: NewWorker) -> Result<Worker> {
         self.allow(ctx, Action::WorkJobs)?;
         let id = match new.id {
             Some(id) => {
@@ -810,6 +956,11 @@ impl JobService {
     /// Workers the caller may see (FB-146: of its tenant, and its own unless
     /// it holds `engine:read_jobs:all`), most recently seen first.
     pub async fn workers(&self, ctx: &AccessContext) -> Result<Vec<Worker>> {
+        self.control_view().workers_here(ctx).await
+    }
+
+    /// [`Self::workers`] on this view's set.
+    pub(crate) async fn workers_here(&self, ctx: &AccessContext) -> Result<Vec<Worker>> {
         self.allow(ctx, Action::ReadJobs)?;
         let mut params = Vec::new();
         let cond = self.access().scope(ctx).sql("", false, &mut params);
@@ -851,16 +1002,51 @@ impl JobService {
         }
         let now = self.now();
         let limit = self.worker_limit(ctx);
+        // FB-172: a view claims on its set; a worker limited to a tenant on
+        // that tenant's set (none: control); an unbound privileged claim
+        // round-robin over every set until `max` is reached.
+        let views = if self.set.is_some() || self.sharded().is_none() {
+            vec![self.clone()]
+        } else if let Some(l) = &limit {
+            vec![self.at_tenant(l.tenant.as_deref()).await?]
+        } else {
+            self.claim_order()
+        };
+        let mut claimed = Vec::new();
+        for view in views {
+            let want = max - i64::try_from(claimed.len()).unwrap_or(i64::MAX);
+            if want <= 0 {
+                break;
+            }
+            claimed.extend(view.claim_on(ctx, &req, limit.as_ref(), want, now).await?);
+        }
+        Ok(claimed)
+    }
+
+    /// [`Self::claim`] on this view's set.
+    async fn claim_on(
+        &self,
+        ctx: &AccessContext,
+        req: &ClaimRequest,
+        limit: Option<&WorkerLimit>,
+        max: i64,
+        now: i64,
+    ) -> Result<Vec<ClaimedJob>> {
         let toucher = self.toucher(ctx);
         // Cheap read first: an idle poll must not take the single writer.
-        if !self.has_claimable(&req, limit.as_ref(), now).await? {
+        if !self.has_claimable(req, limit, now).await? {
             self.touch_worker(&req.worker_id, &toucher, now).await?;
             return Ok(Vec::new());
         }
         let mut fx = self.fx();
         let mut tx = self.begin().await?;
-        let r = claim_tx(&mut *tx, &req, limit.as_ref(), &toucher, max, now, &mut fx).await;
-        self.commit(tx, r, fx).await
+        let r = claim_tx(&mut *tx, req, limit, &toucher, max, now, &mut fx).await;
+        let claimed = self.commit(tx, r, fx).await?;
+        self.touch_deferred(&toucher, now).await;
+        for c in &claimed {
+            self.remember_home(Table::Jobs, &c.job.id, c.job.tenant.as_deref());
+        }
+        Ok(claimed)
     }
 
     /// What a non-privileged worker may claim (FB-142): jobs of its own
@@ -880,12 +1066,15 @@ impl JobService {
     async fn has_claimable(&self, req: &ClaimRequest, limit: Option<&WorkerLimit>, now: i64) -> Result<bool> {
         let blocked = self.backend().fetch_all(&blocked_queues_stmt(now)).await?;
         let blocked: Vec<String> = (0..blocked.len()).map(|i| Row::new(&blocked, i).text("name")).collect();
-        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &blocked, limit, 1);
-        params.insert(0, now.into());
+        let skip = self.excluded();
+        let mut params: Vec<Value> = vec![now.into()];
+        let guard = tenant_guard("tenant", &skip, &mut params, 0);
+        let (filter, more) = claim_filter(&req.queues, &req.kinds, &blocked, limit, &skip, params.len());
+        params.extend(more);
         let sql = format!(
             "SELECT \
-               EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1) \
-               OR EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND deadline_at <= ?1) \
+               EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1{guard}) \
+               OR EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND deadline_at <= ?1{guard}) \
                OR EXISTS (SELECT 1 FROM _forgebase_jobs WHERE status = 'queued' AND waiting_for = 0 \
                           AND run_at <= ?1 {filter})"
         );
@@ -905,22 +1094,69 @@ impl JobService {
                 tenant: ctx.tenant.clone(),
                 created_by: ctx.actor(),
             },
+            here: self.on_control(),
+            deferred: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Records on control the workers a transaction on another set saw
+    /// (workers are registered on control, FB-172). Best effort: the
+    /// claim or heartbeat already committed.
+    async fn touch_deferred(&self, toucher: &Toucher, now: i64) {
+        let ids: Vec<String> = std::mem::take(&mut *toucher.deferred.lock().unwrap_or_else(|p| p.into_inner()));
+        if ids.is_empty() {
+            return;
+        }
+        let control = self.control_view();
+        let on_control = Toucher {
+            scope: toucher.scope.clone(),
+            owner: toucher.owner.clone(),
+            here: true,
+            deferred: Mutex::new(Vec::new()),
+        };
+        for id in ids {
+            if let Err(e) = control.touch_worker(&id, &on_control, now).await {
+                tracing::warn!(worker = %id, error = %e, "worker not recorded as seen on control");
+            }
         }
     }
 
     async fn touch_worker(&self, id: &str, toucher: &Toucher, now: i64) -> Result<()> {
-        let mut tx = self.begin().await?;
+        // Workers live on control (FB-172).
+        let (view, on_control);
+        let toucher = if toucher.here {
+            view = self.clone();
+            toucher
+        } else {
+            view = self.control_view();
+            on_control = Toucher {
+                scope: toucher.scope.clone(),
+                owner: toucher.owner.clone(),
+                here: true,
+                deferred: Mutex::new(Vec::new()),
+            };
+            &on_control
+        };
+        let mut tx = view.begin().await?;
         let r = touch_worker_tx(&mut *tx, id, toucher, now).await;
         finish(tx, r).await
     }
 
     /// Extends the lease and tells the worker whether the job was cancelled.
     pub async fn heartbeat(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Heartbeat> {
+        self.at_job(ctx, id).await?.heartbeat_here(ctx, id, lease_id).await
+    }
+
+    /// [`Self::heartbeat`] on this view's set.
+    pub(crate) async fn heartbeat_here(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Heartbeat> {
         self.allow(ctx, Action::WorkJobs)?;
         let now = self.now();
+        let toucher = self.toucher(ctx);
         let mut tx = self.begin().await?;
-        let r = heartbeat_tx(&mut *tx, id, lease_id, &self.toucher(ctx), now).await;
-        finish(tx, r).await
+        let r = heartbeat_tx(&mut *tx, id, lease_id, &toucher, now).await;
+        let hb = finish(tx, r).await?;
+        self.touch_deferred(&toucher, now).await;
+        Ok(hb)
     }
 
     /// Reports progress of a running job (percent, stage, message; fields
@@ -933,13 +1169,28 @@ impl JobService {
         lease_id: &str,
         report: ProgressReport,
     ) -> Result<Heartbeat> {
+        self.at_job(ctx, id)
+            .await?
+            .progress_here(ctx, id, lease_id, report)
+            .await
+    }
+
+    /// [`Self::progress`] on this view's set.
+    pub(crate) async fn progress_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        report: ProgressReport,
+    ) -> Result<Heartbeat> {
         self.allow(ctx, Action::WorkJobs)?;
         report.validate()?;
         let now = self.now();
         let mut fx = self.fx();
+        let toucher = self.toucher(ctx);
         let mut tx = self.begin().await?;
         let r = async {
-            let hb = heartbeat_tx(&mut *tx, id, lease_id, &self.toucher(ctx), now).await?;
+            let hb = heartbeat_tx(&mut *tx, id, lease_id, &toucher, now).await?;
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_jobs SET progress_percent = COALESCE(?2, progress_percent), \
                  progress_stage = COALESCE(?3, progress_stage), progress_message = COALESCE(?4, progress_message), \
@@ -957,13 +1208,29 @@ impl JobService {
             Ok(hb)
         }
         .await;
-        self.commit(tx, r, fx).await
+        let hb = self.commit(tx, r, fx).await?;
+        self.touch_deferred(&toucher, now).await;
+        Ok(hb)
     }
 
     /// Saves the checkpoint of a running job (JSON, at most
     /// [`MAX_CHECKPOINT_BYTES`]). The next attempt (after a crash, timeout,
     /// retry or restart) gets it. Counts as a heartbeat.
     pub async fn save_checkpoint(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        checkpoint: &Json,
+    ) -> Result<Heartbeat> {
+        self.at_job(ctx, id)
+            .await?
+            .save_checkpoint_here(ctx, id, lease_id, checkpoint)
+            .await
+    }
+
+    /// [`Self::save_checkpoint`] on this view's set.
+    pub(crate) async fn save_checkpoint_here(
         &self,
         ctx: &AccessContext,
         id: &str,
@@ -981,9 +1248,10 @@ impl JobService {
         }
         let now = self.now();
         let mut fx = self.fx();
+        let toucher = self.toucher(ctx);
         let mut tx = self.begin().await?;
         let r = async {
-            let hb = heartbeat_tx(&mut *tx, id, lease_id, &self.toucher(ctx), now).await?;
+            let hb = heartbeat_tx(&mut *tx, id, lease_id, &toucher, now).await?;
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_jobs SET checkpoint = ?2, checkpoint_at = ?3 WHERE id = ?1",
                 vec![id.into(), text.as_str().into(), now.into()],
@@ -993,13 +1261,29 @@ impl JobService {
             Ok(hb)
         }
         .await;
-        self.commit(tx, r, fx).await
+        let hb = self.commit(tx, r, fx).await?;
+        self.touch_deferred(&toucher, now).await;
+        Ok(hb)
     }
 
     /// Enqueues child jobs of a running job (the lease proves the caller runs
     /// it). Children join the parent's workflow, so the workflow finishes
     /// only after them, and are cancelled when the parent is cancelled.
     pub async fn spawn_children(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        children: Vec<NewJob>,
+    ) -> Result<Vec<Job>> {
+        self.at_job(ctx, id)
+            .await?
+            .spawn_children_here(ctx, id, lease_id, children)
+            .await
+    }
+
+    /// [`Self::spawn_children`] on this view's set.
+    pub(crate) async fn spawn_children_here(
         &self,
         ctx: &AccessContext,
         id: &str,
@@ -1044,6 +1328,20 @@ impl JobService {
     /// [`MAX_INLINE_RESULT_BYTES`] is kept in the result store (up to
     /// [`MAX_RESULT_BYTES`]).
     pub async fn complete(&self, ctx: &AccessContext, id: &str, lease_id: &str, result: Option<Json>) -> Result<Job> {
+        self.at_job(ctx, id)
+            .await?
+            .complete_here(ctx, id, lease_id, result)
+            .await
+    }
+
+    /// [`Self::complete`] on this view's set.
+    pub(crate) async fn complete_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        result: Option<Json>,
+    ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let text = match &result {
             Some(v) => Some(serde_json::to_string(v).map_err(|e| JobError::invalid("invalid_job", e.to_string()))?),
@@ -1116,6 +1414,21 @@ impl JobService {
         error: &str,
         retryable: bool,
     ) -> Result<Job> {
+        self.at_job(ctx, id)
+            .await?
+            .fail_here(ctx, id, lease_id, error, retryable)
+            .await
+    }
+
+    /// [`Self::fail`] on this view's set.
+    pub(crate) async fn fail_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        error: &str,
+        retryable: bool,
+    ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let mut fx = self.fx();
         let mut tx = self.begin().await?;
@@ -1125,6 +1438,11 @@ impl JobService {
 
     /// Gives a job back without counting the attempt (graceful shutdown).
     pub async fn release(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Job> {
+        self.at_job(ctx, id).await?.release_here(ctx, id, lease_id).await
+    }
+
+    /// [`Self::release`] on this view's set.
+    pub(crate) async fn release_here(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let mut fx = self.fx();
         let mut tx = self.begin().await?;
@@ -1136,6 +1454,14 @@ impl JobService {
 
     /// Creates a recurring job.
     pub async fn create_schedule(&self, ctx: &AccessContext, new: NewSchedule) -> Result<Schedule> {
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .create_schedule_here(ctx, new)
+            .await
+    }
+
+    /// [`Self::create_schedule`] on this view's set.
+    pub(crate) async fn create_schedule_here(&self, ctx: &AccessContext, new: NewSchedule) -> Result<Schedule> {
         self.allow(ctx, Action::ManageJobs)?;
         check_name("name", &new.name, 128)?;
         check_name("kind", &new.kind, 128)?;
@@ -1204,6 +1530,19 @@ impl JobService {
 
     /// Changes a schedule. A new cron expression recomputes the next firing.
     pub async fn update_schedule(&self, ctx: &AccessContext, id: &str, patch: SchedulePatch) -> Result<Schedule> {
+        self.at_schedule(ctx, id)
+            .await?
+            .update_schedule_here(ctx, id, patch)
+            .await
+    }
+
+    /// [`Self::update_schedule`] on this view's set.
+    pub(crate) async fn update_schedule_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        patch: SchedulePatch,
+    ) -> Result<Schedule> {
         self.allow(ctx, Action::ManageJobs)?;
         self.schedule_visible(ctx, id).await?;
         let now = self.now();
@@ -1271,6 +1610,11 @@ impl JobService {
 
     /// Deletes a schedule (jobs it already enqueued stay).
     pub async fn delete_schedule(&self, ctx: &AccessContext, id: &str) -> Result<()> {
+        self.at_schedule(ctx, id).await?.delete_schedule_here(ctx, id).await
+    }
+
+    /// [`Self::delete_schedule`] on this view's set.
+    pub(crate) async fn delete_schedule_here(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
         self.schedule_visible(ctx, id).await?;
         let mut tx = self.begin().await?;
@@ -1295,6 +1639,11 @@ impl JobService {
 
     /// One schedule.
     pub async fn schedule(&self, ctx: &AccessContext, id: &str) -> Result<Schedule> {
+        self.at_schedule(ctx, id).await?.schedule_here(ctx, id).await
+    }
+
+    /// [`Self::schedule`] on this view's set.
+    pub(crate) async fn schedule_here(&self, ctx: &AccessContext, id: &str) -> Result<Schedule> {
         self.allow(ctx, Action::ReadJobs)?;
         self.schedule_visible(ctx, id).await?;
         let rows = self
@@ -1312,6 +1661,11 @@ impl JobService {
 
     /// The schedules the caller may see, by name.
     pub async fn schedules(&self, ctx: &AccessContext) -> Result<Vec<Schedule>> {
+        self.at_tenant(ctx.tenant.as_deref()).await?.schedules_here(ctx).await
+    }
+
+    /// [`Self::schedules`] on this view's set.
+    pub(crate) async fn schedules_here(&self, ctx: &AccessContext) -> Result<Vec<Schedule>> {
         self.allow(ctx, Action::ReadJobs)?;
         let mut params = Vec::new();
         let scope = self.access().scope(ctx).sql("", false, &mut params);
@@ -1362,14 +1716,29 @@ impl JobService {
     /// key `schedule:<id>:<due time>` makes a firing happen once even if two
     /// processes race. Firings missed while the server was down collapse into
     /// one. Returns the number of jobs enqueued.
+    ///
+    /// Sharded (FB-172): a view fires the schedules of its set; the unbound
+    /// service fires on every set. Tenants moving in or out are skipped.
     pub async fn fire_due_schedules(&self, ctx: &AccessContext) -> Result<usize> {
+        let mut n = 0;
+        for view in self.views() {
+            n += view.fire_due_schedules_here(ctx).await?;
+        }
+        Ok(n)
+    }
+
+    async fn fire_due_schedules_here(&self, ctx: &AccessContext) -> Result<usize> {
         self.allow(ctx, Action::ManageJobs)?;
         let now = self.now();
+        let mut params: Vec<Value> = vec![now.into()];
+        let guard = tenant_guard("tenant", &self.excluded(), &mut params, 0);
         let due = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT 1 FROM _forgebase_job_schedules WHERE enabled = 1 AND next_run_at <= ?1 LIMIT 1",
-                vec![now.into()],
+                format!(
+                    "SELECT 1 FROM _forgebase_job_schedules WHERE enabled = 1 AND next_run_at <= ?1{guard} LIMIT 1"
+                ),
+                params,
             ))
             .await?;
         if due.is_empty() {
@@ -1385,15 +1754,30 @@ impl JobService {
     /// retries (or dead-letters) attempts that ran past their timeout. Claims
     /// do this too; this is for idle systems. Returns the number of jobs
     /// touched.
+    ///
+    /// Sharded (FB-172): per set like [`Self::fire_due_schedules`].
     pub async fn reap_expired(&self, ctx: &AccessContext) -> Result<usize> {
+        let mut n = 0;
+        for view in self.views() {
+            n += view.reap_expired_here(ctx).await?;
+        }
+        Ok(n)
+    }
+
+    async fn reap_expired_here(&self, ctx: &AccessContext) -> Result<usize> {
         self.allow(ctx, Action::ManageJobs)?;
         let now = self.now();
+        let mut params: Vec<Value> = vec![now.into()];
+        let guard = tenant_guard("tenant", &self.excluded(), &mut params, 0);
         let expired = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1 \
-                 UNION ALL SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND deadline_at <= ?1 LIMIT 1",
-                vec![now.into()],
+                format!(
+                    "SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND visibility_until <= ?1{guard} \
+                     UNION ALL SELECT 1 FROM _forgebase_jobs WHERE status = 'running' AND deadline_at <= ?1{guard} \
+                     LIMIT 1"
+                ),
+                params,
             ))
             .await?;
         if expired.is_empty() {
@@ -1410,16 +1794,30 @@ impl JobService {
     /// and workflows that ended `succeeded`, `compensated` or `cancelled`
     /// before then. The dead-letter queue and failed workflows are never
     /// purged automatically. Returns the number of jobs deleted.
+    ///
+    /// Sharded (FB-172): per set like [`Self::fire_due_schedules`].
     pub async fn purge_finished(&self, ctx: &AccessContext, older_than_ms: i64) -> Result<u64> {
+        let mut n = 0;
+        for view in self.views() {
+            n += view.purge_finished_here(ctx, older_than_ms).await?;
+        }
+        Ok(n)
+    }
+
+    async fn purge_finished_here(&self, ctx: &AccessContext, older_than_ms: i64) -> Result<u64> {
         self.allow(ctx, Action::ManageJobs)?;
         let mut fx = self.fx();
+        let mut params: Vec<Value> = vec![older_than_ms.into()];
+        let guard = tenant_guard("tenant", &fx.excluded, &mut params, 0);
         let mut tx = self.begin().await?;
         let r = async {
             let refs = tx
                 .fetch_all(&Statement::new(
-                    "SELECT result_ref FROM _forgebase_jobs WHERE status IN ('succeeded', 'cancelled') \
-                     AND finished_at < ?1 AND result_ref IS NOT NULL",
-                    vec![older_than_ms.into()],
+                    format!(
+                        "SELECT result_ref FROM _forgebase_jobs WHERE status IN ('succeeded', 'cancelled') \
+                         AND finished_at < ?1 AND result_ref IS NOT NULL{guard}"
+                    ),
+                    params.clone(),
                 ))
                 .await?;
             for i in 0..refs.len() {
@@ -1427,15 +1825,19 @@ impl JobService {
             }
             let n = tx
                 .execute(&Statement::new(
-                    "DELETE FROM _forgebase_jobs WHERE status IN ('succeeded', 'cancelled') AND finished_at < ?1",
-                    vec![older_than_ms.into()],
+                    format!(
+                        "DELETE FROM _forgebase_jobs WHERE status IN ('succeeded', 'cancelled') AND finished_at < ?1{guard}"
+                    ),
+                    params.clone(),
                 ))
                 .await?
                 .rows_affected;
             tx.execute(&Statement::new(
-                "DELETE FROM _forgebase_job_workflows WHERE status IN ('succeeded', 'compensated', 'cancelled') \
-                 AND finished_at < ?1",
-                vec![older_than_ms.into()],
+                format!(
+                    "DELETE FROM _forgebase_job_workflows WHERE status IN ('succeeded', 'compensated', 'cancelled') \
+                     AND finished_at < ?1{guard}"
+                ),
+                params.clone(),
             ))
             .await?;
             Ok::<_, JobError>(n)
@@ -1914,10 +2316,12 @@ fn claim_filter(
     kinds: &[String],
     excluded: &[String],
     limit: Option<&WorkerLimit>,
+    skip_tenants: &[String],
     taken: usize,
 ) -> (String, Vec<Value>) {
-    let mut sql = String::new();
     let mut params: Vec<Value> = Vec::new();
+    // FB-172: tenants moving in or out of this set.
+    let mut sql = tenant_guard("tenant", skip_tenants, &mut params, taken);
     if let Some(l) = limit {
         match &l.tenant {
             Some(t) => {
@@ -1986,6 +2390,11 @@ fn claim_filter(
 pub(crate) struct Toucher {
     scope: Scope,
     owner: Owner,
+    /// Workers are registered in this transaction's database (control).
+    /// Otherwise the ids are collected in `deferred` and recorded on
+    /// control after the commit (FB-172).
+    here: bool,
+    deferred: Mutex<Vec<String>>,
 }
 
 /// The tenant and principal that registered worker `id`, if it exists.
@@ -2009,6 +2418,13 @@ async fn worker_owner_tx(tx: &mut dyn WriteTx, id: &str) -> Result<Option<Owner>
 /// worker of another tenant or user is left alone: a claim never changes a
 /// row the claimer may not see.
 async fn touch_worker_tx(tx: &mut dyn WriteTx, id: &str, toucher: &Toucher, now: i64) -> Result<()> {
+    if !toucher.here {
+        let mut deferred = toucher.deferred.lock().unwrap_or_else(|p| p.into_inner());
+        if !deferred.iter().any(|d| d == id) {
+            deferred.push(id.to_owned());
+        }
+        return Ok(());
+    }
     match worker_owner_tx(tx, id).await? {
         Some(owner) if !toucher.scope.sees(&owner, None) => {}
         Some(_) => {
@@ -2134,7 +2550,7 @@ async fn claim_tx(
         if want <= 0 {
             break;
         }
-        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &excluded, limit, 2);
+        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &excluded, limit, &fx.excluded, 2);
         params.insert(0, now.into());
         params.insert(1, want.into());
         let rows = tx
@@ -2270,12 +2686,16 @@ async fn parents_tx(tx: &mut dyn WriteTx, job: &Job, row_order: &str) -> Result<
 /// Timeout: like a retryable failure (backoff), or dead when attempts are
 /// used up.
 pub(crate) async fn reap_tx(tx: &mut dyn WriteTx, now: i64, fx: &mut Fx) -> Result<usize> {
+    let mut params: Vec<Value> = vec![now.into()];
+    let guard = tenant_guard("tenant", &fx.excluded, &mut params, 0);
     let rows = tx
         .fetch_all(&Statement::new(
-            "SELECT id, attempts, max_attempts, cancel_requested, worker_id, timeout_ms, backoff_base_ms, \
-             backoff_max_ms, deadline_at IS NOT NULL AND deadline_at <= ?1 AS timed_out FROM _forgebase_jobs \
-             WHERE status = 'running' AND (visibility_until <= ?1 OR deadline_at <= ?1)",
-            vec![now.into()],
+            format!(
+                "SELECT id, attempts, max_attempts, cancel_requested, worker_id, timeout_ms, backoff_base_ms, \
+                 backoff_max_ms, deadline_at IS NOT NULL AND deadline_at <= ?1 AS timed_out FROM _forgebase_jobs \
+                 WHERE status = 'running' AND (visibility_until <= ?1 OR deadline_at <= ?1){guard}"
+            ),
+            params,
         ))
         .await?;
     for i in 0..rows.len() {
@@ -2638,13 +3058,15 @@ async fn delete_tx(tx: &mut dyn WriteTx, id: &str, fx: &mut Fx) -> Result<()> {
 }
 
 async fn fire_tx(tx: &mut dyn WriteTx, now: i64, fx: &mut Fx) -> Result<usize> {
+    let mut params: Vec<Value> = vec![now.into()];
+    let guard = tenant_guard("tenant", &fx.excluded, &mut params, 0);
     let rows = tx
         .fetch_all(&Statement::new(
             format!(
-                "SELECT {SCHEDULE_COLS} FROM _forgebase_job_schedules WHERE enabled = 1 AND next_run_at <= ?1 \
+                "SELECT {SCHEDULE_COLS} FROM _forgebase_job_schedules WHERE enabled = 1 AND next_run_at <= ?1{guard} \
                  ORDER BY next_run_at LIMIT 100"
             ),
-            vec![now.into()],
+            params,
         ))
         .await?;
     let mut fired = 0;

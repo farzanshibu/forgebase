@@ -470,6 +470,23 @@ impl Store {
             .collect()
     }
 
+    /// [`Store::take_dirty`] for one tenant's keys only.
+    pub(crate) fn take_dirty_of(&mut self, tenant: &str) -> Vec<(KeyId, Option<Entry>)> {
+        let ids: Vec<KeyId> = self
+            .dirty
+            .iter()
+            .filter(|k| k.scope.tenant == tenant)
+            .cloned()
+            .collect();
+        ids.into_iter()
+            .map(|id| {
+                self.dirty.remove(&id);
+                let e = self.map.get(&id).cloned();
+                (id, e)
+            })
+            .collect()
+    }
+
     /// Marks keys dirty again after a failed write.
     pub(crate) fn redirty(&mut self, ids: impl IntoIterator<Item = KeyId>) {
         self.dirty.extend(ids);

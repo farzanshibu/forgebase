@@ -10,6 +10,9 @@
 //! refused with the server's offset. A resumable session with a declared
 //! size completes itself when the last byte arrives. Completion streams the
 //! parts through the same hash-and-commit path as a single upload.
+//!
+//! A session and its parts live on the set of its bucket (FB-172): a tenant
+//! bucket's on the tenant's set, an instance-wide bucket's on control.
 
 use std::io;
 
@@ -23,7 +26,7 @@ use crate::model::{CompleteInput, ObjectInfo, PartInfo, Upload, UploadInput};
 use crate::objects::{CommitMeta, metadata_json};
 use crate::rules::WriteCheck;
 use crate::service::{
-    BucketRow, StorageService, id, int, iv, opt_int, opt_text, public_bucket, st, text, type_allowed, uint,
+    BucketRow, Db, StorageService, id, int, iv, opt_int, opt_text, public_bucket, st, text, type_allowed, uint,
 };
 use crate::util::{parse_sha256, rfc3339, validate_key};
 
@@ -59,18 +62,23 @@ pub struct AppendOutcome {
 }
 
 impl StorageService {
-    async fn upload_row(&self, id: &str) -> Result<UploadRow> {
-        let rows = self
+    async fn upload_row(db: &Db, id: &str) -> Result<UploadRow> {
+        Self::find_upload(db, id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(format!("upload {id}")))
+    }
+
+    async fn find_upload(db: &Db, id: &str) -> Result<Option<UploadRow>> {
+        let rows = db
             .read(
                 &format!("SELECT {UPLOAD_COLS} FROM _forgebase_storage_uploads WHERE id = ?"),
                 vec![id.into()],
             )
             .await?;
-        let r = rows
-            .rows
-            .first()
-            .ok_or_else(|| StorageError::NotFound(format!("upload {id}")))?;
-        Ok(UploadRow {
+        let Some(r) = rows.rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some(UploadRow {
             id: text(r, 0),
             bucket: text(r, 1),
             key: text(r, 2),
@@ -84,17 +92,51 @@ impl StorageService {
             created_by: text(r, 10),
             subject: text(r, 11),
             expires_at: int(r, 12),
-        })
+        }))
+    }
+
+    /// The session `id` and its bucket, from the set that holds them: the
+    /// caller's tenant's set, then control (sessions on instance-wide
+    /// buckets), then, for privileged callers, every other set (by primary
+    /// key, as `GET /jobs/{id}`). A set's copy counts only when the set owns
+    /// the bucket's tenant (a move's source keeps stale rows until cleanup).
+    async fn locate_upload(&self, ctx: &AccessContext, id: &str) -> Result<(UploadRow, BucketRow)> {
+        let missing = || StorageError::NotFound(format!("upload {id}"));
+        let Some(router) = self.router() else {
+            let db = self.control();
+            let row = Self::upload_row(&db, id).await?;
+            let bucket = self.stored_bucket(&db, &row.bucket).await?.ok_or_else(missing)?;
+            return Ok((row, bucket));
+        };
+        let mut sets = vec![self.tenant_set(ctx.tenant.as_deref()).await?];
+        if !sets[0].is_control() {
+            sets.push(self.control());
+        }
+        if ctx.is_privileged() {
+            for set in router.sets() {
+                if !sets.iter().any(|s| s.set_id() == Some(set.id())) {
+                    sets.push(Db::of(set));
+                }
+            }
+        }
+        for db in sets {
+            let Some(row) = Self::find_upload(&db, id).await? else {
+                continue;
+            };
+            let Some(bucket) = self.stored_bucket(&db, &row.bucket).await? else {
+                continue;
+            };
+            if self.owns(&db, bucket.tenant.as_deref()) {
+                return Ok((row, bucket));
+            }
+        }
+        Err(missing())
     }
 
     /// Loads a session and checks the caller may use it: write access to the
     /// target key, and being the creator (administrators may use any).
     async fn session(&self, ctx: &AccessContext, id: &str) -> Result<(UploadRow, BucketRow, WriteCheck)> {
-        let row = self.upload_row(id).await?;
-        let bucket = self
-            .stored_bucket(&row.bucket)
-            .await?
-            .ok_or_else(|| StorageError::NotFound(format!("upload {id}")))?;
+        let (row, bucket) = self.locate_upload(ctx, id).await?;
         // A tenant bucket's sessions are reached from that tenant only.
         if !ctx.is_privileged() && bucket.tenant.is_some() && bucket.tenant != ctx.tenant {
             return Err(StorageError::NotFound(format!("upload {id}")));
@@ -113,8 +155,8 @@ impl StorageService {
         Ok((row, bucket, check))
     }
 
-    async fn parts_of(&self, id: &str) -> Result<Vec<(PartInfo, String)>> {
-        let rows = self
+    async fn parts_of(db: &Db, id: &str) -> Result<Vec<(PartInfo, String)>> {
+        let rows = db
             .read(
                 "SELECT part_number, size, sha256, staging_key FROM _forgebase_storage_parts \
                  WHERE upload_id = ? ORDER BY part_number",
@@ -137,7 +179,7 @@ impl StorageService {
             .collect())
     }
 
-    async fn wire_upload(&self, row: &UploadRow) -> Result<Upload> {
+    async fn wire_upload(db: &Db, row: &UploadRow) -> Result<Upload> {
         Ok(Upload {
             id: row.id.clone(),
             bucket: public_bucket(&row.bucket),
@@ -147,7 +189,7 @@ impl StorageService {
             declared_size: row.declared_size,
             declared_sha256: row.declared_sha.clone(),
             received_bytes: row.received,
-            parts: self.parts_of(&row.id).await?.into_iter().map(|(p, _)| p).collect(),
+            parts: Self::parts_of(db, &row.id).await?.into_iter().map(|(p, _)| p).collect(),
             expires_at: rfc3339(row.expires_at),
         })
     }
@@ -190,7 +232,7 @@ impl StorageService {
         let now = self.now();
         let expires = now + i64::try_from(self.inner.settings.upload_ttl_secs).unwrap_or(i64::MAX / 2000) * 1000;
         let upload_id = id();
-        let mut tx = self.begin().await?;
+        let mut tx = b.db.begin().await?;
         tx.execute(&st(
             "INSERT INTO _forgebase_storage_uploads \
              (id, bucket, key, kind, content_type, metadata, declared_size, declared_sha, received_bytes, next_part, \
@@ -213,15 +255,15 @@ impl StorageService {
         ))
         .await?;
         tx.commit().await?;
-        let row = self.upload_row(&upload_id).await?;
-        self.wire_upload(&row).await
+        let row = Self::upload_row(&b.db, &upload_id).await?;
+        Self::wire_upload(&b.db, &row).await
     }
 
     /// The state of a session: bytes received and the parts held. A client
     /// that lost its connection reads `received_bytes` and resumes there.
     pub async fn get_upload(&self, ctx: &AccessContext, id: &str) -> Result<Upload> {
-        let (row, _, _) = self.session(ctx, id).await?;
-        self.wire_upload(&row).await
+        let (row, bucket, _) = self.session(ctx, id).await?;
+        Self::wire_upload(&bucket.db, &row).await
     }
 
     /// Stores one numbered part of a multipart session (replacing an earlier
@@ -253,12 +295,22 @@ impl StorageService {
                 expected.as_deref(),
             )
             .await?;
-        self.register_part(&row, part_number, &staged.key, staged.size, &staged.sha, None)
-            .await
+        self.register_part(
+            &bucket.db,
+            &row,
+            part_number,
+            &staged.key,
+            staged.size,
+            &staged.sha,
+            None,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn register_part(
         &self,
+        db: &Db,
         row: &UploadRow,
         part_number: u32,
         staging_key: &str,
@@ -267,7 +319,7 @@ impl StorageService {
         at_offset: Option<u64>,
     ) -> Result<PartInfo> {
         let now = self.now();
-        let mut tx = self.begin().await?;
+        let mut tx = db.begin().await?;
         let cur = tx
             .fetch_all(&st(
                 "SELECT received_bytes, next_part FROM _forgebase_storage_uploads WHERE id = ?",
@@ -380,9 +432,17 @@ impl StorageService {
                 expected.as_deref(),
             )
             .await?;
-        self.register_part(&row, row.next_part, &staged.key, staged.size, &staged.sha, Some(offset))
-            .await?;
-        let fresh = self.upload_row(id).await?;
+        self.register_part(
+            &bucket.db,
+            &row,
+            row.next_part,
+            &staged.key,
+            staged.size,
+            &staged.sha,
+            Some(offset),
+        )
+        .await?;
+        let fresh = Self::upload_row(&bucket.db, id).await?;
         if fresh.declared_size == Some(fresh.received) {
             let object = self.finish(&fresh, &bucket, &CompleteInput::default(), check).await?;
             return Ok(AppendOutcome {
@@ -394,7 +454,7 @@ impl StorageService {
             });
         }
         Ok(AppendOutcome {
-            upload: self.wire_upload(&fresh).await?,
+            upload: Self::wire_upload(&bucket.db, &fresh).await?,
             object: None,
         })
     }
@@ -427,7 +487,7 @@ impl StorageService {
         input: &CompleteInput,
         check: WriteCheck,
     ) -> Result<ObjectInfo> {
-        let held = self.parts_of(&row.id).await?;
+        let held = Self::parts_of(&bucket.db, &row.id).await?;
         let chosen: Vec<(PartInfo, String)> = match &input.parts {
             None => held,
             Some(list) => {
@@ -530,14 +590,14 @@ impl StorageService {
                 },
             )
             .await?;
-        self.drop_session(&row.id).await?;
+        self.drop_session(&bucket.db, &row.id).await?;
         Ok(info)
     }
 
-    /// Deletes a session and its staged parts.
-    pub(crate) async fn drop_session(&self, id: &str) -> Result<u64> {
-        let parts = self.parts_of(id).await?;
-        let mut tx = self.begin().await?;
+    /// Deletes a session (on `db`, its bucket's set) and its staged parts.
+    pub(crate) async fn drop_session(&self, db: &Db, id: &str) -> Result<u64> {
+        let parts = Self::parts_of(db, id).await?;
+        let mut tx = db.begin().await?;
         tx.execute(&st(
             "DELETE FROM _forgebase_storage_uploads WHERE id = ?",
             vec![id.into()],
@@ -553,8 +613,8 @@ impl StorageService {
 
     /// Cancels a session and discards what it received.
     pub async fn abort_upload(&self, ctx: &AccessContext, id: &str) -> Result<()> {
-        let (row, _, _) = self.session(ctx, id).await?;
-        self.drop_session(&row.id).await?;
+        let (row, bucket, _) = self.session(ctx, id).await?;
+        self.drop_session(&bucket.db, &row.id).await?;
         Ok(())
     }
 }

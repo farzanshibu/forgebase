@@ -232,6 +232,27 @@ pub async fn attach_pgcron(service: &JobService, db: &Database) -> Option<PgCron
     Some(PgCronHandle { tasks })
 }
 
+/// [`attach_pgcron`] on every set of the service's router (FB-172:
+/// pg_cron runs per primary, each set's schedules fire on that set and its
+/// `NOTIFY` wakes that set's claim loop). Without a router, or with one set,
+/// this is [`attach_pgcron`] on `control`. Sets added later need another
+/// call (it is idempotent).
+pub async fn attach_pgcron_sets(service: &JobService, control: &Database) -> Option<PgCronHandle> {
+    let sets = match service.router() {
+        Some(router) if router.is_sharded() => router.sets(),
+        _ => return attach_pgcron(service, control).await,
+    };
+    let mut tasks = Vec::new();
+    for set in sets {
+        let db = set.database().clone();
+        let view = service.on_set(set);
+        if let Some(mut handle) = attach_pgcron(&view, &db).await {
+            tasks.append(&mut handle.tasks);
+        }
+    }
+    (!tasks.is_empty()).then_some(PgCronHandle { tasks })
+}
+
 /// Wakes the worker pool on every `NOTIFY forgebase_jobs`.
 async fn listen(service: JobService, db: Database) {
     let mut backoff = Duration::from_millis(500);
@@ -366,8 +387,26 @@ impl JobService {
         self.pgcron_reconcile_with(only, catch_up, false).await
     }
 
+    /// Syncs `cron.job` with the schedules now on every set where pg_cron
+    /// fires them (FB-172). A tenant move (FB-174) calls it when it freezes
+    /// the tenant and after the switch: the schedules of a tenant moving in
+    /// or out leave pg_cron on both sets until the move is done, then the
+    /// target takes them over (the ownership mark travels with the rows).
+    pub async fn sync_pgcron_now(&self) -> Result<()> {
+        for view in self.views() {
+            if view.pgcron_flag() {
+                view.pgcron_reconcile(None, false).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn pgcron_reconcile_with(&self, only: Option<&str>, catch_up: bool, off: bool) -> Result<()> {
         let now = crate::service::now_ms();
+        // FB-172: schedules of tenants moving in or out are left alone here
+        // (their rows on this set may be a copy), except that pg_cron must
+        // not fire them.
+        let skip = self.excluded();
         let mut tx = self.begin().await?;
         let r = async {
             let has_cron = !off || {
@@ -382,12 +421,12 @@ impl JobService {
             let schedules = tx
                 .fetch_all(&match only {
                     Some(id) => Statement::new(
-                        "SELECT id, cron, enabled, next_run_at, last_run_at, created_at, updated_at \
+                        "SELECT id, cron, enabled, next_run_at, last_run_at, created_at, updated_at, tenant \
                          FROM _forgebase_job_schedules WHERE id = ?1",
                         vec![id.into()],
                     ),
                     None => Statement::raw(
-                        "SELECT id, cron, enabled, next_run_at, last_run_at, created_at, updated_at \
+                        "SELECT id, cron, enabled, next_run_at, last_run_at, created_at, updated_at, tenant \
                          FROM _forgebase_job_schedules",
                     ),
                 })
@@ -414,6 +453,16 @@ impl JobService {
                 };
                 let next = r.int("next_run_at");
                 let existing = jobs.remove(&name);
+                if r.opt_text("tenant").is_some_and(|t| skip.contains(&t)) {
+                    if existing.is_some() {
+                        tx.fetch_all(&Statement::new(
+                            "SELECT cron.unschedule(?1::text) AS ok",
+                            vec![name.as_str().into()],
+                        ))
+                        .await?;
+                    }
+                    continue;
+                }
                 match want {
                     Want::Cron(text) => {
                         let command = job_command(&id);

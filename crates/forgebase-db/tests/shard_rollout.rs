@@ -75,7 +75,9 @@ async fn a_new_shard_is_migrated_confined_and_subscribed_to_control() {
     assert_eq!(max.as_i64(), Some((1_i64 << 40) - 1));
     // control_replicated rows reach the shard.
     let tables = shards::ensure_control_publication(&s.control).await.unwrap();
-    assert_eq!(tables, ["_forgebase_resource_permissions"]);
+    // FB-153 added `_forgebase_db_logins` to the control_replicated class.
+    assert_eq!(tables, shards::control_replicated_tables());
+    assert!(tables.iter().any(|t| t == "_forgebase_resource_permissions"));
     exec(
         &s.control,
         "INSERT INTO _forgebase_resource_permissions (id, realm_id, resource_type, resource_id, grantee, permission, effect, created_by, created_at) \
@@ -100,7 +102,7 @@ async fn a_new_shard_is_migrated_confined_and_subscribed_to_control() {
         .unwrap()
         .expect("subscribed");
     assert!(sub.enabled);
-    assert_eq!(sub.tables, 1);
+    assert_eq!(sub.tables as usize, tables.len());
     // Activating again changes nothing and does not fail.
     shards::activate_shard(&s.router, &set, &db, setup(Some(&conninfo)))
         .await
@@ -135,7 +137,9 @@ async fn migrations_run_on_every_set_and_migrating_shards_answer_503() {
         &format!("DELETE FROM _forgebase_migrations WHERE version = {head}"),
     )
     .await;
-    exec(&db, "DROP TABLE _forgebase_index_builds").await;
+    for undo in undo_head(head) {
+        exec(&db, undo).await;
+    }
     // A set marked migrating refuses its tenants with 503 shard_migrating.
     topology::update_set(&s.control, &set.id, Some(SetState::Migrating), None, None)
         .await
@@ -189,4 +193,18 @@ async fn activation_refuses_a_node_without_prepared_transactions() {
     assert_eq!(topo.set(&set.id).unwrap().state, SetState::Provisioning);
     assert_eq!(db.schema_version().await.unwrap(), 0);
     assert!(!s.router.is_sharded());
+}
+
+/// Statements that undo the head system migration, so a shard can be put
+/// one migration below head. Teach it each new head migration.
+fn undo_head(head: i64) -> &'static [&'static str] {
+    match head {
+        41 => &["DROP TABLE _forgebase_index_builds"],
+        42 => &["DROP TABLE _forgebase_db_logins"],
+        43 => &[
+            "DROP TABLE _forgebase_db_node_commands",
+            "DROP TABLE _forgebase_db_node_agents",
+        ],
+        v => panic!("shard_rollout: teach undo_head how to undo migration {v}"),
+    }
 }

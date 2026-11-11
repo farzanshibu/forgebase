@@ -1,11 +1,24 @@
 //! The storage service: state, authorization, buckets and ACLs. Objects,
 //! uploads, signed URLs and the reconciler extend it in their own modules.
+//!
+//! **Database sets** (ADR-0029 §3.2, §3.5, FB-172). With a router attached
+//! ([`StorageService::attach_router`]) every call resolves the set of the
+//! bucket it is about: a tenant bucket (stored name `<tenant>/<name>`) and
+//! its objects, ACL entries, upload sessions and parts live on the tenant's
+//! set; an instance-wide bucket (no tenant) and its rows on control. The
+//! settings table and the sealed URL signing key are control-class. Blob
+//! reference counts (`_forgebase_storage_blobs`) are kept per set, next to
+//! the objects that hold them, while the blob files in the driver are shared
+//! by every set: the reconciler ([`crate::reconcile`]) deletes a file only
+//! when no set references it. Without a router there is one database and
+//! nothing changes.
 
+use std::ops::Deref;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use forgebase_auth::crypto::Keyring;
 use forgebase_data::{AccessContext, Action, DataService, Decision, Principal, ResourceKind, ResourceOp, ResourceRef};
-use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, DbRouter, Rows, SetHandle, Statement, TenantRef, TxMode, Value, WriteTx};
 use forgebase_entitlements::{Clock, EntitlementError, EntitlementService, GaugeRequest, subject_key};
 use forgebase_jobs::JobService;
 
@@ -84,6 +97,80 @@ pub(crate) struct Inner {
     /// auth keyring (G11); replaced by [`StorageService::rotate_signing_key`].
     pub signing_key: RwLock<Arc<Vec<u8>>>,
     pub keyring: Keyring,
+    /// The database sets (FB-172); unset: every row is in `db`.
+    pub router: OnceLock<DbRouter>,
+}
+
+/// The database one call's rows live on: the service's own database (no
+/// router), or one set of the router. Derefs to its [`Backend`]; a set's
+/// handle routes the replica reads of FB-169 over that set's replicas.
+#[derive(Clone, Debug)]
+pub(crate) struct Db {
+    backend: Arc<dyn Backend>,
+    /// The router's set id (`None`: the service's database, no router).
+    set: Option<String>,
+    /// Whether this is control (always, without a router).
+    control: bool,
+}
+
+impl Deref for Db {
+    type Target = dyn Backend;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.backend
+    }
+}
+
+impl Db {
+    fn plain(backend: Arc<dyn Backend>) -> Self {
+        Self {
+            backend,
+            set: None,
+            control: true,
+        }
+    }
+
+    pub(crate) fn of(set: SetHandle) -> Self {
+        Self {
+            set: Some(set.id().to_owned()),
+            control: set.is_control(),
+            backend: Arc::new(set),
+        }
+    }
+
+    /// Whether this is the control set (or the only database).
+    pub(crate) fn is_control(&self) -> bool {
+        self.control
+    }
+
+    /// The router's id of the set (`None` without a router).
+    pub(crate) fn set_id(&self) -> Option<&str> {
+        self.set.as_deref()
+    }
+
+    pub(crate) async fn read(&self, sql: &str, params: Vec<Value>) -> Result<Rows> {
+        Ok(self.backend.fetch_all(&st(sql, params)).await?)
+    }
+
+    /// A metadata read that may be served by a replica (ADR-0029 §2.5,
+    /// FB-169): bucket listings, usage and statistics, object listings,
+    /// versions and heads. Authorisation state (ACLs, bucket rows, grants),
+    /// object content reads, writes and signed-URL issue stay on
+    /// [`Self::read`].
+    pub(crate) async fn read_replica(&self, what: &'static str, sql: &str, params: Vec<Value>) -> Result<Rows> {
+        self.fetch_replica(what, &st(sql, params)).await
+    }
+
+    pub(crate) async fn fetch_replica(&self, what: &'static str, stmt: &Statement) -> Result<Rows> {
+        Ok(self
+            .backend
+            .fetch_routed(stmt, &forgebase_db::ReadIntent::replica(what))
+            .await?)
+    }
+
+    pub(crate) async fn begin(&self) -> Result<Box<dyn WriteTx>> {
+        Ok(self.backend.begin(TxMode::Normal).await?)
+    }
 }
 
 /// A bucket as stored.
@@ -97,6 +184,8 @@ pub(crate) struct BucketRow {
     pub name: String,
     /// Owning tenant; `None` for an instance-wide bucket.
     pub tenant: Option<String>,
+    /// The set holding the bucket and its objects, ACL and uploads.
+    pub db: Db,
     pub visibility: Visibility,
     pub versioning: bool,
     pub max_object_bytes: Option<u64>,
@@ -210,8 +299,78 @@ impl StorageService {
                 gate: tokio::sync::RwLock::new(()),
                 signing_key: RwLock::new(Arc::new(signing_key)),
                 keyring,
+                router: OnceLock::new(),
             }),
         })
+    }
+
+    /// Routes calls over the database sets of `router` (ADR-0029 §3.5,
+    /// FB-172): a tenant bucket and its objects, ACL entries, uploads and
+    /// parts on the tenant's set (`ctx.tenant`, or the tenant a signed URL
+    /// or stored bucket names), instance-wide buckets, the settings and the
+    /// URL signing key on control; the reconciler runs over every set. A
+    /// frozen tenant's calls wait for the move's switch, at most the
+    /// router's freeze timeout, then fail with `409 tenant_moving`. Without
+    /// a router everything is in the database the service was opened on (a
+    /// [`DbRouter::single`] over that database behaves the same). Attach it
+    /// once, before serving; a second call is ignored.
+    pub fn attach_router(&self, router: DbRouter) {
+        let _ = self.inner.router.set(router);
+    }
+
+    /// The router, when attached.
+    pub(crate) fn router(&self) -> Option<&DbRouter> {
+        self.inner.router.get()
+    }
+
+    /// Control: instance-wide buckets, settings, the signing key (the
+    /// service's database without a router).
+    pub(crate) fn control(&self) -> Db {
+        match self.router() {
+            Some(r) => Db::of(r.control()),
+            None => Db::plain(self.inner.db.clone()),
+        }
+    }
+
+    /// The set of `tenant`'s rows (`None` or `""`: control). Waits while
+    /// the tenant is frozen by a move, at most the freeze timeout.
+    pub(crate) async fn tenant_set(&self, tenant: Option<&str>) -> Result<Db> {
+        match self.router() {
+            Some(r) => Ok(Db::of(r.for_tenant(TenantRef::new(tenant)).await?)),
+            None => Ok(Db::plain(self.inner.db.clone())),
+        }
+    }
+
+    /// Every set (control first) with the tenants its maintenance leaves
+    /// alone ([`forgebase_jobs::excluded_tenants`]: frozen everywhere,
+    /// moving or in cleanup on every set but the one the placement names).
+    /// Without a router, the one database and no exclusions.
+    pub(crate) fn all_sets(&self) -> Vec<(Db, Vec<String>)> {
+        let Some(router) = self.router() else {
+            return vec![(Db::plain(self.inner.db.clone()), Vec::new())];
+        };
+        router
+            .sets()
+            .into_iter()
+            .map(|set| {
+                let excluded = forgebase_jobs::excluded_tenants(router, set.id());
+                (Db::of(set), excluded)
+            })
+            .collect()
+    }
+
+    /// Whether `db` owns the rows of `tenant` (rule 5 of the brief: a move's
+    /// source keeps stale copies until cleanup): the tenant's placement
+    /// names the set, or the tenant has none (or is instance-wide) and the
+    /// set is control.
+    pub(crate) fn owns(&self, db: &Db, tenant: Option<&str>) -> bool {
+        let (Some(router), Some(set)) = (self.router(), db.set_id()) else {
+            return true;
+        };
+        match tenant.filter(|t| !t.is_empty()).and_then(|t| router.placement(t)) {
+            Some(p) => p.set_id == set,
+            None => db.is_control(),
+        }
     }
 
     /// Attaches the quota engine; uploads then count against the
@@ -237,31 +396,6 @@ impl StorageService {
 
     pub(crate) fn now(&self) -> i64 {
         self.inner.clock.now_ms()
-    }
-
-    pub(crate) async fn read(&self, sql: &str, params: Vec<Value>) -> Result<Rows> {
-        Ok(self.inner.db.fetch_all(&st(sql, params)).await?)
-    }
-
-    /// A metadata read that may be served by a replica (ADR-0029 §2.5,
-    /// FB-169): bucket listings, usage and statistics, object listings,
-    /// versions and heads. Authorisation state (ACLs, bucket rows, grants),
-    /// object content reads, writes and signed-URL issue stay on
-    /// [`Self::read`].
-    pub(crate) async fn read_replica(&self, what: &'static str, sql: &str, params: Vec<Value>) -> Result<Rows> {
-        self.fetch_replica(what, &st(sql, params)).await
-    }
-
-    pub(crate) async fn fetch_replica(&self, what: &'static str, stmt: &Statement) -> Result<Rows> {
-        Ok(self
-            .inner
-            .db
-            .fetch_routed(stmt, &forgebase_db::ReadIntent::replica(what))
-            .await?)
-    }
-
-    pub(crate) async fn begin(&self) -> Result<Box<dyn WriteTx>> {
-        Ok(self.inner.db.begin(TxMode::Normal).await?)
     }
 
     // ---- authorization -------------------------------------------------
@@ -344,7 +478,7 @@ impl StorageService {
                 _ => {}
             }
         }
-        let acl = self.load_acl(&bucket.id).await?;
+        let acl = self.load_acl(bucket).await?;
         let me = ctx.principal_key();
         Ok(acl.iter().any(|e| {
             e.permission >= need.permission()
@@ -399,11 +533,12 @@ impl StorageService {
         }
     }
 
-    async fn load_acl(&self, bucket_id: &str) -> Result<Vec<AclEntry>> {
-        let rows = self
+    async fn load_acl(&self, bucket: &BucketRow) -> Result<Vec<AclEntry>> {
+        let rows = bucket
+            .db
             .read(
                 "SELECT prefix, grantee, permission FROM _forgebase_storage_acl WHERE bucket = ? ORDER BY prefix, grantee",
-                vec![bucket_id.into()],
+                vec![bucket.id.as_str().into()],
             )
             .await?;
         rows.rows
@@ -457,29 +592,31 @@ impl StorageService {
 
     // ---- buckets -------------------------------------------------------
 
-    /// The stored bucket `id` (a stored name), if any.
-    pub(crate) async fn stored_bucket(&self, id: &str) -> Result<Option<BucketRow>> {
-        let rows = self
+    /// The stored bucket `id` (a stored name) on `db`, if any.
+    pub(crate) async fn stored_bucket(&self, db: &Db, id: &str) -> Result<Option<BucketRow>> {
+        let rows = db
             .read(
                 &format!("SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE name = ?"),
                 vec![id.into()],
             )
             .await?;
-        rows.rows.first().map(|r| decode_bucket(r)).transpose()
+        rows.rows.first().map(|r| decode_bucket(r, db)).transpose()
     }
 
     /// The bucket `name` as seen from `tenant` (FB-140, G14): the tenant's
-    /// own bucket of that name, else the instance-wide one. A name is never
-    /// a stored `<tenant>/<name>`, so another tenant's bucket is unreachable.
+    /// own bucket of that name (on the tenant's set), else the instance-wide
+    /// one (on control). A name is never a stored `<tenant>/<name>`, so
+    /// another tenant's bucket is unreachable.
     pub(crate) async fn bucket_in(&self, tenant: Option<&str>, name: &str) -> Result<BucketRow> {
         let missing = || StorageError::NotFound(format!("bucket {name}"));
         validate_bucket(name).map_err(|_| missing())?;
-        if let Some(t) = tenant
-            && let Some(b) = self.stored_bucket(&tenant_bucket_id(t, name)).await?
-        {
-            return Ok(b);
+        if let Some(t) = tenant {
+            let set = self.tenant_set(Some(t)).await?;
+            if let Some(b) = self.stored_bucket(&set, &tenant_bucket_id(t, name)).await? {
+                return Ok(b);
+            }
         }
-        match self.stored_bucket(name).await? {
+        match self.stored_bucket(&self.control(), name).await? {
             Some(b) if b.tenant.is_none() => Ok(b),
             _ => Err(missing()),
         }
@@ -526,7 +663,25 @@ impl StorageService {
             .as_deref()
             .map_or_else(|| input.name.clone(), |t| tenant_bucket_id(t, &input.name));
         let now = self.now();
-        let mut tx = self.begin().await?;
+        let db = self.tenant_set(tenant.as_deref()).await?;
+        if !db.is_control() {
+            // Instance-wide names are on control; a tenant bucket may not
+            // take one.
+            let wide = self
+                .control()
+                .read(
+                    "SELECT 1 FROM _forgebase_storage_buckets WHERE name = ?1 AND tenant IS NULL",
+                    vec![input.name.as_str().into()],
+                )
+                .await?;
+            if !wide.is_empty() {
+                return Err(StorageError::conflict(
+                    "bucket_exists",
+                    format!("bucket {} exists", input.name),
+                ));
+            }
+        }
+        let mut tx = db.begin().await?;
         let exists = tx
             .fetch_all(&st(
                 "SELECT 1 FROM _forgebase_storage_buckets WHERE name = ?1 OR (name = ?2 AND tenant IS NULL)",
@@ -560,7 +715,7 @@ impl StorageService {
         ))
         .await?;
         tx.commit().await?;
-        self.stored_bucket(&id)
+        self.stored_bucket(&db, &id)
             .await?
             .map(|b| b.wire())
             .ok_or_else(|| StorageError::Internal("bucket vanished".into()))
@@ -570,27 +725,52 @@ impl StorageService {
     /// and the instance-wide ones (one of which a tenant bucket of the same
     /// name hides).
     pub async fn list_buckets(&self, ctx: &AccessContext) -> Result<Vec<Bucket>> {
-        let rows = match &ctx.tenant {
+        let decode_all = |rows: &Rows, db: &Db| {
+            rows.rows
+                .iter()
+                .map(|r| decode_bucket(r, db))
+                .collect::<Result<Vec<_>>>()
+        };
+        let wide_sql =
+            format!("SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant IS NULL ORDER BY name");
+        let all = match &ctx.tenant {
             Some(t) => {
-                self.read_replica(
-                    "storage.list_buckets",
-                    &format!(
-                        "SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant = ?1 OR tenant IS NULL ORDER BY name"
-                    ),
-                    vec![t.as_str().into()],
-                )
-                .await?
+                let set = self.tenant_set(Some(t)).await?;
+                if set.is_control() {
+                    let rows = set
+                        .read_replica(
+                            "storage.list_buckets",
+                            &format!(
+                                "SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant = ?1 OR tenant IS NULL ORDER BY name"
+                            ),
+                            vec![t.as_str().into()],
+                        )
+                        .await?;
+                    decode_all(&rows, &set)?
+                } else {
+                    // The tenant's buckets on its set, the instance-wide ones on control.
+                    let own = set
+                        .read_replica(
+                            "storage.list_buckets",
+                            &format!(
+                                "SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant = ?1 ORDER BY name"
+                            ),
+                            vec![t.as_str().into()],
+                        )
+                        .await?;
+                    let control = self.control();
+                    let wide = control.read_replica("storage.list_buckets", &wide_sql, vec![]).await?;
+                    let mut all = decode_all(&own, &set)?;
+                    all.extend(decode_all(&wide, &control)?);
+                    all
+                }
             }
             None => {
-                self.read_replica(
-                    "storage.list_buckets",
-                    &format!("SELECT {BUCKET_COLS} FROM _forgebase_storage_buckets WHERE tenant IS NULL ORDER BY name"),
-                    vec![],
-                )
-                .await?
+                let control = self.control();
+                let rows = control.read_replica("storage.list_buckets", &wide_sql, vec![]).await?;
+                decode_all(&rows, &control)?
             }
         };
-        let all = rows.rows.iter().map(|r| decode_bucket(r)).collect::<Result<Vec<_>>>()?;
         let mine: std::collections::BTreeSet<String> = all
             .iter()
             .filter(|b| b.tenant.is_some())
@@ -636,7 +816,7 @@ impl StorageService {
         if let Some(t) = patch.allowed_content_types {
             b.allowed = normalise_types(Some(t))?;
         }
-        let mut tx = self.begin().await?;
+        let mut tx = b.db.begin().await?;
         tx.execute(&st(
             "UPDATE _forgebase_storage_buckets SET visibility = ?, versioning = ?, max_object_bytes = ?, \
              allowed_content_types = ?, updated_at = ? WHERE name = ?",
@@ -653,7 +833,7 @@ impl StorageService {
         ))
         .await?;
         tx.commit().await?;
-        self.stored_bucket(&b.id)
+        self.stored_bucket(&b.db, &b.id)
             .await?
             .map(|b| b.wire())
             .ok_or_else(|| StorageError::NotFound(format!("bucket {name}")))
@@ -664,7 +844,7 @@ impl StorageService {
         let b = self.bucket_row(ctx, name).await?;
         self.authorize(ctx, &b, None, Need::Admin, ResourceOp::View).await?;
         Ok(Acl {
-            entries: self.load_acl(&b.id).await?,
+            entries: self.load_acl(&b).await?,
         })
     }
 
@@ -679,7 +859,7 @@ impl StorageService {
             }
         }
         let now = self.now();
-        let mut tx = self.begin().await?;
+        let mut tx = b.db.begin().await?;
         tx.execute(&st(
             "DELETE FROM _forgebase_storage_acl WHERE bucket = ?",
             vec![b.id.as_str().into()],
@@ -702,7 +882,7 @@ impl StorageService {
         }
         tx.commit().await?;
         Ok(Acl {
-            entries: self.load_acl(&b.id).await?,
+            entries: self.load_acl(&b).await?,
         })
     }
 
@@ -712,8 +892,8 @@ impl StorageService {
         let b = self.bucket_row(ctx, name).await?;
         self.authorize(ctx, &b, None, Need::Admin, ResourceOp::Delete).await?;
         let name = b.id.as_str();
-        let busy = self
-            .read(
+        let busy =
+            b.db.read(
                 "SELECT (SELECT COUNT(*) FROM _forgebase_storage_objects WHERE bucket = ?1) \
                       + (SELECT COUNT(*) FROM _forgebase_storage_uploads WHERE bucket = ?1)",
                 vec![name.into()],
@@ -730,7 +910,7 @@ impl StorageService {
         let mut released: Vec<(String, String, i64)> = Vec::new();
         let mut staged: Vec<String> = Vec::new();
         let gate = self.inner.gate.read().await;
-        let mut tx = self.begin().await?;
+        let mut tx = b.db.begin().await?;
         let versions = tx
             .fetch_all(&st(
                 "SELECT id, blob_sha, size, quota_subject FROM _forgebase_storage_objects WHERE bucket = ?",
@@ -811,7 +991,7 @@ impl StorageService {
 pub(crate) const BUCKET_COLS: &str =
     "name, visibility, versioning, max_object_bytes, allowed_content_types, owner, created_at, updated_at, tenant";
 
-fn decode_bucket(r: &[Value]) -> Result<BucketRow> {
+fn decode_bucket(r: &[Value], db: &Db) -> Result<BucketRow> {
     let id = text(r, 0);
     let tenant = opt_text(r, 8);
     let name = match &tenant {
@@ -822,6 +1002,7 @@ fn decode_bucket(r: &[Value]) -> Result<BucketRow> {
         id,
         name,
         tenant,
+        db: db.clone(),
         visibility: Visibility::parse(&text(r, 1))?,
         versioning: int(r, 2) == 1,
         max_object_bytes: opt_int(r, 3).and_then(|n| u64::try_from(n).ok()),
@@ -1021,7 +1202,7 @@ impl StorageService {
         }
         let key = random_key()?;
         let sealed = seal_key(&self.inner.keyring, &key)?;
-        let mut tx = self.begin().await?;
+        let mut tx = self.control().begin().await?;
         tx.execute(&st(
             "UPDATE _forgebase_storage_settings SET value = ? WHERE name = ?",
             vec![sealed.into(), SEALED_KEY_ROW.into()],

@@ -2783,6 +2783,756 @@ statistics, queue and job screens are routed by the server.
   reads on replicas need the AGE graph on the standby (physical replication
   carries it); the stale marking after a move reads the primary.
 
+## Addendum: FB-168, managed replicas and `forgebase node` (2026-11-11)
+
+Built as §2.2, §2.3 and §2.8 describe, in `forgebase-pgengine` and the
+`forgebase` command. Nothing in the server calls it yet: the admin API
+(FB-175), the dashboard (FB-176) and the server wiring (FB-171, listed at
+the end) do. Without a replica nothing changes, on either backend.
+
+**Files.** `crates/forgebase-pgengine/src/standby.rs` (engine side of a
+standby), `src/replication.rs` (primary side) and `src/replication/service.rs`
+(the topology service the API and the agent call), `tests/replicas.rs`;
+`crates/forgebase-cli/src/node.rs`, one `Command::Node` variant (plus its
+`mod` line and match arm) in `main.rs`, `tests/node_e2e.rs`; the migration
+pair `migrations/{system,postgres}/0043_db_node_agents.sql`. Shared edits:
+`forgebase-pgengine` `secret.rs` (`Role::Replicator`), `cluster.rs`
+(bootstrap creates the role; readiness probe takes a role), `conf.rs` (slot
+limits, two deny-list keys), `config.rs` (`EngineConfig::replication`),
+`layout.rs` (`Layout::with_kind`), `lib.rs` (modules, `EngineHandle::pg_ctl`,
+probe role per node kind) and `Cargo.toml` (`forgebase-db`, `forgebase-core`,
+`time`, `uuid` become normal dependencies); `forgebase-db` `placement.rs`
+(two `control` rows); registration in `forgebase-migrations`;
+`forgebase-cli/Cargo.toml` (`axum` dev-dependency, `[[test]] node_e2e`).
+
+**The replicator role.** `forgebase_replicator` (`Role::Replicator`):
+`LOGIN REPLICATION`, nothing else, password in `roles.secret` (existing
+clusters get one through `RoleSecrets::fill_missing`; the bootstrap creates
+the role on the next start of a primary). It is also granted `EXECUTE` on
+the four file functions `pg_rewind` reads on its source
+(`REWIND_FUNCTIONS`, database `postgres`): the role can already copy the
+whole cluster with `pg_basebackup`, so this reveals nothing more, and a
+remote old primary can rewind from the new one without a superuser.
+
+**Slot WAL limits.** `SlotLimits { wal_keep_size: "8GB", idle_timeout: 1 day }`
+in `EngineConfig::replication` (`[database.replicas] slot_wal_keep_size`
+maps onto it) is written on every start: `max_slot_wal_keep_size`, and
+`idle_replication_slot_timeout` only on PostgreSQL ≥ 18 (17 refuses the
+key). Both are on the user deny list. `slots()` reads
+`pg_replication_slots`; `SlotInfo::needs_rebuild()` is `wal_status = lost`
+or an `invalidation_reason`; `service::mark_lost_slots(control, set,
+primary)` moves those nodes to `needs_rebuild` (run it with the health
+monitor; invalidation is final). Slot names are `fbr_<node>` with `-`
+written `_`.
+
+**Local standbys (§2.2).** `standby::clone_from` runs `pg_basebackup -D
+data.partial -X stream -R -S fbr_<node> --checkpoint=fast` as the
+replicator over the primary's socket (password in a private passfile,
+`PGPASSWORD` never set), renames the directory into place, then
+`write_follow` rewrites `postgresql.auto.conf`: `primary_conninfo` names the
+passfile `<node>/upstream.pgpass` (0600) and never holds the password
+(`pg_basebackup -R` copies a password it read from a passfile into the
+file; ForgeBase replaces that line), plus `primary_slot_name` and
+`standby.signal`. The standby then runs through `Engine::prepare` with a
+`NodeKind::Standby` layout: the same supervision, restart policy and log
+stream as the primary, tagged with the node name. `LocalReplicas` (one per
+server) holds the running handles: `add` (slot, clone, start), `start`,
+`start_existing` (server start: every `postgres/nodes/*` with a
+`standby.signal`, and `postgres/data` when the old primary rejoined),
+`stop`, `remove` (stop, drop slot, delete), `rebuild` (stop, delete, new
+slot, clone), `take` / `adopt`, `status`.
+
+**Least privilege on a standby.** Everything ForgeBase does on a standby
+logs in as the replicator (database `postgres`): readiness (the probe role
+is the replicator for `NodeKind::Standby`, the superuser for primaries),
+facts, replay waits and the WAL receiver status (without
+`pg_read_all_stats` its details are NULL; a live receiver that received WAL
+counts as streaming). Promotion and reload use `pg_ctl promote -w` and
+`pg_ctl reload` (`EngineHandle::pg_ctl`): ForgeBase owns the postmaster, so
+no SQL privilege is needed. A remote replica's host therefore holds only
+the replicator's password, never the superuser's (the end-to-end test
+checks it).
+
+**Remote replicas (§2.3).** Join tokens: `service::issue_join_token(control,
+{set, role: replica}, created_by, server_url)` → `fbj_` + 64 hex (only its
+SHA-256 in `_forgebase_join_tokens`), 15 minutes, and the exact command.
+`role = primary` is refused until FB-174. The agent: `forgebase node join
+<server url> --token … --data-dir DIR [--name N] [--engine-dir D]
+[--listen ADDR]` resolves the engine (embedded, else
+`FORGEBASE_PG_ENGINE_DIR`), sends `JoinRequest {token, name, engine, listen}`
+to `POST /api/system/database/agent/join`; `service::redeem_join` checks
+the token (unknown, used or expired: 401 `join_token_invalid`), the exact
+engine (`EngineIdentity {major, minor, version, build}`; the build comes
+from the archive manifest; any difference is 409 `engine_mismatch` and
+keeps the token for a retry with the right binary), inserts the node
+(`remote`, `replica`, `provisioning`) and its agent row, creates the slot on
+the primary, and returns `JoinGrant` (node id, agent key `fba_` + 64 hex,
+hashed in `_forgebase_db_node_agents`, the upstream login, heartbeat and
+poll intervals). The agent stores it in `<data dir>/node.json` (0600),
+writes `postgres/roles.secret` with the replicator's password only, clones,
+starts, then runs two loops: a long-poll `GET
+/api/system/database/agent/nodes/{id}/commands?wait_ms=…` (`resend=1` on
+the first poll after a start re-delivers commands sent but never answered)
+and a heartbeat `POST …/nodes/{id}/heartbeat` every 5 s (state, replay LSN,
+free disk, engine, command answers). Commands: `stop` (`{"remove": true}`
+also deletes the data and exits 0), `rebuild` (the replicator drops and
+recreates its own slot: `REPLICATION` is all the slot functions need),
+`promote` (`{min_lsn, slots}`), `follow` (`{upstream}` or
+`{upstream_change: {host, port, slot}}`), `rejoin` (`pg_rewind` as the
+replicator, else re-clone). `forgebase node run --data-dir DIR` resumes
+after a restart; `forgebase node status` prints the file without secrets.
+Heartbeats move the node in and out of service only
+(`state_after_heartbeat`: `provisioning`/`needs_rebuild`/`unreachable` →
+`catching_up` on streaming; cloning or rebuilding → `provisioning`; stopped
+→ `unreachable`; failed → `needs_rebuild`); lag stays the router monitor's
+(FB-167). A retired node may still answer its last `stop`.
+
+**pg_hba entries for FB-153.** `replication::hba_entries(&HbaInput { agents,
+readers })` returns data (`HbaEntry { kind, database, user, address,
+method, reason }`, `line()` renders it): `local replication
+forgebase_replicator` and `local postgres forgebase_replicator` (local
+standbys, standby checks, local rewind), then per agent `hostssl
+replication forgebase_replicator <ip>/32` and `hostssl postgres
+forgebase_replicator <ip>/32` (rewind), and per reader address `hostssl
+forgebase forgebase_reader <ip>/32` (the primary's file is copied to every
+replica, so the server's read pool on a remote replica is allowed there).
+All `scram-sha-256`. `replication::splice_hba(text, &entries)` inserts the
+`hostssl` lines before the first `hostnossl … reject` / `host … reject`
+line. `hba.rs` (FB-153, merged while this package ran) is untouched: its
+`render` admits only `forgebase_super`, `forgebase_server` and
+`forgebase_reader` over TCP, so remote replicas cannot stream until it
+emits these entries. The TCP tests splice them into the generated file and
+reload, which is what the generator has to do.
+
+**Promote (§2.8).** `standby::promote_local(replicas, target, OldPrimary,
+accept_data_loss, timeout)` does steps 1–4 and 6 on this host: the target
+must be in recovery; the old primary is stopped (fast shutdown) when it
+runs here; `pg_controldata` tells whether it stopped cleanly (`shut down`);
+if so the target must replay past the shutdown checkpoint record (its
+`Latest checkpoint location` + 1), which PostgreSQL's walsenders send
+before they exit, so every acknowledged commit is on the target; if not,
+`accept_data_loss` is required. Then `pg_ctl promote -w`, the follow
+settings are removed, and every other local replica gets a slot on the new
+primary and its `primary_conninfo` rewritten and reloaded (no restart; it
+follows the new timeline). `service::promote_local` wraps it with the
+control side: typed confirmation, `promoting`, `PoolSwitch::fence` (the
+server closes the writer pool) before the stop, `PoolSwitch::repoint`
+after it (the server points its pools at the new primary and hands back
+the control database to write to, which for the control set is the new
+primary), then in one transaction the old primary becomes a
+`needs_rebuild` replica (a row named `primary` is inserted when control's
+primary had none) and the target the `ready` primary, epoch + 1,
+`topology.json` rewritten. `service::promote_remote` does the same for a
+remote target: the agent's `promote` command waits for `min_lsn`, promotes
+and creates slots for the set's other remote replicas, which then get
+`follow` commands; the server reaches the new primary at the `listen` its
+agent reported. `service::promote_check` gives the step-1 estimate
+(replayed vs primary LSN, reachable). External primaries cannot be
+fenced, so nothing here promotes them.
+
+**Rejoin.** `standby::rejoin` runs `pg_rewind --target-pgdata …
+--source-server=…` (initdb uses `--data-checksums`, so it is possible),
+then rewrites the follow settings (`pg_rewind` copies the source's
+configuration files); when the engine has no `pg_rewind` or it fails, the
+old data is moved aside and re-cloned (restored on failure).
+`service::rejoin_local` creates `fbr_<name>` on the new primary, rejoins,
+starts the node as a standby and moves it to `catching_up`. The old primary
+of a single-server deployment keeps `postgres/data` and is named `primary`
+(`Layout::primary(..).with_kind(NodeKind::Standby)`).
+
+**Migration 0043 (both backends).** `_forgebase_db_node_agents (node_id PK →
+nodes ON DELETE CASCADE, key_hash UNIQUE, address, engine_version, state,
+replay_lsn, disk_free, detail, last_seen_at, …)` and
+`_forgebase_db_node_commands (id, node_id → nodes, kind rebuild | stop |
+promote | rejoin | follow, args JSON text, state queued | sent | done |
+failed | cancelled, result, created_by, created_at, sent_at, done_at)`,
+both placement class `control`. A unit test checks every wire value against
+both files' `CHECK`s.
+
+**Deviations.**
+- Promotion uses `pg_ctl promote -w` rather than `SELECT pg_promote(true,
+  60)`: the same wait, without a superuser on the standby.
+- Heartbeats store the last report in `_forgebase_db_node_agents`, not in
+  `_forgebase_db_nodes` (only health transitions bump the epoch, as FB-167
+  does).
+- Agent endpoints are `/api/system/database/agent/*` (`service::paths`),
+  authenticated by the token (join) or the agent key, not by an admin
+  session.
+- The agent speaks plain HTTP only to the server (`https://` is refused
+  with a message): the CLI has no TLS client yet. The replication
+  connection itself uses FB-153's engine TLS (`sslmode = require` with the
+  self-signed certificate, `verify-full` with an operator certificate);
+  the TCP tests run with `require`.
+- Removing a node retires the row and renames it `<name>~<id>`, so the
+  name can be used again.
+- The bundled engine (FB-130 archive) has no `pg_rewind`: rejoin re-clones
+  there (the test asserts which path ran). FB-130 should add it.
+
+**Tests.** `crates/forgebase-pgengine/tests/replicas.rs` (real clusters,
+gated on `FORGEBASE_PG_ENGINE_DIR`):
+`local_replica_is_promoted_under_write_load_without_losing_a_commit` (two
+replicas stream; a writer commits one row per transaction until the fence;
+r1 is promoted; every acknowledged id is on r1; r2 follows the new
+timeline; the old primary rejoins by `pg_rewind` or a fresh clone and
+catches up), `unclean_stop_needs_accept_data_loss`,
+`service_adds_promotes_and_rejoins_local_replicas` (node rows, confirmation,
+role swap, epoch, `topology.json`, rejoin, remove),
+`join_tokens_agents_commands_and_heartbeats` (engine mismatch keeps the
+token, one-time use, clone over TCP from the grant, key check, long-poll,
+answers, transitions). `crates/forgebase-cli/tests/node_e2e.rs`: the built
+binary joins through the agent endpoints mounted on a test router over the
+service functions, streams, reports its replay position, holds no
+superuser password, and exits 0 on `stop {remove}`.
+
+**For the next packages.**
+- **FB-171 (server wiring):** keep one `LocalReplicas::new(data_dir,
+  &engine_cfg)`; call `start_existing()` after the primary starts and
+  `stop_all()` before it stops. Map `[database.replicas]
+  slot_wal_keep_size` into `EngineConfig::replication.wal_keep_size`.
+  `SetConnector::connect_replica` for `kind = local` nodes: open
+  `replicas.get(name)`'s `url(Role::Reader)` with `DbOptions::read_only()`;
+  for `remote` nodes unseal `url_sealed` (`service::reader_url(listen,
+  reader password, sslmode)`, sealed at join by the API). Implement
+  `PoolSwitch`: `fence` closes the writer pool of the set; `repoint` opens
+  the new primary and swaps the set's pools (for control this is the
+  server's main `Database`, which today has no swap: a supervised restart
+  that reads `topology.json` is the simplest correct implementation), then
+  `router.reload()`. At start, the control primary is the `ready`
+  primary row of `topology.json` when there is one (after a promote it is
+  `postgres/nodes/<name>`), else `postgres/data`.
+- **FB-175 (admin API):** `POST /nodes {kind: local}` →
+  `service::add_local_replica`; `DELETE /nodes/{id}?confirm=` →
+  `remove_replica`; `POST /nodes/{id}/rebuild` → `rebuild_replica` (local,
+  remote) or `rejoin_local` (a `needs_rebuild` old primary);
+  `POST /nodes/{id}/promote` → `promote_check` for the confirmation dialog,
+  then `promote_local` / `promote_remote` as job `database.promote`;
+  `POST /join-tokens` → `issue_join_token` (audit-log `id`, never the
+  token); mount `service::paths::{JOIN, COMMANDS, HEARTBEAT}` outside
+  admin auth (token / agent key auth inside) and pass the peer address to
+  `redeem_join`; `GET /topology`, `GET /nodes/{id}` → `nodes` /
+  `node_view` (no `url_sealed`). Errors map with `ServiceError::status()`
+  and `code()`. Build `ReplicationSource::from_handle(primary, advertise,
+  sslmode)` once (it refuses a primary without TCP).
+- **FB-176 (dashboard):** node rows carry `kind`, `role`, `state`,
+  `engine_version`, `timeline`, `origin`, and for remote nodes `agent
+  {state, address, replay_lsn, disk_free, last_seen_at}`; show the join
+  command from `issue_join_token`; promote needs the typed name and, when
+  `promote_check.primary_reachable` is false, the "old primary is down"
+  box (`accept_data_loss`).
+- **FB-153 follow-up (hba.rs owner):** `hba::render` must emit
+  `replication::hba_entries(&replication::HbaInput { agents, readers })`
+  before its reject lines (`splice_hba` shows the order): agent addresses
+  from `_forgebase_db_node_agents.address`, readers the server's
+  addresses. Without it no remote replica can clone or stream. Use
+  `ReplicationSource { sslmode: VerifyFull }` when an operator
+  certificate is configured, `Require` otherwise; the agent still needs
+  an HTTPS client for the server URL.
+- **FB-169:** nothing new: replicas appear through the router once
+  FB-171's connector opens them.
+- **FB-174:** shard primaries on other hosts: `issue_join_token` refuses
+  `role = primary` today; a shard primary is `Layout::node(.., Primary)`
+  (bootstrapped), not a clone, so it needs its own join path. Local
+  replicas of a shard use the same `LocalReplicas` with the shard's
+  primary handle; slot names are per primary, so names must stay unique
+  per host.
+- **FB-179 (backups with replicas):** replicas keep their own data under
+  `postgres/nodes/<name>` (FB-150's `ensure_single_set` refuses them); a
+  replica-source backup can run `pg_basebackup` as the replicator against a
+  local standby's socket (`standby::Upstream::local`); after a restore,
+  mark every replica of the set `needs_rebuild` and call `rebuild_replica`.
+- **FB-130:** ship `pg_rewind` (and keep `pg_ctl`, `pg_controldata`) in
+  the engine archive.
+
+## Addendum: FB-172, shard routing in jobs, queues, KV, vector and storage (2026-11-11)
+
+The §3.5 rows for jobs, schedules, queues, KV, vector and storage, as code,
+on FB-170's router. Without a router, or with a router over one set, every
+service behaves exactly as before (all existing suites, unchanged, on SQLite
+and PostgreSQL; plus a one-set-router test per crate). Where the code
+differs from the text above, or decides something it left open, it is said
+here.
+
+**Files.** New: `crates/forgebase-jobs/src/sets.rs`,
+`crates/forgebase-queue/src/sets.rs`, and `tests/shards.rs` in each of the
+five crates. Changed: `forgebase-jobs` `service.rs`, `pool.rs`, `pgcron.rs`,
+`flow.rs`, `queues.rs`, `error.rs`, `lib.rs`; `forgebase-queue`
+`service.rs`, `consume.rs`, `ops.rs`, `push.rs`, `pgmq/engine.rs`,
+`error.rs`, `lib.rs`; `forgebase-kv` `service.rs`, `store.rs`;
+`forgebase-vector` `service.rs`, `pg.rs`, `store.rs`, `model.rs`,
+`jobs.rs`, `error.rs`, `lib.rs`; `forgebase-storage` `service.rs`,
+`objects.rs`, `uploads.rs`, `signed.rs`, `reconcile.rs`, `http.rs`,
+`error.rs`, `lib.rs`. No migration; nothing outside the five crates.
+
+**One pattern (jobs, queue, vector, storage).** A service takes the router
+with `attach_router(router)` (constructors are unchanged, so every caller in
+other crates compiles as before). A clone made by `on_set(SetHandle)` is a
+*view* bound to one set: its `backend()` is that `SetHandle` (so FB-169's
+`ReadVia` / `read_replica` call sites route over that set's replicas). Each
+public method resolves its view first and runs its old body (`*_here`) on
+it. Errors gain a `Router(RouterError)` variant whose code and status are
+the router's: `tenant_moving` 409, `shard_unavailable` / `shard_migrating`
+503. `SetHandle` is passed where `&dyn Backend` was; nothing else in a body
+changed.
+
+**Moving tenants (§3.5 "Background loops", §3.8).**
+`forgebase_jobs::excluded_tenants(router, set_id)` is the exclusion list
+every background loop and claim on a set uses, and
+`forgebase_jobs::tenant_guard(col, list, params, taken)` appends
+` AND (col IS NULL OR col NOT IN (…))` (nothing when the list is empty, so
+unsharded SQL is unchanged). Decision the ADR left open: on set S a tenant
+is skipped when its placement is `frozen` (everywhere), or `moving` /
+`cleanup` and the placement names another set than S. So the source keeps
+serving a moving tenant until the switch freezes it (§3.8 4.1 "background
+loops skip it" at the freeze), the target never touches its partial copy,
+and the old source leaves its stale copy alone until cleanup. Loads at
+start-up take a tenant's rows only from the set its placement names (else
+control).
+
+**Jobs.**
+- Jobs, schedules, workflows and a tenant's queue settings live on the
+  tenant's set; instance-wide ones and the worker registry
+  (`_forgebase_job_workers`, class `control`) on control.
+- Calls about a tenant (`enqueue`, `list`, `create_schedule`, `schedules`,
+  `create_workflow`, `workflows`, `queues`, `queue`) go to the caller's
+  tenant's set (`for_tenant`: a frozen tenant waits, then 409). A
+  privileged caller without a tenant lists control (instance-wide jobs);
+  `stats` without a tenant adds up every set (dashboard statistics, §3.6).
+- Calls about one job, schedule or workflow (`get`, `events`, `attempts`,
+  `result`, `checkpoint`, `cancel`, `retry`, `delete`, `heartbeat`,
+  `progress`, `save_checkpoint`, `spawn_children`, `complete`, `fail`,
+  `release`, `schedule`, `update_schedule`, `delete_schedule`, `workflow`,
+  `cancel_workflow`) find the row's **tenant** by primary key (the view's
+  set, the caller's tenant's set, then every set; a set that cannot be read
+  is skipped), remember it (at most 100 000 ids; enqueue and claim fill it),
+  and then go to that tenant's set through `for_tenant`. Remembering the
+  tenant, not the set, keeps a lookup right after a move.
+- Claims: a view claims on its set. An unbound claim by a privileged worker
+  goes **round-robin**: each call starts one set further and moves on until
+  `max` is reached. A non-privileged worker (limited to its tenant, FB-142)
+  claims on its tenant's set only (none: control). Workers seen by a claim or
+  heartbeat on a shard are recorded on control after the commit (best
+  effort; the claim is already committed).
+- The pool (`start_pool`) with a router runs **one claim loop per set**
+  (`supervise`), each on a view, sharing the `concurrency` budget, started
+  and stopped as `router.subscribe()` reports sets coming and going; each
+  loop fires that set's due schedules, reaps its expired leases and purges
+  its finished jobs. Wake-ups are per set (one `Notify` per set id).
+- Maintenance called on the unbound service (`fire_due_schedules`,
+  `reap_expired`, `purge_finished`) runs per set. The claim SQL, the
+  claimability probe, `reap_tx`, `fire_tx` and the purge carry the
+  exclusion guard.
+- Queue settings (`_forgebase_job_queues`, per set): read and written on the
+  tenant's set (its claims check them there) and every change mirrored to
+  control, which so holds every tenant's settings.
+  `copy_queue_settings(tenant)` copies them from control to the tenant's
+  current set (for FB-174 after a switch; the rate window restarts).
+- pg_cron (FB-165): `attach_pgcron_sets(&jobs, &control_db)` runs
+  `attach_pgcron` on every set's primary with a view of that set: each set's
+  schedules are in its own `cron.job`, `forgebase.fire_schedule` inserts on
+  that set, and its `NOTIFY` wakes that set's loop. One set (or no router):
+  it is `attach_pgcron`. The reconcile leaves excluded tenants' rows alone
+  and unschedules their `cron.job` entries; `sync_pgcron_now()` runs the
+  reconcile on every set at once (FB-174 calls it at the freeze and after
+  the switch; the ownership mark travels with the rows, so the target takes
+  the schedules over at its reconcile).
+
+**Queues.**
+- A topic lives on its tenant's set, an instance-wide topic on control. A
+  subscription lives **with its topic** (its deliveries reference the
+  topic's message log), so a tenant's subscription to an instance-wide topic
+  is on control (stored `<tenant>/<name>` there); snapshots and dead letters
+  live with their subscription. Names resolve as on one set: for a caller
+  in tenant t, the tenant's set is asked for `t/<name>`, else control
+  (`at_topic`, `at_sub`, `at_snapshot`; streams resolve the stored name).
+- Listings of a tenant caller (`topics`, `subscriptions`, `snapshots`) read
+  its set and control, then apply the existing shadowing.
+- `run_maintenance`, `deliver_push`, `meter_pending`, `relay_outbox`,
+  `backlog` and `convert` run per set (the background task: one round per
+  set, a failing set does not hold up the others). Maintenance (leases,
+  materialisation, retention), push and metering skip excluded tenants.
+  The delivery engine (FB-164) is resolved per set (each database pins its
+  own `ext.queue.engine`).
+- Record relay: each set relays its own outbox to its topics with its own
+  cursor (as before; tenant source topics are on their tenant's set). On
+  control, instance-wide source topics also relay **every other set's**
+  outbox, with one cursor per set on control (`_forgebase_queue_state` key
+  `outbox_cursor:<set id>`) written in the transaction of the inserts; the
+  dedup id is `outbox:<set number>:<seq>` (control's own stays
+  `outbox:<seq>`). A set's cursor starts at its outbox head the first time.
+- Limits: a subscription's dead-letter topic must live on the
+  subscription's set (a tenant subscription on its own topic cannot
+  dead-letter to an instance-wide topic on a sharded cluster:
+  `topic_not_found`); the check that a tenant name does not shadow an
+  instance-wide subscription is made on the tenant's set only.
+  `publish_in_tx` publishes in the caller's transaction, so on the
+  caller's set.
+
+**KV.** `KvService::open_routed(cfg, authorizer, router)` (and
+`open_routed_with_clock`): memory as today; start-up loads every set
+(oldest write first across sets), a tenant's keys only from its owner set;
+the flusher groups dirty keys by `try_for_tenant` and writes one
+transaction per set; keys of a frozen tenant, or of a set that cannot be
+reached, stay dirty for the next round (a failed set's group too).
+`flush_tenant(tenant)` writes one tenant's dirty keys on the set its
+placement names even while frozen (§3.8 4.1 "KV flushes the tenant's dirty
+keys"). `open` is unchanged.
+
+**Vector (pgvector and portable).**
+- A collection and its fields, items, values and keyword rows live on the
+  tenant's set (the shared `''` scope and unplaced tenants on control).
+  Calls resolve the set with `for_tenant`; FB-169's `ReadVia` reads run on
+  the routed `SetHandle`.
+- The engine is per set: each set keeps its own storage engine and lock,
+  from its own `ext.vector.engine` pin (FB-162), so control can run
+  pgvector while a shard is portable (tested).
+- `VectorService::open_routed(data, router, indexes_dir, config)` runs the
+  start-up (reconcile, collection load, index repair, warm-up) per set with
+  owners and exclusions applied from the start; `open` then
+  `attach_router` (async, a second call answers 400 `router_attached`)
+  also works but control's start-up has then already seen every row, so the
+  server should use `open_routed`. A set's collections load only from the
+  owner set; orphan `fbv_` indexes are judged against every collection row
+  of the set, so a move target's early-built indexes stay. The portable
+  in-process index files are keyed by collection id (unique across sets),
+  so all sets share `indexes_dir`.
+- Schema changes (create collection, add or delete field, delete
+  collection) of a tenant whose placement is `moving` or `frozen` answer
+  409 `tenant_moving` (§3.8 step 1); reads and upserts keep running on the
+  source.
+- Following a move: after the router publishes a placement change, a
+  tenant's next call sees its collections on the old set, saves the old
+  in-process index, loads the tenant from the new set, moves copied vectors
+  into that set's engine column and builds missing pgvector indexes.
+- `vector.convert` (and `convert`) converts every set; `convert_set(ctx,
+  set, to)` one. A set still serving a frozen tenant with collections is
+  refused with 409 (the job retries), so an aborted switch cannot leave the
+  tenant in the other column. `ConvertReport.sets` lists the sets when
+  sharded (left out of JSON otherwise); the job payload accepts `"set"`.
+  `storage_engines()` reports the engine per set.
+
+**Storage.**
+- A tenant bucket (stored `<tenant>/<name>`) and its objects, ACL entries,
+  uploads and parts live on the tenant's set; instance-wide buckets on
+  control; `_forgebase_storage_settings` and the sealed signing key always
+  on control. A name resolves as on one set (the tenant's bucket on its
+  set, else the instance-wide one on control); creating a tenant bucket on a
+  shard also checks control for the instance-wide name (not in one
+  transaction: two simultaneous creates could both pass). Listings read the
+  tenant's set and control. Upload sessions by id: the caller's set, then
+  control, then (privileged) every set, counting only an owner set's row.
+- Signed URLs carry the tenant (`t`), so the holder, who has no tenant
+  context, reaches the bucket's set; URLs of the old format only named
+  instance-wide buckets.
+- `stats`: tenant scope its set, instance scope control, the privileged
+  engine scope the sum over sets (each counting the tenants it owns; a blob
+  file shared by two sets counted once).
+- Reconcile (`storage.reconcile`, one instance-wide job): per set, expired
+  sessions are dropped, skipping excluded tenants (sessions have no tenant
+  column: the guard is on their bucket; a session whose bucket row has not
+  arrived in a copy is skipped). The blob files are shared by every set, so
+  a staged file is kept while any set's part names it, and a blob file is
+  deleted only when every set's count is zero past the grace period and no
+  object of an excluded tenant on any set names it. Every set is read before
+  anything is deleted: a set that cannot be read fails the run.
+
+**Tests.** Every crate's full suite on `FORGEBASE_TEST_BACKEND=sqlite`
+and `=postgres` (the r1 engine: pgvector, pgmq, pg_cron), plus one
+`tests/shards.rs` per crate. Multi-set tests use FB-173's
+`shard_testing::Sharded` (control plus one shard activated with
+`activate_shard`) and a router with a 200–300 ms freeze timeout; they skip
+without an engine.
+- Jobs: one-set router (enqueue, claim, complete, stats, workers,
+  schedules, the pool); on two sets: rows on the tenant's set only, lookup
+  by id from a fresh service and any caller, per-set lists, stats summed,
+  round-robin claims reaching the shard, tenant-bound workers on their set,
+  workers on control only, queue settings on the set and mirrored
+  (pause blocks claims), schedules stored and fired on the set, a moving
+  tenant's copy neither claimed nor fired, a frozen tenant answering 409,
+  the pool running jobs of both sets, workflows by id,
+  `copy_queue_settings`. pg_cron per set on two managed engines with
+  pg_cron: a tenant's 2-second schedule in the shard's `cron.job` only,
+  fired there; after the tenant moves away, `sync_pgcron_now` removes it.
+- Queue: one-set router; on two sets: topics, subscriptions (with their
+  topic), messages and snapshots on the right set, name resolution,
+  merged listings, backlog and metrics, a moving tenant's lease not reaped
+  until it is back, a frozen tenant answering 409, the instance-wide source
+  topic relaying a shard's outbox with the cursor on control (once).
+- KV: one-set router (`open_routed`, `flush_tenant`); on two sets: rows on
+  the tenant's set (`t:<env>`), instance-wide on control, deletes routed,
+  a restart loading every set and ignoring a stale copy on a non-owner set,
+  a frozen tenant's keys held back and written by `flush_tenant`, writes
+  after the switch on the new set.
+- Vector: one-set router and `open_routed`; on two sets: rows on the
+  tenant's set, shard ids from 2⁴⁰, isolated search, get and hybrid,
+  pgvector on control and portable on the shard, 409 for schema changes of
+  a moving tenant, warm-up from files after a restart, a frozen tenant's
+  409 and refused conversion, a simulated move followed by the service, and
+  start-up and conversion skipping partial and stale copies.
+- Storage: one-set router (buckets, objects, signed URLs, multipart, stats,
+  reconcile); on two sets: rows on the tenant's set, isolated listings and
+  reads, signed GET and PUT for a shard bucket without a tenant context,
+  stats counting shared blobs once, a blob shared by two sets kept until
+  both delete it, a moving tenant's copy skipped by the reconciler, a frozen
+  tenant answering 409 (signed URLs too).
+- Server `--test jobs` and `--test security_bypass` on both backends (no
+  server change).
+
+**Server wiring (not done here; FB-171 / god).** In
+`crates/forgebase-server/src/lib.rs`, once `DbRouter::open` has built
+`router`:
+- KV (line 353 at this merge): `KvService::open_routed(kv_cfg, authorizer,
+  router.clone())` instead of `KvService::open(kv_cfg, authorizer,
+  Some(Arc::new(db.clone())))`.
+- Jobs (line 446): `jobs.attach_router(router.clone())` right after
+  `JobService::new`, before `start_pool` (the pool then runs a loop per
+  set) and before anything enqueues.
+- pg_cron (line 674): `forgebase_jobs::attach_pgcron_sets(&jobs,
+  &db)` instead of `attach_pgcron(&jobs, &db)`.
+- Vector (line 529): `VectorService::open_routed(state.data().clone(),
+  router.clone(), layout.indexes_dir(), VectorConfig::default())` instead of
+  `VectorService::open(..)`.
+- Queue (`open_queue`, line 855): `queue.attach_router(router.clone())`
+  after `QueueService::new` (the function needs the router as an
+  argument).
+- Storage (line 1458): `svc.attach_router(router.clone())` after
+  `StorageService::open`.
+Without these lines the services run on control only, as today.
+
+**Breaking.** `JobService`, `QueueService` (and `VectorService`, `StorageService` internals; `VectorError` and
+`StorageError` gain `Router`; `ConvertReport` gains `sets`, skipped when
+empty)
+have a new field (a struct literal of them never existed outside the
+crates); `JobError` and `QueueError` gain `Router` (exhaustive matches
+outside the crates: none). `QueueBacklog` derives `Default`. No HTTP or
+OpenAPI change: errors `tenant_moving` (409), `shard_unavailable` and
+`shard_migrating` (503) may now come from the job, queue, vector and storage
+routes on a sharded cluster.
+
+**For FB-174 (moves).** KV stores a tenant's scope as `t:<env>` (and
+instance-wide keys as `default` / `shared:<realm>`): the move's row filter
+on `_forgebase_kv_entries` must be `tenant = 't:<env>'`, not the bare id
+the registry's `Column("tenant")` suggests. Storage reference counts
+(`_forgebase_storage_blobs`, `rebuild`) are not recounted by this package:
+after a switch the target has none for the moved objects and the source
+still counts its stale ones until cleanup (the reconciler keeps files, so
+this only leaks space until a recount). At the freeze: `kv.flush_tenant(t)`,
+`jobs.sync_pgcron_now()`. After the switch: `jobs.copy_queue_settings(t)`,
+`jobs.sync_pgcron_now()`. A tenant's subscriptions to instance-wide topics
+stay on control (do not move them with the tenant: the registry classifies
+subscriptions by `tenant`, but these follow their topic). The queue relay
+cursor `outbox_cursor:<source set id>` on control must be drained up to the
+barrier like the source's own relay.
+
+## Addendum: FB-171, shard routing in the data core, realtime, functions and the server (2026-11-11)
+
+Built as §3.5 and §3.6 describe, on FB-170's router, FB-169's replica
+reads and FB-173's fan-out. Without shards (SQLite, one-set PostgreSQL)
+every path below runs on the service's backend exactly as before; the
+"sharded" checks are `DataService::is_sharded()` (the attached router has
+more than one routable set). Human decision 2 (option A) is what is built.
+
+**Files.** New: `crates/forgebase-data/src/shards.rs`,
+`crates/forgebase-server/src/shards.rs`, and the tests
+`crates/forgebase-data/tests/shard_routing.rs`,
+`crates/forgebase-realtime/tests/shards.rs`,
+`crates/forgebase-functions/tests/shards.rs`,
+`crates/forgebase-server/tests/shards_fb171.rs`. Changed: data `lib.rs`,
+`error.rs`, `guard.rs`, `records.rs`, `list.rs`, `changes.rs`,
+`catalog.rs`, `ddl.rs`; realtime `lib.rs`, `outbox.rs`, `conn.rs`;
+functions `lib.rs`; server `lib.rs`, `Cargo.toml` (dev-dependency
+`forgebase-db` with `testing`, for the shard test clusters). No migration.
+
+**Data core: the set per call.** `DataService::route(ctx, coll)`: a
+tenant-scoped collection (and a view with `reads_tenant_data`) →
+`router.for_tenant(ctx.tenant)` (control's handle is the service's own
+backend); every other collection → control. Records create / get / update
+/ delete, list, count, aggregate, versions and `expand` begin their
+transaction or read on that backend (FB-169's `fetch_routed` per set:
+`fetch_replica_on`). Collection DDL, indexes, the SQL editor and the
+catalog stay on control (FB-173 fans DDL out). Router errors surface as
+`DataError::Shard` with the router's code (`tenant_moving` 409,
+`shard_migrating` / `shard_unavailable` 503).
+
+**`tenant_required_sharded` (400).** On a sharded cluster a record call
+on tenant data without a tenant (or with `""`) is refused in `resolve`,
+privileged callers included (on one set they still see every tenant's
+rows). Realtime subscriptions are the exception (`resolve_spanning`):
+they fan in, below. The system context without a tenant is refused by
+`route`.
+
+**Relations across placements (tenant-scoped → shared).**
+- **No foreign key.** `CatalogSnapshot` records whether
+  `_forgebase_db_sets` has a non-retired shard row (one `count(*)` per
+  catalog load; rows are control-only, so a shard reads 0).
+  `ddl::relation_table` then returns no target for such a relation, so
+  create / update collection, the shard steps of FB-173 and the catalog
+  replay of a new shard create the column without `REFERENCES`.
+  `DataService::drop_cross_placement_keys()` drops the keys that tables
+  made before the first shard still have on control (PostgreSQL; a no-op
+  while there is no shard row; idempotent); the server runs it at start on
+  a sharded topology. Deviation from "no SQL foreign key" taken literally
+  for control: a key kept on control would be harmless, but one rule for
+  every set keeps `ON DELETE` in one place.
+- **Existence check.** `check_relations` reads a shared target on
+  control's primary (outside the writer's transaction); every other target
+  in the writer's transaction as before.
+- **`expand`.** Each hop reads its target's set: a shared target of tenant
+  data is a second query on control (two steps, as §3.6 says).
+- **`ON DELETE`.** Deleting a shared record whose collection is the target
+  of tenant-scoped relations: `RESTRICT` (a required, non-cascading
+  relation) is checked on every set's primary before control's delete
+  (`409 record_referenced`, naming the set); the in-transaction walk skips
+  tenant-scoped referrers; after the commit the deleted ids are handed to
+  the installed `RelationFanout` (the server: job
+  `data.relation_deletes`, reserved, 10 attempts), whose handler calls
+  `DataService::apply_relation_deletes`: on every set, one transaction
+  each, cascade (through the normal delete path: change events,
+  tombstones, nested relations), set null, or removal of the id from
+  multi-value relations, without the referencing collections' rules (as
+  foreign-key actions). Idempotent. Without a hook the data core runs it
+  right after the commit. Gap: a crash between control's commit and the
+  enqueue loses the fan-out of that delete (no migration was added for an
+  outbox of fan-outs; references then point to a missing record until the
+  record is written again, and `expand` leaves it out).
+- **`relation_crosses_shards` (400).** A rule, filter, sort key, group
+  key or aggregate path that follows a relation from tenant data to a
+  shared collection (at any hop) is refused on a sharded cluster: rules in
+  `resolve` and in `expand`'s target rule, filters and paths in
+  `build_list` / `aggregate`, realtime filters in `subscription_target`,
+  and saved rules in `validate_predicate` (the policy service calls it in
+  `put_policy`). The relation's own column (`author = 'id'`) is not a
+  crossing. Realtime's per-event `view_snapshot` reads on the row's set.
+- **The pre-check (open question 2).** `DataService::cross_shard_offenders()`
+  parses every stored collection rule (`@request…` references replaced by a
+  parameter) and lists `{collection, rule, path}` for each crossing; works
+  on one set. The server logs them at start when sharded.
+
+**Realtime.** Every set's outbox is tailed by its own dispatcher
+(`SetTail`: set id, number, backend), started by a supervisor that follows
+`DbRouter::subscribe` (sets added or removed later get or lose theirs);
+commits wake every dispatcher (`Wakers`); the pruner prunes each set's
+outbox. `RealtimeService::heads()` gives the newest cursor per set number;
+`stats().head` and the welcome cursor are the maximum. A record
+subscription has a **home**: one set (`Set(k)`: a tenant's data → its
+tenant's set; shared collections and channels → control) or every set
+(`All`: a privileged caller without a tenant on tenant data, sharded).
+- One set: replay and catch-up read only that set's outbox (subscriptions
+  are grouped by set); a cursor whose set (`cursor >> 40`) is not the
+  home gets `reset` with reason **`tenant_moved`** (cursor: the home's
+  head) instead of a silent gap. A live event of the subscriber's own
+  tenant arriving from another set (the tenant moved while connected)
+  re-homes the subscription and sends the same `reset` (cursor: the event's
+  cursor − 1). Cursor `0` is "the beginning" of any set.
+- Every set: live events only, last cursor kept per set; a subscription
+  that brings a cursor, and a bus overflow (catch-up), get `reset` with
+  reason **`cursor_unsupported_sharded`** and `cursor: null`; the
+  `subscribed` reply's cursor is `null`.
+
+**Functions.** The after-hook cursor (`after_hooks`) is stored on each set
+(the table is `per_set`), next to its outbox: `FunctionService::open`
+starts every current set's missing cursor at its head; a set opened later
+has none and is read from its start; `run_after_hooks` passes over every
+set in turn under the one lock (commit order within a set). A shard that
+cannot be read is skipped and retried; control's error is returned. The
+hook acts in the event's tenant, so its own data calls route to the
+tenant's set.
+
+**Server.** After control's `migrate`: `shards::open_router` (SQLite:
+`DbRouter::single`; PostgreSQL: `DbRouter::open` with
+`<data_dir>/topology.json`, default placement policy, freeze timeout and
+replica options until FB-175's `[database.sharding]` / `[database.replicas]`
+exist, and `NodeConnector`), then on a sharded topology
+`shards::migrate_sets(&router, Some(backups), MultiOptions::default())`
+(failures logged; such sets stay `migrating`). Policy, auth and the data
+service get **control's `SetHandle`** as their backend (replica routing per
+§2.5 now applies in the server). In `open_auth`:
+`data.attach_shards(router)` before `enable_native_rls`. Then
+`twophase::spawn_recovery(router, RECOVERY_INTERVAL)` on PostgreSQL (kept
+in `RunningServer`, dropped in shutdown), `prepare_data` (drop the
+cross-placement keys, log rule offenders), the relation fan-out hook and
+its job handler. Shutdown closes every shard's pools.
+`RunningServer::router()` is new. Per-set loops: realtime and after-hooks
+here; jobs, queues, KV, vector and storage are FB-172's.
+- **`NodeConnector`** (`SetConnector`): unseals `url_sealed` (lowercase hex
+  of `Keyring::seal(url, aad = "forgebase/db-node/<node id>")`, the data
+  directory's master key) and opens the node with the server's pool
+  settings (`read_only` for replicas). `seal_node_url` / `open_node_url`
+  are public for FB-175 (node URL sealing). Local nodes (no URL) are
+  refused until FB-174's shard provisioning opens them.
+
+**SQL editor (§3.6, after FB-153).**
+- **Node selector:** `SqlOptions.set` (body field `set` of `POST /sql` and
+  `/sql/batch`, the set **number**; absent or `0`: control). A read runs on
+  that set's primary, or with `read_from_replica` on one of its replicas;
+  statements that write (and every batch) run on control only (`400
+  sql_set_read_only`: tenant data changes through the data API, schema
+  through the collections API on every set; `forgebase db psql --node`
+  reaches a shard). Unknown set: `404 shard_not_found`; a migrating set:
+  `503 shard_migrating`. The number (not the id) keeps `SqlOptions` `Copy`.
+- **"Read from replica" under the editor's role:** new defaulted
+  `Backend::fetch_routed_as(stmt, intent, run_as)`. `SetHandle` routes it
+  through `ReplicaSet::fetch_as`: the chosen replica's read-only
+  transaction runs `SET LOCAL ROLE` and the claims exactly as
+  `fetch_all_as` on the primary (a physical standby has the roles; both are
+  allowed in read-only transactions); strong requests, lagging replicas and
+  fallbacks read the primary as the role. `ReadVia` forwards it; everything
+  else is `fetch_all_as`. `sql.rs` uses it when `read_from_replica` is set
+  and `show_secrets` is not, so FB-153's `forgebase_sql_admin` boundary and
+  FB-169's replica reads both hold. `SetHandle` now also forwards FB-153's
+  `admin_batch` (the services run on control's handle).
+
+**Not done here.** No dashboard change (the SQL editor's set selector and
+the replica toggle are dashboard follow-ups). Extensions on shards
+(`setup_extensions` runs on control only; FB-173 noted shards need the same
+extensions).
+
+**Tests.** `shard_routing.rs` (data): one set unchanged and the pre-check
+(both backends); sharded (real clusters): placement of records, existence
+on control, two-step expand, `tenant_required_sharded`, every
+`relation_crosses_shards` path, no foreign keys on the replayed shard and
+dropped on control, `RESTRICT` across sets, cascade / set null /
+multi-value removal on both sets, idempotent fan-out. Realtime
+`shards.rs`: per-set dispatch and cursor ranges, shared collections from
+control, replay from the home set, `tenant_moved`, fan-in with
+`cursor_unsupported_sharded`, per-set pruning. Functions `shards.rs`:
+per-set cursors and hooks for events on both sets, once. Data
+`routed_as.rs` (`RoutedCluster`): `fetch_routed_as` on the standby and the
+primary as a role, and the SQL editor reading the replica as
+`forgebase_sql_admin`; the node selector in `shard_routing.rs`. Server
+`shards_fb171.rs`: one set (SQLite); sharded: the router opens the shard
+through its sealed URL, `topology.json`, a dispatcher and an after-hook
+cursor per set, records on the shard, the relation fan-out job.
+
+**Breaking.** `DataError::Shard` (new variant). `SqlOptions` has a new
+field `set` (struct literals need `..Default::default()`). `Backend` has a
+new defaulted method `fetch_routed_as`. Record calls on tenant data
+without a tenant answer `400 tenant_required_sharded` on sharded clusters.
+Rules / filters / sort keys across placements answer `400
+relation_crosses_shards` on sharded clusters (and such rules cannot be
+saved). Realtime: `subscribed.cursor` and `reset.cursor` may be `null`
+(spanning subscriptions); reset reasons `tenant_moved` and
+`cursor_unsupported_sharded`. `DataService::delete_in_tx` gained a
+parameter (crate-internal). Server: policy, auth and data run on control's
+`SetHandle` instead of the `Database`.
+
+**For FB-172.** Constructor arguments in `start_on` take `router.clone()`
+(it is built right after `migrate`, before `open_auth`); one loop per
+`router.sets()` entry, watch `router.subscribe()` for new sets (see the
+realtime supervisor); control's handle for control-only work is
+`router.control()`.
+**For FB-174.** Before activating the first shard (its set row inserted):
+`data.cross_shard_offenders()` (refuse or warn) and
+`data.drop_cross_placement_keys()`. A move: realtime re-homes live
+subscriptions on the first event from the new set and answers old cursors
+with `tenant_moved`; after-hook cursors are per set, so events copied by a
+move are not re-run (the copy writes no outbox rows through the data core).
+**For FB-175.** Store node URLs with `forgebase_server::shards::seal_node_url`
+(or the same format). Add `[database.sharding]` / `[database.replicas]` to
+`RouterOptions` in `shards::open_router`: it is the one place where the
+router and its `SetConnector` are built, so FB-168's managed replicas
+(`LocalReplicas`, `connect_replica` for local nodes, `PoolSwitch`) hook in
+there from `replicas.rs`; `NodeConnector::connect_replica` already opens
+sealed-URL replicas read-only and refuses local ones.
 ## Addendum: FB-163, openCypher on Apache AGE (2026-11-11)
 
 Built as §1.5 describes, with decision 9a.1 (option B): label and edge-type

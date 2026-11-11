@@ -26,7 +26,7 @@ use crate::error::{Result, StorageError};
 use crate::model::{DeleteResult, ObjectInfo, ObjectPage};
 use crate::rules::{self, NewRow, WriteCheck};
 use crate::service::{
-    BucketRow, Need, StorageService, blob_key, id, int, iv, opt_text, public_bucket, st, text, type_allowed, uint,
+    BucketRow, Db, Need, StorageService, blob_key, id, int, iv, opt_text, public_bucket, st, text, type_allowed, uint,
 };
 use crate::util::{from_extension, hex, rfc3339, sniff, validate_key};
 
@@ -317,7 +317,7 @@ impl StorageService {
         if check.rules.is_none() {
             return Ok(());
         }
-        let live = match self.find_row(&bucket.id, key, None, None).await {
+        let live = match self.find_row(bucket, key, None, None).await {
             Ok(r) => Some(r).filter(|r| !r.delete_marker),
             Err(StorageError::NotFound(_)) => None,
             Err(e) => return Err(e),
@@ -325,17 +325,17 @@ impl StorageService {
         match check.decision(live.is_some()) {
             Some(Decision::Deny) => Err(rule_refusal()),
             Some(Decision::Filter(p)) => match &live {
-                Some(row) if !self.stored_matches(&row.id, p).await? => Err(rule_refusal()),
+                Some(row) if !Self::stored_matches(&bucket.db, &row.id, p).await? => Err(rule_refusal()),
                 _ => Ok(()),
             },
             _ => Ok(()),
         }
     }
 
-    /// Whether stored version `id` satisfies `p`.
-    pub(crate) async fn stored_matches(&self, id: &str, p: &Predicate) -> Result<bool> {
-        let stmt = rules::stored_row_check(self.inner.db.dialect(), id, p)?;
-        Ok(!self.inner.db.fetch_all(&stmt).await?.is_empty())
+    /// Whether stored version `id` (on `db`) satisfies `p`.
+    pub(crate) async fn stored_matches(db: &Db, id: &str, p: &Predicate) -> Result<bool> {
+        let stmt = rules::stored_row_check(db.dialect(), id, p)?;
+        Ok(!db.fetch_all(&stmt).await?.is_empty())
     }
 
     /// The upload after authorisation (signed URLs authorise by signature).
@@ -448,7 +448,9 @@ impl StorageService {
         }
     }
 
-    /// Records `nv` as the latest version of `key` in one transaction.
+    /// Records `nv` as the latest version of `key` in one transaction on
+    /// the bucket's set (the blob's reference count there too: counts are
+    /// per set, the blob file is shared).
     pub(crate) async fn install(
         &self,
         bucket: &BucketRow,
@@ -457,7 +459,7 @@ impl StorageService {
         check: &WriteCheck,
     ) -> Result<(ObjectRow, Vec<Removed>)> {
         let now = self.now();
-        let mut tx = self.begin().await?;
+        let mut tx = bucket.db.begin().await?;
         match self.install_in(tx.as_mut(), bucket, key, nv, check, now).await {
             Ok(out) => {
                 tx.commit().await?;
@@ -495,8 +497,15 @@ impl StorageService {
             ))
             .await?;
         let prev_row = prev.rows.first().map(|r| ObjectRow::decode(r));
-        self.check_in(tx, check, prev_row.as_ref().filter(|p| !p.delete_marker), key, nv)
-            .await?;
+        Self::check_in(
+            tx,
+            &bucket.db,
+            check,
+            prev_row.as_ref().filter(|p| !p.delete_marker),
+            key,
+            nv,
+        )
+        .await?;
         let mut removed = Vec::new();
         if let Some(p) = prev_row {
             if bucket.versioning {
@@ -569,8 +578,8 @@ impl StorageService {
     /// version `nv` replaces) exists, else `create`. A filter must hold on
     /// `live` and on the new version.
     async fn check_in(
-        &self,
         tx: &mut dyn WriteTx,
+        db: &Db,
         check: &WriteCheck,
         live: Option<&ObjectRow>,
         key: &str,
@@ -581,7 +590,7 @@ impl StorageService {
             Some(Decision::Filter(p)) => p,
             Some(_) => return Err(rule_refusal()),
         };
-        let d = self.inner.db.dialect();
+        let d = db.dialect();
         if let Some(row) = live
             && tx.fetch_all(&rules::stored_row_check(d, &row.id, p)?).await?.is_empty()
         {
@@ -609,16 +618,16 @@ impl StorageService {
         }
     }
 
-    /// A version of `key` in the stored bucket `bucket_id` (the latest by
-    /// default), among those `filter` lets the caller see.
+    /// A version of `key` in `bucket` (the latest by default), among those
+    /// `filter` lets the caller see.
     pub(crate) async fn find_row(
         &self,
-        bucket_id: &str,
+        bucket: &BucketRow,
         key: &str,
         version: Option<&str>,
         filter: Option<&Predicate>,
     ) -> Result<ObjectRow> {
-        self.find_row_on(bucket_id, key, version, filter, None).await
+        self.find_row_on(bucket, key, version, filter, None).await
     }
 
     /// [`Self::find_row`], on a replica when `replica` names the call site
@@ -626,13 +635,15 @@ impl StorageService {
     /// primary, ADR-0029 §2.5).
     pub(crate) async fn find_row_on(
         &self,
-        bucket_id: &str,
+        bucket: &BucketRow,
         key: &str,
         version: Option<&str>,
         filter: Option<&Predicate>,
         replica: Option<&'static str>,
     ) -> Result<ObjectRow> {
-        let d = self.inner.db.dialect();
+        let db = &bucket.db;
+        let bucket_id = bucket.id.as_str();
+        let d = db.dialect();
         let stmt = match version {
             Some(v) => rules::statement(
                 d,
@@ -652,8 +663,8 @@ impl StorageService {
             )?,
         };
         let rows = match replica {
-            Some(what) => self.fetch_replica(what, &stmt).await?,
-            None => self.inner.db.fetch_all(&stmt).await?,
+            Some(what) => db.fetch_replica(what, &stmt).await?,
+            None => db.fetch_all(&stmt).await?,
         };
         rows.rows
             .first()
@@ -672,7 +683,7 @@ impl StorageService {
         let b = self.bucket_row(ctx, bucket).await?;
         let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
         let row = self
-            .find_row_on(&b.id, key, version, access.filter(), Some("storage.head"))
+            .find_row_on(&b, key, version, access.filter(), Some("storage.head"))
             .await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
@@ -691,20 +702,20 @@ impl StorageService {
     ) -> Result<ObjectRead> {
         let b = self.bucket_row(ctx, bucket).await?;
         let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
-        self.read_row(&b.id, key, version, range, access.filter()).await
+        self.read_row(&b, key, version, range, access.filter()).await
     }
 
     /// The read itself, after the caller has been authorised (signed URLs
     /// authorise by signature).
     pub(crate) async fn read_row(
         &self,
-        bucket_id: &str,
+        bucket: &BucketRow,
         key: &str,
         version: Option<&str>,
         range: Option<RangeSpec>,
         filter: Option<&Predicate>,
     ) -> Result<ObjectRead> {
-        let row = self.find_row(bucket_id, key, version, filter).await?;
+        let row = self.find_row(bucket, key, version, filter).await?;
         let Some(sha) = row.blob_sha.clone().filter(|_| !row.delete_marker) else {
             return Err(StorageError::NotFound(format!("object {key}")));
         };
@@ -751,7 +762,7 @@ impl StorageService {
         let mut next_cursor = None;
         'outer: loop {
             let stmt = rules::statement(
-                self.inner.db.dialect(),
+                b.db.dialect(),
                 &format!(
                     "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o \
                      WHERE o.bucket = ?1 AND o.is_latest = 1 AND o.delete_marker = 0 AND substr(o.key, 1, ?2) = ?3 \
@@ -760,7 +771,7 @@ impl StorageService {
                 vec![b.id.as_str().into(), plen.into(), prefix.into(), lower.as_str().into()],
                 access.filter(),
             )?;
-            let rows = self.fetch_replica("storage.list_objects", &stmt).await?;
+            let rows = b.db.fetch_replica("storage.list_objects", &stmt).await?;
             if rows.is_empty() {
                 break;
             }
@@ -804,14 +815,14 @@ impl StorageService {
         let b = self.bucket_row(ctx, bucket).await?;
         let access = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::List).await?;
         let stmt = rules::statement(
-            self.inner.db.dialect(),
+            b.db.dialect(),
             &format!(
                 "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o WHERE o.bucket = ?1 AND o.key = ?2 AND {{rule}} ORDER BY o.seq DESC"
             ),
             vec![b.id.as_str().into(), key.into()],
             access.filter(),
         )?;
-        let rows = self.fetch_replica("storage.list_versions", &stmt).await?;
+        let rows = b.db.fetch_replica("storage.list_versions", &stmt).await?;
         Ok(rows.rows.iter().map(|r| ObjectRow::decode(r).info()).collect())
     }
 
@@ -835,10 +846,10 @@ impl StorageService {
         let now = self.now();
         let _gate = self.inner.gate.read().await;
         if let Some(v) = version {
-            let mut tx = self.begin().await?;
+            let mut tx = b.db.begin().await?;
             let found = tx
                 .fetch_all(&rules::statement(
-                    self.inner.db.dialect(),
+                    b.db.dialect(),
                     &format!(
                         "SELECT {OBJECT_COLS} FROM _forgebase_storage_objects o WHERE o.bucket = ?1 AND o.key = ?2 AND o.id = ?3 AND {{rule}}"
                     ),
@@ -880,7 +891,7 @@ impl StorageService {
                 delete_marker: false,
             });
         }
-        let row = self.find_row(bucket, key, None, access.filter()).await?;
+        let row = self.find_row(&b, key, None, access.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -900,7 +911,7 @@ impl StorageService {
                 delete_marker: true,
             });
         }
-        let mut tx = self.begin().await?;
+        let mut tx = b.db.begin().await?;
         tx.execute(&st(
             "DELETE FROM _forgebase_storage_objects WHERE id = ?",
             vec![row.id.as_str().into()],
@@ -943,7 +954,7 @@ impl StorageService {
             .await?;
         let dst = self.bucket_row(ctx, dest_bucket).await?;
         let check = self.authorize_write(ctx, &dst, dest_key).await?;
-        let row = self.find_row(&src.id, key, version, read.filter()).await?;
+        let row = self.find_row(&src, key, version, read.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -980,7 +991,7 @@ impl StorageService {
             .authorize(ctx, &src, Some(key), Need::Write, ResourceOp::Delete)
             .await?;
         // The source must be the caller's to delete before anything is copied.
-        let live = self.find_row(&src.id, key, None, del.filter()).await?;
+        let live = self.find_row(&src, key, None, del.filter()).await?;
         if live.delete_marker {
             return Err(StorageError::NotFound(format!("object {key}")));
         }
@@ -1001,7 +1012,7 @@ impl StorageService {
         let b = self.bucket_row(ctx, bucket).await?;
         let read = self.authorize(ctx, &b, Some(key), Need::Read, ResourceOp::View).await?;
         let check = self.authorize_write(ctx, &b, key).await?;
-        let row = self.find_row(&b.id, key, Some(version), read.filter()).await?;
+        let row = self.find_row(&b, key, Some(version), read.filter()).await?;
         if row.delete_marker {
             return Err(StorageError::invalid(
                 "cannot_restore_marker",

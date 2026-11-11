@@ -41,6 +41,7 @@ pub mod push;
 mod row;
 pub mod schema;
 mod service;
+mod sets;
 
 pub use error::QueueError;
 pub use http::{StreamClientMessage, StreamServerMessage, api, extension, openapi, router};

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use forgebase_data::{AccessContext, Action, Authorizer, Decision, Principal, ResourceKind, ResourceOp, ResourceRef};
-use forgebase_db::Backend;
+use forgebase_db::{Backend, DbRouter, RouterError, TenantRef};
 use serde::Serialize;
 use tokio::task::JoinHandle;
 
@@ -84,11 +84,21 @@ struct Inner {
     store: Mutex<Store>,
     hub: Hub,
     authorizer: Arc<dyn Authorizer>,
-    backend: Option<Arc<dyn Backend>>,
+    backend: Option<Persistence>,
     flush_lock: tokio::sync::Mutex<()>,
     clock: Clock,
     cfg: KvConfig,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+}
+
+/// Where persisted keys live.
+enum Persistence {
+    /// One database (SQLite, one PostgreSQL set).
+    Single(Arc<dyn Backend>),
+    /// Every set of a sharded cluster (ADR-0029 §3.5, FB-172): a key is
+    /// written on its tenant's set (scope `t:<env>`); instance-wide keys
+    /// (`default`, `shared:<realm>`) on control.
+    Routed(DbRouter),
 }
 
 /// The KV engine for one ForgeBase instance. Cheap to clone.
@@ -153,6 +163,25 @@ impl KvService {
         Self::open_with_clock(cfg, authorizer, backend, system_clock()).await
     }
 
+    /// An engine persisted on the sets of `router` (FB-172): start-up loads
+    /// every set (a tenant's keys only from the set that owns it, since a
+    /// move leaves stale copies on the source until cleanup), and the flusher
+    /// writes each dirty key on its tenant's set. With one set this is
+    /// [`KvService::open`] over that set.
+    pub async fn open_routed(cfg: KvConfig, authorizer: Arc<dyn Authorizer>, router: DbRouter) -> KvResult<Self> {
+        Self::open_routed_with_clock(cfg, authorizer, router, system_clock()).await
+    }
+
+    /// [`KvService::open_routed`] with an explicit clock.
+    pub async fn open_routed_with_clock(
+        cfg: KvConfig,
+        authorizer: Arc<dyn Authorizer>,
+        router: DbRouter,
+        clock: Clock,
+    ) -> KvResult<Self> {
+        Self::open_persisted(cfg, authorizer, Some(Persistence::Routed(router)), clock).await
+    }
+
     /// Same with an explicit clock.
     pub async fn open_with_clock(
         cfg: KvConfig,
@@ -160,12 +189,24 @@ impl KvService {
         backend: Option<Arc<dyn Backend>>,
         clock: Clock,
     ) -> KvResult<Self> {
+        Self::open_persisted(cfg, authorizer, backend.map(Persistence::Single), clock).await
+    }
+
+    async fn open_persisted(
+        cfg: KvConfig,
+        authorizer: Arc<dyn Authorizer>,
+        backend: Option<Persistence>,
+        clock: Clock,
+    ) -> KvResult<Self> {
         let mut store = Store::new(cfg.clone());
-        if let Some(b) = &backend {
-            let now = clock();
-            for l in persist::read_all(&**b).await? {
-                store.load(l.id, l.data, l.expires_at, l.updated_at, now);
-            }
+        let loaded = match &backend {
+            None => Vec::new(),
+            Some(Persistence::Single(b)) => persist::read_all(&**b).await?,
+            Some(Persistence::Routed(router)) => load_sets(router).await?,
+        };
+        let now = clock();
+        for l in loaded {
+            store.load(l.id, l.data, l.expires_at, l.updated_at, now);
         }
         let hub = Hub::new(cfg.channel_capacity, cfg.max_channels);
         // Namespace rules are namespace-level (edge-functions.md §2): they may
@@ -487,14 +528,94 @@ impl KvService {
         lock(&self.inner.store).sweep_expired(self.now(), 100_000)
     }
 
-    /// Writes keys changed since the last flush to SQLite; returns how many
-    /// rows were written. No-op without a backend.
+    /// Writes keys changed since the last flush to the database; returns how
+    /// many rows were written. No-op without a backend.
+    ///
+    /// Sharded (FB-172): dirty keys are grouped by their tenant's set and
+    /// each group is written in one transaction on that set. Keys of a
+    /// tenant that is frozen by a move, or whose set cannot be reached, stay
+    /// dirty for the next round; a failed group stays dirty and the error of
+    /// the first failure is returned after the other groups were written.
     pub async fn flush(&self) -> KvResult<usize> {
         let Some(backend) = &self.inner.backend else {
             return Ok(0);
         };
         let _guard = self.inner.flush_lock.lock().await;
         let changes = lock(&self.inner.store).take_dirty();
+        match backend {
+            Persistence::Single(b) => self.write_group(&**b, changes).await,
+            Persistence::Routed(router) => self.write_routed(router, changes).await,
+        }
+    }
+
+    /// Writes one tenant's (environment id) dirty keys now, on the set the
+    /// tenant's placement names, even while the tenant is frozen (ADR-0029
+    /// §3.8 step 4.1: the switch of a move flushes the tenant's keys on the
+    /// source before the barrier). Returns how many rows were written.
+    pub async fn flush_tenant(&self, tenant: &str) -> KvResult<usize> {
+        let Some(backend) = &self.inner.backend else {
+            return Ok(0);
+        };
+        let _guard = self.inner.flush_lock.lock().await;
+        let changes = lock(&self.inner.store).take_dirty_of(&format!("t:{tenant}"));
+        match backend {
+            Persistence::Single(b) => self.write_group(&**b, changes).await,
+            Persistence::Routed(router) => {
+                let set = match router.placement(tenant) {
+                    Some(p) => router.set(&p.set_id).ok_or(RouterError::SetUnavailable(p.set_id)),
+                    None => Ok(router.control()),
+                };
+                match set {
+                    Ok(set) => self.write_group(&set, changes).await,
+                    Err(e) => {
+                        lock(&self.inner.store).redirty(changes.into_iter().map(|(id, _)| id));
+                        Err(KvError::Storage(e.to_string()))
+                    }
+                }
+            }
+        }
+    }
+
+    async fn write_routed(&self, router: &DbRouter, changes: Vec<persist::Change>) -> KvResult<usize> {
+        let mut groups: std::collections::BTreeMap<String, (forgebase_db::SetHandle, Vec<persist::Change>)> =
+            std::collections::BTreeMap::new();
+        let mut held: Vec<KeyId> = Vec::new();
+        for change in changes {
+            match router.try_for_tenant(TenantRef::new(placed_tenant(&change.0.scope.tenant))) {
+                Ok(set) => groups
+                    .entry(set.id().to_owned())
+                    .or_insert_with(|| (set, Vec::new()))
+                    .1
+                    .push(change),
+                Err(e) => {
+                    tracing::debug!(tenant = %change.0.scope.tenant, error = %e, "kv flush holds the key back");
+                    held.push(change.0);
+                }
+            }
+        }
+        if !held.is_empty() {
+            lock(&self.inner.store).redirty(held);
+        }
+        let mut written = 0;
+        let mut first_error = None;
+        for (_, (set, group)) in groups {
+            match self.write_group(&set, group).await {
+                Ok(n) => written += n,
+                Err(e) => {
+                    tracing::warn!(set = %set.id(), error = %e, "kv flush to a set failed; will retry");
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) if written == 0 => Err(e),
+            _ => Ok(written),
+        }
+    }
+
+    /// Writes `changes` on `backend` in one transaction; on failure (or
+    /// cancellation) the keys are dirty again.
+    async fn write_group(&self, backend: &dyn Backend, changes: Vec<persist::Change>) -> KvResult<usize> {
         let n = changes.len();
         // Cancellation safety: `shutdown` aborts the background flusher, which may
         // be in the middle of this very write. The taken keys must then go back
@@ -504,7 +625,7 @@ impl KvService {
             inner: &self.inner,
             ids: changes.iter().map(|(id, _)| id.clone()).collect(),
         };
-        persist::write(&**backend, &changes).await?;
+        persist::write(backend, &changes).await?;
         pending.ids.clear();
         Ok(n)
     }
@@ -572,4 +693,32 @@ impl Drop for Redirty<'_> {
             lock(&self.inner.store).redirty(std::mem::take(&mut self.ids));
         }
     }
+}
+
+/// The environment a stored scope tenant belongs to: `t:<env>` is a
+/// tenant's; `default` and `shared:<realm>` are instance-wide (control).
+fn placed_tenant(stored: &str) -> Option<&str> {
+    stored.strip_prefix("t:").filter(|t| !t.is_empty())
+}
+
+/// Every persisted key of every set, oldest write first. A tenant's keys are
+/// taken only from the set that owns it (its placement's set, else control):
+/// a move leaves the tenant's rows on the source until cleanup, and a target
+/// holds a partial copy until the switch.
+async fn load_sets(router: &DbRouter) -> KvResult<Vec<persist::Loaded>> {
+    let control = router.control().id().to_owned();
+    let mut all = Vec::new();
+    for set in router.sets() {
+        let rows = persist::read_all(&set).await?;
+        let owned = rows.into_iter().filter(|l| {
+            let owner = match placed_tenant(&l.id.scope.tenant).and_then(|t| router.placement(t)) {
+                Some(p) => p.set_id,
+                None => control.clone(),
+            };
+            owner == set.id()
+        });
+        all.extend(owned);
+    }
+    all.sort_by_key(|l| l.updated_at);
+    Ok(all)
 }

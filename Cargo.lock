@@ -1306,6 +1306,7 @@ name = "forgebase-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.22.1",
  "clap",
  "dotenvy",
@@ -1322,6 +1323,7 @@ dependencies = [
  "forgebase-server",
  "fs4",
  "futures-util",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -1656,10 +1658,12 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror",
+ "time",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "zstd",
 ]
 
