@@ -50,7 +50,7 @@ echo "::group::distroless"
 w=$T/w-distroless
 mkdir -p "$w/s"
 status="distroless: FAILED"
-if run debian:12-slim "$w" /opt/fbpg/bin/initdb -D /w/data -U postgres --auth=trust \
+if run debian:12-slim "$w" /opt/fbpg/bin/initdb -D /w/data -U postgres --auth=trust --encoding=UTF8 \
      --locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C --no-instructions; then
   cid=$(docker run -d --user "$uid:$gid" -v "$E:/opt/fbpg:ro" -v "$w:/w" \
     -v "$T/passwd:/etc/passwd:ro" -v "$T/group:/etc/group:ro" \

@@ -192,6 +192,10 @@ jobs:
   release:
     name: checksums, attestations and release
     needs: [unix, windows]
+    # The Windows engine is not proven on CI yet (engine.lock: pending-ci):
+    # publish the Unix archives even when it fails; its lock entry stays
+    # pending-ci until a run builds it.
+    if: ${{ !cancelled() && needs.unix.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
