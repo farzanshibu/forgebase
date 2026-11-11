@@ -5,7 +5,7 @@ import { MockApi, envelope } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { bucket, installStorage } from "../../test/storageMock";
 import { storageQuotaFor, uploadObject } from "../../api";
-import { confirmDialog } from "../../test/dataStudioMock";
+import { confirmDialog, toast } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -74,7 +74,7 @@ describe("Storage buckets", () => {
     await userEvent.type(within(form).getByLabelText("Max object size"), "10 MiB");
     await userEvent.click(within(form).getByRole("button", { name: "Create bucket" }));
     await waitFor(() => expect(st.buckets.find((b) => b.name === "reports")).toMatchObject({ visibility: "public", versioning: true, max_object_bytes: 10 * 1024 * 1024 }));
-    expect(await screen.findByText("Bucket reports created")).toBeInTheDocument();
+    await toast("Bucket reports created");
   });
 
   it("opens the new-bucket sheet from ?new=1 (the palette's action) and sends the tenant header", async () => {
@@ -191,7 +191,7 @@ describe("Storage object browser", () => {
     expect(within(versions).getByText("latest")).toBeInTheDocument();
 
     await userEvent.click(within(details).getByRole("button", { name: "Restore version v1" }));
-    expect(await screen.findByText("Version restored as the current version")).toBeInTheDocument();
+    await toast("Version restored as the current version");
     await waitFor(() => expect(within(screen.getByRole("list", { name: "Versions" })).getAllByRole("listitem")).toHaveLength(3));
     expect(st.versions["media/photos/a.png"]![0]!.size).toBe(1024);
 
@@ -209,7 +209,7 @@ describe("Storage object browser", () => {
     await userEvent.clear(dest);
     await userEvent.type(dest, "copy/readme.txt");
     await userEvent.click(within(details).getByRole("button", { name: "Copy" }));
-    expect(await screen.findByText("Copied to copy/readme.txt")).toBeInTheDocument();
+    await toast("Copied to copy/readme.txt");
     expect(st.versions["media/copy/readme.txt"]).toBeDefined();
     expect(st.versions["media/readme.txt"]).toBeDefined();
 
@@ -316,7 +316,7 @@ describe("Storage policy, ACL and signed URLs", () => {
     await userEvent.type(screen.getByLabelText("Max object size"), "10 MiB");
     await userEvent.type(screen.getByLabelText(/Allowed content types/), "image/png{enter}text/plain");
     await userEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    expect(await screen.findByText("Bucket policy saved")).toBeInTheDocument();
+    await toast("Bucket policy saved");
     expect(st.buckets.find((b) => b.name === "docs")).toMatchObject({ visibility: "public", versioning: true, max_object_bytes: 10485760, allowed_content_types: ["image/png", "text/plain"] });
   });
 
@@ -350,7 +350,7 @@ describe("Storage policy, ACL and signed URLs", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Remove role:editor on photos/" }));
     await waitFor(() => expect(st.acls.media!.entries).toHaveLength(1));
-    expect(await screen.findByText("Access list saved")).toBeInTheDocument();
+    await toast("Access list saved");
   });
 
   it("says when the ACL is empty", async () => {

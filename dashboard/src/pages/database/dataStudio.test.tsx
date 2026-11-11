@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import type { CollectionDef } from "../../api";
+import { toast } from "../../test/dataStudioMock";
 import { renderStudio, seeded } from "../../test/helpers";
 import { makeCollection } from "../../test/mockApi";
 import { pick } from "../../test/pick";
@@ -153,7 +154,7 @@ describe("resource rules editor", () => {
     await pick(screen.getByLabelText("Create rule"), "everyone");
     await userEvent.click(screen.getByRole("button", { name: "Save rules" }));
     await waitFor(() => expect(rules.orders).toEqual({ list: '@request.auth.id != ""', view: '@request.auth.id != ""', create: "" }));
-    expect(await screen.findByText("Access rules saved")).toBeInTheDocument();
+    await toast("Access rules saved");
 
     for (const op of ["List (scan or search)", "View (read one)", "Create"]) await pick(screen.getByLabelText(`${op} rule`), "locked");
     await userEvent.click(screen.getByRole("button", { name: "Save rules" }));

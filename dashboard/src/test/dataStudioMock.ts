@@ -15,3 +15,7 @@ export async function confirmDialog(title: string | RegExp, confirm: string | Re
 
 /** The side sheet (`form` named by its title) that CreateSheet opens. */
 export const sheet = (title: string | RegExp) => screen.findByRole("form", { name: title });
+
+/** Wait for a toast: it is drawn and announced, so the text can appear more than once, and a toast re-renders while it settles. */
+export const toast = (text: string | RegExp) =>
+  waitFor(() => expect(screen.getAllByText(text).length).toBeGreaterThan(0));

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installVector } from "../../test/vgMock";
-import { confirmDialog } from "../../test/dataStudioMock";
+import { confirmDialog, toast } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -108,7 +108,7 @@ describe("Vector Studio records", () => {
     await userEvent.type(within(form).getByLabelText(/^Vector/), "0, 0, 1");
     await userEvent.type(within(form).getByLabelText(/^Metadata/), '{{"tag":"z"}');
     await userEvent.click(within(form).getByRole("button", { name: "Save record" }));
-    expect((await screen.findAllByText("Record d created")).length).toBeGreaterThan(0); // a toast is drawn and announced
+    await toast("Record d created");
     await screen.findByText("4 records");
     expect(mock.bodies["post /api/v1/vector/collections/{name}/upsert"]?.[0]).toEqual({ items: [{ id: "d", vectors: { embedding: [0, 0, 1] }, metadata: { tag: "z" } }] });
 

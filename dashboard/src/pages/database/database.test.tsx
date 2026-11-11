@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderStudio, seeded } from "../../test/helpers";
-import { confirmDialog } from "../../test/dataStudioMock";
+import { confirmDialog, toast } from "../../test/dataStudioMock";
 import { pick } from "../../test/pick";
 
 afterEach(() => {
@@ -128,7 +128,7 @@ describe("record form", () => {
     await userEvent.click(within(form).getByRole("button", { name: "Create record" }));
     await waitFor(() => expect(mock.records.products).toHaveLength(3));
     expect(mock.bodies["post /api/v1/collections/{collection}/records"]![0]).toEqual({ title: "Stapler", price: 5 });
-    expect(await screen.findByText("Record created")).toBeInTheDocument();
+    await toast("Record created");
     expect(mock.problems).toEqual([]);
   });
 
@@ -220,7 +220,7 @@ describe("schema designer", () => {
     const name = await screen.findByLabelText(/^Name/);
     await userEvent.type(name, "1bad");
     expect(await screen.findByText("Use letters, digits and underscores, starting with a letter.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create collection" })).toBeDisabled;
+    expect(screen.getByRole("button", { name: "Create collection" })).toBeEnabled(); // stays clickable: pressing it reveals every error
     await userEvent.clear(name);
     await userEvent.type(name, "good");
     await userEvent.click(screen.getByRole("button", { name: "Add field" }));
@@ -239,7 +239,7 @@ describe("schema designer", () => {
     expect(nameInputs[0]).toBeDisabled(); // system field `id`
     await userEvent.type(nameInputs.at(-1)!, "sku");
     await userEvent.click(screen.getByRole("button", { name: "Save schema" }));
-    expect(await screen.findByText("Schema saved")).toBeInTheDocument();
+    await toast("Schema saved");
     expect(mock.collections[0]!.fields.map((f) => f.name)).toContain("sku");
   });
 
