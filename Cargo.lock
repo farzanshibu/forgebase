@@ -1875,6 +1875,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "forgebase-topology-tests"
+version = "0.2.0"
+dependencies = [
+ "forgebase-auth",
+ "forgebase-core",
+ "forgebase-data",
+ "forgebase-db",
+ "forgebase-pgengine",
+ "forgebase-server",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "forgebase-vector"
 version = "0.3.0"
 dependencies = [

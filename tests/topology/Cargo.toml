@@ -1,0 +1,47 @@
+[package]
+name = "forgebase-topology-tests"
+description = "FB-178: black-box topology tests (one primary, two local replicas, three shards) driven through the public HTTP API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+autotests = false
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "cluster"
+path = "tests/cluster.rs"
+
+[[test]]
+name = "moves"
+path = "tests/moves.rs"
+
+[[test]]
+name = "chaos"
+path = "tests/chaos.rs"
+
+[[test]]
+name = "lag"
+path = "tests/lag.rs"
+
+[[test]]
+name = "wal"
+path = "tests/wal.rs"
+
+[dependencies]
+forgebase-auth.workspace = true
+forgebase-core.workspace = true
+forgebase-data.workspace = true
+forgebase-pgengine.workspace = true
+forgebase-db = { workspace = true, features = ["testing"] }
+forgebase-server.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
