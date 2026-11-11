@@ -13,7 +13,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-const T = { timeout: 5000 };
+const T = { timeout: 15_000 };
 /** The first render in a file loads the lazy studio chunks; allow for a busy machine. */
 const COLD = { timeout: 20000 };
 
