@@ -332,6 +332,17 @@ impl DataService {
         id: &str,
         pred: Option<&Predicate>,
     ) -> Result<Statement, DataError> {
+        Ok(self.select_by_id_flagged(ctx, coll, id, pred)?.0)
+    }
+
+    /// [`Self::select_by_id`] and whether it follows relation paths.
+    pub(crate) fn select_by_id_flagged(
+        &self,
+        ctx: &AccessContext,
+        coll: &Collection,
+        id: &str,
+        pred: Option<&Predicate>,
+    ) -> Result<(Statement, bool), DataError> {
         let d = self.inner.backend.dialect();
         let mut b = SqlBuilder::new(d);
         let mut sql = format!(
@@ -346,7 +357,8 @@ impl DataService {
         if let Some(p) = pred {
             sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, coll, p)?));
         }
-        Ok(Statement::new(sql, b.into_params()))
+        let follows = b.follows_relations();
+        Ok((Statement::new(sql, b.into_params()), follows))
     }
 
     pub(crate) fn compile_predicate(
@@ -575,9 +587,8 @@ impl DataService {
         opts: &GetOptions,
     ) -> Result<Record, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
-        let rows = self
-            .read_rows(ctx, Action::View, &coll, &self.select_by_id(ctx, &coll, id, pred.as_ref())?)
-            .await?;
+        let (stmt, follows) = self.select_by_id_flagged(ctx, &coll, id, pred.as_ref())?;
+        let rows = self.read_rows(ctx, Action::View, &coll, &stmt, follows).await?;
         let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
             collection: coll.name.clone(),
             id: id.to_owned(),

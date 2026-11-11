@@ -33,6 +33,7 @@ pub struct SqlBuilder<'d> {
     dialect: &'d dyn Dialect,
     params: Vec<Value>,
     aliases: u32,
+    lookups: bool,
 }
 
 impl<'d> SqlBuilder<'d> {
@@ -42,7 +43,16 @@ impl<'d> SqlBuilder<'d> {
             dialect,
             params: Vec::new(),
             aliases: 0,
+            lookups: false,
         }
+    }
+
+    /// Whether the statement reads another collection's table (a relation
+    /// path in a filter, sort key or rule). Native row-level security would
+    /// apply that table's policies to the lookup, so such reads stay on the
+    /// server's session (FB-152).
+    pub fn follows_relations(&self) -> bool {
+        self.lookups
     }
 
     /// The dialect.
@@ -859,6 +869,7 @@ impl<'a> Compiler<'a> {
                         },
                     });
                 }
+                b.lookups = true;
                 let next = RowRef::Lookup {
                     table: d.quote_ident(&target.name),
                     alias: b.alias("r"),

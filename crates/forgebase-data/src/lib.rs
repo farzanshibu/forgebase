@@ -270,15 +270,24 @@ impl DataService {
         self.inner.authorizer.native_session(ctx, action, coll)
     }
 
-    /// Reads rows of `coll` for `ctx`: as the RLS role in `enforce` mode.
+    /// Reads rows of `coll` for `ctx`: as the RLS role in `enforce` mode,
+    /// unless the statement follows relation paths (the lookups would see
+    /// the target table's policies; the data core reads targets with full
+    /// visibility, rls-coverage §3.4).
     pub(crate) async fn read_rows(
         &self,
         ctx: &AccessContext,
         action: Action,
         coll: &Collection,
         stmt: &Statement,
+        follows_relations: bool,
     ) -> Result<Rows, DataError> {
-        Ok(match self.run_as(ctx, action, coll) {
+        let run_as = if follows_relations {
+            None
+        } else {
+            self.run_as(ctx, action, coll)
+        };
+        Ok(match run_as {
             Some(r) => self.inner.backend.fetch_all_as(stmt, &r).await?,
             None => self.inner.backend.fetch_all(stmt).await?,
         })

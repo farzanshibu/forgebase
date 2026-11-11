@@ -1,6 +1,7 @@
 //! [`NativeRender`] for policy generation: request references read the
 //! claims (`forgebase.req`), relation lookups become `SECURITY DEFINER`
-//! functions collected for the generator.
+//! functions collected for the generator. A lookup answers only sessions
+//! with claims, so a login calling it with a forged id gets `NULL`.
 
 use std::sync::Mutex;
 
@@ -103,7 +104,8 @@ impl NativeRender for PolicyRender {
 
     fn relation(&self, target: &str, alias: &str, value_sql: &str, ty: ScalarType) -> Result<String, QueryError> {
         let body = format!(
-            "SELECT {value_sql} FROM public.{} AS {alias} WHERE {alias}.\"id\" = $1",
+            "SELECT {value_sql} FROM public.{} AS {alias} WHERE {alias}.\"id\" = $1 \
+             AND forgebase.claims() IS NOT NULL",
             ident(target)
         );
         let name = format!("forgebase.fb_rel_{}", short_hash(&[target, &body, pg_type(ty)]));
@@ -116,6 +118,12 @@ impl NativeRender for PolicyRender {
             ),
             format!("REVOKE ALL ON FUNCTION {name}(text) FROM PUBLIC"),
             format!("GRANT EXECUTE ON FUNCTION {name}(text) TO {}", super::RLS_ROLE),
+            // Table policies seen through `api` views run it as the login.
+            format!(
+                "DO $g$ BEGIN IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{login}') THEN \
+                 GRANT EXECUTE ON FUNCTION {name}(text) TO {login}; END IF; END $g$",
+                login = super::LOGIN_GROUP
+            ),
         ];
         let mut rels = self.rels.lock().unwrap_or_else(|p| p.into_inner());
         if !rels.iter().any(|r| r.name == name) {

@@ -184,7 +184,7 @@ pub fn generate(
     add("fb_gate_insert", true, "INSERT", None, Some(gate("'create'")));
     add("fb_gate_update", true, "UPDATE", Some(gate("'update'")), Some(gate("'update'")));
     add("fb_gate_delete", true, "DELETE", Some(gate("'delete'")), None);
-    let acl = |action: &str, part: &str| format!("\"id\" = ANY ((SELECT (forgebase.acl({name}, {action})).{part}))");
+    let acl = |action: &str, part: &str| format!("\"id\" = ANY ((SELECT (forgebase.acl({name}, {action})).{part})::text[])");
     add(
         "fb_acl_deny_select",
         true,

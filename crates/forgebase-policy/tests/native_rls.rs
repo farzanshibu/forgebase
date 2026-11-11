@@ -422,15 +422,19 @@ async fn enforce_mode_gives_the_same_rows_and_runs_under_the_policies() {
     // A restrictive policy written by hand narrows the API path in enforce
     // mode: proof that list and get run as forgebase_rls.
     let mut tx = env.db.begin(TxMode::Normal).await.unwrap();
-    tx.execute(&Statement::raw(
+    for sql in [
         "CREATE POLICY user_narrow ON public.\"posts\" AS RESTRICTIVE FOR ALL USING (\"title\" <> 'p1')",
-    ))
-    .await
-    .unwrap();
+        "CREATE POLICY user_narrow ON public.\"cfg\" AS RESTRICTIVE FOR ALL USING (\"id\" <> 'c1')",
+    ] {
+        tx.execute(&Statement::raw(sql)).await.unwrap();
+    }
     tx.commit().await.unwrap();
     let alice = user("alice");
     assert!(!api_list(env, &alice, "posts").await.contains("p1"));
-    assert!(env.data.get_record(&alice, "posts", "p1", &GetOptions::default()).await.is_err());
+    assert!(env.data.get_record(&user("carol"), "cfg", "c1", &GetOptions::default()).await.is_err());
+    // The view rule of posts follows `owner.level`: that read stays on the
+    // server's session (the lookup would see the target's policies).
+    assert!(env.data.get_record(&alice, "posts", "p1", &GetOptions::default()).await.is_ok());
     assert!(
         env.data
             .update_record(&alice, "posts", "p1", json!({"title": "p1"}), UpdateOptions::default())
@@ -522,11 +526,17 @@ async fn direct_logins_cannot_spoof_their_way_in() {
     assert_eq!(as_login(env, &[], count).await, Ok(0));
     assert_eq!(as_login(env, &[&set], count).await, Ok(0));
     assert_eq!(as_login(env, &[&set_config], count).await, Ok(0));
-    // The tables, the helpers and the system schema are out of reach.
+    // The helpers answer, with nothing: the login has no claims.
+    for q in [
+        "SELECT count(*) FROM (SELECT forgebase.claims() AS v) x WHERE v IS NOT NULL",
+        "SELECT count(*) FROM (SELECT forgebase.req('auth.id', false) AS v) x WHERE v IS NOT NULL",
+        "SELECT count(*) FROM (SELECT forgebase.gate(false) AS v) x WHERE v",
+    ] {
+        assert_eq!(as_login(env, &[&set], q).await, Ok(0), "{q}");
+    }
+    // The tables and the system schema are out of reach.
     for (what, q) in [
         ("table", "SELECT count(*) FROM public.\"posts\""),
-        ("claims()", "SELECT count(*) FROM (SELECT forgebase.claims()) x"),
-        ("req()", "SELECT count(*) FROM (SELECT forgebase.req('auth.id')) x"),
         ("system table", "SELECT count(*) FROM forgebase._forgebase_collections"),
         ("system table on the path", "SELECT count(*) FROM _forgebase_collection_policies"),
     ] {
@@ -541,9 +551,15 @@ async fn direct_logins_cannot_spoof_their_way_in() {
         .await
         .unwrap();
     let rel = rel.scalar().and_then(Value::as_str).expect("a relation helper exists").to_owned();
-    assert!(
-        as_login(env, &[], &format!("SELECT count(*) FROM (SELECT forgebase.\"{rel}\"('alice')) x")).await.is_err(),
-        "SECURITY DEFINER helpers cannot be called with forged arguments"
+    assert_eq!(
+        as_login(
+            env,
+            &[&set],
+            &format!("SELECT count(*) FROM (SELECT forgebase.\"{rel}\"('bob') AS v) x WHERE v IS NOT NULL")
+        )
+        .await,
+        Ok(0),
+        "SECURITY DEFINER helpers called with forged arguments give nothing"
     );
     for step in [
         "SET LOCAL ROLE forgebase_rls",

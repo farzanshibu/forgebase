@@ -342,8 +342,17 @@ BEGIN
       forgebase.jtext(jsonb), forgebase.jnum(jsonb), forgebase.like_escape(text), forgebase.static_cmp(jsonb, text, jsonb),
       forgebase.rule_cmp(jsonb, text, jsonb, boolean) TO forgebase_rls;
   END IF;
+  -- Direct logins read `api` views; PostgreSQL checks the functions those
+  -- views and the table policies call against the caller, so the login
+  -- group runs them too. They only read the caller's own claims (NULL for
+  -- an untrusted session), so forged arguments reveal nothing.
   IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'forgebase_login') THEN
-    GRANT USAGE ON SCHEMA api TO forgebase_login;
+    GRANT USAGE ON SCHEMA api, forgebase TO forgebase_login;
+    GRANT EXECUTE ON FUNCTION forgebase.claims(), forgebase.req(text, boolean), forgebase.auth_id(), forgebase.tenant(),
+      forgebase.read_action(), forgebase.now_text(), forgebase.perm_matches(text, text), forgebase.perm(text, text, boolean),
+      forgebase.has_permission(text, text, boolean), forgebase.gate(boolean), forgebase.acl(text, text),
+      forgebase.jtext(jsonb), forgebase.jnum(jsonb), forgebase.like_escape(text), forgebase.static_cmp(jsonb, text, jsonb),
+      forgebase.rule_cmp(jsonb, text, jsonb, boolean) TO forgebase_login;
   END IF;
   -- System tables: row-level security on, no policies, no grants to the
   -- RLS roles (§3.2). BYPASSRLS roles (server, reader, owner) are unaffected.
