@@ -33,6 +33,7 @@ pub mod indexes;
 pub mod list;
 pub mod native;
 pub mod records;
+pub mod shards;
 pub mod sql;
 
 use std::sync::{Arc, OnceLock, RwLock};
@@ -55,6 +56,7 @@ pub use indexes::{
 pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, ListResult};
 pub use native::NativePolicies;
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
+pub use shards::{CrossShardRule, RELATION_CROSSES_SHARDS, RelationDeletes, RelationFanout, TENANT_REQUIRED_SHARDED};
 pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};
 
 pub use forgebase_db as db;
@@ -97,6 +99,9 @@ struct Inner {
     /// The database sets (FB-173, ADR-0029 §3.7): once sharded, schema
     /// changes run on control and every shard as one two-phase commit.
     shards: OnceLock<forgebase_db::DbRouter>,
+    /// Fan-out of `ON DELETE` actions of shared records to every set
+    /// (FB-171), installed once at startup.
+    relation_fanout: OnceLock<Arc<dyn shards::RelationFanout>>,
 }
 
 impl DataService {
@@ -123,6 +128,7 @@ impl DataService {
                 write_guard: OnceLock::new(),
                 native: OnceLock::new(),
                 shards: OnceLock::new(),
+                relation_fanout: OnceLock::new(),
             }),
         })
     }
@@ -253,6 +259,11 @@ impl DataService {
         Ok(self.inner.backend.begin(mode).await?)
     }
 
+    /// A transaction on `backend` (a collection's set, [`DataService::route`]).
+    pub(crate) async fn begin_on(backend: &Arc<dyn Backend>, mode: TxMode) -> Result<Box<dyn WriteTx>, DataError> {
+        Ok(backend.begin(mode).await?)
+    }
+
     /// Installs the native row-level security generator (FB-152), called
     /// in every schema transaction from then on. Once; `false` if one was
     /// installed already.
@@ -283,8 +294,10 @@ impl DataService {
     /// site: `records.list`, `records.view`, `records.aggregate`). A read as
     /// the RLS role stays on the primary: the role switch needs the writer's
     /// session.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn read_rows(
         &self,
+        backend: &Arc<dyn Backend>,
         ctx: &AccessContext,
         action: Action,
         coll: &Collection,
@@ -298,15 +311,23 @@ impl DataService {
             self.run_as(ctx, action, coll)
         };
         Ok(match run_as {
-            Some(r) => self.inner.backend.fetch_all_as(stmt, &r).await?,
-            None => self.fetch_replica(stmt, what).await?,
+            Some(r) => backend.fetch_all_as(stmt, &r).await?,
+            None => Self::fetch_replica_on(backend, stmt, what).await?,
         })
     }
 
     /// A plain read that may be served by a replica (ADR-0029 §2.5).
     pub(crate) async fn fetch_replica(&self, stmt: &Statement, what: &'static str) -> Result<Rows, DbError> {
-        self.inner
-            .backend
+        Self::fetch_replica_on(&self.inner.backend, stmt, what).await
+    }
+
+    /// Same on `backend` (a collection's set, [`DataService::route`]).
+    pub(crate) async fn fetch_replica_on(
+        backend: &Arc<dyn Backend>,
+        stmt: &Statement,
+        what: &'static str,
+    ) -> Result<Rows, DbError> {
+        backend
             .fetch_routed(stmt, &forgebase_db::ReadIntent::replica(what))
             .await
     }

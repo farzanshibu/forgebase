@@ -73,6 +73,10 @@ pub enum DataError {
     /// Stored data could not be decoded (corrupt catalog or bug).
     #[error("internal data error: {0}")]
     Internal(String),
+    /// The tenant's database set cannot serve the call (moving, migrating,
+    /// unavailable; ADR-0029 §3.5, FB-171).
+    #[error(transparent)]
+    Shard(#[from] forgebase_db::RouterError),
 }
 
 impl DataError {
@@ -114,6 +118,7 @@ impl ErrorCode for DataError {
             DataError::Conflict { code, .. } | DataError::Invalid { code, .. } => code,
             DataError::HasherUnavailable => "password_hasher_unavailable",
             DataError::Internal(_) => "internal_error",
+            DataError::Shard(e) => e.code(),
         }
     }
 
@@ -132,6 +137,7 @@ impl ErrorCode for DataError {
             DataError::Unauthenticated => ErrorKind::Unauthenticated,
             DataError::HasherUnavailable => ErrorKind::Unavailable,
             DataError::Internal(_) => ErrorKind::Internal,
+            DataError::Shard(e) => e.kind(),
         }
     }
 }

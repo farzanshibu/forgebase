@@ -12,20 +12,40 @@ use crate::DataError;
 pub(crate) struct CatalogSnapshot {
     by_id: HashMap<String, Collection>,
     by_name: HashMap<String, String>,
+    /// The topology has (or is getting) shard sets (FB-171): relations from
+    /// tenant-scoped collections to shared ones get no SQL foreign key, on
+    /// control or on any shard (ADR-0029 §3.6); the data core enforces them.
+    shards: bool,
 }
 
 const SELECT_DEFINITIONS: &str = "SELECT definition FROM _forgebase_collections ORDER BY name";
 
+/// Shard sets that are not retired (`_forgebase_db_sets`, migration 0033;
+/// its rows live on control only, so a shard reads 0).
+const SELECT_SHARDS: &str = "SELECT count(*) FROM _forgebase_db_sets WHERE kind = 'shard' AND state <> 'retired'";
+
 impl CatalogSnapshot {
     pub(crate) async fn load(backend: &dyn Backend) -> Result<Self, DataError> {
         let rows = backend.fetch_all(&Statement::new(SELECT_DEFINITIONS, vec![])).await?;
-        Self::from_rows(rows.rows)
+        let shards = backend.fetch_all(&Statement::new(SELECT_SHARDS, vec![])).await?;
+        let mut s = Self::from_rows(rows.rows)?;
+        s.shards = shards.scalar().and_then(Value::as_i64).unwrap_or(0) > 0;
+        Ok(s)
     }
 
     /// Loads the catalog as seen inside a write transaction.
     pub(crate) async fn load_tx(tx: &mut dyn WriteTx) -> Result<Self, DataError> {
         let rows = tx.fetch_all(&Statement::new(SELECT_DEFINITIONS, vec![])).await?;
-        Self::from_rows(rows.rows)
+        let shards = tx.fetch_all(&Statement::new(SELECT_SHARDS, vec![])).await?;
+        let mut s = Self::from_rows(rows.rows)?;
+        s.shards = shards.scalar().and_then(Value::as_i64).unwrap_or(0) > 0;
+        Ok(s)
+    }
+
+    /// Whether the topology has shard sets (relations across placements
+    /// then have no foreign key).
+    pub(crate) fn has_shards(&self) -> bool {
+        self.shards
     }
 
     fn from_rows(rows: Vec<Vec<Value>>) -> Result<Self, DataError> {
