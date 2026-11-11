@@ -783,3 +783,74 @@ async fn rules_cost_of_variable_length_traversals_is_measured() {
     assert_eq!(count(g, &user("cy", "t1"), query).await, 12);
     assert_eq!(count(g, &user("ruled", "t1"), query).await, 8);
 }
+
+/// Rules that select more row ids than the cap cannot travel in the claims:
+/// `403 cypher_rules_unsupported` (the only use of that code).
+#[tokio::test]
+async fn rules_selecting_too_many_rows_are_refused() {
+    let Some(e) = env().await else { return };
+    let g = GraphService::new(e.data.clone()).with_visible_id_cap(2);
+    let a = admin("t1");
+    for i in 0..3 {
+        node(&g, &a, &format!("d{i}"), "Doc", json!({"team": "a"})).await;
+    }
+    node(&g, &a, "p", "Person", json!({})).await;
+    materialise(&g, &a).await;
+    let err = g
+        .cypher(&user("ruled", "t1"), q("MATCH (n) RETURN n.__id"))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "cypher_rules_unsupported", "{err}");
+    // Unrestricted callers pass no ids.
+    assert_eq!(count(&g, &user("cy", "t1"), "MATCH (n) RETURN count(n)").await, 4);
+    // Under the cap the same rules apply.
+    let g = GraphService::new(e.data.clone()).with_visible_id_cap(3);
+    assert_eq!(
+        col(&g, &user("ruled", "t1"), "MATCH (n) RETURN n.__id").await,
+        ["d0", "d1", "d2", "p"]
+    );
+}
+
+/// After a tenant move the derived graph is stale (its placement's set or
+/// move time changed): the next query rebuilds it. A running move does not
+/// make it stale, but no rebuild starts while one runs.
+#[tokio::test]
+async fn a_move_makes_the_graph_stale() {
+    use forgebase_db::topology::{CONTROL_SET_ID, PlacementState};
+    let Some(e) = env().await else { return };
+    let router = forgebase_db::DbRouter::open(e.db.clone(), forgebase_db::RouterOptions::default())
+        .await
+        .unwrap();
+    let g = GraphService::new(e.data.clone());
+    assert!(g.attach_router(router.clone()));
+    let ctx = admin("t1");
+    node(&g, &ctx, "a", "Person", json!({})).await;
+    materialise(&g, &ctx).await;
+    // A first placement is a new placement.
+    router.place("t1", CONTROL_SET_ID, PlacementState::Active).await.unwrap();
+    assert_eq!(g.stats(&ctx).await.unwrap().cypher.unwrap().state, "stale");
+    node(&g, &ctx, "b", "Person", json!({})).await;
+    materialise(&g, &ctx).await;
+    assert_eq!(col(&g, &ctx, "MATCH (n) RETURN n.__id").await, ["a", "b"]);
+    // A move in progress: the graph still answers (and stays in sync).
+    router.place("t1", CONTROL_SET_ID, PlacementState::Moving).await.unwrap();
+    node(&g, &ctx, "c", "Person", json!({})).await;
+    assert_eq!(col(&g, &ctx, "MATCH (n) RETURN n.__id").await, ["a", "b", "c"]);
+    // ... but a stale graph is not rebuilt while it runs.
+    assert!(g.mark_cypher_stale("t1").await.unwrap());
+    let err = g.cypher(&ctx, q("MATCH (n) RETURN n.__id")).await.unwrap_err();
+    assert_eq!(code(&err), "tenant_moving", "{err}");
+    // The move's flip (a new move time): stale, rebuilt on next use.
+    let mut p = router.placement("t1").unwrap();
+    p.epoch += 1;
+    p.state = PlacementState::Active;
+    p.moved_at = Some("2026-11-11T12:00:00.000Z".into());
+    assert!(router.apply_placement(p));
+    materialise(&g, &ctx).await;
+    assert_eq!(col(&g, &ctx, "MATCH (n) RETURN n.__id").await, ["a", "b", "c"]);
+    let mut p = router.placement("t1").unwrap();
+    p.epoch += 1;
+    p.moved_at = Some("2026-11-11T13:00:00.000Z".into());
+    assert!(router.apply_placement(p));
+    assert_eq!(g.stats(&ctx).await.unwrap().cypher.unwrap().state, "stale");
+}

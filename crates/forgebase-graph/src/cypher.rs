@@ -13,8 +13,8 @@
 //! * **Materialised on first use**: the first request of a tenant starts
 //!   `graph.materialise` and answers `409 graph_materialising` with the job
 //!   id; from then on every canonical write updates the derived graph in its
-//!   own transaction. After a tenant move (a new placement epoch) the graph
-//!   is rebuilt on next use.
+//!   own transaction. After a tenant move (its placement's set or move time
+//!   changed) the graph is rebuilt on next use.
 //! * **Read-only**: a `READ ONLY` transaction; non-privileged callers run as
 //!   `forgebase_rls` with claims; `statement_timeout`; `search_path =
 //!   ag_catalog, pg_catalog`; the tokenizer refuses write clauses first.
@@ -149,6 +149,15 @@ impl GraphService {
         self
     }
 
+    /// Sets the most row ids a caller's filter rules may select for one
+    /// openCypher read (default [`crate::age::MAX_VISIBLE_IDS`]); above it
+    /// the read gets `403 cypher_rules_unsupported`.
+    #[must_use]
+    pub fn with_visible_id_cap(self, cap: usize) -> Self {
+        self.shared.id_cap.store(cap, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
     /// Runs one read-only openCypher query on the caller's tenant's derived
     /// graph (see the module documentation).
     pub async fn cypher(&self, ctx: &AccessContext, q: CypherQuery) -> Result<CypherResult> {
@@ -180,20 +189,23 @@ impl GraphService {
         finish(tx, r).await
     }
 
-    /// The placement epoch the derived graph of `tenant` must be built for:
-    /// a move changes it (ADR-0029 §3.8). 0 without shards.
-    fn epoch(&self, tenant: &str) -> i64 {
+    /// The placement the derived graph of `tenant` must be built for:
+    /// `<set>@<moved_at>`. A move's flip changes it (ADR-0029 §3.8), and so
+    /// does a move back; its `moving` and `frozen` states do not, so the
+    /// graph keeps answering during a move. `''` without a placement.
+    fn placed(&self, tenant: &str) -> String {
         self.router()
             .filter(|_| !tenant.is_empty())
             .and_then(|r| r.placement(tenant))
-            .map_or(0, |p| i64::try_from(p.epoch).unwrap_or(i64::MAX))
+            .map(|p| format!("{}@{}", p.set_id, p.moved_at.unwrap_or_default()))
+            .unwrap_or_default()
     }
 
     pub(crate) async fn cypher_status_in(&self, tenant: &str) -> Result<Option<CypherStatus>> {
         if !self.age_on() {
             return Ok(None);
         }
-        let epoch = self.epoch(tenant);
+        let placed = self.placed(tenant);
         Ok(Some(match age::state(self.backend(), tenant).await? {
             None => CypherStatus {
                 state: "none".into(),
@@ -205,7 +217,7 @@ impl GraphService {
                 error: None,
             },
             Some(s) => CypherStatus {
-                state: if s.epoch == epoch { s.state } else { "stale".into() },
+                state: if s.placed == placed { s.state } else { "stale".into() },
                 graph: s.graph,
                 job_id: s.job_id,
                 nodes: s.nodes,
@@ -264,7 +276,8 @@ impl GraphService {
         let vis = if acc.is_unrestricted() {
             json!({"v": {"all": true}, "e": {"all": true}})
         } else {
-            age::visibility(&reader, &graph, &tenant, &acc).await?
+            let cap = self.shared.id_cap.load(std::sync::atomic::Ordering::Relaxed);
+            age::visibility(&reader, &graph, &tenant, &acc, cap).await?
         };
         let claims = json!({
             "v": 1, "principal": ctx.principal_key(), "tenant": tenant, "action": "graph_cypher", "graph": vis,
@@ -321,9 +334,9 @@ impl GraphService {
     /// The tenant's ready graph, or `409 graph_materialising` after starting
     /// (or resuming) its materialisation.
     async fn ready_graph(&self, tenant: &str) -> Result<String> {
-        let epoch = self.epoch(tenant);
+        let placed = self.placed(tenant);
         if let Some(s) = age::state(self.backend(), tenant).await?
-            && s.epoch == epoch
+            && s.placed == placed
         {
             match s.state.as_str() {
                 "ready" => return Ok(s.graph),
@@ -347,12 +360,12 @@ impl GraphService {
         let r = async {
             // Another request may have started it meanwhile (one writer).
             if let Some(s) = age::current(&mut *tx, tenant).await?
-                && s.epoch == epoch
+                && s.placed == placed
                 && (s.state == "ready" || s.state == "materialising")
             {
                 return Ok(Some(s));
             }
-            age::start(&mut *tx, tenant, epoch, None).await?;
+            age::start(&mut *tx, tenant, &placed, None).await?;
             Ok(None)
         }
         .await;

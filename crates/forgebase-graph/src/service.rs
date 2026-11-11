@@ -58,12 +58,24 @@ pub struct GraphService {
 }
 
 /// What every view of one service shares.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Shared {
     /// The shard router, once attached.
     pub(crate) router: OnceLock<DbRouter>,
     /// The `graph.materialise` job hook (FB-163).
     pub(crate) jobs: OnceLock<Arc<dyn MaterialiseJobs>>,
+    /// Most row ids rules may select for one openCypher read (FB-163).
+    pub(crate) id_cap: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            router: OnceLock::new(),
+            jobs: OnceLock::new(),
+            id_cap: std::sync::atomic::AtomicUsize::new(age::MAX_VISIBLE_IDS),
+        }
+    }
 }
 
 impl GraphService {

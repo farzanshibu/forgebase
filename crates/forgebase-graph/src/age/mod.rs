@@ -13,7 +13,7 @@
 //! * **Map and state** (extension DDL, `forgebase_db::EXTENSION_DDL`):
 //!   `_forgebase_graph_age_ids (tenant, kind, id, age_id)` and
 //!   `_forgebase_graph_age_state` (one row per tenant: `materialising`,
-//!   `ready`, `stale` or `failed`, progress, the placement epoch it was built
+//!   `ready`, `stale` or `failed`, progress, the placement it was built
 //!   for).
 //! * **Writes.** Label tables are written with plain SQL (never Cypher
 //!   writes, never AGE's CSV loaders) in the same write transaction as the
@@ -56,9 +56,9 @@ pub const CATCH_NODE: &str = "_fbnode";
 pub const CATCH_EDGE: &str = "_fbedge";
 /// Rows copied per materialisation transaction.
 pub const BATCH: i64 = 1000;
-/// Most row ids a caller's filter rules may select for one Cypher read
-/// (they travel in the claims); above it the read is refused with
-/// `403 cypher_rules_unsupported`.
+/// Most row ids a caller's filter rules may select for one Cypher read by
+/// default (they travel in the claims); above it the read is refused with
+/// `403 cypher_rules_unsupported` (`GraphService::with_visible_id_cap`).
 pub const MAX_VISIBLE_IDS: usize = 100_000;
 
 const NODES: &str = "_forgebase_graph_nodes";
@@ -157,7 +157,8 @@ pub(crate) struct State {
     pub state: String,
     pub phase: String,
     pub job_id: Option<String>,
-    pub epoch: i64,
+    /// The placement it was built for (`<set>@<moved_at>`, `''` without one).
+    pub placed: String,
     pub nodes: i64,
     pub edges: i64,
     pub done: i64,
@@ -165,7 +166,7 @@ pub(crate) struct State {
     pub updated_at: String,
 }
 
-const STATE_COLS: &str = "graph, state, phase, job_id, epoch, nodes, edges, done, error, updated_at";
+const STATE_COLS: &str = "graph, state, phase, job_id, placed, nodes, edges, done, error, updated_at";
 
 fn read_state(r: &[Value]) -> State {
     State {
@@ -173,7 +174,7 @@ fn read_state(r: &[Value]) -> State {
         state: text(r.get(1)).unwrap_or_default(),
         phase: text(r.get(2)).unwrap_or_default(),
         job_id: text(r.get(3)),
-        epoch: int(r.get(4)).unwrap_or(0),
+        placed: text(r.get(4)).unwrap_or_default(),
         nodes: int(r.get(5)).unwrap_or(0),
         edges: int(r.get(6)).unwrap_or(0),
         done: int(r.get(7)).unwrap_or(0),
@@ -633,22 +634,22 @@ async fn sync_edge_in(tx: &mut dyn WriteTx, graph: &str, tenant: &str, id: &str)
 
 // ---- materialisation ----------------------------------------------------------
 
-/// Starts (or restarts) the derived graph of `tenant` for placement epoch
-/// `epoch`: drops what was there, creates the graph and the state row
+/// Starts (or restarts) the derived graph of `tenant` for placement
+/// `placed`: drops what was there, creates the graph and the state row
 /// (`materialising`). The caller commits, then runs [`step`] until done.
-pub(crate) async fn start(tx: &mut dyn WriteTx, tenant: &str, epoch: i64, job_id: Option<&str>) -> Result<()> {
+pub(crate) async fn start(tx: &mut dyn WriteTx, tenant: &str, placed: &str, job_id: Option<&str>) -> Result<()> {
     drop_in(tx, tenant).await?;
     let graph = graph_name(tenant);
     with_ag_path!(tx, create_graph(tx, &graph).await)?;
     let now = forgebase_core::now_rfc3339();
     tx.execute(&stmt(
         format!(
-            "INSERT INTO {STATE} (tenant, graph, state, phase, cursor_id, job_id, epoch, nodes, edges, done, \
+            "INSERT INTO {STATE} (tenant, graph, state, phase, cursor_id, job_id, placed, nodes, edges, done, \
              started_at, updated_at) VALUES (?1, ?2, 'materialising', 'nodes', '', ?3, ?4, \
              (SELECT count(*) FROM {NODES} WHERE tenant = ?1), (SELECT count(*) FROM {EDGES} WHERE tenant = ?1), \
              0, ?5, ?5)"
         ),
-        vec![tenant.into(), graph.into(), job_id.into(), epoch.into(), now.into()],
+        vec![tenant.into(), graph.into(), job_id.into(), placed.into(), now.into()],
     ))
     .await?;
     Ok(())
@@ -790,14 +791,20 @@ pub(crate) async fn current(tx: &mut dyn WriteTx, tenant: &str) -> Result<Option
 
 /// The claims' `graph` object for a caller with `acc` on `tenant`'s graph
 /// (see the module documentation), read with `b` (the routed reader).
-pub(crate) async fn visibility(b: &dyn Backend, graph: &str, tenant: &str, acc: &GraphAccess) -> Result<Json> {
+pub(crate) async fn visibility(
+    b: &dyn Backend,
+    graph: &str,
+    tenant: &str,
+    acc: &GraphAccess,
+    cap: usize,
+) -> Result<Json> {
     Ok(json!({
-        "v": side(b, graph, tenant, &acc.nodes, Kind::Node).await?,
-        "e": side(b, graph, tenant, &acc.edges, Kind::Edge).await?,
+        "v": side(b, graph, tenant, &acc.nodes, Kind::Node, cap).await?,
+        "e": side(b, graph, tenant, &acc.edges, Kind::Edge, cap).await?,
     }))
 }
 
-async fn side(b: &dyn Backend, graph: &str, tenant: &str, rules: &Rules, kind: Kind) -> Result<Json> {
+async fn side(b: &dyn Backend, graph: &str, tenant: &str, rules: &Rules, kind: Kind, cap: usize) -> Result<Json> {
     if rules.is_unrestricted() {
         return Ok(json!({"all": true}));
     }
@@ -840,7 +847,7 @@ async fn side(b: &dyn Backend, graph: &str, tenant: &str, rules: &Rules, kind: K
         Kind::Edge => (EDGES, "e"),
     };
     if let Some(cond) = partial.compile(&mut sb, alias)? {
-        let lim = sb.bind(i64::try_from(MAX_VISIBLE_IDS + 1).unwrap_or(i64::MAX));
+        let lim = sb.bind(i64::try_from(cap.saturating_add(1)).unwrap_or(i64::MAX));
         let rows = b
             .fetch_all(&Statement::new(
                 format!(
@@ -851,9 +858,9 @@ async fn side(b: &dyn Backend, graph: &str, tenant: &str, rules: &Rules, kind: K
                 sb.into_params(),
             ))
             .await?;
-        if rows.len() > MAX_VISIBLE_IDS {
+        if rows.len() > cap {
             return Err(GraphError::RulesUnsupported(format!(
-                "your graph rules select more than {MAX_VISIBLE_IDS} {} for openCypher; use the REST graph API",
+                "your graph rules select more than {cap} {} for openCypher; use the REST graph API",
                 if kind == Kind::Node { "nodes" } else { "edges" }
             )));
         }

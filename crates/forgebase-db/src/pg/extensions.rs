@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS _forgebase_graph_age_state (
     phase      text NOT NULL DEFAULT 'nodes' CHECK (phase IN ('nodes', 'edges', 'done')),
     cursor_id  text NOT NULL DEFAULT '',
     job_id     text,
-    epoch      bigint NOT NULL DEFAULT 0,
+    placed     text NOT NULL DEFAULT '',
     nodes      bigint NOT NULL DEFAULT 0,
     edges      bigint NOT NULL DEFAULT 0,
     done       bigint NOT NULL DEFAULT 0,
