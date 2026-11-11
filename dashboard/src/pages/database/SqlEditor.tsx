@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ApiError, explainSql, sqlTables } from "../../api";
+import { ApiError, explainSql, getTopology, sqlTables } from "../../api";
 import type { QueryPlan } from "../../api";
-import { Check } from "../../components/controls";
+import { Check, Sel } from "../../components/controls";
+import { HelpTip } from "../../components/HelpTip";
 import { EmptyState } from "../../components/EmptyState";
 import { runSqlStatement, type SqlRunResult } from "./sqlRequest";
 import { expandStar, secretRefusal } from "./sqlSecrets";
@@ -36,10 +37,14 @@ export default function SqlEditor() {
   const [runAs, setRunAs] = useState(ADMIN);
   const [tenant, setTenant] = useState("");
   const [replica, setReplica] = useState(false);
+  const [runOn, setRunOn] = useState("");
   const info = useLoad(getDatabaseInfo, "database-info");
   const postgres = info.data?.backend === "postgres";
   const [history, setHistory] = useState(loadHistory);
   const tables = useLoad(sqlTables, "sql-tables");
+  // "Run on" shows only when the server is sharded (FB-171): a failed or single-server answer hides it.
+  const topology = useLoad(async (s) => { if (!postgres) return undefined; try { return await getTopology(s); } catch { return undefined; } }, `sql-topology:${postgres}`);
+  const shardSets = postgres && topology.data?.backend === "postgres" && topology.data.sets.some((s) => s.kind === "shard") ? topology.data.sets : [];
 
   async function go(kind: "run" | "explain", text = sql, secrets = showSecrets) {
     setBusy(true);
@@ -48,7 +53,7 @@ export default function SqlEditor() {
       if (kind === "run") {
         setPlan(undefined);
         const as = postgres ? toRunAs(runAs, tenant) : undefined;
-        setResult(await runSqlStatement(text, { showSecrets: secrets, runAs: as, readFromReplica: replica }));
+        setResult(await runSqlStatement(text, { showSecrets: secrets, runAs: as, readFromReplica: replica, set: shardSets.length ? runOn : undefined }));
         if (as?.tenant) rememberTenant(as.tenant);
         const next = [text, ...history.filter((h) => h !== text)].slice(0, MAX_HISTORY);
         setHistory(next);
@@ -74,6 +79,13 @@ export default function SqlEditor() {
     <div className="grid gap-6 lg:grid-cols-[1fr_16rem]">
       <div className="min-w-0 space-y-3">
         {postgres && <RunAsPicker principal={runAs} tenant={tenant} onChange={(p, t) => { setRunAs(p); setTenant(t); }} />}
+        {shardSets.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="inline-flex items-center gap-1 font-medium">Run on <HelpTip term="topology_set" /></span>
+            <Sel aria-label="Run on" className="w-48" value={runOn} onChange={setRunOn} options={[{ value: "", label: "Control (default)" }, ...shardSets.filter((s) => s.id !== "control").map((s) => ({ value: s.id, label: s.name }))]} />
+            <span className="text-xs text-muted-foreground">Each shard holds its own tenants' data. Pick the set whose data you want to query.</span>
+          </div>
+        )}
         {ranAs && (
           <p role="status" className="rounded-md border border-border p-2 text-xs text-muted-foreground">
             Running as <strong className="text-foreground">{ranAs.principal}</strong>{ranAs.tenant ? ` in tenant ${ranAs.tenant}` : ""}: row and field rules apply and table names read the <code>api</code> views. Reads and writes only: schema changes are refused. Each run is recorded in the audit log (<code>sql.run_as</code>).

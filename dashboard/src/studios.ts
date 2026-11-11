@@ -106,7 +106,7 @@ export const STUDIOS: Studio[] = [
   {
     path: "system", label: "System", title: "System", group: "operate", docs: "docs/deployment.md",
     summary: "Server health, version and backups.",
-    tabs: [{ to: "/system", label: "Health" }, { to: "/system/backups", label: "Backups" }],
+    tabs: [{ to: "/system", label: "Health" }, { to: "/system/topology", label: "Database topology" }, { to: "/system/backups", label: "Backups" }],
   },
   { path: "system/features", label: "Features and settings", title: "Features and settings", group: "operate", docs: "docs/adr/0026-first-run-setup-and-feature-configuration.md", summary: "Switch server features on or off and change their settings." },
 ];
