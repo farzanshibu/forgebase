@@ -653,6 +653,15 @@ impl Database {
         }
     }
 
+    /// The administrator URL [`Backend::admin_batch`] logs in with
+    /// (PostgreSQL; the bundled engine's `forgebase_super`). `None`: the
+    /// writer's own role. Ignored on SQLite.
+    pub fn set_admin_url(&self, url: Option<SecretString>) {
+        if let Inner::Postgres(db) = &*self.inner {
+            db.set_admin_url(url);
+        }
+    }
+
     /// Writes the instance id and initialisation time on first call and
     /// returns them on every call. Atomic across processes.
     pub async fn ensure_instance(&self) -> Result<InstanceInfo, DbError> {
@@ -682,6 +691,10 @@ impl Backend for Database {
 
     fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
         self.backend().fetch_all_as(stmt, run_as)
+    }
+
+    fn admin_batch<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.backend().admin_batch(statements)
     }
 
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {

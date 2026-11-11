@@ -205,6 +205,11 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
         "native_rls",
         include_str!("../../../migrations/system/0040_native_rls.sql"),
     ),
+    Migration::new(
+        42,
+        "db_logins",
+        include_str!("../../../migrations/system/0042_db_logins.sql"),
+    ),
 ];
 
 /// A migration recorded as applied in the database.

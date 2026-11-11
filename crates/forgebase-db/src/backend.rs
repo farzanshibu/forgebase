@@ -249,6 +249,9 @@ pub struct RunAs {
     pub role: String,
     /// The caller's claims as JSON text (read back by `forgebase.claims()`).
     pub claims: String,
+    /// `search_path` for the same span (FB-153: the SQL editor's "run as"
+    /// resolves names to the `api` views); `None` keeps the current one.
+    pub search_path: Option<String>,
 }
 
 impl RunAs {
@@ -257,7 +260,15 @@ impl RunAs {
         Self {
             role: role.into(),
             claims: claims.into(),
+            search_path: None,
         }
+    }
+
+    /// The same with `search_path` set for the span.
+    #[must_use]
+    pub fn with_search_path(mut self, path: impl Into<String>) -> Self {
+        self.search_path = Some(path.into());
+        self
     }
 
     /// Refuses role names that are not plain identifiers.
@@ -312,6 +323,21 @@ pub trait Backend: Send + Sync + fmt::Debug {
     fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
         let _ = run_as;
         self.fetch_all(stmt)
+    }
+
+    /// Runs `statements` in one transaction as the database administrator
+    /// (FB-153: role and login management, extensions): on PostgreSQL the
+    /// URL given to [`crate::Database::set_admin_url`] (the bundled engine's
+    /// `forgebase_super`), else the writer's own role. A superuser session
+    /// writes none of them to the server log. Default (SQLite):
+    /// [`DbError::Unsupported`].
+    fn admin_batch<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        let _ = statements;
+        Box::pin(async {
+            Err(DbError::Unsupported(
+                "administrator statements need the PostgreSQL backend".into(),
+            ))
+        })
     }
 
     /// The engine's query plan for a statement (not executed).

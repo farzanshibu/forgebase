@@ -125,6 +125,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "native_rls",
         include_str!("../../../migrations/postgres/0040_native_rls.sql"),
     ),
+    Migration::new(
+        42,
+        "db_logins",
+        include_str!("../../../migrations/postgres/0042_db_logins.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

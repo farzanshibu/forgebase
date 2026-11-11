@@ -143,6 +143,10 @@ impl NativePolicies for Hook {
                 apply(tx, &g.statements).await?;
                 svc.inner.native.record(c, &g);
             }
+            // FB-153: direct logins' claims name every collection.
+            svc.refresh_db_logins_in(tx, catalog)
+                .await
+                .map_err(|e| DataError::Internal(format!("direct login claims: {e}")))?;
             Ok(())
         })
     }
@@ -195,7 +199,21 @@ impl PolicyService {
                 "a native policy hook is already installed".into(),
             ));
         }
-        self.sync_native_rls().await
+        self.sync_native_rls().await?;
+        // FB-153: the SQL editor's role and the direct logins' claims.
+        if let Err(e) = self.enable_sql_editor_role().await {
+            tracing::warn!(error = %e, "the SQL editor's role is not available");
+        }
+        self.refresh_db_logins().await?;
+        Ok(())
+    }
+
+    /// One-off commands (`forgebase db login`, FB-153): records the mode the
+    /// server runs with, for the checks that depend on it, without
+    /// installing the data-core hook or regenerating anything. `false` when
+    /// a mode is already set.
+    pub fn assume_native_rls_mode(&self, mode: NativeMode) -> bool {
+        self.inner.native.mode.set(mode).is_ok()
     }
 
     /// The native row-level security mode, once enabled.
@@ -211,9 +229,9 @@ impl PolicyService {
         let data = self.data()?;
         let catalog = data.list_collections(&AccessContext::system()).await?;
         let snap = self.snapshot();
+        // Views too: they get the SQL editor's grant only (FB-153).
         let generated: Vec<(Collection, Generated)> = catalog
             .iter()
-            .filter(|c| has_policies(c))
             .map(|c| (c.clone(), generate(c, snap.policies.get(&c.id), &catalog, mode)))
             .collect();
         let all: Vec<String> = std::iter::once(format!("mode={}", mode.as_str()))

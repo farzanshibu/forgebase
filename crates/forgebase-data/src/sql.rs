@@ -30,6 +30,17 @@
 //!   never in ForgeBase's schema. `last_insert_id` is `None` there (use
 //!   `RETURNING`). Introspection is limited to ForgeBase's search path
 //!   (`public` and `forgebase`), never `pg_catalog` or `information_schema`.
+//! * Roles on PostgreSQL (FB-153, rls-coverage §3.5, G11): once the server
+//!   sets [`DataService::set_sql_editor_role`], every editor statement runs
+//!   as `forgebase_sql_admin` (`BYPASSRLS`, no `SELECT` on secret columns,
+//!   not a superuser), on the read pool and on the writer alike, except
+//!   `CREATE|ALTER|DROP POLICY`, which needs the table owner and runs as the
+//!   server. Policies named `fb_*` (generated) and objects in the `api`
+//!   schema cannot be changed here. **Run as** ([`SqlRunAs`]): the statements
+//!   run as the direct-login groups with a chosen user's claims and names
+//!   resolve to the `api` views, so the editor shows exactly what a direct
+//!   login bound to that user sees; DDL is refused; each call is audited
+//!   (`sql.run_as`).
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -69,6 +80,38 @@ pub const SECRET_MASK: &str = "********";
 
 /// Event recorded in `_forgebase_auth_audit` for each use of `show_secrets`.
 pub const SHOW_SECRETS_EVENT: &str = "sql.show_secrets";
+
+/// Event recorded in `_forgebase_auth_audit` for each "run as" call.
+pub const RUN_AS_EVENT: &str = "sql.run_as";
+
+/// The SQL editor's role on PostgreSQL (FB-153).
+pub const SQL_ADMIN_ROLE: &str = "forgebase_sql_admin";
+/// Group of every named direct login: reads the `api` views.
+pub const LOGIN_GROUP: &str = "forgebase_login";
+/// Direct logins that may also write through the `api` views.
+pub const LOGIN_WRITE_GROUP: &str = "forgebase_login_write";
+
+/// `search_path` of "run as": collection names resolve to the `api` views.
+const RUN_AS_SEARCH_PATH: &str = "api, forgebase";
+
+/// The SQL editor's "run as" (FB-153): the claims of a chosen user, computed
+/// by the policy engine (`PolicyService::run_as_claims`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlRunAs {
+    /// Principal key, for the audit row.
+    pub principal: String,
+    /// Tenant the claims are for.
+    pub tenant: Option<String>,
+    /// Claims JSON (`forgebase.claims()`).
+    pub claims: String,
+}
+
+impl SqlRunAs {
+    fn role(&self, write: bool) -> forgebase_db::RunAs {
+        forgebase_db::RunAs::new(if write { LOGIN_WRITE_GROUP } else { LOGIN_GROUP }, self.claims.clone())
+            .with_search_path(RUN_AS_SEARCH_PATH)
+    }
+}
 
 /// Result of one statement.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -147,6 +190,76 @@ struct Checked {
     info: StatementInfo,
     params: Vec<Value>,
     kind: StatementKind,
+    /// `CREATE|ALTER|DROP POLICY` (PostgreSQL): runs as the server, which
+    /// owns the tables.
+    policy: bool,
+}
+
+/// Lower-case words and punctuation of `sql` outside string literals (a
+/// rough scan for the PostgreSQL guards below; the tokenizer already
+/// refused what it cannot split).
+fn words(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for ch in sql.chars() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+                if q == '"' {
+                    out.push(std::mem::take(&mut cur));
+                }
+            } else if q == '"' {
+                cur.extend(ch.to_lowercase());
+            }
+            continue;
+        }
+        match ch {
+            '\'' => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                quote = Some('\'');
+            }
+            '"' => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                quote = Some('"');
+            }
+            c if c.is_alphanumeric() || c == '_' || c == '$' => cur.extend(c.to_lowercase()),
+            c => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                if c == '.' {
+                    out.push(".".into());
+                }
+            }
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// `Some(policy name)` for `CREATE|ALTER|DROP POLICY [IF EXISTS] <name>`.
+fn policy_ddl(w: &[String]) -> Option<String> {
+    let verb = w.first()?.as_str();
+    if !matches!(verb, "create" | "alter" | "drop") || w.get(1).map(String::as_str) != Some("policy") {
+        return None;
+    }
+    let mut i = 2;
+    if w.get(i).map(String::as_str) == Some("if") {
+        i += 2;
+    }
+    Some(w.get(i).cloned().unwrap_or_default())
+}
+
+/// The statement names an object of the `api` schema (`api.x`).
+fn names_api_schema(w: &[String]) -> bool {
+    w.windows(2).any(|p| p[0] == "api" && p[1] == ".")
 }
 
 /// Whether `name` is a table the SQL editor keeps to privileged callers.
@@ -292,6 +405,7 @@ impl DataService {
         ctx: &AccessContext,
         s: &SqlStatement,
         guard_secrets: bool,
+        run_as: bool,
     ) -> Result<Checked, DataError> {
         let flavor = SqlFlavor::of(self.inner.backend.dialect());
         let parts = split_statements_for(&s.sql, flavor)?;
@@ -327,12 +441,65 @@ impl DataService {
                 "the statement names the secret column {col}: set show_secrets to run it (the use is audited)"
             )));
         }
+        let mut policy = false;
+        if SqlFlavor::of(self.inner.backend.dialect()) == SqlFlavor::Postgres {
+            let w = words(sql);
+            if let Some(name) = policy_ddl(&w) {
+                if name.starts_with("fb_") {
+                    return Err(DataError::Forbidden(
+                        "policies named fb_* are generated from ForgeBase rules and cannot be changed here".into(),
+                    ));
+                }
+                policy = true;
+            }
+            if kind != StatementKind::Read && names_api_schema(&w) {
+                return Err(DataError::Forbidden(
+                    "the api schema holds the views ForgeBase generates for direct logins".into(),
+                ));
+            }
+        } else if run_as {
+            return Err(DataError::invalid(
+                "run_as_unavailable",
+                "run as needs PostgreSQL with native row-level security",
+            ));
+        }
+        if run_as && (kind == StatementKind::Schema || policy) {
+            return Err(DataError::invalid(
+                "run_as_ddl",
+                "run as runs reads and writes only; run DDL without it",
+            ));
+        }
         Ok(Checked {
             sql: sql.clone(),
             info,
             params,
             kind,
+            policy,
         })
+    }
+
+    /// Who the SQL editor's statements run as on PostgreSQL (FB-153):
+    /// [`SQL_ADMIN_ROLE`] once the server confirmed that role exists and
+    /// both pools may switch to it; `None` keeps the pools' own roles (SQLite,
+    /// external servers without the role).
+    pub fn set_sql_editor_role(&self, role: Option<String>) {
+        *self.inner.sql_role.write().unwrap_or_else(|p| p.into_inner()) = role;
+    }
+
+    /// The role set by [`DataService::set_sql_editor_role`].
+    pub fn sql_editor_role(&self) -> Option<String> {
+        self.inner.sql_role.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Who one checked statement runs as.
+    fn statement_role(&self, c: &Checked, run_as: Option<&SqlRunAs>) -> Option<forgebase_db::RunAs> {
+        if c.policy {
+            return None;
+        }
+        if let Some(r) = run_as {
+            return Some(r.role(c.kind != StatementKind::Read));
+        }
+        self.sql_editor_role().map(|role| forgebase_db::RunAs::new(role, ""))
     }
 
     /// Masks the secrets of `results`.
@@ -350,11 +517,27 @@ impl DataService {
         tx: &mut dyn WriteTx,
         checked: &[Checked],
     ) -> Result<(), DataError> {
+        self.audit_sql(ctx, tx, checked, SHOW_SECRETS_EVENT, None).await?;
+        tracing::warn!(actor = %ctx.actor(), statements = checked.len(), "SQL editor: secrets shown");
+        Ok(())
+    }
+
+    async fn audit_sql(
+        &self,
+        ctx: &AccessContext,
+        tx: &mut dyn WriteTx,
+        checked: &[Checked],
+        event: &str,
+        run_as: Option<&SqlRunAs>,
+    ) -> Result<(), DataError> {
         let d = self.inner.backend.dialect();
-        let detail = json!({
+        let mut detail = json!({
             "statements": checked.len(),
             "sql": checked.iter().take(10).map(|c| clip(&c.sql, 500)).collect::<Vec<_>>(),
         });
+        if let Some(r) = run_as {
+            detail["run_as"] = json!({ "principal": r.principal, "tenant": r.tenant });
+        }
         tx.execute(&Statement::new(
             format!(
                 "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, request_id, detail, impersonator, realm)
@@ -363,7 +546,7 @@ impl DataService {
                 d.column_type(ColumnType::Json)
             ),
             vec![
-                SHOW_SECRETS_EVENT.into(),
+                event.to_owned().into(),
                 ctx.actor().into(),
                 ctx.request_id.clone().into(),
                 detail.to_string().into(),
@@ -372,7 +555,6 @@ impl DataService {
             ],
         ))
         .await?;
-        tracing::warn!(actor = %ctx.actor(), statements = checked.len(), "SQL editor: secrets shown");
         Ok(())
     }
 
@@ -389,7 +571,24 @@ impl DataService {
         statement: SqlStatement,
         opts: SqlOptions,
     ) -> Result<SqlResult, DataError> {
-        let c = self.check_sql(ctx, &statement, !opts.show_secrets).await?;
+        self.execute_sql_as(ctx, statement, opts, None).await
+    }
+
+    /// [`DataService::execute_sql_with`], optionally as another user
+    /// ([`SqlRunAs`], PostgreSQL only; audited as `sql.run_as`).
+    ///
+    /// # Errors
+    /// As [`DataService::execute_sql`]; `run_as_ddl` for DDL with `run_as`.
+    pub async fn execute_sql_as(
+        &self,
+        ctx: &AccessContext,
+        statement: SqlStatement,
+        opts: SqlOptions,
+        run_as: Option<&SqlRunAs>,
+    ) -> Result<SqlResult, DataError> {
+        let c = self
+            .check_sql(ctx, &statement, !opts.show_secrets, run_as.is_some())
+            .await?;
         if c.kind == StatementKind::Read {
             let started = Instant::now();
             let sql = if matches!(c.info.keyword.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE") {
@@ -397,23 +596,31 @@ impl DataService {
             } else {
                 c.sql.clone()
             };
-            let rows = self
-                .inner
-                .backend
-                .fetch_all(&Statement::new(sql, c.params.clone()).uncached())
-                .await?;
+            let stmt = Statement::new(sql, c.params.clone()).uncached();
+            let rows = match self.statement_role(&c, run_as) {
+                Some(role) => self.inner.backend.fetch_all_as(&stmt, &role).await?,
+                None => self.inner.backend.fetch_all(&stmt).await?,
+            };
             let mut r = result_from(c.kind, rows, started);
-            if opts.show_secrets {
+            if opts.show_secrets || run_as.is_some() {
                 // Shown only once the use is on record.
                 let mut tx = self.begin(TxMode::Normal).await?;
-                let audited = self.audit_show_secrets(ctx, &mut *tx, &[c]).await;
+                let checked = [c];
+                let mut audited = Ok(());
+                if opts.show_secrets {
+                    audited = self.audit_show_secrets(ctx, &mut *tx, &checked).await;
+                }
+                if audited.is_ok() && run_as.is_some() {
+                    audited = self.audit_sql(ctx, &mut *tx, &checked, RUN_AS_EVENT, run_as).await;
+                }
                 finish(tx, audited).await?;
-            } else {
+            }
+            if !opts.show_secrets {
                 self.mask_results(std::slice::from_mut(&mut r));
             }
             return Ok(r);
         }
-        Ok(self.execute_sql_batch_checked(ctx, vec![c], opts).await?.remove(0))
+        Ok(self.execute_sql_batch_checked(ctx, vec![c], opts, run_as).await?.remove(0))
     }
 
     /// Runs statements in one write transaction: all succeed or none.
@@ -435,14 +642,32 @@ impl DataService {
         statements: Vec<SqlStatement>,
         opts: SqlOptions,
     ) -> Result<Vec<SqlResult>, DataError> {
+        self.execute_sql_batch_as(ctx, statements, opts, None).await
+    }
+
+    /// [`DataService::execute_sql_batch_with`], optionally as another user
+    /// ([`SqlRunAs`]); the audit row commits with the batch.
+    ///
+    /// # Errors
+    /// As [`DataService::execute_sql_batch`]; `run_as_ddl` for DDL with `run_as`.
+    pub async fn execute_sql_batch_as(
+        &self,
+        ctx: &AccessContext,
+        statements: Vec<SqlStatement>,
+        opts: SqlOptions,
+        run_as: Option<&SqlRunAs>,
+    ) -> Result<Vec<SqlResult>, DataError> {
         if statements.is_empty() || statements.len() > 1000 {
             return Err(DataError::invalid("invalid_batch", "send 1 to 1000 statements"));
         }
         let mut checked = Vec::with_capacity(statements.len());
         for s in &statements {
-            checked.push(self.check_sql(ctx, s, !opts.show_secrets).await?);
+            checked.push(
+                self.check_sql(ctx, s, !opts.show_secrets, run_as.is_some())
+                    .await?,
+            );
         }
-        self.execute_sql_batch_checked(ctx, checked, opts).await
+        self.execute_sql_batch_checked(ctx, checked, opts, run_as).await
     }
 
     async fn execute_sql_batch_checked(
@@ -450,6 +675,7 @@ impl DataService {
         ctx: &AccessContext,
         checked: Vec<Checked>,
         opts: SqlOptions,
+        run_as: Option<&SqlRunAs>,
     ) -> Result<Vec<SqlResult>, DataError> {
         let schema = checked.iter().any(|c| c.kind == StatementKind::Schema);
         let _guard = if schema {
@@ -472,11 +698,18 @@ impl DataService {
                 let started = Instant::now();
                 let stmt = Statement::new(c.sql.clone(), c.params.clone()).uncached();
                 let returns_rows = c.kind == StatementKind::Read || c.info.identifiers.iter().any(|w| w == "returning");
+                let role = self.statement_role(c, run_as);
                 if returns_rows {
-                    let rows = tx.fetch_all(&stmt).await?;
+                    let rows = match &role {
+                        Some(r) => tx.fetch_all_as(&stmt, r).await?,
+                        None => tx.fetch_all(&stmt).await?,
+                    };
                     out.push(result_from(c.kind, rows, started));
                 } else {
-                    let done = tx.execute(&stmt).await?;
+                    let done = match &role {
+                        Some(r) => tx.execute_as(&stmt, r).await?,
+                        None => tx.execute(&stmt).await?,
+                    };
                     out.push(SqlResult {
                         kind: c.kind,
                         columns: vec![],
@@ -489,6 +722,10 @@ impl DataService {
                         secrets_masked: false,
                     });
                 }
+                if pg && role.as_ref().is_some_and(|r| r.search_path.is_some()) {
+                    // "Run as" switched to the `api` views for that statement.
+                    tx.execute(&Statement::raw(PG_EDITOR_SEARCH_PATH)).await?;
+                }
                 if c.kind == StatementKind::Schema {
                     ddl.push(c.sql.clone());
                 }
@@ -497,6 +734,9 @@ impl DataService {
                 let cat = CatalogSnapshot::load_tx(&mut *tx).await?;
                 verify_collections(d, &mut *tx, &cat).await?;
                 record_history(&mut *tx, None, "sql", &ddl, None, None, &ctx.actor()).await?;
+            }
+            if run_as.is_some() {
+                self.audit_sql(ctx, &mut *tx, &checked, RUN_AS_EVENT, run_as).await?;
             }
             if opts.show_secrets {
                 self.audit_show_secrets(ctx, &mut *tx, &checked).await?;
@@ -516,7 +756,7 @@ impl DataService {
         statement: SqlStatement,
     ) -> Result<crate::QueryPlan, DataError> {
         // A plan holds no values: secret columns may be named.
-        let c = self.check_sql(ctx, &statement, false).await?;
+        let c = self.check_sql(ctx, &statement, false, false).await?;
         let steps = self
             .inner
             .backend
@@ -699,6 +939,19 @@ mod tests {
         assert_eq!(mask_json_text(r#"{"c":["id"],"v":["a"]}"#, &s), None);
         assert_eq!(mask_json_text("password", &s), None);
         assert_eq!(mask_json_text("{not json password", &s), None);
+    }
+
+    #[test]
+    fn policy_ddl_and_api_names_are_seen() {
+        let name = |sql: &str| policy_ddl(&words(sql));
+        assert_eq!(name("CREATE POLICY p1 ON posts USING (true)").as_deref(), Some("p1"));
+        assert_eq!(name("drop policy if exists \"FB_tenant\" on posts").as_deref(), Some("fb_tenant"));
+        assert_eq!(name("ALTER POLICY fb_rule_select ON t RENAME TO x").as_deref(), Some("fb_rule_select"));
+        assert_eq!(name("SELECT 'create policy fb_x'"), None);
+        assert_eq!(name("CREATE TABLE policy (id int)"), None);
+        assert!(names_api_schema(&words("DROP VIEW api.posts")));
+        assert!(names_api_schema(&words("update \"api\" . \"posts\" set x = 1")));
+        assert!(!names_api_schema(&words("SELECT 'api.posts', api_key FROM t")));
     }
 
     #[test]

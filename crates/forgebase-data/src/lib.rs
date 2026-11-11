@@ -55,7 +55,10 @@ pub use indexes::{
 pub use list::{AggregateFunction, AggregateQuery, AggregateSpec, ListQuery, ListResult};
 pub use native::NativePolicies;
 pub use records::{GetOptions, Record, RecordVersion, UpdateOptions};
-pub use sql::{ColumnInfo, SqlOptions, SqlResult, SqlStatement, TableInfo};
+pub use sql::{
+    ColumnInfo, LOGIN_GROUP, LOGIN_WRITE_GROUP, RUN_AS_EVENT, SQL_ADMIN_ROLE, SqlOptions, SqlResult, SqlRunAs,
+    SqlStatement, TableInfo,
+};
 
 pub use forgebase_db as db;
 pub use forgebase_query as query;
@@ -94,6 +97,9 @@ struct Inner {
     /// Native row-level security generator (FB-152, PostgreSQL), installed
     /// once at startup.
     native: OnceLock<Arc<dyn native::NativePolicies>>,
+    /// Role the SQL editor's statements run as on PostgreSQL (FB-153,
+    /// `forgebase_sql_admin`); `None`: the pools' own roles.
+    sql_role: RwLock<Option<String>>,
 }
 
 impl DataService {
@@ -119,6 +125,7 @@ impl DataService {
                 change_hook: OnceLock::new(),
                 write_guard: OnceLock::new(),
                 native: OnceLock::new(),
+                sql_role: RwLock::new(None),
             }),
         })
     }

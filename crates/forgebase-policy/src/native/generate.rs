@@ -13,6 +13,7 @@ use forgebase_schema::{Collection, CollectionType, FieldKind};
 
 use super::render::{PolicyRender, RelFn, dollar_tag, ident, literal, short_hash};
 use super::{LOGIN_GROUP, NativeMode, RLS_ROLE};
+use crate::logins::{LOGIN_WRITE_GROUP, SQL_ADMIN_ROLE};
 use crate::snapshot::{CollectionPolicy, RuleSpec};
 
 /// The statements for one collection.
@@ -54,6 +55,59 @@ pub fn drop_objects(coll: &Collection) -> Vec<String> {
         format!("DROP VIEW IF EXISTS {} CASCADE", view(coll)),
         format!("DROP FUNCTION IF EXISTS {}()", trigger_fn(coll)),
     ]
+}
+
+/// Lower-case names of the columns the SQL editor's role never reads
+/// (rls-coverage G11, the data core's `secret_columns`): `password`,
+/// `token_key` and every password field.
+fn secret_columns(coll: &Collection) -> Vec<String> {
+    let mut out = vec!["password".to_owned(), "token_key".to_owned()];
+    for f in &coll.fields {
+        if matches!(f.kind, FieldKind::Password { .. }) {
+            out.push(f.name.to_ascii_lowercase());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The SQL editor's grants on a collection table (FB-153): `SELECT` and
+/// `UPDATE` of every column but the secret ones, `INSERT`, `DELETE`. Built
+/// from the table's real columns, in every mode.
+fn editor_grants(coll: &Collection) -> String {
+    let secrets: Vec<String> = secret_columns(coll).iter().map(|c| literal(c)).collect();
+    let body = format!(
+        "DECLARE cols text; BEGIN \
+         IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{SQL_ADMIN_ROLE}') THEN RETURN; END IF; \
+         EXECUTE format('REVOKE ALL ON public.%I FROM {SQL_ADMIN_ROLE}', {name}); \
+         SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attnum) INTO cols \
+           FROM pg_catalog.pg_attribute a \
+           WHERE a.attrelid = to_regclass(format('public.%I', {name})) AND a.attnum > 0 AND NOT a.attisdropped \
+             AND lower(a.attname) <> ALL (ARRAY[{secrets}]::text[]); \
+         IF cols IS NOT NULL THEN \
+           EXECUTE format('GRANT SELECT (%s), UPDATE (%s) ON public.%I TO {SQL_ADMIN_ROLE}', cols, cols, {name}); \
+         END IF; \
+         EXECUTE format('GRANT INSERT, DELETE ON public.%I TO {SQL_ADMIN_ROLE}', {name}); \
+         END",
+        name = literal(&coll.name),
+        secrets = secrets.join(", ")
+    );
+    let tag = dollar_tag(&body);
+    format!("DO {tag}{body}{tag}")
+}
+
+/// `SELECT` on a view collection for the SQL editor's role (views run with
+/// the caller's rights, so its column grants on the tables still apply).
+fn editor_view_grant(coll: &Collection) -> String {
+    let body = format!(
+        "BEGIN IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{SQL_ADMIN_ROLE}') \
+         AND to_regclass(format('public.%I', {name})) IS NOT NULL THEN \
+         EXECUTE format('GRANT SELECT ON public.%I TO {SQL_ADMIN_ROLE}', {name}); END IF; END",
+        name = literal(&coll.name)
+    );
+    let tag = dollar_tag(&body);
+    format!("DO {tag}{body}{tag}")
 }
 
 /// Drops every `fb_*` policy of the table (generated names only).
@@ -138,6 +192,7 @@ pub fn generate(
         ..Generated::default()
     };
     if !has_policies(coll) {
+        out.statements.push(editor_view_grant(coll));
         return out;
     }
     let t = table(coll);
@@ -146,6 +201,7 @@ pub fn generate(
     s.push(format!("ALTER TABLE {t} ENABLE ROW LEVEL SECURITY"));
     s.push(format!("ALTER TABLE {t} FORCE ROW LEVEL SECURITY"));
     s.push(drop_policies(coll));
+    s.push(editor_grants(coll));
     if mode == NativeMode::Off {
         s.push(format!("REVOKE ALL ON {t} FROM {RLS_ROLE}"));
         s.push(drop_unused_relations());
@@ -338,9 +394,12 @@ pub fn generate(
     ));
     s.push(format!("ALTER VIEW {v} OWNER TO {RLS_ROLE}"));
     s.extend(write_trigger(coll, &writable));
+    // FB-153: every login reads; only logins made without --readonly write.
     let grant_body = format!(
         "BEGIN IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{LOGIN_GROUP}') THEN \
-         GRANT SELECT, INSERT, UPDATE, DELETE ON {v} TO {LOGIN_GROUP}; END IF; END"
+         GRANT SELECT ON {v} TO {LOGIN_GROUP}; END IF; \
+         IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{LOGIN_WRITE_GROUP}') THEN \
+         GRANT INSERT, UPDATE, DELETE ON {v} TO {LOGIN_WRITE_GROUP}; END IF; END"
     );
     let tag = dollar_tag(&grant_body);
     s.push(format!("DO {tag}{grant_body}{tag}"));

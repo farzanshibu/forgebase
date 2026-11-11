@@ -1610,10 +1610,12 @@ dependencies = [
 name = "forgebase-pgengine"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "forgebase-core",
  "forgebase-db",
  "getrandom 0.4.3",
  "object",
+ "ring",
  "rustix",
  "serde",
  "serde_json",
@@ -1634,12 +1636,14 @@ name = "forgebase-policy"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "forgebase-auth",
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
  "forgebase-query",
  "forgebase-schema",
+ "hmac",
  "serde",
  "serde_json",
  "sha2 0.11.1",
