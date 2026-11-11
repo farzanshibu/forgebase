@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use forgebase_data::{AccessContext, Action, DataError, NativePolicies};
-use forgebase_db::{BoxFuture, RunAs, Statement, TxMode, WriteTx};
+use forgebase_db::{BoxFuture, RunAs, Statement, WriteTx};
 use forgebase_schema::Collection;
 
 pub use claims::{CLAIMS_VERSION, claims};
@@ -227,7 +227,7 @@ impl PolicyService {
         }
         // Control, then every shard (FB-173): each set keeps its own
         // fingerprint and is brought up to date on its own.
-        self.sync_native_on(self.backend(), &generated, &print).await?;
+        self.sync_native_on(self.backend().as_ref(), &generated, &print).await?;
         for (set, db) in self.shard_databases() {
             if let Err(e) = self.sync_native_on(&db, &generated, &print).await {
                 tracing::warn!(set = %set, error = %e, "could not bring native policies up to date on a shard");

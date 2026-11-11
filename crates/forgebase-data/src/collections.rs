@@ -1274,7 +1274,7 @@ impl DataService {
                     .inner
                     .backend
                     .fetch_all(&Statement::new(
-                        "SELECT pg_catalog.pg_get_viewdef(CAST(?1 AS regclass), true)",
+                        "SELECT pg_catalog.pg_get_viewdef(pg_catalog.to_regclass(CAST(?1 AS text)), true)",
                         vec![pg_regclass(d, &c.name).into()],
                     ))
                     .await?;
