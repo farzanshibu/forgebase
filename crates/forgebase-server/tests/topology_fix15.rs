@@ -6,13 +6,17 @@
 //! `POST /api/system/database/nodes`:
 //!
 //! 1. a replica added (and removed) while the server runs is used (and
-//!    dropped) by the data core at once, with no restart.
+//!    dropped) by the data core at once, with no restart;
+//! 3. an anonymous sign-in right after a signup finds the user while the
+//!    replica has not replayed it (identity reads run on the primary).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod security_common;
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use forgebase_db::{ReadIntent, Statement};
 use security_common::*;
 use serde_json::{Value as Json, json};
 
@@ -119,6 +123,27 @@ fn replica_reads(env: &Env) -> u64 {
         .map_or(0, |rs| rs.status().iter().map(|s| s.reads).sum())
 }
 
+/// Runs `sql` with the engine's `psql` on the local node whose data
+/// directory is `node`, as the engine's superuser over its socket.
+fn psql(data_dir: &Path, node: &Path, sql: &str) {
+    let pid = std::fs::read_to_string(node.join("postmaster.pid")).expect("the node runs");
+    let mut l = pid.lines();
+    let port = l.nth(3).unwrap().trim().to_owned();
+    let sock = l.next().unwrap().trim().to_owned();
+    let engine = forgebase_db::shard_testing::engine_dir().expect("an engine");
+    let secrets = forgebase_pgengine::RoleSecrets::load(&data_dir.join("postgres").join("roles.secret"))
+        .unwrap()
+        .expect("roles.secret");
+    let password = secrets.password(forgebase_pgengine::Role::Super).unwrap();
+    let out = std::process::Command::new(engine.join("bin").join("psql"))
+        .env("PGPASSWORD", password)
+        .args(["-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-w"])
+        .args(["-U", "forgebase_super", "-d", "postgres", "-h", &sock, "-p", &port, "-c", sql])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "psql: {}", String::from_utf8_lossy(&out.stderr));
+}
+
 #[tokio::test]
 async fn a_replica_added_or_removed_while_the_server_runs_is_used_by_the_data_core_at_once() {
     if !postgres() {
@@ -159,5 +184,61 @@ async fn a_replica_added_or_removed_while_the_server_runs_is_used_by_the_data_co
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["items"].as_array().map_or(0, Vec::len), 3);
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_sign_in_right_after_a_signup_finds_the_user_on_a_lagging_replica() {
+    if !postgres() {
+        return;
+    }
+    // Keep the paused replica in rotation: it must be the one asked.
+    let env = Env::with(|c| {
+        c.database.topology.replicas.max_lag_ms = 600_000;
+        c.database.topology.replicas.max_lag_bytes = 1 << 40;
+    })
+    .await;
+    let admin = env.admin("fix15-auth@example.com").await;
+    add_replica(&env, &admin, "r1").await;
+    let cfg = security_common::config(env.dir.path());
+    let node = cfg.data_dir.join("postgres").join("nodes").join("r1").join("data");
+    psql(&cfg.data_dir, &node, "SELECT pg_wal_replay_pause()");
+
+    let email = "fix15-new-user@example.com";
+    env.auth
+        .signup(&forgebase_auth::ClientInfo::default(), None, email, USER_PASSWORD, None)
+        .await
+        .unwrap();
+    // The replica has not replayed the signup...
+    let replicas = env.server.router().control().replicas().cloned().expect("r1");
+    let rows = replicas
+        .fetch(
+            &Statement::raw(format!(
+                "SELECT CAST(pg_is_in_recovery() AS INT), (SELECT count(*) FROM users WHERE email = '{email}')"
+            )),
+            &ReadIntent::replica("fix15 test"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (rows.rows[0][0].as_i64(), rows.rows[0][1].as_i64()),
+        (Some(1), Some(0)),
+        "r1 is behind the signup"
+    );
+    // ...and an anonymous sign-in still finds the user at once.
+    let r = env
+        .req(
+            "POST",
+            "/api/auth/login",
+            &[],
+            Some(json!({"email": email, "password": USER_PASSWORD})),
+        )
+        .await;
+    assert_eq!(r.status, 200, "login: {}", r.text());
+    assert_eq!(r.json()["user"]["email"], email, "{}", r.text());
+    let token = r.json()["access_token"].as_str().unwrap().to_owned();
+    let me = env.as_(&token, "GET", "/api/auth/me", &[], None).await;
+    assert_eq!(me.status, 200, "me: {}", me.text());
+    psql(&cfg.data_dir, &node, "SELECT pg_wal_replay_resume()");
     env.shutdown().await;
 }
