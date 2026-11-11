@@ -164,7 +164,7 @@ async fn resource_rules_are_for_administrators_and_validated_against_item_fields
             "invalid_resource_kind",
         ),
         (path, json!({"rules": {"admin": ""}}), "invalid_action"),
-        (path, json!({"rules": {"read": "owner = 'x'"}}), "invalid_rule"),
+        (path, json!({"rules": {"read": "no_such_field = 'x'"}}), "invalid_rule"),
         (path, json!({"rules": {}}), "invalid_rule"),
     ] {
         let r = env.as_(&admin, "PUT", p, &[], Some(b)).await;

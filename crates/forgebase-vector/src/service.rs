@@ -303,6 +303,25 @@ pub(crate) fn match_expr(text: &str, op: TextOperator) -> Result<String> {
     }))
 }
 
+/// The keyword query for the backend: FTS5 syntax on SQLite, a
+/// `websearch_to_tsquery` string on PostgreSQL (quoted words, `or` between
+/// them for [`TextOperator::Or`], a space for [`TextOperator::And`]).
+pub(crate) fn match_query(dialect: &dyn forgebase_db::Dialect, text: &str, op: TextOperator) -> Result<String> {
+    let fts5 = match_expr(text, op)?;
+    if dialect.name() != "postgres" {
+        return Ok(fts5);
+    }
+    let words: Vec<String> = text
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .map(|w| format!("\"{}\"", w.replace('"', " ").trim()))
+        .collect();
+    Ok(words.join(match op {
+        TextOperator::Or => " or ",
+        TextOperator::And => " ",
+    }))
+}
+
 /// Reciprocal Rank Fusion of two rankings (keys best first).
 pub(crate) fn rrf(vector: &[u64], text: &[u64], rrf_k: f64, w: HybridWeights) -> Vec<(u64, f64)> {
     let mut scores: HashMap<u64, f64> = HashMap::new();
@@ -1696,7 +1715,7 @@ impl VectorService {
         }
         let mut by_text: Vec<(u64, f64)> = Vec::new();
         if let Some(t) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
-            let expr = match_expr(t, req.text_operator)?;
+            let expr = match_query(self.db().dialect(), t, req.text_operator)?;
             by_text = store::keyword(self.db(), coll.row.id, &expr, filter.as_ref(), candidates).await?;
         }
 

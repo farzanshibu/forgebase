@@ -696,7 +696,16 @@ async fn ten_thousand_edges_stay_fast_and_use_the_directional_indexes() {
             .await
             .unwrap();
         let text: Vec<_> = plan.iter().map(|p| p.detail.clone()).collect();
-        assert!(text.iter().any(|d| d.contains(index)), "{col}: {text:?}");
+        if env.db.kind() == forgebase_db::BackendKind::Sqlite {
+            assert!(text.iter().any(|d| d.contains(index)), "{col}: {text:?}");
+        } else {
+            // PostgreSQL picks among the three edge indexes by statistics:
+            // what matters is that no plan scans the whole table.
+            assert!(
+                text.iter().any(|d| d.contains("Index")) && !text.iter().any(|d| d.contains("Seq Scan")),
+                "{col}: {text:?}"
+            );
+        }
     }
 
     let c = env.admin();

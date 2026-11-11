@@ -185,10 +185,18 @@ pub(crate) async fn kv_rules(db: &dyn Backend) -> Result<HashMap<String, Arc<Vec
 
 /// Versions of a function, newest first.
 pub(crate) async fn versions(db: &dyn Backend, function_id: &str, active: i64) -> Result<Vec<VersionInfo>> {
+    // Size in bytes of the source text or the module.
+    let size = if db.dialect().name() == "postgres" {
+        "coalesce(octet_length(source), octet_length(wasm))"
+    } else {
+        "coalesce(length(CAST(source AS BLOB)), length(wasm))"
+    };
     let rows = db
         .fetch_all(&Statement::new(
-            "SELECT version, sha256, coalesce(length(CAST(source AS BLOB)), length(wasm)), config, created_at, created_by
-             FROM _forgebase_function_versions WHERE function_id = ?1 ORDER BY version DESC",
+            format!(
+                "SELECT version, sha256, {size}, config, created_at, created_by \
+                 FROM _forgebase_function_versions WHERE function_id = ?1 ORDER BY version DESC"
+            ),
             vec![function_id.into()],
         ))
         .await?;

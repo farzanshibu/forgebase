@@ -243,6 +243,56 @@ async fn after_hooks_run_for_committed_changes_only() {
     );
 }
 
+/// A manual call racing other passes (as the 250 ms background task does)
+/// must not deliver an event twice: the cursor is read, advanced and stored
+/// under one lock.
+#[tokio::test]
+async fn concurrent_after_hook_passes_deliver_each_event_once() {
+    let h = harness().await;
+    h.collection(json!({"name": "posts", "fields": [{"name": "title", "type": "text"}]}))
+        .await;
+    h.collection(json!({"name": "audit", "schema_mode": "flexible", "fields": [{"name": "event", "type": "text"}]}))
+        .await;
+    // Writes its whole input as an audit document.
+    let mut w = Wat::new(&["db_create"]);
+    let pre = w.s(r#"{"collection":"audit","data":"#);
+    let close = w.s("}");
+    let body = format!(
+        "{READ_INPUT}
+         (local.set $p (call $copy (i32.const {args}) {pre}))
+         (local.set $p (call $copy (local.get $p) (i32.const 65536) (local.get $n)))
+         (local.set $p (call $copy (local.get $p) {close}))
+         (local.set $r (call $db_create (i32.const {args}) (i32.sub (local.get $p) (i32.const {args}))))
+         (if (i32.lt_s (local.get $r) (i32.const 0)) (then (return (i32.const 1))))
+         (i32.const 0)",
+        args = common::ARGS
+    );
+    let mut r = req("auditor", &w.wasm(&body), &["db.write"]);
+    r.hooks = vec![hook("posts", &[HookEvent::AfterCreate])];
+    h.deploy(r).await;
+    h.grant("auditor", "data:audit:*").await;
+    for i in 0..12 {
+        h.data
+            .create_record(&admin(), "posts", json!({"title": format!("p{i}")}))
+            .await
+            .unwrap();
+    }
+    let (a, b, c) = tokio::join!(
+        h.svc.run_after_hooks(),
+        h.svc.run_after_hooks(),
+        h.svc.run_after_hooks()
+    );
+    let total = a.unwrap() + b.unwrap() + c.unwrap();
+    assert_eq!(total, 12, "each event is delivered once across the racing passes");
+    let audit = h
+        .data
+        .list_records(&admin(), "audit", &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(audit.items.len(), 12, "{audit:?}");
+    assert_eq!(h.svc.run_after_hooks().await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn hook_recursion_is_bounded() {
     let h = harness().await;

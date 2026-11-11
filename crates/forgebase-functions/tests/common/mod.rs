@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use forgebase_auth::crypto::Keyring;
-use forgebase_data::db::{Database, DbOptions};
+use forgebase_data::db::Database;
+use forgebase_data::db::testing::{TestDb, test_backend};
 use forgebase_data::schema::Collection;
 use forgebase_data::{AccessContext, Authorizer, DataService};
 use forgebase_functions::runtime::HOST_FUNCTIONS;
@@ -31,6 +32,7 @@ pub struct H {
     pub rt: RealtimeService,
     pub db: Database,
     pub dir: tempfile::TempDir,
+    pub test: TestDb,
 }
 
 impl Drop for H {
@@ -46,11 +48,8 @@ pub async fn harness() -> H {
 
 pub async fn harness_with(cfg: FunctionsConfig) -> H {
     let dir = tempfile::tempdir().unwrap();
-    let core = forgebase_core::Config::defaults(dir.path());
-    let db = Database::open(DbOptions::from_config(&core.database, dir.path().join("forgebase.db")))
-        .await
-        .unwrap();
-    db.migrate(None).await.unwrap();
+    let test = test_backend().await;
+    let db = test.database().clone();
     let backend: Arc<dyn forgebase_data::db::Backend> = Arc::new(db.clone());
     let policy = PolicyService::open(backend.clone()).await.unwrap();
     let authorizer: Arc<dyn Authorizer> = policy.authorizer();
@@ -72,6 +71,7 @@ pub async fn harness_with(cfg: FunctionsConfig) -> H {
         rt,
         db,
         dir,
+        test,
     }
 }
 
