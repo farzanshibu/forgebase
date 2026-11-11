@@ -90,6 +90,11 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         "key_tenant",
         include_str!("../../../migrations/postgres/0028_key_tenant.sql"),
     ),
+    Migration::new(
+        29,
+        "job_tenant",
+        include_str!("../../../migrations/postgres/0029_job_tenant.sql"),
+    ),
 ];
 
 /// The SQLite migrations the baseline stands for (versions up to

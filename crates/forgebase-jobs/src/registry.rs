@@ -13,6 +13,7 @@ use serde_json::Value as Json;
 use tokio::sync::watch;
 
 use crate::JobError;
+use crate::access::{EnqueueGuard, KindAccess, RecordedContext};
 use crate::model::{ClaimedJob, Job, NewJob};
 use crate::service::JobService;
 use crate::tasks::{ParentResult, ProgressReport};
@@ -138,6 +139,18 @@ impl JobContext {
     /// The job.
     pub fn job(&self) -> &Job {
         &self.job
+    }
+
+    /// Who enqueued the job (FB-142): the recorded context of the caller
+    /// whose request created it, a schedule's creator for scheduled jobs, the
+    /// parent's for child jobs; `None` when the system enqueued it (or the
+    /// job predates FB-142). Roles and attributes are not part of it: the
+    /// policy engine resolves them again when the handler acts as it.
+    pub fn enqueuer(&self) -> Option<AccessContext> {
+        RecordedContext::decode(self.job.context.as_deref())
+            .ok()
+            .flatten()
+            .and_then(|r| r.context())
     }
 
     /// The job's payload.
@@ -285,9 +298,17 @@ where
 
 /// Handlers by job kind. The in-process worker pool claims only the kinds
 /// registered here, so other kinds stay for external workers.
+///
+/// Each kind has a [`KindAccess`] (FB-142): [`JobRegistry::register`] makes
+/// it reserved (only the system and privileged callers may enqueue it),
+/// [`JobRegistry::register_public`] open to every caller with
+/// `engine:enqueue_job`, and [`JobRegistry::register_guarded`] open to the
+/// callers a guard admits. The worker pool hands the access to its
+/// [`JobService`] when it starts ([`JobService::install_kinds`]).
 #[derive(Clone, Default)]
 pub struct JobRegistry {
     handlers: BTreeMap<String, Arc<dyn JobHandler>>,
+    access: BTreeMap<String, KindAccess>,
 }
 
 impl std::fmt::Debug for JobRegistry {
@@ -302,11 +323,49 @@ impl JobRegistry {
         Self::default()
     }
 
-    /// Registers `handler` for `kind` (replacing an earlier one).
+    /// Registers `handler` for `kind` (replacing an earlier one) as a
+    /// reserved kind: only the system and privileged callers may enqueue it.
     #[must_use]
-    pub fn register(mut self, kind: impl Into<String>, handler: impl JobHandler) -> Self {
-        self.handlers.insert(kind.into(), Arc::new(handler));
+    pub fn register(self, kind: impl Into<String>, handler: impl JobHandler) -> Self {
+        self.register_with(kind, handler, KindAccess::Reserved)
+    }
+
+    /// Registers `handler` for `kind` as a public kind: every caller allowed
+    /// to enqueue jobs may enqueue it. The handler acts for whoever that is.
+    #[must_use]
+    pub fn register_public(self, kind: impl Into<String>, handler: impl JobHandler) -> Self {
+        self.register_with(kind, handler, KindAccess::Public)
+    }
+
+    /// Registers `handler` for `kind` with `guard` checking every
+    /// non-privileged enqueuer and payload before the job is stored.
+    #[must_use]
+    pub fn register_guarded(
+        self,
+        kind: impl Into<String>,
+        handler: impl JobHandler,
+        guard: impl EnqueueGuard,
+    ) -> Self {
+        self.register_with(kind, handler, KindAccess::Guarded(Arc::new(guard)))
+    }
+
+    /// Registers `handler` for `kind` with `access`.
+    #[must_use]
+    pub fn register_with(mut self, kind: impl Into<String>, handler: impl JobHandler, access: KindAccess) -> Self {
+        let kind = kind.into();
+        self.handlers.insert(kind.clone(), Arc::new(handler));
+        self.access.insert(kind, access);
         self
+    }
+
+    /// Who may enqueue `kind` (`None`: not registered here).
+    pub fn access(&self, kind: &str) -> Option<&KindAccess> {
+        self.access.get(kind)
+    }
+
+    /// Every registered kind with its access.
+    pub fn accesses(&self) -> impl Iterator<Item = (&String, &KindAccess)> {
+        self.access.iter()
     }
 
     /// The handler for `kind`.

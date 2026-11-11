@@ -570,6 +570,8 @@ pub struct Workflow {
     pub error: Option<String>,
     /// Who created it.
     pub created_by: String,
+    /// Tenant of the creator (FB-142). `null`: none.
+    pub tenant: Option<String>,
     /// Creation time (RFC 3339).
     pub created_at: String,
     /// Last change (RFC 3339).

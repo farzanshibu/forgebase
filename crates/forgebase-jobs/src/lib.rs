@@ -28,7 +28,13 @@
 //! Every operation asks the data core's authorizer first
 //! ([`forgebase_data::Action::ReadJobs`] and friends); the pool acts as the
 //! system principal. This crate contains no authentication or policy code.
+//!
+//! Tenancy (FB-142, [`JobAccess`]): jobs carry their enqueuer's tenant and
+//! recorded context; non-privileged callers see only their own jobs of their
+//! tenant (every job of it with [`READ_ALL_KEY`]); kinds are reserved,
+//! public or guarded ([`KindAccess`]).
 
+mod access;
 mod clock;
 mod cron;
 mod error;
@@ -42,6 +48,9 @@ mod routes;
 mod service;
 mod tasks;
 
+pub use access::{
+    EnqueueGuard, JobAccess, KindAccess, PermissionCheck, READ_ALL_KEY, RESERVED_PREFIXES, RecordedContext,
+};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use cron::{Cron, CronError};
 pub use error::JobError;
