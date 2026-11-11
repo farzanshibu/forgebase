@@ -16,8 +16,8 @@ use forgebase_data::db::routing::testing::RoutedCluster;
 use forgebase_data::db::routing::{Consistency, ReadAfter, RequestScope, scope};
 use forgebase_data::schema::{Collection, Field, FieldKind};
 use forgebase_data::{
-    AccessContext, AggregateQuery, DataService, DefaultAuthorizer, GetOptions, ListQuery, SqlOptions, SqlStatement,
-    UpdateOptions,
+    AccessContext, AggregateQuery, DataService, DefaultAuthorizer, GetOptions, IndexDefinition, IndexKind, ListQuery,
+    SqlOptions, SqlStatement, UpdateOptions,
 };
 use serde_json::json;
 
@@ -66,6 +66,16 @@ async fn env() -> Option<Env> {
         ));
     notes.versioned = true;
     svc.create_collection(&ctx, notes).await.unwrap();
+    svc.create_index(
+        &ctx,
+        IndexDefinition {
+            name: "notes_title_fts".into(),
+            kind: IndexKind::Fulltext,
+            ..IndexDefinition::btree("notes", &["title"])
+        },
+    )
+    .await
+    .unwrap();
     svc.create_record(&ctx, "authors", json!({"id": "a1", "name": "Ada"}))
         .await
         .unwrap();
@@ -84,7 +94,7 @@ fn ids(r: &forgebase_data::ListResult) -> Vec<String> {
     r.items.iter().map(|i| i["id"].as_str().unwrap().to_owned()).collect()
 }
 
-fn strong() -> RequestScope {
+fn strong() -> Arc<RequestScope> {
     RequestScope::new(Consistency::Strong, ReadAfter::new())
 }
 
@@ -106,9 +116,8 @@ async fn record_reads_use_a_lagging_replica_when_allowed() {
         search: Some("two".into()),
         ..ListQuery::default()
     };
-    // No full-text index: the request is a plain list on every backend, or
-    // an error that came from the statement; what matters is where it ran.
-    let _ = svc.list_records(ctx, "notes", &search).await;
+    let found = svc.list_records(ctx, "notes", &search).await.unwrap();
+    assert!(found.items.is_empty(), "n2 is not on the standby yet");
     assert!(rc.replica_reads() > before, "search read the replica");
 
     // view
@@ -220,7 +229,7 @@ async fn the_sql_editor_reads_a_replica_only_when_asked() {
 
     // Writes and batches are the primary's, whatever the flag says.
     let write = SqlStatement {
-        sql: "INSERT INTO authors (id, name) VALUES ('a9', 'Nine')".into(),
+        sql: "UPDATE authors SET name = 'Ada L' WHERE id = 'a1'".into(),
         params: Vec::new(),
     };
     svc.execute_sql_with(ctx, write, ticked).await.unwrap();
