@@ -233,11 +233,13 @@ impl PgDatabase {
         let mut conn = pool.acquire().await.map_err(|e| self.classify(e))?;
         let gen_now = self.inner.schema_gen.load(Ordering::Acquire);
         let mut result = self.read_once(&mut conn, stmt, gen_now).await;
+        // The rollback in read_once ended the aborted transaction.
         if matches!(&result, Err(RunError::Driver(e)) if error::is_stale_plan(e)) {
-            // The rollback in read_once ended the aborted transaction.
             if conn.clear_cached_statements().await.is_ok() {
                 result = self.read_once(&mut conn, stmt, gen_now).await;
             }
+        } else if matches!(&result, Err(RunError::Driver(e)) if error::is_lost_unnamed_statement(e)) {
+            result = self.read_once(&mut conn, stmt, gen_now).await;
         }
         let rows = result.map_err(|e| self.run_error(e))?;
         self.inner
@@ -893,6 +895,40 @@ async fn fetch(db: &PgDatabase, conn: &mut sqlx::PgConnection, stmt: &Statement)
     Ok(decode_rows(&rows, p.columns)?)
 }
 
+/// Whether [`fetch`] runs `stmt` as the unnamed prepared statement: uncached
+/// and without parameters (with parameters, [`prepare`] has already prepared
+/// and cached a named one, which sqlx then reuses).
+fn runs_unnamed(db: &PgDatabase, stmt: &Statement) -> Result<bool, DbError> {
+    Ok(!stmt.cache && stmt.params.is_empty() && db.translate(&stmt.sql)?.max_param == 0)
+}
+
+/// [`fetch`] of an unnamed statement inside a write transaction. sqlx can
+/// lose the unnamed statement on a connection's first sight of a result type
+/// ([`error::is_lost_unnamed_statement`]); that error would abort the
+/// transaction, so the statement runs under a savepoint and once more after
+/// rolling back to it (the type is cached by then). Reads retry the same way
+/// in [`PgDatabase::read`], without a savepoint (each read is its own
+/// transaction).
+async fn fetch_unnamed_in_tx(
+    db: &PgDatabase,
+    conn: &mut sqlx::PgConnection,
+    stmt: &Statement,
+) -> Result<Rows, RunError> {
+    sqlx::raw_sql("SAVEPOINT forgebase_unnamed").execute(&mut *conn).await?;
+    let mut result = fetch(db, conn, stmt).await;
+    if matches!(&result, Err(RunError::Driver(e)) if error::is_lost_unnamed_statement(e)) {
+        sqlx::raw_sql("ROLLBACK TO SAVEPOINT forgebase_unnamed")
+            .execute(&mut *conn)
+            .await?;
+        result = fetch(db, conn, stmt).await;
+    }
+    let rows = result?;
+    sqlx::raw_sql("RELEASE SAVEPOINT forgebase_unnamed")
+        .execute(&mut *conn)
+        .await?;
+    Ok(rows)
+}
+
 async fn execute(db: &PgDatabase, conn: &mut sqlx::PgConnection, stmt: &Statement) -> Result<u64, RunError> {
     if stmt.params.is_empty() && !stmt.cache {
         // One-off statements without parameters (DDL, scripts) use the simple
@@ -1176,8 +1212,13 @@ impl WriteTx for PgTx {
         Box::pin(async move {
             let started = Instant::now();
             let db = self.db.clone();
+            let unnamed = runs_unnamed(&db, stmt)?;
             let conn = self.conn()?;
-            let r = fetch(&db, conn, stmt).await;
+            let r = if unnamed {
+                fetch_unnamed_in_tx(&db, conn, stmt).await
+            } else {
+                fetch(&db, conn, stmt).await
+            };
             let rows = self.note(r)?;
             db.inner.slow.record(stmt, started.elapsed(), rows.len() as u64, true);
             Ok(rows)
