@@ -10,12 +10,14 @@
 
 mod common;
 
-use common::{admin, is_postgres, service, test_db};
+use std::sync::Arc;
+
+use common::{admin, is_postgres, service, service_with, test_db};
 use forgebase_core::ErrorCode;
 use forgebase_core::config::{ExtensionMode, PostgresExtensions};
 use forgebase_data::db::{Database, ExtensionSetup, Feature, Statement, Value};
 use forgebase_data::schema::{Collection, Field, FieldKind};
-use forgebase_data::{DataService, IndexDefinition, IndexKind, ListQuery};
+use forgebase_data::{AccessContext, Action, Authorizer, DataService, Decision, IndexDefinition, IndexKind, ListQuery};
 use serde_json::json;
 
 fn text() -> FieldKind {
@@ -428,4 +430,84 @@ async fn scalar(db: &Database, sql: &str) -> Value {
         .scalar()
         .cloned()
         .unwrap_or(Value::Null)
+}
+
+/// Users may list; field `secret` is hidden from them.
+#[derive(Debug)]
+struct ListOnly;
+
+impl Authorizer for ListOnly {
+    fn authorize(&self, ctx: &AccessContext, action: Action, _c: Option<&Collection>) -> Decision {
+        match (&ctx.principal, action) {
+            (forgebase_data::Principal::Admin { .. }, _) => Decision::Allow,
+            (forgebase_data::Principal::User { .. }, Action::List) => Decision::Allow,
+            _ => Decision::Deny,
+        }
+    }
+}
+
+/// Masked fields are refused for `fuzzy` as for `search`, indexed or not.
+#[tokio::test]
+async fn fuzzy_refuses_masked_fields() {
+    let db = test_db().await;
+    if !is_postgres(&db) {
+        eprintln!("skipped: needs PostgreSQL");
+        return;
+    }
+    with_trigram(&db, ExtensionMode::Auto).await;
+    if !db.feature_active(Feature::Trigram) {
+        eprintln!("skipped: the engine has no pg_trgm");
+        return;
+    }
+    let svc = service_with(&db, Arc::new(ListOnly), None).await;
+    let ctx = admin();
+    svc.create_collection(
+        &ctx,
+        Collection::base("notes")
+            .with_field(Field::new("title", text()))
+            .with_field(Field {
+                hidden: true,
+                ..Field::new("secret", text())
+            }),
+    )
+    .await
+    .unwrap();
+    svc.create_record(&ctx, "notes", json!({"title": "alpha", "secret": "hunter2"}))
+        .await
+        .unwrap();
+    svc.create_index(&ctx, trigram("notes_trgm", "notes", &["title", "secret"]))
+        .await
+        .unwrap();
+    let user = AccessContext::user("users", "u1");
+    for fields in [vec!["secret".to_owned()], vec![]] {
+        let err = svc
+            .list_records(
+                &user,
+                "notes",
+                &ListQuery {
+                    fuzzy_fields: fields.clone(),
+                    ..fuzzy("hunter2")
+                },
+            )
+            .await;
+        if fields.is_empty() {
+            // All indexed fields include a masked one: refused too.
+            assert_eq!(err.unwrap_err().code(), "no_trigram_index");
+        } else {
+            assert_eq!(err.unwrap_err().code(), "no_trigram_index");
+        }
+    }
+    let ok = svc
+        .list_records(
+            &user,
+            "notes",
+            &ListQuery {
+                fuzzy_fields: vec!["title".into()],
+                ..fuzzy("alpha")
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.items.len(), 1);
+    assert!(ok.items[0].get("secret").is_none());
 }
