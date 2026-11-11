@@ -211,10 +211,13 @@ async fn every_ctx_service_runs_as_the_caller_and_service_role_bypasses() {
         .await
         .unwrap();
     let allowed = invoke(&server, &u1, "").await;
+    // FB-139: u1 has no tenant, and only privileged callers may use the
+    // shared vector scope (security_fb139 covers ctx.vector with a tenant).
     assert_eq!(
         allowed,
         json!({
-            "db_list": 1, "vector_upsert": "ok", "vector_search": 1, "storage_put": "ok", "storage_get": "hello",
+            "db_list": 1, "vector_upsert": "ERR:tenant_required", "vector_search": "ERR:tenant_required",
+            "storage_put": "ok", "storage_get": "hello",
             "storage_sign": true, "queue": true, "job": true, "realtime": "ok", "kv_app": true
         }),
         "{allowed}"

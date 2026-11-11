@@ -108,6 +108,7 @@ pub async fn create(svc: &VectorService, ctx: &AccessContext, name: &str, fields
             description: String::new(),
             fields,
             exact_threshold: exact,
+            source_collection: None,
         },
     )
     .await

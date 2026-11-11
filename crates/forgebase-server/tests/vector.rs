@@ -77,6 +77,7 @@ async fn vectors_persist_and_indexes_reload_or_rebuild_across_restarts() {
                     expansion_search: None,
                 }],
                 exact_threshold: Some(0),
+                source_collection: None,
             },
         )
         .await

@@ -17,8 +17,11 @@
 //! authorizer first ([`forgebase_data::Action::VectorRead`],
 //! [`forgebase_data::Action::VectorWrite`],
 //! [`forgebase_data::Action::VectorAdmin`]) and stays inside the caller's
-//! tenant. This crate contains no authentication or policy code and generates
-//! no embeddings.
+//! tenant. Collection rules (`vector_collection` resource rules over
+//! [`item_schema`]) pre-filter searches and guard writes; a
+//! `source_collection` re-checks hits against the records' View rule
+//! (FB-139). This crate contains no authentication or policy code and
+//! generates no embeddings.
 
 mod engine;
 mod error;
@@ -32,5 +35,9 @@ mod store;
 
 pub use engine::{AnnEngine, AnnIndex, EngineStats, IndexParams, Usearch};
 pub use error::VectorError;
+pub use filter::{ItemRule, item_schema};
 pub use http::{MAX_BODY, RebuildResponse, extension, openapi, router};
-pub use service::{DEFAULT_CONNECTIVITY, DEFAULT_EXPANSION_ADD, DEFAULT_EXPANSION_SEARCH, VectorConfig, VectorService};
+pub use service::{
+    DEFAULT_CONNECTIVITY, DEFAULT_EXPANSION_ADD, DEFAULT_EXPANSION_SEARCH, SOURCE_COLLECTION_OPTION, VectorConfig,
+    VectorService,
+};
