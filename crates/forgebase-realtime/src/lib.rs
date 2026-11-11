@@ -195,7 +195,7 @@ struct Inner {
     shutdown: watch::Sender<bool>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     /// One dispatcher per set id (FB-171), started by the supervisor.
-    dispatchers: Mutex<HashMap<String, (JoinHandle<()>, Arc<Notify>)>>,
+    dispatchers: Mutex<HashMap<String, Dispatcher>>,
 }
 
 impl Drop for Inner {
@@ -208,6 +208,9 @@ impl Drop for Inner {
         }
     }
 }
+
+/// A running set dispatcher and the wake-up it listens on.
+type Dispatcher = (JoinHandle<()>, Arc<Notify>);
 
 /// The dispatchers' wake-ups: a commit in this process wakes every set's
 /// dispatcher (the hook does not know which set the change went to).

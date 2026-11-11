@@ -962,6 +962,42 @@ impl DataService {
 /// Set at the start of every SQL editor write transaction on PostgreSQL.
 const PG_EDITOR_SEARCH_PATH: &str = "SET LOCAL search_path = public, forgebase";
 
+/// Statements that write run on control only (FB-171): a shard's tenant
+/// data changes through the data API, its schema through the collections API
+/// (two-phase, on every set); `forgebase db psql --node` reaches a shard
+/// directly.
+fn refuse_writes_off_control(set: Option<u16>) -> Result<(), DataError> {
+    match set {
+        None | Some(0) => Ok(()),
+        Some(k) => Err(DataError::invalid(
+            "sql_set_read_only",
+            format!("statements that write run on control only; set {k} takes read statements"),
+        )),
+    }
+}
+
+impl DataService {
+    /// The backend of the SQL editor's node selector (FB-171): control, or
+    /// the open set with this number.
+    fn sql_backend(&self, set: Option<u16>) -> Result<std::sync::Arc<dyn forgebase_db::Backend>, DataError> {
+        match set {
+            None | Some(0) => Ok(self.inner.backend.clone()),
+            Some(k) => {
+                let router = self
+                    .shard_router()
+                    .ok_or_else(|| forgebase_db::RouterError::UnknownSet(k.to_string()))?;
+                let h = router
+                    .set_by_number(k)
+                    .ok_or_else(|| forgebase_db::RouterError::UnknownSet(k.to_string()))?;
+                if h.set().state == forgebase_db::topology::SetState::Migrating {
+                    return Err(forgebase_db::RouterError::SetMigrating(h.id().to_owned()).into());
+                }
+                Ok(std::sync::Arc::new(h))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1038,42 +1074,6 @@ mod tests {
         }
         for n in ["users", "forgebase_notes", "my_sqlite_table"] {
             assert!(!is_system_table(n), "{n}");
-        }
-    }
-}
-
-/// Statements that write run on control only (FB-171): a shard's tenant
-/// data changes through the data API, its schema through the collections API
-/// (two-phase, on every set); `forgebase db psql --node` reaches a shard
-/// directly.
-fn refuse_writes_off_control(set: Option<u16>) -> Result<(), DataError> {
-    match set {
-        None | Some(0) => Ok(()),
-        Some(k) => Err(DataError::invalid(
-            "sql_set_read_only",
-            format!("statements that write run on control only; set {k} takes read statements"),
-        )),
-    }
-}
-
-impl DataService {
-    /// The backend of the SQL editor's node selector (FB-171): control, or
-    /// the open set with this number.
-    fn sql_backend(&self, set: Option<u16>) -> Result<std::sync::Arc<dyn forgebase_db::Backend>, DataError> {
-        match set {
-            None | Some(0) => Ok(self.inner.backend.clone()),
-            Some(k) => {
-                let router = self
-                    .shard_router()
-                    .ok_or_else(|| forgebase_db::RouterError::UnknownSet(k.to_string()))?;
-                let h = router
-                    .set_by_number(k)
-                    .ok_or_else(|| forgebase_db::RouterError::UnknownSet(k.to_string()))?;
-                if h.set().state == forgebase_db::topology::SetState::Migrating {
-                    return Err(forgebase_db::RouterError::SetMigrating(h.id().to_owned()).into());
-                }
-                Ok(std::sync::Arc::new(h))
-            }
         }
     }
 }

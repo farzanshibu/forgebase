@@ -184,7 +184,7 @@ async fn events_flow_per_set_with_replay_resets_and_fan_in() {
     data.create_record(&t0, "notes", json!({"body": "on control"}))
         .await
         .unwrap();
-    let mut seen = vec![next_event(&mut c).await, next_event(&mut c).await];
+    let mut seen = [next_event(&mut c).await, next_event(&mut c).await];
     seen.sort_by_key(|e| e["cursor"].as_i64().unwrap());
     assert_eq!(seen[0]["data"]["body"], "on control");
     assert_eq!(seen[0]["tenant_id"], "t0");
