@@ -317,11 +317,11 @@ impl StorageService {
         if check.rules.is_none() {
             return Ok(());
         }
-        let live = self
-            .find_row(&bucket.id, key, None, None)
-            .await
-            .ok()
-            .filter(|r| !r.delete_marker);
+        let live = match self.find_row(&bucket.id, key, None, None).await {
+            Ok(r) => Some(r).filter(|r| !r.delete_marker),
+            Err(StorageError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
         match check.decision(live.is_some()) {
             Some(Decision::Deny) => Err(rule_refusal()),
             Some(Decision::Filter(p)) => match &live {
@@ -714,7 +714,9 @@ impl StorageService {
         cursor: Option<&str>,
     ) -> Result<ObjectPage> {
         let b = self.bucket_row(ctx, bucket).await?;
-        let access = self.authorize(ctx, &b, Some(prefix), Need::Read, ResourceOp::List).await?;
+        let access = self
+            .authorize(ctx, &b, Some(prefix), Need::Read, ResourceOp::List)
+            .await?;
         let limit = usize::try_from(limit.clamp(1, 1000)).unwrap_or(1000);
         let delimiter = delimiter.filter(|d| !d.is_empty());
         let plen = i64::try_from(prefix.chars().count()).unwrap_or(0);
@@ -807,7 +809,9 @@ impl StorageService {
         version: Option<&str>,
     ) -> Result<DeleteResult> {
         let b = self.bucket_row(ctx, bucket).await?;
-        let access = self.authorize(ctx, &b, Some(key), Need::Write, ResourceOp::Delete).await?;
+        let access = self
+            .authorize(ctx, &b, Some(key), Need::Write, ResourceOp::Delete)
+            .await?;
         let bucket = b.id.as_str();
         let now = self.now();
         let _gate = self.inner.gate.read().await;
@@ -915,7 +919,9 @@ impl StorageService {
     ) -> Result<ObjectInfo> {
         validate_key(dest_key)?;
         let src = self.bucket_row(ctx, bucket).await?;
-        let read = self.authorize(ctx, &src, Some(key), Need::Read, ResourceOp::View).await?;
+        let read = self
+            .authorize(ctx, &src, Some(key), Need::Read, ResourceOp::View)
+            .await?;
         let dst = self.bucket_row(ctx, dest_bucket).await?;
         let check = self.authorize_write(ctx, &dst, dest_key).await?;
         let row = self.find_row(&src.id, key, version, read.filter()).await?;
@@ -951,7 +957,9 @@ impl StorageService {
             return self.head_object(ctx, bucket, key, None).await;
         }
         let src = self.bucket_row(ctx, bucket).await?;
-        let del = self.authorize(ctx, &src, Some(key), Need::Write, ResourceOp::Delete).await?;
+        let del = self
+            .authorize(ctx, &src, Some(key), Need::Write, ResourceOp::Delete)
+            .await?;
         // The source must be the caller's to delete before anything is copied.
         let live = self.find_row(&src.id, key, None, del.filter()).await?;
         if live.delete_marker {

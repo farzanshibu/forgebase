@@ -15,7 +15,13 @@ use serde_json::{Value as Json, json};
 /// A user's organization with one project; returns the production tenant.
 async fn tenant_of(env: &Env, token: &str, slug: &str) -> String {
     let r = env
-        .as_(token, "POST", "/api/v1/orgs", &[], Some(json!({"slug": slug, "name": slug})))
+        .as_(
+            token,
+            "POST",
+            "/api/v1/orgs",
+            &[],
+            Some(json!({"slug": slug, "name": slug})),
+        )
         .await;
     assert_eq!(r.status, 201, "org: {}", r.text());
     let id = r.json()["id"].as_str().unwrap().to_owned();
@@ -81,7 +87,15 @@ async fn get_obj(env: &Env, token: &str, tenant: Option<&str>, bucket: &str, key
 }
 
 async fn bucket(env: &Env, token: &str, tenant: Option<&str>, name: &str) -> Resp {
-    call(env, token, tenant, "POST", "/api/v1/storage/buckets", Some(json!({"name": name}))).await
+    call(
+        env,
+        token,
+        tenant,
+        "POST",
+        "/api/v1/storage/buckets",
+        Some(json!({"name": name})),
+    )
+    .await
 }
 
 fn keys(r: &Resp) -> Vec<String> {
@@ -121,8 +135,14 @@ async fn g1_a_prefix_grant_is_not_a_bucket_grant() {
     // The grant covers its keys.
     let r = put_obj(&env, &alice, None, "shared", "users/alice/a.txt", b"mine").await;
     assert!(r.status < 300, "{}", r.text());
-    assert_eq!(get_obj(&env, &alice, None, "shared", "users/alice/a.txt").await.text(), "mine");
-    assert_eq!(put_obj(&env, &alice, None, "shared", "users/bob/x", b"x").await.status, 403);
+    assert_eq!(
+        get_obj(&env, &alice, None, "shared", "users/alice/a.txt").await.text(),
+        "mine"
+    );
+    assert_eq!(
+        put_obj(&env, &alice, None, "shared", "users/bob/x", b"x").await.status,
+        403
+    );
 
     // ... and never the bucket itself: every bucket-level operation.
     let path = "/api/v1/storage/buckets/shared";
@@ -150,7 +170,10 @@ async fn g1_a_prefix_grant_is_not_a_bucket_grant() {
     assert_eq!(r.json()["visibility"], "private", "{}", r.text());
     let r = call(&env, &admin, None, "GET", &format!("{path}/acl"), None).await;
     assert_eq!(r.json()["entries"].as_array().unwrap().len(), 1, "{}", r.text());
-    assert_eq!(get_obj(&env, &admin, None, "shared", "users/alice/a.txt").await.status, 200);
+    assert_eq!(
+        get_obj(&env, &admin, None, "shared", "users/alice/a.txt").await.status,
+        200
+    );
     env.shutdown().await;
 }
 
@@ -182,11 +205,22 @@ async fn g14_bucket_names_are_unique_per_tenant_and_tenants_are_isolated() {
     let r = put_obj(&env, &alice, Some(&ta), "files", "doc.txt", b"alpha-secret").await;
     assert!(r.status < 300, "{}", r.text());
     assert_eq!(r.json()["bucket"], "files", "{}", r.text());
-    assert_eq!(get_obj(&env, &alice, Some(&ta), "files", "doc.txt").await.text(), "alpha-secret");
+    assert_eq!(
+        get_obj(&env, &alice, Some(&ta), "files", "doc.txt").await.text(),
+        "alpha-secret"
+    );
 
     // Bob's "files" is another bucket.
     assert_eq!(get_obj(&env, &bob, Some(&tb), "files", "doc.txt").await.status, 404);
-    let r = call(&env, &bob, Some(&tb), "GET", "/api/v1/storage/buckets/files/objects", None).await;
+    let r = call(
+        &env,
+        &bob,
+        Some(&tb),
+        "GET",
+        "/api/v1/storage/buckets/files/objects",
+        None,
+    )
+    .await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(keys(&r).is_empty(), "{}", r.text());
     // The stored name of alice's bucket is not a name anyone can use.
@@ -248,7 +282,15 @@ async fn g14_bucket_names_are_unique_per_tenant_and_tenants_are_isolated() {
     assert_eq!(r.status, 201, "{}", r.text());
     assert_eq!(r.json()["bucket"], "files", "{}", r.text());
     let up = r.json()["id"].as_str().unwrap().to_owned();
-    let r = call(&env, &alice, Some(&tb), "GET", &format!("/api/v1/storage/uploads/{up}"), None).await;
+    let r = call(
+        &env,
+        &alice,
+        Some(&tb),
+        "GET",
+        &format!("/api/v1/storage/uploads/{up}"),
+        None,
+    )
+    .await;
     assert!(r.status == 403 || r.status == 404, "{}", r.text());
     env.shutdown().await;
 }
@@ -288,16 +330,35 @@ async fn g14_bucket_rules_filter_objects_by_owner_folder_and_size() {
     assert_eq!(r.json()["created_by"], json!(alice_pk));
     let r = put_obj(&env, &bob, None, "home", &format!("{a}/b.txt"), b"x").await;
     assert_eq!(r.status, 403, "bob in alice's folder: {}", r.text());
-    assert!(put_obj(&env, &bob, None, "home", &format!("{b}/b.txt"), b"bob").await.status < 300);
+    assert!(
+        put_obj(&env, &bob, None, "home", &format!("{b}/b.txt"), b"bob")
+            .await
+            .status
+            < 300
+    );
     let r = put_obj(&env, &alice, None, "home", &format!("{a}/big.txt"), &[b'x'; 100]).await;
     assert_eq!(r.status, 403, "size rule: {}", r.text());
 
     // view / list: only one's own objects; folder names do not leak.
-    assert_eq!(get_obj(&env, &alice, None, "home", &format!("{a}/a.txt")).await.text(), "hello");
-    assert_eq!(get_obj(&env, &bob, None, "home", &format!("{a}/a.txt")).await.status, 404);
+    assert_eq!(
+        get_obj(&env, &alice, None, "home", &format!("{a}/a.txt")).await.text(),
+        "hello"
+    );
+    assert_eq!(
+        get_obj(&env, &bob, None, "home", &format!("{a}/a.txt")).await.status,
+        404
+    );
     let r = call(&env, &bob, None, "GET", "/api/v1/storage/buckets/home/objects", None).await;
     assert_eq!(keys(&r), vec![format!("{b}/b.txt")], "{}", r.text());
-    let r = call(&env, &bob, None, "GET", "/api/v1/storage/buckets/home/objects?delimiter=/", None).await;
+    let r = call(
+        &env,
+        &bob,
+        None,
+        "GET",
+        "/api/v1/storage/buckets/home/objects?delimiter=/",
+        None,
+    )
+    .await;
     assert_eq!(r.json()["prefixes"], json!([format!("{b}/")]), "{}", r.text());
     let r = call(
         &env,
@@ -333,12 +394,25 @@ async fn g14_bucket_rules_filter_objects_by_owner_folder_and_size() {
     )
     .await;
     assert_eq!(r.status, 404, "copy: {}", r.text());
-    assert_eq!(get_obj(&env, &alice, None, "home", &format!("{a}/a.txt")).await.text(), "hello");
+    assert_eq!(
+        get_obj(&env, &alice, None, "home", &format!("{a}/a.txt")).await.text(),
+        "hello"
+    );
 
     // Signing follows the same rules.
     let sign = |token: String, body: Json| {
         let env = &env;
-        async move { call(env, &token, None, "POST", "/api/v1/storage/buckets/home/sign", Some(body)).await }
+        async move {
+            call(
+                env,
+                &token,
+                None,
+                "POST",
+                "/api/v1/storage/buckets/home/sign",
+                Some(body),
+            )
+            .await
+        }
     };
     let r = sign(bob.clone(), json!({"key": format!("{a}/a.txt")})).await;
     assert_eq!(r.status, 404, "bob signs alice's object: {}", r.text());
@@ -386,7 +460,10 @@ async fn g11_the_signing_key_is_not_readable_through_sql() {
         "a plain-text key is readable: {}",
         r.text()
     );
-    let sealed = rows.iter().find(|row| row[0] == "signing_key_sealed").expect("sealed key row");
+    let sealed = rows
+        .iter()
+        .find(|row| row[0] == "signing_key_sealed")
+        .expect("sealed key row");
     // 24-byte nonce + 32-byte key + 16-byte tag, hex.
     assert_eq!(sealed[1].as_str().unwrap().len(), 144, "{}", r.text());
     env.shutdown().await;

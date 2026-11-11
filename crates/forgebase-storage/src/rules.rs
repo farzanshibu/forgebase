@@ -119,7 +119,12 @@ fn compile(b: &mut SqlBuilder<'_>, p: &Predicate) -> Result<String> {
 /// `sql` with `{rule}` replaced by `filter` compiled over the objects table
 /// aliased `o` (`1 = 1` without a filter). `sql` numbers its own parameters
 /// `?1`..`?n` (`params`, bound first); the rule's follow.
-pub(crate) fn statement(dialect: &dyn Dialect, sql: &str, params: Vec<Value>, filter: Option<&Predicate>) -> Result<Statement> {
+pub(crate) fn statement(
+    dialect: &dyn Dialect,
+    sql: &str,
+    params: Vec<Value>,
+    filter: Option<&Predicate>,
+) -> Result<Statement> {
     let mut b = SqlBuilder::new(dialect);
     for p in params {
         b.bind(p);
@@ -201,7 +206,13 @@ mod tests {
     fn rules_compile_over_object_columns() {
         let d = forgebase_db::SqliteDialect;
         let p = Predicate::parse("folders.0 = 'u1' && size < 10", HashMap::new()).unwrap();
-        let s = statement(&d, "SELECT 1 FROM t o WHERE o.bucket = ?1 AND {rule}", vec!["b".into()], Some(&p)).unwrap();
+        let s = statement(
+            &d,
+            "SELECT 1 FROM t o WHERE o.bucket = ?1 AND {rule}",
+            vec!["b".into()],
+            Some(&p),
+        )
+        .unwrap();
         assert!(s.sql.contains("json_extract(o.\"folders\", '$[0]')"), "{}", s.sql);
         assert_eq!(s.params.len(), 3);
         let pg = forgebase_db::PgDialect;
@@ -213,6 +224,14 @@ mod tests {
         };
         let s = new_row_check(&pg, &row, &p).unwrap();
         assert!(s.sql.contains("CAST(?7 AS jsonb)"), "{}", s.sql);
-        assert!(statement(&d, "{rule}", vec![], Some(&Predicate::parse("id = 'x'", HashMap::new()).unwrap())).is_err());
+        assert!(
+            statement(
+                &d,
+                "{rule}",
+                vec![],
+                Some(&Predicate::parse("id = 'x'", HashMap::new()).unwrap())
+            )
+            .is_err()
+        );
     }
 }

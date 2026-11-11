@@ -332,7 +332,16 @@ async fn start_full(
     // Object storage (FB-30): local directory or S3-compatible driver, unless
     // `[storage] enabled = false`.
     let storage = if config.storage.enabled {
-        match open_storage(&db, &layout, config, state.data().clone(), &entitlements, master_key_path).await {
+        match open_storage(
+            &db,
+            &layout,
+            config,
+            state.data().clone(),
+            &entitlements,
+            master_key_path,
+        )
+        .await
+        {
             Ok(s) => Some(s),
             Err(e) => {
                 db.close().await;
@@ -1142,13 +1151,21 @@ async fn open_storage(
     };
     // The URL signing key is sealed with the data directory's master key
     // (FB-140, rls-coverage G11).
-    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&master_key_path))
-        .await
-        .map_err(|e| ServerError::Storage(e.to_string()))?
-        .map_err(|e| ServerError::Storage(e.to_string()))?;
-    let svc = StorageService::open(Arc::new(db.clone()), data, driver, Arc::new(SystemClock), settings, keyring)
-        .await
-        .map_err(|e| ServerError::Storage(e.to_string()))?;
+    let keyring =
+        tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&master_key_path))
+            .await
+            .map_err(|e| ServerError::Storage(e.to_string()))?
+            .map_err(|e| ServerError::Storage(e.to_string()))?;
+    let svc = StorageService::open(
+        Arc::new(db.clone()),
+        data,
+        driver,
+        Arc::new(SystemClock),
+        settings,
+        keyring,
+    )
+    .await
+    .map_err(|e| ServerError::Storage(e.to_string()))?;
     svc.attach_entitlements(entitlements.clone());
     Ok(svc)
 }

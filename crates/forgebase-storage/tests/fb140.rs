@@ -14,8 +14,8 @@ use forgebase_data::AccessContext;
 use forgebase_db::{Backend, Statement, TxMode, Value};
 use forgebase_entitlements::Clock;
 use forgebase_storage::{
-    BucketInput, CompleteInput, SignRequest, SignedMethod, SignedParams, StorageError, StorageService,
-    StorageSettings, UploadInput, Visibility, body_of,
+    BucketInput, CompleteInput, SignRequest, SignedMethod, SignedParams, StorageError, StorageService, StorageSettings,
+    UploadInput, Visibility, body_of,
 };
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -144,7 +144,10 @@ async fn a_plain_key_is_sealed_unchanged_and_old_urls_keep_working() {
 
 async fn rules(env: &Env, bucket: &str, set: &[(&str, &str)]) {
     let input = forgebase_policy::store::ResourceRulesInput {
-        rules: set.iter().map(|(a, r)| ((*a).to_owned(), Some((*r).to_owned()))).collect(),
+        rules: set
+            .iter()
+            .map(|(a, r)| ((*a).to_owned(), Some((*r).to_owned())))
+            .collect(),
     };
     env.policy
         .put_resource_rules(&admin(), "bucket", bucket, &input)
@@ -183,19 +186,33 @@ async fn bucket_rules_apply_to_uploads_restores_and_moves() {
 
     // A resumable upload is checked when it completes: the size rule holds
     // on the assembled object.
-    let up = env.storage.create_upload(&alice, "home", upload("alice/big.txt")).await.unwrap();
+    let up = env
+        .storage
+        .create_upload(&alice, "home", upload("alice/big.txt"))
+        .await
+        .unwrap();
     env.storage
         .append_chunk(&alice, &up.id, 0, None, body_of(vec![b'x'; 20]))
         .await
         .unwrap();
-    let r = env.storage.complete_upload(&alice, &up.id, CompleteInput::default()).await;
+    let r = env
+        .storage
+        .complete_upload(&alice, &up.id, CompleteInput::default())
+        .await;
     assert!(matches!(r, Err(StorageError::Forbidden(_))), "{r:?}");
-    let up = env.storage.create_upload(&alice, "home", upload("alice/ok.txt")).await.unwrap();
+    let up = env
+        .storage
+        .create_upload(&alice, "home", upload("alice/ok.txt"))
+        .await
+        .unwrap();
     env.storage
         .append_chunk(&alice, &up.id, 0, None, body_of(b"small".to_vec()))
         .await
         .unwrap();
-    let done = env.storage.complete_upload(&alice, &up.id, CompleteInput::default()).await;
+    let done = env
+        .storage
+        .complete_upload(&alice, &up.id, CompleteInput::default())
+        .await;
     let info = match done {
         Ok(i) => i,
         Err(e) => panic!("{e}"),
@@ -203,13 +220,19 @@ async fn bucket_rules_apply_to_uploads_restores_and_moves() {
     assert_eq!(info.created_by, "user:people/alice");
     // In someone else's folder: refused when the upload completes (rules
     // over the written version need the assembled object).
-    let up = env.storage.create_upload(&bob, "home", upload("alice/x.txt")).await.unwrap();
+    let up = env
+        .storage
+        .create_upload(&bob, "home", upload("alice/x.txt"))
+        .await
+        .unwrap();
     env.storage
         .append_chunk(&bob, &up.id, 0, None, body_of(b"x".to_vec()))
         .await
         .unwrap();
     assert!(matches!(
-        env.storage.complete_upload(&bob, &up.id, CompleteInput::default()).await,
+        env.storage
+            .complete_upload(&bob, &up.id, CompleteInput::default())
+            .await,
         Err(StorageError::Forbidden(_))
     ));
     // ... and a session onto someone else's existing object at once.
@@ -253,7 +276,11 @@ async fn bucket_rules_apply_to_uploads_restores_and_moves() {
         Err(StorageError::NotFound(_))
     ));
     // A delete marker of one's own object.
-    let del = env.storage.delete_object(&alice, "home", "alice/ok.txt", None).await.unwrap();
+    let del = env
+        .storage
+        .delete_object(&alice, "home", "alice/ok.txt", None)
+        .await
+        .unwrap();
     assert!(del.delete_marker);
 }
 
@@ -269,7 +296,15 @@ async fn tenant_buckets_resolve_in_their_tenant() {
         max_object_bytes: None,
         allowed_content_types: None,
     };
-    assert_eq!(env.storage.create_bucket(&ta, input("files")).await.unwrap().tenant.as_deref(), Some("tenant-a"));
+    assert_eq!(
+        env.storage
+            .create_bucket(&ta, input("files"))
+            .await
+            .unwrap()
+            .tenant
+            .as_deref(),
+        Some("tenant-a")
+    );
     env.storage.create_bucket(&tb, input("files")).await.unwrap();
     assert!(matches!(
         env.storage.create_bucket(&ta, input("files")).await,
@@ -290,8 +325,18 @@ async fn tenant_buckets_resolve_in_their_tenant() {
     }
     // An instance-wide bucket of the same name is hidden in tenant a only.
     env.storage.create_bucket(&admin(), input("files")).await.unwrap();
-    env.storage.put_object(&admin(), put("files", "g.txt", b"g")).await.unwrap();
-    let names: Vec<_> = env.storage.list_buckets(&ta).await.unwrap().into_iter().map(|b| b.tenant).collect();
+    env.storage
+        .put_object(&admin(), put("files", "g.txt", b"g"))
+        .await
+        .unwrap();
+    let names: Vec<_> = env
+        .storage
+        .list_buckets(&ta)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|b| b.tenant)
+        .collect();
     assert_eq!(names, vec![Some("tenant-a".to_owned())]);
     assert!(env.storage.head_object(&ta, "files", "g.txt", None).await.is_err());
     assert!(env.storage.head_object(&admin(), "files", "g.txt", None).await.is_ok());

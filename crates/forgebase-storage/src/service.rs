@@ -284,7 +284,12 @@ impl StorageService {
     /// upload, copy target, restore): `WriteCheck::open()` when the caller
     /// is let in without rules, else the `create` and `update` decisions,
     /// applied when the version is installed. Fails when neither can allow.
-    pub(crate) async fn authorize_write(&self, ctx: &AccessContext, bucket: &BucketRow, key: &str) -> Result<WriteCheck> {
+    pub(crate) async fn authorize_write(
+        &self,
+        ctx: &AccessContext,
+        bucket: &BucketRow,
+        key: &str,
+    ) -> Result<WriteCheck> {
         if self.direct_grant(ctx, bucket, Some(key), Need::Write).await? {
             return Ok(WriteCheck::open());
         }
@@ -301,7 +306,13 @@ impl StorageService {
 
     /// Grants that need no rule: privileged callers, the bucket owner,
     /// visibility (reads) and ACL entries.
-    async fn direct_grant(&self, ctx: &AccessContext, bucket: &BucketRow, key: Option<&str>, need: Need) -> Result<bool> {
+    async fn direct_grant(
+        &self,
+        ctx: &AccessContext,
+        bucket: &BucketRow,
+        key: Option<&str>,
+        need: Need,
+    ) -> Result<bool> {
         if ctx.is_privileged() {
             return Ok(true);
         }
@@ -337,7 +348,10 @@ impl StorageService {
     /// The authorizer's answer for `need` and `op` on `bucket` (FB-134).
     pub(crate) fn decide(&self, ctx: &AccessContext, bucket: &BucketRow, need: Need, op: ResourceOp) -> Decision {
         let res = ResourceRef::new(ResourceKind::Bucket, bucket.name.clone(), op);
-        self.inner.data.authorizer().authorize_resource(ctx, need.action(), &res)
+        self.inner
+            .data
+            .authorizer()
+            .authorize_resource(ctx, need.action(), &res)
     }
 
     pub(crate) fn refusal(ctx: &AccessContext, bucket: &BucketRow, need: Need) -> StorageError {
@@ -558,14 +572,21 @@ impl StorageService {
             }
         };
         let all = rows.rows.iter().map(|r| decode_bucket(r)).collect::<Result<Vec<_>>>()?;
-        let mine: std::collections::BTreeSet<String> =
-            all.iter().filter(|b| b.tenant.is_some()).map(|b| b.name.clone()).collect();
+        let mine: std::collections::BTreeSet<String> = all
+            .iter()
+            .filter(|b| b.tenant.is_some())
+            .map(|b| b.name.clone())
+            .collect();
         let mut out = Vec::new();
         for b in all {
             if b.tenant.is_none() && mine.contains(&b.name) {
                 continue;
             }
-            if self.authorize(ctx, &b, None, Need::Read, ResourceOp::List).await.is_ok() {
+            if self
+                .authorize(ctx, &b, None, Need::Read, ResourceOp::List)
+                .await
+                .is_ok()
+            {
                 out.push(b.wire());
             }
         }
@@ -877,7 +898,8 @@ fn seal_key(keyring: &Keyring, key: &[u8]) -> Result<String> {
 }
 
 fn open_key(keyring: &Keyring, sealed: &str) -> Result<Vec<u8>> {
-    let bytes = crate::util::unhex(sealed).ok_or_else(|| StorageError::Internal("sealed signing key is not hex".into()))?;
+    let bytes =
+        crate::util::unhex(sealed).ok_or_else(|| StorageError::Internal("sealed signing key is not hex".into()))?;
     let key = keyring.open(&bytes, SEALED_KEY_AAD).map_err(|e| {
         StorageError::Internal(format!(
             "cannot open the URL signing key ({e}); restore the master key, or delete the \
@@ -941,11 +963,9 @@ async fn load_signing_key(db: &dyn Backend, keyring: &Keyring) -> Result<Vec<u8>
     };
     let sealed = seal_key(keyring, &key)?;
     let mut tx = db.begin(TxMode::Normal).await?;
-    let insert = db.dialect().insert_ignore(
-        "_forgebase_storage_settings",
-        "name, value",
-        "VALUES (?1, ?2)",
-    );
+    let insert = db
+        .dialect()
+        .insert_ignore("_forgebase_storage_settings", "name, value", "VALUES (?1, ?2)");
     tx.execute(&st(&insert, vec![SEALED_KEY_ROW.into(), sealed.into()]))
         .await?;
     tx.execute(&st(

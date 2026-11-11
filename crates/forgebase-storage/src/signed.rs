@@ -232,8 +232,7 @@ impl StorageService {
         }
         self.verify_signed(p)?;
         let b = self.bucket_in(p.tenant.as_deref(), &p.bucket).await?;
-        self.read_row(&b.id, &p.key, p.version.as_deref(), range, None)
-            .await
+        self.read_row(&b.id, &p.key, p.version.as_deref(), range, None).await
     }
 
     /// Whether `ctx` may sign an upload URL for `key`: write access, and
@@ -249,10 +248,11 @@ impl StorageService {
     ) -> Result<()> {
         let check = self.authorize_write(ctx, b, key).await?;
         self.precheck_write(b, key, &check).await?;
-        let exists = self
-            .find_row(&b.id, key, None, None)
-            .await
-            .is_ok_and(|r| !r.delete_marker);
+        let exists = match self.find_row(&b.id, key, None, None).await {
+            Ok(r) => !r.delete_marker,
+            Err(StorageError::NotFound(_)) => false,
+            Err(e) => return Err(e),
+        };
         match check.decision(exists) {
             Some(Decision::Filter(pred)) => {
                 let actor = ctx.principal_key();
