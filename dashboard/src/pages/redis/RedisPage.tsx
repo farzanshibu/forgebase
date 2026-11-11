@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Route, Routes, useSearchParams } from "react-router-dom";
 import { Input } from "panelui-web/input";
 import { kvNamespaces } from "../../api";
+import type { KvNamespace } from "../../api";
 import { RouteTabs } from "../../components/controls";
 import { FormField } from "../../components/FormField";
 import { PageHeader } from "../../components/PageHeader";
@@ -19,10 +20,7 @@ export default function RedisPage() {
   const [params, setParams] = useSearchParams();
   const ns = params.get("ns") || "default";
   const names = useLoad((s) => kvNamespaces(s).catch(() => []), "kv-namespaces");
-  const [draft, setDraft] = useState(ns);
-  useEffect(() => setDraft(ns), [ns]);
   const [creating, setCreating] = useCreateParam();
-  const draftError = draft.trim() && draft.trim() !== ns ? validate.namespaceName(draft.trim()) : undefined;
   /** The namespace lives in the URL (`?ns=`), so a link or a reload keeps it. */
   const setNs = (v: string) => {
     const p = new URLSearchParams(params);
@@ -39,12 +37,7 @@ export default function RedisPage() {
         secondary={<UseFromCodeButton kind="kvNamespace" name={ns} />}
         primary={<Button tone="primary" onClick={() => setCreating(true)}>New key</Button>}
       />
-      <form className="mt-4 flex flex-wrap items-start gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); if (!draftError && draft.trim()) setNs(draft.trim()); }}>
-        <FormField label="Namespace" term="namespace" error={draftError} help={<>Names starting with <code className="font-mono">shared.</code> are shared by every tenant of a realm.</>}>
-          {(p) => <Input {...p} size="sm" list="kv-namespaces" className="w-48" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => draft.trim() && draft.trim() !== ns && !draftError && setNs(draft.trim())} />}
-        </FormField>
-        <datalist id="kv-namespaces">{(names.data ?? []).map((n) => <option key={n.name} value={n.name}>{`${n.keys} keys`}</option>)}</datalist>
-      </form>
+      <NamespaceForm key={ns} ns={ns} names={names.data ?? []} onChange={setNs} />
       <RouteTabs label="Key-value sections" tabs={[{ to: `/redis${search}`, label: "Keys", end: true }, { to: `/redis/console${search}`, label: "Console" }, { to: `/redis/pubsub${search}`, label: "Pub/Sub" }, { to: `/redis/stats${search}`, label: "Memory and stats" }, { to: `/redis/rules${search}`, label: "Rules" }]} className="mt-4" />
       <div className="mt-6">
         <Routes>
@@ -57,5 +50,19 @@ export default function RedisPage() {
         </Routes>
       </div>
     </div>
+  );
+}
+
+/** The namespace box. Keyed by the namespace in the URL, so a link or a reload resets what is typed. */
+function NamespaceForm({ ns, names, onChange }: { ns: string; names: KvNamespace[]; onChange: (ns: string) => void }) {
+  const [draft, setDraft] = useState(ns);
+  const draftError = draft.trim() && draft.trim() !== ns ? validate.namespaceName(draft.trim()) : undefined;
+  return (
+      <form className="mt-4 flex flex-wrap items-start gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); if (!draftError && draft.trim()) onChange(draft.trim()); }}>
+        <FormField label="Namespace" term="namespace" error={draftError} help={<>Names starting with <code className="font-mono">shared.</code> are shared by every tenant of a realm.</>}>
+          {(p) => <Input {...p} size="sm" list="kv-namespaces" className="w-48" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => draft.trim() && draft.trim() !== ns && !draftError && onChange(draft.trim())} />}
+        </FormField>
+        <datalist id="kv-namespaces">{names.map((n) => <option key={n.name} value={n.name}>{`${n.keys} keys`}</option>)}</datalist>
+      </form>
   );
 }

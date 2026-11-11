@@ -9,10 +9,10 @@ import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import ResourceRules from "../database/ResourceRules";
 import AclEditor from "./AclEditor";
-import { bucketScope } from "./BucketList";
 import BucketSettings from "./BucketSettings";
 import ObjectBrowser from "./ObjectBrowser";
 import SignedUrls from "./SignedUrls";
+import { bucketScope } from "./util";
 
 export default function BucketView() {
   const { bucket = "" } = useParams();

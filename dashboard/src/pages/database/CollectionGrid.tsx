@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Input } from "panelui-web/input";
 import { Table } from "panelui-web/table";
@@ -13,15 +13,7 @@ import { Button, ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import RecordEditor from "./RecordEditor";
-import { display, parseCell } from "./values";
-
-export const PER_PAGE = 25;
-
-/** The grid's state as it sits in the URL: `?filter=&sort=&page=&record=`. */
-export function readGridState(p: URLSearchParams) {
-  const page = Number.parseInt(p.get("page") ?? "1", 10);
-  return { filter: p.get("filter") ?? "", sort: p.get("sort") ?? "", page: Number.isFinite(page) && page > 0 ? page : 1, record: p.get("record") ?? "" };
-}
+import { PER_PAGE, display, parseCell, readGridState } from "./values";
 
 const FILTER_HELP: [string, string][] = [
   ["=  !=", "equal, not equal: status = \"live\""],
@@ -35,8 +27,6 @@ export default function CollectionGrid({ collection, collections }: { collection
   const name = collection.name;
   const [params, setParams] = useSearchParams();
   const { filter, sort, page, record } = readGridState(params);
-  const [filterText, setFilterText] = useState(filter);
-  useEffect(() => setFilterText(filter), [filter]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<unknown>();
   const [bulkField, setBulkField] = useState("");
@@ -94,34 +84,7 @@ export default function CollectionGrid({ collection, collections }: { collection
 
   return (
     <div className="space-y-3">
-      <form
-        className="flex flex-wrap items-center gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setState({ page: "1", filter: filterText.trim() });
-        }}
-      >
-        <Input size="sm"
-          aria-label="Filter"
-          className="w-80 font-mono"
-          placeholder='price > 10 && title ~ "pen"'
-          value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
-        />
-        <Button type="submit">Apply filter</Button>
-        {filtered && <Button type="button" onClick={() => setState({ page: "1", filter: "" })}>Clear filter</Button>}
-        <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer select-none">Filter help</summary>
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md border border-border p-2">
-            {FILTER_HELP.map(([op, text]) => (
-              <div key={op} className="contents">
-                <dt className="font-mono text-foreground">{op}</dt>
-                <dd>{text}</dd>
-              </div>
-            ))}
-          </dl>
-        </details>
-      </form>
+      <FilterForm key={filter} filter={filter} onApply={(f) => setState({ page: "1", filter: f })} />
 
       <ErrorView error={error} onRetry={reload} />
       <ErrorView error={actionError} />
@@ -218,3 +181,38 @@ export default function CollectionGrid({ collection, collections }: { collection
   );
 }
 
+
+/** The filter box and its help. Keyed by the applied filter, so a link or "Clear filter" resets what is typed. */
+function FilterForm({ filter, onApply }: { filter: string; onApply: (filter: string) => void }) {
+  const [filterText, setFilterText] = useState(filter);
+  return (
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onApply(filterText.trim());
+        }}
+      >
+        <Input size="sm"
+          aria-label="Filter"
+          className="w-80 font-mono"
+          placeholder='price > 10 && title ~ "pen"'
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+        />
+        <Button type="submit">Apply filter</Button>
+        {filter && <Button type="button" onClick={() => onApply("")}>Clear filter</Button>}
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer select-none">Filter help</summary>
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md border border-border p-2">
+            {FILTER_HELP.map(([op, text]) => (
+              <div key={op} className="contents">
+                <dt className="font-mono text-foreground">{op}</dt>
+                <dd>{text}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      </form>
+  );
+}

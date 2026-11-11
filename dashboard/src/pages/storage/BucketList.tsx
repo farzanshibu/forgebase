@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Input } from "panelui-web/input";
 import { Table } from "panelui-web/table";
 import { ApiError, VISIBILITIES, bucketUsage, createBucket, deleteBucket, listBuckets, reconcileStorage, rotateSigningKey, storageQuotaFor, storageStats } from "../../api";
-import type { Bucket, ReconcileReport, Visibility } from "../../api";
+import type { ReconcileReport, Visibility } from "../../api";
 import { useSession } from "../../auth/session";
 import { Check, Sel } from "../../components/controls";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
@@ -19,10 +19,7 @@ import { useCreateParam, useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import { validate } from "../../validate";
 import { when } from "../functions/util";
-import { parseBytes } from "./util";
-
-/** Where a bucket lives: one tenant, or the whole instance (FB-140: a tenant's buckets are stored as `<tenant>/<name>`). */
-export const bucketScope = (b: Bucket) => (b.tenant ? { label: b.tenant, text: `Tenant ${b.tenant}` } : { label: "Instance", text: "Instance-wide: every tenant's rules apply to it" });
+import { bucketScope, parseBytes } from "./util";
 
 export default function BucketList() {
   const buckets = useLoad(listBuckets, "buckets");

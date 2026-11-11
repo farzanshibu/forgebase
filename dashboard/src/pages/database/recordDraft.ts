@@ -114,7 +114,7 @@ export function parseJsonBody(text: string): Record<string, unknown> {
   try {
     doc = JSON.parse(text);
   } catch (e) {
-    throw new Error(`Invalid JSON: ${(e as Error).message}`);
+    throw new Error(`Invalid JSON: ${(e as Error).message}`, { cause: e });
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw new Error("A record must be a JSON object.");
   const body = { ...(doc as Record<string, unknown>) };
