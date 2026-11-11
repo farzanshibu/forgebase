@@ -19,6 +19,7 @@
 //! * **Fan-out** ([`fanout`]): optional, for channel messages and presence
 //!   across instances (Redis/Valkey pub/sub).
 
+pub mod channel;
 pub mod fanout;
 pub mod outbox;
 pub mod presence;
@@ -327,17 +328,14 @@ impl RealtimeService {
 
     /// Publishes a channel message as `ctx` (authorised with
     /// [`Action::ChannelPublish`]). Delivered to this instance's subscribers
-    /// and, through the fan-out, to every other instance's.
+    /// and, through the fan-out, to every other instance's. A caller with a
+    /// tenant publishes in its tenant's namespace ([`channel`], G17).
     pub async fn publish(&self, ctx: &AccessContext, channel: &str, data: Json) -> Result<(), RealtimeError> {
-        if !protocol::valid_channel(channel) {
-            return Err(RealtimeError::invalid(
-                "invalid_channel",
-                "channel names are 1-128 characters of [A-Za-z0-9_.:-]",
-            ));
-        }
+        let ch = channel::resolve(ctx, channel)?;
+        channel::check_publish(ctx, &ch)?;
         self.inner
             .data
-            .authorize_channel(ctx, Action::ChannelPublish, channel)
+            .authorize_channel(ctx, Action::ChannelPublish, &ch.rule_name)
             .map_err(|e| RealtimeError::from_data(e, ctx))?;
         let size = data.to_string().len();
         if size > self.inner.cfg.max_message_bytes {
@@ -345,7 +343,7 @@ impl RealtimeService {
         }
         self.emit_ephemeral(Ephemeral {
             origin: self.inner.instance.clone(),
-            channel: channel.to_owned(),
+            channel: ch.routed,
             kind: EphemeralKind::Message {
                 from: ctx.actor(),
                 data,
@@ -355,19 +353,15 @@ impl RealtimeService {
         Ok(())
     }
 
-    /// Members of a channel, for callers allowed to subscribe to it.
+    /// Members of a channel, for callers allowed to subscribe to it (in the
+    /// caller's tenant namespace, G17).
     pub fn presence(&self, ctx: &AccessContext, channel: &str) -> Result<Vec<Member>, RealtimeError> {
-        if !protocol::valid_channel(channel) {
-            return Err(RealtimeError::invalid(
-                "invalid_channel",
-                "channel names are 1-128 characters of [A-Za-z0-9_.:-]",
-            ));
-        }
+        let ch = channel::resolve(ctx, channel)?;
         self.inner
             .data
-            .authorize_channel(ctx, Action::ChannelSubscribe, channel)
+            .authorize_channel(ctx, Action::ChannelSubscribe, &ch.rule_name)
             .map_err(|e| RealtimeError::from_data(e, ctx))?;
-        Ok(self.inner.rooms.members(channel))
+        Ok(self.inner.rooms.members(&ch.routed))
     }
 
     /// Local delivery plus fan-out.

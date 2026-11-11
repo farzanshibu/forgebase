@@ -203,7 +203,7 @@ async fn identity(svc: &RealtimeService, parts: &Parts, pairs: &[(String, String
             return Err(RealtimeError::Unavailable("authentication is not configured".into()).into());
         };
         let cred = Credential::Bearer(token.to_owned());
-        let a = conn::authenticate(auth, &cred)
+        let (a, bound) = conn::authenticate(auth, &cred)
             .await
             .map_err(|e| RealtimeError::Unauthenticated(e.to_string()))?;
         if !conn::scopes_grant(a.scopes.as_deref(), "realtime", Access::Read, None) {
@@ -211,7 +211,17 @@ async fn identity(svc: &RealtimeService, parts: &Parts, pairs: &[(String, String
                 RealtimeError::Forbidden("insufficient_scope: realtime needs scope realtime:read".into()).into(),
             );
         }
-        let ctx = a.access_context(ctx.request_id.as_deref());
+        // As the HTTP auth layer does: the identity's home realm, and the
+        // tenant a key is bound to (FB-138; the auth service validated it for
+        // the key's owner just now).
+        let mut a_ctx = auth.access_context_for(&a);
+        if let Some(id) = ctx.request_id.as_deref() {
+            a_ctx = a_ctx.with_request_id(id);
+        }
+        let ctx = match bound {
+            Some(t) => a_ctx.with_tenant(t),
+            None => a_ctx,
+        };
         return Ok(Identity {
             ctx,
             credential: Some(cred),
