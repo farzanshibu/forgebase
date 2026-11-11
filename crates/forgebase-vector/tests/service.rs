@@ -224,6 +224,7 @@ async fn invalid_vectors_and_requests_are_rejected() {
         description: String::new(),
         fields: vec![field("emb", 0, Metric::L2)],
         exact_threshold: None,
+        source_collection: None,
     };
     assert!(h.svc.create_collection(&ctx, bad_dim).await.is_err());
     let dup = NewCollection {
@@ -231,6 +232,7 @@ async fn invalid_vectors_and_requests_are_rejected() {
         description: String::new(),
         fields: vec![],
         exact_threshold: None,
+        source_collection: None,
     };
     assert!(matches!(
         h.svc.create_collection(&ctx, dup).await,

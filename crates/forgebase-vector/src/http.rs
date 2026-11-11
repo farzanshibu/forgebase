@@ -136,7 +136,11 @@ async fn list_collections(State(s): State<VectorService>, Access(ctx): Access) -
     responses((status = 201, description = "Created", body = VectorCollection),
               (status = 409, description = "The name is taken")))]
 async fn create_collection(State(s): State<VectorService>, Access(ctx): Access, new: Body<NewCollection>) -> ApiResult {
-    // The name is in the body: the service checks it.
+    // The name is in the body, so the service checks it; administration is
+    // granted by permissions only, which anonymous callers never hold.
+    if ctx.principal == forgebase_data::Principal::Anonymous {
+        return Err(api(VectorError::Unauthenticated));
+    }
     let new = new?.0;
     let c = s.create_collection(&ctx, new).await.map_err(api)?;
     Ok((StatusCode::CREATED, Json(c)).into_response())

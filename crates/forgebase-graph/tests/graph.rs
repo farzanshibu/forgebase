@@ -519,9 +519,10 @@ async fn anonymous_is_denied_everywhere_and_nothing_is_written() {
 #[tokio::test]
 async fn policy_decisions_are_honoured_and_fail_closed() {
     let env = env_with(Arc::new(TestPolicy)).await;
-    env.admin().node("a", "User").await;
-    env.admin().node("b", "User").await;
-    let user = |id: &str| env.client(Some(AccessContext::user("users", id)));
+    let admin = env.client(Some(admin_in("t1")));
+    admin.node("a", "User").await;
+    admin.node("b", "User").await;
+    let user = |id: &str| env.client(Some(AccessContext::user("users", id).with_tenant("t1")));
 
     let reader = user("reader");
     assert_eq!(reader.get("/nodes/a").await.0, StatusCode::OK);
@@ -538,12 +539,21 @@ async fn policy_decisions_are_honoured_and_fail_closed() {
     writer.edge("w1", "T", "a", "b").await;
 
     assert_eq!(user("stranger").get("/nodes/a").await.0, StatusCode::FORBIDDEN);
-    // a row-level Filter decision cannot be honoured for graph data: denied
+    // FB-139: a Filter decision is a label rule, compiled into the statement
+    // (this one is `true`); it never grants writes.
     let (s, r) = user("rowfilter").get("/nodes/a").await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(user("rowfilter").delete("/nodes/a").await.0, StatusCode::FORBIDDEN);
+    // FB-139: callers that are not privileged need a tenant, but only once
+    // they are allowed at all.
+    let tenantless = |id: &str| env.client(Some(AccessContext::user("users", id)));
+    let (s, r) = tenantless("reader").get("/nodes/a").await;
     assert_eq!(
         (s, r["error"]["code"].as_str()),
-        (StatusCode::FORBIDDEN, Some("forbidden"))
+        (StatusCode::BAD_REQUEST, Some("tenant_required")),
+        "{r}"
     );
+    assert_eq!(tenantless("stranger").get("/nodes/a").await.0, StatusCode::FORBIDDEN);
     // the default authorizer lets non-admin users do nothing
     let plain = env_with(Arc::new(forgebase_data::DefaultAuthorizer)).await;
     assert_eq!(
