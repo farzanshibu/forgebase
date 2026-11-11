@@ -70,12 +70,16 @@ pub async fn run(g: &GlobalArgs, args: ConvertCli) -> anyhow::Result<ExitCode> {
     let loaded = g.load()?;
     let config = &loaded.config;
     let layout = DataLayout::new(&config.data_dir);
+    let no_database = || anyhow!("no database in {} (run `forgebase init`)", layout.root().display());
+    if !layout.root().is_dir() {
+        return Err(no_database());
+    }
     let lock = DataDirLock::acquire(&layout).map_err(|e| match e {
         ServerError::Locked { .. } => anyhow!("{e}; stop the server before converting the database"),
         other => other.into(),
     })?;
     let Some(from) = database::existing(&layout)? else {
-        bail!("no database in {} (run `forgebase init`)", layout.root().display());
+        return Err(no_database());
     };
     let to = match args.to {
         To::Sqlite => BackendMarker::Sqlite,
