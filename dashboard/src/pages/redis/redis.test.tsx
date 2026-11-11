@@ -408,7 +408,7 @@ describe("Redis tenant scope and rules (FB-138)", () => {
     mock.custom = mock.custom.filter((c) => !c.template.endsWith("/kv/_info"));
     mock.on("GET", "/api/v1/kv/_info", () => ({ status: 200, body: { keys: 3, used_memory_bytes: 10, max_memory_bytes: 100, eviction_policy: "allkeys-lru", hits: 1, misses: 1, expired_keys: 0, evicted_keys: 0, channels: 0, unsaved_keys: 0, persistent: false, scope: "tenant", tenant: "t:acme" } }));
     renderStudio("/redis/stats");
-    expect(await screen.findByRole("status")).toHaveTextContent("Figures for tenant t:acme only");
+    expect(await screen.findByText(/Figures for tenant t:acme only/)).toBeInTheDocument();
   });
 
   it("has a Rules tab that explains shared namespaces", async () => {

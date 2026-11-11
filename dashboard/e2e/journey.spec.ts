@@ -113,8 +113,8 @@ test.describe.serial("first journey", () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/database");
-    await page.getByRole("link", { name: "New collection" }).click();
-    await page.getByLabel("Name", { exact: true }).fill(n.collection);
+    await page.getByRole("button", { name: "New collection" }).click();
+    await page.getByLabel(/^Name/).fill(n.collection);
     await page.getByRole("button", { name: "Add field" }).click();
     await page.getByLabel("Field 1 name").fill("title");
     await page.getByLabel("Field 1 required").check();
@@ -125,21 +125,21 @@ test.describe.serial("first journey", () => {
     await page.getByRole("button", { name: "Create collection" }).click();
     await expect(page).toHaveURL(new RegExp(`/database/c/${n.collection}$`));
 
-    // A-07: today a record is a raw JSON textarea; a typed form per field is the fix.
-    await page.getByRole("link", { name: "Add record" }).click();
-    await page.getByLabel("Record JSON").fill(JSON.stringify({ title: "Hello from the walkthrough", done: false }));
-    await page.getByRole("button", { name: "Create record" }).click();
-    await expect(page).toHaveURL(/\/r\/[^/]+$/);
-    await page.getByRole("link", { name: "Back to data" }).click();
+    // A-07: a typed form per field (a text box for title, a switch for done) opens in a side sheet.
+    await page.getByRole("button", { name: "Add record" }).first().click();
+    const form = page.getByRole("form", { name: "New record" });
+    await form.getByLabel("title").fill("Hello from the walkthrough");
+    await form.getByRole("button", { name: "Create record" }).click();
     await expect(page.getByText("Hello from the walkthrough")).toBeVisible();
     await shot(page, info, "02b-records");
   });
 
   // A-03: every resource shows a Use from code panel (JavaScript SDK, Rust SDK, curl).
-  test.fixme("3. copy a working snippet from the collection's Use from code panel", async () => {
+  test("3. copy a working snippet from the collection's Use from code panel", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto(`/admin/database/c/${n.collection}`);
+    await page.getByRole("button", { name: "Use from code" }).click();
     const panel = page.getByRole("region", { name: "Use from code" });
     await expect(panel).toContainText(n.collection);
     await expect(panel).toContainText("<YOUR_API_KEY>");
@@ -166,9 +166,11 @@ test.describe.serial("first journey", () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/storage");
-    await page.getByLabel("Name", { exact: true }).fill(n.bucket);
+    await page.getByRole("button", { name: "New bucket" }).first().click();
+    await page.getByLabel(/^Name/).fill(n.bucket);
     await page.getByRole("button", { name: "Create bucket" }).click();
-    await page.getByRole("link", { name: n.bucket }).click();
+    // creating a bucket opens it; drop a file into the upload area
+    await expect(page.getByRole("heading", { name: n.bucket })).toBeVisible();
     await page.getByLabel("Choose files").setInputFiles({ name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("hello from the walkthrough\n") });
     await expect(page.getByRole("button", { name: "Select hello.txt" })).toBeVisible();
     await shot(page, info, "04-upload");
