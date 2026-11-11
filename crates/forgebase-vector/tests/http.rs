@@ -13,7 +13,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::{self, Next};
-use common::{Rng, open_db};
+use common::{Rng, test_db};
 use forgebase_api::{AppState, RouterOptions};
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, DefaultAuthorizer};
@@ -24,12 +24,14 @@ use tower::ServiceExt;
 struct Api {
     app: Router,
     _dir: tempfile::TempDir,
+    _test: forgebase_db::testing::TestDb,
 }
 
 impl Api {
     async fn new(ctx: Option<AccessContext>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let db = open_db(dir.path()).await;
+        let test = test_db(dir.path()).await;
+        let db = test.database().clone();
         let layout = DataLayout::new(dir.path().join("data"));
         let state = AppState::with_authorizer(db, layout.clone(), Arc::new(DefaultAuthorizer))
             .await
@@ -60,7 +62,7 @@ impl Api {
                 }
             }));
         }
-        Self { app, _dir: dir }
+        Self { app, _dir: dir, _test: test }
     }
 
     async fn admin() -> Self {

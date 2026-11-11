@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, Authorizer, DataService, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::testing::{TestDb, test_backend};
+use forgebase_db::Database;
 use forgebase_vector::model::*;
 use forgebase_vector::{VectorConfig, VectorService};
 
@@ -16,6 +17,7 @@ pub struct Harness {
     pub db: Database,
     pub svc: VectorService,
     pub dir: tempfile::TempDir,
+    pub test: TestDb,
 }
 
 pub fn admin() -> AccessContext {
@@ -36,15 +38,9 @@ pub fn index_dir(dir: &Path) -> PathBuf {
     layout(dir).indexes_dir().join("vector")
 }
 
-pub async fn open_db(dir: &Path) -> Database {
-    let layout = layout(dir);
-    layout.ensure().unwrap();
-    let cfg = forgebase_core::Config::defaults(dir);
-    let db = Database::open(DbOptions::from_config(&cfg.database, layout.database_path()))
-        .await
-        .unwrap();
-    db.migrate(Some(&layout.backups_dir())).await.unwrap();
-    db
+pub async fn test_db(dir: &Path) -> TestDb {
+    layout(dir).ensure().unwrap();
+    test_backend().await
 }
 
 pub async fn service(
@@ -65,9 +61,10 @@ pub async fn harness() -> Harness {
 
 pub async fn harness_with(config: VectorConfig) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let db = open_db(dir.path()).await;
+    let test = test_db(dir.path()).await;
+    let db = test.database().clone();
     let svc = service(&db, dir.path(), config, Arc::new(DefaultAuthorizer)).await;
-    Harness { db, svc, dir }
+    Harness { db, svc, dir, test }
 }
 
 impl Harness {
@@ -80,11 +77,11 @@ impl Harness {
 
     /// A fresh service without saving first, as after a crash.
     pub async fn reopen_without_shutdown(self, config: VectorConfig) -> Harness {
-        let Harness { db, dir, .. } = self;
+        let Harness { db, dir, test, .. } = self;
         db.close().await;
-        let db = open_db(dir.path()).await;
+        let db = Database::open(test.options()).await.unwrap();
         let svc = service(&db, dir.path(), config, Arc::new(DefaultAuthorizer)).await;
-        Harness { db, svc, dir }
+        Harness { db, svc, dir, test }
     }
 }
 

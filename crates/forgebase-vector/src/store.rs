@@ -87,6 +87,17 @@ fn keys_json(keys: &[u64]) -> Value {
     Value::Text(serde_json::to_string(keys).unwrap_or_else(|_| "[]".into()))
 }
 
+/// `expr` is one of the integer keys in the JSON array bound to `param`.
+/// PostgreSQL compares the elements as text, so they are cast to bigint (the
+/// key stays a plain bigint comparison, usable by the index).
+fn key_in_list(dialect: &dyn forgebase_db::Dialect, expr: &str, param: &str) -> String {
+    if dialect.name() == "postgres" {
+        format!("{expr} = ANY (SELECT CAST(jsonb_array_elements_text(CAST({param} AS jsonb)) AS bigint))")
+    } else {
+        dialect.in_json_list(expr, param)
+    }
+}
+
 fn int_of(n: u64) -> Value {
     Value::Integer(i64::try_from(n).unwrap_or(i64::MAX))
 }
@@ -324,6 +335,7 @@ pub(crate) async fn delete_items(
     let mut b = SqlBuilder::new(dialect);
     let p_cid = b.bind(cid);
     let p_ids = b.bind(Value::Text(serde_json::to_string(ids).unwrap_or_else(|_| "[]".into())));
+    let id_in = dialect.in_json_list("id", &p_ids);
     let cond = match filter {
         Some(f) => format!(
             " AND key IN (SELECT i.key FROM {ITEMS} i WHERE i.collection_id = {p_cid} AND ({}))",
@@ -335,7 +347,7 @@ pub(crate) async fn delete_items(
         .fetch_all(&Statement::new(
             format!(
                 "DELETE FROM _forgebase_vector_items WHERE collection_id = {p_cid} \
-                 AND id IN (SELECT value FROM json_each({p_ids})){cond} RETURNING key"
+                 AND {id_in}{cond} RETURNING key"
             ),
             b.into_params(),
         ))
@@ -434,7 +446,8 @@ pub(crate) async fn items_by_keys(db: &dyn Backend, cid: i64, keys: &[u64]) -> R
         .fetch_all(&Statement::new(
             format!(
                 "SELECT {ITEM_COLS} FROM _forgebase_vector_items i \
-                 WHERE i.collection_id = ?1 AND i.key IN (SELECT value FROM json_each(?2))"
+                 WHERE i.collection_id = ?1 AND {}",
+                key_in_list(db.dialect(), "i.key", "?2")
             ),
             vec![cid.into(), keys_json(keys)],
         ))
@@ -452,10 +465,13 @@ fn vectors_rows(rows: Rows) -> Result<HashMap<u64, Vec<u8>>> {
         .collect()
 }
 
-fn vectors_by_keys_stmt(cid: i64, field: &str, keys: &[u64]) -> Statement {
+fn vectors_by_keys_stmt(dialect: &dyn forgebase_db::Dialect, cid: i64, field: &str, keys: &[u64]) -> Statement {
     Statement::new(
-        "SELECT key, vector FROM _forgebase_vector_values \
-         WHERE collection_id = ?1 AND field = ?2 AND key IN (SELECT value FROM json_each(?3))",
+        format!(
+            "SELECT key, vector FROM _forgebase_vector_values \
+             WHERE collection_id = ?1 AND field = ?2 AND {}",
+            key_in_list(dialect, "key", "?3")
+        ),
         vec![cid.into(), field.into(), keys_json(keys)],
     )
 }
@@ -470,7 +486,7 @@ pub(crate) async fn vectors_by_keys(
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
-    vectors_rows(db.fetch_all(&vectors_by_keys_stmt(cid, field, keys)).await?)
+    vectors_rows(db.fetch_all(&vectors_by_keys_stmt(db.dialect(), cid, field, keys)).await?)
 }
 
 /// One page of a field's vectors in key order, after `after`, optionally only
@@ -546,9 +562,10 @@ pub(crate) async fn verify(db: &dyn Backend, cid: i64, keys: &[u64], filter: &Fi
     let p_cid = b.bind(cid);
     let p_keys = b.bind(keys_json(keys));
     let cond = filter.compile(&mut b, "i")?;
+    let key_in = key_in_list(db.dialect(), "i.key", &p_keys);
     let sql = format!(
         "SELECT i.key FROM {ITEMS} i WHERE i.collection_id = {p_cid} \
-         AND i.key IN (SELECT value FROM json_each({p_keys})) AND ({cond})"
+         AND {key_in} AND ({cond})"
     );
     let rows = db.fetch_all(&Statement::new(sql, b.into_params())).await?;
     rows.rows.iter().map(|r| key(&r[0])).collect()
@@ -570,12 +587,26 @@ pub(crate) async fn keyword(
         None => String::new(),
     };
     let p_limit = b.bind(int_of(limit as u64));
-    let sql = format!(
-        "SELECT i.key, bm25(_forgebase_vector_fts) AS rank FROM _forgebase_vector_fts \
-         JOIN {ITEMS} i ON i.key = _forgebase_vector_fts.rowid \
-         WHERE _forgebase_vector_fts MATCH {p_match} AND i.collection_id = {p_cid}{cond} \
-         ORDER BY rank, i.key LIMIT {p_limit}"
-    );
+    let pg = db.dialect().name() == "postgres";
+    let sql = if pg {
+        // tsvector hybrid search (ADR-0028 §7.4): the generated, GIN-indexed
+        // column of _forgebase_vector_fts; the rule and caller filter stay
+        // pre-filters on the items (FB-139).
+        format!(
+            "SELECT i.key, ts_rank(f.fts, q.query) AS rank FROM _forgebase_vector_fts f \
+             JOIN {ITEMS} i ON i.key = f.rowid \
+             CROSS JOIN (SELECT websearch_to_tsquery('simple', _forgebase_unaccent({p_match})) AS query) q \
+             WHERE f.fts @@ q.query AND i.collection_id = {p_cid}{cond} \
+             ORDER BY rank DESC, i.key LIMIT {p_limit}"
+        )
+    } else {
+        format!(
+            "SELECT i.key, bm25(_forgebase_vector_fts) AS rank FROM _forgebase_vector_fts \
+             JOIN {ITEMS} i ON i.key = _forgebase_vector_fts.rowid \
+             WHERE _forgebase_vector_fts MATCH {p_match} AND i.collection_id = {p_cid}{cond} \
+             ORDER BY rank, i.key LIMIT {p_limit}"
+        )
+    };
     let rows = db.fetch_all(&Statement::new(sql, b.into_params())).await?;
     rows.rows
         .iter()
@@ -586,7 +617,8 @@ pub(crate) async fn keyword(
                 Value::Integer(i) => *i as f64,
                 _ => return Err(bad("bm25")),
             };
-            Ok((key(&r[0])?, -rank))
+            // bm25 is lower-is-better, ts_rank higher-is-better.
+            Ok((key(&r[0])?, if pg { rank } else { -rank }))
         })
         .collect()
 }

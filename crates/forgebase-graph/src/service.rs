@@ -878,9 +878,9 @@ impl GraphService {
             and(acc.node_sql(&mut b, "n")?.as_deref())
         );
         let type_sql = if types.is_empty() {
-            ""
+            String::new()
         } else {
-            " AND e.type IN (SELECT value FROM json_each(?3))"
+            format!(" AND {}", self.dialect().in_json_list("e.type", "?3"))
         };
         // One side of the union: edges whose `own` end is the node, joined to
         // the node at the `nbr` end. `dir` says where the queried node sits on
@@ -958,11 +958,20 @@ impl GraphService {
             i64::from(limit + 1).into(),
         ];
         let mut filter_sql = String::new();
-        for (key, value) in conds {
-            params.push(format!("$.\"{key}\"").into());
-            let path = params.len();
-            params.push(value);
-            filter_sql.push_str(&format!(" AND json_extract(n.properties, ?{path}) = ?{}", path + 1));
+        let pg = self.dialect().name() == "postgres";
+        for (key, value, json) in conds {
+            if pg {
+                // jsonb equality keeps the JSON type: a boolean is not 1.
+                params.push(key.into());
+                let path = params.len();
+                params.push(json.to_string().into());
+                filter_sql.push_str(&format!(" AND n.properties -> ?{path} = CAST(?{} AS jsonb)", path + 1));
+            } else {
+                params.push(format!("$.\"{key}\"").into());
+                let path = params.len();
+                params.push(value);
+                filter_sql.push_str(&format!(" AND json_extract(n.properties, ?{path}) = ?{}", path + 1));
+            }
         }
         // Rules (FB-139): every step crosses a visible edge into a visible
         // node, so hidden parts of the graph are never walked through.
@@ -975,39 +984,72 @@ impl GraphService {
         let nvis = and(ncond.as_deref());
         let params = b.into_params();
         let t = if types.is_empty() {
-            ""
+            String::new()
         } else {
-            " AND e.type IN (SELECT value FROM json_each(?4))"
+            format!(" AND {}", self.dialect().in_json_list("e.type", "?4"))
         };
-        // CROSS JOIN pins the walk queue as the outer loop: left to itself the
-        // planner scans the edge table for every queue row (measured: 37 s
-        // instead of 0.1 s for 15 000 rows on a 10 000-edge graph).
-        let step = |join: &str, next: &str, extra: &str| {
-            let into = match &ncond {
-                Some(c) => format!(" JOIN {NODES} n ON n.tenant = e.tenant AND n.id = e.{next} AND {c}"),
-                None => String::new(),
+        let sql = if pg {
+            // PostgreSQL allows one reference to the recursive term, and no
+            // LIMIT inside it: the steps are a lateral UNION, the row cap sits
+            // outside the CTE (rows are produced on demand, so it stops the
+            // walk), and UNION (not ALL) is the cycle guard with the depth
+            // bound.
+            let step = |join: &str, next: &str, extra: &str| {
+                let into = match &ncond {
+                    Some(c) => format!(" JOIN {NODES} n ON n.tenant = e.tenant AND n.id = e.{next} AND {c}"),
+                    None => String::new(),
+                };
+                format!("SELECT e.{next} AS nxt FROM {EDGES} e{into} WHERE e.tenant = ?1 AND {join}{extra}{t}{evis}")
+            };
+            let forward = step("e.source = w.node", "target", "");
+            let backward = step("e.target = w.node", "source", "");
+            let forward_undirected = step("e.target = w.node", "source", " AND e.directed = 0");
+            let backward_undirected = step("e.source = w.node", "target", " AND e.directed = 0");
+            let lateral = match q.direction {
+                Direction::Out => format!("{forward} UNION {forward_undirected}"),
+                Direction::In => format!("{backward} UNION {backward_undirected}"),
+                Direction::Both => format!("{forward} UNION {backward}"),
             };
             format!(
-                "SELECT e.{next}, w.depth + 1 FROM walk w CROSS JOIN {EDGES} e ON e.tenant = ?1 AND {join}{into} \
-                 WHERE w.depth < ?3{extra}{t}{evis}"
+                "WITH RECURSIVE walk(node, depth) AS (SELECT CAST(?2 AS text), 0 UNION \
+                 SELECT s.nxt, w.depth + 1 FROM walk w CROSS JOIN LATERAL ({lateral}) s WHERE w.depth < ?3) \
+                 SELECT {N_COLS}, m.depth FROM (SELECT node, min(depth) AS depth \
+                 FROM (SELECT node, depth FROM walk LIMIT {MAX_WALK_ROWS}) capped GROUP BY node) m \
+                 JOIN {NODES} n ON n.tenant = ?1 AND n.id = m.node \
+                 WHERE m.depth >= ?5 AND (CAST(?6 AS text) IS NULL OR n.label = ?6){filter_sql}{nvis} \
+                 ORDER BY m.depth, n.id LIMIT ?7"
+            )
+        } else {
+            // CROSS JOIN pins the walk queue as the outer loop: left to itself the
+            // planner scans the edge table for every queue row (measured: 37 s
+            // instead of 0.1 s for 15 000 rows on a 10 000-edge graph).
+            let step = |join: &str, next: &str, extra: &str| {
+                let into = match &ncond {
+                    Some(c) => format!(" JOIN {NODES} n ON n.tenant = e.tenant AND n.id = e.{next} AND {c}"),
+                    None => String::new(),
+                };
+                format!(
+                    "SELECT e.{next}, w.depth + 1 FROM walk w CROSS JOIN {EDGES} e ON e.tenant = ?1 AND {join}{into} \
+                     WHERE w.depth < ?3{extra}{t}{evis}"
+                )
+            };
+            let forward = step("e.source = w.node", "target", "");
+            let backward = step("e.target = w.node", "source", "");
+            let forward_undirected = step("e.target = w.node", "source", " AND e.directed = 0");
+            let backward_undirected = step("e.source = w.node", "target", " AND e.directed = 0");
+            let recursive = match q.direction {
+                Direction::Out => format!("{forward} UNION {forward_undirected}"),
+                Direction::In => format!("{backward} UNION {backward_undirected}"),
+                Direction::Both => format!("{forward} UNION {backward}"),
+            };
+            format!(
+                "WITH RECURSIVE walk(node, depth) AS (SELECT ?2, 0 UNION {recursive} LIMIT {MAX_WALK_ROWS}) \
+                 SELECT {N_COLS}, m.depth FROM (SELECT node, min(depth) AS depth FROM walk GROUP BY node) m \
+                 JOIN {NODES} n ON n.tenant = ?1 AND n.id = m.node \
+                 WHERE m.depth >= ?5 AND (?6 IS NULL OR n.label = ?6){filter_sql}{nvis} \
+                 ORDER BY m.depth, n.id LIMIT ?7"
             )
         };
-        let forward = step("e.source = w.node", "target", "");
-        let backward = step("e.target = w.node", "source", "");
-        let forward_undirected = step("e.target = w.node", "source", " AND e.directed = 0");
-        let backward_undirected = step("e.source = w.node", "target", " AND e.directed = 0");
-        let recursive = match q.direction {
-            Direction::Out => format!("{forward} UNION {forward_undirected}"),
-            Direction::In => format!("{backward} UNION {backward_undirected}"),
-            Direction::Both => format!("{forward} UNION {backward}"),
-        };
-        let sql = format!(
-            "WITH RECURSIVE walk(node, depth) AS (SELECT ?2, 0 UNION {recursive} LIMIT {MAX_WALK_ROWS}) \
-             SELECT {N_COLS}, m.depth FROM (SELECT node, min(depth) AS depth FROM walk GROUP BY node) m \
-             JOIN {NODES} n ON n.tenant = ?1 AND n.id = m.node \
-             WHERE m.depth >= ?5 AND (?6 IS NULL OR n.label = ?6){filter_sql}{nvis} \
-             ORDER BY m.depth, n.id LIMIT ?7"
-        );
         let rows = self.backend().fetch_all(&Statement::new(sql, params)).await?;
         let mut truncated = rows.len() > limit as usize;
         let nodes = rows
@@ -1029,9 +1071,9 @@ impl GraphService {
                 ids.push(q.start.clone());
             }
             let type_sql = if types.is_empty() {
-                ""
+                String::new()
             } else {
-                " AND e.type IN (SELECT value FROM json_each(?3))"
+                format!(" AND {}", self.dialect().in_json_list("e.type", "?3"))
             };
             let mut b = SqlBuilder::new(self.dialect());
             bind_all(
@@ -1045,13 +1087,15 @@ impl GraphService {
             );
             // Both ends are among the visible nodes; the type must be too.
             let evis = and(acc.edges.compile(&mut b, "e")?.as_deref());
+            let src_in = self.dialect().in_json_list("e.source", "?2");
+            let tgt_in = self.dialect().in_json_list("e.target", "?2");
             let rows = self
                 .backend()
                 .fetch_all(&Statement::new(
                     format!(
                         "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 \
-                         AND e.source IN (SELECT value FROM json_each(?2)) \
-                         AND e.target IN (SELECT value FROM json_each(?2)){type_sql}{evis} ORDER BY e.id LIMIT ?4"
+                         AND {src_in} \
+                         AND {tgt_in}{type_sql}{evis} ORDER BY e.id LIMIT ?4"
                     ),
                     b.into_params(),
                 ))
@@ -1103,18 +1147,19 @@ impl GraphService {
         let mut frontier = vec![q.from.clone()];
         let mut reached = q.from == q.to;
         let t = if types.is_empty() {
-            ""
+            String::new()
         } else {
-            " AND e.type IN (SELECT value FROM json_each(?3))"
+            format!(" AND {}", self.dialect().in_json_list("e.type", "?3"))
         };
         let hop = |from: &str, to: &str, extra: &str| {
+            let from_in = self.dialect().in_json_list(&format!("e.{from}"), "?2");
             let into = match &ncond {
                 Some(c) => format!(" JOIN {NODES} n ON n.tenant = e.tenant AND n.id = e.{to} AND {c}"),
                 None => String::new(),
             };
             format!(
                 "SELECT e.{to} AS nxt, e.id AS eid, e.{from} AS prev FROM {EDGES} e{into} WHERE e.tenant = ?1 \
-                 AND e.{from} IN (SELECT value FROM json_each(?2)){extra}{t}{evis}"
+                 AND {from_in}{extra}{t}{evis}"
             )
         };
         let (a, b) = match q.direction {
@@ -1189,7 +1234,8 @@ impl GraphService {
             .backend()
             .fetch_all(&Statement::new(
                 format!(
-                    "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND n.id IN (SELECT value FROM json_each(?2))"
+                    "SELECT {N_COLS} FROM {NODES} n WHERE n.tenant = ?1 AND {}",
+                    self.dialect().in_json_list("n.id", "?2")
                 ),
                 vec![tenant.into(), json_list(ids).into()],
             ))
@@ -1214,7 +1260,8 @@ impl GraphService {
             .backend()
             .fetch_all(&Statement::new(
                 format!(
-                    "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND e.id IN (SELECT value FROM json_each(?2))"
+                    "SELECT {E_COLS} FROM {EDGES} e WHERE e.tenant = ?1 AND {}",
+                    self.dialect().in_json_list("e.id", "?2")
                 ),
                 vec![tenant.into(), json_list(ids).into()],
             ))
@@ -1414,7 +1461,7 @@ fn check_limit(limit: Option<u32>) -> Result<u32> {
 }
 
 /// Label and property equality conditions of a validated filter.
-type Conditions = (Option<String>, Vec<(String, Value)>);
+type Conditions = (Option<String>, Vec<(String, Value, Json)>);
 
 fn check_filter(filter: Option<NodeFilter>) -> Result<Conditions> {
     let Some(f) = filter else {
@@ -1436,8 +1483,8 @@ fn check_filter(filter: Option<NodeFilter>) -> Result<Conditions> {
                 "property names in a filter use A-Z a-z 0-9 _ - (up to 64)",
             ));
         }
-        let v = match value {
-            Json::String(s) => Value::Text(s),
+        let v = match &value {
+            Json::String(s) => Value::Text(s.clone()),
             Json::Bool(b) => Value::Integer(i64::from(b)),
             Json::Number(n) => match n.as_i64() {
                 Some(i) => Value::Integer(i),
@@ -1450,7 +1497,7 @@ fn check_filter(filter: Option<NodeFilter>) -> Result<Conditions> {
                 ));
             }
         };
-        conds.push((key, v));
+        conds.push((key, v, value));
     }
     Ok((label, conds))
 }
