@@ -1,10 +1,12 @@
 import { Textarea } from "panelui-web/textarea";
+import { EmptyState } from "../../components/EmptyState";
 import { useState } from "react";
 import { createClient, deleteClient, GRANT_TYPES, listClients, OIDC_SCOPES, rotateClientSecret, updateClient, type ClientApp, type ClientInput, type ClientType } from "../../api";
+import { HelpTip } from "../../components/HelpTip";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, Field, MultiPick } from "../access/shared";
+import { ActionError, Field, MultiPick } from "../access/shared";
 import { useRun } from "../access/util";
 import { Check, Note, SecretOnce } from "./shared";
 import { fmtIso, lines, useRealm } from "./util";
@@ -26,9 +28,10 @@ export default function ClientsPage() {
     <div className="space-y-6">
       {secret && <SecretOnce label={secret.label} secret={secret.value} onDismiss={() => setSecret(undefined)} />}
       <Panel title={`Client apps in ${realm}`}>
+        <p className="mb-2 flex items-center gap-1 text-sm text-muted-foreground">A client app is a program that signs users in through this realm with <HelpTip term="oidc">OIDC</HelpTip>.</p>
         <ErrorView error={l.error} />
         {l.loading && !l.error && <Loading what="Loading client apps" />}
-        {l.data?.length === 0 && <Empty>No client apps yet.</Empty>}
+        {l.data?.length === 0 && <EmptyState compact title="No client apps yet." why="A client app is a program that signs users in through this realm using OIDC. Create one below." />}
         {l.data && l.data.length > 0 && (
           <Table className="w-full text-left text-sm">
             <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Name</Table.Head><Table.Head>Client id</Table.Head><Table.Head>Type</Table.Head><Table.Head>Secret</Table.Head><Table.Head /></Table.Row></Table.Header>

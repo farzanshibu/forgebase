@@ -1661,3 +1661,163 @@ HTTP against a real standby.
 - **FB-175 (admin API):** adding an external node runs `check_replica`
   (400 `node_mismatch`) and stores `primary_facts` (version, identifier,
   timeline); show `SetHandle::replicas().status()` for live health.
+
+## Addendum: FB-164, queue deliveries on pgmq (2026-11-11)
+
+Built as §1.6 describes. Where the code differs from the text above, or
+decides something it left open, it is said here.
+
+**Files.** `crates/forgebase-queue/src/pgmq/{mod.rs, engine.rs}` (new):
+the delivery store over pgmq queues, engine selection, the layout check,
+reconcile and `queue.convert`. Engine branches in `consume.rs` (claim,
+materialisation, reap, ack, nack, deadline, release, in-flight, seek,
+snapshots, dead letters), `ops.rs` (metrics, backlog, retention) and
+`service.rs` (queue created/dropped with the subscription and with a
+forced topic delete). `model.rs`: `DeliveryEngine`, `ConvertReport`.
+Tests: `tests/pgmq.rs` (new), the harness runs FB-161's extension setup on
+PostgreSQL, the FIX-9 plan test knows both engines. No migration. Outside
+Owns: the restart-reason fix in `forgebase-db/src/pg/extensions.rs` (below).
+
+**Which engine.** The service has no `Database` handle (it gets a
+`dyn Backend` through the data core), so it reads what
+`Database::feature_active(Feature::Queue)` is derived from:
+`_forgebase_meta` `ext.queue.engine = extension` (FB-161 pins it at the
+first setup; the setup refuses to start when the pinned extension is
+gone). With that pin, pgmq installed and the layout check passing, the
+service uses pgmq; otherwise the portable table. It decides once, on the
+first delivery operation, and keeps the answer behind a `tokio` `RwLock`:
+every delivery operation holds the read guard for its transaction,
+`queue.convert` the write guard. `QueueService::delivery_engine()` tells.
+
+**Queue names.** `fbs_` and the first 128 bits of SHA-256 of the stored
+subscription name (`<tenant>/<name>` for a tenant's), in hex: 36
+characters (pgmq allows 47; stored names are not identifiers). Tenant and
+owner stay in ForgeBase's tables (FB-141); the owner's view of record
+messages is still applied at claim from `source_row`.
+
+**Entry body.** `{seq, key, lease, consumer, history}`; §1.6 named four
+fields, `consumer` is added: it marks a leased entry (`consumer` not
+null) and serves streaming flow control and `release_consumer`. `lease`
+stays after a lease expires, so a late ack counts until the entry is
+leased again (ADR-0022 §4), exactly as `lease_id` does on the portable
+table. `read_ct` is the attempt count, `vt` is `available_at` (ready) or
+`lease_until` (leased). History entries have the portable shape (`attempt,
+at, consumer, outcome, error`, at most 25).
+
+**Clock.** Every `vt` is the service clock's epoch milliseconds as
+`timestamptz 'epoch' + ms * interval '1 millisecond'` (exact both ways),
+never `now()`: tests drive a manual clock, and both engines must agree.
+`pgmq.send_batch(name, msgs, vt timestamptz)` takes it.
+
+**Statements** (all ForgeBase's own over `pgmq.q_fbs_…`):
+- materialisation: one `pgmq.send_batch` per claim round of new messages
+  (a filter picks in Rust first); `msg_id` order equals `seq` order;
+- claim: `SELECT … WHERE vt <= $now [AND no earlier entry with the same
+  key] ORDER BY msg_id LIMIT $n FOR UPDATE OF q SKIP LOCKED`, joined with
+  the message log, then **one** `UPDATE … FROM jsonb_to_recordset(…)`
+  per round sets `vt`, `read_ct + 1`, lease, consumer and the history entry.
+  Select-then-update instead of §1.6's single `UPDATE … RETURNING`: the
+  byte limit of streaming pull and the owner's view (withheld records are
+  deleted, not leased) are decided per message in Rust, as on the
+  portable path;
+- the reap (expired leases → ready after backoff, or dead letter) runs
+  before each claim as on the portable path, over an index ForgeBase adds
+  to each queue table: `(vt) WHERE message->>'consumer' IS NOT NULL`.
+  Ordering subscriptions also get `((message->>'key'), msg_id) WHERE key
+  IS NOT NULL`;
+- ack ids are `ack-<msg_id>-<uuid>`: ack is one `DELETE … USING
+  jsonb_to_recordset(…) WHERE msg_id = l.id AND message->>'lease' =
+  l.lease` for the batch; nack, modify-deadline and release update `vt`,
+  the lease and history by `msg_id`. Ack ids from the portable engine
+  (before a conversion) are found by their lease;
+- dead letters: the entry is read with its message, the dead-letter
+  record and the copy on the dead-letter topic are written as before, the
+  entry is deleted;
+- seek purges the queue and, for a snapshot, inserts its items;
+  snapshots read the owed `seq`s from the queue;
+- retention: pgmq entries have no foreign key to the message log, so after
+  pruning a topic its queues drop entries whose message is gone;
+- metrics: per subscription from its queue; `/metrics` backlog adds every
+  queue (one `UNION ALL` per 100 queues).
+
+**Layout check.** At the first delivery operation and before converting
+to pgmq: pgmq must be installed; a probe queue created in a transaction
+that is rolled back, and every existing `pgmq.q_fbs_%` table, must have
+`msg_id bigint, read_ct integer, enqueued_at timestamptz, vt timestamptz,
+message jsonb` (`format_type`). A mismatch logs a warning and uses the
+portable table (the pin stays `extension`; entries in the mismatching
+queues stay there, untouched); `queue.convert` to pgmq answers `400
+pgmq_unavailable` with the problems.
+
+**Reconcile.** At that first use, and inside every conversion, owed
+deliveries are moved to the engine in use, one transaction per
+subscription: pgmq creates missing queues and takes any portable rows
+(state, attempts, lease, history kept, `seq` order); portable takes back
+the entries of every `fbs_` queue (those whose message still exists) and
+drops the queues; queues without a subscription are dropped. This also
+covers databases set up after FB-161 and before FB-164 (pinned
+`extension` with portable rows) — no re-creation needed.
+
+**`queue.convert`.** `QueueService::convert(ctx, to)` (instance-wide
+`engine:queue_admin`, no tenant) and the reserved job kind `queue.convert`
+(`forgebase_queue::register_jobs`, payload `{"to": "pgmq" | "portable"}`).
+It writes `ext.queue.engine` first and then reconciles, under the write
+guard: a conversion that stops half way is finished by the next start.
+The extension report (`/api/system/info`, `feature_active`) shows the new
+engine after the next start.
+
+**Restart reason fix (FB-161 follow-up).** A stateful feature pinned
+`portable` in `auto` now reports the extension's own unavailability
+reason when it is missing (as the first start did), and the
+"`<feature>.convert` moves it" reason only when the extension is usable:
+a restart reports the same status as the first start on engines without
+pgvector/pgmq.
+
+**Tests.** `tests/pgmq.rs`: one queue per subscription (created, entries
+leased/acked, dropped with the subscription and with a forced topic
+delete); `queue.convert` both ways with a lease handed out before each
+conversion still acked, attempts and history carried (redelivery is
+attempt 2), an ordering subscription converted, the stored engine
+followed after a restart, `pgmq_unavailable` where pgmq is missing; a
+renamed `vt` column falls back to portable and refuses conversion; the
+convert job kind is reserved. The rest of the suite (ADR-0022:
+fan-out, competing consumers, redelivery, dead letters, ordering, dedup,
+replay, restart survival, streaming flow control, push, record views)
+runs on whichever engine the database offers: SQLite (portable),
+PostgreSQL without pgmq (portable), the bundled engine (pgmq), and the
+bundled engine with `FORGEBASE_TEST_PGMQ=off` (portable, and convert
+portable → pgmq → portable).
+
+**Bench** (`queue_pull_ack_10`, pull 10 + ack 10 with a standing backlog
+of 10 000, through `forgebase_server::start`; bench profile with thin LTO
+off for build time; a shared, loaded machine, so the spread is large on
+every engine): pgmq on the bundled engine 3.0 / 3.6 / 16.6 / 82 ms per
+round (one run at 1.76 s with every round slow, from the warm-up on);
+portable on Homebrew PostgreSQL 18 7.1 / 7.3 / 8.9 ms; SQLite 14.5 / 35 /
+210 ms. The pgmq round runs fewer statements than the portable one (one
+lease `UPDATE` and one ack `DELETE` for the batch instead of one per
+message); in-process, without the server, a round took about 2.3 ms in
+a debug build after 400 rounds, every statement well under 1 ms.
+
+**For the next packages.**
+- **FB-169 (replica reads):** claims, acks, nacks, deadline changes,
+  releases, seeks and snapshots write pgmq queue tables: primary only.
+  `subscription_metrics` and `backlog` read the queue tables
+  (`pgmq.q_fbs_…`, `SELECT` granted to `forgebase_reader` by default
+  privileges) and may go through `fetch_routed` with
+  `ReadIntent::replica(..)` (FB-167); the queue name of a subscription is
+  `crate::pgmq::queue_name(stored name)`.
+- **FB-172 (shard routing):** the engine is resolved per `QueueService`,
+  i.e. per backend: with one service per set, each set's database keeps
+  its own `ext.queue.engine` pin, pgmq install and queues, and resolves
+  on its own. A tenant move must move its subscriptions' pgmq queue
+  tables (whole tables outside the placement registry; `msg_id` is per
+  queue, so `apply_sequence_range` need not touch it) — or convert the
+  moving tenant's deliveries to portable rows first and let the target's
+  reconcile adopt them (reconcile moves portable rows of any subscription
+  into its queue). Maintenance (`run_maintenance`, retention pruning of
+  queue entries) is per set.
+- **Server wiring (not done here, outside Owns):** register the job kind
+  in `forgebase-server/src/lib.rs` next to the other `register_jobs`
+  calls: `let registry = match &queue { Some(q) =>
+  forgebase_queue::register_jobs(registry, q.clone()), None => registry };`.

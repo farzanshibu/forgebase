@@ -1,5 +1,8 @@
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useNavigate } from "react-router-dom";
+import { useAdminScope, PlatformOnly } from "../../auth/scope";
 import { RouteTabs } from "../../components/controls";
+import { PageHeader } from "../../components/PageHeader";
+import { Button } from "../../components/ui";
 import Admins from "./Admins";
 import ApiKeys from "./ApiKeys";
 import AuditLog from "./AuditLog";
@@ -9,18 +12,21 @@ import Users from "./Users";
 
 const TABS = [
   { to: "/auth", label: "Users", end: true },
+  { to: "/auth/keys", label: "API keys", end: false },
   { to: "/auth/service-accounts", label: "Service accounts", end: false },
-  { to: "/auth/keys", label: "API keys & tokens", end: false },
   { to: "/auth/audit", label: "Audit log", end: false },
   { to: "/auth/admins", label: "Admins", end: false },
 ];
 
-/** Authentication Studio (FB-23, ADR-0014 section 2). */
+/** Authentication: users, API keys, service accounts, the audit log and administrators (ADR-0014 section 2). */
 export default function AuthPage() {
+  const navigate = useNavigate();
+  const { platform } = useAdminScope();
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Authentication Studio</h1>
-      <RouteTabs label="Authentication sections" tabs={TABS} className="mt-4" />
+      <PageHeader studio="auth" primary={<Button tone="primary" onClick={() => navigate("/auth/keys?new=1")}>Create API key</Button>} />
+      {/* Platform administrators are managed by the platform: a realm administrator does not see the tab. */}
+      <RouteTabs label="Authentication sections" tabs={platform ? TABS : TABS.filter((t) => t.to !== "/auth/admins")} className="mt-4" />
       <div className="mt-6">
         <Routes>
           <Route index element={<Users />} />
@@ -28,8 +34,8 @@ export default function AuthPage() {
           <Route path="service-accounts" element={<ServiceAccounts />} />
           <Route path="keys" element={<ApiKeys />} />
           <Route path="audit" element={<AuditLog />} />
-          <Route path="admins" element={<Admins />} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in Authentication Studio.</p>} />
+          <Route path="admins" element={<PlatformOnly what="Administrators"><Admins /></PlatformOnly>} />
+          <Route path="*" element={<p className="text-muted-foreground">No such page in Authentication.</p>} />
         </Routes>
       </div>
     </div>

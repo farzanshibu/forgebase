@@ -1,7 +1,16 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { createQueueSnapshot, queueDeadLetters, deleteQueueSnapshot, deleteQueueSubscription, getQueueSubscription, listQueueSnapshots, seekQueueSubscription, queueSubscriptionMetrics } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { HelpTip } from "../../components/HelpTip";
+import { PageHeader } from "../../components/PageHeader";
+import { SkeletonLines } from "../../components/Skeleton";
+import { UseFromCodeButton } from "../../components/UseFromCode";
+import { notify } from "../../toaster";
+import Tenant from "../jobs/Tenant";
+import QueueRules from "./QueueRules";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
 import { duration, pretty } from "./util";
@@ -23,12 +32,12 @@ export default function SubscriptionDetail() {
   const [open, setOpen] = useState<number>();
 
   const refresh = () => { info.reload(); metrics.reload(); dead.reload(); snaps.reload(); };
-  async function run(fn: () => Promise<unknown>, done: string) {
+  async function run(fn: () => Promise<unknown>, announce: () => void) {
     setError(undefined);
     setNotice("");
     try {
       await fn();
-      setNotice(done);
+      announce();
       refresh();
     } catch (e) {
       setError(e);
@@ -51,22 +60,32 @@ export default function SubscriptionDetail() {
   const mine = (snaps.data ?? []).filter((x) => x.subscription === sub || x.topic === s?.topic);
   return (
     <div className="space-y-4">
-      <Link to="/queues/subscriptions" className="text-sm text-primary hover:underline">← All subscriptions</Link>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-mono text-lg">{sub}</h2>
-        <div className="flex gap-2">
-          <Button onClick={refresh}>Refresh</Button>
-          <ConfirmButton label="Delete subscription" onConfirm={() => void run(async () => { await deleteQueueSubscription(sub); nav("/queues/subscriptions"); }, "")} />
-        </div>
-      </div>
+      <PageHeader
+        title={sub}
+        description={<span className="inline-flex flex-wrap items-center gap-2">Subscription of <span className="font-mono">{s?.topic ?? "a topic"}</span> · tenant <Tenant value={s?.tenant} /> · owner <span className="font-mono text-xs">{s?.created_by ?? "unknown"}</span></span>}
+        docs="docs/adr/0022-queues-pubsub.md"
+        secondary={<><Button onClick={refresh}>Refresh</Button><UseFromCodeButton kind="subscription" name={sub} /></>}
+        primary={
+          <ConfirmDialog
+            trigger={<Button tone="danger">Delete subscription</Button>}
+            title={`Delete subscription ${sub}?`}
+            consequence="Its cursor, dead letters and snapshots are deleted. Messages stay in the topic."
+            confirmLabel="Delete subscription" confirmText={sub}
+            onConfirm={async () => { await deleteQueueSubscription(sub); notify.deleted(`Subscription ${sub}`); nav("/queues/subscriptions"); }}
+          />
+        }
+      />
       <ErrorView error={error ?? info.error} />
       {notice && <p role="status" className="text-sm text-success">{notice}</p>}
-      {info.loading && !info.error && <Loading what="Loading subscription" />}
+      {info.loading && !info.error && <SkeletonLines lines={4} label="Loading subscription" />}
       {s && (
         <Panel title="Settings">
+          <p className="mb-3 text-xs text-muted-foreground">
+            This subscription delivers as its owner, <span className="font-mono">{s.created_by}</span>. Record changes reach it as that account may see them: hidden fields are removed, and records it may not see are withheld, so they never appear here.
+          </p>
           <dl aria-label="Subscription settings" className="grid gap-x-6 gap-y-1 text-sm md:grid-cols-2">
             {([
-              ["Topic", s.topic], ["Delivery", s.push ? `push to ${s.push.kind} ${s.push.endpoint}` : "pull"], ["Ack deadline", duration(s.ack_deadline_ms)],
+              ["Topic", s.topic], ["Owner", s.created_by], ["Tenant", s.tenant ?? "instance"], ["Delivery", s.push ? `push to ${s.push.kind} ${s.push.endpoint}` : "pull"], ["Ack deadline", duration(s.ack_deadline_ms)],
               ["Max attempts", s.max_delivery_attempts ?? "unlimited"], ["Backoff", `${duration(s.backoff_base_ms)} up to ${duration(s.backoff_max_ms)}`],
               ["Dead-letter topic", s.dead_letter_topic ?? "none"], ["Ordering", s.ordering ? "per ordering key" : "off"], ["Filter", s.filter ? JSON.stringify(s.filter) : "none"],
             ] as [string, string | number][]).map(([k, v]) => <div key={k} className="flex gap-2"><dt className="w-36 shrink-0 text-muted-foreground">{k}</dt><dd>{v}</dd></div>)}
@@ -85,8 +104,9 @@ export default function SubscriptionDetail() {
         </Panel>
       )}
       <Panel title="Dead letters">
+        <p className="mb-2 flex items-center gap-1 text-xs text-muted-foreground">What is a dead letter? <HelpTip term="dead_letter" /></p>
         <ErrorView error={dead.error} />
-        {dead.data && dead.data.length === 0 && <p className="text-sm text-muted-foreground">No dead letters.</p>}
+        {dead.data && dead.data.length === 0 && <EmptyState compact title="No dead letters" why="A message lands here after it fails too many times, so you can look at it instead of losing it." />}
         {dead.data && dead.data.length > 0 && (
           <ul aria-label="Dead letters" className="space-y-2 text-sm">
             {dead.data.map((d) => (
@@ -121,13 +141,14 @@ export default function SubscriptionDetail() {
             <Sel aria-label="Snapshot" className="ml-2" value={snapPick} onChange={setSnapPick} options={[{ value: "", label: "choose…" }, ...mine.map((x) => ({ value: x.name, label: `${x.name} (cursor ${x.cursor_seq}, ${x.unacked} unacked)` }))]} />
           </label>
           <Button type="submit" disabled={!snapPick}>Restore snapshot</Button>
-          {snapPick && <ConfirmButton label="Delete snapshot" onConfirm={() => void run(async () => { await deleteQueueSnapshot(snapPick); setSnapPick(""); }, "Snapshot deleted.")} />}
+          {snapPick && <ConfirmDialog trigger={<Button tone="danger" type="button">Delete snapshot</Button>} title={`Delete snapshot ${snapPick}?`} consequence="You can no longer replay from it." confirmLabel="Delete snapshot" confirmText={snapPick} onConfirm={() => run(async () => { await deleteQueueSnapshot(snapPick); setSnapPick(""); }, () => notify.deleted(`Snapshot ${snapPick}`))} />}
         </form>
-        <form onSubmit={(e) => { e.preventDefault(); void run(() => createQueueSnapshot(snapName.trim(), sub), `Snapshot ${snapName.trim()} saved.`).then(() => setSnapName("")); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
+        <form onSubmit={(e) => { e.preventDefault(); void run(() => createQueueSnapshot(snapName.trim(), sub, s?.tenant ?? undefined), () => notify.created(`Snapshot ${snapName.trim()}`)).then(() => setSnapName("")); }} className="mt-3 flex flex-wrap items-end gap-3 text-sm">
           <label>New snapshot<Input size="sm" className="ml-2 w-40" value={snapName} onChange={(e) => setSnapName(e.target.value)} /></label>
           <Button type="submit" disabled={!snapName.trim()}>Save snapshot</Button>
         </form>
       </Panel>
+      <QueueRules kind="queue_subscription" name={sub} />
     </div>
   );
 }

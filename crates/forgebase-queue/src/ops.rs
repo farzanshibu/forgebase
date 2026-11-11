@@ -12,7 +12,9 @@ use tokio::sync::watch;
 
 use crate::access::{bare, source_row};
 use crate::error::QueueError;
-use crate::model::{DeadLetter, DeadLetterPage, MaintenanceReport, NewMessage, SubscriptionMetrics, TopicMetrics, iso};
+use crate::model::{
+    DeadLetter, DeadLetterPage, DeliveryEngine, MaintenanceReport, NewMessage, SubscriptionMetrics, TopicMetrics, iso,
+};
 use crate::row::{Row, scalar};
 use crate::service::{
     Db, Inner, QueueService, Result, SUB_COLS, SubRow, TOPIC_COLS, TopicRow, finish, insert_message_tx, minute,
@@ -77,12 +79,20 @@ impl QueueService {
             ))
             .await?;
         let r = Row::new(&rows, 0);
-        Ok(QueueBacklog {
+        let mut b = QueueBacklog {
             ready: r.int("ready"),
             delayed: r.int("delayed"),
             in_flight: r.int("in_flight"),
             messages: r.int("messages"),
-        })
+        };
+        let eng = self.store().await?;
+        if *eng == DeliveryEngine::Pgmq {
+            let (ready, delayed, in_flight) = self.pgmq_backlog(now).await?;
+            b.ready += ready;
+            b.delayed += delayed;
+            b.in_flight += in_flight;
+        }
+        Ok(b)
     }
 
     /// Metrics of a topic.
@@ -140,19 +150,24 @@ impl QueueService {
             .await?;
         let sub = s.name.as_str();
         let now = self.now();
-        let rows = self
-            .backend()
-            .fetch_all(&Statement::new(
-                "SELECT \
+        let eng = self.store().await?;
+        let rows = if *eng == DeliveryEngine::Pgmq {
+            self.pgmq_metrics(sub, now).await?
+        } else {
+            self.backend()
+                .fetch_all(&Statement::new(
+                    "SELECT \
                    coalesce(sum(CASE WHEN d.state = 'ready' AND d.available_at <= ?2 THEN 1 ELSE 0 END), 0) AS ready, \
                    coalesce(sum(CASE WHEN d.state = 'ready' AND d.available_at > ?2 THEN 1 ELSE 0 END), 0) AS delayed, \
                    coalesce(sum(CASE WHEN d.state = 'leased' THEN 1 ELSE 0 END), 0) AS in_flight, \
                    COUNT(*) AS n, coalesce(sum(m.bytes), 0) AS b, min(m.published_at) AS oldest \
                  FROM _forgebase_queue_deliveries d JOIN _forgebase_queue_messages m ON m.seq = d.seq \
                  WHERE d.subscription = ?1",
-                vec![sub.into(), now.into()],
-            ))
-            .await?;
+                    vec![sub.into(), now.into()],
+                ))
+                .await?
+        };
+        drop(eng);
         let d = Row::new(&rows, 0);
         let rows = self
             .backend()
@@ -258,16 +273,19 @@ impl QueueService {
         let now = self.now();
         let subs = self.all_subs().await?;
         for s in &subs {
+            let eng = self.store().await?;
             let mut tx = self.begin().await?;
             let r: Result<_> = async {
                 let cur = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?;
-                let n = self.reap_tx(&mut *tx, &cur, now).await?;
+                let n = self.reap_tx(&mut *tx, *eng, &cur, now).await?;
                 let cur = sub_row(&mut Db::Tx(&mut *tx), &s.name).await?;
-                self.materialize_tx(&mut *tx, &cur, now).await?;
+                self.materialize_tx(&mut *tx, *eng, &cur, now).await?;
                 Ok(n)
             }
             .await;
-            match finish(tx, r).await {
+            let done = finish(tx, r).await;
+            drop(eng);
+            match done {
                 Ok(n) => report.expired += n,
                 // Deleted meanwhile.
                 Err(QueueError::SubscriptionNotFound(_)) => {}
@@ -308,10 +326,12 @@ impl QueueService {
     pub(crate) async fn enforce_retention(&self, now: i64) -> Result<u64> {
         let topics = self.all_topics().await?;
         let dl_cutoff = now - self.inner.settings.dead_letter_retention_ms;
+        let eng = self.store().await?;
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let mut pruned = 0;
             for t in &topics {
+                let before = pruned;
                 pruned += tx
                     .execute(&Statement::new(
                         "DELETE FROM _forgebase_queue_messages WHERE topic = ?1 AND published_at < ?2",
@@ -338,6 +358,18 @@ impl QueueService {
                             .rows_affected;
                     }
                 }
+                // pgmq entries have no foreign key to the message log.
+                if pruned > before && *eng == DeliveryEngine::Pgmq {
+                    let rows = tx
+                        .fetch_all(&Statement::new(
+                            "SELECT name FROM _forgebase_queue_subscriptions WHERE topic = ?1",
+                            vec![t.name.as_str().into()],
+                        ))
+                        .await?;
+                    for r in Row::all(&rows) {
+                        self.pgmq_prune(&mut *tx, &r.text("name")).await?;
+                    }
+                }
             }
             for sql in [
                 "DELETE FROM _forgebase_queue_dedup WHERE expires_at <= ?1",
@@ -355,6 +387,7 @@ impl QueueService {
         }
         .await;
         let pruned = finish(tx, r).await?;
+        drop(eng);
         if pruned > 0 {
             metrics::counter!("forgebase_queue_retention_dropped_total").increment(pruned);
         }

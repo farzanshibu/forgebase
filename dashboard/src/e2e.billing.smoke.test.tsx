@@ -1,4 +1,5 @@
 /** End-to-end smoke of the Billing Studio: drives every screen through the real router against the in-memory billing API. */
+import { GROUPS as BILLING_GROUPS } from "./pages/billing/groups";
 import { afterEach, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,8 +17,12 @@ it("walks every Billing Studio screen from the sidebar and runs one real action 
 
   await u.click(await screen.findByRole("link", { name: "Billing" }));
   expect(await screen.findByRole("region", { name: "Recurring revenue" })).toHaveTextContent("$1,299.00");
-  const nav = screen.getByRole("tablist", { name: "Billing sections" });
-  const go = (name: string) => u.click(within(nav).getByRole("tab", { name }));
+  // Four groups on top, the pages of the active group below (A-23).
+  const go = async (name: string) => {
+    const g = BILLING_GROUPS.find((x) => x.pages.some((p) => p.label === name))!;
+    await u.click(within(screen.getByRole("tablist", { name: "Billing groups" })).getByRole("tab", { name: g.label }));
+    if (g.pages.length > 1) await u.click(within(await screen.findByRole("tablist", { name: `${g.label} pages` })).getByRole("tab", { name }));
+  };
 
   await go("Catalog");
   expect(await screen.findByRole("table", { name: "Products" })).toHaveTextContent("Pro");

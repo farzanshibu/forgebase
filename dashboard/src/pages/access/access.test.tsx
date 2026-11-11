@@ -8,6 +8,13 @@ import { registerAccess, type AccessState } from "./accessMock";
 import { catalogue, allKeys, fromCells, toCells } from "./catalogue";
 import AccessPage from "./AccessPage";
 
+// A test sets `adminScope.value` to see the studio as a realm administrator (what /api/auth/me reports, FB-137).
+const adminScope = vi.hoisted(() => ({ value: undefined as undefined | { realm: string } }));
+vi.mock("../../auth/session", async (orig) => {
+  const m = await orig<typeof import("../../auth/session")>();
+  return { ...m, useOptionalSession: () => (adminScope.value ? ({ adminScope: adminScope.value } as ReturnType<typeof m.useOptionalSession>) : m.useOptionalSession()) };
+});
+
 let mock: MockApi;
 let st: AccessState;
 
@@ -28,7 +35,7 @@ beforeEach(() => {
   st = registerAccess(mock);
   mock.install();
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); adminScope.value = undefined; });
 
 describe("catalogue", () => {
   it("round-trips allow/deny lists and keeps wildcard patterns as custom", () => {
@@ -52,6 +59,14 @@ describe("organizations", () => {
     expect(last("post /api/v1/orgs")).toEqual({ slug: "globex", name: "Globex" });
   });
 
+  it("keeps the organization when the typed name does not match", async () => {
+    open(ORG);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete organization" }));
+    await userEvent.type(within(await screen.findByRole("alertdialog")).getByRole("textbox"), "nope");
+    expect(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete organization" })).toBeDisabled();
+    expect(st.orgs).toHaveLength(1);
+  });
+
   it("renames and deletes an organization", async () => {
     open(ORG);
     expect(await screen.findByText("Acme Inc")).toBeInTheDocument();
@@ -59,7 +74,10 @@ describe("organizations", () => {
     await userEvent.click(screen.getByRole("button", { name: "Rename" }));
     expect(await screen.findByText("Acme Corp")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Delete organization" }));
-    await userEvent.click(screen.getByRole("button", { name: /confirm delete organization/i }));
+    const confirm = within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete organization" });
+    expect(confirm).toBeDisabled(); // the org's slug must be typed first
+    await userEvent.type(within(screen.getByRole("alertdialog")).getByRole("textbox"), "acme");
+    await userEvent.click(confirm);
     await waitFor(() => expect(st.orgs).toHaveLength(0));
   });
 
@@ -325,6 +343,36 @@ describe("realm level", () => {
     await userEvent.click(screen.getByRole("button", { name: "Suspend account" }));
     expect(await screen.findByText("user:users/eve")).toBeInTheDocument();
     expect(last("post /api/v1/suspensions")).toEqual({ principal: "user:users/eve", reason: "fraud", until: null });
+  });
+});
+
+describe("realm administrators", () => {
+  it("a platform administrator makes an account an administrator of a realm", async () => {
+    open("/access/realm");
+    await userEvent.type(await screen.findByLabelText("Account to make administrator"), "user:users/ann");
+    await userEvent.click(screen.getByRole("button", { name: "Make realm administrator" }));
+    expect(await screen.findByText("user:users/ann is now an administrator of default.")).toBeInTheDocument();
+    expect(last("put /api/v1/roles")).toMatchObject({ key: "realm-admin", allow: ["identity:admin"] });
+    expect(last("put /api/v1/realm-bindings")).toEqual({ principal: "user:users/ann", roles: ["realm-admin"], role_sets: [] });
+    expect(mock.headers.filter((h) => h["X-ForgeBase-Realm"] === "default")).toHaveLength(2);
+  });
+  it("a realm administrator cannot create realms and acts in their own realm", async () => {
+    adminScope.value = { realm: "default" };
+    open("/access/realm");
+    await screen.findByText("Realm administrators");
+    expect(screen.queryByRole("button", { name: "Create realm" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Administrator of realm")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Account to make administrator"), "user:users/bob");
+    await userEvent.click(screen.getByRole("button", { name: "Make realm administrator" }));
+    await waitFor(() => expect(last("put /api/v1/realm-bindings")).toMatchObject({ principal: "user:users/bob" }));
+  });
+});
+
+describe("empty states", () => {
+  it("teaches when there are no organizations", async () => {
+    st.orgs = [];
+    open("/access");
+    expect(await screen.findByRole("region", { name: "No organizations yet." })).toHaveTextContent(/groups your team/);
   });
 });
 

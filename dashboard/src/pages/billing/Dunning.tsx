@@ -1,8 +1,10 @@
 import { Link } from "react-router-dom";
+import { EmptyState } from "../../components/EmptyState";
 import { getBillingSettings, listDunning, listSubscriptions, payInvoice, runBillingMaintenance } from "../../api";
+import { HelpTip } from "../../components/HelpTip";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Money, Th, SubjectLink } from "./shared";
+import { Badge, BillingError, Money, Th, SubjectLink } from "./shared";
 import { ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -20,6 +22,7 @@ export default function Dunning() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
         {settings.data && <span aria-label="Retry schedule">Retries after {settings.data.retry_days.map((d) => `${d}d`).join(", ")}; then {settings.data.final_action === "cancel" ? "cancel the subscription" : "leave it past due"}.</span>}
+        <span className="inline-flex items-center gap-1">Dunning <HelpTip term="dunning" /></span>
         <Button disabled={act.busy} onClick={() => act.run(runBillingMaintenance, "Maintenance ran")}>Run dunning now</Button>
         <Button onClick={reload}>Refresh</Button>
       </div>
@@ -27,7 +30,7 @@ export default function Dunning() {
       <ErrorView error={act.error} />
       {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
       {invoices.loading && !invoices.error && <Loading what="Loading dunning queue" />}
-      {invoices.data && queue.length === 0 && <Empty>The dunning queue is empty: no invoice is waiting on a retry.</Empty>}
+      {invoices.data && queue.length === 0 && <EmptyState compact title="The dunning queue is empty." why="No invoice is waiting on a retry." />}
       {queue.length > 0 && (
         <Table aria-label="Dunning queue" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Invoice</Th><Th>Subject</Th><Th>Due</Th><Th>Attempts</Th><Th>Next attempt</Th><Th>Retries left</Th><Th>Last failure</Th><Th /></Table.Row></Table.Header>
@@ -48,7 +51,7 @@ export default function Dunning() {
         </Table>
       )}
       <Panel title="Past-due subscriptions">
-        {subs.data && pastDue.length === 0 && <Empty>No past-due subscriptions.</Empty>}
+        {subs.data && pastDue.length === 0 && <EmptyState compact title="No past-due subscriptions." why="A subscription shows here when its payment failed." />}
         {pastDue.length > 0 && (
           <ul aria-label="Past-due subscriptions" className="space-y-1 text-sm">
             {pastDue.map((s) => <li key={s.id}><SubjectLink subject={s.subject} /> <Badge status={s.status} /> <span className="text-muted-foreground">period ended {when_(s.current_period_end)}</span></li>)}

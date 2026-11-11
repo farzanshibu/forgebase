@@ -386,7 +386,9 @@ mod tests {
 
     #[test]
     fn recent_commits_expire_and_are_bounded() {
-        let recent = RecentCommits::new(Duration::from_millis(30), 2);
+        // 500 ms, not tens: a loaded test machine can pause a thread for more
+        // than 30 ms between two calls, which expired entries early.
+        let recent = RecentCommits::new(Duration::from_millis(500), 2);
         let c = ReadAfter::parse_header("control/0/1");
         recent.note("a", &c);
         recent.note("b", &c);
@@ -396,7 +398,7 @@ mod tests {
         assert_eq!(recent.len(), 2, "the least recently written principal goes");
         assert!(recent.get("b").is_empty());
         assert!(!recent.get("a").is_empty() && !recent.get("c").is_empty());
-        std::thread::sleep(Duration::from_millis(40));
+        std::thread::sleep(Duration::from_millis(600));
         assert!(recent.get("a").is_empty(), "expired");
         recent.note("d", &c);
         assert_eq!(recent.len(), 1, "expired principals are dropped on the next write");

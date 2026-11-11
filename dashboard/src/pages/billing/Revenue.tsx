@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { billingStats } from "../../api";
 import { Button, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatBp } from "./money";
-import { BillingError, Empty, Money, Th } from "./shared";
+import { BillingError, Money, Th } from "./shared";
 import { ROW, TABLE, THEAD, when_ } from "./util";
 import { Table } from "panelui-web/table";
 
@@ -25,7 +26,7 @@ export default function Revenue() {
       {d && (
         <>
           <section aria-label="Recurring revenue" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {d.recurring.length === 0 && <Empty>No recurring revenue yet.</Empty>}
+            {d.recurring.length === 0 && <EmptyState compact title="No recurring revenue yet." why="It appears once a customer has an active subscription." />}
             {d.recurring.map((r) => (
               <div key={r.currency} className="rounded-lg border border-border bg-card p-4">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">{r.currency} recurring</p>
@@ -48,7 +49,7 @@ export default function Revenue() {
             </p>
           </Panel>
           <Panel title="Revenue by currency">
-            {d.revenue.length === 0 ? <Empty>No payments in this window.</Empty> : (
+            {d.revenue.length === 0 ? <EmptyState compact title="No payments in this window." why="Pick a longer window to see earlier payments." /> : (
               <Table aria-label="Revenue" className={TABLE}>
                 <Table.Header className={THEAD}><Table.Row><Th>Period</Th><Th>Currency</Th><Th>Gross</Th><Th>Refunded</Th><Th>Net</Th><Th>Payments</Th></Table.Row></Table.Header>
                 <Table.Body>

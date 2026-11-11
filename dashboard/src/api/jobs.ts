@@ -12,6 +12,8 @@ export interface Job {
   attempts: number; max_attempts: number; backoff_base_ms: number; backoff_max_ms: number; visibility_timeout_ms: number;
   idempotency_key?: string | null; schedule_id?: string | null; worker_id?: string | null; visibility_until?: string | null;
   cancel_requested: boolean; result?: unknown; last_error?: string | null; created_by: string;
+  /** Tenant the job was enqueued in (FB-142); absent or null on a job without one. */
+  tenant?: string | null;
   created_at: string; updated_at: string; started_at?: string | null; finished_at?: string | null;
   /** Long-task fields (FB-64); absent on servers without them. */
   progress?: Progress | null; has_checkpoint?: boolean; checkpoint_at?: string | null; timeout_ms?: number | null; deadline_at?: string | null;
@@ -25,13 +27,15 @@ export interface Attempt {
 }
 export interface JobResult { job_id: string; stored: boolean; size?: number | null; result?: unknown }
 export interface JobQueueInfo {
+  /** Tenant the settings belong to and `created_by` who set them (FB-146); null on settings made before then. */
+  tenant?: string | null; created_by?: string | null;
   name: string; configured: boolean; concurrency?: number | null; rate_limit?: number | null; rate_period: "second" | "minute"; paused: boolean;
   default_priority?: number | null; default_timeout_ms?: number | null; queued: number; waiting: number; running: number; succeeded: number; dead: number; cancelled: number;
 }
 export type WorkflowStatus = "running" | "succeeded" | "failed" | "compensating" | "compensated" | "cancelled";
 export interface Workflow {
   id: string; name: string; status: WorkflowStatus; on_failure: "fail" | "compensate"; failed_job_id?: string | null; error?: string | null;
-  created_by: string; created_at: string; updated_at: string; finished_at?: string | null;
+  created_by: string; created_at: string; updated_at: string; finished_at?: string | null; tenant?: string | null;
 }
 export interface WorkflowStep { name?: string | null; role: string; job: Job; depends_on: string[] }
 export interface WorkflowDetail extends Workflow { steps: WorkflowStep[] }
@@ -42,12 +46,20 @@ export interface JobStats { totals: Record<string, number>; queues: QueueStats[]
 export interface Schedule {
   id: string; name: string; cron: string; queue: string; kind: string; payload: unknown; priority: number; enabled: boolean;
   next_run_at: string; last_run_at?: string | null; last_job_id?: string | null; created_at: string; updated_at: string;
+  created_by?: string; tenant?: string | null;
 }
+/** A registered worker (FB-146: `tenant` and `created_by`; registering another tenant's id answers `409 worker_id_taken`). */
+export interface JobWorker {
+  id: string; name?: string | null; queues: string[]; kinds: string[]; concurrency: number; registered_at: string; last_seen_at: string; online: boolean;
+  tenant?: string | null; created_by?: string | null;
+}
+/** Kind prefixes only an administrator (or a service account) may enqueue, schedule or claim; others get 403 (FB-142). */
+export const RESERVED_KIND_PREFIXES = ["function.", "storage.", "billing.", "credits.", "entitlements.", "customize.", "forgebase.", "system."] as const;
 export interface JobFilter { status?: JobStatus; queue?: string; kind?: string; limit?: number; offset?: number; workflow_id?: string }
 
 export const JOB_OPERATIONS = [
   "get /api/v1/jobs", "get /api/v1/jobs/stats", "get /api/v1/jobs/{id}", "get /api/v1/jobs/{id}/events",
-  "post /api/v1/jobs/{id}/cancel", "post /api/v1/jobs/{id}/retry", "delete /api/v1/jobs/{id}", "get /api/v1/jobs/schedules",
+  "post /api/v1/jobs/{id}/cancel", "post /api/v1/jobs/{id}/retry", "delete /api/v1/jobs/{id}", "get /api/v1/jobs/schedules", "get /api/v1/jobs/workers",
 ] as const;
 
 export const jobStats = (signal?: AbortSignal) => request<JobStats>(`${J}/stats`, { signal });
@@ -77,3 +89,4 @@ export function listWorkflows(filter: { status?: WorkflowStatus; limit?: number;
 export const getWorkflow = (id: string, signal?: AbortSignal) => request<WorkflowDetail>(`${J}/workflows/${enc(id)}`, { signal });
 export const cancelWorkflow = (id: string) => send<WorkflowDetail>("POST", `${J}/workflows/${enc(id)}/cancel`);
 export const listSchedules = async (signal?: AbortSignal) => (await request<{ items: Schedule[] }>(`${J}/schedules`, { signal })).items;
+export const listJobWorkers = async (signal?: AbortSignal) => (await request<{ items: JobWorker[] }>(`${J}/workers`, { signal })).items;

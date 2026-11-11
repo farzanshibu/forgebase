@@ -43,9 +43,6 @@ export function MultiPick({ label, options, value, onChange }: { label: string; 
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-muted-foreground">{children}</p>;
-}
 
 export function EffectBadge({ effect }: { effect: "allow" | "deny" }) {
   return (

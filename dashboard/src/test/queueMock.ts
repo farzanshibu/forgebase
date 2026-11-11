@@ -13,6 +13,10 @@ export interface QueueState {
   messages: Record<string, QueueMessage[]>;
   dead: Record<string, DeadLetter[]>;
   snapshots: QueueSnapshot[];
+  /** Resource rules by kind and name (the policy-engine routes the Rules panels use). */
+  rules: Record<string, Record<string, Record<string, string | null>>>;
+  /** Tenants sent as X-ForgeBase-Tenant on a create, in order. */
+  tenants: (string | undefined)[];
   /** Messages the next pull of a subscription returns. */
   ready: Record<string, ReceivedMessage[]>;
   acked: string[];
@@ -48,7 +52,7 @@ export function installQueues(mock: MockApi): QueueState {
       }],
     },
     snapshots: [{ name: "before-fix", subscription: "order-workers", topic: "orders", cursor_seq: 2, unacked: 1, created_by: "admin", created_at: NOW, expires_at: "2026-11-16T10:00:00Z" }],
-    ready: {}, acked: [], nacked: [], seeks: [],
+    ready: {}, acked: [], nacked: [], seeks: [], rules: { queue_topic: {}, queue_subscription: {} }, tenants: [],
   };
   const Q = "/api/v1/queues";
   const no = (what: string) => envelope(404, `${what}_not_found`, `no such ${what}`);
@@ -56,12 +60,19 @@ export function installQueues(mock: MockApi): QueueState {
   const s = (n: string) => st.subs.find((x) => x.name === n);
 
   mock.on("GET", `${Q}/topics`, () => ({ status: 200, body: { items: st.topics } }));
-  mock.on("POST", `${Q}/topics`, ({ body }) => {
+  /** A tenant caller creates `<tenant>/<name>` (FB-141). */
+  const scoped = (name: string, headers: Record<string, string>) => {
+    const tenant = headers["X-ForgeBase-Tenant"] ?? headers["x-forgebase-tenant"];
+    st.tenants.push(tenant);
+    return { tenant, key: tenant ? `${tenant}/${name}` : name };
+  };
+  mock.on("POST", `${Q}/topics`, ({ body, headers }) => {
     const b = body as { name: string; retention_ms?: number };
-    if (t(b.name)) return envelope(409, "topic_exists", "topic exists");
-    const made = topic(b.name, b.retention_ms ? { retention_ms: b.retention_ms } : {});
+    const { tenant, key } = scoped(b.name, headers);
+    if (t(key)) return envelope(409, "topic_exists", "topic exists");
+    const made = topic(key, { ...(b.retention_ms ? { retention_ms: b.retention_ms } : {}), tenant: tenant ?? null });
     st.topics.push(made);
-    st.messages[b.name] = [];
+    st.messages[key] = [];
     return { status: 201, body: made };
   });
   mock.on("GET", `${Q}/topics/{topic}`, ({ params }) => (t(params.topic!) ? { status: 200, body: t(params.topic!) } : no("topic")));
@@ -102,11 +113,12 @@ export function installQueues(mock: MockApi): QueueState {
   });
 
   mock.on("GET", `${Q}/subscriptions`, ({ query }) => ({ status: 200, body: { items: st.subs.filter((x) => !query.get("topic") || x.topic === query.get("topic")) } }));
-  mock.on("POST", `${Q}/subscriptions`, ({ body }) => {
+  mock.on("POST", `${Q}/subscriptions`, ({ body, headers }) => {
     const b = body as { name: string; topic: string; ack_deadline_ms?: number; max_delivery_attempts?: number; ordering?: boolean };
-    if (s(b.name)) return envelope(409, "subscription_exists", "subscription exists");
+    const { tenant, key } = scoped(b.name, headers);
+    if (s(key)) return envelope(409, "subscription_exists", "subscription exists");
     if (!t(b.topic)) return no("topic");
-    const made = sub(b.name, b.topic, { ack_deadline_ms: b.ack_deadline_ms ?? 30_000, max_delivery_attempts: b.max_delivery_attempts ?? null, ordering: !!b.ordering });
+    const made = sub(key, b.topic, { ack_deadline_ms: b.ack_deadline_ms ?? 30_000, max_delivery_attempts: b.max_delivery_attempts ?? null, ordering: !!b.ordering, tenant: tenant ?? null });
     st.subs.push(made);
     return { status: 201, body: made };
   });
@@ -158,6 +170,17 @@ export function installQueues(mock: MockApi): QueueState {
   mock.on("DELETE", `${Q}/snapshots/{snapshot}`, ({ params }) => {
     if (!st.snapshots.some((x) => x.name === params.snapshot)) return no("snapshot");
     st.snapshots = st.snapshots.filter((x) => x.name !== params.snapshot);
+    return { status: 204 };
+  });
+  // The rules editor: queue rules read @request only, so the kinds list no item fields.
+  const R = "/api/v1/policies/resources";
+  mock.on("GET", `${R}/{kind}`, ({ params }) => ({ status: 200, body: { kind: params.kind, fields: [], operations: ["list", "view", "create", "update", "delete"], actions: [], items: Object.entries(st.rules[params.kind!] ?? {}).map(([name, rules]) => ({ name, rules })) } }));
+  mock.on("PUT", `${R}/{kind}/{name}`, ({ params, body }) => {
+    (st.rules[params.kind!] ??= {})[params.name!] = (body as { rules: Record<string, string | null> }).rules;
+    return { status: 200, body: { name: params.name, rules: (body as { rules: unknown }).rules } };
+  });
+  mock.on("DELETE", `${R}/{kind}/{name}`, ({ params }) => {
+    delete st.rules[params.kind!]?.[params.name!];
     return { status: 204 };
   });
   return st;

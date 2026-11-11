@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApiError, endImpersonation as apiEndImpersonation, impersonate as apiImpersonate, isMfaChallenge, login, logout, me, mfaVerify,
-  setCsrfToken, setTokenSource, setUnauthorizedHandler, type AdminInfo, type LoginSession, type MeResponse,
+  setCsrfToken, setTokenSource, setUnauthorizedHandler, type AdminInfo, type AdminScope, type LoginSession, type MeResponse,
 } from "../api";
 
 export interface ImpersonationState {
@@ -16,6 +16,8 @@ export interface ImpersonationState {
 export interface Session {
   status: "loading" | "anonymous" | "authenticated";
   admin: AdminInfo | null;
+  /** What the administrator may manage: the whole server (`platform`) or one realm (FB-137). `null` while signed out. */
+  adminScope: AdminScope | null;
   /** A second factor is needed to finish `signIn`. */
   mfaRequired?: boolean;
   /** True after a 401 ended a signed-in session. */
@@ -38,9 +40,15 @@ export function useSession(): Session {
   return v;
 }
 
+/** The session, or `null` outside a SessionProvider (a component that only wants to know whether an administrator is signed in). */
+export function useOptionalSession(): Session | null {
+  return useContext(Ctx);
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Session["status"]>("loading");
   const [admin, setAdmin] = useState<AdminInfo | null>(null);
+  const [adminScope, setAdminScope] = useState<AdminScope | null>(null);
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [expiredNotice, setExpiredNotice] = useState(false);
   const [impersonation, setImpersonation] = useState<ImpersonationState | null>(null);
@@ -58,12 +66,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const applyMe = useCallback((m: MeResponse | null): boolean => {
-    if (m && m.subject.type === "admin") {
+    // A realm administrator is a user or service account that holds identity:admin in its realm: `admin_scope` says so (FB-137).
+    if (m && (m.subject.type === "admin" || m.admin_scope)) {
       setAdmin({ id: m.admin?.id ?? m.subject.id ?? "", email: m.admin?.email ?? "" });
+      setAdminScope(m.admin_scope ?? "platform");
       setStatus("authenticated");
       return true;
     }
     setAdmin(null);
+    setAdminScope(null);
     setStatus("anonymous");
     return false;
   }, []);
@@ -87,6 +98,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (statusRef.current === "authenticated") {
         setExpiredNotice(true);
         setAdmin(null);
+        setAdminScope(null);
         setStatus("anonymous");
       }
     });
@@ -149,6 +161,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
     setCsrfToken(null);
     setAdmin(null);
+    setAdminScope(null);
     setMfaToken(null);
     setExpiredNotice(false);
     setStatus("anonymous");
@@ -175,10 +188,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<Session>(
     () => ({
-      status, admin, mfaRequired: mfaToken !== null, expiredNotice, signIn, submitMfa, signOut, adoptSession: finish,
+      status, admin, adminScope, mfaRequired: mfaToken !== null, expiredNotice, signIn, submitMfa, signOut, adoptSession: finish,
       impersonation, startImpersonation, endImpersonation,
     }),
-    [status, admin, mfaToken, expiredNotice, signIn, submitMfa, signOut, finish, impersonation, startImpersonation, endImpersonation],
+    [status, admin, adminScope, mfaToken, expiredNotice, signIn, submitMfa, signOut, finish, impersonation, startImpersonation, endImpersonation],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

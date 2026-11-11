@@ -52,11 +52,13 @@ export interface SourceEditorProps {
   /** Only for a brand-new function. */
   description?: string;
   access?: InvokeAccess;
+  /** Accessible name of the editor; default "<name> source". Pass a fixed one when the name is still being typed. */
+  label?: string;
   onDeployed: (d: Deployed) => void;
 }
 
 /** Editor, capability switches and Deploy for one JS/TS function. */
-export default function SourceEditor({ name, language, initialSource, storageKey, capabilities, config, description, access, onDeployed }: SourceEditorProps) {
+export default function SourceEditor({ name, language, initialSource, storageKey, capabilities, config, description, access, label, onDeployed }: SourceEditorProps) {
   const [draft] = useState(() => readDraft(storageKey));
   const restored = draft !== undefined && draft.source !== initialSource;
   const [source, setSource] = useState(restored ? draft.source : initialSource);
@@ -132,7 +134,7 @@ export default function SourceEditor({ name, language, initialSource, storageKey
         </p>
       )}
       <Suspense fallback={<Loading what="Loading editor" />}>
-        <CodeEditor label={`${name || "function"} source`} language={language} value={source} onChange={setSource} types={types?.dts} issues={issues} />
+        <CodeEditor label={label ?? `${name || "function"} source`} language={language} value={source} onChange={setSource} types={types?.dts} issues={issues} />
       </Suspense>
       {issues.length > 0 && (
         <ul aria-label="Compile errors" role="alert" className="space-y-1 rounded-md border border-destructive/50 p-3 text-sm">

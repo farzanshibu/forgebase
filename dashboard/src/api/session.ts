@@ -6,9 +6,14 @@ export interface AdminInfo {
   email: string;
 }
 
+/** What an administrator manages: the whole server, or the one realm they hold `identity:admin` in (FB-137). */
+export type AdminScope = "platform" | { realm: string };
+
 export interface MeResponse {
   subject: { type: string; id?: string; collection?: string };
   admin?: { id: string; email: string };
+  /** Present for administrators only. A server older than FB-137 omits it: treat that as `platform`. */
+  admin_scope?: AdminScope;
   impersonator?: string | null;
   mfa?: boolean;
   mfa_enabled?: boolean;
