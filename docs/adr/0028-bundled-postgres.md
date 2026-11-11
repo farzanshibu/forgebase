@@ -1586,3 +1586,176 @@ the build; `deploy/postgres-engine/extensions/README.md` describes the hook
 (patches, extra make arguments, `post-install.sh` for `lib/plugins/`, or a
 `build.sh` that replaces the PGXS build) and what else AGE needs (source pin,
 licence and `NOTICE`, `graph_cypher` flag, smoke checks).
+
+## Addendum: FB-148, configuration, CLI and server wiring (2026-11-11)
+
+Built as §4.3, §6.1–§6.3 and ADR-0029 §4.1 and §6 describe. What the next
+packages need, and where the code differs from the text above.
+
+**Configuration** (`forgebase-core/src/config.rs`). `DatabaseConfig` gained
+`backend: DatabaseBackend` (`Postgres` | `Sqlite`) and `postgres:
+PostgresConfig { mode, url: Option<DatabaseUrl>, pool_size (16, 1–64),
+listen, engine_dir, native_rls, settings: BTreeMap<String, String>,
+extensions: PostgresExtensions { vector, graph, queue, cron, trigram } }`.
+The default backend is a compile-time constant: `DEFAULT_BACKEND` is
+`Postgres` when `forgebase-core` is built with `bundled-postgres` (enabled by
+`forgebase-cli/bundled-postgres` → `forgebase-server/bundled-postgres`, which
+also embeds the engine), `Sqlite` otherwise (the `-lite` build;
+`forgebase --version` says `lite`). The test and development builds are
+`-lite`, so every existing suite keeps SQLite unless it asks otherwise.
+`DatabaseUrl` redacts its password in `Debug` and is never serialised.
+`[database.postgres.settings]` accepts text, numbers and booleans (stored as
+text; `on`/`off` for booleans); names must be PostgreSQL parameter names and
+values one line; the engine's deny list is applied at start
+(`Engine::prepare`). Environment: `FORGEBASE_DATABASE_BACKEND`,
+`FORGEBASE_DATABASE_URL` (recorded as a secret by name; the file's `url` is
+reported as source `file`), `FORGEBASE_DATABASE_POSTGRES_{MODE, POOL_SIZE,
+LISTEN, ENGINE_DIR, NATIVE_RLS}` and
+`FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_{VECTOR, GRAPH, QUEUE, CRON, TRIGRAM}`.
+*Differs:* the unknown-variable guard now ignores `FORGEBASE_PG_ENGINE_DIR`,
+`FORGEBASE_PG_ENGINE_ARCHIVE`, `FORGEBASE_PG_ENGINE_LOCK` and every
+`FORGEBASE_TEST_*` variable: before, a `forgebase` binary spawned by a test
+running with `FORGEBASE_TEST_BACKEND` refused to start. The SQLite keys keep
+their `FORGEBASE_DB_*` names.
+
+**Registry** (`features.rs`). The `database` module now lists
+`database.backend`, `database.postgres.{mode, url, pool_size, listen,
+engine_dir, native_rls, settings}` and `database.postgres.extensions.*`; the
+SQLite keys stay under `server`. Editable from the dashboard: `pool_size`,
+`native_rls` and the five extension switches. Read-only: `backend` and `mode`
+(§6.1: they need `db convert`), `listen` (opens a network listener),
+`engine_dir` (ForgeBase runs the programs in it, so an administrator could run
+code as the server's OS user) and `settings` (file only, as the deny list is
+the engine's). `url` is a secret. New `SettingType::Map` (`"map"`) for
+`settings`; `set_keys` writes nested sections (`[database.postgres.extensions]`)
+and `keys_of` in the tests walks them. The module's docs link is
+`docs/deployment.md#35-database-postgresql-or-sqlite`.
+
+**Backend marker and resolution** (`forgebase_server::database`).
+`resolve(config, explicit, layout)`: the marker, else what is on disk
+(`forgebase.db` → SQLite, `postgres/data/PG_VERSION` → managed), else the
+configuration. `explicit` is "`database.backend` or `database.postgres.mode`
+came from the file, the environment or a flag" (`backend_is_explicit`); a
+configuration built in code (`forgebase_server::start(&Config)`) counts as
+explicit. A data directory keeps its backend when the configuration only has
+the default; an explicit contradiction is `ServerError::BackendMismatch`
+(`backend_mismatch`, 409) with the §6.3 message plus the `db convert` hint.
+This reconciles §6.3 ("refuse a mismatch") with ADR-0029 §6 ("the marker
+wins"): existing SQLite projects never switch on their own, and an edited
+config never opens an empty PostgreSQL next to a full SQLite project. The
+marker is written atomically by `init` and by the first start of an empty
+directory (and by `db convert`, FB-151: `database::write_marker`).
+
+**Server** (`forgebase-server/src/lib.rs`). After the lock,
+`database::open_owned(config, explicit, layout, Create::Yes)` starts the
+bundled engine (`Engine::prepare(Layout::primary(data_dir), engine_config)`:
+`engine_dir` → `EngineSource::Dir`, `listen`, `settings`, `extensions.cron`
+→ pg_cron), then opens `Database` with `url(Role::Server)` and
+`read_pool_size = pool_size`; an external server uses `FORGEBASE_DATABASE_URL`
+(`create_if_missing` creates its database). A failing startup closes the
+pools, stops the engine and only then releases the lock. Shutdown closes the
+pools, then `EngineHandle::stop()` (fast shutdown), then releases the lock.
+`RunningServer::{backend, engine, db}` are new. *Differs:* the final
+`CHECKPOINT` runs on SQLite only (`database::checkpoint`): `forgebase_server`
+has no `pg_checkpoint` membership, so `Database::checkpoint` fails on the
+bundled engine (`permission denied to execute CHECKPOINT`); the engine's fast
+shutdown checkpoints anyway. FB-150 (backups) should either grant
+`pg_checkpoint` to `forgebase_server` in the FB-132 bootstrap or run its
+checkpoint as `forgebase_super`.
+
+**One-off commands** (`database::open_attached(config, explicit, layout,
+Access::{Read, Write, Super})`). SQLite opens the file (read-only for
+`Read`). The bundled engine: when the lock is free the command takes it and
+starts the engine for its duration (`PrimaryDatabase::close` stops it and
+releases the lock); when a server holds the lock, it reads
+`postgres/data/postmaster.pid` (pid alive, status `ready`, socket directory,
+port; waits up to 10 s for a starting server) and logs in through the socket
+with the role's password from `roles.secret` (`forgebase_reader`,
+`forgebase_server` or `forgebase_super`). `PrimaryDatabase` derefs to
+`Database`. Used by `status`, `doctor` (`Super`, for `amcheck`), `migrate
+--status`, `admin`, `export`/`import` and `db`; `init` and `migrate` use
+`open_owned` under their own lock. *Differs:* §6.2 has `init` start and stop
+the engine once; it now runs the migrations and the administrator step on one
+open database (`admin::init_admin` takes the `Database`), so the engine starts
+once per `init`.
+
+**CLI.** `forgebase init [DIR] --database postgres|sqlite` and
+`--database-url URL` (conflicting flags); on a terminal without either, the
+ADR-0029 §6 prompt (`[1]` is the build's default). An existing data directory
+or an explicit `backend` in an existing `forgebase.toml` decides without
+asking, and a flag that contradicts either is refused. The new
+`forgebase.toml` gets `backend = "…"` (and `[database.postgres] mode =
+"external"`); the URL goes to `DIR/.env` (single-quoted, 0600; a different
+URL already there is refused). Root: `PostgreSQL cannot run as root: run as an
+unprivileged user, or use --database sqlite`. A build without an engine and
+without `engine_dir`/`FORGEBASE_PG_ENGINE_DIR` answers with
+`database::NO_BUNDLED_ENGINE`. `status` shows the backend, the cluster or
+server, the socket and who started the engine, and the SQLite notice of
+ADR-0029 §6 (only while PostgreSQL is the default). `doctor` adds `backend`,
+`engine` (`archive::verify_extracted` for extracted engines, `postgres
+--version`, major against `PG_VERSION`, `MIN_MAJOR`), `cluster` (mode 0700),
+`roles`, `postmaster` (left behind) and runs `amcheck` plus the foreign-key
+check as `forgebase_super`; the WAL-size warning is SQLite only.
+`forgebase db status [--json]` never starts the engine. `forgebase db psql
+[--read-only | --superuser] [ARGS…]` runs the engine's `psql` over the Unix
+socket only (human decision 2026-11-11), with a 0600 passfile in
+`<data_dir>/tmp/` (removed afterwards; never argv or `PGPASSWORD`), ignoring
+Ctrl-C itself so psql gets it; external servers and SQLite are refused with a
+hint. One-off commands filter `forgebase::postgres` out of their log (the
+pg_cron launcher logs `database "forgebase" does not exist` on a first start,
+before the bootstrap creates it); a start failure still carries the engine's
+last lines.
+
+**API** (`forgebase-api`). `AppState::with_database_runtime(DatabaseRuntime {
+mode, location, extensions, engine })`, where `engine` is a closure returning
+`EngineReport { state, version, pid, restarts, last_error, socket_dir, tcp,
+warnings }` (no `forgebase-pgengine` dependency in the API crate).
+`/api/system/info` `database` gained `backend`, `mode`, `server_version`,
+`connections`, `engine` and `features` (per feature: `engine: "portable"`,
+`mode`, `extension`, `available`, `installed`, `state` = `off` |
+`installed` | `available` | `unavailable`, from `pg_available_extensions` and
+`pg_extension`; `{}` on SQLite); `path` is the SQLite file, the cluster
+directory or the external URL without password. `/health/ready` fails the
+`database` check while the engine is `restarting` or `failed` (with its last
+error); its body keeps the Phase 1 contract shape (`status`, `checks`,
+`errors`), so the backend is reported by `/api/system/info` only (the
+dashboard's backend-info slot reads `database.backend` and
+`database.features` there).
+
+**Bench.** `forgebase_bench::Rig` and the queue/jobs bench follow
+`FORGEBASE_TEST_BACKEND` (`postgres` starts the bundled engine through
+`open_owned`, from `FORGEBASE_PG_ENGINE_DIR` in a `-lite` build);
+`run-load.sh` takes an optional `postgres|sqlite` argument for `init`.
+
+**Engine fixes (FB-132 follow-ups).** Extraction no longer calls `sync_all`
+per file (on macOS that is `F_FULLFSYNC`, a full flush of the drive's cache,
+938 times). The whole tree is made durable once, before the rename that
+publishes it: Linux `syncfs` of the file system; macOS a plain `fsync` of
+every file and directory, then one `F_FULLFSYNC`; other platforms keep the
+per-file sync. The rename is followed by a sync of the parent directory, and
+a directory left without a matching `forgebase-engine.sha256` is replaced
+instead of kept. Measured with the real FB-130 archive
+(`forgebase-pg18.6-r1-aarch64-apple-darwin.tar.zst`, 938 files, debug build,
+external SSD): first extraction **143.6 s before, 2.6 s after**; finding it
+again 0.09 s (`examples/extract_engine.rs`). The archive test packs `bin lib
+share`, so it passes with a relocatable engine.
+
+**Not done here / for the next packages.**
+- `serve` on PostgreSQL stops at the first unported service query until
+  FB-143–FB-147 merge (on this branch: `forgebase-data/src/ddl.rs` asks
+  `sqlite_master`); the full-server test
+  `crates/forgebase-server/tests/database_fb148.rs::the_server_runs_on_the_bundled_engine`
+  is `#[ignore]` for that reason and should be switched on by god or FB-149
+  after the merge.
+- FB-149: release builds enable `forgebase-cli/bundled-postgres` (with
+  `FORGEBASE_PG_ENGINE_ARCHIVE`); the `-lite` archive builds without it. CI's
+  PostgreSQL job runs these suites with `FORGEBASE_TEST_BACKEND=postgres` and
+  `FORGEBASE_PG_ENGINE_DIR`.
+- FB-150/FB-151: open the data directory through `database::open_owned` /
+  `open_attached` (they handle the marker and the engine), write the marker
+  with `database::write_marker`, and take the `pg_checkpoint` point above.
+  `forgebase backup` still opens `forgebase.db` directly.
+- FB-155/FB-102: the new `database.*` settings (type `map` included) and the
+  `database.features` and `engine` objects above.
+- External servers: the text-collation check FB-133 suggested (a libc locale
+  may sort differently from the bundled engine's builtin C.UTF-8) is not done.

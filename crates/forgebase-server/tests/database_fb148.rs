@@ -127,7 +127,10 @@ async fn the_lock_holder_runs_the_engine_and_others_attach() {
     );
     let engine_pid = owned.engine().expect("engine").health().pid.expect("pid");
     owned.db().migrate(Some(&layout.backups_dir())).await.unwrap();
-    assert_eq!(scalar(owned.db(), "SELECT current_user::text").await, "forgebase_server");
+    assert_eq!(
+        scalar(owned.db(), "SELECT current_user::text").await,
+        "forgebase_server"
+    );
     let pm = database::postmaster(&layout).expect("postmaster.pid");
     assert_eq!(pm.pid, engine_pid);
     assert_eq!(pm.status, "ready");
@@ -143,14 +146,22 @@ async fn the_lock_holder_runs_the_engine_and_others_attach() {
         assert_eq!(scalar(other.db(), "SELECT current_user::text").await, role);
         other.close().await;
     }
-    assert!(database::postmaster(&layout).is_some(), "closing an attached handle keeps the engine");
+    assert!(
+        database::postmaster(&layout).is_some(),
+        "closing an attached handle keeps the engine"
+    );
 
     owned.close().await;
     drop(lock);
-    assert!(database::postmaster(&layout).is_none(), "the owner's close stops the engine");
+    assert!(
+        database::postmaster(&layout).is_none(),
+        "the owner's close stops the engine"
+    );
 
     // No server: the command takes the lock and runs the engine itself.
-    let alone = database::open_attached(&cfg, true, &layout, Access::Read).await.unwrap();
+    let alone = database::open_attached(&cfg, true, &layout, Access::Read)
+        .await
+        .unwrap();
     assert!(alone.engine().is_some());
     assert!(DataDirLock::acquire(&layout).is_err(), "held while the command runs");
     let version = scalar(alone.db(), "SELECT max(version)::text FROM _forgebase_migrations").await;
@@ -188,7 +199,7 @@ async fn the_server_runs_on_the_bundled_engine() {
     assert_eq!(info["database"]["features"].as_object().map(|m| m.len()), Some(5));
     let (s, ready) = get(addr, "/health/ready").await;
     assert_eq!(s, 200, "{ready}");
-    assert_eq!(ready["database"]["engine"], "ready");
+    assert_eq!(ready["checks"]["database"], "ok");
     server.shutdown().await.unwrap();
     assert!(database::postmaster(&layout).is_none());
 }

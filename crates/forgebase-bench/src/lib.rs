@@ -117,7 +117,9 @@ mod tests {
         assert_eq!(rig.db.kind(), want);
         let rows = rig
             .db
-            .fetch_all(&forgebase_db::Statement::raw("SELECT count(*) FROM _forgebase_migrations"))
+            .fetch_all(&forgebase_db::Statement::raw(
+                "SELECT count(*) FROM _forgebase_migrations",
+            ))
             .await
             .unwrap();
         assert!(rows.scalar().and_then(forgebase_db::Value::as_i64).unwrap_or(0) > 0);

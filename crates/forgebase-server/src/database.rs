@@ -350,6 +350,9 @@ pub async fn open_owned(
     if create == Create::No && existing(layout)?.is_none() {
         return Err(ServerError::NotInitialized(layout.root().to_path_buf()));
     }
+    if had_marker {
+        check_contents(layout, marker)?;
+    }
     let primary = match marker {
         BackendMarker::Sqlite => {
             let opts = DbOptions::from_config(&config.database, layout.database_path())
@@ -396,6 +399,30 @@ pub async fn open_owned(
         return Err(e);
     }
     Ok(primary)
+}
+
+/// A marked data directory must still hold its database: never create an
+/// empty one in place of a deleted file or cluster (ADR-0028 §6.3).
+fn check_contents(layout: &DataLayout, marker: BackendMarker) -> Result<(), ServerError> {
+    let missing = match marker {
+        BackendMarker::Sqlite => (!layout.database_path().is_file()).then(|| layout.database_path()),
+        BackendMarker::PostgresManaged => {
+            let pgdata = engine_layout(layout).pgdata();
+            (!pgdata.join("PG_VERSION").is_file()).then_some(pgdata)
+        }
+        BackendMarker::PostgresExternal => None,
+    };
+    match missing {
+        Some(path) => Err(ServerError::Backend(format!(
+            "{} says this data directory holds {}, but {} is missing; restore it from a backup \
+             (forgebase restore), or remove {} to start an empty project",
+            marker_path(layout).display(),
+            marker.describe(),
+            path.display(),
+            BACKEND_MARKER
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Starts the bundled engine of `layout` (the caller holds the lock).
@@ -473,6 +500,9 @@ pub async fn open_attached(
     let marker = resolve(config, explicit, layout)?;
     if existing(layout)?.is_none() {
         return Err(ServerError::NotInitialized(layout.root().to_path_buf()));
+    }
+    if read_marker(layout)?.is_some() {
+        check_contents(layout, marker)?;
     }
     match marker {
         BackendMarker::Sqlite => {
@@ -769,6 +799,21 @@ mod tests {
         assert_eq!(resolve(&c, false, &layout).unwrap(), BackendMarker::PostgresManaged);
         std::fs::write(marker_path(&layout), "mysql\n").unwrap();
         assert!(read_marker(&layout).is_err());
+    }
+
+    #[test]
+    fn a_marked_directory_must_keep_its_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = DataLayout::new(tmp.path());
+        layout.ensure().unwrap();
+        write_marker(&layout, BackendMarker::Sqlite).unwrap();
+        let err = check_contents(&layout, BackendMarker::Sqlite).unwrap_err();
+        assert!(err.to_string().contains("forgebase.db is missing"), "{err}");
+        std::fs::write(layout.database_path(), b"").unwrap();
+        check_contents(&layout, BackendMarker::Sqlite).unwrap();
+        let err = check_contents(&layout, BackendMarker::PostgresManaged).unwrap_err();
+        assert!(err.to_string().contains("postgres/data is missing"), "{err}");
+        check_contents(&layout, BackendMarker::PostgresExternal).unwrap();
     }
 
     #[test]

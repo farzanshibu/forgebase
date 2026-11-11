@@ -63,8 +63,9 @@ ops_access = "loopback"     # FORGEBASE_OPS_ACCESS
 # Engine: "postgres" (PostgreSQL) or "sqlite" (one file). `forgebase init`
 # writes the one it set up; changing it later needs `forgebase db convert`.
 # backend = "postgres"      # FORGEBASE_DATABASE_BACKEND
-# SQLite only. "full" fsyncs the WAL on every commit (durable across power
-# loss); "normal" is faster but a power cut can drop the last commits.
+# The three keys below are for SQLite.
+# "full" fsyncs the WAL on every commit (durable across power loss).
+# "normal" is faster but a power cut can drop the last committed transactions.
 synchronous = "full"        # FORGEBASE_DB_SYNCHRONOUS
 busy_timeout_ms = 5000      # FORGEBASE_DB_BUSY_TIMEOUT_MS
 read_pool_size = 8          # FORGEBASE_DB_READ_POOL_SIZE

@@ -161,7 +161,8 @@ pub async fn run(g: &GlobalArgs, cmd: AdminCommand) -> anyhow::Result<ExitCode> 
             );
         }
         AdminCommand::List { json } => {
-            let (db, auth) = open(g, Access::Read).await?;
+            // Opening the auth service prunes expired rows: a writing login.
+            let (db, auth) = open(g, Access::Write).await?;
             let res = auth.list_admins().await;
             db.close().await;
             let admins = res?;

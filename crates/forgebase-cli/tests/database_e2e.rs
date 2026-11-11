@@ -77,7 +77,11 @@ fn sqlite_init_writes_the_backend_and_refuses_to_switch() {
 
     // init again keeps it; asking for the other engine is refused.
     ok(&run(tmp.path(), None, &["init", "app", "--no-admin"]));
-    let out = run(tmp.path(), None, &["init", "app", "--database", "postgres", "--no-admin"]);
+    let out = run(
+        tmp.path(),
+        None,
+        &["init", "app", "--database", "postgres", "--no-admin"],
+    );
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("already holds a sqlite database"), "{err}");
@@ -145,7 +149,11 @@ fn bundled_postgres_project_lifecycle() {
     };
     let tmp = tempdir();
     let e = Some(engine.as_path());
-    let text = ok(&run(tmp.path(), e, &["init", "app", "--database", "postgres", "--no-admin"]));
+    let text = ok(&run(
+        tmp.path(),
+        e,
+        &["init", "app", "--database", "postgres", "--no-admin"],
+    ));
     assert!(text.contains("PostgreSQL") && text.contains("(bundled)"), "{text}");
     let app = tmp.path().join("app");
     let data = app.join("forgebase-data");
@@ -154,7 +162,10 @@ fn bundled_postgres_project_lifecycle() {
         "postgres-managed\n"
     );
     assert!(data.join("postgres/data/PG_VERSION").is_file());
-    assert!(!data.join("postgres/data/postmaster.pid").exists(), "init stops the engine");
+    assert!(
+        !data.join("postgres/data/postmaster.pid").exists(),
+        "init stops the engine"
+    );
     assert!(!data.join("forgebase.db").exists());
 
     let s = json(&run(&app, e, &["status", "--json"]));
@@ -163,7 +174,10 @@ fn bundled_postgres_project_lifecycle() {
     assert_eq!(s["database"]["engine_started_by"], "this command");
     assert_eq!(s["database"]["schema_version"], s["database"]["latest_schema_version"]);
     assert_eq!(s["setup_required"], true);
-    assert!(!data.join("postgres/data/postmaster.pid").exists(), "status stops what it started");
+    assert!(
+        !data.join("postgres/data/postmaster.pid").exists(),
+        "status stops what it started"
+    );
 
     let text = ok(&run(&app, e, &["migrate", "--status"]));
     assert!(text.contains("(up to date)"), "{text}");
@@ -177,12 +191,7 @@ fn bundled_postgres_project_lifecycle() {
         .unwrap();
     {
         use std::io::Write;
-        admin
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"a long password 1\n")
-            .unwrap();
+        admin.stdin.take().unwrap().write_all(b"a long password 1\n").unwrap();
     }
     ok(&admin.wait_with_output().unwrap());
     let list = ok(&run(&app, e, &["admin", "list"]));
@@ -190,18 +199,25 @@ fn bundled_postgres_project_lifecycle() {
 
     let d = json(&run(&app, e, &["doctor", "--json"]));
     let checks = d["checks"].as_array().unwrap();
-    let check = |name: &str| checks.iter().find(|c| c["name"] == name).cloned().unwrap_or(Value::Null);
+    let check = |name: &str| {
+        checks
+            .iter()
+            .find(|c| c["name"] == name)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
     for name in ["backend", "engine", "cluster", "roles", "database", "migrations"] {
         assert_eq!(check(name)["status"], "ok", "{name}: {d}");
     }
-    assert!(
-        check("database")["detail"].as_str().unwrap().contains("amcheck"),
-        "{d}"
-    );
+    assert!(check("database")["detail"].as_str().unwrap().contains("amcheck"), "{d}");
 
     let out = run(&app, e, &["db", "psql", "-tA", "-c", "select current_user || ':' || 1"]);
     assert_eq!(ok(&out).trim(), "forgebase_server:1");
-    let out = run(&app, e, &["db", "psql", "--read-only", "-tA", "-c", "select current_user"]);
+    let out = run(
+        &app,
+        e,
+        &["db", "psql", "--read-only", "-tA", "-c", "select current_user"],
+    );
     assert_eq!(ok(&out).trim(), "forgebase_reader");
     let out = run(&app, e, &["db", "psql", "--read-only", "-c", "create table x (a int)"]);
     assert!(!out.status.success(), "the reader cannot write");

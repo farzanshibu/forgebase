@@ -2073,4 +2073,131 @@ mod tests {
             Source::Flag
         );
     }
+
+    /// FB-148: nested `[database.postgres.*]` keys are written into their
+    /// own tables, read-only and secret database keys are refused.
+    #[test]
+    fn patch_writes_nested_database_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("forgebase.toml");
+        std::fs::write(&file, crate::config::CONFIG_TEMPLATE).unwrap();
+        let (origin, data_dir) = origin(tmp.path());
+        apply_patch(
+            &origin,
+            &data_dir,
+            &set(&[
+                ("database.postgres.pool_size", Json::from(4)),
+                ("database.postgres.extensions.vector", Json::from("off")),
+                ("database.postgres.native_rls", Json::from("enforce")),
+            ]),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("[database.postgres]\n") && text.contains("\npool_size = 4\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[database.postgres.extensions]\nvector = \"off\""),
+            "{text}"
+        );
+        let loaded = ConfigLoader::new(tmp.path()).load().unwrap();
+        let pg = &loaded.config.database.postgres;
+        assert_eq!(pg.pool_size, 4);
+        assert_eq!(pg.native_rls, crate::config::NativeRls::Enforce);
+        assert_eq!(pg.extensions.vector, crate::config::ExtensionMode::Off);
+        assert_eq!(loaded.sources.get("database.postgres.extensions.vector"), Source::File);
+        // A second change keeps the tables it made.
+        apply_patch(
+            &origin,
+            &data_dir,
+            &set(&[("database.postgres.extensions.cron", Json::from("on"))]),
+        )
+        .unwrap();
+        let again = ConfigLoader::new(tmp.path()).load().unwrap().config.database.postgres;
+        assert_eq!(again.extensions.vector, crate::config::ExtensionMode::Off);
+        assert_eq!(again.extensions.cron, crate::config::ExtensionMode::On);
+        for (key, value) in [
+            ("database.backend", Json::from("sqlite")),
+            ("database.postgres.mode", Json::from("external")),
+            ("database.postgres.engine_dir", Json::from("/tmp/x")),
+            ("database.postgres.listen", Json::from("127.0.0.1:5433")),
+            ("database.postgres.url", Json::from("postgres://u:p@h/db")),
+            ("database.postgres.settings", serde_json::json!({"work_mem": "8MB"})),
+        ] {
+            let err = apply_patch(&origin, &data_dir, &set(&[(key, value)])).unwrap_err();
+            let PatchError::Invalid(m) = err else {
+                panic!("{key}: {err}")
+            };
+            assert!(m.contains_key(key), "{key}: {m:?}");
+        }
+        let err = apply_patch(
+            &origin,
+            &data_dir,
+            &set(&[("database.postgres.pool_size", Json::from(65))]),
+        )
+        .unwrap_err();
+        let PatchError::Invalid(m) = err else { panic!("{err}") };
+        assert!(m["database.postgres.pool_size"].starts_with("must be "), "{m:?}");
+    }
+
+    /// FB-148: the environment layer and the file's settings table.
+    #[test]
+    fn postgres_settings_come_from_file_and_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("forgebase.toml"),
+            "[database]\nbackend = \"postgres\"\n[database.postgres]\nurl = \"postgres://u:pw@db/x\"\nengine_dir = \"engine\"\n[database.postgres.settings]\nshared_buffers = \"256MB\"\nmax_connections = 100\njit = false\n",
+        )
+        .unwrap();
+        let loaded = load(
+            tmp.path(),
+            &[
+                ("FORGEBASE_DATABASE_POSTGRES_MODE", "external"),
+                ("FORGEBASE_DATABASE_POSTGRES_EXTENSIONS_GRAPH", "off"),
+                ("FORGEBASE_TEST_BACKEND", "postgres"),
+                ("FORGEBASE_PG_ENGINE_DIR", "/opt/pg"),
+            ],
+            ConfigOverrides::default(),
+        );
+        let db = &loaded.config.database;
+        assert_eq!(db.backend, crate::config::DatabaseBackend::Postgres);
+        assert_eq!(db.postgres.mode, crate::config::PostgresMode::External);
+        assert_eq!(db.postgres.extensions.graph, crate::config::ExtensionMode::Off);
+        assert_eq!(db.postgres.url.as_ref().unwrap().expose(), "postgres://u:pw@db/x");
+        assert!(!format!("{db:?}").contains("pw"), "the URL is redacted in Debug");
+        assert_eq!(db.postgres.engine_dir, tmp.path().join("engine").display().to_string());
+        let st: Vec<(&str, &str)> = db
+            .postgres
+            .settings
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            st,
+            [("jit", "off"), ("max_connections", "100"), ("shared_buffers", "256MB")]
+        );
+        assert_eq!(setting_value(&loaded.config, "database.postgres.url"), None, "a secret");
+        assert_eq!(
+            source_of(setting("database.postgres.url").unwrap(), &loaded.sources),
+            Source::File
+        );
+        assert_eq!(loaded.sources.get("database.postgres.mode"), Source::Env);
+        assert_eq!(
+            crate::config::redact_url("postgres://u:pw@db/x?host=/s"),
+            "postgres://u:***@db/x?host=/s"
+        );
+        let mut c = loaded.config.clone();
+        c.database.postgres.listen = "0.0.0.0:5433".into();
+        c.database.postgres.settings.insert("bad name".into(), "x".into());
+        let fields: Vec<_> = c
+            .problems()
+            .into_iter()
+            .filter_map(|e| match e {
+                ConfigError::Invalid { field, .. } => Some(field),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fields, ["database.postgres.listen", "database.postgres.settings"]);
+    }
 }

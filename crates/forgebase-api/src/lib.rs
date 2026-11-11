@@ -677,11 +677,7 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(
             j,
-            serde_json::json!({
-                "status": "ready",
-                "checks": {"database": "ok", "storage": "ok"},
-                "database": {"backend": "sqlite", "mode": null, "engine": null},
-            })
+            serde_json::json!({"status": "ready", "checks": {"database": "ok", "storage": "ok"}})
         );
 
         let (s, _, j, _) = call(&app, Method::GET, "/api/system/info", &[]).await;
@@ -776,11 +772,14 @@ mod tests {
             assert_eq!(d["features"], serde_json::json!({}));
         }
 
+        // The readiness body keeps its contract shape (docs/PLAN.md §5).
         let (s, _, j, _) = call(&app, Method::GET, "/health/ready", &[]).await;
         assert_eq!(s, StatusCode::OK, "{j}");
-        assert_eq!(j["database"]["backend"], d["backend"]);
+        assert_eq!(
+            j,
+            serde_json::json!({"status": "ready", "checks": {"database": "ok", "storage": "ok"}})
+        );
         if pg {
-            assert_eq!(j["database"]["engine"], "ready");
             // A restarting engine fails readiness (ADR-0028 §4.3).
             *engine_state.lock().unwrap() = "restarting";
             let (s, _, j, _) = call(&app, Method::GET, "/health/ready", &[]).await;
@@ -790,7 +789,6 @@ mod tests {
                 j["errors"]["database"],
                 "the bundled PostgreSQL is restarting: the postmaster exited unexpectedly"
             );
-            assert_eq!(j["database"]["engine"], "restarting");
         }
     }
 

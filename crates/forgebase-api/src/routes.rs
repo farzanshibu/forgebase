@@ -49,15 +49,6 @@ pub async fn ready(State(state): State<AppState>) -> Response {
     let mut body = Map::new();
     body.insert("status".into(), Value::from(if ok { "ready" } else { "not_ready" }));
     body.insert("checks".into(), Value::Object(checks));
-    let rt = state.database_runtime();
-    body.insert(
-        "database".into(),
-        json!({
-            "backend": state.db().kind().as_str(),
-            "mode": rt.mode,
-            "engine": engine.as_ref().map(|e| e.state),
-        }),
-    );
     if !ok {
         let summary = Value::Object(errors.clone());
         tracing::warn!(errors = %summary, "readiness check failed");
