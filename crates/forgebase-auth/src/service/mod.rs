@@ -216,6 +216,8 @@ struct Inner {
     realm_sms: RwLock<std::collections::HashMap<String, Arc<dyn crate::sms::SmsProvider>>>,
     change_hook: RwLock<Option<Hook>>,
     realm_creator: RwLock<Option<Creator>>,
+    /// Realm-administrator check (FB-137), wired to the policy engine.
+    realm_admin: RwLock<Option<AdminCheck>>,
     idp: crate::idp::IdpState,
     /// First-run setup token (FB-90).
     setup: crate::setup::SetupState,
@@ -233,6 +235,15 @@ impl std::fmt::Debug for Creator {
 #[derive(Clone)]
 struct Hook(ChangeHook);
 
+#[derive(Clone)]
+struct AdminCheck(RealmAdminCheck);
+
+impl std::fmt::Debug for AdminCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RealmAdminCheck")
+    }
+}
+
 impl std::fmt::Debug for Hook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ChangeHook")
@@ -242,6 +253,46 @@ impl std::fmt::Debug for Hook {
 /// Called after the auth service changed state the policy engine caches
 /// (suspensions); the server wires it to `PolicyService::reload`.
 pub type ChangeHook = Arc<dyn Fn() + Send + Sync>;
+
+/// Permission key of a realm administrator (FB-137). Held in a realm through
+/// a realm binding (a role of `/api/v1/realm-bindings`, or a realm-level
+/// override), it opens the identity admin APIs for that realm's identities.
+pub const IDENTITY_ADMIN: &str = "identity:admin";
+
+/// Whether the caller of `ctx` holds [`IDENTITY_ADMIN`] in `ctx.realm_id`
+/// at realm level (FB-137). `ctx` is the caller's own context in its home
+/// realm. The router wires it to `PolicyService::has`.
+pub type RealmAdminCheck = Arc<dyn Fn(&AccessContext) -> bool + Send + Sync>;
+
+/// What an administrator may administer (FB-137).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AdminScope {
+    /// A platform administrator, or a service account with the admin role:
+    /// every realm, and the platform itself.
+    Platform,
+    /// A realm administrator: the identities of one realm (its home realm).
+    Realm(String),
+}
+
+impl AdminScope {
+    /// Whether this scope covers the identities of `realm`.
+    pub fn covers(&self, realm: &str) -> bool {
+        match self {
+            AdminScope::Platform => true,
+            AdminScope::Realm(r) => r == realm,
+        }
+    }
+
+    /// The realm of a realm administrator; `None` for the platform.
+    pub fn realm(&self) -> Option<&str> {
+        match self {
+            AdminScope::Platform => None,
+            AdminScope::Realm(r) => Some(r),
+        }
+    }
+}
 
 impl AuthService {
     /// Current Unix time in seconds, from the configured clock.
@@ -295,6 +346,7 @@ impl AuthService {
                 realm_sms: RwLock::new(std::collections::HashMap::new()),
                 change_hook: RwLock::new(None),
                 realm_creator: RwLock::new(None),
+                realm_admin: RwLock::new(None),
                 idp: crate::idp::IdpState::default(),
                 setup: crate::setup::SetupState::default(),
             }),
@@ -381,6 +433,127 @@ impl AuthService {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|c| c.0.clone())
+    }
+
+    /// Installs the realm-administrator check (FB-137); the router wires it
+    /// to the policy engine. Without it only platform administrators
+    /// administer.
+    pub fn set_realm_admin_check(&self, f: RealmAdminCheck) {
+        *self.inner.realm_admin.write().unwrap_or_else(|e| e.into_inner()) = Some(AdminCheck(f));
+    }
+
+    /// The home realm of `subject` when it is a realm administrator there
+    /// (a user or a non-admin service account holding [`IDENTITY_ADMIN`]
+    /// through a realm binding).
+    pub(crate) fn realm_admin_realm(&self, subject: &Subject) -> Option<String> {
+        if !matches!(
+            subject,
+            Subject::User { .. } | Subject::ServiceAccount { admin: false, .. }
+        ) {
+            return None;
+        }
+        let check = self
+            .inner
+            .realm_admin
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let realm = self.realms().realm_of_subject(subject)?;
+        let ctx = subject.access_context().with_realm(realm.clone());
+        (check.0)(&ctx).then_some(realm)
+    }
+
+    /// What the caller may administer: [`AdminScope::Platform`] for platform
+    /// administrators (unchanged), [`AdminScope::Realm`] for realm
+    /// administrators (FB-137). An impersonation session never administers.
+    pub fn admin_scope(&self, caller: &Authenticated) -> Result<AdminScope, AuthError> {
+        if caller.subject.is_admin() {
+            return Ok(AdminScope::Platform);
+        }
+        if caller.impersonator.is_none()
+            && let Some(realm) = self.realm_admin_realm(&caller.subject)
+        {
+            return Ok(AdminScope::Realm(realm));
+        }
+        Err(AuthError::Forbidden("administrator access required".into()))
+    }
+
+    /// An administrator of `realm`'s identities.
+    pub(crate) fn require_realm_admin(&self, caller: &Authenticated, realm: &str) -> Result<AdminScope, AuthError> {
+        let scope = self.admin_scope(caller)?;
+        if scope.covers(realm) {
+            Ok(scope)
+        } else {
+            Err(outside_realm())
+        }
+    }
+
+    /// An administrator of `target`: platform administrators of anyone,
+    /// realm administrators of the users and non-admin service accounts of
+    /// their realm.
+    pub(crate) fn require_admin_of(&self, caller: &Authenticated, target: &Subject) -> Result<AdminScope, AuthError> {
+        let scope = self.admin_scope(caller)?;
+        let ok = match (&scope, target) {
+            (AdminScope::Platform, _) => true,
+            (AdminScope::Realm(r), Subject::User { .. } | Subject::ServiceAccount { admin: false, .. }) => {
+                self.realms().realm_of_subject(target).as_deref() == Some(r.as_str())
+            }
+            _ => false,
+        };
+        if ok { Ok(scope) } else { Err(outside_realm()) }
+    }
+
+    /// SQL condition matching auth-collection names (column `col`) whose
+    /// users live in `realm`, with its parameters numbered from `start`.
+    pub(crate) fn realm_users_sql(&self, realm: &str, col: &str, start: usize) -> (String, Vec<Value>) {
+        let realms = self.realms().list();
+        let (negate, colls): (bool, Vec<String>) = if realm == forgebase_data::DEFAULT_REALM {
+            let others = realms.iter().filter(|r| r.realm != realm);
+            (true, others.map(|r| r.collection.clone()).collect())
+        } else {
+            let mine = realms.iter().filter(|r| r.realm == realm);
+            (false, mine.map(|r| r.collection.clone()).collect())
+        };
+        if colls.is_empty() {
+            let all = if negate {
+                format!("{col} IS NOT NULL")
+            } else {
+                "1 = 0".to_owned()
+            };
+            return (all, Vec::new());
+        }
+        let ph = (start..start + colls.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let op = if negate { "NOT IN" } else { "IN" };
+        (
+            format!("({col} IS NOT NULL AND {col} {op} ({ph}))"),
+            colls.into_iter().map(t).collect(),
+        )
+    }
+
+    /// SQL condition matching principals (subject type, collection and id
+    /// columns) a realm administrator of `realm` administers: its users and
+    /// its non-admin service accounts. Parameters are numbered from `start`.
+    pub(crate) fn realm_principals_sql(
+        &self,
+        realm: &str,
+        type_col: &str,
+        coll_col: &str,
+        id_col: &str,
+        start: usize,
+    ) -> (String, Vec<Value>) {
+        let (users, mut params) = self.realm_users_sql(realm, coll_col, start);
+        let n = start + params.len();
+        params.push(t(realm));
+        (
+            format!(
+                "(({type_col} = 'user' AND {users}) OR ({type_col} = 'service_account' AND {id_col} IN \
+                 (SELECT id FROM _forgebase_service_accounts WHERE realm = ?{n} AND role <> 'admin')))"
+            ),
+            params,
+        )
     }
 
     /// Installs the hook run after suspensions change.
@@ -590,9 +763,10 @@ impl AuthService {
         tx.commit().await
     }
 
-    /// Audit entries, newest first (administrators).
+    /// Audit entries, newest first (administrators; a realm administrator
+    /// sees the entries recorded for their realm, FB-137).
     pub async fn audit_log(&self, caller: &Authenticated, q: &AuditQuery) -> Result<Vec<AuditEntry>, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
         let limit = i64::from(q.limit.unwrap_or(50).clamp(1, 500));
         let r = read(
             self.db(),
@@ -601,8 +775,15 @@ impl AuthService {
              WHERE (?1 IS NULL OR substr(event, 1, length(?1)) = ?1)
                AND (?2 IS NULL OR subject_id = ?2)
                AND (?3 IS NULL OR id < ?3)
+               AND (?5 IS NULL OR realm = ?5)
              ORDER BY id DESC LIMIT ?4",
-            vec![ot(q.event.clone()), ot(q.subject_id.clone()), q.before.map_or(Value::Null, i), i(limit)],
+            vec![
+                ot(q.event.clone()),
+                ot(q.subject_id.clone()),
+                q.before.map_or(Value::Null, i),
+                i(limit),
+                ot(scope.realm().map(str::to_owned)),
+            ],
         )
         .await?;
         Ok(rows(&r).map(audit_entry).collect())
@@ -1423,6 +1604,13 @@ pub(crate) fn reject_impersonated(caller: &Authenticated) -> Result<(), AuthErro
     }
 }
 
+/// A realm administrator acting outside their realm (FB-137).
+pub(crate) fn outside_realm() -> AuthError {
+    AuthError::Forbidden("administrator access to this realm required".into())
+}
+
+/// A platform administrator (or a service account with the admin role).
+/// Realm administrators (FB-137) pass [`AuthService::admin_scope`] instead.
 pub(crate) fn require_admin(caller: &Authenticated) -> Result<(), AuthError> {
     if caller.subject.is_admin() {
         Ok(())

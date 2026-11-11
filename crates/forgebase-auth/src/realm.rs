@@ -27,7 +27,7 @@ use forgebase_data::{AccessContext, DEFAULT_REALM, Principal};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value as Json, json};
 
-use crate::service::{ClientInfo, is_unique_violation, require_admin};
+use crate::service::{AdminScope, ClientInfo, is_unique_violation, require_admin};
 use crate::store::{Tx, first, i, read, rfc3339, rows, t};
 use crate::{AuthError, AuthService, Authenticated, Subject};
 
@@ -666,15 +666,21 @@ impl AuthService {
         }))
     }
 
-    /// Every realm identity (administrators).
+    /// Every realm identity (administrators; a realm administrator sees
+    /// their own, FB-137).
     pub fn list_realm_identities(&self, caller: &Authenticated) -> Result<Vec<Arc<RealmIdentity>>, AuthError> {
-        require_admin(caller)?;
-        Ok(self.realms().list())
+        let scope = self.admin_scope(caller)?;
+        Ok(self
+            .realms()
+            .list()
+            .into_iter()
+            .filter(|r| scope.covers(&r.realm))
+            .collect())
     }
 
-    /// One realm identity (administrators).
+    /// One realm identity (administrators of that realm).
     pub fn get_realm_identity(&self, caller: &Authenticated, realm: &str) -> Result<Arc<RealmIdentity>, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)
     }
 
@@ -688,7 +694,7 @@ impl AuthService {
         realm: &str,
         mut input: RealmInput,
     ) -> Result<Arc<RealmIdentity>, AuthError> {
-        require_admin(caller)?;
+        let scope = self.require_realm_admin(caller, realm)?;
         check_realm_id(realm)?;
         let exists = read(
             self.data().backend(),
@@ -702,6 +708,13 @@ impl AuthService {
             )));
         }
         let old = self.realms().get(realm);
+        // Choosing a realm's user pool is the platform's (FB-137): a realm
+        // administrator edits the settings of an existing one.
+        if old.is_none() && scope != AdminScope::Platform {
+            return Err(AuthError::Forbidden(
+                "only platform administrators set up a realm's identity".into(),
+            ));
+        }
         let collection = match (&old, input.collection.as_deref().filter(|c| !c.is_empty())) {
             (Some(o), Some(c)) if c != o.collection => {
                 return Err(AuthError::Conflict(format!(

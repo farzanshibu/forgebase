@@ -16,7 +16,7 @@
 use forgebase_data::{AccessContext, DataError, UpdateOptions};
 use serde_json::{Map, Value as Json, json};
 
-use crate::service::{AuthService, ClientInfo, audit_in, require_admin};
+use crate::service::{AuthService, ClientInfo, audit_in};
 use crate::store::{Tx, first, i, read, rfc3339, rows, t};
 use crate::{AuthError, Authenticated, Subject};
 
@@ -136,14 +136,16 @@ impl AuthService {
         }
     }
 
-    /// The target of an administrator's lifecycle action (must exist).
+    /// The target of an administrator's lifecycle action (must exist; a
+    /// realm administrator's targets live in their realm, FB-137).
     async fn admin_target(&self, caller: &Authenticated, collection: &str, id: &str) -> Result<Subject, AuthError> {
-        require_admin(caller)?;
+        self.admin_scope(caller)?;
         let coll = self.auth_collection(Some(collection)).await?;
         let subject = Subject::User {
             collection: coll.name,
             id: id.to_owned(),
         };
+        self.require_admin_of(caller, &subject)?;
         if !self.subject_exists(&subject).await? {
             return Err(AuthError::NotFound("user not found".into()));
         }
