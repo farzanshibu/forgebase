@@ -7,6 +7,8 @@
 //!
 //! 1. a replica added (and removed) while the server runs is used (and
 //!    dropped) by the data core at once, with no restart;
+//! 2. on a sharded server, a record write on control answers
+//!    `X-ForgeBase-Commit`, before and after a restart;
 //! 3. an anonymous sign-in right after a signup finds the user while the
 //!    replica has not replayed it (identity reads run on the primary).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -14,6 +16,7 @@
 mod security_common;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use forgebase_db::{ReadIntent, Statement};
@@ -123,6 +126,32 @@ fn replica_reads(env: &Env) -> u64 {
         .map_or(0, |rs| rs.status().iter().map(|s| s.reads).sum())
 }
 
+/// An [`Env`] around a server started again on the same directory.
+async fn restart(env: Env, cfg: &forgebase_core::Config) -> Env {
+    let Env { server, auth, dir, .. } = env;
+    drop(auth);
+    server.shutdown().await.unwrap();
+    let server = forgebase_server::start(cfg).await.unwrap();
+    let mut acfg = forgebase_auth::AuthConfig::for_data_dir(&cfg.data_dir);
+    acfg.argon2 = forgebase_auth::Argon2Config::insecure_fast_for_tests();
+    let auth = forgebase_auth::AuthService::open_with_data(
+        Arc::new(server.database().clone()),
+        Arc::new(forgebase_data::DefaultAuthorizer),
+        &cfg.data_dir,
+        acfg,
+        None,
+    )
+    .await
+    .unwrap();
+    let addr = server.local_addr();
+    Env {
+        server,
+        auth,
+        addr,
+        dir,
+    }
+}
+
 /// Runs `sql` with the engine's `psql` on the local node whose data
 /// directory is `node`, as the engine's superuser over its socket.
 fn psql(data_dir: &Path, node: &Path, sql: &str) {
@@ -184,6 +213,54 @@ async fn a_replica_added_or_removed_while_the_server_runs_is_used_by_the_data_co
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(r.json()["items"].as_array().map_or(0, Vec::len), 3);
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn control_set_writes_on_a_sharded_server_return_the_commit_token() {
+    if !postgres() {
+        return;
+    }
+    let env = Env::new().await;
+    let admin = env.admin("fix15-sharded@example.com").await;
+    add_replica(&env, &admin, "r1").await;
+    let r = env
+        .as_(
+            &admin,
+            "POST",
+            &format!("{BASE}/shards"),
+            &[],
+            Some(json!({"name": "s1", "node": {"name": "s1p", "kind": "local"}})),
+        )
+        .await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let op = r.json()["operation"]["id"].as_str().unwrap().to_owned();
+    let done = wait_op(&env, &admin, &op, Duration::from_secs(300)).await;
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert!(env.server.router().is_sharded());
+
+    // A shared collection lives on control.
+    create_collection(&env, &admin, "settings").await;
+    let token = write(&env, &admin, "settings", "a").await.expect("X-ForgeBase-Commit");
+    assert!(token.starts_with("control/"), "{token}");
+
+    // And after a restart.
+    let cfg = security_common::config(env.dir.path());
+    let env = restart(env, &cfg).await;
+    let r = env
+        .req(
+            "POST",
+            "/api/auth/admins/login",
+            &[],
+            Some(json!({"email": "fix15-sharded@example.com", "password": ADMIN_PASSWORD})),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let admin = r.json()["access_token"].as_str().unwrap().to_owned();
+    assert!(env.server.router().is_sharded());
+    wait_in_rotation(&env, "r1").await;
+    let token = write(&env, &admin, "settings", "b").await.expect("X-ForgeBase-Commit after a restart");
+    assert!(token.starts_with("control/"), "{token}");
     env.shutdown().await;
 }
 

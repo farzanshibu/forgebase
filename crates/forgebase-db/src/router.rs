@@ -281,8 +281,16 @@ impl Backend for SetHandle {
         }
     }
 
+    /// Like [`Backend::begin`], the commit records a read-your-writes token
+    /// when the set has replicas (FIX-15: writes as a native-RLS role too).
     fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
-        self.db.begin_as(mode, run_as)
+        match &self.replicas {
+            None => self.db.begin_as(mode, run_as),
+            Some(replicas) => Box::pin(async move {
+                let tx = self.db.begin_as(mode, run_as).await?;
+                Ok(replicas.wrap_tx(tx))
+            }),
+        }
     }
 
     fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
