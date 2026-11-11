@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use common::{Harness, claim_one, harness, open_db, service, system, wait_for};
+use common::{Harness, Store, claim_one, harness, service, system, wait_for};
 use forgebase_data::DefaultAuthorizer;
 use forgebase_jobs::{
     HandlerError, Job, JobFilter, JobRegistry, JobService, JobStatus, NewJob, NewSchedule, PoolConfig, start_pool,
@@ -447,8 +447,8 @@ async fn graceful_shutdown_releases_jobs_that_outlive_the_grace_period() {
 
 #[tokio::test]
 async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = open_db(dir.path()).await;
+    let dir = Store::new().await;
+    let db = dir.open().await;
     let (_data, svc, _clock) = service(&db, Arc::new(DefaultAuthorizer)).await;
 
     // Process 1 starts the job and "dies" in the middle of it.
@@ -486,7 +486,7 @@ async fn a_crashed_pool_loses_nothing_and_the_job_completes_exactly_once() {
 
     // The database is reopened by a fresh process; the job is still there.
     db.close().await;
-    let db = open_db(dir.path()).await;
+    let db = dir.open().await;
     let (_data, svc, clock) = service(&db, Arc::new(DefaultAuthorizer)).await;
     assert_eq!(status_of(&svc, &j.id).await.status, JobStatus::Running);
     // The dead worker's lease runs out (virtual time: no waiting, no load sensitivity).
