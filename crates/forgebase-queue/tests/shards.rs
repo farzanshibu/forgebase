@@ -311,7 +311,7 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
     exec(
         &s1,
         "INSERT INTO _forgebase_realtime_outbox (op, collection_id, collection, record_id, tenant, actor, snapshot, \
-         created_at) VALUES ('create', 'c1', 'posts', 'r1', 'tb', 'user:1', '{\"id\": \"r1\"}', \
+         created_at) VALUES ('create', 'c1', 'posts', 'r1', 'tb', 'user:1', '{\"c\": [\"id\"], \"v\": [\"r1\"]}', \
          '2026-11-11T00:00:00Z')",
     )
     .await;

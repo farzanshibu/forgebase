@@ -179,7 +179,7 @@ async fn keys_are_written_on_their_tenant_set_and_loaded_from_every_set() {
     assert_eq!(
         count(
             &s1,
-            "SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:tb' AND key = 'k' AND data LIKE '%YjI=%'"
+            "SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = 't:tb' AND key = 'k' AND CAST(data AS TEXT) LIKE '%YjI=%'"
         )
         .await,
         1
