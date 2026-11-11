@@ -4171,7 +4171,12 @@ and acknowledging; ~1 100–2 500 rows moved): **819 ms** (hooks 300,
 barrier 188, source digests 74, switch transaction 25, flip 215) and
 **4 149 ms** on a second run while other agents loaded the machine
 (barrier 2 758, flip 1 059): both under the 10 s limit, with no failed
-call, no lost or duplicated record, event or delivery. The barrier wait is
+call, no lost or duplicated record, event or delivery; on a quiet machine
+**514 ms** (barrier 278, hooks 98, flip 85, switch transaction 17). A
+move through the API (`topology_fb174.rs`, a local shard, 30 records):
+**503 ms** quiet; under heavy load it reached 10–12 s once and the 10 s
+limit aborted it cleanly (tenant unfrozen, nothing changed), so the server
+tests run with a 60 s limit. The barrier wait is
 the apply worker's latency and dominates under load; the rest grows with
 the tenant's rows (digests). Plans estimate `150 ms + 4 ms per 1 000
 rows`.
