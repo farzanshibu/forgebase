@@ -437,7 +437,7 @@ describe("shards: drain, capacity, remove", () => {
   });
 
   it("remove asks for the shard's name; a shard with tenants is refused in plain words", async () => {
-    const { st, u } = open({ view: shardedView() });
+    const { u } = open({ view: shardedView() });
     await screen.findByLabelText("eu-1", { selector: "[data-set]" }, T);
     await openMenu(u, "Actions for eu-1", /Remove shard/);
     const d = await dialog("Remove shard eu-1?");
@@ -506,8 +506,7 @@ describe("operations", () => {
       url: string;
       constructor(url: string) {
         this.url = url;
-        const self = this;
-        sources.push({ url, closed: false, fire: () => { self.onmessage?.(); self.listeners.forEach((l) => l()); } });
+        sources.push({ url, closed: false, fire: () => { this.onmessage?.(); this.listeners.forEach((l) => l()); } });
       }
       addEventListener(_t: string, l: () => void) { this.listeners.push(l); }
       close() { this.closed = true; const s = sources.find((x) => x.url === this.url); if (s) s.closed = true; }

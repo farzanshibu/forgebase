@@ -29,7 +29,7 @@ it("Database studio -> View topology -> one server -> add a local replica -> see
   const u = userEvent.setup();
 
   // The Database studio links to the new screen.
-  await u.click(await screen.findByRole("link", { name: "View topology" }, T));
+  await u.click(await screen.findByRole("link", { name: "View topology" }, { timeout: 20000 }));
   expect(await screen.findByRole("heading", { level: 1, name: /Database topology/ }, T)).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Database topology", selected: true })).toBeInTheDocument();
 
