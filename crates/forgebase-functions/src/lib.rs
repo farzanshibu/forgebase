@@ -240,6 +240,10 @@ pub(crate) struct Inner {
     services: RwLock<Arc<Services>>,
     global: Arc<Semaphore>,
     write_lock: tokio::sync::Mutex<()>,
+    /// Held for a whole [`FunctionService::run_after_hooks`] pass: the
+    /// cursor is read, advanced and stored under it, so a manual call racing
+    /// the background task cannot deliver an event twice.
+    after_lock: tokio::sync::Mutex<()>,
     log_counter: AtomicU64,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -336,6 +340,7 @@ impl FunctionService {
                 scripts: Mutex::new(HashMap::new()),
                 kv_rules: RwLock::new(kv_rules),
                 services: RwLock::new(Arc::new(Services::default())),
+                after_lock: tokio::sync::Mutex::new(()),
                 write_lock: tokio::sync::Mutex::new(()),
                 log_counter: AtomicU64::new(0),
                 tasks: Mutex::new(Vec::new()),
@@ -1317,6 +1322,9 @@ impl FunctionService {
     /// hook executions. The background task calls this; tests may call it
     /// directly.
     pub async fn run_after_hooks(&self) -> Result<usize> {
+        // Once-only delivery: a second caller waits, then starts from the
+        // cursor the first one stored.
+        let _pass = self.inner.after_lock.lock().await;
         let backend = self.backend();
         let mut cursor = store::cursor(backend.as_ref(), AFTER_CURSOR).await?.unwrap_or(0);
         let mut runs = 0;

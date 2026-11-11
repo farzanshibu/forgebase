@@ -320,8 +320,16 @@ fn kv(env: &HostEnv, args: &[u8]) -> HostResult {
             ));
         }
     };
+    // The function's own `fn.<name>` namespace is its private data, granted
+    // by the `kv` capability alone: FB-138 refuses it to non-privileged
+    // callers, so it is reached as the system context in the caller's tenant
+    // (as `ctx.kv` does in JavaScript).
+    let mut sys = AccessContext::system();
+    if let Some(t) = &env.caller.tenant {
+        sys = sys.with_tenant(t.clone());
+    }
     let reply = kv
-        .exec(&env.identity, &kv_namespace(&env.function), &cmd)
+        .exec(&sys, &kv_namespace(&env.function), &cmd)
         .map_err(|e| HostError::new(e.code(), e.to_string()))?;
     to_bytes(&json!({ "value": reply_json(reply) }))
 }

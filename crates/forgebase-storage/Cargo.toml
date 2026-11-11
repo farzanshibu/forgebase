@@ -32,6 +32,7 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+forgebase-db = { workspace = true, features = ["testing"] }
 futures-util.workspace = true
 forgebase-policy.workspace = true
 forgebase-schema.workspace = true

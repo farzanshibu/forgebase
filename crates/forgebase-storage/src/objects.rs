@@ -483,7 +483,7 @@ impl StorageService {
             tx.execute(&st(
                 "INSERT INTO _forgebase_storage_blobs (sha256, size, refcount, created_at, zero_since) \
                  VALUES (?, ?, 1, ?, NULL) \
-                 ON CONFLICT (sha256) DO UPDATE SET refcount = refcount + 1, zero_since = NULL",
+                 ON CONFLICT (sha256) DO UPDATE SET refcount = _forgebase_storage_blobs.refcount + 1, zero_since = NULL",
                 vec![sha.as_str().into(), iv(*size), now.into()],
             ))
             .await?;

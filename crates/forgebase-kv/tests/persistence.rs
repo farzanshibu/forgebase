@@ -14,8 +14,8 @@ fn cmd(s: &str) -> Vec<Vec<u8>> {
 
 #[tokio::test]
 async fn data_ttl_and_tenants_survive_restart_and_expired_keys_do_not() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = common::open_db(tmp.path()).await;
+    let test = common::test_db().await;
+    let db = test.database().clone();
     let clock = Arc::new(std::sync::atomic::AtomicU64::new(1_000_000));
     let mk = |db: forgebase_db::Database, c: Arc<std::sync::atomic::AtomicU64>| async move {
         KvService::open_with_clock(
@@ -86,8 +86,8 @@ async fn data_ttl_and_tenants_survive_restart_and_expired_keys_do_not() {
 
 #[tokio::test]
 async fn shutdown_flushes_unsaved_writes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = common::open_db(tmp.path()).await;
+    let test = common::test_db().await;
+    let db = test.database().clone();
     let kv = KvService::open(
         KvConfig::default(),
         Arc::new(DefaultAuthorizer),
@@ -115,8 +115,8 @@ async fn a_flush_cancelled_mid_write_keeps_its_keys_for_the_next_flush() {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
-    let tmp = tempfile::tempdir().unwrap();
-    let db = common::open_db(tmp.path()).await;
+    let test = common::test_db().await;
+    let db = test.database().clone();
     let kv = KvService::open(KvConfig::default(), Arc::new(DefaultAuthorizer), Some(Arc::new(db)))
         .await
         .unwrap();
