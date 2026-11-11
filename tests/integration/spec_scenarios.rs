@@ -2187,19 +2187,28 @@ fn scenario_23_rebuild_derived_indexes() {
         assert_eq!(plan["indexes_used"], json!(["idx_items_cat"]), "{plan}");
     }
 
+    // On pgvector (FB-162) the HNSW index lives in the database: there are no
+    // derived files, and a restart keeps the index as it is.
+    let pgvector = fb.admin("GET", "/api/v1/vector/collections/kb/stats", None).json()["indexes"][0]["engine"]
+        == "pgvector";
+
     // Offline: the derived files are deleted; the next start rebuilds them.
     fb.stop();
-    let files = fb.data_dir().join("indexes/vector");
-    assert!(files.is_dir(), "vector index files exist after shutdown");
-    std::fs::remove_dir_all(&files).unwrap();
+    if !pgvector {
+        let files = fb.data_dir().join("indexes/vector");
+        assert!(files.is_dir(), "vector index files exist after shutdown");
+        std::fs::remove_dir_all(&files).unwrap();
+    }
     fb.serve();
     fb.admin = fb.admin_login();
-    let s = wait_for("the rebuild after a restart", Duration::from_secs(60), || {
+    let s = wait_for("the index after a restart", Duration::from_secs(60), || {
         let s = fb.admin("GET", "/api/v1/vector/collections/kb/stats", None).json();
         (s["indexes"][0]["state"] == "ready").then_some(s)
     });
-    assert_eq!(s["indexes"][0]["last_rebuild"]["reason"], "missing", "{s}");
-    assert_eq!(s["indexes"][0]["indexed_vectors"], 200);
+    if !pgvector {
+        assert_eq!(s["indexes"][0]["last_rebuild"]["reason"], "missing", "{s}");
+    }
+    assert_eq!(s["indexes"][0]["indexed_vectors"], 200, "{s}");
     assert_eq!(top_ids(&fb, [41.2, 0.0, 0.0], 3), expected);
 }
 

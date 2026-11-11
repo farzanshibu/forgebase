@@ -64,6 +64,18 @@ impl Query {
             .transpose()
     }
 
+    /// A decimal parameter.
+    pub fn f64(&self, name: &str) -> Result<Option<f64>, ApiError> {
+        self.get(name)
+            .map(|v| {
+                v.parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite())
+                    .ok_or_else(|| ApiError::bad_request("invalid_parameter", format!("{name} must be a number")))
+            })
+            .transpose()
+    }
+
     /// A boolean parameter (`true`, `false`, `1`, `0`; a bare flag is true).
     pub fn bool(&self, name: &str) -> Result<bool, ApiError> {
         match self.get(name) {
@@ -95,7 +107,8 @@ impl Query {
     }
 
     /// The record-listing options of the query string: `filter`, `p.*`,
-    /// `sort`, `fields`, `expand`, `search`, `page`, `per_page`, `cursor`,
+    /// `sort`, `fields`, `expand`, `search`, `fuzzy`, `fuzzy_fields`,
+    /// `fuzzy_threshold`, `page`, `per_page`, `cursor`,
     /// `skip_total`.
     pub fn list_query(&self) -> Result<ListQuery, ApiError> {
         let fields = self.list("fields");
@@ -106,6 +119,9 @@ impl Query {
             fields: (!fields.is_empty()).then_some(fields),
             expand: self.list("expand"),
             search: self.get("search").filter(|f| !f.trim().is_empty()).map(str::to_owned),
+            fuzzy: self.get("fuzzy").filter(|f| !f.trim().is_empty()).map(str::to_owned),
+            fuzzy_fields: self.list("fuzzy_fields"),
+            fuzzy_threshold: self.f64("fuzzy_threshold")?,
             page: self.u32("page")?,
             per_page: self.u32("per_page")?,
             cursor: self.get("cursor").filter(|c| !c.is_empty()).map(str::to_owned),
