@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use forgebase_db::topology::{NodeRole, NodeState};
 use forgebase_db::{Database, DbOptions, DbTarget};
+use forgebase_pgengine::replication;
 use forgebase_pgengine::replication::service::{
     self, AgentState, CommandKind, Heartbeat, JoinRequest, JoinTokenRequest, ReplicationSource, ServiceError,
 };
@@ -130,7 +131,17 @@ async fn node_join_clones_streams_heartbeats_and_stops_on_command() {
     .await
     .expect("control");
     control.migrate(None).await.expect("migrate");
-    let source = ReplicationSource::from_handle(&primary, None, SslMode::Disable).expect("source");
+    // FB-153's pg_hba.conf admits ForgeBase's own roles only over TCP: add
+    // the replicator's lines the way the generator should, then reload.
+    let hba = tmp.path().join("server/postgres/data/pg_hba.conf");
+    let text = std::fs::read_to_string(&hba).unwrap();
+    let entries = replication::hba_entries(&replication::HbaInput {
+        agents: vec!["127.0.0.1".parse().unwrap()],
+        readers: vec![],
+    });
+    std::fs::write(&hba, replication::splice_hba(&text, &entries)).unwrap();
+    primary.pg_ctl(&["reload", "-s"]).await.unwrap();
+    let source = ReplicationSource::from_handle(&primary, None, SslMode::Require).expect("source");
     let app = Arc::new(App {
         control: control.clone(),
         source,
@@ -178,8 +189,9 @@ async fn node_join_clones_streams_heartbeats_and_stops_on_command() {
             .expect("spawn the agent"),
     ));
 
-    // The node streams and reports its replay position.
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // The node streams and reports its replay position (clone with fsync
+    // plus a first start: generous under a loaded machine).
+    let deadline = Instant::now() + Duration::from_secs(300);
     let node = loop {
         let nodes = service::nodes(&control, Some("control")).await.expect("nodes");
         if let Some(n) = nodes.into_iter().find(|n| n.name == "far-1")

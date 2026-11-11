@@ -478,6 +478,20 @@ async fn service_adds_promotes_and_rejoins_local_replicas() {
     new.stop().await.expect("stop");
 }
 
+/// FB-153's generated `pg_hba.conf` admits only ForgeBase's own roles over
+/// TCP; add the replicator's lines ([`replication::hba_entries`]) the way
+/// the generator should, and reload.
+async fn allow_replicator_over_tcp(h: &EngineHandle) {
+    let path = h.layout().pgdata().join("pg_hba.conf");
+    let text = std::fs::read_to_string(&path).expect("pg_hba.conf");
+    let entries = replication::hba_entries(&replication::HbaInput {
+        agents: vec!["127.0.0.1".parse().unwrap()],
+        readers: vec![],
+    });
+    std::fs::write(&path, replication::splice_hba(&text, &entries)).expect("write pg_hba.conf");
+    h.pg_ctl(&["reload", "-s"]).await.expect("reload");
+}
+
 #[tokio::test]
 async fn join_tokens_agents_commands_and_heartbeats() {
     let Some(engine) = engine_dir() else { return };
@@ -489,7 +503,8 @@ async fn join_tokens_agents_commands_and_heartbeats() {
         .expect("primary");
     let control = open_db(&primary).await;
     control.migrate(None).await.expect("migrate");
-    let source = ReplicationSource::from_handle(&primary, None, SslMode::Disable).expect("source");
+    allow_replicator_over_tcp(&primary).await;
+    let source = ReplicationSource::from_handle(&primary, None, SslMode::Require).expect("source");
 
     let tok = service::issue_join_token(
         &control,

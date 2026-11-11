@@ -2896,7 +2896,13 @@ replication forgebase_replicator <ip>/32` and `hostssl postgres
 forgebase_replicator <ip>/32` (rewind), and per reader address `hostssl
 forgebase forgebase_reader <ip>/32` (the primary's file is copied to every
 replica, so the server's read pool on a remote replica is allowed there).
-All `scram-sha-256`. `hba.rs` is untouched.
+All `scram-sha-256`. `replication::splice_hba(text, &entries)` inserts the
+`hostssl` lines before the first `hostnossl … reject` / `host … reject`
+line. `hba.rs` (FB-153, merged while this package ran) is untouched: its
+`render` admits only `forgebase_super`, `forgebase_server` and
+`forgebase_reader` over TCP, so remote replicas cannot stream until it
+emits these entries. The TCP tests splice them into the generated file and
+reload, which is what the generator has to do.
 
 **Promote (§2.8).** `standby::promote_local(replicas, target, OldPrimary,
 accept_data_loss, timeout)` does steps 1–4 and 6 on this host: the target
@@ -2952,11 +2958,11 @@ both files' `CHECK`s.
 - Agent endpoints are `/api/system/database/agent/*` (`service::paths`),
   authenticated by the token (join) or the agent key, not by an admin
   session.
-- The agent speaks plain HTTP only (`https://` is refused with a message):
-  HTTPS to the server and TLS on the engine (`hostssl`, `sslmode =
-  verify-full`) come with FB-153. Until then `[database.postgres] listen`
-  and the agent's `--listen` accept loopback only (FB-132's check), so
-  remote replicas work on one host or through a tunnel.
+- The agent speaks plain HTTP only to the server (`https://` is refused
+  with a message): the CLI has no TLS client yet. The replication
+  connection itself uses FB-153's engine TLS (`sslmode = require` with the
+  self-signed certificate, `verify-full` with an operator certificate);
+  the TCP tests run with `require`.
 - Removing a node retires the row and renames it `<name>~<id>`, so the
   name can be used again.
 - The bundled engine (FB-130 archive) has no `pg_rewind`: rejoin re-clones
@@ -3013,10 +3019,14 @@ superuser password, and exits 0 on `stop {remove}`.
   command from `issue_join_token`; promote needs the typed name and, when
   `promote_check.primary_reachable` is false, the "old primary is down"
   box (`accept_data_loss`).
-- **FB-153:** render `replication::hba_entries` into the generated
-  `pg_hba.conf` (agent addresses: `_forgebase_db_node_agents.address`;
-  readers: the server's addresses); with TLS, set `ReplicationSource`
-  `sslmode = verify-full` and give the agent an HTTPS client.
+- **FB-153 follow-up (hba.rs owner):** `hba::render` must emit
+  `replication::hba_entries(&replication::HbaInput { agents, readers })`
+  before its reject lines (`splice_hba` shows the order): agent addresses
+  from `_forgebase_db_node_agents.address`, readers the server's
+  addresses. Without it no remote replica can clone or stream. Use
+  `ReplicationSource { sslmode: VerifyFull }` when an operator
+  certificate is configured, `Require` otherwise; the agent still needs
+  an HTTPS client for the server URL.
 - **FB-169:** nothing new: replicas appear through the router once
   FB-171's connector opens them.
 - **FB-174:** shard primaries on other hosts: `issue_join_token` refuses

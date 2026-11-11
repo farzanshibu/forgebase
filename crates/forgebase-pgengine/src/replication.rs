@@ -598,6 +598,40 @@ pub struct HbaInput {
     pub readers: Vec<IpAddr>,
 }
 
+/// Splices [`hba_entries`]' TCP lines into a generated `pg_hba.conf` text,
+/// before its first `hostnossl … reject` / `host … reject` line (rules are
+/// matched top down), and returns the new text. What FB-153's generator
+/// (`hba::render`) should do with these entries; until it does, tests and
+/// operators can apply it to the file and reload.
+pub fn splice_hba(text: &str, entries: &[HbaEntry]) -> String {
+    let lines: Vec<String> = entries
+        .iter()
+        .filter(|e| e.kind == HbaType::Hostssl)
+        .map(HbaEntry::line)
+        .collect();
+    let mut out = String::new();
+    let mut done = false;
+    for l in text.lines() {
+        let t = l.trim_start();
+        if !done && (t.starts_with("hostnossl") || (t.starts_with("host ") && t.contains("reject"))) {
+            for e in &lines {
+                out.push_str(e);
+                out.push('\n');
+            }
+            done = true;
+        }
+        out.push_str(l);
+        out.push('\n');
+    }
+    if !done {
+        for e in &lines {
+            out.push_str(e);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The `pg_hba.conf` lines replication needs, in order:
 ///
 /// - `local replication forgebase_replicator` (managed replicas on this
@@ -812,6 +846,29 @@ mod tests {
         assert!(lines[4].starts_with("hostssl\tforgebase\tforgebase_reader\tfd00::1/128"));
         assert_eq!(e.len(), 5);
         assert_eq!(hba_entries(&HbaInput::default()).len(), 2);
+    }
+
+    #[test]
+    fn hba_lines_go_before_the_rejects() {
+        let generated = "local all all scram-sha-256\nhostnossl all all all reject\nhostssl all x 127.0.0.1/32 scram-sha-256\nhost all all all reject\n";
+        let e = hba_entries(&HbaInput {
+            agents: vec!["10.0.0.7".parse().expect("ip")],
+            readers: vec![],
+        });
+        let out = splice_hba(generated, &e);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "local all all scram-sha-256");
+        assert!(lines[1].starts_with("hostssl\treplication\tforgebase_replicator\t10.0.0.7/32"));
+        assert!(lines[2].starts_with("hostssl\tpostgres\tforgebase_replicator\t10.0.0.7/32"));
+        assert_eq!(lines[3], "hostnossl all all all reject");
+        assert_eq!(lines.len(), 6);
+        let plain = splice_hba("local all all scram-sha-256\n", &e);
+        assert!(
+            plain
+                .lines()
+                .last()
+                .is_some_and(|l| l.contains("postgres\tforgebase_replicator"))
+        );
     }
 
     #[test]

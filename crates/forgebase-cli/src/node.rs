@@ -65,7 +65,7 @@ struct EngineArgs {
     #[arg(long, value_name = "DIR")]
     engine_dir: Option<PathBuf>,
     /// TCP address the replica listens on for the server's read pool
-    /// (loopback only until TLS for the engine lands, FB-153).
+    /// (TLS required, FB-153).
     #[arg(long, value_name = "ADDR")]
     listen: Option<String>,
 }
