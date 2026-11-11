@@ -498,6 +498,16 @@ pub const TENANT_COLUMNS_NOT_KEYS: &[(&str, &str, &str)] = &[
         "the request's tenant; the audit log is control's",
     ),
     (
+        "_forgebase_job_queues",
+        "tenant",
+        "queue settings keyed <tenant>/<queue> since 0035; each set keeps its own copy (FB-172 keeps them in step)",
+    ),
+    (
+        "_forgebase_job_workers",
+        "tenant",
+        "the tenant a worker registered for since 0035; workers are control rows",
+    ),
+    (
         "_forgebase_realtime_outbox",
         "tenant",
         "whose change it was; each set keeps its own outbox",
