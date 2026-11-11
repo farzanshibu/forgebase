@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
 use forgebase_data::{AccessContext, Action, DataService};
-use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, ReadVia, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::Value as Json;
 use tokio::sync::{Notify, watch};
 
@@ -276,6 +276,14 @@ impl JobService {
         self.inner.clock.now_ms()
     }
 
+    /// The reads of one §2.5 call site (ADR-0029, FB-169): job list, get,
+    /// events, attempts and stats may be served by a replica. Claims,
+    /// heartbeats, the result and checkpoint reads (the work in flight) and
+    /// every write keep [`Self::backend`].
+    pub(crate) fn reader(&self, what: &'static str) -> ReadVia<'_> {
+        ReadVia::replica(self.backend(), what)
+    }
+
     pub(crate) fn backend(&self) -> &dyn Backend {
         self.inner.data.backend().as_ref()
     }
@@ -444,7 +452,7 @@ impl JobService {
     pub async fn get(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
-        fetch_job(self.backend(), id)
+        fetch_job(&self.reader("jobs.get"), id)
             .await?
             .ok_or_else(|| JobError::NotFound(id.to_owned()))
     }
@@ -470,7 +478,7 @@ impl JobService {
             }
         }
         let total = self
-            .backend()
+            .reader("jobs.list")
             .fetch_all(&Statement::new(
                 format!("SELECT COUNT(*) FROM _forgebase_jobs WHERE {where_sql}"),
                 params.clone(),
@@ -484,7 +492,7 @@ impl JobService {
         params.push(limit.into());
         params.push(offset.into());
         let rows = self
-            .backend()
+            .reader("jobs.list")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {JOB_COLS} FROM _forgebase_jobs WHERE {where_sql} \
@@ -508,7 +516,7 @@ impl JobService {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         let rows = self
-            .backend()
+            .reader("jobs.events")
             .fetch_all(&Statement::new(
                 "SELECT id, at, event, attempt, worker_id, message FROM _forgebase_job_events \
                  WHERE job_id = ?1 ORDER BY id",
@@ -535,7 +543,7 @@ impl JobService {
         self.allow(ctx, Action::ReadJobs)?;
         self.visible(ctx, id).await?;
         let rows = self
-            .backend()
+            .reader("jobs.attempts")
             .fetch_all(&Statement::new(
                 "SELECT attempt, worker_id, started_at, finished_at, outcome, error, from_checkpoint \
                  FROM _forgebase_job_attempts WHERE job_id = ?1 ORDER BY id",
@@ -633,7 +641,7 @@ impl JobService {
         let mut params = Vec::new();
         let scope = self.access().scope(ctx).sql("", true, &mut params);
         let rows = self
-            .backend()
+            .reader("jobs.stats")
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT queue, status, COUNT(*) AS n FROM _forgebase_jobs WHERE {scope} \

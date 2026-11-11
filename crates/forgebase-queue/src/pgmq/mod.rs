@@ -595,9 +595,9 @@ impl QueueService {
     /// Delivery counts of one subscription, as the portable metrics query
     /// returns them (`ready`, `delayed`, `in_flight`, `n`, `b`, `oldest`).
     pub(crate) async fn pgmq_metrics(&self, sub: &str, now: i64) -> Result<Rows> {
-        Ok(self
-            .backend()
-            .fetch_all(&Statement::new(
+        self.read_replica(
+            "queue.subscription_metrics",
+            &Statement::new(
                 format!(
                     "SELECT \
                      coalesce(sum(CASE WHEN q.message->>'consumer' IS NULL AND q.vt <= {t} THEN 1 ELSE 0 END), 0) AS ready, \
@@ -608,18 +608,19 @@ impl QueueService {
                     t = ts(1)
                 ),
                 vec![now.into()],
-            ))
-            .await?)
+            ),
+        )
+        .await
     }
 
     /// Server-wide delivery counts over every subscription's queue:
     /// `(ready, delayed, in_flight)`, one `UNION ALL` per 100 queues.
     pub(crate) async fn pgmq_backlog(&self, now: i64) -> Result<(i64, i64, i64)> {
         let rows = self
-            .backend()
-            .fetch_all(&Statement::raw(
-                "SELECT s.name FROM _forgebase_queue_subscriptions s ORDER BY s.name",
-            ))
+            .read_replica(
+                "queue.backlog",
+                &Statement::raw("SELECT s.name FROM _forgebase_queue_subscriptions s ORDER BY s.name"),
+            )
             .await?;
         let subs: Vec<String> = Row::all(&rows).map(|r| r.text("name")).collect();
         let mut total = (0, 0, 0);
@@ -638,15 +639,17 @@ impl QueueService {
                 })
                 .collect();
             let rows = self
-                .backend()
-                .fetch_all(&Statement::new(
-                    format!(
-                        "SELECT coalesce(sum(ready), 0) AS ready, coalesce(sum(delayed), 0) AS delayed, \
-                         coalesce(sum(in_flight), 0) AS in_flight FROM ({}) x",
-                        parts.join(" UNION ALL ")
+                .read_replica(
+                    "queue.backlog",
+                    &Statement::new(
+                        format!(
+                            "SELECT coalesce(sum(ready), 0) AS ready, coalesce(sum(delayed), 0) AS delayed, \
+                             coalesce(sum(in_flight), 0) AS in_flight FROM ({}) x",
+                            parts.join(" UNION ALL ")
+                        ),
+                        vec![now.into()],
                     ),
-                    vec![now.into()],
-                ))
+                )
                 .await?;
             let r = Row::new(&rows, 0);
             total.0 += r.int("ready");

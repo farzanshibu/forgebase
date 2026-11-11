@@ -1,4 +1,5 @@
 import { errorFromResponse, ForgeBaseError, RealtimeError } from "./errors";
+import type { CommitTokens } from "./consistency";
 import type { FetchLike } from "./http";
 import type { Row } from "./records";
 
@@ -15,6 +16,12 @@ export interface RecordEvent<T = Row> {
   tenant_id?: string | null;
   timestamp: string;
   data: T;
+  /**
+   * The primary's commit position when the event's page was read (`<set>/<lsn>`); only present when
+   * the database has replicas. The client feeds it to its commit tokens, so a read after the event
+   * sees the record.
+   */
+  commit?: string;
 }
 
 export interface ChannelMessage<T = unknown> {
@@ -108,6 +115,8 @@ export interface RealtimeConfig {
   /** Consecutive failed WebSocket connects before falling back to SSE (default 2). */
   fallbackAfter?: number;
   reconnect?: { baseDelayMs?: number; maxDelayMs?: number; maxAttempts?: number };
+  /** Where the `commit` position of record events goes (the client's own `commitTokens`). */
+  commitTokens?: CommitTokens;
   /** Test hooks. */
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
@@ -477,6 +486,7 @@ export class RealtimeClient {
       case "reset": {
         const sub = typeof m.id === "string" ? this.subs.get(m.id) : undefined;
         if (!sub) return;
+        if (typeof m.commit === "string") this.cfg.commitTokens?.note(m.commit);
         if (typeof m.cursor === "number" && (sub.cursor === undefined || m.cursor > sub.cursor || m.type === "reset")) sub.cursor = m.cursor;
         try {
           sub.handler(m as unknown as RealtimeEvent<never>);

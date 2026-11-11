@@ -63,7 +63,7 @@ pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_
 pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
 pub use routing::{
     CommitToken, Consistency, Lsn, PrimaryOnly, ReadAfter, ReadIntent, ReadRequest, ReadRouter, ReadRouting,
-    ReadTarget, ReplicaOptions, ReplicaSet,
+    ReadTarget, ReadVia, ReplicaOptions, ReplicaSet,
 };
 pub use slow_log::{DEFAULT_SLOW_QUERY_THRESHOLD, SLOW_QUERY_LOG_CAPACITY};
 pub use sqlite::sqlite_library_version;

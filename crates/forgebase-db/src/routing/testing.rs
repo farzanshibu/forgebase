@@ -9,12 +9,16 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sqlx::{AssertSqlSafe, Connection, Row};
 
-use super::Lsn;
+use super::{Lsn, ReplicaNode, ReplicaOptions, ReplicaSet};
+use crate::Backend;
+use crate::router::SetHandle;
 use crate::testing::{ENGINE_DIR_ENV, ENGINE_ENV};
+use crate::topology::{DbNode, DbSet, NodeKind, NodeOrigin, NodeRole, NodeState};
 use crate::{Database, DbError, DbOptions, DbTarget};
 
 /// Port number of every test server's Unix socket (each has its own directory).
@@ -300,6 +304,105 @@ impl Drop for ReplicaCluster {
                 .status();
         }
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// A migrated primary, one streaming standby and a control [`SetHandle`]
+/// routing over it (FB-169). The services under test run on
+/// [`RoutedCluster::backend`]; [`RoutedCluster::lag`] pauses replay so that
+/// a routed read shows what the standby had before, and
+/// [`RoutedCluster::replica_reads`] counts the reads it served.
+#[derive(Debug)]
+pub struct RoutedCluster {
+    /// The cluster (primary and standby).
+    pub cluster: ReplicaCluster,
+    /// The routing over the standby.
+    pub replicas: ReplicaSet,
+    /// The control set's handle: its reads route, its writes go to the primary.
+    pub handle: SetHandle,
+}
+
+impl RoutedCluster {
+    /// Starts the cluster. `None` when no engine is configured.
+    pub async fn start() -> Option<Self> {
+        let cluster = match ReplicaCluster::start_migrated(&[]).await? {
+            Ok(c) => c,
+            Err(e) => panic!("replica cluster: {e}"),
+        };
+        Some(Self::over(cluster).await)
+    }
+
+    async fn over(cluster: ReplicaCluster) -> Self {
+        let primary = cluster.open_primary().await.expect("open the primary");
+        cluster.wait_caught_up().await.expect("standby catches up");
+        let standby = cluster.open_standby().await.expect("open the standby");
+        let node = DbNode {
+            id: "n-r1".into(),
+            set_id: "control".into(),
+            name: "r1".into(),
+            kind: NodeKind::External,
+            role: NodeRole::Replica,
+            url_sealed: None,
+            state: NodeState::Ready,
+            weight: 1,
+            engine_version: None,
+            system_identifier: None,
+            timeline: None,
+            origin: NodeOrigin::Api,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let replicas = ReplicaSet::open(
+            "control",
+            primary.clone(),
+            vec![ReplicaNode { node, db: standby }],
+            ReplicaOptions {
+                health_interval: Duration::ZERO,
+                lsn_wait: Duration::from_millis(20),
+                ..ReplicaOptions::default()
+            },
+            None,
+        )
+        .await;
+        let handle = SetHandle::new(DbSet::control(), primary).with_replicas(replicas.clone());
+        Self {
+            cluster,
+            replicas,
+            handle,
+        }
+    }
+
+    /// The handle as the backend services take.
+    pub fn backend(&self) -> Arc<dyn Backend> {
+        Arc::new(self.handle.clone())
+    }
+
+    /// Reads the standby has served so far.
+    pub fn replica_reads(&self) -> u64 {
+        self.replicas.status().iter().map(|s| s.reads).sum()
+    }
+
+    /// Reads that failed on the standby and were retried on the primary.
+    pub fn fallbacks(&self) -> u64 {
+        self.replicas.status().iter().map(|s| s.fallbacks).sum()
+    }
+
+    /// Lets the standby catch up (DDL a service ran at open must reach it
+    /// before the first routed read), then samples its health.
+    pub async fn sync(&self) {
+        self.cluster.wait_caught_up().await.expect("standby catches up");
+        self.replicas.refresh().await;
+    }
+
+    /// Pauses replay: the standby keeps what it has.
+    pub async fn lag(&self) {
+        self.cluster.pause_replay().await.expect("pause replay");
+    }
+
+    /// Resumes replay and waits for it to finish.
+    pub async fn catch_up(&self) {
+        self.cluster.resume_replay().await.expect("resume replay");
+        self.sync().await;
     }
 }
 

@@ -588,7 +588,9 @@ impl DataService {
     ) -> Result<Record, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
         let (stmt, follows) = self.select_by_id_flagged(ctx, &coll, id, pred.as_ref())?;
-        let rows = self.read_rows(ctx, Action::View, &coll, &stmt, follows).await?;
+        let rows = self
+            .read_rows(ctx, Action::View, &coll, &stmt, follows, "records.view")
+            .await?;
         let row = rows.rows.first().ok_or_else(|| DataError::RecordNotFound {
             collection: coll.name.clone(),
             id: id.to_owned(),
@@ -901,13 +903,14 @@ impl DataService {
     ) -> Result<Vec<RecordVersion>, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::View, collection)?;
         let rows = self
-            .inner
-            .backend
-            .fetch_all(&Statement::new(
-                "SELECT version, op, data, changed_at, actor FROM _forgebase_record_versions
+            .fetch_replica(
+                &Statement::new(
+                    "SELECT version, op, data, changed_at, actor FROM _forgebase_record_versions
                  WHERE collection_id = ?1 AND record_id = ?2 ORDER BY version",
-                vec![coll.id.clone().into(), id.into()],
-            ))
+                    vec![coll.id.clone().into(), id.into()],
+                ),
+                "records.versions",
+            )
             .await?;
         if !self.history_visible(ctx, &coll, id, pred.as_ref(), &rows).await? {
             return Err(DataError::RecordNotFound {
@@ -928,21 +931,27 @@ impl DataService {
         pred: Option<&Predicate>,
         versions: &Rows,
     ) -> Result<bool, DataError> {
-        let b = self.inner.backend.as_ref();
-        if !b.fetch_all(&self.select_by_id(ctx, coll, id, pred)?).await?.is_empty() {
+        let d = self.inner.backend.dialect();
+        if !self
+            .fetch_replica(&self.select_by_id(ctx, coll, id, pred)?, "records.versions")
+            .await?
+            .is_empty()
+        {
             return Ok(true);
         }
         // A live record the caller cannot see hides its history.
-        let d = b.dialect();
-        let live = b
-            .fetch_all(&Statement::new(
-                format!(
-                    "SELECT 1 FROM {} WHERE {} = ?1",
-                    d.quote_ident(&coll.name),
-                    d.quote_ident("id")
+        let live = self
+            .fetch_replica(
+                &Statement::new(
+                    format!(
+                        "SELECT 1 FROM {} WHERE {} = ?1",
+                        d.quote_ident(&coll.name),
+                        d.quote_ident("id")
+                    ),
+                    vec![id.into()],
                 ),
-                vec![id.into()],
-            ))
+                "records.versions",
+            )
             .await?;
         if !live.is_empty() {
             return Ok(false);
@@ -1016,9 +1025,7 @@ impl DataService {
         let cond = self.compile_predicate(ctx, &mut b, coll, p)?;
         let sql = format!("SELECT 1 FROM (SELECT {}) AS t WHERE {cond}", cols.join(", "));
         Ok(!self
-            .inner
-            .backend
-            .fetch_all(&Statement::new(sql, b.into_params()))
+            .fetch_replica(&Statement::new(sql, b.into_params()), "records.versions")
             .await?
             .is_empty())
     }
@@ -1176,9 +1183,7 @@ impl DataService {
                         sql.push_str(&format!(" AND ({})", self.compile_predicate(ctx, &mut b, &target, p)?));
                     }
                     let rows = self
-                        .inner
-                        .backend
-                        .fetch_all(&Statement::new(sql, b.into_params()))
+                        .fetch_replica(&Statement::new(sql, b.into_params()), "records.expand")
                         .await?;
                     for row in &rows.rows {
                         let rec = row_to_record(&target, &rows.columns, row, &target_mask);

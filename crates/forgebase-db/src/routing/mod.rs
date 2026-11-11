@@ -33,6 +33,7 @@ pub mod scope;
 #[cfg(all(feature = "testing", unix))]
 pub mod testing;
 mod token;
+mod via;
 
 use std::fmt;
 use std::str::FromStr;
@@ -46,6 +47,7 @@ pub use check::{ReplicaCheckError, ReplicaFacts, check_replica, primary_facts};
 pub use replicas::{FallbackReason, ReplicaNode, ReplicaSet, ReplicaStatus};
 pub use scope::RequestScope;
 pub use token::{CommitToken, ReadAfter};
+pub use via::ReadVia;
 
 /// A PostgreSQL write-ahead-log position (`pg_lsn`), printed `16/B374D848`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]

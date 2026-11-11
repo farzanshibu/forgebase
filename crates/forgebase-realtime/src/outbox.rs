@@ -38,6 +38,10 @@ pub struct Event {
     pub snapshot: RowSnapshot,
     /// When (UTC, millisecond precision).
     pub created_at: String,
+    /// The primary's commit position when the page holding this event was
+    /// read (`<set>/<lsn>`, ADR-0029 §2.6), or `None` without replicas. A
+    /// client that reads after this event passes it as the read-after token.
+    pub commit: Option<String>,
 }
 
 impl Event {
@@ -107,6 +111,7 @@ fn parse_rows(rows: &Rows) -> Result<Vec<Event>, RealtimeError> {
             actor: text(6),
             snapshot,
             created_at: text(8),
+            commit: None,
         });
     }
     Ok(out)
@@ -114,6 +119,11 @@ fn parse_rows(rows: &Rows) -> Result<Vec<Event>, RealtimeError> {
 
 /// Events with `seq > after`, oldest first, at most `limit`. Public for
 /// other consumers of the outbox (server functions' after-hooks, FB-60).
+///
+/// The outbox is always read on the primary (ADR-0029 §2.5). Each page is
+/// stamped with the primary's commit position, sampled after the read (so it
+/// is at or after every event of the page): a set with replicas answers
+/// `Event::commit`, every other backend leaves it `None`.
 pub async fn read_after(backend: &dyn Backend, after: i64, limit: i64) -> Result<Vec<Event>, RealtimeError> {
     let rows = backend
         .fetch_all(&Statement::new(
@@ -122,7 +132,17 @@ pub async fn read_after(backend: &dyn Backend, after: i64, limit: i64) -> Result
             vec![after.into(), limit.into()],
         ))
         .await?;
-    parse_rows(&rows)
+    let mut events = parse_rows(&rows)?;
+    if !events.is_empty() {
+        // A failed sample only means the page carries no token.
+        if let Ok(Some(token)) = backend.sample_commit_token().await {
+            let token = token.to_string();
+            for e in &mut events {
+                e.commit = Some(token.clone());
+            }
+        }
+    }
+    Ok(events)
 }
 
 /// `(oldest retained seq, newest seq)`; `(0, 0)` while the outbox is empty.
