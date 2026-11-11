@@ -1,10 +1,11 @@
 import { Textarea } from "panelui-web/textarea";
+import { EmptyState } from "../../components/EmptyState";
 import { useState } from "react";
 import { listAcceptances, listAgreements, publishAgreement, type Agreement } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, Field, TextField } from "../access/shared";
+import { ActionError, Field, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { Note } from "./shared";
 import { fmtTime, useRealm } from "./util";
@@ -29,7 +30,7 @@ export default function AgreementsPage() {
       <Panel title={`Agreements of ${realm}`}>
         <ErrorView error={l.error} />
         {l.loading && !l.error && <Loading what="Loading agreements" />}
-        {l.data?.length === 0 && <Empty>No agreements published yet.</Empty>}
+        {l.data?.length === 0 && <EmptyState compact title="No agreements published yet." why="Publish terms or a privacy policy and users must accept it at sign-up." />}
         {l.data && l.data.length > 0 && (
           <Table className="w-full text-left text-sm">
             <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Kind</Table.Head><Table.Head>Version</Table.Head><Table.Head>Title</Table.Head><Table.Head>Published</Table.Head><Table.Head /></Table.Row></Table.Header>
@@ -64,7 +65,7 @@ export default function AgreementsPage() {
       <Panel title="Acceptances" actions={
         <Sel aria-label="Acceptance kind" value={filter} onChange={setFilter} options={[{ value: "", label: "all kinds" }, ...kinds.map((k) => ({ value: k, label: k }))]} />}>
         <ErrorView error={acc.error} />
-        {acc.data?.length === 0 && <Empty>No acceptances recorded.</Empty>}
+        {acc.data?.length === 0 && <EmptyState compact title="No acceptances recorded." why="Each time a user accepts an agreement it is listed here." />}
         {acc.data && acc.data.length > 0 && (
           <Table className="w-full text-left text-sm">
             <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Agreement</Table.Head><Table.Head>Accepted</Table.Head><Table.Head>IP</Table.Head></Table.Row></Table.Header>

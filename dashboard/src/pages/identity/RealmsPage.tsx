@@ -1,8 +1,11 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { createRealmWithIdentity, DEFAULT_LDAP, listOidcKeys, putRealmIdentity, type LoginMethods, type RealmConfig, type RealmIdentity } from "../../api";
+import { useAdminScope } from "../../auth/scope";
+import { HelpTip } from "../../components/HelpTip";
 import { Button, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
-import { ActionError, Empty, TextField } from "../access/shared";
+import { ActionError, TextField } from "../access/shared";
 import { useRun } from "../access/util";
 import { useLoad } from "../../hooks";
 import { Check, Note } from "./shared";
@@ -20,11 +23,12 @@ export default function RealmsPage({ realms, reload, onPick }: { realms: RealmId
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
   const create = useRun(reload);
+  const { platform } = useAdminScope();
   const current = realms.find((r) => r.realm === editing);
   return (
     <div className="space-y-6">
       <Panel title="Realms">
-        {realms.length === 0 && <Empty>No realm has an identity configuration yet.</Empty>}
+        {realms.length === 0 && <EmptyState compact title="No realm has an identity configuration yet." why="Create a realm below to set up sign-in for it." />}
         {realms.length > 0 && (
           <Table className="w-full text-left text-sm">
             <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Realm</Table.Head><Table.Head>User collection</Table.Head><Table.Head>Sign-up</Table.Head><Table.Head>Methods</Table.Head><Table.Head>Updated</Table.Head><Table.Head /></Table.Row></Table.Header>
@@ -46,7 +50,7 @@ export default function RealmsPage({ realms, reload, onPick }: { realms: RealmId
           </Table>
         )}
       </Panel>
-      <Panel title="Create realm">
+      {platform && (<Panel title="Create realm">
         <div className="flex flex-wrap items-end gap-3">
           <TextField label="Realm id" value={slug} onChange={setSlug} placeholder="acme" />
           <TextField label="Realm name" value={name} onChange={setName} />
@@ -59,7 +63,7 @@ export default function RealmsPage({ realms, reload, onPick }: { realms: RealmId
         </div>
         <Note>Creates the realm and its identity configuration (default settings) in one call; its user collection is created with it.</Note>
         <ActionError error={create.error} />
-      </Panel>
+      </Panel>)}
       {current && <RealmSettings key={current.realm} realm={current} onSaved={reload} />}
     </div>
   );
@@ -76,7 +80,7 @@ function RealmSettings({ realm, onSaved }: { realm: RealmIdentity; onSaved: () =
         <p className="text-xs text-muted-foreground">User collection: <span className="font-mono">{realm.collection}</span> (fixed once set)</p>
         {keys.data && (
           <p className="text-xs text-muted-foreground" data-testid="oidc-kids">
-            OIDC signing keys: {keys.data.items.map((k) => `${k.kid} (${k.kid === keys.data!.current ? "current" : k.status})`).join(", ")}
+            <HelpTip term="oidc">OIDC</HelpTip> signing keys: {keys.data.items.map((k) => `${k.kid} (${k.kid === keys.data!.current ? "current" : k.status})`).join(", ")}
           </p>
         )}
         <Check label="Allow sign-up" checked={cfg.signup} onChange={(v) => setCfg({ ...cfg, signup: v })} hint="new accounts via password, social, LDAP or phone" />

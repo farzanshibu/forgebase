@@ -1,7 +1,11 @@
-import { Route, Routes } from "react-router-dom";
+import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { getBillingSettings, isBillingDisabled } from "../../api";
 import { Loading } from "../../components/ui";
 import { RouteTabs } from "../../components/controls";
+import { PageHeader } from "../../components/PageHeader";
+import { PlatformOnly } from "../../auth/scope";
+import { Tabs } from "panelui-web/tabs";
+import { GROUPS, groupOf } from "./groups";
 import { useLoad } from "../../hooks";
 import Catalog from "./Catalog";
 import Coupons from "./Coupons";
@@ -18,34 +22,29 @@ import Stores from "./Stores";
 import Subscriptions from "./Subscriptions";
 import Usage from "./Usage";
 
-const TABS: { to: string; label: string; end?: boolean }[] = [
-  { to: "/billing", label: "Revenue", end: true },
-  { to: "/billing/catalog", label: "Catalog" },
-  { to: "/billing/customers", label: "Customers" },
-  { to: "/billing/subscriptions", label: "Subscriptions" },
-  { to: "/billing/orders", label: "Orders" },
-  { to: "/billing/usage", label: "Usage meters" },
-  { to: "/billing/invoices", label: "Invoices" },
-  { to: "/billing/payments", label: "Payments" },
-  { to: "/billing/stores", label: "Stores" },
-  { to: "/billing/coupons", label: "Coupons" },
-  { to: "/billing/dunning", label: "Dunning" },
-  { to: "/billing/credits", label: "Credits" },
-  { to: "/billing/settings", label: "Providers and settings" },
-];
-
 export default function BillingPage() {
   // Billing can be turned off and its routes then answer 404: one probe decides between the studio and the disabled state.
   const probe = useLoad(getBillingSettings, "billing-probe");
   const disabled = isBillingDisabled(probe.error);
+  const group = groupOf(useLocation().pathname);
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Billing Studio</h1>
+      <PageHeader studio="billing" />
+      <PlatformOnly what="Billing">
       {probe.loading && <div className="mt-4"><Loading what="Checking billing" /></div>}
       {!probe.loading && disabled && <div className="mt-6"><Disabled /></div>}
       {!probe.loading && !disabled && (
         <>
-          <RouteTabs label="Billing sections" tabs={TABS} className="mt-4" />
+          <Tabs variant="underline" value={group.id} className="mt-4">
+            <Tabs.List aria-label="Billing groups">
+              {GROUPS.map((g) => (
+                <Tabs.Trigger key={g.id} value={g.id} nativeButton={false} render={<Link to={g.pages[0]!.to} />}>
+                  {g.label}
+                </Tabs.Trigger>
+              ))}
+            </Tabs.List>
+          </Tabs>
+          {group.pages.length > 1 && <RouteTabs label={`${group.label} pages`} tabs={group.pages} className="mt-2" />}
           <div className="mt-6">
             <Routes>
               <Route index element={<Revenue />} />
@@ -66,6 +65,7 @@ export default function BillingPage() {
           </div>
         </>
       )}
+      </PlatformOnly>
     </div>
   );
 }

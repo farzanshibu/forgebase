@@ -1,5 +1,7 @@
 import { listAdmins } from "../../api";
-import { ErrorView, Loading } from "../../components/ui";
+import { EmptyState } from "../../components/EmptyState";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { SkeletonTable } from "../../components/Skeleton";
 import { useLoad } from "../../hooks";
 import { THEAD, Th, fmtTime } from "./common";
 import { Table } from "panelui-web/table";
@@ -8,9 +10,10 @@ export default function Admins() {
   const { data, error, loading } = useLoad(listAdmins, "admins");
   return (
     <div>
-      <ErrorView error={error} />
-      {loading && !error && <Loading what="Loading administrators" />}
-      {data?.length === 0 && <p className="text-sm text-muted-foreground">No administrators.</p>}
+      <p className="mb-3 max-w-2xl text-sm text-muted-foreground">Administrators manage the whole server. Add one with <code>forgebase admin create --email you@example.com</code> on the server.</p>
+      <ErrorPanel error={error} />
+      {loading && !error && <SkeletonTable rows={2} columns={3} label="Loading administrators" />}
+      {data?.length === 0 && <EmptyState compact title="No administrators" why="Create one with forgebase admin create on the server." />}
       {!!data?.length && (
         <Table className="w-full text-sm">
           <Table.Header className={THEAD}>

@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { listRoles, listRoleSets, putRoleSet } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, MultiPick, TextField } from "./shared";
+import { ActionError, MultiPick, TextField } from "./shared";
 import { useRun } from "./util";
 import { Table } from "panelui-web/table";
 
@@ -20,9 +21,10 @@ export default function RoleSetsPanel({ org }: { org?: string }) {
   };
   return (
     <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">A role set bundles roles, so you can give them to an account together in one step.</p>
       <ErrorView error={sets.error} />
       {sets.loading && !sets.error && <Loading what="Loading role sets" />}
-      {sets.data && sets.data.length === 0 && <Empty>No role sets yet.</Empty>}
+      {sets.data && sets.data.length === 0 && <EmptyState compact title="No role sets yet." why="A role set bundles roles so you can give them together in one step." />}
       {sets.data && sets.data.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Key</Table.Head><Table.Head>Name</Table.Head><Table.Head>Roles</Table.Head><Table.Head /></Table.Row></Table.Header>

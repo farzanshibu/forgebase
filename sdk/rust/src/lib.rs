@@ -29,6 +29,7 @@
 pub mod auth;
 pub mod billing;
 pub mod client;
+pub mod consistency;
 pub mod entitlements;
 pub mod error;
 pub mod functions;
@@ -46,6 +47,7 @@ pub use billing::{
     BillingApi, BillingStoreApi, HostedCheckout, StoreCheckout, StoreProvider, StorePurchase, StoreReceipt,
 };
 pub use client::{ClientBuilder, ForgeBase};
+pub use consistency::{CommitTokens, Consistency};
 pub use entitlements::{EntitlementsApi, HasQuery, MeteredRequest, QuotaRequest};
 pub use error::{ApiError, Error, ErrorKind, Result};
 pub use functions::FunctionsApi;

@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { useSearchParams } from "react-router-dom";
 import { creditBalance, getCustomer, listCustomers, listSubscriptions, putCustomer } from "../../api";
 import type { Customer } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
+import { Badge, BillingError, Field, Money, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
 import { formatCount } from "./money";
@@ -52,7 +53,7 @@ function Detail({ subject }: { subject: string }) {
           </form>
           <div>
             <h3 className="text-xs uppercase text-muted-foreground">Subscriptions</h3>
-            {subs.data && subs.data.length === 0 && <Empty>No subscriptions.</Empty>}
+            {subs.data && subs.data.length === 0 && <EmptyState compact title="No subscriptions." why="This customer has no subscription." />}
             <ul aria-label="Customer subscriptions" className="mt-1 space-y-1 text-sm">
               {(subs.data ?? []).map((s) => <li key={s.id}><Badge status={s.status} /> <span className="font-mono text-xs">{s.items.map((i) => `${i.price}×${i.quantity}`).join(", ")}</span> <span className="text-muted-foreground">renews {when_(s.current_period_end)}</span></li>)}
             </ul>
@@ -83,7 +84,7 @@ export default function Customers() {
       </div>
       <BillingError error={list.error} />
       {list.loading && !list.error && <Loading what="Loading customers" />}
-      {list.data && rows.length === 0 && <Empty>No customers match.</Empty>}
+      {list.data && rows.length === 0 && <EmptyState compact title="No customers match." why="Change the search to see more." />}
       {rows.length > 0 && (
         <Table aria-label="Customers" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Subject</Th><Th>Email</Th><Th>Currency</Th><Th>Balance</Th><Th>Payment method</Th><Th>Since</Th></Table.Row></Table.Header>

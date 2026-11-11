@@ -18,15 +18,17 @@ it("storage: create bucket -> enable versioning -> upload twice -> versions -> r
   renderStudio("/storage");
   const u = userEvent.setup();
 
-  expect(await screen.findByText(/No buckets yet/)).toBeInTheDocument();
-  await u.type(screen.getByLabelText("Name"), "smoke-files");
+  expect(await screen.findByRole("region", { name: "No buckets yet" })).toBeInTheDocument();
+  await u.click(screen.getAllByRole("button", { name: "New bucket" })[0]!);
+  await u.type(await screen.findByLabelText(/^Name/), "smoke-files");
   await u.click(screen.getByRole("button", { name: "Create bucket" }));
-  await u.click(await screen.findByRole("link", { name: "smoke-files" }));
+  // creating a bucket opens it
+  await screen.findByRole("heading", { name: "smoke-files" });
 
   await u.click(await screen.findByRole("tab", { name: "Policy" }));
-  await u.click(await screen.findByLabelText(/Keep versions/));
+  await u.click(await screen.findByRole("checkbox", { name: /Keep versions/ }));
   await u.click(screen.getByRole("button", { name: "Save policy" }));
-  await screen.findByText("Saved.");
+  expect((await screen.findAllByText("Bucket policy saved")).length).toBeGreaterThan(0); // a toast is announced and drawn
 
   await u.click(screen.getByRole("tab", { name: "Objects" }));
   await u.upload(await screen.findByLabelText("Choose files"), new File(["one"], "a.txt", { type: "text/plain" }));
@@ -42,15 +44,17 @@ it("storage: create bucket -> enable versioning -> upload twice -> versions -> r
   expect(((await screen.findByLabelText("Signed URL")) as HTMLTextAreaElement).value).toContain("/signed/smoke-files/a.txt");
 
   await u.click(screen.getByRole("tab", { name: "Access (ACL)" }));
-  await u.type(await screen.findByLabelText("Grantee"), "user:bo");
+  await u.type(await screen.findByLabelText(/^Grantee/), "user:bo");
   await u.click(screen.getByRole("button", { name: "Add entry" }));
-  expect(await screen.findByText("ACL saved.")).toBeInTheDocument();
+  expect((await screen.findAllByText("Access list saved")).length).toBeGreaterThan(0);
 
-  await u.click(screen.getByRole("link", { name: "All buckets" }));
-  await u.click(await screen.findByLabelText("Delete with their objects"));
+  await u.click(screen.getAllByRole("link", { name: "Storage" })[0]!);
   await u.click(await screen.findByRole("button", { name: "Delete bucket smoke-files" }));
-  await u.click(screen.getByRole("button", { name: "Confirm delete bucket smoke-files" }));
-  expect(await screen.findByText(/No buckets yet/)).toBeInTheDocument();
+  const dialog = await screen.findByRole("alertdialog", { name: "Delete bucket smoke-files?" });
+  await u.click(within(dialog).getByRole("checkbox", { name: /Also delete its objects/ }));
+  await u.type(within(dialog).getByLabelText(/to confirm/), "smoke-files");
+  await u.click(within(dialog).getByRole("button", { name: "Delete bucket" }));
+  expect(await screen.findByRole("region", { name: "No buckets yet" })).toBeInTheDocument();
   expect(mock.problems).toEqual([]);
 });
 
@@ -61,10 +65,12 @@ it("redis: create key -> TTL -> hash edit -> console -> stats", async () => {
   renderStudio("/redis");
   const u = userEvent.setup();
 
-  expect(await screen.findByText(/No keys match/)).toBeInTheDocument();
-  await u.type(screen.getByLabelText("New key name"), "cfg");
-  await u.type(screen.getByLabelText("New key value"), "v1");
-  await u.click(screen.getByRole("button", { name: "Create key" }));
+  expect(await screen.findByRole("region", { name: "No keys in default yet" })).toBeInTheDocument();
+  await u.click(screen.getAllByRole("button", { name: "New key" })[0]!);
+  const form = await screen.findByRole("form", { name: "New key" });
+  await u.type(within(form).getByLabelText(/^Key/), "cfg");
+  await u.type(within(form).getByLabelText("Value"), "v1");
+  await u.click(within(form).getByRole("button", { name: "Create key" }));
   await screen.findByLabelText("String value");
   await u.click(screen.getByRole("button", { name: "Set TTL" }));
   await waitFor(() => expect(st.ns.default!.cfg!.ttl_ms).toBe(60_000));

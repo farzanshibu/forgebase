@@ -58,9 +58,6 @@ export function SubjectLink({ subject }: { subject: string }) {
 }
 
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-muted-foreground">{children}</p>;
-}
 
 
 export function Field({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {

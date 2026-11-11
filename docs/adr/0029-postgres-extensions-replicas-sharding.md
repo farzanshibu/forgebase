@@ -1513,3 +1513,311 @@ un-ignored (FB-148's file, not changed here).
   DDL.
 - **FB-153 (SQL editor allow list):** refuse `CREATE/ALTER/DROP EXTENSION`
   for vector, age, pgmq, pg_cron and pg_trgm (§1.1), and `cron.*` (§1.7).
+
+## Addendum: FB-167, replica routing and read-your-writes (2026-11-11)
+
+Built as §2.1 and §2.4–§2.7 describe, inside `forgebase-db` (`routing/`),
+`forgebase-api` (`consistency.rs`) and both SDKs. Nothing in the server
+opens replicas yet: FB-171 builds the router, FB-168 provisions managed
+replicas, FB-169 passes intents at the §2.5 call sites. Without replicas
+every read is on the primary and responses are unchanged, on both backends.
+
+**Files.** `crates/forgebase-db/src/routing/` (`routing.rs` moved to
+`routing/mod.rs`; new `token.rs`, `scope.rs`, `health.rs`, `check.rs`,
+`replicas.rs`, and `testing.rs` behind the `testing` feature); the default
+method in `backend.rs`; `SetHandle` replicas, `SetConnector::connect_replica`,
+`RouterOptions::replicas` and the reload step in `router.rs`; re-exports in
+`lib.rs`; `crates/forgebase-api/src/consistency.rs`; the test files
+`crates/forgebase-db/tests/replicas.rs`, `sdk/js/test/consistency.test.ts`;
+`sdk/js/src/consistency.ts`, `sdk/rust/src/consistency.rs`. No migration.
+
+**Model.**
+- `Backend::fetch_routed(stmt, &ReadIntent)`: a default method that runs
+  `fetch_all`. Only `SetHandle` overrides it, and only when the set has a
+  `ReplicaSet`. `ReadIntent { what, replica, consistency, read_after }`:
+  `ReadIntent::primary(what)` (the default) or `ReadIntent::replica(what)`,
+  plus `.with_consistency(Strong)`, `.after(&token)`, `.after_all(&read_after)`.
+- `ReplicaSet` (one per set, control included): the replicas as read-only
+  `Database`s on each standby, a monitor task, and the choice. Built by
+  `DbRouter::reload` from `Topology::nodes_of(set)` with role `replica` and
+  state `ready | catching_up | streaming | lagging | unreachable`, opened
+  with `SetConnector::connect_replica` (default: refuse, so a connector that
+  cannot open replicas leaves every read on the primary) and checked with
+  `check_replica`. A node that cannot be opened or fails the check is left
+  out with a log line; routing never fails because a replica is missing. A
+  reload with the same nodes keeps the set; with other nodes it keeps the
+  health, counters and connection of every node it already had.
+  `read_routing = "primary"` and SQLite open no replicas.
+- `ReplicaOptions` carries `[database.replicas]` (§4.1) with its defaults:
+  `read_routing`, `read_your_writes`, `lsn_wait` 50 ms, `lsn_poll` 5 ms,
+  `max_lag` 2 s, `max_lag_bytes` 64 MiB, `health_interval` 500 ms,
+  `return_after` 3. `health_interval = 0` runs no monitor (tests call
+  `refresh`).
+
+**Health (§2.7).** Every sample reads the primary's
+`pg_current_wal_insert_lsn()` and, on every replica in parallel,
+`pg_is_in_recovery()` and `pg_last_wal_replay_lsn()`. Lag in bytes is the
+difference; lag in time is the age of the oldest primary sample the replica
+has not replayed (a ring of 256 samples). Deviation: `pg_stat_replication`
+is not read; it needs `pg_monitor` for other roles' rows, cannot see
+external replicas, and the replica-side position works for every node kind.
+States: a new node enters rotation on its first sample within the limits
+(`catching_up` → `streaming`); above either limit it is `lagging`; it comes
+back after 3 consecutive samples under half of both limits; no answer is
+`unreachable` (also set at once when a read finds the replica gone); a node
+no longer in recovery is `needs_rebuild`. Only transitions are written, with
+`topology::update_node_state` on control (bumps the epoch), in the
+background. `ReplicaSet::status()` gives the live view (state, rotation,
+replay LSN, lag, in-flight, reads, fallbacks, last error) for FB-175/176.
+
+**Choice and fallback.** Among replicas in rotation (weight > 0, read pool
+not saturated by our reads) that have replayed the read's LSN: the lowest
+(in-flight + 1) ÷ weight, ties rotating. None has: the most advanced one is
+waited on up to `lsn_wait` (`WAIT FOR LSN '<lsn>' WITH (TIMEOUT '<n>ms',
+NO_THROW)` on PostgreSQL ≥ 19, outside a transaction on a read connection;
+on a parse error it is marked unsupported; otherwise polling every 5 ms),
+then the primary. A replica read that fails with `Busy` (SQLSTATE `40001` /
+`40P01`: a recovery conflict on a standby; also pool timeouts) or
+`Unavailable` / `Closed` / a driver error is retried once on the primary;
+statement errors are returned as they are. Metrics:
+`forgebase_db_routed_reads_total{set,target}`,
+`forgebase_db_replica_fallbacks_total{set,reason}` (`strong`,
+`no_replica`, `behind`, `unavailable`, `recovery_conflict`).
+
+**Read-your-writes (§2.6).**
+- Commit LSN: the PostgreSQL backend already read
+  `pg_current_wal_insert_lsn()` in the `COMMIT` round trip (FB-158 seam);
+  kept as is. A `SetHandle` with replicas wraps its write transactions: after
+  `COMMIT` it records `<set id>/<Database::last_commit_lsn()>` in the
+  request scope. The value is at or after the transaction's own commit (the
+  writer is single; a concurrent later commit can only raise it).
+- `RequestScope` (a Tokio task-local, `routing::scope`): consistency, the
+  positions reads must see, and the commits made. Commits also raise the
+  scope's own minimum, so a request reads its own writes. Work spawned onto
+  other tasks does not see the scope.
+- Tokens: `CommitToken` `<set>/<lsn>` (set ids `[A-Za-z0-9_.-]{1,64}`),
+  `ReadAfter` (highest LSN per set; a header lists tokens separated by
+  commas, at most 64; malformed ones are ignored, never an error).
+- `forgebase-api` `consistency::track`, mounted innermost (inside
+  authentication, so the principal is known): reads
+  `X-ForgeBase-Consistency` (`strong` | `session`, anything else ignored)
+  and every `X-ForgeBase-Read-After` value, adds the principal's recent
+  commits (`RecentCommits`: per realm and principal, 10 s, at most 10 000
+  principals, least recently written dropped; anonymous and system callers
+  are not remembered), runs the request in the scope, and answers
+  `X-ForgeBase-Commit` when it committed on a set with replicas. CORS allows
+  the two request headers and exposes the response header (shared edit in
+  `lib.rs`).
+- SDKs: JavaScript `CommitTokens` (`fb.commitTokens`), client option
+  `consistency: "session" | "strong"`, per call `{ consistency }` on
+  `request`, `collection().list/get`; Rust `CommitTokens`
+  (`fb.commit_tokens()`), `ClientBuilder::consistency`,
+  `ForgeBase::with_consistency` (shares credentials, tokens and realtime).
+  Both read `X-ForgeBase-Commit` from every response (a failed request may
+  have committed) and send `X-ForgeBase-Read-After` only once they hold a
+  token.
+
+**External checks (§2.4).** `check_replica(primary, replica, name)`: in
+recovery, equal `system_identifier` (`pg_control_system()`), version ≥ 16,
+and the role has `USAGE` on schema `forgebase` and `SELECT` on
+`forgebase._forgebase_migrations`. A mismatch is
+`ReplicaCheckError::Mismatch` (`node_mismatch`, 400); a server that cannot be
+asked keeps its `DbError` code. `primary_facts(db)` returns the facts
+(version, identifier, timeline) for the admin API to store.
+
+**Tests.** `crates/forgebase-db/tests/replicas.rs` builds real standbys
+(`routing::testing::ReplicaCluster`: `initdb`, `pg_basebackup -R -X stream`,
+each server on its own socket directory, a watchdog per server; gated on
+`FORGEBASE_TEST_PG_ENGINE` / `FORGEBASE_PG_ENGINE_DIR`): lag out of rotation
+and back after three samples; read-after tokens (wait, then primary; served
+by the replica once replayed; strong; `read_your_writes = false`); a
+recovery conflict (`max_standby_streaming_delay = 0`, `ALTER TABLE` on the
+primary) retried on the primary; another cluster's standby and a primary
+refused; the router opening only checked replicas, recording the health
+transition and keeping state across a reload. One test runs on the selected
+backend without replicas (unchanged behaviour). `forgebase-api`
+`consistency` tests: headers, the principal map, and the whole path over
+HTTP against a real standby.
+
+**For the next packages.**
+- **FB-168 (managed replicas):** insert the node row (`role = replica`,
+  state `provisioning`, then `catching_up` once started) and `reload()`; the
+  router opens nodes in `ready | catching_up | streaming | lagging |
+  unreachable`. `connect_replica` must open the standby with
+  `DbOptions::read_only()` (for a local node, its socket directory).
+  `NodeState::NeedsRebuild` from the monitor means "not in recovery".
+- **FB-169 (call sites, realtime):** pass `ReadIntent::replica("<area>")`
+  at the §2.5 call sites through `fetch_routed`; everything else keeps
+  `fetch_all`. `AccessContext.read_after` can become `ReadIntent::after_all`;
+  the request scope already carries the headers, so a call site inside an
+  HTTP request needs nothing more. Realtime pages: sample
+  `Database::current_wal_lsn()` and send `<set>/<lsn>`; the SDKs take it
+  with `commitTokens.note(...)` / `commit_tokens().note(...)`.
+- **FB-171 (server):** pass `RouterOptions { replicas: <from
+  [database.replicas]>, .. }`; implement `SetConnector::connect_replica`
+  (unseal `url_sealed`). The `[database.replicas]` keys are not in the FB-91
+  registry yet (outside this package): add them with `ReplicaOptions`'
+  defaults.
+- **FB-175 (admin API):** adding an external node runs `check_replica`
+  (400 `node_mismatch`) and stores `primary_facts` (version, identifier,
+  timeline); show `SetHandle::replicas().status()` for live health.
+
+## Addendum: FB-164, queue deliveries on pgmq (2026-11-11)
+
+Built as §1.6 describes. Where the code differs from the text above, or
+decides something it left open, it is said here.
+
+**Files.** `crates/forgebase-queue/src/pgmq/{mod.rs, engine.rs}` (new):
+the delivery store over pgmq queues, engine selection, the layout check,
+reconcile and `queue.convert`. Engine branches in `consume.rs` (claim,
+materialisation, reap, ack, nack, deadline, release, in-flight, seek,
+snapshots, dead letters), `ops.rs` (metrics, backlog, retention) and
+`service.rs` (queue created/dropped with the subscription and with a
+forced topic delete). `model.rs`: `DeliveryEngine`, `ConvertReport`.
+Tests: `tests/pgmq.rs` (new), the harness runs FB-161's extension setup on
+PostgreSQL, the FIX-9 plan test knows both engines. No migration. Outside
+Owns: the restart-reason fix in `forgebase-db/src/pg/extensions.rs` (below).
+
+**Which engine.** The service has no `Database` handle (it gets a
+`dyn Backend` through the data core), so it reads what
+`Database::feature_active(Feature::Queue)` is derived from:
+`_forgebase_meta` `ext.queue.engine = extension` (FB-161 pins it at the
+first setup; the setup refuses to start when the pinned extension is
+gone). With that pin, pgmq installed and the layout check passing, the
+service uses pgmq; otherwise the portable table. It decides once, on the
+first delivery operation, and keeps the answer behind a `tokio` `RwLock`:
+every delivery operation holds the read guard for its transaction,
+`queue.convert` the write guard. `QueueService::delivery_engine()` tells.
+
+**Queue names.** `fbs_` and the first 128 bits of SHA-256 of the stored
+subscription name (`<tenant>/<name>` for a tenant's), in hex: 36
+characters (pgmq allows 47; stored names are not identifiers). Tenant and
+owner stay in ForgeBase's tables (FB-141); the owner's view of record
+messages is still applied at claim from `source_row`.
+
+**Entry body.** `{seq, key, lease, consumer, history}`; §1.6 named four
+fields, `consumer` is added: it marks a leased entry (`consumer` not
+null) and serves streaming flow control and `release_consumer`. `lease`
+stays after a lease expires, so a late ack counts until the entry is
+leased again (ADR-0022 §4), exactly as `lease_id` does on the portable
+table. `read_ct` is the attempt count, `vt` is `available_at` (ready) or
+`lease_until` (leased). History entries have the portable shape (`attempt,
+at, consumer, outcome, error`, at most 25).
+
+**Clock.** Every `vt` is the service clock's epoch milliseconds as
+`timestamptz 'epoch' + ms * interval '1 millisecond'` (exact both ways),
+never `now()`: tests drive a manual clock, and both engines must agree.
+`pgmq.send_batch(name, msgs, vt timestamptz)` takes it.
+
+**Statements** (all ForgeBase's own over `pgmq.q_fbs_…`):
+- materialisation: one `pgmq.send_batch` per claim round of new messages
+  (a filter picks in Rust first); `msg_id` order equals `seq` order;
+- claim: `SELECT … WHERE vt <= $now [AND no earlier entry with the same
+  key] ORDER BY msg_id LIMIT $n FOR UPDATE OF q SKIP LOCKED`, joined with
+  the message log, then **one** `UPDATE … FROM jsonb_to_recordset(…)`
+  per round sets `vt`, `read_ct + 1`, lease, consumer and the history entry.
+  Select-then-update instead of §1.6's single `UPDATE … RETURNING`: the
+  byte limit of streaming pull and the owner's view (withheld records are
+  deleted, not leased) are decided per message in Rust, as on the
+  portable path;
+- the reap (expired leases → ready after backoff, or dead letter) runs
+  before each claim as on the portable path, over an index ForgeBase adds
+  to each queue table: `(vt) WHERE message->>'consumer' IS NOT NULL`.
+  Ordering subscriptions also get `((message->>'key'), msg_id) WHERE key
+  IS NOT NULL`;
+- ack ids are `ack-<msg_id>-<uuid>`: ack is one `DELETE … USING
+  jsonb_to_recordset(…) WHERE msg_id = l.id AND message->>'lease' =
+  l.lease` for the batch; nack, modify-deadline and release update `vt`,
+  the lease and history by `msg_id`. Ack ids from the portable engine
+  (before a conversion) are found by their lease;
+- dead letters: the entry is read with its message, the dead-letter
+  record and the copy on the dead-letter topic are written as before, the
+  entry is deleted;
+- seek purges the queue and, for a snapshot, inserts its items;
+  snapshots read the owed `seq`s from the queue;
+- retention: pgmq entries have no foreign key to the message log, so after
+  pruning a topic its queues drop entries whose message is gone;
+- metrics: per subscription from its queue; `/metrics` backlog adds every
+  queue (one `UNION ALL` per 100 queues).
+
+**Layout check.** At the first delivery operation and before converting
+to pgmq: pgmq must be installed; a probe queue created in a transaction
+that is rolled back, and every existing `pgmq.q_fbs_%` table, must have
+`msg_id bigint, read_ct integer, enqueued_at timestamptz, vt timestamptz,
+message jsonb` (`format_type`). A mismatch logs a warning and uses the
+portable table (the pin stays `extension`; entries in the mismatching
+queues stay there, untouched); `queue.convert` to pgmq answers `400
+pgmq_unavailable` with the problems.
+
+**Reconcile.** At that first use, and inside every conversion, owed
+deliveries are moved to the engine in use, one transaction per
+subscription: pgmq creates missing queues and takes any portable rows
+(state, attempts, lease, history kept, `seq` order); portable takes back
+the entries of every `fbs_` queue (those whose message still exists) and
+drops the queues; queues without a subscription are dropped. This also
+covers databases set up after FB-161 and before FB-164 (pinned
+`extension` with portable rows) — no re-creation needed.
+
+**`queue.convert`.** `QueueService::convert(ctx, to)` (instance-wide
+`engine:queue_admin`, no tenant) and the reserved job kind `queue.convert`
+(`forgebase_queue::register_jobs`, payload `{"to": "pgmq" | "portable"}`).
+It writes `ext.queue.engine` first and then reconciles, under the write
+guard: a conversion that stops half way is finished by the next start.
+The extension report (`/api/system/info`, `feature_active`) shows the new
+engine after the next start.
+
+**Restart reason fix (FB-161 follow-up).** A stateful feature pinned
+`portable` in `auto` now reports the extension's own unavailability
+reason when it is missing (as the first start did), and the
+"`<feature>.convert` moves it" reason only when the extension is usable:
+a restart reports the same status as the first start on engines without
+pgvector/pgmq.
+
+**Tests.** `tests/pgmq.rs`: one queue per subscription (created, entries
+leased/acked, dropped with the subscription and with a forced topic
+delete); `queue.convert` both ways with a lease handed out before each
+conversion still acked, attempts and history carried (redelivery is
+attempt 2), an ordering subscription converted, the stored engine
+followed after a restart, `pgmq_unavailable` where pgmq is missing; a
+renamed `vt` column falls back to portable and refuses conversion; the
+convert job kind is reserved. The rest of the suite (ADR-0022:
+fan-out, competing consumers, redelivery, dead letters, ordering, dedup,
+replay, restart survival, streaming flow control, push, record views)
+runs on whichever engine the database offers: SQLite (portable),
+PostgreSQL without pgmq (portable), the bundled engine (pgmq), and the
+bundled engine with `FORGEBASE_TEST_PGMQ=off` (portable, and convert
+portable → pgmq → portable).
+
+**Bench** (`queue_pull_ack_10`, pull 10 + ack 10 with a standing backlog
+of 10 000, through `forgebase_server::start`; bench profile with thin LTO
+off for build time; a shared, loaded machine, so the spread is large on
+every engine): pgmq on the bundled engine 3.0 / 3.6 / 16.6 / 82 ms per
+round (one run at 1.76 s with every round slow, from the warm-up on);
+portable on Homebrew PostgreSQL 18 7.1 / 7.3 / 8.9 ms; SQLite 14.5 / 35 /
+210 ms. The pgmq round runs fewer statements than the portable one (one
+lease `UPDATE` and one ack `DELETE` for the batch instead of one per
+message); in-process, without the server, a round took about 2.3 ms in
+a debug build after 400 rounds, every statement well under 1 ms.
+
+**For the next packages.**
+- **FB-169 (replica reads):** claims, acks, nacks, deadline changes,
+  releases, seeks and snapshots write pgmq queue tables: primary only.
+  `subscription_metrics` and `backlog` read the queue tables
+  (`pgmq.q_fbs_…`, `SELECT` granted to `forgebase_reader` by default
+  privileges) and may go through `fetch_routed` with
+  `ReadIntent::replica(..)` (FB-167); the queue name of a subscription is
+  `crate::pgmq::queue_name(stored name)`.
+- **FB-172 (shard routing):** the engine is resolved per `QueueService`,
+  i.e. per backend: with one service per set, each set's database keeps
+  its own `ext.queue.engine` pin, pgmq install and queues, and resolves
+  on its own. A tenant move must move its subscriptions' pgmq queue
+  tables (whole tables outside the placement registry; `msg_id` is per
+  queue, so `apply_sequence_range` need not touch it) — or convert the
+  moving tenant's deliveries to portable rows first and let the target's
+  reconcile adopt them (reconcile moves portable rows of any subscription
+  into its queue). Maintenance (`run_maintenance`, retention pruning of
+  queue entries) is per set.
+- **Server wiring (not done here, outside Owns):** register the job kind
+  in `forgebase-server/src/lib.rs` next to the other `register_jobs`
+  calls: `let registry = match &queue { Some(q) =>
+  forgebase_queue::register_jobs(registry, q.clone()), None => registry };`.

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { measureRecall, rebuildVectorIndex, vectorCollectionStats } from "../../api";
 import type { IndexStatus, VectorCollection } from "../../api";
-import { Button, ErrorView, Loading, Panel } from "../../components/ui";
+import { SkeletonLines } from "../../components/Skeleton";
+import { Button, ErrorView, Panel } from "../../components/ui";
 import { usePolling } from "../../hooks";
 import { bytes, fmt } from "./util";
 
@@ -23,7 +24,7 @@ export default function VectorIndex({ collection }: { collection: VectorCollecti
   return (
     <div className="space-y-4">
       <ErrorView error={fail ?? error} />
-      {!data && !error && <Loading what="Loading index status" />}
+      {!data && !error && <SkeletonLines lines={3} label="Loading index status" />}
       {data && (
         <p className="text-sm text-muted-foreground">
           {data.items} items ({data.items_with_text} with text) · change seq {data.change_seq}

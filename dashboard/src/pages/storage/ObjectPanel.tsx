@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { copyObject, deleteObject, downloadObject, listVersions, moveObject, objectMeta, restoreVersion } from "../../api";
 import type { Bucket, ObjectInfo } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { SkeletonLines } from "../../components/Skeleton";
+import { UseFromCode } from "../../components/UseFromCode";
+import { Button, ErrorView, Panel } from "../../components/ui";
+import { notify, toaster } from "../../toaster";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import { when } from "../functions/util";
@@ -14,12 +19,11 @@ export default function ObjectPanel({ bucket, objectKey, onClose, onChanged }: {
   const versions = useLoad((s) => listVersions(bucket.name, objectKey, s), `versions:${bucket.name}:${objectKey}`);
   const [error, setError] = useState<unknown>();
   const [dest, setDest] = useState(objectKey);
-  const [notice, setNotice] = useState("");
   const base = objectKey.split("/").pop() || objectKey;
 
   const act = async (f: () => Promise<unknown>, msg: string, closes = false) => {
-    setError(undefined); setNotice("");
-    try { await f(); setNotice(msg); onChanged(); info.reload(); versions.reload(); if (closes) onClose(); } catch (e) { setError(e); }
+    setError(undefined);
+    try { await f(); toaster.add({ title: msg.replace(/\.$/, ""), type: "success" }); onChanged(); info.reload(); versions.reload(); if (closes) onClose(); } catch (e) { setError(e); }
   };
   const download = async (version?: string) => {
     setError(undefined);
@@ -30,7 +34,7 @@ export default function ObjectPanel({ bucket, objectKey, onClose, onChanged }: {
     <aside aria-label="Object details" className="space-y-4">
       <Panel title={base} actions={<Button onClick={onClose} aria-label="Close details">Close</Button>}>
         <p className="break-all font-mono text-xs text-muted-foreground">{objectKey}</p>
-        {info.loading && !info.error && <Loading what="Loading object" />}
+        {info.loading && !info.error && <SkeletonLines lines={4} label="Loading object" />}
         {o && (
           <dl className="mt-2 grid grid-cols-[6rem_1fr] gap-y-1 text-sm">
             <dt className="text-muted-foreground">Size</dt><dd>{formatBytes(o.size)}</dd>
@@ -41,12 +45,17 @@ export default function ObjectPanel({ bucket, objectKey, onClose, onChanged }: {
             {Object.entries(o.metadata).map(([k, v]) => (<><dt key={`k${k}`} className="text-muted-foreground">meta {k}</dt><dd key={`v${k}`}>{v}</dd></>))}
           </dl>
         )}
-        {info.data === undefined && !info.loading && !info.error && <p className="mt-2 text-sm text-muted-foreground">This object no longer exists (or is a delete marker).</p>}
+        {info.data === undefined && !info.loading && !info.error && <EmptyState compact className="mt-2" title="This object is gone" why="It no longer exists, or its latest version is a delete marker." />}
         <div className="mt-3 flex flex-wrap gap-2">
           <Button onClick={() => void download()}>Download</Button>
-          <ConfirmButton label="Delete object" onConfirm={() => void act(() => deleteObject(bucket.name, objectKey), "Deleted.", !bucket.versioning)} />
+          <ConfirmDialog
+            trigger={<Button tone="danger">Delete object</Button>}
+            title={`Delete ${base}?`}
+            consequence={bucket.versioning ? "The object gets a delete marker; earlier versions stay and can be restored." : "The object is deleted for good. Apps that read it get 404."}
+            confirmLabel="Delete object"
+            onConfirm={async () => { await deleteObject(bucket.name, objectKey); notify.deleted(`Object ${base}`); onChanged(); info.reload(); versions.reload(); if (!bucket.versioning) onClose(); }}
+          />
         </div>
-        {notice && <p role="status" className="mt-2 text-sm text-success">{notice}</p>}
         <div className="mt-2"><ErrorView error={error} /></div>
       </Panel>
 
@@ -60,8 +69,8 @@ export default function ObjectPanel({ bucket, objectKey, onClose, onChanged }: {
 
       <Panel title="Version history">
         <ErrorView error={versions.error} />
-        {versions.loading && !versions.error && <Loading what="Loading versions" />}
-        {versions.data && versions.data.length === 0 && <p className="text-sm text-muted-foreground">No versions recorded.</p>}
+        {versions.loading && !versions.error && <SkeletonLines lines={2} label="Loading versions" />}
+        {versions.data && versions.data.length === 0 && <EmptyState compact title="No versions recorded" why="Turn on versioning in the bucket policy to keep earlier versions of this file." />}
         {versions.data && versions.data.length > 0 && (
           <ul aria-label="Versions" className="space-y-2 text-sm">
             {versions.data.map((v) => (
@@ -82,6 +91,10 @@ export default function ObjectPanel({ bucket, objectKey, onClose, onChanged }: {
       </Panel>
 
       <SignedUrls bucket={bucket} initialKey={objectKey} />
+
+      <Panel title="Use from code">
+        <UseFromCode kind="object" name={`${bucket.name}/${objectKey}`} title={null} />
+      </Panel>
     </aside>
   );
 }

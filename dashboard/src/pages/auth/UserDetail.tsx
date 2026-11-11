@@ -1,6 +1,6 @@
 import { Textarea } from "panelui-web/textarea";
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   getUserDetail, listSuspensions, revokeAllSessions, revokeSession, suspend, unsuspend, userLoginHistory, userSessions,
 } from "../../api";
@@ -30,9 +30,6 @@ export default function UserDetail() {
 
   return (
     <div className="space-y-4">
-      <Link to="/auth" className="text-sm text-primary hover:underline">
-        ← Users
-      </Link>
       <ErrorView error={detail.error} />
       {detail.loading && !detail.error && <Loading what="Loading user" />}
       {detail.data && (

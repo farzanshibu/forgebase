@@ -2,7 +2,7 @@
  * In-memory fakes of the functions and jobs REST APIs for component tests.
  * Jobs routes are checked against the OpenAPI fixture; the functions routes are not in the fixture yet, so they are plain handlers.
  */
-import type { ExecutionLog, FunctionInfo, Job, JobEvent, JobStatus, SecretInfo, VersionInfo } from "../api";
+import type { ExecutionLog, FunctionInfo, Job, JobEvent, JobStatus, JobWorker, SecretInfo, VersionInfo } from "../api";
 import { envelope, type MockApi, type MockReply, type MockRequest } from "./mockApi";
 import { hasResponse, matchRoute, responseSchemaName, validateBody } from "./contract";
 import { installTasks, type TaskState } from "./tasksMock";
@@ -168,17 +168,21 @@ const job = (id: string, status: JobStatus, extra: Partial<Job> = {}): Job => ({
   has_checkpoint: false, waiting_for: 0, result_stored: false, ...extra,
 });
 
-export interface JobsState { jobs: Job[]; events: Record<string, JobEvent[]>; tasks: TaskState }
+export interface JobsState { jobs: Job[]; events: Record<string, JobEvent[]>; tasks: TaskState; workers: JobWorker[] }
 
 export function installJobs(mock: MockApi): JobsState {
   const st: JobsState = {
     jobs: [
       job("job_q", "queued"),
-      job("job_r", "running", { queue: "mail", worker_id: "w1" }),
+      job("job_r", "running", { queue: "mail", worker_id: "w1", tenant: "acme" }),
       job("job_d", "dead", { last_error: "smtp refused", attempts: 3 }),
       job("job_s", "succeeded", { result: { sent: true }, finished_at: NOW }),
     ],
     tasks: undefined as unknown as TaskState,
+    workers: [
+      { id: "w1", name: "mailer", queues: ["mail"], kinds: [], concurrency: 2, registered_at: NOW, last_seen_at: NOW, online: true, tenant: "acme", created_by: "svc:mailer" },
+      { id: "w2", queues: [], kinds: [], concurrency: 1, registered_at: NOW, last_seen_at: NOW, online: false, tenant: null, created_by: null },
+    ],
     events: { job_d: [{ id: 1, at: NOW, event: "enqueued", attempt: 0 }, { id: 2, at: NOW, event: "dead", attempt: 3, message: "smtp refused" }] },
   };
   const J = "/api/v1/jobs";
@@ -203,6 +207,8 @@ export function installJobs(mock: MockApi): JobsState {
     return { status: 200, body: { items: all.slice(off, off + lim), total: all.length } };
   }, true);
   route(mock, "GET", `${J}/schedules`, () => ({ status: 200, body: { items: [{ id: "s1", name: "nightly", cron: "0 3 * * *", queue: "default", kind: "report", payload: {}, priority: 0, max_attempts: 3, backoff_base_ms: 1000, backoff_max_ms: 60000, visibility_timeout_ms: 30000, enabled: true, next_run_at: NOW, created_by: "admin", created_at: NOW, updated_at: NOW }] } }), true);
+  // Workers (FB-146): the fixture does not describe them yet, so this route is not checked against it.
+  route(mock, "GET", `${J}/workers`, () => ({ status: 200, body: { items: st.workers } }));
   st.tasks = installTasks(mock, () => st.jobs); // long-task routes: before the `{id}` routes
   route(mock, "GET", `${J}/{id}`, ({ params }) => { const j = find(params.id!); return j ? { status: 200, body: j } : nf(); }, true);
   route(mock, "GET", `${J}/{id}/events`, ({ params }) => (find(params.id!) ? { status: 200, body: { items: st.events[params.id!] ?? [] } } : nf()), true);

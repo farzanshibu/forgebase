@@ -2,7 +2,14 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { cancelJob, deleteJob, getJob, jobAttempts, jobCheckpoint, jobEvents, jobResult, retryJob } from "../../api";
 import type { Job, JobResult } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
+import { SkeletonLines } from "../../components/Skeleton";
+import { UseFromCodeButton } from "../../components/UseFromCode";
+import { notify } from "../../toaster";
+import Tenant from "./Tenant";
 import { useLoad, usePolling } from "../../hooks";
 import { when } from "../functions/util";
 import ProgressBar from "./ProgressBar";
@@ -27,10 +34,11 @@ export default function JobDetail() {
   const [stored, setStored] = useState<JobResult>();
   const [error, setError] = useState<unknown>();
 
-  async function act(fn: () => Promise<Job | void>, leave = false) {
+  async function act(fn: () => Promise<Job | void>, done: string, leave = false) {
     setError(undefined);
     try {
       await fn();
+      notify.saved(`Job ${id}`, done);
       if (leave) return nav("/jobs");
       job.refresh();
       events.reload();
@@ -46,20 +54,20 @@ export default function JobDetail() {
 
   return (
     <div className="space-y-4">
-      <Link to="/jobs" className="text-sm text-primary hover:underline">← All jobs</Link>
+      <PageHeader title={id} description={j ? <span className="inline-flex flex-wrap items-center gap-2"><StatusBadge status={j.status} /> {j.kind} in {j.queue} · tenant <Tenant value={j.tenant} /></span> : "Job"} docs="docs/adr/0007-jobs.md"
+        secondary={j ? <UseFromCodeButton kind="jobKind" name={j.kind} /> : undefined}
+        primary={j ? (
+          <span className="flex gap-2">
+            {retryable && <Button onClick={() => void act(() => retryJob(j.id), "Queued again.")}>Retry</Button>}
+            {cancellable && <ConfirmDialog trigger={<Button tone="danger">Cancel job</Button>} title="Cancel this job?" consequence="A queued job never runs. A running job stops at its next heartbeat." confirmLabel="Cancel job" onConfirm={() => act(() => cancelJob(j.id), "Cancel requested.")} />}
+            {finished && <ConfirmDialog trigger={<Button tone="danger">Delete job</Button>} title={`Delete job ${j.id}?`} consequence="Its history, attempts and result are deleted." confirmLabel="Delete job" confirmText={j.id} onConfirm={() => act(() => deleteJob(j.id), "Deleted.", true)} />}
+          </span>
+        ) : undefined} />
       <ErrorView error={error ?? job.error} />
-      {job.loading && !job.error && <Loading what="Loading job" />}
+      {job.loading && !job.error && <SkeletonLines lines={5} label="Loading job" />}
       {j?.workflow_id && <p className="text-sm text-muted-foreground">Step {j.step ?? j.kind} of workflow <Link className="text-primary hover:underline" to={`/jobs/w/${encodeURIComponent(j.workflow_id)}`}>{j.workflow_id}</Link>{j.parent_id ? <> · child of <Link className="font-mono text-xs text-primary hover:underline" to={`/jobs/j/${encodeURIComponent(j.parent_id)}`}>{j.parent_id}</Link></> : null}</p>}
       {j && (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="flex items-center gap-2 font-mono text-lg">{j.id} <StatusBadge status={j.status} /></h2>
-            <div className="flex gap-2">
-              {retryable && <Button onClick={() => void act(() => retryJob(j.id))}>Retry</Button>}
-              {cancellable && <Button tone="danger" onClick={() => void act(() => cancelJob(j.id))}>Cancel job</Button>}
-              {finished && <ConfirmButton label="Delete job" onConfirm={() => void act(() => deleteJob(j.id), true)} />}
-            </div>
-          </div>
           {j.cancel_requested && <p role="status" className="text-sm text-warning">Cancel requested: the worker stops at its next heartbeat.</p>}
           {(j.waiting_for ?? 0) > 0 && <p role="status" className="text-sm text-foreground/80">Waiting for {j.waiting_for} parent job(s) to succeed before it can start.</p>}
           {(j.status === "running" || j.progress) && (
@@ -74,7 +82,7 @@ export default function JobDetail() {
               {([
                 ["Queue", j.queue], ["Kind", j.kind], ["Priority", j.priority], ["Attempts", `${j.attempts} of ${j.max_attempts}`],
                 ["Run at", when(j.run_at)], ["Created", when(j.created_at)], ["Started", when(j.started_at)], ["Finished", when(j.finished_at)],
-                ["Worker", j.worker_id ?? "none"], ["Created by", j.created_by], ["Idempotency key", j.idempotency_key ?? "none"], ["Schedule", j.schedule_id ?? "none"],
+                ["Worker", j.worker_id ?? "none"], ["Created by", j.created_by], ["Tenant", j.tenant ?? "instance"], ["Idempotency key", j.idempotency_key ?? "none"], ["Schedule", j.schedule_id ?? "none"],
               ] as [string, string | number][]).map(([k, v]) => (
                 <div key={k} className="flex gap-2"><dt className="w-32 shrink-0 text-muted-foreground">{k}</dt><dd>{v}</dd></div>
               ))}
@@ -99,7 +107,7 @@ export default function JobDetail() {
           )}
           <Panel title="Attempts">
             <ErrorView error={attempts.error} />
-            {attempts.data && attempts.data.length === 0 && <p className="text-sm text-muted-foreground">No attempts yet.</p>}
+            {attempts.data && attempts.data.length === 0 && <EmptyState compact title="No attempts yet" why="An attempt starts when a worker claims the job." />}
             {attempts.data && attempts.data.length > 0 && (
               <Table aria-label="Attempts" className="w-full text-left text-sm">
                 <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">#</Table.Head><Table.Head>Worker</Table.Head><Table.Head>Started</Table.Head><Table.Head>Duration</Table.Head><Table.Head>Outcome</Table.Head><Table.Head>Resumed</Table.Head></Table.Row></Table.Header>
@@ -116,7 +124,7 @@ export default function JobDetail() {
           </Panel>
           <Panel title="History">
             <ErrorView error={events.error} />
-            {events.data && events.data.length === 0 && <p className="text-sm text-muted-foreground">No events.</p>}
+            {events.data && events.data.length === 0 && <EmptyState compact title="No history yet" why="Every change of the job is recorded here." />}
             <ol aria-label="Job history" className="space-y-1 text-sm">
               {events.data?.map((e) => (
                 <li key={e.id} className="flex flex-wrap gap-x-3">

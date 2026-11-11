@@ -56,7 +56,10 @@ pub use pg::extensions::{
 };
 pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_placeholders};
 pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
-pub use routing::{Lsn, PrimaryOnly, ReadRequest, ReadRouter, ReadTarget};
+pub use routing::{
+    CommitToken, Consistency, Lsn, PrimaryOnly, ReadAfter, ReadIntent, ReadRequest, ReadRouter, ReadRouting,
+    ReadTarget, ReplicaOptions, ReplicaSet,
+};
 pub use slow_log::{DEFAULT_SLOW_QUERY_THRESHOLD, SLOW_QUERY_LOG_CAPACITY};
 pub use sqlite::sqlite_library_version;
 
@@ -592,6 +595,23 @@ impl Database {
         match &*self.inner {
             Inner::Sqlite(_) => Ok(None),
             Inner::Postgres(db) => db.current_wal_lsn().await.map(Some),
+        }
+    }
+
+    /// PostgreSQL `server_version_num` (`180003`); `None` on SQLite.
+    pub fn server_version_num(&self) -> Option<u32> {
+        match &*self.inner {
+            Inner::Sqlite(_) => None,
+            Inner::Postgres(db) => Some(db.server_version_num()),
+        }
+    }
+
+    /// Waits for this standby to replay `lsn` (`WAIT FOR LSN`, PostgreSQL
+    /// 19 and newer); `Unsupported` elsewhere.
+    pub(crate) async fn wait_for_lsn(&self, lsn: Lsn, timeout: Duration) -> Result<routing::LsnWait, DbError> {
+        match &*self.inner {
+            Inner::Sqlite(_) => Ok(routing::LsnWait::Unsupported),
+            Inner::Postgres(db) => db.wait_for_lsn(lsn, timeout).await,
         }
     }
 

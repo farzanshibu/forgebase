@@ -9,6 +9,7 @@ import { installJobs } from "../../test/fnMock";
 import ProgressBar from "./ProgressBar";
 import { layout } from "./WorkflowGraph";
 import { pick } from "../../test/pick";
+import { confirmDialog } from "../../test/dataStudioMock";
 
 const NOW = "2026-11-09T10:00:00Z";
 
@@ -114,6 +115,7 @@ describe("Job detail for long tasks", () => {
     renderStudio("/jobs/j/job_q");
     expect(await screen.findByText(/Waiting for 2 parent job\(s\)/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Cancel job" }));
+    await confirmDialog("Cancel this job?", "Cancel job");
     await waitFor(() => expect(st.jobs.find((x) => x.id === "job_q")?.status).toBe("cancelled"));
     expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -138,7 +140,7 @@ describe("Job detail for long tasks", () => {
     await screen.findByText("smtp refused", { exact: false });
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Checkpoint")).not.toBeInTheDocument();
-    expect(await screen.findByText("No attempts yet.")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No attempts yet" })).toBeInTheDocument();
   });
 });
 
@@ -178,7 +180,7 @@ describe("Workflows", () => {
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Workflows" })).getAllByRole("row")).toHaveLength(2));
     expect(screen.getByRole("link", { name: "cleanup" })).toHaveAttribute("href", "/jobs/w/wf2");
     await pick(screen.getByLabelText("Status"), "cancelled");
-    expect(await screen.findByText("No workflows match.")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No workflows match" })).toBeInTheDocument();
   });
 
   it("is reachable from the Jobs tabs", async () => {
@@ -211,6 +213,7 @@ describe("Workflows", () => {
     st.tasks.workflows = [workflow()];
     renderStudio("/jobs/w/wf1");
     await userEvent.click(await screen.findByRole("button", { name: "Cancel workflow" }));
+    await confirmDialog("Cancel this workflow?", "Cancel workflow");
     await waitFor(() => expect(screen.getByRole("status", { name: "Workflow status" })).toHaveTextContent("cancelled"));
     expect(screen.queryByRole("button", { name: "Cancel workflow" })).not.toBeInTheDocument();
     expect(mock.calls).toContain("post /api/v1/jobs/workflows/wf1/cancel");

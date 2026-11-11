@@ -27,6 +27,7 @@
 //! request gates (plan-based rate limits; FB-24) → handler.
 
 pub mod admin;
+pub mod consistency;
 pub mod context;
 pub mod error;
 pub mod features;
@@ -420,8 +421,15 @@ fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 HeaderName::from_static("x-request-id"),
                 HeaderName::from_static(forgebase_auth::http::API_KEY_HEADER),
                 HeaderName::from_static(forgebase_auth::http::CSRF_HEADER),
+                HeaderName::from_static(consistency::READ_AFTER_HEADER),
+                HeaderName::from_static(consistency::CONSISTENCY_HEADER),
             ])
-            .expose_headers([header::ETAG, header::LOCATION, HeaderName::from_static("x-request-id")])
+            .expose_headers([
+                header::ETAG,
+                header::LOCATION,
+                HeaderName::from_static("x-request-id"),
+                HeaderName::from_static(consistency::COMMIT_HEADER),
+            ])
             .max_age(Duration::from_secs(600)),
     )
 }
@@ -515,6 +523,10 @@ pub fn router_with(
         .route("/admin/{*path}", get(admin::asset))
         .fallback(routes::not_found)
         .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            consistency::RecentCommits::default(),
+            consistency::track,
+        ))
         .layer(middleware::from_fn(principal::install_anonymous));
     // Gates run after tenancy (outside them) has completed the context.
     let app = if opts.gates.is_empty() {

@@ -6,9 +6,10 @@ export interface SetupStatus {
   setup_required: boolean;
 }
 
-export type SettingType = "bool" | "int" | "string" | "enum" | "duration" | "list" | "url";
+/** `map` is a table of name and value pairs, read-only here (FB-148: `database.postgres.settings`). */
+export type SettingType = "bool" | "int" | "string" | "enum" | "duration" | "list" | "url" | "map";
 export type SettingSource = "default" | "file" | "env" | "flag";
-export type SettingValue = boolean | number | string | string[] | null;
+export type SettingValue = boolean | number | string | string[] | Record<string, string | number | boolean | null> | null;
 
 export interface FeatureSetting {
   key: string;

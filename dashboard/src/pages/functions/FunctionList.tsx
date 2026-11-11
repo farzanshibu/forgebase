@@ -1,8 +1,14 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { deleteFunction, listFunctions } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { PageHeader } from "../../components/PageHeader";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button } from "../../components/ui";
 import { useLoad } from "../../hooks";
+import { notify } from "../../toaster";
 import DeployForm from "./DeployForm";
 import { when } from "./util";
 import { Table } from "panelui-web/table";
@@ -10,34 +16,26 @@ import { Table } from "panelui-web/table";
 export default function FunctionList() {
   const list = useLoad(listFunctions, "functions");
   const nav = useNavigate();
-  const [error, setError] = useState<unknown>();
-  const [deploying, setDeploying] = useState(false);
-
-  async function remove(name: string) {
-    setError(undefined);
-    try {
-      await deleteFunction(name);
-      list.reload();
-    } catch (e) {
-      setError(e);
-    }
-  }
+  const [uploading, setUploading] = useState(false);
+  const upload = <Button onClick={() => setUploading((d) => !d)}>{uploading ? "Cancel upload" : "Upload .wasm"}</Button>;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Sandboxed TypeScript, JavaScript and WebAssembly functions of your tenant.</p>
-        <div className="flex gap-2">
-          <Button tone="primary" onClick={() => nav("/functions/new")}>New function</Button>
-          <Button onClick={() => setDeploying((d) => !d)}>{deploying ? "Cancel" : "Deploy function"}</Button>
-        </div>
-      </div>
-      {deploying && <DeployForm onDone={(d) => nav(`/functions/f/${encodeURIComponent(d.function.name)}`)} />}
-      <ErrorView error={error ?? list.error} />
-      {list.loading && !list.error && <Loading what="Loading functions" />}
-      {list.data && list.data.length === 0 && <p className="text-sm text-muted-foreground">No functions yet.</p>}
+      <PageHeader studio="functions" secondary={upload} primary={<Button tone="primary" onClick={() => nav("/functions/new")}>New function</Button>} />
+      {uploading && <DeployForm onDone={(d) => nav(`/functions/f/${encodeURIComponent(d.function.name)}`)} />}
+      <ErrorPanel error={list.error} onRetry={list.reload} />
+      {list.loading && !list.error && <SkeletonTable rows={3} columns={6} label="Loading functions" />}
+      {list.data && list.data.length === 0 && (
+        <EmptyState
+          title="No functions yet"
+          why="A function is your own code that the server runs next to your data, when a request, a record change or a schedule calls it. Start from a template: no toolchain needed."
+          action={<Button tone="primary" onClick={() => nav("/functions/new")}>New function</Button>}
+          sample={upload}
+          docs="docs/adr/0017-functions.md"
+        />
+      )}
       {list.data && list.data.length > 0 && (
-        <Table className="w-full text-left text-sm">
+        <Table aria-label="Functions" className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
             <Table.Row><Table.Head className="py-2">Name</Table.Head><Table.Head>Active</Table.Head><Table.Head>Latest</Table.Head><Table.Head>HTTP access</Table.Head><Table.Head>Updated</Table.Head><Table.Head /></Table.Row>
           </Table.Header>
@@ -52,7 +50,16 @@ export default function FunctionList() {
                 <Table.Cell>v{f.latest_version}</Table.Cell>
                 <Table.Cell>{f.access}</Table.Cell>
                 <Table.Cell className="text-muted-foreground">{when(f.updated_at)}</Table.Cell>
-                <Table.Cell className="text-right"><ConfirmButton label={`Delete ${f.name}`} onConfirm={() => void remove(f.name)} /></Table.Cell>
+                <Table.Cell className="text-right">
+                  <ConfirmDialog
+                    trigger={<Button tone="danger" aria-label={`Delete ${f.name}`}>Delete</Button>}
+                    title={`Delete function ${f.name}?`}
+                    consequence="Every version, its secrets and its logs are deleted. Apps and hooks that call it get an error."
+                    confirmLabel="Delete function"
+                    confirmText={f.name}
+                    onConfirm={async () => { await deleteFunction(f.name); notify.deleted(`Function ${f.name}`); list.reload(); }}
+                  />
+                </Table.Cell>
               </Table.Row>
             ))}
           </Table.Body>

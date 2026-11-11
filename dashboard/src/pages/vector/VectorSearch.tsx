@@ -5,7 +5,8 @@ import { Button, ErrorView, Panel } from "../../components/ui";
 import { fmt, parseVector } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
-import { Sel } from "../../components/controls";
+import { Check, Sel } from "../../components/controls";
+import { HelpTip } from "../../components/HelpTip";
 
 type Mode = "similarity" | "hybrid";
 
@@ -59,7 +60,7 @@ export default function VectorSearch({ collection }: { collection: VectorCollect
           <label className="text-sm">Field
             <Sel aria-label="Field" className="mt-1" value={field} onChange={setField} options={collection.fields.map((f) => ({ value: f.name, label: f.name }))} />
           </label>
-          <label className="text-sm md:col-span-2">Query vector<Input size="sm" className="mt-1 w-full font-mono" value={vector} onChange={(e) => setVector(e.target.value)} placeholder="0.1, 0.2, 0.3" /></label>
+          <label className="text-sm md:col-span-2">Query vector<Input size="sm" className="mt-1 w-full font-mono" value={vector} onChange={(e) => setVector(e.target.value)} placeholder={Array.from({ length: Math.min(collection.fields.find((f) => f.name === field)?.dimension ?? 3, 4) }, (_, i) => (0.1 * (i + 1)).toFixed(1)).join(", ")} /></label>
           {mode === "hybrid" && (
             <>
               <label className="text-sm md:col-span-2">Query text<Input size="sm" className="mt-1 w-full" value={text} onChange={(e) => setText(e.target.value)} /></label>
@@ -76,7 +77,7 @@ export default function VectorSearch({ collection }: { collection: VectorCollect
           </label>
           <label className="text-sm">k<Input size="sm" type="number" min={1} max={1000} className="mt-1 w-full" value={k} onChange={(e) => setK(e.target.value)} /></label>
           {mode === "similarity" && (
-            <label className="flex items-end gap-2 text-sm"><input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />Exact (brute force)</label>
+            <div className="flex items-end gap-1 text-sm"><Check checked={exact} onChange={setExact} label="Exact (brute force)" /><HelpTip term="exact_search" /></div>
           )}
           <div className="flex items-end"><Button tone="primary" type="submit">Run search</Button></div>
         </form>

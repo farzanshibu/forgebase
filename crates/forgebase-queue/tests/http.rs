@@ -351,11 +351,15 @@ async fn websocket_streaming_pull_honours_flow_control() {
     drop(ws);
 
     // Closing released the held leases (2 and 3) without counting the attempt.
-    let got = common::wait_for(Duration::from_secs(5), || async {
-        let got = h.pull("s", 10).await;
-        (got.len() == 4).then_some(got)
+    // Wait for the release without consuming: a pull here would lease what
+    // it finds (4 and 5 before the release, then 2 and 3), so under load the
+    // four would never come back together (the old flake).
+    common::wait_for(Duration::from_secs(30), || async {
+        let m = h.svc.subscription_metrics(&admin(), "s").await.unwrap();
+        (m.in_flight == 0).then_some(())
     })
     .await;
+    let got = h.pull("s", 10).await;
     let data: Vec<Json> = common::datas(&got);
     assert_eq!(data, vec![json!(2), json!(3), json!(4), json!(5)]);
     assert_eq!(got[0].delivery_attempt, 1);

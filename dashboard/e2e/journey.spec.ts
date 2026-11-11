@@ -88,11 +88,18 @@ test.describe.serial("first journey", () => {
   });
   test.afterAll(async () => { await page?.close(); });
 
-  // Step 1 (A-01): on a server with no administrator the dashboard should open the setup wizard,
-  // not a sign-in form. Lands with FB-92 (branch agent/worker-fb92, /admin/setup?token=...).
-  test.fixme("1. first-run setup creates the administrator in the browser", async () => {
-    await page.goto("/admin/");
+  // Step 1 (A-01): on a server with no administrator the dashboard opens the setup page, not a sign-in form.
+  // Needs a fresh server (docs/ux/walkthrough.md, "Fresh server"): FB_SETUP_URL is the link `forgebase serve` prints.
+  test("1. first-run setup creates the administrator in the browser", async () => {
+    test.skip(!process.env.FB_SETUP_URL, "Needs a server with no administrator: set FB_SETUP_URL to the First run link that serve prints.");
+    await page.goto(process.env.FB_SETUP_URL!);
     await expect(page.getByRole("heading", { name: /create the administrator/i })).toBeVisible();
+    await page.getByLabel("Email").fill(EMAIL);
+    await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
+    await page.getByLabel("Confirm password").fill(PASSWORD);
+    await page.getByRole("button", { name: "Create administrator" }).click();
+    await expect(page.getByRole("region", { name: "Feature map" })).toBeVisible();
+    await shot(page, test.info(), "00-setup");
   });
 
   test("1b. sign in and land on Overview", async () => {
@@ -113,8 +120,8 @@ test.describe.serial("first journey", () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/database");
-    await page.getByRole("link", { name: "New collection" }).click();
-    await page.getByLabel("Name", { exact: true }).fill(n.collection);
+    await page.getByRole("button", { name: "New collection" }).click();
+    await page.getByLabel(/^Name/).fill(n.collection);
     await page.getByRole("button", { name: "Add field" }).click();
     await page.getByLabel("Field 1 name").fill("title");
     await page.getByLabel("Field 1 required").check();
@@ -125,39 +132,46 @@ test.describe.serial("first journey", () => {
     await page.getByRole("button", { name: "Create collection" }).click();
     await expect(page).toHaveURL(new RegExp(`/database/c/${n.collection}$`));
 
-    // A-07: today a record is a raw JSON textarea; a typed form per field is the fix.
-    await page.getByRole("link", { name: "Add record" }).click();
-    await page.getByLabel("Record JSON").fill(JSON.stringify({ title: "Hello from the walkthrough", done: false }));
-    await page.getByRole("button", { name: "Create record" }).click();
-    await expect(page).toHaveURL(/\/r\/[^/]+$/);
-    await page.getByRole("link", { name: "Back to data" }).click();
+    // A-07: a typed form per field (a text box for title, a switch for done) opens in a side sheet.
+    await page.getByRole("button", { name: "Add record" }).first().click();
+    const form = page.getByRole("form", { name: "New record" });
+    await form.getByLabel("title").fill("Hello from the walkthrough");
+    await form.getByRole("button", { name: "Create record" }).click();
     await expect(page.getByText("Hello from the walkthrough")).toBeVisible();
     await shot(page, info, "02b-records");
   });
 
   // A-03: every resource shows a Use from code panel (JavaScript SDK, Rust SDK, curl).
-  test.fixme("3. copy a working snippet from the collection's Use from code panel", async () => {
+  test("3. copy a working snippet from the collection's Use from code panel", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto(`/admin/database/c/${n.collection}`);
+    await page.getByRole("button", { name: "Use from code" }).click();
     const panel = page.getByRole("region", { name: "Use from code" });
     await expect(panel).toContainText(n.collection);
     await expect(panel).toContainText("<YOUR_API_KEY>");
   });
 
-  test("3b. an API token reads the collection over HTTP (what the snippet should say)", async () => {
+  // A-08: one dialog makes a key with read access to one collection, without knowing the scope grammar.
+  test("3b. the Create API key dialog makes a key that reads the collection over HTTP", async () => {
     const info = test.info();
     const n = names(info.project.name);
-    await page.goto("/admin/auth/keys");
-    await page.getByLabel("Token name").fill(n.token);
-    await page.getByLabel("Token scopes").fill("collections:read");
-    await page.getByRole("button", { name: /create token/i }).click();
+    await page.goto("/admin/auth/keys?new=1");
+    const form = page.getByRole("form", { name: "Create API key" });
+    await form.getByLabel("App name").fill(n.token);
+    const records = form.getByRole("group", { name: "Records" });
+    await records.getByRole("checkbox", { name: "Read records" }).check();
+    await records.getByRole("checkbox", { name: "All collections" }).uncheck();
+    await records.getByRole("checkbox", { name: n.collection }).check();
+    await expect(form).toContainText(`collections:read:${n.collection}`);
+    await form.getByRole("button", { name: "Create key" }).click();
     const secret = page.getByLabel("Secret");
     await expect(secret).toBeVisible();
     token = (await secret.innerText()).trim();
+    await expect(page.getByLabel("curl example")).toContainText("<YOUR_API_KEY>");
     await shot(page, info, "03-token");
     await page.getByRole("button", { name: "Done" }).click();
-    const res = await page.request.get(`/api/v1/collections/${n.collection}/records`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await page.request.get(`/api/v1/collections/${n.collection}/records`, { headers: { "X-API-Key": token } });
     expect(res.status(), await res.text()).toBe(200);
     expect(JSON.stringify(await res.json())).toContain("Hello from the walkthrough");
   });
@@ -166,33 +180,35 @@ test.describe.serial("first journey", () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/storage");
-    await page.getByLabel("Name", { exact: true }).fill(n.bucket);
+    await page.getByRole("button", { name: "New bucket" }).first().click();
+    await page.getByLabel(/^Name/).fill(n.bucket);
     await page.getByRole("button", { name: "Create bucket" }).click();
-    await page.getByRole("link", { name: n.bucket }).click();
+    // creating a bucket opens it; drop a file into the upload area
+    await expect(page.getByRole("heading", { name: n.bucket })).toBeVisible();
     await page.getByLabel("Choose files").setInputFiles({ name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("hello from the walkthrough\n") });
     await expect(page.getByRole("button", { name: "Select hello.txt" })).toBeVisible();
     await shot(page, info, "04-upload");
   });
 
-  // A-05: write the function in the browser from a template that reads a collection, then test it.
-  // Lands with FB-94 (branch agent/worker-fb94: New function, editor, Test panel).
-  test.fixme("5. write, deploy and test a function that reads the collection", async () => {
+  // A-05: write the function in the browser from a template that reads a collection, then test it (FB-101).
+  // The template starts on the newest collection; a deploy opens the Test tab.
+  test("5. write, deploy and test a function that reads the collection", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/functions");
-    await page.getByRole("link", { name: /new function/i }).click();
+    await page.getByRole("button", { name: /new function/i }).first().click();
     await page.getByRole("button", { name: /read a collection/i }).click();
     await page.getByRole("button", { name: /deploy/i }).click();
     await page.getByRole("tab", { name: "Test" }).click();
-    await page.getByRole("button", { name: /run/i }).click();
-    await expect(page.getByText(n.collection)).toBeVisible();
+    await page.getByRole("button", { name: /run test/i }).click();
+    await expect(page.getByLabel("Response body")).toContainText(n.collection);
   });
 
   test("5b. deploy a WebAssembly function and call it", async () => {
     const info = test.info();
     const n = names(info.project.name);
     await page.goto("/admin/functions");
-    await page.getByRole("button", { name: "Deploy function" }).click();
+    await page.getByRole("button", { name: "Upload .wasm" }).click();
     const form = page.getByRole("form", { name: "Deploy function" });
     await form.getByLabel("Name", { exact: true }).fill(n.fn);
     await form.getByLabel("WebAssembly module").setInputFiles({ name: "hello.wasm", mimeType: "application/wasm", buffer: helloWasm() });
@@ -219,7 +235,7 @@ test.describe.serial("first journey", () => {
 
   // A-04: an error shows plain words, the next step and a copyable request id, with raw JSON behind Details.
   // ErrorPanel (FB-98) does this; CollectionView still draws its own "No collection named …" line (FB-100).
-  test.fixme("6b. an error explains its fix and offers the request id", async () => {
+  test("6b. an error explains its fix and offers the request id", async () => {
     await page.goto("/admin/database/c/does_not_exist");
     const err = page.getByRole("alert");
     await expect(err).toContainText(/what to do/i);
