@@ -47,7 +47,11 @@ async fn exec(db: &Database, sql: &str) {
 
 /// Rows of environment `t` (stored as `t:<env>`); `""`: the instance-wide `default`.
 fn rows_of(t: &str) -> String {
-    let stored = if t.is_empty() { "default".to_owned() } else { format!("t:{t}") };
+    let stored = if t.is_empty() {
+        "default".to_owned()
+    } else {
+        format!("t:{t}")
+    };
     format!("SELECT count(*) FROM _forgebase_kv_entries WHERE tenant = '{stored}'")
 }
 
@@ -55,21 +59,32 @@ fn rows_of(t: &str) -> String {
 async fn one_set_router_persists_as_before() {
     let test = common::test_db().await;
     let db = test.database().clone();
-    let open = || KvService::open_routed(KvConfig::default(), Arc::new(DefaultAuthorizer), DbRouter::single(db.clone()));
+    let open = || {
+        KvService::open_routed(
+            KvConfig::default(),
+            Arc::new(DefaultAuthorizer),
+            DbRouter::single(db.clone()),
+        )
+    };
     let kv = open().await.unwrap();
     kv.exec(&tenant("acme"), "app", &cmd("SET a 1")).unwrap();
     kv.exec(&AccessContext::admin("root"), "app", &cmd("SET b 2")).unwrap();
     assert_eq!(kv.flush().await.unwrap(), 2);
     assert_eq!(kv.flush().await.unwrap(), 0);
     let again = open().await.unwrap();
-    assert_eq!(again.exec(&tenant("acme"), "app", &cmd("GET a")).unwrap(), Reply::bulk("1"));
+    assert_eq!(
+        again.exec(&tenant("acme"), "app", &cmd("GET a")).unwrap(),
+        Reply::bulk("1")
+    );
     assert_eq!(
         again.exec(&AccessContext::admin("root"), "app", &cmd("GET b")).unwrap(),
         Reply::bulk("2")
     );
     // flush_tenant writes only that tenant's keys.
     again.exec(&tenant("acme"), "app", &cmd("SET c 3")).unwrap();
-    again.exec(&AccessContext::admin("root"), "app", &cmd("SET d 4")).unwrap();
+    again
+        .exec(&AccessContext::admin("root"), "app", &cmd("SET d 4"))
+        .unwrap();
     assert_eq!(again.flush_tenant("acme").await.unwrap(), 1);
     assert_eq!(again.flush().await.unwrap(), 1);
 }
@@ -111,9 +126,18 @@ async fn keys_are_written_on_their_tenant_set_and_loaded_from_every_set() {
     kv.exec(&tenant("tb"), "app", &cmd("SET k b")).unwrap();
     kv.exec(&AccessContext::admin("root"), "app", &cmd("SET k i")).unwrap();
     assert_eq!(kv.flush().await.unwrap(), 3);
-    assert_eq!((count(&control, &rows_of("ta")).await, count(&s1, &rows_of("ta")).await), (1, 0));
-    assert_eq!((count(&control, &rows_of("tb")).await, count(&s1, &rows_of("tb")).await), (0, 1));
-    assert_eq!((count(&control, &rows_of("")).await, count(&s1, &rows_of("")).await), (1, 0));
+    assert_eq!(
+        (count(&control, &rows_of("ta")).await, count(&s1, &rows_of("ta")).await),
+        (1, 0)
+    );
+    assert_eq!(
+        (count(&control, &rows_of("tb")).await, count(&s1, &rows_of("tb")).await),
+        (0, 1)
+    );
+    assert_eq!(
+        (count(&control, &rows_of("")).await, count(&s1, &rows_of("")).await),
+        (1, 0)
+    );
 
     // A delete goes to the tenant's set too.
     kv.exec(&tenant("tb"), "app", &cmd("SET gone x")).unwrap();
@@ -131,8 +155,14 @@ async fn keys_are_written_on_their_tenant_set_and_loaded_from_every_set() {
     )
     .await;
     let back = open().await.unwrap();
-    assert_eq!(back.exec(&tenant("ta"), "app", &cmd("GET k")).unwrap(), Reply::bulk("a"));
-    assert_eq!(back.exec(&tenant("tb"), "app", &cmd("GET k")).unwrap(), Reply::bulk("b"));
+    assert_eq!(
+        back.exec(&tenant("ta"), "app", &cmd("GET k")).unwrap(),
+        Reply::bulk("a")
+    );
+    assert_eq!(
+        back.exec(&tenant("tb"), "app", &cmd("GET k")).unwrap(),
+        Reply::bulk("b")
+    );
     assert_eq!(
         back.exec(&AccessContext::admin("root"), "app", &cmd("GET k")).unwrap(),
         Reply::bulk("i")

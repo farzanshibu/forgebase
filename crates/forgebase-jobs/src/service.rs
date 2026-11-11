@@ -28,12 +28,12 @@ use crate::clock::{Clock, SystemClock};
 use crate::cron::Cron;
 use crate::error::JobError;
 use crate::hooks::{JobEventSink, RealtimeSink, ResultStore, channel};
-use crate::sets::{Table, tenant_guard};
 use crate::model::{
     ClaimRequest, ClaimedJob, Heartbeat, Job, JobEvent, JobFilter, JobPage, JobStats, JobStatus, MAX_CLAIM, MAX_PAGE,
     NewJob, NewSchedule, NewWorker, Policy, QueueStats, Resolved, Schedule, SchedulePatch, WORKER_ONLINE_MS, Worker,
     backoff_ms, check_name, check_payload, iso, jitter,
 };
+use crate::sets::{Table, tenant_guard};
 use crate::tasks::{
     Attempt, Checkpoint, JobUpdate, MAX_CHECKPOINT_BYTES, MAX_CHILDREN, MAX_INLINE_RESULT_BYTES, MAX_RESULT_BYTES,
     ParentResult, Progress, ProgressReport, WorkflowUpdate,
@@ -523,7 +523,10 @@ impl JobService {
 
     /// Jobs, newest first.
     pub async fn list(&self, ctx: &AccessContext, filter: JobFilter) -> Result<JobPage> {
-        self.at_tenant(ctx.tenant.as_deref()).await?.list_here(ctx, filter).await
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .list_here(ctx, filter)
+            .await
     }
 
     /// [`Self::list`] on this view's set.
@@ -1166,7 +1169,10 @@ impl JobService {
         lease_id: &str,
         report: ProgressReport,
     ) -> Result<Heartbeat> {
-        self.at_job(ctx, id).await?.progress_here(ctx, id, lease_id, report).await
+        self.at_job(ctx, id)
+            .await?
+            .progress_here(ctx, id, lease_id, report)
+            .await
     }
 
     /// [`Self::progress`] on this view's set.
@@ -1217,7 +1223,10 @@ impl JobService {
         lease_id: &str,
         checkpoint: &Json,
     ) -> Result<Heartbeat> {
-        self.at_job(ctx, id).await?.save_checkpoint_here(ctx, id, lease_id, checkpoint).await
+        self.at_job(ctx, id)
+            .await?
+            .save_checkpoint_here(ctx, id, lease_id, checkpoint)
+            .await
     }
 
     /// [`Self::save_checkpoint`] on this view's set.
@@ -1267,7 +1276,10 @@ impl JobService {
         lease_id: &str,
         children: Vec<NewJob>,
     ) -> Result<Vec<Job>> {
-        self.at_job(ctx, id).await?.spawn_children_here(ctx, id, lease_id, children).await
+        self.at_job(ctx, id)
+            .await?
+            .spawn_children_here(ctx, id, lease_id, children)
+            .await
     }
 
     /// [`Self::spawn_children`] on this view's set.
@@ -1316,11 +1328,20 @@ impl JobService {
     /// [`MAX_INLINE_RESULT_BYTES`] is kept in the result store (up to
     /// [`MAX_RESULT_BYTES`]).
     pub async fn complete(&self, ctx: &AccessContext, id: &str, lease_id: &str, result: Option<Json>) -> Result<Job> {
-        self.at_job(ctx, id).await?.complete_here(ctx, id, lease_id, result).await
+        self.at_job(ctx, id)
+            .await?
+            .complete_here(ctx, id, lease_id, result)
+            .await
     }
 
     /// [`Self::complete`] on this view's set.
-    pub(crate) async fn complete_here(&self, ctx: &AccessContext, id: &str, lease_id: &str, result: Option<Json>) -> Result<Job> {
+    pub(crate) async fn complete_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        lease_id: &str,
+        result: Option<Json>,
+    ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
         let text = match &result {
             Some(v) => Some(serde_json::to_string(v).map_err(|e| JobError::invalid("invalid_job", e.to_string()))?),
@@ -1393,7 +1414,10 @@ impl JobService {
         error: &str,
         retryable: bool,
     ) -> Result<Job> {
-        self.at_job(ctx, id).await?.fail_here(ctx, id, lease_id, error, retryable).await
+        self.at_job(ctx, id)
+            .await?
+            .fail_here(ctx, id, lease_id, error, retryable)
+            .await
     }
 
     /// [`Self::fail`] on this view's set.
@@ -1430,7 +1454,10 @@ impl JobService {
 
     /// Creates a recurring job.
     pub async fn create_schedule(&self, ctx: &AccessContext, new: NewSchedule) -> Result<Schedule> {
-        self.at_tenant(ctx.tenant.as_deref()).await?.create_schedule_here(ctx, new).await
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .create_schedule_here(ctx, new)
+            .await
     }
 
     /// [`Self::create_schedule`] on this view's set.
@@ -1503,11 +1530,19 @@ impl JobService {
 
     /// Changes a schedule. A new cron expression recomputes the next firing.
     pub async fn update_schedule(&self, ctx: &AccessContext, id: &str, patch: SchedulePatch) -> Result<Schedule> {
-        self.at_schedule(ctx, id).await?.update_schedule_here(ctx, id, patch).await
+        self.at_schedule(ctx, id)
+            .await?
+            .update_schedule_here(ctx, id, patch)
+            .await
     }
 
     /// [`Self::update_schedule`] on this view's set.
-    pub(crate) async fn update_schedule_here(&self, ctx: &AccessContext, id: &str, patch: SchedulePatch) -> Result<Schedule> {
+    pub(crate) async fn update_schedule_here(
+        &self,
+        ctx: &AccessContext,
+        id: &str,
+        patch: SchedulePatch,
+    ) -> Result<Schedule> {
         self.allow(ctx, Action::ManageJobs)?;
         self.schedule_visible(ctx, id).await?;
         let now = self.now();
@@ -1700,7 +1735,9 @@ impl JobService {
         let due = self
             .backend()
             .fetch_all(&Statement::new(
-                format!("SELECT 1 FROM _forgebase_job_schedules WHERE enabled = 1 AND next_run_at <= ?1{guard} LIMIT 1"),
+                format!(
+                    "SELECT 1 FROM _forgebase_job_schedules WHERE enabled = 1 AND next_run_at <= ?1{guard} LIMIT 1"
+                ),
                 params,
             ))
             .await?;

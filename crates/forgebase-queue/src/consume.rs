@@ -569,11 +569,19 @@ impl QueueService {
     /// Pulls up to `max_messages` messages. With `wait_ms`, waits (long poll)
     /// until at least one message is available or the time is up.
     pub async fn pull(&self, ctx: &AccessContext, sub: &str, req: PullRequest) -> Result<Vec<ReceivedMessage>> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.pull_here(ctx, sub, req).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .pull_here(ctx, sub, req)
+            .await
     }
 
     /// [`Self::pull`] on this view's set.
-    pub(crate) async fn pull_here(&self, ctx: &AccessContext, sub: &str, req: PullRequest) -> Result<Vec<ReceivedMessage>> {
+    pub(crate) async fn pull_here(
+        &self,
+        ctx: &AccessContext,
+        sub: &str,
+        req: PullRequest,
+    ) -> Result<Vec<ReceivedMessage>> {
         let s = self
             .sub_for(
                 &mut Db::Ro(self.backend()),
@@ -627,7 +635,10 @@ impl QueueService {
 
     /// Acknowledges deliveries: the messages are done for this subscription.
     pub async fn ack(&self, ctx: &AccessContext, sub: &str, ack_ids: &[String]) -> Result<AckResult> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.ack_here(ctx, sub, ack_ids).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .ack_here(ctx, sub, ack_ids)
+            .await
     }
 
     /// [`Self::ack`] on this view's set.
@@ -702,7 +713,10 @@ impl QueueService {
     /// Negative acknowledgement: redeliver after the retry backoff (or
     /// dead-letter when attempts are used up).
     pub async fn nack(&self, ctx: &AccessContext, sub: &str, ack_ids: &[String]) -> Result<AckResult> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.nack_here(ctx, sub, ack_ids).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .nack_here(ctx, sub, ack_ids)
+            .await
     }
 
     /// [`Self::nack`] on this view's set.
@@ -826,7 +840,10 @@ impl QueueService {
         ack_ids: &[String],
         ms: i64,
     ) -> Result<AckResult> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.modify_deadline_here(ctx, sub, ack_ids, ms).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .modify_deadline_here(ctx, sub, ack_ids, ms)
+            .await
     }
 
     /// [`Self::modify_deadline`] on this view's set.
@@ -890,7 +907,10 @@ impl QueueService {
     /// Gives back every lease `consumer` holds on `sub` without counting the
     /// attempt (a stream that closed). Returns the number released.
     pub(crate) async fn release_consumer(&self, sub: &str, consumer: &str) -> Result<u64> {
-        self.at_stored_sub(sub).await?.release_consumer_here(sub, consumer).await
+        self.at_stored_sub(sub)
+            .await?
+            .release_consumer_here(sub, consumer)
+            .await
     }
 
     /// [`Self::release_consumer`] on this view's set.
@@ -961,7 +981,10 @@ impl QueueService {
         max_messages: i64,
         max_bytes: i64,
     ) -> Result<Vec<ReceivedMessage>> {
-        self.at_stored_sub(sub).await?.stream_batch_here(sub, consumer, max_messages, max_bytes).await
+        self.at_stored_sub(sub)
+            .await?
+            .stream_batch_here(sub, consumer, max_messages, max_bytes)
+            .await
     }
 
     /// [`Self::stream_batch`] on this view's set.
@@ -989,7 +1012,10 @@ impl QueueService {
     /// To a snapshot: the acknowledgement state saved in it is restored.
     /// Outstanding leases are dropped either way.
     pub async fn seek(&self, ctx: &AccessContext, sub: &str, req: SeekRequest) -> Result<SeekResult> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.seek_here(ctx, sub, req).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .seek_here(ctx, sub, req)
+            .await
     }
 
     /// [`Self::seek`] on this view's set.
@@ -1079,7 +1105,10 @@ impl QueueService {
     /// Saves the acknowledgement state of a subscription (its cursor and the
     /// messages it still owes) for a later [`QueueService::seek`].
     pub async fn create_snapshot(&self, ctx: &AccessContext, new: NewSnapshot) -> Result<Snapshot> {
-        self.at_sub(ctx.tenant.as_deref(), &new.subscription).await?.create_snapshot_here(ctx, new).await
+        self.at_sub(ctx.tenant.as_deref(), &new.subscription)
+            .await?
+            .create_snapshot_here(ctx, new)
+            .await
     }
 
     /// [`Self::create_snapshot`] on this view's set.
@@ -1179,7 +1208,10 @@ impl QueueService {
 
     /// One snapshot.
     pub async fn snapshot(&self, ctx: &AccessContext, name: &str) -> Result<Snapshot> {
-        self.at_snapshot(ctx.tenant.as_deref(), name).await?.snapshot_here(ctx, name).await
+        self.at_snapshot(ctx.tenant.as_deref(), name)
+            .await?
+            .snapshot_here(ctx, name)
+            .await
     }
 
     /// [`Self::snapshot`] on this view's set.
@@ -1234,7 +1266,10 @@ impl QueueService {
 
     /// Deletes a snapshot.
     pub async fn delete_snapshot(&self, ctx: &AccessContext, name: &str) -> Result<()> {
-        self.at_snapshot(ctx.tenant.as_deref(), name).await?.delete_snapshot_here(ctx, name).await
+        self.at_snapshot(ctx.tenant.as_deref(), name)
+            .await?
+            .delete_snapshot_here(ctx, name)
+            .await
     }
 
     /// [`Self::delete_snapshot`] on this view's set.

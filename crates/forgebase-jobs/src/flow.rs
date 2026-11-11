@@ -62,7 +62,10 @@ impl JobService {
     /// their parents. Parents' results reach a step through
     /// [`crate::ClaimedJob::parents`] / [`crate::JobContext::parents`].
     pub async fn create_workflow(&self, ctx: &AccessContext, new: NewWorkflow) -> Result<WorkflowDetail> {
-        self.at_tenant(ctx.tenant.as_deref()).await?.create_workflow_here(ctx, new).await
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .create_workflow_here(ctx, new)
+            .await
     }
 
     /// [`Self::create_workflow`] on this view's set.
@@ -177,7 +180,10 @@ impl JobService {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<WorkflowPage> {
-        self.at_tenant(ctx.tenant.as_deref()).await?.workflows_here(ctx, status, limit, offset).await
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .workflows_here(ctx, status, limit, offset)
+            .await
     }
 
     /// [`Self::workflows`] on this view's set.

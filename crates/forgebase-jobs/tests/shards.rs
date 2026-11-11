@@ -88,11 +88,13 @@ async fn one_set_with_a_router_behaves_as_before() {
         .unwrap();
     h.clock.advance(Duration::from_secs(61));
     assert_eq!(h.svc.fire_due_schedules(&system()).await.unwrap(), 1);
-    assert_eq!(h.svc.schedule(&system(), &s.id).await.unwrap().tenant.as_deref(), Some("ta"));
+    assert_eq!(
+        h.svc.schedule(&system(), &s.id).await.unwrap().tenant.as_deref(),
+        Some("ta")
+    );
 
     // The pool over a one-set router runs jobs.
-    let registry =
-        JobRegistry::new().register("ping", |_ctx: forgebase_jobs::JobContext| async { Ok(json!("pong")) });
+    let registry = JobRegistry::new().register("ping", |_ctx: forgebase_jobs::JobContext| async { Ok(json!("pong")) });
     let pool = start_pool(
         h.svc.clone(),
         registry,
@@ -162,7 +164,10 @@ async fn jobs_live_on_the_tenant_set() {
     let (b, _) = svc.enqueue(&as_tenant("tb"), job("work")).await.unwrap();
     let (i, _) = svc.enqueue(&system(), job("work")).await.unwrap();
     let on = |db: &Database, id: &str| {
-        let (db, sql) = (db.clone(), format!("SELECT count(*) FROM _forgebase_jobs WHERE id = '{id}'"));
+        let (db, sql) = (
+            db.clone(),
+            format!("SELECT count(*) FROM _forgebase_jobs WHERE id = '{id}'"),
+        );
         async move { count(&db, &sql).await }
     };
     assert_eq!((on(&control, &a.id).await, on(&s1, &a.id).await), (1, 0));
@@ -190,7 +195,10 @@ async fn jobs_live_on_the_tenant_set() {
     let second = svc.claim(&system(), claim_req("w1", 1)).await.unwrap();
     let ids: Vec<&str> = first.iter().chain(&second).map(|c| c.job.id.as_str()).collect();
     assert_eq!(ids.len(), 2);
-    assert!(ids.contains(&b.id.as_str()), "{ids:?}: the shard's job is claimed within two rounds");
+    assert!(
+        ids.contains(&b.id.as_str()),
+        "{ids:?}: the shard's job is claimed within two rounds"
+    );
     let rest = svc.claim(&system(), claim_req("w1", 10)).await.unwrap();
     assert_eq!(rest.len(), 1);
     for c in first.iter().chain(&second).chain(&rest) {
@@ -204,7 +212,10 @@ async fn jobs_live_on_the_tenant_set() {
     // A tenant-bound worker claims on its tenant's set only.
     let (b2, _) = svc.enqueue(&as_tenant("tb"), job("work")).await.unwrap();
     let mine = svc.claim(&as_tenant("tb"), claim_req("w2", 10)).await.unwrap();
-    assert_eq!(mine.iter().map(|c| c.job.id.clone()).collect::<Vec<_>>(), vec![b2.id.clone()]);
+    assert_eq!(
+        mine.iter().map(|c| c.job.id.clone()).collect::<Vec<_>>(),
+        vec![b2.id.clone()]
+    );
     svc.release(&as_tenant("tb"), &b2.id, &mine[0].lease_id).await.unwrap();
 
     // Queue settings: on the tenant's set, mirrored to control.
@@ -272,7 +283,14 @@ async fn jobs_live_on_the_tenant_set() {
     let tc_fired = format!("SELECT count(*) FROM _forgebase_jobs WHERE schedule_id = '{}'", sc.id);
     assert_eq!(count(&s1, &tc_fired).await, 0);
     assert_eq!(
-        count(&s1, &format!("SELECT count(*) FROM _forgebase_jobs WHERE id = '{}' AND status = 'queued'", c1.id)).await,
+        count(
+            &s1,
+            &format!(
+                "SELECT count(*) FROM _forgebase_jobs WHERE id = '{}' AND status = 'queued'",
+                c1.id
+            )
+        )
+        .await,
         1
     );
 
@@ -287,8 +305,7 @@ async fn jobs_live_on_the_tenant_set() {
     router.place("tb", &s1_id, PlacementState::Active).await.unwrap();
 
     // The pool: one claim loop per set; the moving tenant's job waits.
-    let registry =
-        JobRegistry::new().register("ping", |_ctx: forgebase_jobs::JobContext| async { Ok(json!("pong")) });
+    let registry = JobRegistry::new().register("ping", |_ctx: forgebase_jobs::JobContext| async { Ok(json!("pong")) });
     let pool = start_pool(
         svc.clone(),
         registry,
@@ -311,7 +328,14 @@ async fn jobs_live_on_the_tenant_set() {
     assert!(svc.get(&system(), &pb.id).await.unwrap().worker_id.is_some());
     pool.shutdown().await;
     assert_eq!(
-        count(&s1, &format!("SELECT count(*) FROM _forgebase_jobs WHERE id = '{}' AND status = 'queued'", c1.id)).await,
+        count(
+            &s1,
+            &format!(
+                "SELECT count(*) FROM _forgebase_jobs WHERE id = '{}' AND status = 'queued'",
+                c1.id
+            )
+        )
+        .await,
         1,
         "the moving tenant's copy was not claimed"
     );
@@ -324,7 +348,10 @@ async fn jobs_live_on_the_tenant_set() {
         )
         .await
         .unwrap();
-    let wf_sql = format!("SELECT count(*) FROM _forgebase_job_workflows WHERE id = '{}'", wf.workflow.id);
+    let wf_sql = format!(
+        "SELECT count(*) FROM _forgebase_job_workflows WHERE id = '{}'",
+        wf.workflow.id
+    );
     assert_eq!((count(&s1, &wf_sql).await, count(&control, &wf_sql).await), (1, 0));
     assert_eq!(fresh.workflow(&system(), &wf.workflow.id).await.unwrap().steps.len(), 1);
 
@@ -342,7 +369,11 @@ async fn jobs_live_on_the_tenant_set() {
     exec(&s1, "DELETE FROM _forgebase_job_queues WHERE name = 'tb/bulk'").await;
     assert_eq!(svc.copy_queue_settings("tb").await.unwrap(), 2);
     assert_eq!(
-        count(&s1, "SELECT count(*) FROM _forgebase_job_queues WHERE name = 'tb/bulk' AND concurrency = 2").await,
+        count(
+            &s1,
+            "SELECT count(*) FROM _forgebase_job_queues WHERE name = 'tb/bulk' AND concurrency = 2"
+        )
+        .await,
         1
     );
     drop(sh);

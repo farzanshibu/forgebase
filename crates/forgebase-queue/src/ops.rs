@@ -128,7 +128,10 @@ impl QueueService {
 
     /// Metrics of a topic.
     pub async fn topic_metrics(&self, ctx: &AccessContext, topic: &str) -> Result<TopicMetrics> {
-        self.at_topic(ctx.tenant.as_deref(), topic).await?.topic_metrics_here(ctx, topic).await
+        self.at_topic(ctx.tenant.as_deref(), topic)
+            .await?
+            .topic_metrics_here(ctx, topic)
+            .await
     }
 
     /// [`Self::topic_metrics`] on this view's set.
@@ -177,11 +180,18 @@ impl QueueService {
     /// into the backlog without the filter (the background task reads them
     /// every poll interval, applying it).
     pub async fn subscription_metrics(&self, ctx: &AccessContext, sub: &str) -> Result<SubscriptionMetrics> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.subscription_metrics_here(ctx, sub).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .subscription_metrics_here(ctx, sub)
+            .await
     }
 
     /// [`Self::subscription_metrics`] on this view's set.
-    pub(crate) async fn subscription_metrics_here(&self, ctx: &AccessContext, sub: &str) -> Result<SubscriptionMetrics> {
+    pub(crate) async fn subscription_metrics_here(
+        &self,
+        ctx: &AccessContext,
+        sub: &str,
+    ) -> Result<SubscriptionMetrics> {
         let s = self
             .sub_for(
                 &mut Db::Ro(self.backend()),
@@ -259,7 +269,10 @@ impl QueueService {
         before: Option<i64>,
         limit: i64,
     ) -> Result<DeadLetterPage> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.dead_letters_here(ctx, sub, before, limit).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .dead_letters_here(ctx, sub, before, limit)
+            .await
     }
 
     /// [`Self::dead_letters`] on this view's set.

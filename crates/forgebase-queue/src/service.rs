@@ -673,7 +673,10 @@ impl QueueService {
         sub: &str,
         op: ResourceOp,
     ) -> Result<()> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.authorize_subscription_here(ctx, action, sub, op).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .authorize_subscription_here(ctx, action, sub, op)
+            .await
     }
 
     /// [`Self::authorize_subscription`] on this view's set.
@@ -692,7 +695,10 @@ impl QueueService {
     /// Checks that `ctx` may stream subscription `sub` and that it is a pull
     /// subscription; returns its stored name.
     pub(crate) async fn stream_subscription(&self, ctx: &AccessContext, sub: &str) -> Result<String> {
-        self.at_sub(ctx.tenant.as_deref(), sub).await?.stream_subscription_here(ctx, sub).await
+        self.at_sub(ctx.tenant.as_deref(), sub)
+            .await?
+            .stream_subscription_here(ctx, sub)
+            .await
     }
 
     /// [`Self::stream_subscription`] on this view's set.
@@ -744,7 +750,10 @@ impl QueueService {
 
     /// Creates a topic.
     pub async fn create_topic(&self, ctx: &AccessContext, new: NewTopic) -> Result<Topic> {
-        self.at_tenant(ctx.tenant.as_deref()).await?.create_topic_here(ctx, new).await
+        self.at_tenant(ctx.tenant.as_deref())
+            .await?
+            .create_topic_here(ctx, new)
+            .await
     }
 
     /// [`Self::create_topic`] on this view's set.
@@ -872,7 +881,10 @@ impl QueueService {
 
     /// One topic.
     pub async fn topic(&self, ctx: &AccessContext, name: &str) -> Result<Topic> {
-        self.at_topic(ctx.tenant.as_deref(), name).await?.topic_here(ctx, name).await
+        self.at_topic(ctx.tenant.as_deref(), name)
+            .await?
+            .topic_here(ctx, name)
+            .await
     }
 
     /// [`Self::topic`] on this view's set.
@@ -906,19 +918,19 @@ impl QueueService {
         let rows = match &ctx.tenant {
             Some(t) => {
                 self.fetch_listing(&Statement::new(
-                        format!(
-                            "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant = ?1 OR tenant IS NULL \
+                    format!(
+                        "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant = ?1 OR tenant IS NULL \
                              ORDER BY name"
-                        ),
-                        vec![t.as_str().into()],
-                    ))
-                    .await?
+                    ),
+                    vec![t.as_str().into()],
+                ))
+                .await?
             }
             None => {
                 self.fetch_listing(&Statement::raw(format!(
-                        "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant IS NULL ORDER BY name"
-                    )))
-                    .await?
+                    "SELECT {TOPIC_COLS} FROM _forgebase_queue_topics WHERE tenant IS NULL ORDER BY name"
+                )))
+                .await?
             }
         };
         let rows: Vec<TopicRow> = Row::all(&rows).map(|r| TopicRow::from_row(&r)).collect::<Result<_>>()?;
@@ -948,7 +960,10 @@ impl QueueService {
 
     /// Changes a topic's limits, schema or labels.
     pub async fn update_topic(&self, ctx: &AccessContext, name: &str, patch: TopicPatch) -> Result<Topic> {
-        self.at_topic(ctx.tenant.as_deref(), name).await?.update_topic_here(ctx, name, patch).await
+        self.at_topic(ctx.tenant.as_deref(), name)
+            .await?
+            .update_topic_here(ctx, name, patch)
+            .await
     }
 
     /// [`Self::update_topic`] on this view's set.
@@ -1032,7 +1047,10 @@ impl QueueService {
     /// Deletes a topic and its messages. A topic with subscriptions is only
     /// deleted with `force`, which deletes them too.
     pub async fn delete_topic(&self, ctx: &AccessContext, name: &str, force: bool) -> Result<()> {
-        self.at_topic(ctx.tenant.as_deref(), name).await?.delete_topic_here(ctx, name, force).await
+        self.at_topic(ctx.tenant.as_deref(), name)
+            .await?
+            .delete_topic_here(ctx, name, force)
+            .await
     }
 
     /// [`Self::delete_topic`] on this view's set.
@@ -1256,11 +1274,19 @@ impl QueueService {
     /// (`duplicate: true`). Usage is metered through the quota engine when one
     /// is attached; a refusal publishes nothing.
     pub async fn publish(&self, ctx: &AccessContext, topic: &str, messages: Vec<NewMessage>) -> Result<Vec<Published>> {
-        self.at_topic(ctx.tenant.as_deref(), topic).await?.publish_here(ctx, topic, messages).await
+        self.at_topic(ctx.tenant.as_deref(), topic)
+            .await?
+            .publish_here(ctx, topic, messages)
+            .await
     }
 
     /// [`Self::publish`] on this view's set.
-    pub(crate) async fn publish_here(&self, ctx: &AccessContext, topic: &str, messages: Vec<NewMessage>) -> Result<Vec<Published>> {
+    pub(crate) async fn publish_here(
+        &self,
+        ctx: &AccessContext,
+        topic: &str,
+        messages: Vec<NewMessage>,
+    ) -> Result<Vec<Published>> {
         self.check(
             ctx,
             Action::QueuePublish,
@@ -1369,11 +1395,20 @@ impl QueueService {
     /// those whose record the caller may not see are left out, so a page may
     /// hold fewer than `limit` items (follow `next_after`).
     pub async fn messages(&self, ctx: &AccessContext, topic: &str, after: i64, limit: i64) -> Result<MessagePage> {
-        self.at_topic(ctx.tenant.as_deref(), topic).await?.messages_here(ctx, topic, after, limit).await
+        self.at_topic(ctx.tenant.as_deref(), topic)
+            .await?
+            .messages_here(ctx, topic, after, limit)
+            .await
     }
 
     /// [`Self::messages`] on this view's set.
-    pub(crate) async fn messages_here(&self, ctx: &AccessContext, topic: &str, after: i64, limit: i64) -> Result<MessagePage> {
+    pub(crate) async fn messages_here(
+        &self,
+        ctx: &AccessContext,
+        topic: &str,
+        after: i64,
+        limit: i64,
+    ) -> Result<MessagePage> {
         self.check(
             ctx,
             Action::QueueRead,
@@ -1475,11 +1510,18 @@ impl QueueService {
     /// Creates a subscription. A webhook push subscription's signing secret is
     /// in the response (`push_secret`) and never shown again.
     pub async fn create_subscription(&self, ctx: &AccessContext, new: NewSubscription) -> Result<Subscription> {
-        self.at_topic(ctx.tenant.as_deref(), &new.topic).await?.create_subscription_here(ctx, new).await
+        self.at_topic(ctx.tenant.as_deref(), &new.topic)
+            .await?
+            .create_subscription_here(ctx, new)
+            .await
     }
 
     /// [`Self::create_subscription`] on this view's set.
-    pub(crate) async fn create_subscription_here(&self, ctx: &AccessContext, new: NewSubscription) -> Result<Subscription> {
+    pub(crate) async fn create_subscription_here(
+        &self,
+        ctx: &AccessContext,
+        new: NewSubscription,
+    ) -> Result<Subscription> {
         self.check(
             ctx,
             Action::QueueAdmin,
@@ -1666,7 +1708,10 @@ impl QueueService {
 
     /// One subscription.
     pub async fn subscription(&self, ctx: &AccessContext, name: &str) -> Result<Subscription> {
-        self.at_sub(ctx.tenant.as_deref(), name).await?.subscription_here(ctx, name).await
+        self.at_sub(ctx.tenant.as_deref(), name)
+            .await?
+            .subscription_here(ctx, name)
+            .await
     }
 
     /// [`Self::subscription`] on this view's set.
@@ -1687,12 +1732,19 @@ impl QueueService {
     /// every one with `engine:queue_read`, else those the caller owns or may
     /// list (resource keys and rules).
     pub async fn subscriptions(&self, ctx: &AccessContext, topic: Option<&str>) -> Result<Vec<Subscription>> {
-        let view = match topic { Some(t) => self.at_topic(ctx.tenant.as_deref(), t).await?, None => self.at_tenant(ctx.tenant.as_deref()).await? };
+        let view = match topic {
+            Some(t) => self.at_topic(ctx.tenant.as_deref(), t).await?,
+            None => self.at_tenant(ctx.tenant.as_deref()).await?,
+        };
         view.subscriptions_here(ctx, topic).await
     }
 
     /// [`Self::subscriptions`] on this view's set.
-    pub(crate) async fn subscriptions_here(&self, ctx: &AccessContext, topic: Option<&str>) -> Result<Vec<Subscription>> {
+    pub(crate) async fn subscriptions_here(
+        &self,
+        ctx: &AccessContext,
+        topic: Option<&str>,
+    ) -> Result<Vec<Subscription>> {
         let plain = self.allow(ctx, Action::QueueRead);
         let topic = match topic {
             Some(t) => match find_topic(&mut Db::Ro(self.backend()), ctx.tenant.as_deref(), t).await? {
@@ -1746,7 +1798,10 @@ impl QueueService {
         name: &str,
         patch: SubscriptionPatch,
     ) -> Result<Subscription> {
-        self.at_sub(ctx.tenant.as_deref(), name).await?.update_subscription_here(ctx, name, patch).await
+        self.at_sub(ctx.tenant.as_deref(), name)
+            .await?
+            .update_subscription_here(ctx, name, patch)
+            .await
     }
 
     /// [`Self::update_subscription`] on this view's set.
@@ -1886,7 +1941,10 @@ impl QueueService {
 
     /// Deletes a subscription with its deliveries, snapshots and dead letters.
     pub async fn delete_subscription(&self, ctx: &AccessContext, name: &str) -> Result<()> {
-        self.at_sub(ctx.tenant.as_deref(), name).await?.delete_subscription_here(ctx, name).await
+        self.at_sub(ctx.tenant.as_deref(), name)
+            .await?
+            .delete_subscription_here(ctx, name)
+            .await
     }
 
     /// [`Self::delete_subscription`] on this view's set.

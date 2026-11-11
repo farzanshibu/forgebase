@@ -472,7 +472,12 @@ impl Store {
 
     /// [`Store::take_dirty`] for one tenant's keys only.
     pub(crate) fn take_dirty_of(&mut self, tenant: &str) -> Vec<(KeyId, Option<Entry>)> {
-        let ids: Vec<KeyId> = self.dirty.iter().filter(|k| k.scope.tenant == tenant).cloned().collect();
+        let ids: Vec<KeyId> = self
+            .dirty
+            .iter()
+            .filter(|k| k.scope.tenant == tenant)
+            .cloned()
+            .collect();
         ids.into_iter()
             .map(|id| {
                 self.dirty.remove(&id);

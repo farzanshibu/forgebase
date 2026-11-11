@@ -22,9 +22,7 @@ use forgebase_db::shard_testing::Sharded;
 use forgebase_db::topology::PlacementState;
 use forgebase_db::{Backend, Database, DbRouter, RouterOptions, Statement, TxMode, Value, shards};
 use forgebase_jobs::ManualClock;
-use forgebase_queue::{
-    NewMessage, NewSnapshot, NewSubscription, NewTopic, PullRequest, QueueService, RecordSource,
-};
+use forgebase_queue::{NewMessage, NewSnapshot, NewSubscription, NewTopic, PullRequest, QueueService, RecordSource};
 use serde_json::json;
 
 fn tenant(t: &str) -> AccessContext {
@@ -83,13 +81,22 @@ async fn one_set_with_a_router_behaves_as_before() {
     h.svc.attach_router(DbRouter::single(h.db.clone()));
     h.svc.create_topic(&tenant("ta"), topic("orders")).await.unwrap();
     h.svc.create_topic(&admin(), topic("events")).await.unwrap();
-    h.svc.create_subscription(&tenant("ta"), sub("work", "orders")).await.unwrap();
-    h.svc.create_subscription(&tenant("ta"), sub("all", "events")).await.unwrap();
+    h.svc
+        .create_subscription(&tenant("ta"), sub("work", "orders"))
+        .await
+        .unwrap();
+    h.svc
+        .create_subscription(&tenant("ta"), sub("all", "events"))
+        .await
+        .unwrap();
     h.svc
         .publish(&tenant("ta"), "orders", vec![msg(json!({"n": 1}))])
         .await
         .unwrap();
-    h.svc.publish(&admin(), "events", vec![msg(json!({"n": 2}))]).await.unwrap();
+    h.svc
+        .publish(&admin(), "events", vec![msg(json!({"n": 2}))])
+        .await
+        .unwrap();
     h.svc.run_maintenance().await.unwrap();
     let got = h.svc.pull(&tenant("ta"), "work", pull(5)).await.unwrap();
     assert_eq!(got.len(), 1);
@@ -154,13 +161,21 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
     let topics = "SELECT count(*) FROM _forgebase_queue_topics";
     assert_eq!((count(&s1, topics).await, count(&control, topics).await), (1, 1));
     assert_eq!(
-        count(&s1, "SELECT count(*) FROM _forgebase_queue_topics WHERE name = 'tb/orders'").await,
+        count(
+            &s1,
+            "SELECT count(*) FROM _forgebase_queue_topics WHERE name = 'tb/orders'"
+        )
+        .await,
         1
     );
 
     // Subscriptions live with their topic.
-    svc.create_subscription(&tenant("tb"), sub("work", "orders")).await.unwrap();
-    svc.create_subscription(&tenant("tb"), sub("all", "events")).await.unwrap();
+    svc.create_subscription(&tenant("tb"), sub("work", "orders"))
+        .await
+        .unwrap();
+    svc.create_subscription(&tenant("tb"), sub("all", "events"))
+        .await
+        .unwrap();
     let subs_of = |db: &Database, name: &str| {
         let (db, sql) = (
             db.clone(),
@@ -168,8 +183,14 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
         );
         async move { count(&db, &sql).await }
     };
-    assert_eq!((subs_of(&s1, "tb/work").await, subs_of(&control, "tb/work").await), (1, 0));
-    assert_eq!((subs_of(&s1, "tb/all").await, subs_of(&control, "tb/all").await), (0, 1));
+    assert_eq!(
+        (subs_of(&s1, "tb/work").await, subs_of(&control, "tb/work").await),
+        (1, 0)
+    );
+    assert_eq!(
+        (subs_of(&s1, "tb/all").await, subs_of(&control, "tb/all").await),
+        (0, 1)
+    );
 
     // Publishing and pulling resolve names as on one set.
     svc.publish(&tenant("tb"), "orders", vec![msg(json!({"n": 1}))])
@@ -223,7 +244,9 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
     svc.publish(&tenant("tb"), "orders", vec![msg(json!({"n": 3}))])
         .await
         .unwrap();
-    svc.publish(&admin(), "events", vec![msg(json!({"n": 4}))]).await.unwrap();
+    svc.publish(&admin(), "events", vec![msg(json!({"n": 4}))])
+        .await
+        .unwrap();
     svc.run_maintenance().await.unwrap();
     let b = svc.backlog().await.unwrap();
     assert_eq!(b.ready, 2, "{b:?}");
@@ -242,7 +265,9 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
     )
     .await
     .unwrap();
-    svc.publish(&tenant("tc"), "jobs", vec![msg(json!({"n": 5}))]).await.unwrap();
+    svc.publish(&tenant("tc"), "jobs", vec![msg(json!({"n": 5}))])
+        .await
+        .unwrap();
     svc.run_maintenance().await.unwrap();
     assert_eq!(svc.pull(&tenant("tc"), "w", pull(1)).await.unwrap().len(), 1);
     router.place("tc", "control", PlacementState::Moving).await.unwrap();
@@ -291,7 +316,11 @@ async fn queues_live_with_their_topic_on_the_tenant_set() {
     )
     .await;
     assert_eq!(svc.relay_outbox().await.unwrap(), 1);
-    assert_eq!(svc.relay_outbox().await.unwrap(), 0, "the cursor moved in the same transaction");
+    assert_eq!(
+        svc.relay_outbox().await.unwrap(),
+        0,
+        "the cursor moved in the same transaction"
+    );
     let relayed = svc.messages(&admin(), "changes", 0, 10).await.unwrap();
     assert_eq!(relayed.items.len(), 1);
     assert_eq!(relayed.items[0].data["record_id"], "r1");
