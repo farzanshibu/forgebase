@@ -139,6 +139,19 @@ impl DataService {
         action: Action,
         name: &str,
     ) -> Result<(Collection, Option<Predicate>), DataError> {
+        self.resolve_spanning(ctx, action, name, false)
+    }
+
+    /// [`Self::resolve`]; with `span`, a privileged caller without a tenant
+    /// may name tenant data on a sharded cluster (realtime fan-in, ADR-0029
+    /// §3.5: live events from every set, no replay).
+    pub(crate) fn resolve_spanning(
+        &self,
+        ctx: &AccessContext,
+        action: Action,
+        name: &str,
+        span: bool,
+    ) -> Result<(Collection, Option<Predicate>), DataError> {
         let coll = match self.collection(name) {
             Ok(c) => c,
             Err(DataError::CollectionNotFound(_)) if !ctx.is_privileged() => {
@@ -172,6 +185,7 @@ impl DataService {
         // relation from tenant data to a shared collection.
         if self.is_sharded() {
             if record_action
+                && !span
                 && Self::tenant_placed(&coll)
                 && ctx.tenant.as_deref().is_none_or(str::is_empty)
                 && !ctx.is_system()

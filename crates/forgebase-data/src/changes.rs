@@ -291,7 +291,7 @@ impl DataService {
         action: Action,
         filter: Option<(&Expr, &HashMap<String, Json>)>,
     ) -> Result<Collection, DataError> {
-        let (coll, _) = self.resolve(ctx, action, collection)?;
+        let (coll, _) = self.resolve_spanning(ctx, action, collection, true)?;
         if let Some((expr, params)) = filter {
             let opts = self.filter_options(ctx, &coll, params);
             let cat = self.catalog();

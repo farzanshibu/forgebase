@@ -45,6 +45,7 @@ pub mod database;
 mod function_services;
 mod job_results;
 mod lock;
+pub mod shards;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -102,6 +103,11 @@ pub struct RunningServer {
     backend: BackendMarker,
     /// The bundled PostgreSQL engine, when this server runs it.
     engine: Option<Arc<forgebase_pgengine::EngineHandle>>,
+    /// The database sets (FB-171): control and, once sharded, every shard.
+    router: forgebase_db::DbRouter,
+    /// Two-phase commit recovery at start and every minute (FB-173,
+    /// PostgreSQL); dropping it stops the loop.
+    recovery: Option<forgebase_db::twophase::RecoveryTask>,
 }
 
 /// Starts a server for `config` with no in-process job handlers (jobs are
@@ -261,6 +267,16 @@ async fn start_on(
             return Err(e.into());
         }
     };
+    // FB-171 (ADR-0029 §3.5): the database sets. The router reads the
+    // topology from the migrated control database and opens every other
+    // set and the replicas; SQLite has one fixed set.
+    let router = match open_sets(&db, config, layout).await {
+        Ok(r) => r,
+        Err(e) => {
+            db.close().await;
+            return Err(e);
+        }
+    };
     // Extensions after the migrations (ADR-0029 §1.1): the bundled engine
     // creates them as forgebase_super, an external server as its own role.
     let extensions = forgebase_db::ExtensionSetup {
@@ -278,13 +294,19 @@ async fn start_on(
     }
     let instance = db.ensure_instance().await?;
 
-    let (auth, policy, job_access) = match open_auth(&db, layout, config).await {
+    let (auth, policy, job_access) = match open_auth(&db, &router, layout, config).await {
         Ok(a) => a,
         Err(e) => {
             db.close().await;
             return Err(e);
         }
     };
+    // FB-173: in-doubt two-phase transactions are resolved at start and
+    // every minute (PostgreSQL only; SQLite never prepares).
+    let recovery = (db.kind() == forgebase_db::BackendKind::Postgres).then(|| {
+        forgebase_db::twophase::spawn_recovery(router.clone(), forgebase_db::twophase::RECOVERY_INTERVAL)
+    });
+    shards::prepare_data(auth.data()).await;
     // First-run setup (FB-90): a one-time token while no administrator
     // exists. The caller prints it; it never goes to the log.
     let setup_token = match auth.begin_setup().await {
@@ -437,6 +459,11 @@ async fn start_on(
         state
     };
     let jobs = JobService::new(state.data().clone());
+    // FB-171: `ON DELETE` actions of shared records on every set, as jobs.
+    state
+        .data()
+        .set_relation_fanout(Arc::new(shards::JobFanout::new(jobs.clone())));
+    let registry = shards::register_jobs(registry, state.data().clone());
     // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
     jobs.attach_access(job_access);
     let jp = fn_policy.clone();
@@ -710,7 +737,34 @@ async fn start_on(
         setup_token,
         backend,
         engine,
+        router,
+        recovery,
     })
+}
+
+/// Opens the database sets on the migrated control database (FB-171), then
+/// migrates every shard (FB-173: control first, at most four shards at a
+/// time; a shard that fails stays `migrating` and its tenants get `503
+/// shard_migrating`).
+async fn open_sets(db: &Database, config: &Config, layout: &DataLayout) -> Result<forgebase_db::DbRouter, ServerError> {
+    let path = forgebase_auth::AuthConfig::for_data_dir(layout.root()).master_key_path;
+    let keyring = tokio::task::spawn_blocking(move || forgebase_auth::crypto::Keyring::load_or_create(&path))
+        .await
+        .map_err(|e| ServerError::Backend(e.to_string()))?
+        .map_err(|e| ServerError::Backend(e.to_string()))?;
+    let router = shards::open_router(db, config, layout.root(), keyring).await?;
+    if router.is_sharded() {
+        let report = forgebase_db::shards::migrate_sets(
+            &router,
+            Some(&layout.backups_dir()),
+            forgebase_db::migrations::multi::MultiOptions::default(),
+        )
+        .await;
+        for f in report.failed() {
+            tracing::warn!(set = %f.id, outcome = ?f.outcome, "database set not migrated; its tenants get 503 shard_migrating");
+        }
+    }
+    Ok(router)
 }
 
 /// Opens the policy service (FB-21), then the auth service (FB-20) and the
@@ -903,6 +957,7 @@ async fn open_billing(
 
 async fn open_auth(
     db: &Database,
+    router: &forgebase_db::DbRouter,
     layout: &DataLayout,
     config: &Config,
 ) -> Result<
@@ -919,7 +974,8 @@ async fn open_auth(
     cfg.trust_forwarded_for = config.auth.trust_forwarded_for;
     cfg.allow_private_outbound = config.auth.allow_private_outbound;
     let public_url = cfg.public_url.clone();
-    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(db.clone());
+    // FB-171: control's set handle (its replica reads route per §2.5).
+    let backend: Arc<dyn forgebase_db::Backend> = Arc::new(router.control());
     let policy = forgebase_policy::PolicyService::open(backend.clone())
         .await
         .map_err(|e| ServerError::Policy(e.to_string()))?;
@@ -930,6 +986,9 @@ async fn open_auth(
     let authorizer: Arc<dyn Authorizer> = Arc::new(channels);
     let auth = forgebase_auth::AuthService::open_with_data(backend, authorizer, layout.root(), cfg, None).await?;
     policy.attach_data(auth.data().clone());
+    // FB-173: schema changes on every set, and the native-policy startup
+    // sync below covers every shard. FB-171: records route per call.
+    auth.data().attach_shards(router.clone());
     policy.attach_mailer(auth.mailer().clone(), public_url);
     // FB-25: identities act in their own realm; suspensions set through the
     // auth API reach the policy engine's cached model.
@@ -1051,6 +1110,11 @@ impl RunningServer {
         &self.db
     }
 
+    /// The database sets (FB-171): control and every open shard.
+    pub fn router(&self) -> &forgebase_db::DbRouter {
+        &self.router
+    }
+
     /// The backend of this data directory (FB-148).
     pub fn backend(&self) -> BackendMarker {
         self.backend
@@ -1144,6 +1208,10 @@ impl RunningServer {
         }
         if let Err(e) = database::checkpoint(&self.db).await {
             tracing::warn!(error = %e, "final WAL checkpoint failed; the WAL will be replayed on next start");
+        }
+        drop(self.recovery.take());
+        for set in self.router.sets().into_iter().filter(|s| !s.is_control()) {
+            set.database().close().await;
         }
         self.db.close().await;
         if let Some(engine) = self.engine.take()

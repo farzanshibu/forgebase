@@ -184,8 +184,29 @@ enum Target {
 pub(crate) struct Sub {
     id: String,
     target: Target,
+    /// Cursor of the last event of `home` seen (a set's own cursor range).
     last_seq: i64,
+    /// The set this subscription's events come from (FB-171).
+    home: Home,
 }
+
+/// Where a subscription's events come from (FB-171, ADR-0029 §3.5).
+#[derive(Debug, Clone)]
+enum Home {
+    /// One set (by number): a tenant's data, a shared collection on
+    /// control, a channel. Replay works.
+    Set(u16),
+    /// Every set: a privileged subscription to tenant data without a
+    /// tenant on a sharded cluster. Live events only; the last cursor seen
+    /// per set keeps each set's events in order.
+    All(HashMap<u16, i64>),
+}
+
+/// Reset reason: the cursor is from another set than the subscription's
+/// (the tenant moved, ADR-0029 §3.3).
+const TENANT_MOVED: &str = "tenant_moved";
+/// Reset reason: a subscription spanning sets cannot replay.
+const CURSOR_UNSUPPORTED_SHARDED: &str = "cursor_unsupported_sharded";
 
 /// Records a slow consumer once per connection.
 pub(crate) fn mark_slow(svc: &RealtimeService, flag: &AtomicBool) {
@@ -325,7 +346,7 @@ impl Conn {
                 ),
             ));
         }
-        let target = match (&spec.collection, &spec.channel) {
+        let (target, home) = match (&spec.collection, &spec.channel) {
             (Some(collection), None) => {
                 if spec.record.is_some() && spec.filter.is_some() {
                     return Err(RealtimeError::invalid(
@@ -365,12 +386,19 @@ impl Conn {
                     .data
                     .subscription_target(ctx, collection, action, filter.as_ref().map(|(_, e, p)| (e, p)))
                     .map_err(|e| RealtimeError::from_data(e, ctx))?;
-                Target::Records {
-                    collection_id: coll.id,
-                    record: spec.record.clone(),
-                    filter,
-                    action,
-                }
+                let home = match self.svc.home_of(ctx, &coll).await? {
+                    Some(k) => Home::Set(k),
+                    None => Home::All(HashMap::new()),
+                };
+                (
+                    Target::Records {
+                        collection_id: coll.id,
+                        record: spec.record.clone(),
+                        filter,
+                        action,
+                    },
+                    home,
+                )
             }
             (None, Some(channel)) => {
                 if spec.record.is_some() || spec.filter.is_some() {
@@ -385,7 +413,7 @@ impl Conn {
                     .data
                     .authorize_channel(ctx, Action::ChannelSubscribe, &ch.rule_name)
                     .map_err(|e| RealtimeError::from_data(e, ctx))?;
-                Target::Channel(ch)
+                (Target::Channel(ch), Home::Set(0))
             }
             _ => {
                 return Err(RealtimeError::invalid(
@@ -398,38 +426,94 @@ impl Conn {
             id: spec.id.clone(),
             target,
             last_seq: spec.cursor.unwrap_or(-1),
+            home,
         })
     }
 
     /// Activates prepared subscriptions: record subscriptions with a cursor
-    /// replay (merged, in cursor order) from the outbox, the others start at
-    /// the head. Sends `subscribed` for each (after its replay).
+    /// replay (merged, in cursor order) from their set's outbox, the others
+    /// start at their set's head. Sends `subscribed` for each (after its
+    /// replay). A cursor from another set gets `reset` (`tenant_moved`); a
+    /// subscription spanning sets starts live (`cursor_unsupported_sharded`
+    /// when it brought a cursor).
     pub(crate) async fn activate(&mut self, subs: Vec<Sub>, reference: Option<Json>) -> Step {
-        let (_, head) = match outbox::bounds(self.svc.inner.data.backend().as_ref()).await {
-            Ok(b) => b,
-            Err(e) => {
-                for s in &subs {
-                    self.send(error_json(&reference, Some(&s.id), &e)).await?;
-                }
-                return Ok(());
-            }
+        let mut heads: HashMap<u16, i64> = HashMap::new();
+        let needed: Vec<u16> = if subs.iter().any(|s| matches!(s.home, Home::All(_))) {
+            crate::tails(&self.svc.inner.data).iter().map(|t| t.number).collect()
+        } else {
+            subs.iter()
+                .filter_map(|s| match s.home {
+                    Home::Set(k) => Some(k),
+                    Home::All(_) => None,
+                })
+                .collect()
         };
+        for k in needed {
+            if heads.contains_key(&k) {
+                continue;
+            }
+            let bounds = match self.svc.tail(k) {
+                Some(t) => outbox::bounds(t.backend.as_ref()).await,
+                None => Err(RealtimeError::Unavailable(format!("database set {k} is not open"))),
+            };
+            match bounds {
+                Ok((_, head)) => {
+                    heads.insert(k, head);
+                }
+                Err(e) => {
+                    for s in &subs {
+                        self.send(error_json(&reference, Some(&s.id), &e)).await?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let first = self.subs.len();
         let mut replay = Vec::new();
+        let mut early: HashMap<usize, &'static str> = HashMap::new();
         for mut s in subs {
             let is_records = matches!(s.target, Target::Records { .. });
-            if s.last_seq < 0 || !is_records {
-                s.last_seq = head;
-            } else {
-                replay.push(self.subs.len());
+            match &mut s.home {
+                Home::All(per_set) => {
+                    if is_records && s.last_seq >= 0 {
+                        early.insert(self.subs.len(), CURSOR_UNSUPPORTED_SHARDED);
+                    }
+                    *per_set = heads.clone();
+                    s.last_seq = -1;
+                }
+                Home::Set(k) => {
+                    let head = heads.get(k).copied().unwrap_or(0);
+                    if s.last_seq < 0 || !is_records {
+                        s.last_seq = head;
+                    } else if s.last_seq > 0 && forgebase_data::db::topology::set_number_of(s.last_seq) != *k {
+                        early.insert(self.subs.len(), TENANT_MOVED);
+                        s.last_seq = head;
+                    } else {
+                        replay.push(self.subs.len());
+                    }
+                }
             }
             self.subs.push(s);
             self.svc.inner.counters.subscriptions.fetch_add(1, Ordering::SeqCst);
         }
-        let (counts, resets) = self.replay(&replay).await?;
+        for (&i, &reason) in &early {
+            let s = &self.subs[i];
+            let cursor = match s.home {
+                Home::Set(_) => json!(s.last_seq),
+                Home::All(_) => Json::Null,
+            };
+            let v = json!({"type": "reset", "id": s.id, "reason": reason, "cursor": cursor});
+            emit(&self.svc, &self.out, &self.slow, Outbound::of(v, None)).await?;
+        }
+        let (counts, mut resets) = self.replay(&replay).await?;
+        resets.extend(early);
         for i in first..self.subs.len() {
             let s = &self.subs[i];
-            let mut v = json!({"type": "subscribed", "id": s.id, "cursor": s.last_seq});
+            let cursor = match s.home {
+                Home::Set(_) => json!(s.last_seq),
+                Home::All(_) => Json::Null,
+            };
+            let mut v = json!({"type": "subscribed", "id": s.id, "cursor": cursor});
             if let Some(r) = &reference {
                 v["ref"] = r.clone();
             }
@@ -444,25 +528,46 @@ impl Conn {
         Ok(())
     }
 
-    /// Replays outbox events after each listed subscription's `last_seq`, in
-    /// one pass in cursor order. A subscription whose cursor is unusable gets
-    /// a `reset` (and starts at the head). Returns per-subscription delivered
-    /// counts and resets.
+    /// Replays outbox events after each listed subscription's `last_seq`,
+    /// set by set, in one pass per set in cursor order. A subscription whose
+    /// cursor is unusable gets a `reset` (and starts at the head). Returns
+    /// per-subscription delivered counts and resets.
     async fn replay(
         &mut self,
         idx: &[usize],
     ) -> Result<(HashMap<usize, u64>, HashMap<usize, &'static str>), CloseReason> {
         let mut counts = HashMap::new();
         let mut resets = HashMap::new();
-        if idx.is_empty() {
-            return Ok((counts, resets));
+        let mut by_set: std::collections::BTreeMap<u16, Vec<usize>> = std::collections::BTreeMap::new();
+        for &i in idx {
+            if let Home::Set(k) = self.subs[i].home {
+                by_set.entry(k).or_default().push(i);
+            }
         }
-        let backend = self.svc.inner.data.backend().clone();
+        for (k, group) in by_set {
+            let Some(tail) = self.svc.tail(k) else {
+                tracing::warn!(set = k, "realtime replay: the database set is not open");
+                continue;
+            };
+            self.replay_set(&tail, &group, &mut counts, &mut resets).await?;
+        }
+        Ok((counts, resets))
+    }
+
+    /// [`Self::replay`] of subscriptions homed on one set.
+    async fn replay_set(
+        &mut self,
+        tail: &crate::SetTail,
+        idx: &[usize],
+        counts: &mut HashMap<usize, u64>,
+        resets: &mut HashMap<usize, &'static str>,
+    ) -> Step {
+        let backend = tail.backend.clone();
         let (min, max) = match outbox::bounds(backend.as_ref()).await {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!(error = %e, "realtime replay could not read the outbox");
-                (0, self.svc.inner.head.load(Ordering::SeqCst))
+                tracing::warn!(set = %tail.id, error = %e, "realtime replay could not read the outbox");
+                (0, self.svc.heads().get(&tail.number).copied().unwrap_or(0))
             }
         };
         let mut from = i64::MAX;
@@ -494,7 +599,7 @@ impl Conn {
             let page = match outbox::read_after(backend.as_ref(), cur, outbox::PAGE).await {
                 Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!(error = %e, "realtime replay could not read the outbox");
+                    tracing::warn!(set = %tail.id, error = %e, "realtime replay could not read the outbox");
                     break;
                 }
             };
@@ -518,15 +623,32 @@ impl Conn {
                 self.subs[i].last_seq = max;
             }
         }
-        Ok((counts, resets))
+        Ok(())
     }
 
     /// Catches up every record subscription from the outbox (after the bus
-    /// dropped events for this connection).
+    /// dropped events for this connection). A subscription spanning sets
+    /// cannot: it gets `reset` (`cursor_unsupported_sharded`) and goes on
+    /// live.
     async fn catch_up(&mut self) -> Step {
-        let idx: Vec<usize> = (0..self.subs.len())
-            .filter(|&i| matches!(self.subs[i].target, Target::Records { .. }))
-            .collect();
+        let mut idx = Vec::new();
+        for i in 0..self.subs.len() {
+            if !matches!(self.subs[i].target, Target::Records { .. }) {
+                continue;
+            }
+            match &self.subs[i].home {
+                Home::Set(_) => idx.push(i),
+                Home::All(_) => {
+                    let v = json!({
+                        "type": "reset",
+                        "id": self.subs[i].id,
+                        "reason": CURSOR_UNSUPPORTED_SHARDED,
+                        "cursor": Json::Null,
+                    });
+                    emit(&self.svc, &self.out, &self.slow, Outbound::of(v, None)).await?;
+                }
+            }
+        }
         self.replay(&idx).await.map(|_| ())
     }
 
@@ -562,13 +684,37 @@ impl Conn {
             else {
                 continue;
             };
-            if *collection_id != ev.collection_id
-                || record.as_ref().is_some_and(|r| *r != ev.record_id)
-                || ev.seq <= s.last_seq
-            {
+            if *collection_id != ev.collection_id || record.as_ref().is_some_and(|r| *r != ev.record_id) {
                 continue;
             }
-            s.last_seq = ev.seq;
+            // FB-171: each set has its own cursor range (`seq >> 40`).
+            let ev_set = forgebase_data::db::topology::set_number_of(ev.seq);
+            match &mut s.home {
+                Home::Set(k) if *k == ev_set => {
+                    if ev.seq <= s.last_seq {
+                        continue;
+                    }
+                    s.last_seq = ev.seq;
+                }
+                Home::Set(k) => {
+                    // The subscriber's tenant now writes on another set: it
+                    // moved. Follow it, and say so (the cursor changes range).
+                    if ctx.tenant.is_none() || tenant != ctx.tenant {
+                        continue;
+                    }
+                    *k = ev_set;
+                    s.last_seq = ev.seq;
+                    let v = json!({"type": "reset", "id": s.id, "reason": TENANT_MOVED, "cursor": ev.seq - 1});
+                    emit(svc, out, slow, Outbound::of(v, None)).await?;
+                }
+                Home::All(per_set) => {
+                    let last = per_set.entry(ev_set).or_insert(-1);
+                    if ev.seq <= *last {
+                        continue;
+                    }
+                    *last = ev.seq;
+                }
+            }
             // Defence in depth: never cross tenants for non-privileged callers.
             let same_tenant = ctx.is_privileged() || tenant.is_none() || tenant == ctx.tenant;
             let key = filter.as_ref().map(|(t, _, _)| t.clone());

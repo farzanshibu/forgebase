@@ -18,6 +18,16 @@
 //!   credential closes its sockets (`4001`).
 //! * **Fan-out** ([`fanout`]): optional, for channel messages and presence
 //!   across instances (Redis/Valkey pub/sub).
+//! * **Database sets** (FB-171, ADR-0029 §3.5): each set keeps its own
+//!   outbox (its cursors are in the set's identity range, `cursor >> 40` is
+//!   the set number). One dispatcher and one pruner pass per set feed the
+//!   one bus; a subscription that maps to one set (a tenant's data, or a
+//!   shared collection on control) replays from its set, and a cursor from
+//!   another set (the tenant moved) gets `reset` with reason
+//!   `tenant_moved`. A privileged subscription to tenant data without a
+//!   tenant spans every set: live events only (a cursor gets `reset` with
+//!   reason `cursor_unsupported_sharded`). Sets added later get their
+//!   dispatcher when the router reports the change.
 
 pub mod channel;
 pub mod fanout;
@@ -29,12 +39,13 @@ mod conn;
 mod error;
 mod http;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use forgebase_auth::AuthService;
+use forgebase_data::db::Backend;
 use forgebase_data::{AccessContext, Action, DataService};
 use serde::Serialize;
 use serde_json::Value as Json;
@@ -173,11 +184,18 @@ struct Inner {
     ephemeral: broadcast::Sender<Arc<Ephemeral>>,
     fanout: Option<Arc<dyn FanOut>>,
     rooms: presence::Rooms,
+    /// Newest cursor published to the bus, over every set.
     head: AtomicI64,
+    /// Newest cursor published per set number (FB-171).
+    heads: Mutex<BTreeMap<u16, i64>>,
+    /// Wakes every set's dispatcher after a commit in this process.
+    wakers: Arc<Wakers>,
     counters: Counters,
     per_principal: Mutex<HashMap<String, usize>>,
     shutdown: watch::Sender<bool>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// One dispatcher per set id (FB-171), started by the supervisor.
+    dispatchers: Mutex<HashMap<String, (JoinHandle<()>, Arc<Notify>)>>,
 }
 
 impl Drop for Inner {
@@ -185,6 +203,65 @@ impl Drop for Inner {
         for t in self.tasks.get_mut().unwrap_or_else(|p| p.into_inner()).drain(..) {
             t.abort();
         }
+        for (_, (t, _)) in self.dispatchers.get_mut().unwrap_or_else(|p| p.into_inner()).drain() {
+            t.abort();
+        }
+    }
+}
+
+/// The dispatchers' wake-ups: a commit in this process wakes every set's
+/// dispatcher (the hook does not know which set the change went to).
+#[derive(Debug, Default)]
+pub(crate) struct Wakers(Mutex<Vec<Arc<Notify>>>);
+
+impl Wakers {
+    fn add(&self, n: Arc<Notify>) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).push(n);
+    }
+
+    fn remove(&self, n: &Arc<Notify>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|x| !Arc::ptr_eq(x, n));
+    }
+
+    pub(crate) fn wake_all(&self) {
+        for n in self.0.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+            n.notify_one();
+        }
+    }
+}
+
+/// One database set's outbox (FB-171): control is set 0.
+#[derive(Debug, Clone)]
+pub(crate) struct SetTail {
+    pub(crate) id: String,
+    pub(crate) number: u16,
+    pub(crate) backend: Arc<dyn Backend>,
+}
+
+/// Every open set of `data`'s router (control first), or the one backend.
+pub(crate) fn tails(data: &DataService) -> Vec<SetTail> {
+    match data.shard_router() {
+        Some(r) => r
+            .sets()
+            .into_iter()
+            .map(|h| SetTail {
+                id: h.id().to_owned(),
+                number: h.number(),
+                backend: if h.is_control() {
+                    data.backend().clone()
+                } else {
+                    Arc::new(h)
+                },
+            })
+            .collect(),
+        None => vec![SetTail {
+            id: forgebase_data::db::topology::CONTROL_SET_ID.to_owned(),
+            number: 0,
+            backend: data.backend().clone(),
+        }],
     }
 }
 
@@ -222,9 +299,14 @@ impl RealtimeService {
         cfg: RealtimeConfig,
         fanout: Option<Arc<dyn FanOut>>,
     ) -> Result<Self, RealtimeError> {
-        let notify = Arc::new(Notify::new());
-        let (_, head) = outbox::bounds(data.backend().as_ref()).await?;
-        if !data.set_change_hook(Arc::new(outbox::OutboxHook { notify: notify.clone() })) {
+        let wakers = Arc::new(Wakers::default());
+        let mut heads = BTreeMap::new();
+        for t in tails(&data) {
+            let (_, h) = outbox::bounds(t.backend.as_ref()).await?;
+            heads.insert(t.number, h);
+        }
+        let head = heads.values().copied().max().unwrap_or(0);
+        if !data.set_change_hook(Arc::new(outbox::OutboxHook { wakers: wakers.clone() })) {
             return Err(RealtimeError::Internal(
                 "a change hook is already installed on this data service".into(),
             ));
@@ -243,16 +325,20 @@ impl RealtimeService {
                 fanout,
                 rooms: presence::Rooms::default(),
                 head: AtomicI64::new(head),
+                heads: Mutex::new(heads),
+                wakers,
                 counters: Counters::default(),
                 per_principal: Mutex::new(HashMap::new()),
                 shutdown,
                 tasks: Mutex::new(Vec::new()),
+                dispatchers: Mutex::new(HashMap::new()),
             }),
         };
         let weak = Arc::downgrade(&svc.inner);
         let mut tasks = vec![tokio::spawn(pruner(weak.clone()))];
         if svc.inner.cfg.dispatch {
-            tasks.push(tokio::spawn(dispatcher(weak.clone(), notify)));
+            svc.sync_dispatchers();
+            tasks.push(tokio::spawn(supervisor(weak.clone())));
             if let Some(f) = &svc.inner.fanout {
                 let rx = f.subscribe().await?;
                 tasks.push(tokio::spawn(fanout_receiver(weak, rx)));
@@ -268,6 +354,72 @@ impl RealtimeService {
         let _ = self.inner.shutdown.send(true);
         for t in self.inner.tasks.lock().unwrap_or_else(|p| p.into_inner()).drain(..) {
             t.abort();
+        }
+        for (_, (t, _)) in self.inner.dispatchers.lock().unwrap_or_else(|p| p.into_inner()).drain() {
+            t.abort();
+        }
+    }
+
+    /// Starts a dispatcher for every set without one and stops those of
+    /// sets that are gone (FB-171).
+    fn sync_dispatchers(&self) {
+        let current = tails(&self.inner.data);
+        let mut running = self.inner.dispatchers.lock().unwrap_or_else(|p| p.into_inner());
+        let wakers = &self.inner.wakers;
+        running.retain(|id, (h, n)| {
+            let keep = current.iter().any(|t| &t.id == id) && !h.is_finished();
+            if !keep {
+                h.abort();
+                wakers.remove(n);
+            }
+            keep
+        });
+        for t in current {
+            if running.contains_key(&t.id) {
+                continue;
+            }
+            let notify = Arc::new(Notify::new());
+            self.inner.wakers.add(notify.clone());
+            let id = t.id.clone();
+            let task = tokio::spawn(dispatcher(Arc::downgrade(&self.inner), t, notify.clone()));
+            running.insert(id, (task, notify));
+        }
+    }
+
+    /// The set with this number, if it is open.
+    pub(crate) fn tail(&self, number: u16) -> Option<SetTail> {
+        tails(&self.inner.data).into_iter().find(|t| t.number == number)
+    }
+
+    /// Newest cursor published per set number.
+    pub fn heads(&self) -> BTreeMap<u16, i64> {
+        self.inner.heads.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Where a record subscription of `ctx` to `coll` reads events from
+    /// (FB-171): one set (`Some(number)`), or every set (`None`: a
+    /// privileged caller without a tenant on a sharded cluster).
+    pub(crate) async fn home_of(
+        &self,
+        ctx: &AccessContext,
+        coll: &forgebase_data::schema::Collection,
+    ) -> Result<Option<u16>, RealtimeError> {
+        let data = &self.inner.data;
+        let Some(router) = data.shard_router().filter(|r| r.is_sharded()) else {
+            return Ok(Some(0));
+        };
+        if !(forgebase_data::is_tenant_scoped(coll) || forgebase_data::reads_tenant_data(coll)) {
+            return Ok(Some(0));
+        }
+        match ctx.tenant.as_deref().filter(|t| !t.is_empty()) {
+            Some(t) => {
+                let h = router
+                    .for_tenant(forgebase_data::db::TenantRef::new(Some(t)))
+                    .await
+                    .map_err(|e| RealtimeError::Data(e.into()))?;
+                Ok(Some(h.number()))
+            }
+            None => Ok(None),
         }
     }
 
@@ -383,23 +535,68 @@ impl RealtimeService {
     }
 }
 
-/// Tails the outbox and publishes each committed event once.
-async fn dispatcher(weak: std::sync::Weak<Inner>, notify: Arc<Notify>) {
+/// Restarts dispatchers when the router's topology changes (a set added,
+/// retired or reopened, FB-171). Without a router there is one set.
+async fn supervisor(weak: std::sync::Weak<Inner>) {
+    let (mut changes, mut shutdown) = {
+        let Some(inner) = weak.upgrade() else { return };
+        (
+            inner.data.shard_router().map(forgebase_data::db::DbRouter::subscribe),
+            inner.shutdown.subscribe(),
+        )
+    };
+    let Some(changes) = changes.as_mut() else {
+        let _ = shutdown.changed().await;
+        return;
+    };
+    loop {
+        tokio::select! {
+            r = changes.changed() => if r.is_err() { return },
+            _ = shutdown.changed() => return,
+        }
+        let Some(inner) = weak.upgrade() else { return };
+        RealtimeService { inner }.sync_dispatchers();
+    }
+}
+
+/// Tails one set's outbox and publishes each committed event once.
+async fn dispatcher(weak: std::sync::Weak<Inner>, tail: SetTail, notify: Arc<Notify>) {
+    let mut last = match weak.upgrade() {
+        Some(inner) => {
+            let known = inner
+                .heads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&tail.number)
+                .copied();
+            match known {
+                Some(h) => h,
+                // A set opened after start: from its head now.
+                None => outbox::bounds(tail.backend.as_ref()).await.map_or(0, |(_, h)| h),
+            }
+        }
+        None => return,
+    };
     loop {
         let Some(inner) = weak.upgrade() else { return };
         let poll = inner.cfg.poll_interval;
         let mut shutdown = inner.shutdown.subscribe();
         if *shutdown.borrow() {
+            inner.wakers.remove(&notify);
             return;
         }
-        let mut last = inner.head.load(Ordering::SeqCst);
         loop {
-            match outbox::read_after(inner.data.backend().as_ref(), last, outbox::PAGE).await {
+            match outbox::read_after(tail.backend.as_ref(), last, outbox::PAGE).await {
                 Ok(events) => {
                     let n = events.len();
                     for e in events {
                         last = e.seq;
-                        inner.head.store(last, Ordering::SeqCst);
+                        inner
+                            .heads
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(tail.number, last);
+                        inner.head.fetch_max(last, Ordering::SeqCst);
                         inner.counters.events_dispatched.fetch_add(1, Ordering::SeqCst);
                         metrics::counter!("forgebase_realtime_events_dispatched_total").increment(1);
                         let _ = inner.bus.send(Arc::new(e));
@@ -409,7 +606,7 @@ async fn dispatcher(weak: std::sync::Weak<Inner>, notify: Arc<Notify>) {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "realtime dispatcher could not read the outbox");
+                    tracing::warn!(set = %tail.id, error = %e, "realtime dispatcher could not read the outbox");
                     break;
                 }
             }
@@ -433,10 +630,13 @@ async fn pruner(weak: std::sync::Weak<Inner>) {
         tokio::time::sleep(interval).await;
         let Some(inner) = weak.upgrade() else { return };
         let cutoff = time_ago(inner.cfg.retention);
-        match outbox::prune(inner.data.backend().as_ref(), &cutoff, inner.cfg.max_retained_events).await {
-            Ok(0) => {}
-            Ok(n) => tracing::debug!(deleted = n, "pruned realtime outbox"),
-            Err(e) => tracing::warn!(error = %e, "realtime outbox pruning failed"),
+        // FB-171: every set prunes its own outbox (per-set table).
+        for t in tails(&inner.data) {
+            match outbox::prune(t.backend.as_ref(), &cutoff, inner.cfg.max_retained_events).await {
+                Ok(0) => {}
+                Ok(n) => tracing::debug!(set = %t.id, deleted = n, "pruned realtime outbox"),
+                Err(e) => tracing::warn!(set = %t.id, error = %e, "realtime outbox pruning failed"),
+            }
         }
     }
 }
