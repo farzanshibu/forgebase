@@ -478,7 +478,7 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
             }
         }
     }
-    ctx.hooks.prepare_target(&rec.tenant, &target).await?;
+    ctx.hooks.prepare_target(&rec.tenant, &source, &target).await?;
     // Row filters need their columns in the replica identity.
     for t in plan.tables.iter().filter(|t| t.identity_full) {
         let q = t.qualified();

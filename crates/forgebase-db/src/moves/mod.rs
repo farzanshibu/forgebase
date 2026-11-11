@@ -227,8 +227,13 @@ pub trait MoveHooks: Send + Sync + std::fmt::Debug {
     /// Before the copy: objects the target needs that are not rows (for
     /// example the tenant's direct-login roles). The engine itself copies
     /// pgmq queues and partial indexes.
-    fn prepare_target<'a>(&'a self, tenant: &'a str, target: &'a SetHandle) -> BoxFuture<'a, Result<(), MoveError>> {
-        let _ = (tenant, target);
+    fn prepare_target<'a>(
+        &'a self,
+        tenant: &'a str,
+        source: &'a SetHandle,
+        target: &'a SetHandle,
+    ) -> BoxFuture<'a, Result<(), MoveError>> {
+        let _ = (tenant, source, target);
         Box::pin(async { Ok(()) })
     }
 
