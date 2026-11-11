@@ -1876,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "forgebase-topology-tests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "forgebase-auth",
  "forgebase-core",
