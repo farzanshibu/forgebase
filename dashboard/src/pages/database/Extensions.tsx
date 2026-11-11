@@ -12,14 +12,7 @@ import { SkeletonTable } from "../../components/Skeleton";
 import { Button, ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
-
-/** Who manages an extension, in plain words. */
-export function managedWords(by: string): string {
-  if (by === "api") return "You (here)";
-  if (by === "schema") return "ForgeBase schema";
-  if (by.startsWith("feature:")) return `Feature: ${by.slice("feature:".length)}`;
-  return by;
-}
+import { managedWords } from "./pgHelpers";
 
 const removable = (e: ExtensionInfo) => e.managed_by === "api" && !!e.installed_version;
 

@@ -114,7 +114,7 @@ export default function CollectionGrid({ collection, collections }: { collection
       {loading && !data && !error && <SkeletonTable rows={5} columns={fields.length + 3} label="Loading records" />}
       {data && items.length === 0 && (
         filtered ? (
-          <EmptyState compact title="No records match" why="Change the filter or the search, or clear them to see every record." action={<Button onClick={() => setState({ page: "1", filter: "", search: "", fuzzy: "", ft: "" })}>Clear filter</Button>} />
+          <EmptyState compact title="No records match this filter" why="Change the filter or the search, or clear them to see every record." action={<Button onClick={() => setState({ page: "1", filter: "", search: "", fuzzy: "", ft: "" })}>Clear filter</Button>} />
         ) : (
           <EmptyState title="No records yet" why={`Records are the rows of ${name}. Add the first one with the form, or import many from the Import / export tab.`} action={<Button tone="primary" onClick={() => setState({ record: "new" })}>Add record</Button>} docs="docs/database.md" />
         )

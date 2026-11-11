@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { Input } from "panelui-web/input";
 import { Table } from "panelui-web/table";
-import { createDbLogin, deleteDbLogin, listDbLogins, rotateDbLogin, type DbLogin, type LoginSecret } from "../../api";
+import { createDbLogin, deleteDbLogin, listDbLogins, rotateDbLogin, type LoginSecret } from "../../api";
 import { Check } from "../../components/controls";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CreateSheet, DetailSheet } from "../../components/CreateSheet";
@@ -17,19 +17,12 @@ import { HelpTip } from "../../components/HelpTip";
 import { SkeletonTable } from "../../components/Skeleton";
 import { Button, CopyButton, ErrorView } from "../../components/ui";
 import { fieldErrors } from "../../errors";
+import { accessWords, seesNothing } from "./pgHelpers";
 import { useCreateParam, useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 
 const NAME = /^[a-z][a-z0-9_]{0,39}$/;
 const PRINCIPAL = /^(user:[^/\s]+\/[^\s]+|service:[^\s]+)$/;
-
-/** What a login can do, in plain words. */
-export function accessWords(l: Pick<DbLogin, "admin" | "readonly">): string {
-  return l.admin ? "Administrator (SQL editor rights)" : l.readonly ? "Read only" : "Read and write";
-}
-
-/** The login sees nothing: its principal or tenant is gone. Admin logins have no claims by design. */
-export const seesNothing = (l: Pick<DbLogin, "admin" | "has_claims">) => !l.admin && !l.has_claims;
 
 /** Shows a new password once. Closing it is the only way to dismiss: there is no second look. */
 function SecretSheet({ secret, onClose }: { secret: LoginSecret | undefined; onClose: () => void }) {

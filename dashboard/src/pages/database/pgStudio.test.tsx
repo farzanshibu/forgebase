@@ -12,9 +12,7 @@ import type { TableInfo } from "../../api";
 import { expandStar, secretRefusal } from "./sqlSecrets";
 import { sqlBody } from "./sqlRequest";
 import { fuzzyThresholdError } from "./values";
-import { widens, isGenerated } from "./Policies";
-import { accessWords, seesNothing } from "./Logins";
-import { managedWords } from "./Extensions";
+import { widens, isGenerated, accessWords, seesNothing, managedWords } from "./pgHelpers";
 import { showSqliteNotice, SQLITE_NOTICE } from "./info";
 
 afterEach(() => {
