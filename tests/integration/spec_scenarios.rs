@@ -2189,8 +2189,8 @@ fn scenario_23_rebuild_derived_indexes() {
 
     // On pgvector (FB-162) the HNSW index lives in the database: there are no
     // derived files, and a restart keeps the index as it is.
-    let pgvector =
-        fb.admin("GET", "/api/v1/vector/collections/kb/stats", None).json()["indexes"][0]["engine"] == "pgvector";
+    let pgvector = fb.admin("GET", "/api/v1/vector/collections/kb/stats", None).json()["indexes"][0]["engine"]
+        == "pgvector";
 
     // Offline: the derived files are deleted; the next start rebuilds them.
     fb.stop();
