@@ -474,7 +474,11 @@ impl Topo {
     /// Whether `set` takes new tenants (`PATCH /shards/{id}`).
     pub async fn takes_tenants(&self, set: &str, on: bool) {
         let r = self
-            .adm("PATCH", &format!("{BASE}/shards/{set}"), Some(json!({"hosts_tenants": on})))
+            .adm(
+                "PATCH",
+                &format!("{BASE}/shards/{set}"),
+                Some(json!({"hosts_tenants": on})),
+            )
             .await;
         assert_eq!(r.status, 200, "hosts_tenants of {set}: {}", r.text());
     }

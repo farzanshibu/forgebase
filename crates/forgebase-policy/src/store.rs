@@ -460,7 +460,10 @@ impl PolicyService {
             envs.push(json!({"id": eid, "name": e}));
         }
         self.write(stmts).await?;
-        let env_ids: Vec<String> = envs.iter().filter_map(|e| e["id"].as_str().map(str::to_owned)).collect();
+        let env_ids: Vec<String> = envs
+            .iter()
+            .filter_map(|e| e["id"].as_str().map(str::to_owned))
+            .collect();
         if let Err(e) = self.place_environments(&id, &env_ids).await {
             // Without a placement the project would be half made: undo it.
             let _ = self

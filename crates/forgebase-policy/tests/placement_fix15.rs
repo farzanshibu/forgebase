@@ -88,7 +88,10 @@ async fn new_environments_are_placed_per_the_policy() {
         sets.push(on[0].clone());
         projects.push(p);
     }
-    assert_eq!(sets, vec!["control".to_owned(), shard_ids[0].clone(), shard_ids[1].clone()]);
+    assert_eq!(
+        sets,
+        vec!["control".to_owned(), shard_ids[0].clone(), shard_ids[1].clone()]
+    );
 
     // `POST environments` follows its project, also on a shard.
     for (p, expect) in projects.iter().zip(&sets) {
