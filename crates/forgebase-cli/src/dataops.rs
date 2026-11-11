@@ -13,9 +13,10 @@ use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use forgebase_backup::manifest::Manifest;
 use forgebase_backup::restore::{self, RestoreOptions};
+use forgebase_backup::topology::{self, ClusterBackupOptions, ClusterRestoreOptions, NodeSource, SetSource};
 use forgebase_backup::transfer::{self, ExportOptions, Format, ImportOptions, OnConflict};
 use forgebase_backup::{BackupOptions, DumpPlan, PgSource, Retention, SnapshotStore, backup};
-use forgebase_core::{Config, DataLayout};
+use forgebase_core::{BackupSource, Config, DataLayout};
 use forgebase_data::{DataService, DefaultAuthorizer};
 use forgebase_db::Database;
 use forgebase_server::database::{self, Access, BackendMarker, Create, PrimaryDatabase};
@@ -148,6 +149,17 @@ struct CreateArgs {
     /// apart from the data it protects.
     #[arg(long)]
     include_master_key: bool,
+    /// Back up every set of a cluster with replicas or shards (PostgreSQL on
+    /// the bundled engine): one backup per set under the destination, with a
+    /// combined manifest holding the placement epoch. Without a destination
+    /// it goes to `<data dir>/backups/clusters/<UTC time>`.
+    #[arg(long)]
+    cluster: bool,
+    /// With --cluster: copy each set from its `primary` or from a healthy
+    /// `replica` (default: `[backup] source`). A set without a healthy
+    /// replica is copied from its primary and the manifest says so.
+    #[arg(long, value_name = "primary|replica")]
+    source: Option<BackupSource>,
     /// Snapshots: always keep the newest N (deletes the rest after the backup).
     #[arg(long, value_name = "N")]
     keep_last: Option<usize>,
@@ -196,13 +208,13 @@ enum BackupCommand {
 
 fn resolve_backup(store: &SnapshotStore, spec: &str) -> anyhow::Result<PathBuf> {
     let as_path = Path::new(spec);
-    if as_path.join(forgebase_backup::manifest::MANIFEST).is_file() {
+    if as_path.join(forgebase_backup::manifest::MANIFEST).is_file() || topology::is_cluster_backup(as_path) {
         return Ok(as_path.to_path_buf());
     }
     match store.resolve(spec) {
         Ok(s) => Ok(s.path),
         Err(e) if as_path.is_dir() => bail!(
-            "{} is not a ForgeBase backup (no MANIFEST.json); {e}",
+            "{} is not a ForgeBase backup (no MANIFEST.json or CLUSTER.json); {e}",
             as_path.display()
         ),
         Err(e) => Err(e.into()),
@@ -248,6 +260,9 @@ pub async fn run_backup(g: &GlobalArgs, cli: BackupCli) -> anyhow::Result<ExitCo
         }
         Some(BackupCommand::Verify { target, json: as_json }) => {
             let path = resolve_backup(&store, &target)?;
+            if topology::is_cluster_backup(&path) {
+                return verify_cluster_cli(&config, &layout, &path, as_json).await;
+            }
             let report = forgebase_backup::verify_with(
                 &path,
                 &forgebase_backup::VerifyOptions {
@@ -324,7 +339,15 @@ async fn create(
     store: &SnapshotStore,
     a: CreateArgs,
 ) -> anyhow::Result<ExitCode> {
+    if a.source.is_some() && !a.cluster {
+        bail!("--source applies to --cluster");
+    }
     let db = open_read_only(config, layout).await?;
+    if a.cluster {
+        let out = cluster_backup(config, layout, &db, &a).await;
+        db.close().await;
+        return out;
+    }
     let opts = BackupOptions {
         include_indexes: !a.no_indexes,
         include_master_key: a.include_master_key,
@@ -365,6 +388,277 @@ async fn create(
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// --------------------------------------------------------- cluster backup
+
+/// A data directory relative to the data directory root: `postgres/data`
+/// or `postgres/nodes/<name>/data`.
+fn node_data_dir(name: Option<&str>) -> String {
+    match name {
+        None | Some("primary") => "postgres/data".to_owned(),
+        Some(n) => format!("postgres/nodes/{n}/data"),
+    }
+}
+
+/// How the tools reach a node of this host that is running: its own socket,
+/// as `role`.
+fn local_node_source(
+    layout: &DataLayout,
+    base: &PgSource,
+    secrets: &forgebase_pgengine::RoleSecrets,
+    name: &str,
+    role: forgebase_pgengine::Role,
+) -> anyhow::Result<PgSource> {
+    use forgebase_backup::{Password, pg};
+    let data = node_data_dir(Some(name));
+    let (socket, port) = pg::postmaster_socket(&layout.root().join(&data)).with_context(|| {
+        format!("node {name} is not running here (no live postmaster in {data}); start the server so its nodes run")
+    })?;
+    let password = secrets
+        .password(role)
+        .with_context(|| format!("roles.secret has no password for {}", role.name()))?;
+    Ok(PgSource::managed(
+        base.engine_root.clone(),
+        base.version.clone(),
+        socket,
+        port,
+        role.name(),
+        Password::new(password),
+        database::engine_layout(layout).postgres_dir(),
+    ))
+}
+
+/// `forgebase backup --cluster`: every set of the topology, each from its
+/// primary or a healthy replica.
+async fn cluster_backup(
+    config: &Config,
+    layout: &DataLayout,
+    primary: &PrimaryDatabase,
+    a: &CreateArgs,
+) -> anyhow::Result<ExitCode> {
+    use forgebase_db::topology::{self as dbtopo, NodeKind, NodeRole, NodeState, SetState};
+    use forgebase_pgengine::Role;
+
+    if a.keep_last.is_some() || a.max_age_days.is_some() {
+        bail!("--keep-last and --max-age-days apply to snapshots; a cluster backup is not a snapshot");
+    }
+    let Some(control_pg) = pg_source(config, layout, primary).filter(PgSource::is_managed) else {
+        bail!(
+            "--cluster backs up PostgreSQL on the bundled engine; SQLite and external servers have one set: use \
+             `forgebase backup` (or pg_dump on the external server's own tools)"
+        );
+    };
+    let source = a.source.unwrap_or(config.backup.source);
+    let secrets = forgebase_pgengine::RoleSecrets::load(&database::engine_layout(layout).secrets_file())
+        .ok()
+        .flatten()
+        .context("roles.secret is missing: the bundled engine has not been started in this data directory")?;
+    let topo = dbtopo::load(primary.db()).await?;
+
+    let mut sets = Vec::new();
+    let mut opened: Vec<Database> = Vec::new();
+    for set in topo.sets.iter().filter(|s| s.state != SetState::Retired) {
+        let nodes: Vec<&dbtopo::DbNode> = topo
+            .nodes_of(&set.id)
+            .filter(|n| n.state != NodeState::Retired)
+            .collect();
+        let row = nodes.iter().find(|n| n.role == NodeRole::Primary);
+        let (src, data_dir, db) = if set.is_control() {
+            if let Some(r) = row
+                && r.kind != NodeKind::Local
+            {
+                bail!("the control primary {} is not a local node", r.name);
+            }
+            let name = row.map(|r| r.name.as_str());
+            (control_pg.clone(), node_data_dir(name), primary.db().clone())
+        } else {
+            let Some(r) = row else {
+                bail!("set {} has no primary node", set.name);
+            };
+            if r.kind != NodeKind::Local {
+                bail!(
+                    "the primary {} of set {} runs on another host ({}): back it up there (pg_basebackup on that \
+                     host, or `forgebase backup` of its own data directory) - a cluster backup copies the sets \
+                     this host runs",
+                    r.name,
+                    set.name,
+                    r.kind
+                );
+            }
+            let src = local_node_source(layout, &control_pg, &secrets, &r.name, Role::Super)?;
+            let url = shard_url(&src, &secrets)?;
+            let mut opts = forgebase_db::DbOptions::from_config_target(
+                &config.database,
+                forgebase_db::DbTarget::postgres(url, true),
+            );
+            opts.read_pool_size = 1;
+            let db = Database::open(opts.read_only())
+                .await
+                .with_context(|| format!("cannot open the primary {} of set {}", r.name, set.name))?;
+            opened.push(db.clone());
+            (src, node_data_dir(Some(&r.name)), db)
+        };
+        let primary_name = row.map_or_else(|| "primary".to_owned(), |r| r.name.clone());
+        let mut replicas = Vec::new();
+        if source == BackupSource::Replica {
+            for n in nodes
+                .iter()
+                .filter(|n| n.role == NodeRole::Replica && n.kind == NodeKind::Local && n.state == NodeState::Streaming)
+            {
+                match local_node_source(layout, &control_pg, &secrets, &n.name, Role::Replicator) {
+                    Ok(pg) => replicas.push(NodeSource {
+                        name: n.name.clone(),
+                        pg,
+                        data_dir: None,
+                    }),
+                    Err(e) => tracing::warn!(node = %n.name, error = %e, "replica not usable as a backup source"),
+                }
+            }
+        }
+        sets.push(SetSource {
+            set: set.clone(),
+            db,
+            primary: NodeSource {
+                name: primary_name,
+                pg: src,
+                data_dir: Some(data_dir),
+            },
+            replicas,
+        });
+    }
+
+    let dest = match &a.dest {
+        Some(d) => std::path::absolute(d)?,
+        None => layout
+            .backups_dir()
+            .join("clusters")
+            .join(forgebase_core::now_rfc3339().replace([':', '.'], "-")),
+    };
+    let result = topology::create_cluster(
+        primary.db(),
+        layout,
+        &dest,
+        ClusterBackupOptions {
+            base: BackupOptions {
+                include_indexes: !a.no_indexes,
+                include_master_key: a.include_master_key,
+                label: a.label.clone(),
+                ..BackupOptions::default()
+            },
+            source,
+            sets,
+        },
+    )
+    .await;
+    for db in opened {
+        db.close().await;
+    }
+    let m = result?;
+    if a.json {
+        print_json(&json!({ "path": dest, "manifest": m }))?;
+    } else {
+        println!(
+            "cluster backup written to {}\n  {} set(s), {} file(s), {}, topology epoch {}, source {}",
+            dest.display(),
+            m.sets.len(),
+            m.total_files(),
+            human_bytes(m.total_bytes()),
+            m.topology_epoch,
+            m.source
+        );
+        for e in &m.sets {
+            println!(
+                "  {:<12} {:<9} from {} ({}), timeline {}, end LSN {}, schema v{}",
+                e.name,
+                e.kind.as_str(),
+                e.node,
+                e.role.as_str(),
+                e.timeline.map_or_else(|| "-".to_owned(), |t| t.to_string()),
+                e.end_lsn.as_deref().unwrap_or("-"),
+                e.schema_version
+            );
+        }
+        for w in &m.warnings {
+            println!("  [warn] {w}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The URL that opens a shard primary's `forgebase` database as the
+/// superuser over its socket (for reading its schema version).
+fn shard_url(src: &PgSource, secrets: &forgebase_pgengine::RoleSecrets) -> anyhow::Result<String> {
+    use forgebase_backup::PgEndpoint;
+    let PgEndpoint::Managed {
+        socket_dir, port, user, ..
+    } = &src.endpoint
+    else {
+        bail!("not a bundled node");
+    };
+    let password = secrets
+        .password(forgebase_pgengine::Role::Super)
+        .context("roles.secret has no superuser password")?;
+    let enc = |v: &str| {
+        v.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(b).to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect::<String>()
+    };
+    Ok(format!(
+        "postgres://{}:{}@localhost/forgebase?host={}&port={port}",
+        enc(user),
+        enc(password),
+        enc(&socket_dir.display().to_string())
+    ))
+}
+
+async fn verify_cluster_cli(
+    config: &Config,
+    layout: &DataLayout,
+    path: &Path,
+    as_json: bool,
+) -> anyhow::Result<ExitCode> {
+    let report = topology::verify_cluster(
+        path,
+        &forgebase_backup::VerifyOptions {
+            pg: pg_tools(config, layout).await,
+            tmp: Some(layout.tmp_dir()),
+        },
+    )
+    .await;
+    if as_json {
+        print_json(&serde_json::to_value(&report)?)?;
+    } else {
+        println!(
+            "{}: {} set(s), {} file(s), {} checked",
+            path.display(),
+            report.sets.len(),
+            report.files_checked,
+            human_bytes(report.bytes_checked)
+        );
+        for w in &report.warnings {
+            println!("[warn] {w}");
+        }
+        for p in &report.problems {
+            println!("[FAIL] {p}");
+        }
+        println!(
+            "{}",
+            if report.ok {
+                "cluster backup is valid"
+            } else {
+                "cluster backup is NOT valid"
+            }
+        );
+    }
+    Ok(if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 // ----------------------------------------------------------------- restore
@@ -414,11 +708,14 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
         );
         return Ok(ExitCode::SUCCESS);
     }
-    let Some(source) = cli.source else {
+    let Some(source) = cli.source.clone() else {
         bail!("name a backup directory, a snapshot id, `latest` or a time (or use --recover)");
     };
     let store = SnapshotStore::new(&layout);
     let path = resolve_backup(&store, &source)?;
+    if topology::is_cluster_backup(&path) {
+        return restore_cluster_cli(&config, &layout, &path, cli).await;
+    }
     let manifest = Manifest::read(&path)?;
     let engine = manifest.engine_info();
     let target = restore_marker(&config, &layout, &engine)?;
@@ -469,6 +766,76 @@ pub async fn run_restore(g: &GlobalArgs, cli: RestoreCli) -> anyhow::Result<Exit
             println!("  PostgreSQL replays its WAL when the server starts, so the first start takes a moment longer");
         }
         println!("start the server with `forgebase serve`; run `forgebase doctor` to check the result");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `forgebase restore` of a cluster backup: every set, offline.
+async fn restore_cluster_cli(
+    config: &Config,
+    layout: &DataLayout,
+    path: &Path,
+    cli: RestoreCli,
+) -> anyhow::Result<ExitCode> {
+    let cm = topology::ClusterManifest::read(path)?;
+    let control = cm.control().context("the cluster backup has no control set")?;
+    let engine = Manifest::read(&path.join(&control.dir))?.engine_info();
+    let target = restore_marker(config, layout, &engine)?;
+    let report = topology::restore_cluster(
+        path,
+        layout,
+        ClusterRestoreOptions {
+            base: RestoreOptions {
+                force: cli.force,
+                master_key: cli.master_key,
+                allow_missing_key: cli.allow_missing_key,
+                skip_indexes: cli.no_indexes,
+                pg: pg_tools(config, layout).await,
+                crash_after: None,
+            },
+            ..ClusterRestoreOptions::default()
+        },
+    )
+    .await?;
+    database::write_marker(layout, target)?;
+    if cli.json {
+        print_json(&json!({ "source": path, "report": report }))?;
+    } else {
+        println!(
+            "restored cluster backup {} into {}\n  {} set(s), {} file(s), {}, topology epoch {}; master key: {}",
+            path.display(),
+            layout.root().display(),
+            report.sets.len(),
+            report.files,
+            human_bytes(report.bytes),
+            report.topology_epoch,
+            report.master_key
+        );
+        for s in &report.sets {
+            println!(
+                "  {:<12} schema v{} -> {}",
+                s.name,
+                s.schema_version,
+                s.data_dir.as_deref().unwrap_or("(loaded into its server)")
+            );
+        }
+        if let Some(prev) = &report.previous_data {
+            println!("  previous data kept in {}", prev.display());
+        }
+        for r in &report.moved_aside {
+            println!("  moved aside (stale after the restore): {r}");
+        }
+        for r in &report.replicas {
+            println!("  replica {} ({}) needs a rebuild", r.node, r.kind);
+        }
+        for w in &report.warnings {
+            println!("  note: {w}");
+        }
+        println!(
+            "start the server with `forgebase serve`; replicas are rebuilt and every set is brought to the \
+             schema head once the restored control database runs ({} lists the work)",
+            report.pending_file.display()
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

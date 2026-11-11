@@ -168,13 +168,16 @@ pub struct PgInstance {
 }
 
 pub fn engine_config(dir: &Path) -> EngineConfig {
-    EngineConfig {
+    let mut cfg = EngineConfig {
         source: EngineSource::Dir(dir.to_path_buf()),
         unsafe_fast: true,
         ready_timeout: std::time::Duration::from_secs(60),
         stop_timeout: std::time::Duration::from_secs(20),
         ..EngineConfig::default()
-    }
+    };
+    // A backup taken on a standby needs full-page writes (the fast test mode turns them off).
+    cfg.settings.insert("full_page_writes".into(), "on".into());
+    cfg
 }
 
 pub fn pg_source_of(engine: &EngineHandle, root: &Path) -> PgSource {
