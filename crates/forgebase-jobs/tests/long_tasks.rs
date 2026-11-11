@@ -19,9 +19,9 @@ use common::{Harness, claim_one, claim_req, harness, harness_with, system, wait_
 use forgebase_data::schema::Collection;
 use forgebase_data::{AccessContext, Action, Authorizer, Decision};
 use forgebase_jobs::{
-    Clock, FailurePolicy, HandlerError, Job, JobChannelAuthorizer, JobContext, JobRegistry, JobService, JobStatus,
+    Clock, FailurePolicy, HandlerError, Job, JobAccess, JobChannelAuthorizer, JobContext, JobRegistry, JobService, JobStatus,
     MemoryResultStore, MemorySink, NewJob, NewStep, NewWorkflow, PoolConfig, ProgressReport, QueueSettings, RatePeriod,
-    WorkflowStatus, channel, start_pool,
+    READ_ALL_KEY, WorkflowStatus, channel, start_pool,
 };
 use http_body_util::BodyExt;
 use serde_json::{Value as Json, json};
@@ -158,7 +158,18 @@ async fn sse(app: &Router, channel: &str) -> Result<Sse, StatusCode> {
 
 #[tokio::test]
 async fn progress_streams_to_a_realtime_subscriber_and_only_to_readers() {
-    let h = harness_with(Arc::new(JobChannelAuthorizer::new(Arc::new(ReaderOnly)))).await;
+    // FB-142: the reader may watch jobs it did not create with
+    // `engine:read_jobs:all`; the channel authorizer shares the service's state.
+    let access = JobAccess::new();
+    access.attach_permissions(Arc::new(|ctx: &AccessContext, key: &str| {
+        key == READ_ALL_KEY && ctx.actor() == "user:users/reader"
+    }));
+    let h = harness_with(Arc::new(JobChannelAuthorizer::with_access(
+        Arc::new(ReaderOnly),
+        access.clone(),
+    )))
+    .await;
+    h.svc.attach_access(access);
     let rt = forgebase_realtime::RealtimeService::start(
         h.data.clone(),
         None,
@@ -179,8 +190,14 @@ async fn progress_streams_to_a_realtime_subscriber_and_only_to_readers() {
         forgebase_realtime::router(rt.clone()),
         AccessContext::user("users", "outsider"),
     );
-    // A caller who may subscribe to channels but not read jobs is refused.
+    // A caller who may subscribe to channels but not read jobs is refused,
+    // and so is a job reader who may not see this job (FB-142).
     assert_eq!(sse(&outsider, &ch).await.err(), Some(StatusCode::FORBIDDEN));
+    let other_reader = as_user(
+        forgebase_realtime::router(rt.clone()),
+        AccessContext::user("users", "reader2"),
+    );
+    assert_eq!(sse(&other_reader, &ch).await.err(), Some(StatusCode::FORBIDDEN));
     let mut stream = sse(&reader, &ch).await.unwrap();
     assert_eq!(stream.next().await["type"], "welcome");
     assert_eq!(stream.next().await["type"], "subscribed");

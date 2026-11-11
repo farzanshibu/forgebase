@@ -1871,3 +1871,115 @@ columns, no `pg_read_server_files`/`pg_execute_server_program`, `CREATE` on
 it on that role). The deny list stays as defence in depth; it refuses every
 `SET`, `DO` and `GRANT`, so role and privilege changes must go through an
 admin API.
+
+## Addendum (FB-142): jobs RLS and internal invocation contexts
+
+Written 2026-11-11 by FB-142. Closes `rls-coverage.md` G3 and G4 and the
+FB-142 part of G5 for the job queue (`forgebase-jobs`), `function.invoke`
+and record hooks (`forgebase-functions`). Backend-neutral: the new SQL is a
+migration pair and statements valid on both engines (`COALESCE`, `LIKE`
+with constant prefixes, `IS NULL`; no `?n IS NULL` parameter tests).
+
+**Tenant (G3).** Migration 0029 pair: `_forgebase_jobs.tenant`,
+`_forgebase_jobs.context`, `_forgebase_job_schedules.tenant`,
+`_forgebase_job_schedules.context`, `_forgebase_job_workflows.tenant`, index
+`_forgebase_jobs_by_tenant (tenant, created_at)`, and the idempotency index
+widened to `(queue, COALESCE(tenant, ''), idempotency_key)`; on PostgreSQL
+`context` is `jsonb`. A job takes the enqueuer's `ctx.tenant` (`NULL` = none); a schedule
+firing takes the schedule's tenant and context; child jobs and saga
+compensations take their parent's (or the compensated step's) tenant. Job,
+Schedule and Workflow JSON gain `tenant`; `context` never leaves the server.
+
+**Visibility** (`forgebase_jobs::JobAccess`, `Scope`). Privileged callers
+see every job. Others see jobs of their own tenant only (`tenant IS NULL`
+without one), and of those only the ones they created (or that a schedule
+they created fired) unless they hold `engine:read_jobs:all` (a plain key:
+`engine:read_jobs` does not grant it, `engine:*` and `*` do). Applied to
+list, stats, get, events, attempts, checkpoint, result, cancel, retry,
+delete, schedules (list, get, update, delete) and workflows (list, get,
+cancel); an invisible id answers `404` like a missing one. Idempotency keys
+are per tenant (another tenant's key never matches; another creator's in
+the same tenant is `409 idempotency_key_in_use`). The server answers the key
+with `PolicyService::has(ctx, key, ctx.org_id)` (which also runs policy
+steps 1 and 2) through `JobService::attach_permissions`.
+
+**Job channels.** `JobChannelAuthorizer` now also requires visibility for a
+non-privileged subscriber of `jobs:<id>`. `authorize_channel` is
+synchronous, so it reads owners remembered by the shared `JobAccess`
+(enqueued, published, read or listed since start; at most 100 000). A
+subscriber to a job not seen since a restart is refused until it reads or
+lists the job: clients (the dashboard) list or `GET` before subscribing.
+The server creates the authorizer first (`open_auth`) and hands its
+`access()` to the `JobService` (`attach_access`).
+
+**Kinds (G4).** `JobRegistry::register` now makes a kind **reserved**
+(system and privileged callers only); `register_public` and
+`register_guarded(kind, handler, guard)` (`EnqueueGuard::admit(ctx,
+payload)`) open it. `start_pool` installs the kinds
+(`JobService::install_kinds`). Kinds with the prefixes `function.`,
+`storage.`, `billing.`, `credits.`, `entitlements.`, `customize.`,
+`forgebase.` and `system.` are reserved even when no handler registered
+them (a module switched off cannot be handed jobs for later). Every other
+unregistered kind stays public (external workers). Enqueue, schedule
+creation, a schedule payload change, workflow steps and compensations, and
+`spawn_children` all ask `JobAccess::admit`. A non-privileged worker claims
+only public kinds of its own tenant (`tenant IS NULL` without one).
+
+**`function.invoke` (G4, G5).** Guarded: a non-privileged enqueuer must pass
+the function's HTTP invoke check (`public`, `authenticated`, or `permission` =
+`engine:invoke_function`) at enqueue; unknown and forbidden functions give
+the same `403`. The job records the enqueuer (`RecordedContext`: principal,
+realm, organization, tenant, scopes, impersonator; no roles: the policy
+engine resolves them again) and runs **as it**
+(`JobContext::enqueuer`, `FunctionService::invoke_as`): before the run the
+enqueuer must still pass the invoke check and hold `engine:enqueue_job` or
+`engine:manage_jobs` (which re-validates its tenant), and a user must still
+exist (its record gives `@request.auth.<field>`); otherwise the job fails for
+good. A changed schedule payload is recorded with the updater's context.
+**Privileged enqueuers do not lend their rights**: jobs of administrators,
+admin service accounts and the system run as the function's own identity
+`service:function.<name>` in the recorded realm, organization and tenant
+(the job's tenant for system jobs); only `service_role` reaches `ctx.admin`.
+
+**Hooks (G5 follow-up).** Hooks pass an explicit context
+(`invocation_context`): a before-hook acts as the writer, except that a
+privileged writer's hook acts as the function's identity in the writer's
+realm, organization and tenant; an after-hook acts as the function's
+identity in the tenant recorded with the change (`Event.tenant`), so it can
+use that tenant's tenant-scoped data under the collection rules.
+`FunctionService::invoke` (no context: the function's identity, no tenant)
+stays for tests.
+
+**`ctx.auth.verify`.** Uses `authenticate_key_bound` (FB-138): a bound key's
+tenant is reported in the answer's `tenant` (it was `null`).
+
+**Breaking.**
+- Non-privileged callers no longer see other callers' jobs (or other
+  tenants'): grant `engine:read_jobs:all` (seeded Owner `*` and Developer
+  `engine:*` hold it). Jobs, schedules and workflows from before 0029 have no
+  tenant: visible to callers without a tenant (their creator) and to
+  administrators.
+- Embedders' handlers registered with `register` become reserved: use
+  `register_public` for kinds HTTP callers may enqueue.
+- Kinds under the module prefixes above are refused to non-privileged
+  callers even without a handler.
+- `function.invoke` jobs of non-privileged callers act as the caller (rules
+  and tenancy apply), not as `service:function.<name>`; before-hooks of
+  administrators' writes no longer act as the administrator.
+
+**For FB-146 (jobs on PostgreSQL).** `context` is `jsonb` on PostgreSQL and
+`TEXT CHECK (json_valid(context))` on SQLite; the service reads it as text
+(`Row::opt_text`), like `payload`. The scope filter is `tenant = ?n` /
+`tenant IS NULL` plus `created_by = ?m OR schedule_id IN (SELECT ...)`;
+the claim filter adds `kind NOT IN (...)` and `NOT (kind LIKE 'p%' OR ...)`
+(PostgreSQL `LIKE` is case-sensitive, SQLite's is not for ASCII; both only
+exclude more). The idempotency lookup matches `COALESCE(tenant, '') = ?3`,
+the expression of the unique index on both engines.
+`rowid` ordering in list and workflow reads is unchanged (FB-146's).
+**For FB-147 (functions SQL).** No new functions tables; the execution log
+does not record the context a run used (a possible `actor` column).
+**For the dashboard jobs and functions studios.** Show `tenant` on jobs,
+schedules and workflows; list or `GET` a job before subscribing to its
+channel; explain `engine:read_jobs:all` in the roles editor; reserved kinds
+answer `403` (offer only public kinds and `function.invoke` of functions the
+user may invoke).

@@ -10,3 +10,8 @@ ALTER TABLE _forgebase_job_schedules ADD COLUMN context jsonb;
 ALTER TABLE _forgebase_job_workflows ADD COLUMN tenant text;
 
 CREATE INDEX _forgebase_jobs_by_tenant ON _forgebase_jobs (tenant, created_at);
+
+-- Idempotency keys are per tenant: the same key in two tenants names two jobs.
+DROP INDEX _forgebase_jobs_idempotency;
+CREATE UNIQUE INDEX _forgebase_jobs_idempotency ON _forgebase_jobs (queue, COALESCE(tenant, ''), idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
