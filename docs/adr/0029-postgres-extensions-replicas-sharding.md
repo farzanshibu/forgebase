@@ -1944,3 +1944,242 @@ move must be followed by an attach/reconcile on the target before the
 tick is relied on. `idempotency` keys are per tenant, so a due time already
 fired on the source is not re-fired as the same key on the target only if
 the job rows moved too.
+
+## Addendum: FB-162, vector search on pgvector (2026-11-11)
+
+Built as §1.4 describes. Where the code differs from the text above, or
+decides something it left open, it is said here.
+
+**Files.** `crates/forgebase-vector/src/{pg.rs, jobs.rs}` (new): pgvector
+SQL (layout check, index specs and DDL, searches, recall, build progress,
+conversion batches) and the `vector.convert` job kind. Engine branches in
+`service.rs`; engine-aware vector reads and writes in `store.rs`; the
+pgvector state of a field in `index.rs` (`pg_valid`, `pg_bytes`,
+`pg_indexed`); `VectorEngine` and `ConvertReport` in `model.rs`. Tests:
+`tests/pgvector.rs` (new); the harness runs FB-161's extension setup on
+PostgreSQL (`FORGEBASE_TEST_PGVECTOR=off` keeps the vectors portable); the
+four tests about index files know both engines. No migration, no new
+`EXTENSION_DDL` step (version 1's column is all the engine needs; the
+indexes are per field, created at run time). Outside Owns, in
+`forgebase-db`: `Backend::maintenance` and `Decision::Prepare` (below).
+
+**Which engine.** `VectorService` has only a `dyn Backend`, so like FB-164
+it reads what `feature_active(Feature::Vector)` is derived from: PostgreSQL
+with `_forgebase_meta` `ext.vector.engine = extension` and a pgvector that
+passes the **layout check** — the extension installed, version 0.7 or
+later (`halfvec`), `_forgebase_vector_values.vec` of type `vector`, the
+portable `vector` column nullable. A pinned database that fails it logs a
+warning and runs portable (`vector.convert` to pgvector then answers `400
+pgvector_unavailable` with the problems). Iterative scans are used from
+pgvector 0.8. The engine is resolved in `VectorService::open` and kept
+behind a `tokio` `RwLock`: every operation holds the read guard for its
+whole run, a conversion the write guard. `VectorService::storage_engine()`
+tells.
+
+**Reconcile at open.** Before serving, vectors in the other column move to
+the engine in use, in batches: under an `extension` pin, `vector` bytea
+rows become `vec` (databases set up between FB-161 and FB-162 — no
+re-creation needed — and a conversion back to portable that stopped before
+its last batch); without it, `vec` rows go back to bytea (a conversion to
+pgvector that stopped early). On pgvector, missing or invalid HNSW indexes
+are then built in the background (reason `missing`; searches are
+`exact_fallback` meanwhile, `vector_index_not_ready` above
+`max_exact_scan`), and `fbv_` indexes no field owns are dropped; on the
+portable engine leftover `fbv_` indexes are dropped. Each check is one
+scan of the values table per start.
+
+**Storage.** `vec` holds the vector, `vector` stays `NULL`. Values travel
+as pgvector's text form, bound as text and cast (`CAST(CAST($n AS text) AS
+forgebase.vector)`); Rust prints the shortest decimal that reads back as
+the same `f32` and pgvector prints the same, so the stored vector is the
+returned one (unit test and `tests/pgvector.rs`). No statement ever
+returns a `vector` column (sqlx would look its type up, FB-161's bug).
+Types, operator classes and operators are qualified with the extension's
+schema (`OPERATOR(forgebase.<=>)`).
+
+**Index.** `fbv_<collection id>_<12 hex>`, the hash over the field's
+name, creation time, dimension, metric, element type and build parameters
+(a re-created field never meets a leftover index); 40 characters at most.
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS … USING hnsw ((CAST(vec AS
+forgebase.T(dim))) forgebase.T_<cosine|l2|ip>_ops) WITH (m, ef_construction)
+WHERE collection_id = <id> AND field = '<field>'`, T as §1.4 (`vector` for
+`f32` up to 2 000, `halfvec` for wider `f32` up to 4 000 and for every
+`f16`/`i8` field up to 4 000; wider: no index, exact search only, reason
+in the stats). `m` = connectivity clamped to 2…100 and `ef_construction`
+= expansion_add clamped to 2·m…1 000 (pgvector's limits; the stats report
+the `m` used). Searches repeat the cast and the predicate **as literals**
+(collection id and field name are inlined, everything else is bound), so
+even a generic plan matches the partial index. The index of a new field is
+built when the field is created (`create_collection`, `add_field`) before
+the call returns: the field is empty, but `CREATE INDEX CONCURRENTLY`
+still scans the table twice, concurrently with writes. Dropping a field or
+a collection drops its indexes concurrently after the commit (the next
+start drops what a failure leaves).
+
+**Maintenance connection (`forgebase-db`, outside Owns).** New default
+method `Backend::maintenance(&[String])`: the statements run in order, each
+in autocommit, on a connection of their own opened with the writer's
+options (not the writer, not a reader), closed afterwards; `Database` and
+`SetHandle` (its primary) delegate, SQLite refuses (`Unsupported`). Where
+a backend refuses, the vector engine falls back to the plain statements in
+a schema-change transaction on the writer, with a warning.
+
+**Distances** as §1.4; every returned distance is computed on the stored
+`float4` vector (`vec <op> query`) even when a `halfvec` index orders the
+scan, and L2 is squared internally like the portable path, so both engines
+return the same numbers.
+
+**Strategies** keep ADR-0012's names and rules:
+- `exact`: explicit, or at most `exact_threshold` vectors (with a filter:
+  matches; counted with `LIMIT threshold + 1`), or a field with no index;
+  `ORDER BY <distance on the uncast column>, key`.
+- `ann`: `hnsw.ef_search = max(expansion_search, k)` (≤ 1 000), no
+  iterative scan (pgvector then returns up to `ef_search ≥ k` rows).
+- `filtered_ann` (pre/auto) and `post_filter`: `hnsw.iterative_scan =
+  relaxed_order`, `hnsw.max_scan_tuples` 20 000, the compiled filter
+  (caller filter AND FB-139's collection rule) in the same `WHERE` through
+  the items join; results re-sorted. Fewer than `k`: pre/auto search the
+  matching set exactly when it has at most `max_exact_scan` vectors (as the
+  portable path does); then both widen the scan (ADR-0012's over-fetch
+  loop: `max_scan_tuples` ×4 up to the field's size; `ef_search` up to
+  1 000 before pgvector 0.8) until `k` match or the field is exhausted.
+  `candidates` is reported only by the strategies that counted it (the
+  exact ones); `filtered_ann` reports none (the portable path reports the
+  number of matches it collected).
+- **Settings per search.** Each read is one statement in its own `READ
+  ONLY` transaction (FB-131), so `SET LOCAL` has no place. The statement
+  is `SELECT … FROM (SELECT set_config('hnsw.ef_search', $ef, true) AS ef,
+  …) cfg CROSS JOIN LATERAL (… WHERE … AND cfg.ef IS NOT NULL … ORDER BY …
+  LIMIT k) s`: the lateral reference makes the settings run before the
+  index scan starts, and the read's `ROLLBACK` ends them. Tested by the
+  row count of a non-iterative scan (`ef_search` 5 → 5 rows).
+- `VectorService::explain_search` (administrators) returns PostgreSQL's
+  plan of a search's index statement; the plan test checks `Index Scan
+  using fbv_…` with and without a filter.
+
+**Rebuild** = `REINDEX INDEX CONCURRENTLY` (an invalid or missing index:
+`DROP INDEX CONCURRENTLY IF EXISTS` + `CREATE INDEX CONCURRENTLY`) on the
+maintenance connection, in the background; the old index serves meanwhile
+(`state building`, `serving ann`). The connection's `application_name` is
+`forgebase vector build <index>`; every 200 ms the build's
+`pg_stat_progress_create_index.tuples_done` (pgvector reports the tuples
+it added) becomes `progress.done`, `total` = the field's vectors. The poll
+runs on the writer: a separate reader role (`forgebase_reader`) does not
+see the server role's progress columns. A rebuild holds the engine's read
+guard, so a conversion waits for it.
+
+**Stats.** `engine "pgvector"`, `engine_version` = `extversion`,
+`indexed_vectors` = the field's vectors while the index is valid (0
+otherwise), `memory_bytes` = `serialized_bytes` = `pg_relation_size` of
+the index, `capacity 0`, `dirty false`, no `last_saved`. Tenant and server
+totals use the values last seen by a stats call or a build.
+
+**Recall in SQL.** The samples are the field's keys at `s·n/samples`, as
+on the portable path. One statement runs every sample's index scan
+(`ann_ms`); a second runs every sample's exact top `k` on the uncast
+column and compares in SQL: per sample, how many ANN results are at least
+as close as the `k`-th exact one (`+ 1e-5 · max(|kth|, 1)`, ties count),
+averaged (`exact_ms`).
+
+**Hybrid search.** Unchanged from FB-147: the keyword side reads the
+`tsvector` of `_forgebase_vector_fts` (`websearch_to_tsquery` with quoted
+words, not §1.4's `plainto_tsquery`: it keeps the `or` operator of
+`text_operator`), the same filter ANDed in, RRF unchanged.
+
+**`vector.convert`.** `VectorService::convert(ctx, to)` (instance-wide
+`engine:vector_admin`, no tenant; `400 invalid_request` with one) and the
+reserved job kind `vector.convert` (`forgebase_vector::register_jobs`,
+payload `{"to": "pgvector" | "portable"}`; `Invalid` errors are fatal,
+others retried). Under the write guard:
+- to pgvector: bytea → `vec` in batches (one transaction each, `SELECT …
+  FOR UPDATE` then one `UPDATE … FROM jsonb_to_recordset`; at most
+  2 000 000 floats a batch), then every field's index is built
+  concurrently and the collection's index files are deleted;
+- to portable: `vec` → bytea, the `fbv_` indexes dropped concurrently, and
+  USearch rebuilds every field in the background (reason `missing`).
+- **Pin.** As FB-161 asked, the last batch's transaction (the one that
+  moves fewer than a batch, possibly none) also writes `ext.vector.engine`.
+  A conversion that stops earlier leaves the database on its old engine;
+  the next start's reconcile moves the converted rows back. (FB-164 writes
+  its pin first and finishes forward; both are consistent, this one keeps
+  the database on the engine its pin names.) The report (`from`, `to`,
+  `vectors`, `indexes`) is the job result; `/api/system/info` shows the
+  new engine after the next start.
+- **Extension preparation (`forgebase-db`, outside Owns).** A database
+  pinned `portable` in mode `auto` never got pgvector created (FB-161 only
+  created extensions in use), so nothing could convert it. New
+  `Decision::Prepare`: a stateful feature pinned portable in `auto` whose
+  extension is usable gets the extension created and its DDL applied, and
+  stays portable (state `portable`, reason "… `<feature>.convert` moves
+  it"). Applies to queue (pgmq) too: `queue.convert` to pgmq now works on
+  such a database. FB-161's test updated (`vector` is installed there now,
+  `schema_version 1`, pin still `portable`).
+
+**Tests.** `tests/pgvector.rs`: one partial index per field with the cast,
+opclass, `m`/`ef_construction` and predicate for cosine/`f32`,
+L2/`f16`, dot/`i8`, 3 000-dim `f32` (`halfvec`) and 4 096-dim (none,
+exact, reason in the stats), stored vectors returned exactly, float4
+distances through a `halfvec` index; the plan scans `fbv_` with and
+without a filter; the settings apply before the scan; a selective filter
+returns `k` matches in pre and post mode; a rebuild swaps in a new index
+(`REINDEX CONCURRENTLY`) while writes go on; `vector.convert` both ways
+with two fields (vectors, versions, metadata, text and exact answers
+identical, pin, column counts, index count, stats engine, writes after the
+conversion, restart follows the pin, converting to the current engine
+moves nothing; tenants and non-admins refused; `pgvector_unavailable`
+without pgvector and on SQLite); reconcile at open both ways; a renamed
+`vec` column falls back to portable and refuses conversion; the job kind
+is reserved; an `#[ignore]`d bench. The rest of the suite (SPEC #12, #13,
+#23, filters, tenant isolation, hybrid, validation, recall, HTTP) runs on
+whichever engine the database offers.
+
+**Bench** (`bench_recall_and_latency`, 10 000 × 128 cosine, 200 recall
+samples, 200 searches per strategy, debug build of the Rust side, a shared
+and loaded machine):
+
+| PostgreSQL 18 | load + index | recall@10 | ANN p50 / p95 / p99 | filtered (⅓ of rows) p50 / p95 / p99 | exact p50 / p95 / p99 |
+|---|---|---|---|---|---|
+| bundled engine, `pgvector` (HNSW in the database) | 38.9 s | 0.975 | 2.24 / 3.72 / 4.95 ms | 2.07 / 2.72 / 3.17 ms | 48.1 / 136.2 / 224.0 ms |
+| Homebrew, no pgvector (`portable`, USearch in process) | 4.0 s | 0.952 | 3.20 / 10.04 / 19.43 ms | 16.06 / 47.83 / 98.20 ms | 100.9 / 262.5 / 339.8 ms |
+
+Load + index is the upserts (in batches) until the field is ready. On
+pgvector the index exists from `create_collection` on, so each insert
+writes through HNSW; the portable path stores bytea rows and inserts into
+the in-process graph, which is cheaper. Building after the rows is faster
+in pgvector, but no API defers the index during a bulk import yet (open
+follow-up). The recall check itself
+took 227 ms (ANN side) and 16.0 s (exact side, 200 sequential scans in one
+statement) on pgvector, 55 ms and 1.5 s on portable. Filtered search on
+pgvector is the iterative scan (`relaxed_order`) of the same index; on
+portable it is the in-process filtered ANN.
+
+**For the next packages.**
+- **FB-169 (replica reads):** search, hybrid, get, list and stats only
+  read (`fetch_all`; the search statement's `set_config` is local to its
+  read-only transaction), so they may use `fetch_routed` with
+  `ReadIntent::replica(..)` — HNSW indexes are WAL-logged. Primary only:
+  upserts, deletes, collection and field DDL, index builds and drops
+  (`Backend::maintenance` refuses on a read-only handle), the build
+  progress poll (it reads `pg_stat_progress_create_index` of the primary's
+  session), `vector.convert`, the reconcile at open, and the recall check
+  only if its numbers must match the primary's index exactly. A replica's
+  index is valid when the primary's is.
+- **FB-172 (shard routing):** the engine is resolved per `VectorService`,
+  i.e. per backend: one service per set reads that set's
+  `ext.vector.engine` pin, pgvector and layout, and converts on its own.
+  Rows keep their ids in a move (§3.3), so a collection's index names are
+  the same on the target, but the indexes are not moved: build them there
+  after the copy (the target service's `repair_indexes` at open does it, as
+  does `rebuild`), and drop the source's with its rows (`delete_collection`
+  does; rows deleted otherwise leave orphans, dropped at the source's next
+  open). The copy must carry `vec` or the bytea, whichever the source uses;
+  when the two sets use different engines, the target's reconcile at open
+  moves the rows into its own column. A service learns of collections only
+  at open, so the target needs a reopen (or a reload hook) after a move.
+  Index builds and conversions are per set.
+- **Server wiring (not done here, outside Owns):** in
+  `forgebase-server/src/lib.rs` (`start_on`), right after the
+  `let vector = if config.vector.enabled { … };` block and before
+  `start_pool(…, registry, …)`, as FB-164 did for `queue.convert`:
+  `let registry = match &vector { Some(v) =>
+  forgebase_vector::register_jobs(registry, v.clone()), None => registry };`.

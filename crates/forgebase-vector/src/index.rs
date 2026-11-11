@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,12 @@ pub(crate) struct FieldIndex {
     pub done: AtomicU64,
     pub total: AtomicU64,
     pub counters: Counters,
+    /// pgvector engine (FB-162): the field's HNSW index exists and is valid.
+    pub pg_valid: AtomicBool,
+    /// pgvector engine: size of that index (last seen).
+    pub pg_bytes: AtomicU64,
+    /// pgvector engine: vectors it covers (last seen).
+    pub pg_indexed: AtomicU64,
 }
 
 /// Build parameters of a field.
@@ -182,7 +188,19 @@ impl FieldIndex {
             done: AtomicU64::new(0),
             total: AtomicU64::new(0),
             counters: Counters::default(),
+            pg_valid: AtomicBool::new(false),
+            pg_bytes: AtomicU64::new(0),
+            pg_indexed: AtomicU64::new(0),
         }
+    }
+
+    /// A field of the pgvector engine: no file, no in-memory index; its HNSW
+    /// index lives in PostgreSQL (`valid` once built).
+    pub(crate) fn on_postgres(def: VectorField, dir: &Path, valid: bool) -> Self {
+        let idx = Self::unloaded(def, dir);
+        idx.status().state = IndexState::Ready;
+        idx.pg_valid.store(valid, Ordering::Relaxed);
+        idx
     }
 
     /// A new, empty, serving index (a field that has no vectors yet).

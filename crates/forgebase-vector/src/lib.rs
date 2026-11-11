@@ -9,6 +9,7 @@
 //! | kNN with metadata pre/post filters (the data core's filter language), exact search for small sets | [`VectorService::search`] |
 //! | Hybrid search: FTS5 keyword + vector, Reciprocal Rank Fusion | [`VectorService::hybrid`] |
 //! | Recall check, index statistics, Prometheus metrics | [`VectorService::recall`], [`VectorService::stats`] |
+//! | PostgreSQL with pgvector: `vec` column, partial HNSW index per field, iterative scans, concurrent rebuilds, recall in SQL; `vector.convert` both ways (FB-162) | [`VectorService::storage_engine`], [`VectorService::convert`], [`register_jobs`] |
 //! | REST under `/api/v1/vector` with OpenAPI | [`router`], [`extension`], [`openapi`] |
 //!
 //! SQLite holds the only copy of every vector; the files under
@@ -28,8 +29,10 @@ mod error;
 mod filter;
 mod http;
 mod index;
+mod jobs;
 mod metric;
 pub mod model;
+mod pg;
 mod service;
 mod store;
 
@@ -37,6 +40,7 @@ pub use engine::{AnnEngine, AnnIndex, EngineStats, IndexParams, Usearch};
 pub use error::VectorError;
 pub use filter::{ItemRule, item_schema};
 pub use http::{MAX_BODY, RebuildResponse, extension, openapi, router};
+pub use jobs::{CONVERT_JOB, register_jobs};
 pub use service::{
     DEFAULT_CONNECTIVITY, DEFAULT_EXPANSION_ADD, DEFAULT_EXPANSION_SEARCH, SOURCE_COLLECTION_OPTION, VectorConfig,
     VectorService,

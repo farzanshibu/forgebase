@@ -674,6 +674,49 @@ pub struct CollectionStats {
     pub indexes: Vec<IndexStatus>,
 }
 
+/// Where the canonical vectors and their ANN indexes live (ADR-0029 §1.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorEngine {
+    /// `vector bytea` rows and USearch index files under the data directory
+    /// (SQLite, and PostgreSQL without pgvector).
+    Portable,
+    /// The pgvector column `vec` and one partial HNSW index per field.
+    Pgvector,
+}
+
+impl VectorEngine {
+    /// `portable` or `pgvector` (the `to` of a `vector.convert` payload).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VectorEngine::Portable => "portable",
+            VectorEngine::Pgvector => "pgvector",
+        }
+    }
+
+    /// Parses [`Self::as_str`].
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "portable" => Some(VectorEngine::Portable),
+            "pgvector" => Some(VectorEngine::Pgvector),
+            _ => None,
+        }
+    }
+}
+
+/// Outcome of `vector.convert`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ConvertReport {
+    /// The engine before.
+    pub from: VectorEngine,
+    /// The engine now.
+    pub to: VectorEngine,
+    /// Canonical vectors moved between the columns.
+    pub vectors: u64,
+    /// HNSW indexes built (to pgvector) or dropped (to portable).
+    pub indexes: u64,
+}
+
 /// Statistics of the caller's tenant.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct VectorStats {

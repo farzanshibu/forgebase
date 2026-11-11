@@ -707,6 +707,10 @@ impl Backend for Database {
     fn set_slow_query_threshold(&self, threshold: Duration) {
         self.backend().set_slow_query_threshold(threshold);
     }
+
+    fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
+        self.backend().maintenance(statements)
+    }
 }
 
 /// Which constraint a statement violated.

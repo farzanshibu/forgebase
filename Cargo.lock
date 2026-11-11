@@ -1840,6 +1840,7 @@ dependencies = [
  "forgebase-core",
  "forgebase-data",
  "forgebase-db",
+ "forgebase-jobs",
  "metrics",
  "serde",
  "serde_json",
