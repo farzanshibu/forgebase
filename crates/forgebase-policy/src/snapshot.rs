@@ -740,6 +740,33 @@ impl Snapshot {
         let e = self.envs.get(env)?;
         Some((e, self.projects.get(&e.project_id)?))
     }
+
+    /// The realm of a billing subject (FB-136): `org:<id>` → the
+    /// organization's realm (`None` when unknown); `user:<collection>/<id>`
+    /// and `service:<id>` → the identity's home realm; anything else `None`.
+    pub fn realm_of_subject(&self, subject: &str) -> Option<String> {
+        if let Some(org) = subject.strip_prefix("org:") {
+            return self.orgs.get(org).map(|o| o.realm_id.clone());
+        }
+        let dir = self.realm_dir.as_ref();
+        if let Some(rest) = subject.strip_prefix("user:") {
+            let (collection, id) = rest.split_once('/')?;
+            if collection.is_empty() || id.is_empty() {
+                return None;
+            }
+            return Some(dir.map_or_else(
+                || forgebase_data::DEFAULT_REALM.to_owned(),
+                |d| d.realm_of_collection(collection),
+            ));
+        }
+        if let Some(id) = subject.strip_prefix("service:").filter(|id| !id.is_empty()) {
+            return Some(dir.map_or_else(
+                || forgebase_data::DEFAULT_REALM.to_owned(),
+                |d| d.realm_of_service_account(id),
+            ));
+        }
+        None
+    }
 }
 
 /// Field rules as stored (`{"salary": {"read": "...", "write": "..."}}`).

@@ -11,7 +11,7 @@ use forgebase_entitlements::period::{civil_from_days, days_from_civil};
 use crate::error::{BillingError, Result};
 use crate::model::{BillingStats, CouponKind, Interval, PriceType, RecurringRevenue, RevenuePoint};
 use crate::money::mul_div;
-use crate::service::{BillingService, DAY, int, text};
+use crate::service::{BillingService, DAY, int, realm_clause, text};
 
 /// Revenue buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,10 +49,11 @@ impl Bucket {
 type SubMrr = (String, i64, i64, Option<(String, i64, i64)>);
 
 impl BillingService {
-    /// Statistics over `[from, to)` (realm-level `billing:read` or
-    /// privileged).
+    /// Statistics over `[from, to)` (realm-level `billing:read`: the
+    /// subjects of the caller's realm, G18; privileged: every subject).
     pub async fn stats(&self, ctx: &AccessContext, from: i64, to: i64, bucket: Bucket) -> Result<BillingStats> {
-        self.can_read_all(ctx)?;
+        let realm = self.can_read_all(ctx)?;
+        let realm = realm.as_deref();
         if to <= from || to - from > 3 * 366 * DAY {
             return Err(BillingError::invalid(
                 "invalid_window",
@@ -61,16 +62,20 @@ impl BillingService {
         }
         // MRR: active and past-due subscriptions, recurring prices, normalised
         // to a month, after percent coupons and amount coupons.
+        let mut params = Vec::new();
+        let only = realm_clause(realm, "s.subject", &mut params);
         let rows = self
             .fetch(
-                "SELECT s.id, s.currency, p.key, i.quantity, c.kind, c.percent_bp, c.amount_off
-                 FROM _forgebase_billing_subscriptions s
-                 JOIN _forgebase_billing_subscription_items i ON i.subscription_id = s.id
-                 JOIN _forgebase_billing_prices p ON p.id = i.price_id
-                 LEFT JOIN _forgebase_billing_coupons c ON c.id = s.coupon_id
-                 WHERE s.status IN ('active', 'past_due') AND p.type = 'recurring'
-                 ORDER BY s.id",
-                Vec::new(),
+                &format!(
+                    "SELECT s.id, s.currency, p.key, i.quantity, c.kind, c.percent_bp, c.amount_off
+                     FROM _forgebase_billing_subscriptions s
+                     JOIN _forgebase_billing_subscription_items i ON i.subscription_id = s.id
+                     JOIN _forgebase_billing_prices p ON p.id = i.price_id
+                     LEFT JOIN _forgebase_billing_coupons c ON c.id = s.coupon_id
+                     WHERE s.status IN ('active', 'past_due') AND p.type = 'recurring'{only}
+                     ORDER BY s.id"
+                ),
+                params,
             )
             .await?;
         let mut per_sub: HashMap<String, SubMrr> = HashMap::new();
@@ -114,10 +119,12 @@ impl BillingService {
                 subscriptions: n,
             })
             .collect();
+        let mut params = Vec::new();
+        let only = realm_clause(realm, "subject", &mut params);
         let by_status = self
             .fetch(
-                "SELECT status, COUNT(*) FROM _forgebase_billing_subscriptions GROUP BY status",
-                Vec::new(),
+                &format!("SELECT status, COUNT(*) FROM _forgebase_billing_subscriptions WHERE 1 = 1{only} GROUP BY status"),
+                params,
             )
             .await?
             .rows
@@ -125,15 +132,19 @@ impl BillingService {
             .map(|r| (text(r, 0), int(r, 1)))
             .collect();
         // Subscriptions that never started (unpaid first invoice) are not churn.
+        let mut params = vec![from.into(), to.into()];
+        let only = realm_clause(realm, "subject", &mut params);
         let counts = self
             .fetch(
-                "SELECT
+                &format!(
+                    "SELECT
                     SUM(CASE WHEN created_at < ?1 AND (ended_at IS NULL OR ended_at >= ?1) AND status <> 'incomplete' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN created_at >= ?1 AND created_at < ?2 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN ended_at >= ?1 AND ended_at < ?2 THEN 1 ELSE 0 END)
                  FROM _forgebase_billing_subscriptions
-                 WHERE COALESCE(cancel_reason, '') NOT IN ('incomplete_expired', 'invoice_voided')",
-                vec![from.into(), to.into()],
+                 WHERE COALESCE(cancel_reason, '') NOT IN ('incomplete_expired', 'invoice_voided'){only}"
+                ),
+                params,
             )
             .await?;
         let c = counts.rows.first().cloned().unwrap_or_default();
@@ -141,11 +152,15 @@ impl BillingService {
         let churn_rate_bp = (active_at_start > 0).then(|| mul_div(churned, 10_000, active_at_start));
         // Revenue.
         let mut revenue: BTreeMap<(i64, String), RevenuePoint> = BTreeMap::new();
+        let mut params = vec![from.into(), to.into()];
+        let only = realm_clause(realm, "subject", &mut params);
         let pays = self
             .fetch(
-                "SELECT updated_at, currency, amount FROM _forgebase_billing_payments
-                 WHERE status = 'succeeded' AND updated_at >= ?1 AND updated_at < ?2",
-                vec![from.into(), to.into()],
+                &format!(
+                    "SELECT updated_at, currency, amount FROM _forgebase_billing_payments
+                     WHERE status = 'succeeded' AND updated_at >= ?1 AND updated_at < ?2{only}"
+                ),
+                params,
             )
             .await?;
         for r in &pays.rows {
@@ -161,11 +176,16 @@ impl BillingService {
             e.gross += int(r, 2);
             e.payments += 1;
         }
+        let mut params = vec![from.into(), to.into()];
+        let only = realm_clause(realm, "i.subject", &mut params);
         let refunds = self
             .fetch(
-                "SELECT updated_at, currency, amount FROM _forgebase_billing_refunds
-                 WHERE status = 'succeeded' AND updated_at >= ?1 AND updated_at < ?2",
-                vec![from.into(), to.into()],
+                &format!(
+                    "SELECT r.updated_at, r.currency, r.amount
+                     FROM _forgebase_billing_refunds r JOIN _forgebase_billing_invoices i ON i.id = r.invoice_id
+                     WHERE r.status = 'succeeded' AND r.updated_at >= ?1 AND r.updated_at < ?2{only}"
+                ),
+                params,
             )
             .await?;
         for r in &refunds.rows {
@@ -187,10 +207,15 @@ impl BillingService {
                 p
             })
             .collect();
+        let mut params = vec![from.into(), to.into()];
+        let only = realm_clause(realm, "subject", &mut params);
         let failed_payments = self
             .fetch(
-                "SELECT COUNT(*) FROM _forgebase_billing_payments WHERE status = 'failed' AND updated_at >= ?1 AND updated_at < ?2",
-                vec![from.into(), to.into()],
+                &format!(
+                    "SELECT COUNT(*) FROM _forgebase_billing_payments
+                     WHERE status = 'failed' AND updated_at >= ?1 AND updated_at < ?2{only}"
+                ),
+                params,
             )
             .await?
             .scalar()

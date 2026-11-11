@@ -37,7 +37,7 @@ use crate::provider::store::{
 };
 use crate::service::{
     BillingService, Tx, add_months, check_idem, check_subject, check_url, int, new_id, opt_int, opt_text,
-    period_months, text,
+    period_months, realm_clause, text,
 };
 
 /// Stores ForgeBase knows.
@@ -309,10 +309,14 @@ impl BillingService {
         ctx: &AccessContext,
         subject: Option<&str>,
     ) -> Result<Vec<StorePurchaseRecord>> {
-        let rows = if subject.is_none() && self.can_read_all(ctx).is_ok() {
+        let rows = if subject.is_none()
+            && let Ok(realm) = self.can_read_all(ctx)
+        {
+            let mut params = Vec::new();
+            let only = realm_clause(realm.as_deref(), "sp.subject", &mut params);
             self.fetch(
-                &format!("SELECT {COLUMNS} FROM {FROM} ORDER BY sp.created_at DESC LIMIT 500"),
-                Vec::new(),
+                &format!("SELECT {COLUMNS} FROM {FROM} WHERE 1 = 1{only} ORDER BY sp.created_at DESC LIMIT 500"),
+                params,
             )
             .await?
         } else {
