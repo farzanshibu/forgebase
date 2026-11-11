@@ -20,7 +20,7 @@ export const jobQueue = (name: string, extra: Partial<JobQueueInfo> = {}): JobQu
 });
 
 export function installTasks(mock: MockApi, jobs: () => Job[]): TaskState {
-  const st: TaskState = { queues: [jobQueue("mail", { concurrency: 2, rate_limit: 10 }), jobQueue("default")], workflows: [], attempts: {}, checkpoints: {}, results: {} };
+  const st: TaskState = { queues: [jobQueue("mail", { concurrency: 2, rate_limit: 10, tenant: "acme", created_by: "admin" }), jobQueue("default")], workflows: [], attempts: {}, checkpoints: {}, results: {} };
   const J = "/api/v1/jobs";
   const find = (id: string) => jobs().find((j) => j.id === id);
   const nf = () => envelope(404, "job_not_found", "no such job");

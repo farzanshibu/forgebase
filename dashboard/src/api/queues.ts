@@ -10,6 +10,8 @@ export interface QueueTopic {
   name: string; retention_ms: number; retention_bytes?: number | null; max_message_bytes: number; dedup_window_ms: number;
   schema?: unknown; source?: RecordSource | null; labels: Record<string, string>; published_total: number; published_bytes: number;
   created_by: string; created_at: string; updated_at: string;
+  /** Tenant the topic belongs to (FB-141); its name is then `<tenant>/<name>`. Absent or null: instance-wide. */
+  tenant?: string | null;
 }
 export interface NewTopic {
   name: string; retention_ms?: number; retention_bytes?: number; max_message_bytes?: number; dedup_window_ms?: number; schema?: unknown; labels?: Record<string, string>;
@@ -26,6 +28,8 @@ export interface PushConfig { kind: "webhook" | "function"; endpoint: string }
 export interface QueueSubscription {
   name: string; topic: string; filter?: unknown; ack_deadline_ms: number; max_delivery_attempts?: number | null; backoff_base_ms: number; backoff_max_ms: number;
   dead_letter_topic?: string | null; ordering: boolean; push?: PushConfig | null; labels: Record<string, string>; created_by: string; created_at: string; updated_at: string;
+  /** Tenant of the subscription (FB-141). `created_by` is its owner: record messages are delivered as that principal sees them. */
+  tenant?: string | null;
 }
 export interface NewSubscription {
   name: string; topic: string; filter?: unknown; ack_deadline_ms?: number; max_delivery_attempts?: number; backoff_base_ms?: number; backoff_max_ms?: number;
@@ -47,7 +51,7 @@ export interface DeadLetter {
 export interface ReceivedMessage { ack_id: string; delivery_attempt: number; ack_deadline: string; message: QueueMessage }
 export interface AckResult { count: number; unknown: string[] }
 export interface SeekResult { cursor_seq: number; restored: number }
-export interface QueueSnapshot { name: string; subscription: string; topic: string; cursor_seq: number; unacked: number; created_by: string; created_at: string; expires_at: string }
+export interface QueueSnapshot { name: string; subscription: string; topic: string; cursor_seq: number; unacked: number; created_by: string; created_at: string; expires_at: string; tenant?: string | null }
 
 export const QUEUE_OPERATIONS = [
   "get /api/v1/queues/topics", "post /api/v1/queues/topics", "get /api/v1/queues/topics/{topic}", "delete /api/v1/queues/topics/{topic}",
@@ -62,7 +66,9 @@ const items = async <T>(p: Promise<{ items: T[] }>) => (await p).items;
 
 export const listQueueTopics = (signal?: AbortSignal) => items(request<{ items: QueueTopic[] }>(`${Q}/topics`, { signal }));
 export const getQueueTopic = (name: string, signal?: AbortSignal) => request<QueueTopic>(`${Q}/topics/${enc(name)}`, { signal });
-export const createQueueTopic = (t: NewTopic) => send<QueueTopic>("POST", `${Q}/topics`, t);
+/** `tenant` creates the topic in that tenant (header `X-ForgeBase-Tenant`, FB-141); without it the caller's own tenant, or instance-wide for an administrator. */
+const tenantHeader = (tenant?: string) => (tenant ? { "X-ForgeBase-Tenant": tenant } : undefined);
+export const createQueueTopic = (t: NewTopic, tenant?: string) => send<QueueTopic>("POST", `${Q}/topics`, t, tenantHeader(tenant));
 export const deleteQueueTopic = (name: string, force = false) => send<void>("DELETE", `${Q}/topics/${enc(name)}${force ? "?force=true" : ""}`);
 export const queueTopicMetrics = (name: string, signal?: AbortSignal) => request<TopicMetrics>(`${Q}/topics/${enc(name)}/metrics`, { signal });
 export const queueTopicMessages = (name: string, after = 0, limit = 25, signal?: AbortSignal) =>
@@ -73,7 +79,7 @@ export const publishQueueMessages = async (name: string, messages: NewMessage[])
 export const listQueueSubscriptions = (topic?: string, signal?: AbortSignal) =>
   items(request<{ items: QueueSubscription[] }>(topic ? `${Q}/subscriptions?topic=${enc(topic)}` : `${Q}/subscriptions`, { signal }));
 export const getQueueSubscription = (name: string, signal?: AbortSignal) => request<QueueSubscription>(`${Q}/subscriptions/${enc(name)}`, { signal });
-export const createQueueSubscription = (s: NewSubscription) => send<QueueSubscription>("POST", `${Q}/subscriptions`, s);
+export const createQueueSubscription = (s: NewSubscription, tenant?: string) => send<QueueSubscription>("POST", `${Q}/subscriptions`, s, tenantHeader(tenant));
 export const deleteQueueSubscription = (name: string) => send<void>("DELETE", `${Q}/subscriptions/${enc(name)}`);
 export const queueSubscriptionMetrics = (name: string, signal?: AbortSignal) => request<SubscriptionMetrics>(`${Q}/subscriptions/${enc(name)}/metrics`, { signal });
 export const queueDeadLetters = (name: string, before?: number, limit = 25, signal?: AbortSignal) =>
@@ -84,7 +90,7 @@ export const ackQueueMessages = (name: string, ackIds: string[]) => send<AckResu
 export const nackQueueMessages = (name: string, ackIds: string[]) => send<AckResult>("POST", `${Q}/subscriptions/${enc(name)}/nack`, { ack_ids: ackIds });
 export const seekQueueSubscription = (name: string, to: { time: string } | { snapshot: string }) => send<SeekResult>("POST", `${Q}/subscriptions/${enc(name)}/seek`, to);
 export const listQueueSnapshots = (signal?: AbortSignal) => items(request<{ items: QueueSnapshot[] }>(`${Q}/snapshots`, { signal }));
-export const createQueueSnapshot = (name: string, subscription: string) => send<QueueSnapshot>("POST", `${Q}/snapshots`, { name, subscription });
+export const createQueueSnapshot = (name: string, subscription: string, tenant?: string) => send<QueueSnapshot>("POST", `${Q}/snapshots`, { name, subscription }, tenantHeader(tenant));
 export const deleteQueueSnapshot = (name: string) => send<void>("DELETE", `${Q}/snapshots/${enc(name)}`);
 
 /**

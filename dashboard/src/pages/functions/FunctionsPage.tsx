@@ -1,22 +1,17 @@
-import { Route, Routes } from "react-router-dom";
-import { RouteTabs } from "../../components/controls";
+import { Link, Route, Routes } from "react-router-dom";
+import { PageHeader } from "../../components/PageHeader";
 import FunctionList from "./FunctionList";
 import NewFunction from "./NewFunction";
 import FunctionView from "./FunctionView";
 
+/** The header of the list ("New function", "Upload .wasm") lives in FunctionList; a detail page draws its own. */
 export default function FunctionsPage() {
   return (
-    <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Functions Studio</h1>
-      <RouteTabs label="Functions sections" tabs={[{ to: "/functions", label: "Functions", end: true }]} className="mt-4" />
-      <div className="mt-6">
-        <Routes>
-          <Route index element={<FunctionList />} />
-          <Route path="new" element={<NewFunction />} />
-          <Route path="f/:name/*" element={<FunctionView />} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in Functions Studio.</p>} />
-        </Routes>
-      </div>
-    </div>
+    <Routes>
+      <Route index element={<FunctionList />} />
+      <Route path="new" element={<NewFunction />} />
+      <Route path="f/:name/*" element={<FunctionView />} />
+      <Route path="*" element={<div className="space-y-4"><PageHeader studio="functions" /><p className="text-muted-foreground">No such page in Functions. <Link className="text-primary hover:underline" to="/functions">Back to functions</Link></p></div>} />
+    </Routes>
   );
 }

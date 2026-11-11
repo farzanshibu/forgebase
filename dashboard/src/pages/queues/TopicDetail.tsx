@@ -1,51 +1,85 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, createQueueSubscription, deleteQueueTopic, listQueueSubscriptions, publishQueueMessages, queueTopicMessages, queueTopicMetrics } from "../../api";
+import { ApiError, createQueueSubscription, deleteQueueTopic, getQueueTopic, listQueueSubscriptions, publishQueueMessages, queueTopicMessages, queueTopicMetrics } from "../../api";
 import type { QueueMessage, QueueSubscription } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Button, ErrorView, Panel } from "../../components/ui";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { CreateSheet } from "../../components/CreateSheet";
+import { EmptyState } from "../../components/EmptyState";
+import { FormField } from "../../components/FormField";
+import { HelpTip } from "../../components/HelpTip";
+import { PageHeader } from "../../components/PageHeader";
+import { Pager } from "../../components/Pager";
+import { SkeletonLines, SkeletonTable } from "../../components/Skeleton";
+import { UseFromCodeButton } from "../../components/UseFromCode";
+import { fieldErrors } from "../../errors";
 import { useLoad, type LoadState } from "../../hooks";
+import { notify } from "../../toaster";
+import { validate } from "../../validate";
+import Tenant from "../jobs/Tenant";
+import QueueRules from "./QueueRules";
 import { when } from "../functions/util";
 import { bytes, duration, parseAttrs, parseJson, pretty } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { Sel } from "../../components/controls";
+import { Check, Sel } from "../../components/controls";
 
 const PAGE = 25;
 
 export default function TopicDetail() {
   const { topic = "" } = useParams();
   const nav = useNavigate();
+  const info = useLoad((s) => getQueueTopic(topic, s), `topic:${topic}`);
   const metrics = useLoad((s) => queueTopicMetrics(topic, s), `topic-metrics:${topic}`);
   const subs = useLoad((s) => listQueueSubscriptions(topic, s), `topic-subs:${topic}`);
   const [error, setError] = useState<unknown>();
   const [needForce, setNeedForce] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   async function remove(force: boolean) {
     setError(undefined);
     try {
       await deleteQueueTopic(topic, force);
+      notify.deleted(`Topic ${topic}`);
       nav("/queues");
     } catch (e) {
       if (e instanceof ApiError && e.code === "topic_has_subscriptions") setNeedForce(true);
       setError(e);
+      throw e;
     }
   }
 
   const m = metrics.data;
+  const t = info.data;
   return (
     <div className="space-y-4">
-      <Link to="/queues" className="text-sm text-primary hover:underline">← All topics</Link>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-mono text-lg">{topic}</h2>
-        <div className="flex gap-2">
-          <Button onClick={() => { metrics.reload(); subs.reload(); }}>Refresh</Button>
-          <ConfirmButton label="Delete topic" onConfirm={() => void remove(false)} />
-          {needForce && <ConfirmButton label="Delete topic and its subscriptions" onConfirm={() => void remove(true)} />}
-        </div>
-      </div>
-      <ErrorView error={error ?? metrics.error} />
-      {metrics.loading && !metrics.error && <Loading what="Loading topic" />}
+      <PageHeader
+        title={topic}
+        description={<span className="inline-flex flex-wrap items-center gap-2">Topic · tenant <Tenant value={t?.tenant} />{t?.created_by ? <> · created by <span className="font-mono text-xs">{t.created_by}</span></> : null}</span>}
+        docs="docs/adr/0022-queues-pubsub.md"
+        secondary={<><Button onClick={() => { info.reload(); metrics.reload(); subs.reload(); }}>Refresh</Button><UseFromCodeButton kind="topic" name={topic} /></>}
+        primary={
+          <span className="flex gap-2">
+            <Button tone="primary" onClick={() => setAdding(true)}>New subscription</Button>
+            <ConfirmDialog
+              trigger={<Button tone="danger">Delete topic</Button>}
+              title={`Delete topic ${topic}?`}
+              consequence={needForce ? "It still has subscriptions: they are deleted with it, with their dead letters and snapshots." : "Every retained message is deleted. Publishers get 404."}
+              confirmLabel={needForce ? "Delete topic and its subscriptions" : "Delete topic"}
+              confirmText={topic}
+              onConfirm={() => remove(needForce)}
+            />
+          </span>
+        }
+      />
+      <ErrorView error={error ?? metrics.error ?? info.error} />
+      {metrics.loading && !metrics.error && <SkeletonLines lines={3} label="Loading topic" />}
+      {t?.source && (
+        <p role="note" className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+          This topic carries the record changes of <span className="font-mono">{t.source.collection}</span> ({t.source.ops.join(", ")}). A reader gets each record as <em>its subscription&apos;s owner</em> may see it: hidden fields are removed, and a record the owner may not see is withheld, so it never appears for that subscription. The messages listed below show your own view.
+        </p>
+      )}
       {m && (
         <Panel title="Metrics">
           <dl aria-label="Topic metrics" className="grid gap-x-6 gap-y-1 text-sm md:grid-cols-3">
@@ -59,6 +93,8 @@ export default function TopicDetail() {
       <PublishPanel topic={topic} onDone={() => metrics.reload()} />
       <Messages topic={topic} version={m?.published_total ?? 0} />
       <Subscriptions topic={topic} subs={subs} />
+      <NewSubscription topic={topic} tenant={t?.tenant ?? undefined} open={adding} onOpenChange={setAdding} onCreated={subs.reload} />
+      <QueueRules kind="queue_topic" name={topic} />
     </div>
   );
 }
@@ -87,12 +123,12 @@ function PublishPanel({ topic, onDone }: { topic: string; onDone: () => void }) 
   }
   return (
     <Panel title="Publish">
-      <form onSubmit={(e) => void submit(e)} className="space-y-3 text-sm">
+      <form aria-label="Publish" onSubmit={(e) => void submit(e)} className="space-y-3 text-sm">
         <label className="block">Data (JSON)<Textarea size="sm" autoResize={false} className="mt-1 block h-24 w-full font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
         <label className="block">Attributes (one key=value per line)<Textarea size="sm" autoResize={false} className="mt-1 block h-16 w-full font-mono text-xs" value={attrs} onChange={(e) => setAttrs(e.target.value)} /></label>
         <div className="flex flex-wrap items-end gap-3">
-          <label>Ordering key<Input size="sm" className="ml-2 w-40" value={key} onChange={(e) => setKey(e.target.value)} /></label>
-          <label>Dedup id<Input size="sm" className="ml-2 w-40" value={dedup} onChange={(e) => setDedup(e.target.value)} /></label>
+          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Ordering key <Input size="sm" className="ml-1 w-40" value={key} onChange={(e) => setKey(e.target.value)} /></label><HelpTip term="ordering_key" /></span>
+          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Dedup id <Input size="sm" className="ml-1 w-40" value={dedup} onChange={(e) => setDedup(e.target.value)} /></label><HelpTip term="dedup_id" /></span>
           <Button type="submit" tone="primary">Publish message</Button>
         </div>
         {last && <p role="status" className="text-success">{last}</p>}
@@ -107,6 +143,7 @@ function Messages({ topic, version }: { topic: string; version: number }) {
   const [next, setNext] = useState<number | null | undefined>(undefined);
   const [error, setError] = useState<unknown>();
   const [loading, setLoading] = useState(true);
+  const [more, setMore] = useState(false);
   const [open, setOpen] = useState<string>();
 
   // Reload from the start whenever the topic changes or something was published.
@@ -119,22 +156,25 @@ function Messages({ topic, version }: { topic: string; version: number }) {
     return () => { live = false; };
   }, [topic, version]);
 
-  async function more() {
+  async function loadMore() {
     if (!next) return;
+    setMore(true);
     try {
       const p = await queueTopicMessages(topic, next, PAGE);
       setRows((r) => [...r, ...p.items]);
       setNext(p.next_after);
     } catch (e) {
       setError(e);
+    } finally {
+      setMore(false);
     }
   }
 
   return (
     <Panel title="Messages">
       <ErrorView error={error} />
-      {loading && <Loading what="Loading messages" />}
-      {!loading && rows.length === 0 && !error && <p className="text-sm text-muted-foreground">No retained messages.</p>}
+      {loading && <SkeletonTable rows={3} columns={6} label="Loading messages" />}
+      {!loading && rows.length === 0 && !error && <EmptyState compact title="No retained messages" why="Publish one above, or publish from your code (Use from code). Messages are kept for the topic's retention period." />}
       {rows.length > 0 && (
         <Table aria-label="Messages" className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
@@ -161,53 +201,80 @@ function Messages({ topic, version }: { topic: string; version: number }) {
           </Table.Body>
         </Table>
       )}
-      {next ? <div className="mt-3"><Button onClick={() => void more()}>Load more</Button></div> : null}
+      {rows.length > 0 && <Pager mode="more" shown={rows.length} hasMore={!!next} loading={more} onMore={() => void loadMore()} noun="messages" label="More messages" />}
     </Panel>
   );
 }
 
 function Subscriptions({ topic, subs }: { topic: string; subs: LoadState<QueueSubscription[]> }) {
+  return (
+    <Panel title="Subscriptions of this topic">
+      <ErrorView error={subs.error} />
+      {subs.data && subs.data.length === 0 && <EmptyState compact title="No subscriptions" why="Messages are kept for the retention period but delivered to nobody. Choose New subscription to add a reader." />}
+      {subs.data && subs.data.length > 0 && (
+        <ul aria-label="Topic subscriptions" className="space-y-1 text-sm">
+          {subs.data.map((s) => (
+            <li key={s.name}>
+              <Link className="text-primary hover:underline" to={`/queues/s/${encodeURIComponent(s.name)}`}>{s.name}</Link>{" "}
+              <span className="text-muted-foreground">ack deadline {duration(s.ack_deadline_ms)}{s.ordering ? ", ordered" : ""} · owner {s.created_by}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <span hidden>{topic}</span>
+    </Panel>
+  );
+}
+
+/** New subscription for this topic. The owner is the signed-in account: record messages reach the subscription as that account sees them. */
+function NewSubscription({ topic, tenant: topicTenant, open, onOpenChange, onCreated }: { topic: string; tenant?: string; open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [deadline, setDeadline] = useState("30");
   const [attempts, setAttempts] = useState("");
   const [dlt, setDlt] = useState("");
   const [ordering, setOrdering] = useState(false);
   const [start, setStart] = useState<"latest" | "earliest">("latest");
-  const [error, setError] = useState<unknown>();
-
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
-    setError(undefined);
-    try {
-      await createQueueSubscription({
-        name: name.trim(), topic, ack_deadline_ms: Math.round(Number(deadline) * 1000), ordering, start,
-        ...(attempts ? { max_delivery_attempts: Number(attempts) } : {}), ...(dlt ? { dead_letter_topic: dlt.trim() } : {}),
-      });
-      setName("");
-      subs.reload();
-    } catch (err) {
-      setError(err);
-    }
-  }
+  const [tenant, setTenant] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [saveError, setSaveError] = useState<unknown>();
+  const n = name.trim();
+  const nameError = (touched ? validate.topicName(n) : undefined) ?? fieldErrors(saveError).name;
+  const secs = (v: string) => (v && !(Number(v) > 0) ? "Use a number above 0." : undefined);
   return (
-    <Panel title="Subscriptions of this topic">
-      <ErrorView error={subs.error} />
-      {subs.data && subs.data.length === 0 && <p className="mb-3 text-sm text-muted-foreground">No subscriptions: messages are kept for the retention period but delivered to nobody.</p>}
-      {subs.data && subs.data.length > 0 && (
-        <ul aria-label="Topic subscriptions" className="mb-3 space-y-1 text-sm">
-          {subs.data.map((s) => <li key={s.name}><Link className="text-primary hover:underline" to={`/queues/s/${encodeURIComponent(s.name)}`}>{s.name}</Link> <span className="text-muted-foreground">ack deadline {duration(s.ack_deadline_ms)}{s.ordering ? ", ordered" : ""}</span></li>)}
-        </ul>
-      )}
-      <form onSubmit={(e) => void create(e)} className="flex flex-wrap items-end gap-3 text-sm">
-        <label>Subscription name<Input size="sm" className="ml-2 w-40" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label>Ack deadline (s)<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>
-        <label>Max attempts<Input size="sm" className="ml-2 w-16" inputMode="numeric" value={attempts} onChange={(e) => setAttempts(e.target.value)} /></label>
-        <label>Dead-letter topic<Input size="sm" className="ml-2 w-36" value={dlt} onChange={(e) => setDlt(e.target.value)} /></label>
-        <label>Start<Sel aria-label="Start" className="ml-2" value={start} onChange={(v) => setStart(v as "latest" | "earliest")} options={[{ value: "latest", label: "latest" }, { value: "earliest", label: "earliest" }]} /></label>
-        <label className="flex items-center gap-1"><input type="checkbox" checked={ordering} onChange={(e) => setOrdering(e.target.checked)} />Ordered</label>
-        <Button type="submit" tone="primary" disabled={!name.trim()}>Create subscription</Button>
-      </form>
-      <div className="mt-3"><ErrorView error={error} /></div>
-    </Panel>
+    <CreateSheet
+      open={open} onOpenChange={onOpenChange}
+      title="New subscription" description={`A subscription reads topic ${topic} with its own cursor. You become its owner.`}
+      submitLabel="Create subscription" canSubmit={!validate.topicName(n) && !secs(deadline)} onError={setSaveError}
+      onSubmit={async () => {
+        const t = tenant.trim() || topicTenant;
+        const made = await createQueueSubscription({
+          name: n, topic, ack_deadline_ms: Math.round(Number(deadline || "30") * 1000), ordering, start,
+          ...(attempts ? { max_delivery_attempts: Number(attempts) } : {}), ...(dlt ? { dead_letter_topic: dlt.trim() } : {}),
+        }, t || undefined);
+        setName(""); setAttempts(""); setDlt(""); setTouched(false); setSaveError(undefined);
+        onCreated();
+        return { what: `Subscription ${made.name ?? n}`, href: `/queues/s/${encodeURIComponent(made.name ?? (t ? `${t}/${n}` : n))}` };
+      }}
+    >
+      <FormField label="Name" required help="Letters, digits, dots, dashes, underscores or colons." error={nameError}>
+        {(p) => <Input {...p} size="sm" className="w-full" value={name} onChange={(e) => { setName(e.target.value); setTouched(true); }} />}
+      </FormField>
+      <FormField label="Ack deadline (seconds)" term="ack_deadline" error={secs(deadline)}>
+        {(p) => <Input {...p} size="sm" className="w-full" inputMode="decimal" value={deadline} onChange={(e) => setDeadline(e.target.value)} />}
+      </FormField>
+      <FormField label="Max attempts" help="After this many failed deliveries a message goes to the dead-letter topic. Empty: unlimited.">
+        {(p) => <Input {...p} size="sm" className="w-full" inputMode="numeric" value={attempts} onChange={(e) => setAttempts(e.target.value)} />}
+      </FormField>
+      <FormField label="Dead-letter topic" term="dead_letter" help="Optional. You need permission to publish to it.">
+        {(p) => <Input {...p} size="sm" className="w-full" value={dlt} onChange={(e) => setDlt(e.target.value)} />}
+      </FormField>
+      <FormField label="Start" help="Latest: only new messages. Earliest: every message still retained.">
+        {(p) => <Sel {...p} aria-label="Start" value={start} onChange={(v) => setStart(v as "latest" | "earliest")} options={[{ value: "latest", label: "latest" }, { value: "earliest", label: "earliest" }]} />}
+      </FormField>
+      <FormField label="Tenant" help="Optional. Defaults to the topic's tenant.">
+        {(p) => <Input {...p} size="sm" className="w-full" value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder={topicTenant ?? ""} />}
+      </FormField>
+      <Check checked={ordering} onChange={setOrdering} label="Ordered" description="Deliver messages with the same ordering key one after another." />
+    </CreateSheet>
   );
 }
