@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { SUBSCRIPTION_STATUSES, cancelSubscription, changePlan, listPrices, previewPlanChange, listSubscriptions, pauseSubscription, resumeSubscription, subscribe } from "../../api";
 import type { Price, Proration, Subscription, SubscriptionStatus } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { formatMoney } from "./money";
-import { Badge, BillingError, Empty, Field, Th, SubjectLink } from "./shared";
+import { Badge, BillingError, Field, Th, SubjectLink } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -106,7 +107,7 @@ export default function Subscriptions() {
       </div>
       <BillingError error={subs.error} />
       {subs.loading && !subs.error && <Loading what="Loading subscriptions" />}
-      {subs.data && rows.length === 0 && <Empty>No subscriptions match.</Empty>}
+      {subs.data && rows.length === 0 && <EmptyState compact title="No subscriptions match." why="Change the filters to see more." />}
       {rows.length > 0 && (
         <Table aria-label="Subscriptions" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Subscriber</Th><Th>Plan</Th><Th>Status</Th><Th>Period</Th><Th>Trial ends</Th><Th /></Table.Row></Table.Header>

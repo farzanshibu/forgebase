@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import {
   addOverride, addTeamMember, createEnvironment, createProject, createTeam, deleteOverride, deleteProject, deleteTeam, getProject,
   invite, listInvitations, listMembers, listOverrides, listProjects, listRoles, listRoleSets, listTeams, putMember, removeMember,
@@ -7,7 +8,7 @@ import {
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, EffectBadge, MultiPick, TextField } from "./shared";
+import { ActionError, EffectBadge, MultiPick, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
@@ -23,7 +24,7 @@ export function ProjectsTab({ org }: { org: string }) {
     <div className="space-y-4">
       <ErrorView error={l.error} />
       {l.loading && !l.error && <Loading what="Loading projects" />}
-      {l.data?.length === 0 && <Empty>No projects yet.</Empty>}
+      {l.data?.length === 0 && <EmptyState compact title="No projects yet." why="Projects hold an organization's resources. Add one below." />}
       {l.data?.map((p) => <ProjectRow key={p.id} id={p.id} onChanged={l.reload} />)}
       <Panel title="New project">
         <div className="flex flex-wrap items-end gap-3">
@@ -73,7 +74,7 @@ export function MembersTab({ org }: { org: string }) {
     <div className="space-y-4">
       <ErrorView error={members.error} />
       {members.loading && !members.error && <Loading what="Loading members" />}
-      {members.data?.length === 0 && <Empty>No members.</Empty>}
+      {members.data?.length === 0 && <EmptyState compact title="No members." why="Members are accounts that belong to this organization. Invite or add one below." />}
       {members.data && members.data.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Roles</Table.Head><Table.Head>Role sets</Table.Head><Table.Head>Status</Table.Head><Table.Head /></Table.Row></Table.Header>
@@ -124,7 +125,7 @@ export function TeamsTab({ org }: { org: string }) {
     <div className="space-y-4">
       <ErrorView error={teams.error} />
       {teams.loading && !teams.error && <Loading what="Loading teams" />}
-      {teams.data?.length === 0 && <Empty>No teams yet.</Empty>}
+      {teams.data?.length === 0 && <EmptyState compact title="No teams yet." why="A team is a named group of members that can be given roles together." />}
       <ul aria-label="Team tree">{children(null).map(node)}</ul>
       <Panel title="New team">
         <div className="flex flex-wrap items-end gap-3">
@@ -182,7 +183,7 @@ export function InvitationsTab({ org }: { org: string }) {
     <div className="space-y-4">
       <ErrorView error={inv.error} />
       {inv.loading && !inv.error && <Loading what="Loading invitations" />}
-      {inv.data?.length === 0 && <Empty>No pending invitations.</Empty>}
+      {inv.data?.length === 0 && <EmptyState compact title="No pending invitations." why="Invitations you send wait here until the person accepts." />}
       {inv.data && inv.data.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Email</Table.Head><Table.Head>Roles</Table.Head><Table.Head>Status</Table.Head><Table.Head>Expires</Table.Head></Table.Row></Table.Header>
@@ -218,7 +219,7 @@ export function OverridesTab({ org }: { org: string }) {
     <div className="space-y-4">
       <ErrorView error={l.error} />
       {l.loading && !l.error && <Loading what="Loading overrides" />}
-      {l.data?.length === 0 && <Empty>No user overrides.</Empty>}
+      {l.data?.length === 0 && <EmptyState compact title="No user overrides." why="An override grants or denies one permission to one account, whatever its roles say." />}
       {l.data && l.data.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Principal</Table.Head><Table.Head>Permission</Table.Head><Table.Head>Effect</Table.Head><Table.Head /></Table.Row></Table.Header>

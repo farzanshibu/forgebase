@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import {
   DEFAULT_LDAP, DEFAULT_TURNSTILE, deleteSmsGateway, deleteSocialProvider, getSmsGateway, listSocialProviders, PROVIDER_KINDS, putRealmIdentity, putSmsGateway, putSocialProvider,
   SECRET_MASK, TURNSTILE_ACTIONS, type LdapSettings, type ProviderKind, type RealmConfig, type RealmIdentity, type SmsConfig, type SmsProviderType, type SocialProvider, type TurnstileSettings,
@@ -6,7 +7,7 @@ import {
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty, Field, MultiPick } from "../access/shared";
+import { ActionError, Field, MultiPick } from "../access/shared";
 import { useRun } from "../access/util";
 import { Check, Note } from "./shared";
 import { csv, useRealm } from "./util";
@@ -16,7 +17,7 @@ import { Input } from "panelui-web/input";
 export default function ProvidersPage({ realms, reload }: { realms: RealmIdentity[]; reload: () => void }) {
   const realm = useRealm();
   const ident = realms.find((r) => r.realm === realm);
-  if (!ident) return <Empty>Realm {realm} has no identity configuration yet. Create it on the Realms tab.</Empty>;
+  if (!ident) return <EmptyState compact title={`Realm ${realm} has no identity configuration yet.`} why="Create it on the Realms tab." />;
   return (
     <div className="space-y-6">
       <Social realm={realm} enabled={ident.config.methods.oauth} />
@@ -36,7 +37,7 @@ function Social({ realm, enabled }: { realm: string; enabled: boolean }) {
     <Panel title="Social and OAuth providers">
       <ErrorView error={l.error} />
       {l.loading && !l.error && <Loading what="Loading providers" />}
-      {l.data && l.data.length === 0 && <Empty>{enabled ? "No provider is registered for this realm." : "Social sign-in is off for this realm (enable it under Realms > Settings)."}</Empty>}
+      {l.data && l.data.length === 0 && <EmptyState compact title={enabled ? "No provider is registered for this realm." : "Social sign-in is off for this realm."} why={enabled ? "A provider lets users sign in with an account they already have elsewhere." : "Enable it under Realms > Settings."} />}
       {l.data && l.data.length > 0 && (
         <ul className="text-sm">
           {l.data.map((p) => (

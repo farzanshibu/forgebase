@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { listUsageAlerts, listUsageMeters } from "../../api";
 import type { ServerMeterState, UsageMeter } from "../../api";
 import { Button, Loading, Panel } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { formatCount, percent } from "./money";
-import { BillingError, Empty, SubjectLink, Th } from "./shared";
+import { BillingError, SubjectLink, Th } from "./shared";
 import { ROW, TABLE, THEAD, when_ } from "./util";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
@@ -56,7 +57,7 @@ export default function Usage() {
       </form>
       <BillingError error={meters.error} />
       {meters.loading && !meters.error && <Loading what="Loading usage" />}
-      {meters.data && meters.data.items.length === 0 && <Empty>No usage meters match. Meters appear once a subject uses a metered feature.</Empty>}
+      {meters.data && meters.data.items.length === 0 && <EmptyState compact title="No usage meters match." why="Meters appear once a subject uses a metered feature." />}
       {meters.data && meters.data.items.length > 0 && <ul aria-label="Usage meters" className="grid gap-3 md:grid-cols-2">{meters.data.items.map((u) => <Meter key={`${u.subject}:${u.feature}:${u.scope_key}`} u={u} />)}</ul>}
       {meters.data && meters.data.total > PAGE && (
         <div className="flex items-center gap-3 text-sm text-muted-foreground" aria-label="Usage paging">

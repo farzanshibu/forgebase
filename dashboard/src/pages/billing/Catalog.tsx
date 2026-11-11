@@ -1,4 +1,5 @@
 import { Textarea } from "panelui-web/textarea";
+import { EmptyState } from "../../components/EmptyState";
 import { useState } from "react";
 import { PRICE_TYPES, PRODUCT_KINDS, SCHEMES, listAddons, listFeatures, listPlans, listPrices, listProducts, listUsagePacks, putPrice, putProduct, archivePrice, archiveProduct } from "../../api";
 import type { BillingInterval, PriceInput, PriceScheme, PriceType, Product, ProductKind } from "../../api";
@@ -7,7 +8,7 @@ import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { describePrice, parseCurrencyOptions, parseTiers } from "./catalogUtil";
 import { formatMoney, parseMinor } from "./money";
-import { Badge, BillingError, Empty, Field, Th } from "./shared";
+import { Badge, BillingError, Field, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -145,7 +146,7 @@ export default function Catalog() {
       {products.loading && !products.error && <Loading what="Loading catalog" />}
       {products.data && (
         <Panel title="Products and prices">
-          {products.data.length === 0 && <Empty>No products yet. Add one below.</Empty>}
+          {products.data.length === 0 && <EmptyState compact title="No products yet." why="A product is something you sell, with one or more prices. Add one below." />}
           {products.data.length > 0 && (
             <Table aria-label="Products" className={TABLE}>
               <Table.Header className={THEAD}><Table.Row><Th>Product</Th><Th>Kind</Th><Th>Prices</Th><Th>State</Th></Table.Row></Table.Header>

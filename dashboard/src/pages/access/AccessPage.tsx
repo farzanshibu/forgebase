@@ -1,4 +1,5 @@
 import { Route, Routes } from "react-router-dom";
+import { PageHeader } from "../../components/PageHeader";
 import { RouteTabs } from "../../components/controls";
 import PoliciesPage from "./PoliciesPage";
 import RealmPage from "./RealmPage";
@@ -16,7 +17,7 @@ const TABS = [
 export default function AccessPage() {
   return (
     <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Access Studio</h1>
+      <PageHeader studio="access" />
       <RouteTabs label="Access sections" tabs={TABS} className="mt-4" />
       <div className="mt-6">
         <Routes>
@@ -25,7 +26,7 @@ export default function AccessPage() {
           <Route path="realm" element={<RealmPage />} />
           <Route path="rules" element={<PoliciesPage />} />
           <Route path="tester" element={<RuleTester />} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in Access Studio.</p>} />
+          <Route path="*" element={<p className="text-muted-foreground">No such page in Access.</p>} />
         </Routes>
       </div>
     </div>

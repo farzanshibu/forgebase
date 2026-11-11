@@ -1,10 +1,11 @@
 import { Textarea } from "panelui-web/textarea";
+import { EmptyState } from "../../components/EmptyState";
 import { useState } from "react";
 import { deletePolicy, getPolicy, listCollections, putPolicy, type CollectionDef, type Policy } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { ActionError, Empty } from "./shared";
+import { ActionError } from "./shared";
 import { useRun } from "./util";
 
 type Mode = "none" | "open" | "expr";
@@ -46,7 +47,7 @@ export default function PoliciesPage() {
     <div className="space-y-4">
       <ErrorView error={cols.error} />
       {cols.loading && !cols.error && <Loading what="Loading collections" />}
-      {cols.data?.length === 0 && <Empty>No collections yet.</Empty>}
+      {cols.data?.length === 0 && <EmptyState compact title="No collections yet." why="Collection rules apply to collections. Create a collection in Database first." />}
       {cols.data && cols.data.length > 0 && (
         <label className="flex max-w-xs flex-col gap-1 text-xs text-muted-foreground">Collection
           <Sel value={name} onChange={(v) => { setName(v); setSaved(false); }} options={[{ value: "", label: "Choose a collection…" }, ...cols.data.filter((c) => !c.system).map((c) => ({ value: c.name, label: c.name }))]} />

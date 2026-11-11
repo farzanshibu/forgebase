@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { archiveCoupon, listCoupons, putCoupon } from "../../api";
 import type { CouponDuration, CouponKind } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
@@ -6,7 +7,7 @@ import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
 import { csv } from "../functions/util";
 import { formatBp, formatMoney, parseMinor } from "./money";
-import { Badge, BillingError, Empty, Field, Th } from "./shared";
+import { Badge, BillingError, Field, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -47,7 +48,7 @@ export default function Coupons() {
     <div className="space-y-4">
       <BillingError error={coupons.error} />
       {coupons.loading && !coupons.error && <Loading what="Loading coupons" />}
-      {coupons.data && coupons.data.length === 0 && <Empty>No coupons yet.</Empty>}
+      {coupons.data && coupons.data.length === 0 && <EmptyState compact title="No coupons yet." why="A coupon gives a discount when a customer enters its code." />}
       {coupons.data && coupons.data.length > 0 && (
         <Table aria-label="Coupons" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Code</Th><Th>Discount</Th><Th>Duration</Th><Th>Redeemed</Th><Th>Expires</Th><Th>State</Th><Th /></Table.Row></Table.Header>

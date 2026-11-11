@@ -1,8 +1,10 @@
 import { useCallback, useState } from "react";
+import { HelpTip } from "../../components/HelpTip";
+import { EmptyState } from "../../components/EmptyState";
 import { deleteAcl, listAcl, putAcl, type AclEntry, type Effect } from "../../api";
 import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
-import { ActionError, Empty, EffectBadge, TextField } from "./shared";
+import { ActionError, EffectBadge, TextField } from "./shared";
 import { rowCls, useRun } from "./util";
 import { Table } from "panelui-web/table";
 
@@ -25,6 +27,7 @@ export default function AclPanel() {
 
   return (
     <div className="space-y-4">
+      <p className="flex items-center gap-1 text-sm text-muted-foreground"><HelpTip term="acl">An ACL</HelpTip> lets one account or role use a single project, environment or collection.</p>
       <Panel title="Resource">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">Resource type
@@ -36,7 +39,7 @@ export default function AclPanel() {
       </Panel>
       <ErrorView error={loadError} />
       {loaded && !rows && !loadError && <Loading what="Loading ACL" />}
-      {rows && rows.length === 0 && <Empty>No ACL entries on {loaded?.type} {loaded?.id}.</Empty>}
+      {rows && rows.length === 0 && <EmptyState compact title={`No ACL entries on ${loaded?.type} ${loaded?.id}.`} why="An ACL entry lets one account or role use this one resource, beyond what its roles allow." />}
       {rows && rows.length > 0 && (
         <Table className="w-full text-left text-sm">
           <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Grantee</Table.Head><Table.Head>Permission</Table.Head><Table.Head>Effect</Table.Head><Table.Head /></Table.Row></Table.Header>

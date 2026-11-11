@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/EmptyState";
 import { createOrder, getInvoice, listAllOrders, listPrices } from "../../api";
 import type { Order, OrderStatus } from "../../api";
 import { Button, ErrorView, Loading, Panel } from "../../components/ui";
 import { Sel } from "../../components/controls";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Empty, Field, Money, Th } from "./shared";
+import { Badge, BillingError, Field, Money, Th } from "./shared";
 import { FORM_GRID, ROW, TABLE, THEAD, idempotencyKey, when_ } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
@@ -43,7 +44,7 @@ export default function Orders() {
       </form>
       <BillingError error={orders.error} />
       {orders.loading && !orders.error && <Loading what="Loading orders" />}
-      {orders.data && orders.data.items.length === 0 && <Empty>No orders match.</Empty>}
+      {orders.data && orders.data.items.length === 0 && <EmptyState compact title="No orders match." why="Change the filters to see more." />}
       {orders.data && orders.data.items.length > 0 && (
         <Table aria-label="Orders" className={TABLE}>
           <Table.Header className={THEAD}><Table.Row><Th>Order</Th><Th>Subject</Th><Th>Status</Th><Th>Total</Th><Th>Invoice</Th><Th>Created</Th></Table.Row></Table.Header>
