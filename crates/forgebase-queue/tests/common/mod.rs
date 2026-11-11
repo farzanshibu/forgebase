@@ -1,16 +1,22 @@
-//! Shared harness: a real SQLite database in a temp dir, migrated, with the
+//! Shared harness: a real, migrated database on the backend
+//! `FORGEBASE_TEST_BACKEND` selects (SQLite in a temp dir, the default, or a
+//! PostgreSQL database of the shared test engine; ADR-0028 §7.7), with the
 //! policy engine as the authorizer, the quota engine, realtime (for the
 //! outbox that feeds record sources) and the queue service on a manual clock.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod writers;
+
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use forgebase_auth::crypto::Keyring;
 use forgebase_core::DataLayout;
 use forgebase_data::{AccessContext, DataService};
-use forgebase_db::{Backend, Database, DbOptions};
+use forgebase_db::testing::{TestDb, postgres_test_db, selected_backend};
+use forgebase_db::{Backend, BackendKind, Database, DbOptions};
 use forgebase_entitlements::{
     EntitlementService, FeatureInput, FeatureKind, PlanFeature, PlanInput, SubscriptionStatus, SubscriptionSync,
 };
@@ -58,7 +64,56 @@ pub struct H {
     pub svc: QueueService,
     pub clock: ManualClock,
     pub keyring: Keyring,
-    pub dir: tempfile::TempDir,
+    pub dir: Store,
+}
+
+/// A test's database and private directory. On SQLite the database is a
+/// file in the directory; on PostgreSQL it is a database of the shared test
+/// engine, dropped with the store. [`Store::open`] again reopens the same
+/// data (a process restart).
+pub struct Store {
+    dir: tempfile::TempDir,
+    pg: Option<TestDb>,
+    opened: AtomicBool,
+}
+
+impl Store {
+    pub async fn new() -> Self {
+        let pg = match selected_backend() {
+            BackendKind::Postgres => Some(
+                postgres_test_db()
+                    .await
+                    .expect("FORGEBASE_TEST_BACKEND=postgres needs a test engine"),
+            ),
+            _ => None,
+        };
+        Self {
+            dir: tempfile::tempdir().unwrap(),
+            pg,
+            opened: AtomicBool::new(false),
+        }
+    }
+
+    /// The private directory (data layout, SQLite file).
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Opens the database (again), with the `root` administrator.
+    pub async fn open(&self) -> Database {
+        let Some(pg) = &self.pg else {
+            return open_db(self.dir.path()).await;
+        };
+        let db = if self.opened.swap(true, Ordering::SeqCst) {
+            let db = Database::open(pg.options()).await.unwrap();
+            db.migrate(None).await.unwrap();
+            db
+        } else {
+            pg.database().clone()
+        };
+        insert_root(&db).await;
+        db
+    }
 }
 
 pub async fn open_db(dir: &Path) -> Database {
@@ -73,6 +128,11 @@ pub async fn open_db(dir: &Path) -> Database {
         .await
         .unwrap();
     db.migrate(Some(&layout.backups_dir())).await.unwrap();
+    insert_root(&db).await;
+    db
+}
+
+async fn insert_root(db: &Database) {
     // `admin()` is a real administrator: subscriptions record their creator,
     // and record-change messages are delivered as that creator sees them
     // (FB-141), which needs the account to exist.
@@ -84,7 +144,6 @@ pub async fn open_db(dir: &Path) -> Database {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    db
 }
 
 pub async fn harness() -> H {
@@ -92,14 +151,14 @@ pub async fn harness() -> H {
 }
 
 pub async fn harness_with(settings: QueueSettings) -> H {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Store::new().await;
     let clock = ManualClock::new(real_now());
     open_in(dir, settings, clock).await
 }
 
 /// Opens (or reopens) everything over the database in `dir`.
-pub async fn open_in(dir: tempfile::TempDir, settings: QueueSettings, clock: ManualClock) -> H {
-    let db = open_db(dir.path()).await;
+pub async fn open_in(dir: Store, settings: QueueSettings, clock: ManualClock) -> H {
+    let db = dir.open().await;
     let backend: Arc<dyn Backend> = Arc::new(db.clone());
     let policy = PolicyService::open(backend.clone()).await.unwrap();
     let data = DataService::new(backend.clone(), policy.authorizer()).await.unwrap();

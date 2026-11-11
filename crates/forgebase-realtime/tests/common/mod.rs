@@ -1,7 +1,10 @@
-//! Test harness: a real SQLite database, the real auth service and auth
+//! Test harness: a real database on the backend `FORGEBASE_TEST_BACKEND`
+//! selects (ADR-0028 §7.7), the real auth service and auth
 //! layer, the realtime router served on a loopback port, and an authorizer
 //! whose rules a test can change while connections are open.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
+
+pub mod writers;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -114,6 +117,7 @@ pub struct Stack {
     pub db: Database,
     pub app: Router,
     server: tokio::task::JoinHandle<()>,
+    _pg: Option<forgebase_db::testing::TestDb>,
     _tmp: tempfile::TempDir,
 }
 
@@ -131,11 +135,25 @@ impl Stack {
 
     pub async fn start_with(cfg: RealtimeConfig, fanout: Option<Arc<dyn FanOut>>) -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let core = forgebase_core::Config::defaults(tmp.path());
-        let db = Database::open(DbOptions::from_config(&core.database, tmp.path().join("forgebase.db")))
-            .await
-            .unwrap();
-        db.migrate(None).await.unwrap();
+        let pg = match forgebase_db::testing::selected_backend() {
+            forgebase_db::BackendKind::Postgres => Some(
+                forgebase_db::testing::postgres_test_db()
+                    .await
+                    .expect("FORGEBASE_TEST_BACKEND=postgres needs a test engine"),
+            ),
+            _ => None,
+        };
+        let db = match &pg {
+            Some(pg) => pg.database().clone(),
+            None => {
+                let core = forgebase_core::Config::defaults(tmp.path());
+                let db = Database::open(DbOptions::from_config(&core.database, tmp.path().join("forgebase.db")))
+                    .await
+                    .unwrap();
+                db.migrate(None).await.unwrap();
+                db
+            }
+        };
         let mut acfg = AuthConfig::for_data_dir(tmp.path());
         acfg.argon2 = Argon2Config::insecure_fast_for_tests();
         acfg.cookie_secure = false;
@@ -168,6 +186,7 @@ impl Stack {
             db,
             app,
             server,
+            _pg: pg,
             _tmp: tmp,
         }
     }

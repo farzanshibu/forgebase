@@ -47,9 +47,9 @@ impl QueueService {
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT coalesce(sum(CASE WHEN minute > ?4 - 120000 THEN count ELSE 0 END), 0) AS last, \
+                "SELECT coalesce(sum(CASE WHEN minute > CAST(?4 AS BIGINT) - 120000 THEN count ELSE 0 END), 0) AS last, \
                         coalesce(sum(count), 0) AS window FROM _forgebase_queue_rates \
-                 WHERE scope = ?1 AND name = ?2 AND metric = ?3 AND minute > ?4 - 300000",
+                 WHERE scope = ?1 AND name = ?2 AND metric = ?3 AND minute > CAST(?4 AS BIGINT) - 300000",
                 vec![scope.into(), name.into(), metric.into(), minute(now).into()],
             ))
             .await?;
@@ -342,7 +342,7 @@ impl QueueService {
             for sql in [
                 "DELETE FROM _forgebase_queue_dedup WHERE expires_at <= ?1",
                 "DELETE FROM _forgebase_queue_snapshots WHERE expires_at <= ?1",
-                "DELETE FROM _forgebase_queue_rates WHERE minute < ?1 - 3600000",
+                "DELETE FROM _forgebase_queue_rates WHERE minute < CAST(?1 AS BIGINT) - 3600000",
             ] {
                 tx.execute(&Statement::new(sql, vec![now.into()])).await?;
             }

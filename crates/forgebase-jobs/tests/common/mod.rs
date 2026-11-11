@@ -1,15 +1,19 @@
-//! Shared harness: a real SQLite database in a temp dir, migrated, with the
+//! Shared harness: a real, migrated database on the backend
+//! `FORGEBASE_TEST_BACKEND` selects (SQLite in a temp dir, the default, or a
+//! PostgreSQL database of the shared test engine; ADR-0028 §7.7), with the
 //! data core's authorizer behind the job service.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use forgebase_core::DataLayout;
 use forgebase_data::schema::Collection;
 use forgebase_data::{AccessContext, Action, Authorizer, DataService, Decision, DefaultAuthorizer};
-use forgebase_db::{Database, DbOptions};
+use forgebase_db::testing::{TestDb, postgres_test_db, selected_backend};
+use forgebase_db::{BackendKind, Database, DbOptions};
 use forgebase_jobs::{ClaimRequest, ClaimedJob, JobService, ManualClock};
 
 pub struct Harness {
@@ -18,13 +22,60 @@ pub struct Harness {
     pub svc: JobService,
     /// The clock `svc` reads: time moves only when a test advances it.
     pub clock: ManualClock,
-    pub dir: tempfile::TempDir,
+    pub dir: Store,
+}
+
+/// A test's database and private directory. On SQLite the database is a
+/// file in the directory; on PostgreSQL it is a database of the shared test
+/// engine, dropped with the store. [`Store::open`] again reopens the same
+/// data (a process restart).
+pub struct Store {
+    dir: tempfile::TempDir,
+    pg: Option<TestDb>,
+    opened: AtomicBool,
+}
+
+impl Store {
+    pub async fn new() -> Self {
+        let pg = match selected_backend() {
+            BackendKind::Postgres => Some(
+                postgres_test_db()
+                    .await
+                    .expect("FORGEBASE_TEST_BACKEND=postgres needs a test engine"),
+            ),
+            _ => None,
+        };
+        Self {
+            dir: tempfile::tempdir().unwrap(),
+            pg,
+            opened: AtomicBool::new(false),
+        }
+    }
+
+    /// The private directory (data layout, SQLite file).
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Opens the database (again).
+    pub async fn open(&self) -> Database {
+        let Some(pg) = &self.pg else {
+            return open_db(self.dir.path()).await;
+        };
+        if !self.opened.swap(true, Ordering::SeqCst) {
+            return pg.database().clone();
+        }
+        let db = Database::open(pg.options()).await.unwrap();
+        db.migrate(None).await.unwrap();
+        db
+    }
 }
 
 pub fn system() -> AccessContext {
     AccessContext::system()
 }
 
+/// A SQLite database in `dir` (what [`Store::open`] uses on SQLite).
 pub async fn open_db(dir: &Path) -> Database {
     let layout = DataLayout::new(dir.join("data"));
     layout.ensure().unwrap();
@@ -48,8 +99,8 @@ pub async fn harness() -> Harness {
 }
 
 pub async fn harness_with(authorizer: Arc<dyn Authorizer>) -> Harness {
-    let dir = tempfile::tempdir().unwrap();
-    let db = open_db(dir.path()).await;
+    let dir = Store::new().await;
+    let db = dir.open().await;
     let (data, svc, clock) = service(&db, authorizer).await;
     Harness {
         db,

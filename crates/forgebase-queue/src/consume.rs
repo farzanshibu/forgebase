@@ -17,6 +17,7 @@ use forgebase_jobs::backoff_ms;
 
 use crate::access::bare;
 use crate::error::QueueError;
+use crate::history;
 use crate::model::{
     AckResult, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage, SeekRequest,
     SeekResult, Snapshot, check_name, iso, parse_time,
@@ -33,10 +34,6 @@ const CLAIM_ROUNDS: usize = 8;
 
 /// Messages turned into delivery rows per claim at most.
 const MATERIALIZE_MAX: i64 = 2000;
-
-/// Appends a history entry for a new attempt.
-const PUSH_HISTORY: &str = "json_insert(CASE WHEN json_array_length(history) >= 25 THEN json_remove(history, '$[0]') \
-    ELSE history END, '$[#]', json_object('attempt', attempts + 1, 'at', ?3, 'consumer', ?4))";
 
 /// The query that picks the oldest ready deliveries of a subscription.
 ///
@@ -63,14 +60,30 @@ impl QueueService {
     /// must not contain a sort of the backlog).
     #[doc(hidden)]
     pub async fn explain_claim_plan(&self, ordering: bool) -> Result<Vec<String>> {
-        let rows = self
-            .backend()
+        let params = || vec!["s".into(), 0_i64.into(), 10_i64.into()];
+        if self.backend().dialect().name() != "postgres" {
+            let rows = self
+                .backend()
+                .fetch_all(&Statement::new(
+                    format!("EXPLAIN QUERY PLAN {}", ready_claim_sql(ordering)),
+                    params(),
+                ))
+                .await?;
+            return Ok(Row::all(&rows).map(|r| r.text("detail")).collect());
+        }
+        // PostgreSQL: an empty test table is cheapest to scan, so sequential
+        // scans are switched off to show whether the index serves the order
+        // (a `Sort` step then means it cannot).
+        let mut tx = self.begin().await?;
+        tx.execute(&Statement::raw("SET LOCAL enable_seqscan = off")).await?;
+        let rows = tx
             .fetch_all(&Statement::new(
-                format!("EXPLAIN QUERY PLAN {}", ready_claim_sql(ordering)),
-                vec!["s".into(), 0_i64.into(), 10_i64.into()],
+                format!("EXPLAIN (COSTS OFF) {}", ready_claim_sql(ordering)),
+                params(),
             ))
-            .await?;
-        Ok(Row::all(&rows).map(|r| r.text("detail")).collect())
+            .await;
+        tx.rollback().await?;
+        Ok(Row::all(&rows?).map(|r| r.text("QUERY PLAN")).collect())
     }
 
     /// Reads up to `MATERIALIZE_MAX` new topic messages into delivery rows of
@@ -160,9 +173,13 @@ impl QueueService {
             .await?;
         for r in Row::all(&rows) {
             let (seq, attempts) = (r.int("seq"), r.int("attempts"));
+            let d = self.backend().dialect();
             tx.execute(&Statement::new(
-                "UPDATE _forgebase_queue_deliveries SET history = json_set(history, '$[#-1].outcome', 'expired') \
-                 WHERE subscription = ?1 AND seq = ?2 AND json_array_length(history) > 0",
+                format!(
+                    "UPDATE _forgebase_queue_deliveries SET history = {} WHERE subscription = ?1 AND seq = ?2 AND {}",
+                    history::set_outcome(d, "'expired'"),
+                    history::not_empty(d)
+                ),
                 vec![sub.name.as_str().into(), seq.into()],
             ))
             .await?;
@@ -407,9 +424,10 @@ impl QueueService {
                 let lease = format!("ack-{}", uuid::Uuid::new_v4().simple());
                 tx.execute(&Statement::new(
                     format!(
-                        "UPDATE _forgebase_queue_deliveries SET state = 'leased', history = {PUSH_HISTORY}, \
+                        "UPDATE _forgebase_queue_deliveries SET state = 'leased', history = {}, \
                      attempts = attempts + 1, lease_id = ?5, lease_until = ?6, consumer = ?4 \
-                     WHERE subscription = ?1 AND seq = ?2"
+                     WHERE subscription = ?1 AND seq = ?2",
+                        history::push(self.backend().dialect())
                     ),
                     vec![
                         name.into(),
@@ -600,11 +618,15 @@ impl QueueService {
                 };
                 let (seq, attempts) = (r.int("seq"), r.int("attempts"));
                 let err: Value = error.map(|e| e.chars().take(500).collect::<String>()).into();
+                let d = self.backend().dialect();
                 tx.execute(&Statement::new(
-                    "UPDATE _forgebase_queue_deliveries SET history = CASE WHEN ?4 IS NULL \
-                       THEN json_set(history, '$[#-1].outcome', ?3) \
-                       ELSE json_set(history, '$[#-1].outcome', ?3, '$[#-1].error', ?4) END \
-                     WHERE subscription = ?1 AND seq = ?2 AND json_array_length(history) > 0",
+                    format!(
+                        "UPDATE _forgebase_queue_deliveries SET history = CASE WHEN CAST(?4 AS TEXT) IS NULL \
+                         THEN {} ELSE {} END WHERE subscription = ?1 AND seq = ?2 AND {}",
+                        history::set_outcome(d, "CAST(?3 AS TEXT)"),
+                        history::set_outcome_and_error(d, "CAST(?3 AS TEXT)", "CAST(?4 AS TEXT)"),
+                        history::not_empty(d)
+                    ),
                     vec![sub.into(), seq.into(), outcome.into(), err],
                 ))
                 .await?;
@@ -701,10 +723,14 @@ impl QueueService {
         let r: Result<_> = async {
             Ok(tx
                 .execute(&Statement::new(
-                    "UPDATE _forgebase_queue_deliveries SET state = 'ready', available_at = ?3, \
-                     attempts = max(attempts - 1, 0), lease_id = NULL, lease_until = NULL, consumer = NULL, \
-                     history = json_set(history, '$[#-1].outcome', 'released') \
-                     WHERE subscription = ?1 AND consumer = ?2 AND state = 'leased' AND json_array_length(history) > 0",
+                    format!(
+                        "UPDATE _forgebase_queue_deliveries SET state = 'ready', available_at = ?3, \
+                         attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, lease_id = NULL, \
+                         lease_until = NULL, consumer = NULL, history = {} \
+                         WHERE subscription = ?1 AND consumer = ?2 AND state = 'leased' AND {}",
+                        history::set_outcome(self.backend().dialect(), "'released'"),
+                        history::not_empty(self.backend().dialect())
+                    ),
                     vec![sub.into(), consumer.into(), now.into()],
                 ))
                 .await?

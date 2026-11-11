@@ -112,9 +112,15 @@ const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max
     backoff_max_ms, visibility_timeout_ms, enabled, next_run_at, last_run_at, last_job_id, created_by, created_at, \
     updated_at, tenant, context";
 
-/// Effects of a transaction, applied after it committed.
-#[derive(Debug, Default)]
+/// Effects of a transaction, applied after it committed, and what the
+/// transaction's SQL needs to know about the engine.
+#[derive(Debug)]
 pub(crate) struct Fx {
+    /// Column that orders job and workflow rows by insertion
+    /// ([`forgebase_db::Dialect::row_order_col`]): SQLite's `rowid`, the
+    /// `_rowid` identity column on PostgreSQL. Ties of `created_at` and
+    /// `finished_at` break on it.
+    pub row_order: &'static str,
     /// Jobs to publish: (id, `status` or `progress`).
     pub jobs: Vec<(String, &'static str)>,
     /// Workflows whose state changed.
@@ -128,6 +134,17 @@ pub(crate) struct Fx {
 }
 
 impl Fx {
+    pub(crate) fn new(row_order: &'static str) -> Self {
+        Self {
+            row_order,
+            jobs: Vec::new(),
+            workflows: BTreeSet::new(),
+            cancel: Vec::new(),
+            wake: false,
+            drop_objects: Vec::new(),
+        }
+    }
+
     pub(crate) fn job(&mut self, id: &str, event: &'static str) {
         if !self.jobs.iter().any(|(i, e)| i == id && *e == event) {
             self.jobs.push((id.to_owned(), event));
@@ -260,6 +277,17 @@ impl JobService {
         self.inner.data.backend().as_ref()
     }
 
+    /// Column that orders job and workflow rows by insertion
+    /// (`rowid` / `_rowid`, ADR-0028 §7.4).
+    pub(crate) fn row_order(&self) -> &'static str {
+        self.backend().dialect().row_order_col()
+    }
+
+    /// Effects of a new transaction.
+    pub(crate) fn fx(&self) -> Fx {
+        Fx::new(self.row_order())
+    }
+
     pub(crate) fn allow(&self, ctx: &AccessContext, action: Action) -> Result<()> {
         Ok(self.inner.data.authorize_action(ctx, action)?)
     }
@@ -383,7 +411,7 @@ impl JobService {
         self.access().admit(ctx, &new.kind, &new.payload)?;
         let origin = Origin::of(ctx);
         let scope = self.access().scope(ctx);
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
             let (job, created) = insert_job(&mut *tx, &resolved, None, &origin, now, &mut fx).await?;
@@ -449,9 +477,10 @@ impl JobService {
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {JOB_COLS} FROM _forgebase_jobs WHERE {where_sql} \
-                     ORDER BY created_at DESC, rowid DESC LIMIT ?{} OFFSET ?{}",
+                     ORDER BY created_at DESC, {ord} DESC LIMIT ?{} OFFSET ?{}",
                     params.len() - 1,
-                    params.len()
+                    params.len(),
+                    ord = self.row_order()
                 ),
                 params,
             ))
@@ -642,7 +671,7 @@ impl JobService {
         self.allow(ctx, Action::ManageJobs)?;
         self.visible(ctx, id).await?;
         let now = self.now();
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
             cancel_tx(&mut *tx, id, now, &mut fx, true).await?;
@@ -657,7 +686,7 @@ impl JobService {
     pub async fn retry(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
         self.visible(ctx, id).await?;
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = retry_tx(&mut *tx, id, self.now(), &mut fx).await;
         self.commit(tx, r, fx).await
@@ -667,7 +696,7 @@ impl JobService {
     pub async fn delete(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
         self.visible(ctx, id).await?;
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = delete_tx(&mut *tx, id, &mut fx).await;
         self.commit(tx, r, fx).await
@@ -675,7 +704,10 @@ impl JobService {
 
     // --------------------------------------------------------------- workers
 
-    /// Registers (or updates) a worker and returns it.
+    /// Registers (or updates) a worker and returns it. A worker belongs to
+    /// the tenant and principal that registered it first (FB-146); others
+    /// may not take its id over (`409 worker_id_taken`), except privileged
+    /// callers and, in the same tenant, holders of `engine:read_jobs:all`.
     pub async fn register_worker(&self, ctx: &AccessContext, new: NewWorker) -> Result<Worker> {
         self.allow(ctx, Action::WorkJobs)?;
         let id = match new.id {
@@ -707,11 +739,19 @@ impl JobService {
             ));
         }
         let now = self.now();
+        let scope = self.access().scope(ctx);
         let mut tx = self.begin().await?;
         let r = async {
+            if worker_owner_tx(&mut *tx, &id).await?.is_some_and(|o| !scope.sees(&o, None)) {
+                return Err(JobError::state(
+                    "worker_id_taken",
+                    format!("worker id {id:?} belongs to another tenant or user"),
+                ));
+            }
+            // The owner columns keep their first value on an update.
             tx.execute(&Statement::new(
-                "INSERT INTO _forgebase_job_workers (id, name, queues, kinds, concurrency, registered_at, last_seen_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) \
+                "INSERT INTO _forgebase_job_workers (id, name, queues, kinds, concurrency, registered_at, last_seen_at, \
+                 tenant, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, ?8) \
                  ON CONFLICT (id) DO UPDATE SET name = excluded.name, queues = excluded.queues, \
                  kinds = excluded.kinds, concurrency = excluded.concurrency, last_seen_at = excluded.last_seen_at",
                 vec![
@@ -721,6 +761,8 @@ impl JobService {
                     serde_json::to_string(&new.kinds).unwrap_or_else(|_| "[]".into()).into(),
                     concurrency.into(),
                     now.into(),
+                    ctx.tenant.clone().into(),
+                    ctx.actor().into(),
                 ],
             ))
             .await?;
@@ -735,7 +777,7 @@ impl JobService {
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
-                "SELECT id, name, queues, kinds, concurrency, registered_at, last_seen_at \
+                "SELECT id, name, queues, kinds, concurrency, registered_at, last_seen_at, tenant, created_by \
                  FROM _forgebase_job_workers WHERE id = ?1",
                 vec![id.into()],
             ))
@@ -746,14 +788,20 @@ impl JobService {
         Ok(worker_from(&Row::new(&rows, 0), self.now()))
     }
 
-    /// Workers, most recently seen first.
+    /// Workers the caller may see (FB-146: of its tenant, and its own unless
+    /// it holds `engine:read_jobs:all`), most recently seen first.
     pub async fn workers(&self, ctx: &AccessContext) -> Result<Vec<Worker>> {
         self.allow(ctx, Action::ReadJobs)?;
+        let mut params = Vec::new();
+        let cond = self.access().scope(ctx).sql("", false, &mut params);
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(
-                "SELECT id, name, queues, kinds, concurrency, registered_at, last_seen_at \
-                 FROM _forgebase_job_workers ORDER BY last_seen_at DESC, id LIMIT 500",
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT id, name, queues, kinds, concurrency, registered_at, last_seen_at, tenant, created_by \
+                     FROM _forgebase_job_workers WHERE {cond} ORDER BY last_seen_at DESC, id LIMIT 500"
+                ),
+                params,
             ))
             .await?;
         let now = self.now();
@@ -784,14 +832,15 @@ impl JobService {
         }
         let now = self.now();
         let limit = self.worker_limit(ctx);
+        let toucher = self.toucher(ctx);
         // Cheap read first: an idle poll must not take the single writer.
         if !self.has_claimable(&req, limit.as_ref(), now).await? {
-            self.touch_worker(&req.worker_id, now).await?;
+            self.touch_worker(&req.worker_id, &toucher, now).await?;
             return Ok(Vec::new());
         }
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
-        let r = claim_tx(&mut *tx, &req, limit.as_ref(), max, now, &mut fx).await;
+        let r = claim_tx(&mut *tx, &req, limit.as_ref(), &toucher, max, now, &mut fx).await;
         self.commit(tx, r, fx).await
     }
 
@@ -830,9 +879,19 @@ impl JobService {
             == Some(1))
     }
 
-    async fn touch_worker(&self, id: &str, now: i64) -> Result<()> {
+    fn toucher(&self, ctx: &AccessContext) -> Toucher {
+        Toucher {
+            scope: self.access().scope(ctx),
+            owner: Owner {
+                tenant: ctx.tenant.clone(),
+                created_by: ctx.actor(),
+            },
+        }
+    }
+
+    async fn touch_worker(&self, id: &str, toucher: &Toucher, now: i64) -> Result<()> {
         let mut tx = self.begin().await?;
-        let r = touch_worker_tx(&mut *tx, id, now).await;
+        let r = touch_worker_tx(&mut *tx, id, toucher, now).await;
         finish(tx, r).await
     }
 
@@ -841,7 +900,7 @@ impl JobService {
         self.allow(ctx, Action::WorkJobs)?;
         let now = self.now();
         let mut tx = self.begin().await?;
-        let r = heartbeat_tx(&mut *tx, id, lease_id, now).await;
+        let r = heartbeat_tx(&mut *tx, id, lease_id, &self.toucher(ctx), now).await;
         finish(tx, r).await
     }
 
@@ -858,10 +917,10 @@ impl JobService {
         self.allow(ctx, Action::WorkJobs)?;
         report.validate()?;
         let now = self.now();
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
-            let hb = heartbeat_tx(&mut *tx, id, lease_id, now).await?;
+            let hb = heartbeat_tx(&mut *tx, id, lease_id, &self.toucher(ctx), now).await?;
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_jobs SET progress_percent = COALESCE(?2, progress_percent), \
                  progress_stage = COALESCE(?3, progress_stage), progress_message = COALESCE(?4, progress_message), \
@@ -902,10 +961,10 @@ impl JobService {
             ));
         }
         let now = self.now();
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
-            let hb = heartbeat_tx(&mut *tx, id, lease_id, now).await?;
+            let hb = heartbeat_tx(&mut *tx, id, lease_id, &self.toucher(ctx), now).await?;
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_jobs SET checkpoint = ?2, checkpoint_at = ?3 WHERE id = ?1",
                 vec![id.into(), text.as_str().into(), now.into()],
@@ -942,7 +1001,7 @@ impl JobService {
             resolved.push(c.resolve(now)?);
             access.admit(ctx, &c.kind, &c.payload)?;
         }
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
             let parent = leased(&mut *tx, id, lease_id).await?;
@@ -996,7 +1055,7 @@ impl JobService {
             other => (other, None),
         };
         let now = self.now();
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = complete_tx(&mut *tx, id, lease_id, inline, stored.clone(), now, &mut fx).await;
         if r.is_err()
@@ -1039,7 +1098,7 @@ impl JobService {
         retryable: bool,
     ) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = fail_tx(&mut *tx, id, lease_id, error, retryable, self.now(), &mut fx).await;
         self.commit(tx, r, fx).await
@@ -1048,7 +1107,7 @@ impl JobService {
     /// Gives a job back without counting the attempt (graceful shutdown).
     pub async fn release(&self, ctx: &AccessContext, id: &str, lease_id: &str) -> Result<Job> {
         self.allow(ctx, Action::WorkJobs)?;
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = release_tx(&mut *tx, id, lease_id, self.now(), &mut fx).await;
         self.commit(tx, r, fx).await
@@ -1291,7 +1350,7 @@ impl JobService {
         if due.is_empty() {
             return Ok(0);
         }
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = fire_tx(&mut *tx, now, &mut fx).await;
         self.commit(tx, r, fx).await
@@ -1315,7 +1374,7 @@ impl JobService {
         if expired.is_empty() {
             return Ok(0);
         }
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = reap_tx(&mut *tx, now, &mut fx).await;
         self.commit(tx, r, fx).await
@@ -1328,7 +1387,7 @@ impl JobService {
     /// purged automatically. Returns the number of jobs deleted.
     pub async fn purge_finished(&self, ctx: &AccessContext, older_than_ms: i64) -> Result<u64> {
         self.allow(ctx, Action::ManageJobs)?;
-        let mut fx = Fx::default();
+        let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = async {
             let refs = tx
@@ -1551,6 +1610,8 @@ fn worker_from(r: &Row<'_>, now: i64) -> Worker {
         registered_at: iso(r.int("registered_at")),
         last_seen_at: iso(seen),
         online: now - seen <= WORKER_ONLINE_MS,
+        tenant: r.opt_text("tenant"),
+        created_by: r.opt_text("created_by"),
     }
 }
 
@@ -1675,7 +1736,7 @@ pub(crate) async fn insert_job(
     let defaults = tx
         .fetch_all(&Statement::new(
             "SELECT default_priority, default_timeout_ms FROM _forgebase_job_queues WHERE name = ?1",
-            vec![r.queue.as_str().into()],
+            vec![crate::queues::queue_key(origin.tenant.as_deref(), &r.queue).into()],
         ))
         .await?;
     let (mut priority, mut timeout_ms) = (r.policy.priority, r.timeout_ms);
@@ -1752,7 +1813,7 @@ pub(crate) async fn insert_job(
     .await?;
     for parent in &r.depends_on {
         tx.execute(&Statement::new(
-            "INSERT OR IGNORE INTO _forgebase_job_deps (job_id, parent_id) VALUES (?1, ?2)",
+            "INSERT INTO _forgebase_job_deps (job_id, parent_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
             vec![id.as_str().into(), parent.as_str().into()],
         ))
         .await?;
@@ -1773,14 +1834,18 @@ pub(crate) fn owner_of(job: &Job) -> Owner {
     }
 }
 
-/// Queues that hand out nothing right now: paused, at their concurrency
-/// limit, or out of rate budget in the current window.
+/// Queue settings (stored names, [`crate::queues::queue_key`]) that hand out
+/// nothing right now: paused, at their concurrency limit, or out of rate
+/// budget in the current window.
 fn blocked_queues_stmt(now: i64) -> Statement {
     Statement::new(
-        "SELECT name FROM _forgebase_job_queues q WHERE paused = 1 \
-         OR (rate_limit IS NOT NULL AND window_start + rate_period_ms > ?1 AND window_count >= rate_limit) \
-         OR (concurrency IS NOT NULL AND concurrency <= \
-             (SELECT COUNT(*) FROM _forgebase_jobs r WHERE r.queue = q.name AND r.status = 'running'))",
+        format!(
+            "SELECT name FROM _forgebase_job_queues q WHERE paused = 1 \
+             OR (rate_limit IS NOT NULL AND window_start + rate_period_ms > ?1 AND window_count >= rate_limit) \
+             OR (concurrency IS NOT NULL AND concurrency <= \
+                 (SELECT COUNT(*) FROM _forgebase_jobs r WHERE r.status = 'running' AND {} = q.name))",
+            crate::queues::job_queue_key("r.")
+        ),
         vec![now.into()],
     )
 }
@@ -1796,8 +1861,9 @@ pub(crate) struct WorkerLimit {
     public_with_prefix: Vec<String>,
 }
 
-/// `AND queue IN (...) AND kind IN (...) AND queue NOT IN (...)` (and a
-/// worker's tenant and kind limits) with placeholders numbered after `taken`.
+/// `AND queue IN (...) AND kind IN (...)`, `AND <settings name> NOT IN
+/// (...)` for the `excluded` queue settings (stored names), and a worker's
+/// tenant and kind limits, with placeholders numbered after `taken`.
 fn claim_filter(
     queues: &[String],
     kinds: &[String],
@@ -1850,10 +1916,11 @@ fn claim_filter(
             ));
         }
     }
+    let settings_key = crate::queues::job_queue_key("");
     for (col, list, op) in [
         ("queue", queues, "IN"),
         ("kind", kinds, "IN"),
-        ("queue", excluded, "NOT IN"),
+        (settings_key.as_str(), excluded, "NOT IN"),
     ] {
         if list.is_empty() {
             continue;
@@ -1870,13 +1937,56 @@ fn claim_filter(
     (sql, params)
 }
 
-async fn touch_worker_tx(tx: &mut dyn WriteTx, id: &str, now: i64) -> Result<()> {
-    tx.execute(&Statement::new(
-        "INSERT INTO _forgebase_job_workers (id, registered_at, last_seen_at) VALUES (?1, ?2, ?2) \
-         ON CONFLICT (id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
-        vec![id.into(), now.into()],
-    ))
-    .await?;
+/// Who claims as a worker: what it may see and who it is (FB-146).
+pub(crate) struct Toucher {
+    scope: Scope,
+    owner: Owner,
+}
+
+/// The tenant and principal that registered worker `id`, if it exists.
+async fn worker_owner_tx(tx: &mut dyn WriteTx, id: &str) -> Result<Option<Owner>> {
+    let rows = tx
+        .fetch_all(&Statement::new(
+            "SELECT tenant, created_by FROM _forgebase_job_workers WHERE id = ?1",
+            vec![id.into()],
+        ))
+        .await?;
+    Ok((!rows.is_empty()).then(|| {
+        let r = Row::new(&rows, 0);
+        Owner {
+            tenant: r.opt_text("tenant"),
+            created_by: r.opt_text("created_by").unwrap_or_default(),
+        }
+    }))
+}
+
+/// Records that worker `id` was seen (creating it for the claimer). The
+/// worker of another tenant or user is left alone: a claim never changes a
+/// row the claimer may not see.
+async fn touch_worker_tx(tx: &mut dyn WriteTx, id: &str, toucher: &Toucher, now: i64) -> Result<()> {
+    match worker_owner_tx(tx, id).await? {
+        Some(owner) if !toucher.scope.sees(&owner, None) => {}
+        Some(_) => {
+            tx.execute(&Statement::new(
+                "UPDATE _forgebase_job_workers SET last_seen_at = ?2 WHERE id = ?1",
+                vec![id.into(), now.into()],
+            ))
+            .await?;
+        }
+        None => {
+            tx.execute(&Statement::new(
+                "INSERT INTO _forgebase_job_workers (id, registered_at, last_seen_at, tenant, created_by) \
+                 VALUES (?1, ?2, ?2, ?3, ?4)",
+                vec![
+                    id.into(),
+                    now.into(),
+                    toucher.owner.tenant.clone().into(),
+                    toucher.owner.created_by.as_str().into(),
+                ],
+            ))
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -1909,13 +2019,17 @@ impl Budget {
     }
 }
 
-async fn budget(tx: &mut dyn WriteTx, queue: &str, now: i64) -> Result<Budget> {
+/// The budget of the queue settings stored as `key` (none: unlimited).
+async fn budget(tx: &mut dyn WriteTx, key: &str, now: i64) -> Result<Budget> {
     let rows = tx
         .fetch_all(&Statement::new(
-            "SELECT paused, concurrency, rate_limit, rate_period_ms, window_start, window_count, \
-             (SELECT COUNT(*) FROM _forgebase_jobs WHERE queue = ?1 AND status = 'running') AS running \
-             FROM _forgebase_job_queues WHERE name = ?1",
-            vec![queue.into()],
+            format!(
+                "SELECT paused, concurrency, rate_limit, rate_period_ms, window_start, window_count, \
+                 (SELECT COUNT(*) FROM _forgebase_jobs WHERE status = 'running' AND {} = ?1) AS running \
+                 FROM _forgebase_job_queues WHERE name = ?1",
+                crate::queues::job_queue_key("")
+            ),
+            vec![key.into()],
         ))
         .await?;
     if rows.is_empty() {
@@ -1957,11 +2071,12 @@ async fn claim_tx(
     tx: &mut dyn WriteTx,
     req: &ClaimRequest,
     limit: Option<&WorkerLimit>,
+    toucher: &Toucher,
     max: i64,
     now: i64,
     fx: &mut Fx,
 ) -> Result<Vec<ClaimedJob>> {
-    touch_worker_tx(tx, &req.worker_id, now).await?;
+    touch_worker_tx(tx, &req.worker_id, toucher, now).await?;
     reap_tx(tx, now, fx).await?;
     let blocked = tx.fetch_all(&blocked_queues_stmt(now)).await?;
     let mut excluded: Vec<String> = (0..blocked.len()).map(|i| Row::new(&blocked, i).text("name")).collect();
@@ -1980,8 +2095,9 @@ async fn claim_tx(
         let rows = tx
             .fetch_all(&Statement::new(
                 format!(
-                    "SELECT id, queue FROM _forgebase_jobs WHERE status = 'queued' AND waiting_for = 0 \
-                     AND run_at <= ?1 {filter} ORDER BY priority DESC, run_at, rowid LIMIT ?2"
+                    "SELECT id, queue, tenant FROM _forgebase_jobs WHERE status = 'queued' AND waiting_for = 0 \
+                     AND run_at <= ?1 {filter} ORDER BY priority DESC, run_at, {ord} LIMIT ?2",
+                    ord = fx.row_order
                 ),
                 params,
             ))
@@ -1991,7 +2107,9 @@ async fn claim_tx(
         }
         let mut skipped = false;
         for i in 0..rows.len() {
-            let (id, queue) = (Row::new(&rows, i).text("id"), Row::new(&rows, i).text("queue"));
+            let row = Row::new(&rows, i);
+            let id = row.text("id");
+            let queue = crate::queues::queue_key(row.opt_text("tenant").as_deref(), &row.text("queue"));
             if excluded.contains(&queue) {
                 skipped = true;
                 continue;
@@ -2062,7 +2180,7 @@ async fn claim_one(tx: &mut dyn WriteTx, id: &str, worker: &str, now: i64, fx: &
             Row::new(&rows, 0).opt_json("checkpoint")?
         }
     };
-    let parents = parents_tx(tx, &job).await?;
+    let parents = parents_tx(tx, &job, fx.row_order).await?;
     fx.job(id, "status");
     Ok(ClaimedJob {
         lease_id: lease,
@@ -2074,12 +2192,14 @@ async fn claim_one(tx: &mut dyn WriteTx, id: &str, worker: &str, now: i64, fx: &
 
 /// The parents of `job` with their results; a compensation job also gets
 /// the step it compensates.
-async fn parents_tx(tx: &mut dyn WriteTx, job: &Job) -> Result<Vec<ParentResult>> {
+async fn parents_tx(tx: &mut dyn WriteTx, job: &Job, row_order: &str) -> Result<Vec<ParentResult>> {
     let rows = tx
         .fetch_all(&Statement::new(
-            "SELECT j.id, j.step, j.status, j.result, j.result_ref FROM _forgebase_jobs j \
-             WHERE j.id IN (SELECT parent_id FROM _forgebase_job_deps WHERE job_id = ?1) OR j.id = ?2 \
-             ORDER BY j.created_at, j.rowid",
+            format!(
+                "SELECT j.id, j.step, j.status, j.result, j.result_ref FROM _forgebase_jobs j \
+                 WHERE j.id IN (SELECT parent_id FROM _forgebase_job_deps WHERE job_id = ?1) OR j.id = ?2 \
+                 ORDER BY j.created_at, j.{row_order}"
+            ),
             vec![job.id.as_str().into(), job.compensates.clone().into()],
         ))
         .await?;
@@ -2135,7 +2255,7 @@ pub(crate) async fn reap_tx(tx: &mut dyn WriteTx, now: i64, fx: &mut Fx) -> Resu
         let finished = status != "queued";
         tx.execute(&Statement::new(
             "UPDATE _forgebase_jobs SET status = ?2, lease_id = NULL, visibility_until = NULL, deadline_at = NULL, \
-             run_at = ?3, last_error = ?5, finished_at = CASE WHEN ?4 = 1 THEN ?6 ELSE NULL END, updated_at = ?6 \
+             run_at = ?3, last_error = ?5, finished_at = CASE WHEN ?4 = 1 THEN CAST(?6 AS BIGINT) ELSE NULL END, updated_at = ?6 \
              WHERE id = ?1",
             vec![
                 id.as_str().into(),
@@ -2192,7 +2312,7 @@ pub(crate) async fn leased(tx: &mut dyn WriteTx, id: &str, lease: &str) -> Resul
     }
 }
 
-async fn heartbeat_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> Result<Heartbeat> {
+async fn heartbeat_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, toucher: &Toucher, now: i64) -> Result<Heartbeat> {
     let job = leased(tx, id, lease).await?;
     let until = now + job.visibility_timeout_ms;
     tx.execute(&Statement::new(
@@ -2201,7 +2321,7 @@ async fn heartbeat_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64) -> 
     ))
     .await?;
     if let Some(w) = &job.worker_id {
-        touch_worker_tx(tx, w, now).await?;
+        touch_worker_tx(tx, w, toucher, now).await?;
     }
     Ok(Heartbeat {
         visibility_until: iso(until),
@@ -2265,7 +2385,7 @@ async fn fail_tx(
     let error: String = error.chars().take(4000).collect();
     tx.execute(&Statement::new(
         "UPDATE _forgebase_jobs SET status = ?2, run_at = ?3, lease_id = NULL, visibility_until = NULL, \
-         deadline_at = NULL, last_error = ?4, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?5 END, \
+         deadline_at = NULL, last_error = ?4, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE CAST(?5 AS BIGINT) END, \
          updated_at = ?5 WHERE id = ?1",
         vec![
             id.into(),
@@ -2305,8 +2425,8 @@ async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64, fx: &
         ("queued", "released")
     };
     tx.execute(&Statement::new(
-        "UPDATE _forgebase_jobs SET status = ?2, attempts = MAX(attempts - 1, 0), run_at = ?3, lease_id = NULL, \
-         visibility_until = NULL, deadline_at = NULL, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE ?3 END, \
+        "UPDATE _forgebase_jobs SET status = ?2, attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, run_at = ?3, lease_id = NULL, \
+         visibility_until = NULL, deadline_at = NULL, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE CAST(?3 AS BIGINT) END, \
          updated_at = ?3 WHERE id = ?1",
         vec![id.into(), status.into(), now.into()],
     ))

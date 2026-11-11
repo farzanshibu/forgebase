@@ -121,7 +121,7 @@ pub(crate) async fn bump_rate(
     }
     tx.execute(&Statement::new(
         "INSERT INTO _forgebase_queue_rates (scope, name, metric, minute, count) VALUES (?1, ?2, ?3, ?4, ?5) \
-         ON CONFLICT (scope, name, metric, minute) DO UPDATE SET count = count + excluded.count",
+         ON CONFLICT (scope, name, metric, minute) DO UPDATE SET count = _forgebase_queue_rates.count + excluded.count",
         vec![scope.into(), name.into(), metric.into(), minute(now).into(), n.into()],
     ))
     .await?;
@@ -517,11 +517,14 @@ pub(crate) async fn insert_message_tx(
         ))
         .await?;
     }
-    let res = tx
-        .execute(&Statement::new(
+    // `RETURNING seq`, not `last_insert_id` (PostgreSQL has none). Under the
+    // single writer (ADR-0028 §7.3) the sequence order of messages is their
+    // commit order, which the subscription cursors rely on (ADR-0022).
+    let inserted = tx
+        .fetch_all(&Statement::new(
             "INSERT INTO _forgebase_queue_messages (topic, id, data, attributes, ordering_key, dedup_id, bytes, \
              publisher, subject, metered, history, published_at, source_row) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) RETURNING seq",
             vec![
                 topic.name.as_str().into(),
                 id.as_str().into(),
@@ -548,7 +551,10 @@ pub(crate) async fn insert_message_tx(
     bump_rate(tx, "topic", &topic.name, "published", now, 1).await?;
     Ok(Published {
         message_id: id,
-        seq: res.last_insert_id,
+        seq: inserted
+            .scalar()
+            .and_then(Value::as_i64)
+            .ok_or_else(|| QueueError::Internal("message insert returned no seq".into()))?,
         duplicate: false,
     })
 }
@@ -1594,7 +1600,7 @@ impl QueueService {
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {SUB_COLS} FROM _forgebase_queue_subscriptions \
-                     WHERE (tenant IS NULL OR tenant = ?1) AND (?2 IS NULL OR topic = ?2) ORDER BY name"
+                     WHERE (tenant IS NULL OR tenant = ?1) AND (CAST(?2 AS TEXT) IS NULL OR topic = ?2) ORDER BY name"
                 ),
                 vec![ctx.tenant.clone().into(), topic.into()],
             ))
