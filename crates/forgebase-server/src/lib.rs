@@ -45,6 +45,7 @@ pub mod database;
 mod function_services;
 mod job_results;
 mod lock;
+pub mod moves;
 pub mod replicas;
 pub mod shards;
 
@@ -325,6 +326,28 @@ async fn start_on(
     let recovery = (db.kind() == forgebase_db::BackendKind::Postgres)
         .then(|| forgebase_db::twophase::spawn_recovery(router.clone(), forgebase_db::twophase::RECOVERY_INTERVAL));
     shards::prepare_data(auth.data()).await;
+    // FB-179 (ADR-0029 §2.9): finish a cluster restore: schema reconcile of
+    // every set, every replica marked `needs_rebuild`. Replica rebuilds go
+    // through the replicas service (FB-168), not here.
+    if let Ok(Some(_)) = forgebase_backup::topology::read_pending(layout) {
+        let backups = layout.backups_dir();
+        match forgebase_backup::topology::complete_restore(
+            &db,
+            layout,
+            forgebase_backup::topology::CompleteOptions {
+                router: Some(&router),
+                backups_dir: Some(&backups),
+                rebuilder: None,
+            },
+        )
+        .await
+        {
+            Ok(r) => tracing::info!(report = ?r, "cluster restore completed"),
+            Err(e) => {
+                tracing::warn!(error = %e, "cluster restore could not be completed; it is retried at the next start")
+            }
+        }
+    }
     // First-run setup (FB-90): a one-time token while no administrator
     // exists. The caller prints it; it never goes to the log.
     let setup_token = match auth.begin_setup().await {
@@ -486,9 +509,26 @@ async fn start_on(
     let registry = shards::register_jobs(registry, state.data().clone());
     // FB-175: the `database.*` topology operations.
     let registry = replicas::register_jobs(registry, replicas.clone());
+    // FB-174: tenant moves, shard drains and rebalancing.
+    let moves = moves::Moves::new(moves::MovesConfig {
+        router: router.clone(),
+        jobs: jobs.clone(),
+        kv: Some(kv.clone()),
+        queue: queue.clone(),
+        keyring: replicas.keyring().clone(),
+        database: config.database.clone(),
+        control_url: replicas.control_admin_url(),
+        shards: Some(replicas.shards().clone()),
+        options: moves::options_from(config),
+    });
+    let registry = moves::register_jobs(registry, moves.clone());
     replicas
         .attach(router.clone(), jobs.clone(), state.data().clone())
         .await;
+    replicas.attach_moves(moves.clone());
+    if router.control().database().kind() == forgebase_db::BackendKind::Postgres {
+        moves.spawn_stats();
+    }
     // FB-142: job visibility (channels included) and `engine:read_jobs:all`.
     jobs.attach_access(job_access);
     let jp = fn_policy.clone();

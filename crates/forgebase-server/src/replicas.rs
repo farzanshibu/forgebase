@@ -41,6 +41,7 @@ use forgebase_db::{
 };
 use forgebase_jobs::{HandlerError, Job, JobContext, JobFilter, JobRegistry, JobService, JobStatus, NewJob};
 use forgebase_pgengine::replication::service::{self, ServiceError};
+use forgebase_pgengine::shard::LocalShards;
 use forgebase_pgengine::standby::{LocalReplicas, OldPrimary, SslMode};
 use forgebase_pgengine::{EngineConfig, EngineHandle, Layout, Role, RoleSecrets, Secret};
 use serde_json::{Value as Json, json};
@@ -58,7 +59,10 @@ const LAG_MINUTES: usize = 60;
 /// How long a remote promote waits for the agent.
 const REMOTE_PROMOTE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Stages after which an operation cannot be cancelled.
-const POINT_OF_NO_RETURN: &[&str] = &["fencing", "promoting", "switching", "activating"];
+const POINT_OF_NO_RETURN: &[&str] = &["fencing", "promoting", "switching", "activating", "cleanup"];
+
+/// How long a remote shard's add waits for its primary to join (FB-174).
+const REMOTE_PRIMARY_WAIT: Duration = Duration::from_secs(3600);
 
 // ---------------------------------------------------------------------------
 // Start-up helpers (used by `database.rs`).
@@ -141,6 +145,10 @@ pub struct Replicas {
     config: forgebase_core::Config,
     keyring: Keyring,
     local: Arc<LocalReplicas>,
+    /// Shard primaries on this host (FB-174).
+    shards: Arc<LocalShards>,
+    /// Tenant moves, drains and rebalancing (FB-174).
+    moves: OnceLock<crate::moves::Moves>,
     primary: RwLock<Option<Arc<EngineHandle>>>,
     promoted: tokio::sync::Mutex<Vec<Arc<EngineHandle>>>,
     router: OnceLock<DbRouter>,
@@ -187,7 +195,17 @@ impl Replicas {
             EngineConfig::default()
         };
         let local = Arc::new(LocalReplicas::new(data_dir, &engine_cfg));
+        let shards = Arc::new(LocalShards::new(data_dir, &engine_cfg));
         if engine.is_some() {
+            // Shard primaries first: their local replicas follow them.
+            for (name, set, r) in shards.start_existing().await {
+                match r {
+                    Ok(()) => tracing::info!(node = %name, set = %set, "local shard primary started"),
+                    Err(e) => {
+                        tracing::error!(node = %name, set = %set, error = %e, "local shard primary did not start")
+                    }
+                }
+            }
             for (name, r) in local.start_existing().await {
                 match r {
                     Ok(()) => tracing::info!(replica = %name, "local replica started"),
@@ -200,6 +218,8 @@ impl Replicas {
             config: config.clone(),
             keyring,
             local,
+            shards,
+            moves: OnceLock::new(),
             primary: RwLock::new(engine),
             promoted: tokio::sync::Mutex::new(Vec::new()),
             router: OnceLock::new(),
@@ -220,6 +240,59 @@ impl Replicas {
     /// The local replicas of this host.
     pub fn local(&self) -> &LocalReplicas {
         &self.local
+    }
+
+    /// The shard primaries of this host (FB-174).
+    pub fn shards(&self) -> &Arc<LocalShards> {
+        &self.shards
+    }
+
+    /// Hands over the move service (FB-174; after [`Replicas::attach`]).
+    pub fn attach_moves(&self, moves: crate::moves::Moves) {
+        let _ = self.moves.set(moves);
+    }
+
+    fn moves(&self) -> Result<&crate::moves::Moves, TopologyError> {
+        self.moves
+            .get()
+            .ok_or_else(|| TopologyError::new(503, api::codes::TOPOLOGY_UNAVAILABLE, "the server is starting"))
+    }
+
+    /// How the engine reaches control as an administrator, and how targets
+    /// reach it: the managed engine's superuser over its socket, or the
+    /// configured URL of an external server.
+    pub fn control_admin_url(&self) -> Option<forgebase_db::SecretString> {
+        match self.primary() {
+            Some(h) => Some(forgebase_db::SecretString::new(h.url(Role::Super).expose().to_owned())),
+            None => crate::moves::external_control_url(&self.config),
+        }
+    }
+
+    /// The running local primary of `set` (control's engine, or a local
+    /// shard node).
+    async fn set_primary(&self, set: &str) -> Result<Arc<EngineHandle>, TopologyError> {
+        if set == CONTROL_SET_ID {
+            return self.need_primary();
+        }
+        let control = self.control()?;
+        let topo = topology::load(&control).await.map_err(db_err)?;
+        let node = topo
+            .primary_of(set)
+            .filter(|n| n.kind == NodeKind::Local)
+            .ok_or_else(|| {
+                TopologyError::new(
+                    400,
+                    "node_unsupported",
+                    format!("{set}'s primary is not on this server: add an external replica of it"),
+                )
+            })?;
+        self.shards.get(&node.name).await.ok_or_else(|| {
+            TopologyError::new(
+                503,
+                api::codes::NODE_UNREACHABLE,
+                format!("local shard primary {} is not running", node.name),
+            )
+        })
     }
 
     /// The control primary's engine, when this server runs it.
@@ -301,6 +374,7 @@ impl Replicas {
             t.abort();
         }
         self.local.stop_all().await;
+        self.shards.stop_all().await;
         for h in self.promoted.lock().await.drain(..) {
             if let Err(e) = h.stop().await {
                 tracing::warn!(error = %e, "stopping the promoted primary failed");
@@ -671,6 +745,61 @@ fn router_err(e: RouterError) -> TopologyError {
     }
 }
 
+/// A move-engine error as an API error (FB-174).
+fn move_err(e: forgebase_db::moves::MoveError) -> TopologyError {
+    use forgebase_core::{ErrorCode, ErrorKind};
+    if let forgebase_db::moves::MoveError::Router(r) = e {
+        return router_err(r);
+    }
+    let status = match e.kind() {
+        ErrorKind::NotFound => 404,
+        ErrorKind::Conflict => 409,
+        ErrorKind::InvalidInput => 400,
+        ErrorKind::Unavailable => 503,
+        _ => 500,
+    };
+    TopologyError::new(status, e.code(), e.to_string())
+}
+
+fn plan_view(p: &forgebase_db::moves::RebalancePlan) -> api::RebalancePlanView {
+    let loads = |v: &[forgebase_db::moves::SetScore]| {
+        v.iter()
+            .map(|s| api::SetLoadInfo {
+                set_id: s.set_id.clone(),
+                name: s.name.clone(),
+                weight: s.weight,
+                tenants: s.tenants,
+                bytes: s.bytes,
+                score: s.score,
+            })
+            .collect()
+    };
+    let expires = forgebase_db::moves::rebalance::expires_at(p);
+    api::RebalancePlanView {
+        id: p.id.clone(),
+        created_at: p.created_at.clone(),
+        expires_at: expires,
+        moves: p
+            .moves
+            .iter()
+            .map(|m| api::PlannedMoveInfo {
+                tenant: m.tenant.clone(),
+                project: m.project.clone(),
+                from: m.from.clone(),
+                to: m.to.clone(),
+                rows: m.rows,
+                bytes: m.bytes,
+                est_freeze_ms: m.est_freeze_ms,
+            })
+            .collect(),
+        before: loads(&p.before),
+        after: loads(&p.after),
+        spread_before: p.spread_before,
+        spread_after: p.spread_after,
+        est_freeze_ms: p.moves.iter().map(|m| m.est_freeze_ms).sum(),
+    }
+}
+
 fn job_err(e: forgebase_jobs::JobError) -> TopologyError {
     let status = forgebase_api::error::status_for(forgebase_core::ErrorCode::kind(&e)).as_u16();
     TopologyError::new(status, forgebase_core::ErrorCode::code(&e), e.to_string())
@@ -850,7 +979,22 @@ impl std::fmt::Debug for ReplicaConnector {
 
 impl SetConnector for ReplicaConnector {
     fn connect<'a>(&'a self, set: &'a DbSet, primary: &'a DbNode) -> BoxFuture<'a, Result<Database, DbError>> {
-        self.inner.connect(set, primary)
+        Box::pin(async move {
+            if primary.kind != NodeKind::Local {
+                return self.inner.connect(set, primary).await;
+            }
+            // FB-174: a shard primary on this server, over its socket.
+            let h = self.replicas.shards.get(&primary.name).await.ok_or_else(|| {
+                DbError::Unavailable(format!(
+                    "local shard primary {} is not running on this server",
+                    primary.name
+                ))
+            })?;
+            let cfg = &self.replicas.config.database;
+            let mut opts = DbOptions::from_config_target(cfg, DbTarget::postgres(h.url(Role::Server).expose(), true));
+            opts.read_pool_size = cfg.postgres.pool_size;
+            Database::open(opts).await
+        })
     }
 
     fn connect_replica<'a>(&'a self, set: &'a DbSet, node: &'a DbNode) -> BoxFuture<'a, Result<Database, DbError>> {
@@ -919,9 +1063,14 @@ impl service::PoolSwitch for Pools<'_> {
                 tracing::warn!(node = %new_primary.name, "control's primary was promoted: restart the server");
                 return Ok(db);
             }
+            // FB-174: a shard's new primary: the router reopens the set (its
+            // primary node changed) and the set's pools follow.
             if let Ok(r) = self.replicas.router() {
                 r.reload().await.map_err(|e| ServiceError::Invalid(e.to_string()))?;
-                return Ok(r.control().database().clone());
+                return match r.set(set_id) {
+                    Some(h) => Ok(h.database().clone()),
+                    None => Err(ServiceError::Invalid(format!("set {set_id} did not reopen"))),
+                };
             }
             Err(ServiceError::Invalid("the router is not running".into()))
         })
@@ -1008,13 +1157,8 @@ impl TopologyOps for Replicas {
             let weight = req.weight.unwrap_or(1);
             if req.kind == "local" {
                 self.need_primary()?;
-                if req.set != CONTROL_SET_ID {
-                    return Err(TopologyError::new(
-                        501,
-                        api::codes::NOT_IMPLEMENTED,
-                        "local replicas of a shard come with FB-174 (shard primaries on this server)",
-                    ));
-                }
+                // FB-174: a shard's local replicas follow its local primary.
+                self.set_primary(&req.set).await?;
                 let op = self
                     .enqueue(
                         ctx,
@@ -1097,7 +1241,12 @@ impl TopologyOps for Replicas {
                 ));
             }
             let _one = self.changes.lock().await;
-            let primary = self.primary();
+            // FB-174: a shard's replica has its slot on the shard's primary.
+            let primary = if n.set_id == CONTROL_SET_ID {
+                self.primary()
+            } else {
+                self.set_primary(&n.set_id).await.ok()
+            };
             // Close its pool first: the router drops it on reload.
             service::remove_replica(&control, &self.local, primary.as_deref(), id, confirm)
                 .await
@@ -1299,8 +1448,25 @@ impl TopologyOps for Replicas {
                     format!("a node named {} already exists", req.node.name),
                 ));
             }
+            // FB-174: `local` (a cluster on this server), `remote` (another
+            // host joins with a primary token), `external` (a server you run).
+            let kind = req.node.kind.as_str();
             let url = req.node.url.clone().unwrap_or_default();
-            check_reachable(&self.config, &url).await?;
+            match kind {
+                "local" => {
+                    self.need_primary()?;
+                    forgebase_pgengine::Layout::node(
+                        &self.data_dir,
+                        &req.node.name,
+                        forgebase_pgengine::NodeKind::Primary,
+                    )
+                    .map_err(|e| TopologyError::invalid(e.to_string()))?;
+                }
+                "remote" => {
+                    self.need_primary()?;
+                }
+                _ => check_reachable(&self.config, &url).await?,
+            }
             let set = topology::insert_set(
                 &control,
                 &topology::NewSet {
@@ -1310,23 +1476,40 @@ impl TopologyOps for Replicas {
             )
             .await
             .map_err(db_err)?;
+            if kind == "remote" {
+                // The node row comes with `forgebase node join`
+                // (POST join-tokens {set, role: primary}); the job waits for it.
+                return self
+                    .enqueue(ctx, kinds::SHARD_ADD, &set.id, None, json!({ "remote": req.node.name }))
+                    .await;
+            }
             let node = topology::insert_node(
                 &control,
                 &topology::NewNode {
                     set_id: set.id.clone(),
                     name: req.node.name.clone(),
-                    kind: NodeKind::External,
+                    kind: if kind == "local" {
+                        NodeKind::Local
+                    } else {
+                        NodeKind::External
+                    },
                     role: NodeRole::Primary,
                     url_sealed: None,
-                    state: NodeState::Ready,
+                    state: if kind == "local" {
+                        NodeState::Provisioning
+                    } else {
+                        NodeState::Ready
+                    },
                     weight: 1,
                     origin: NodeOrigin::Api,
                 },
             )
             .await
             .map_err(db_err)?;
-            let sealed = seal_node_url(&self.keyring, &node.id, &url).map_err(TopologyError::internal)?;
-            set_node_url(&control, &node.id, Some(&sealed), None).await?;
+            if kind != "local" {
+                let sealed = seal_node_url(&self.keyring, &node.id, &url).map_err(TopologyError::internal)?;
+                set_node_url(&control, &node.id, Some(&sealed), None).await?;
+            }
             self.enqueue(ctx, kinds::SHARD_ADD, &set.id, Some(&node.id), json!({}))
                 .await
         })
@@ -1356,6 +1539,12 @@ impl TopologyOps for Replicas {
                     api::codes::OPERATION_IN_PROGRESS,
                     format!("{} is {}; wait for it to become active", set.name, set.state),
                 ));
+            }
+            // FB-174: draining moves every tenant away (operation
+            // `database.shard.drain`, one move at a time).
+            if state == Some(SetState::Draining) && set.state == SetState::Active {
+                self.enqueue(&AccessContext::system(), kinds::SHARD_DRAIN, id, None, json!({}))
+                    .await?;
             }
             let updated = topology::update_set(&control, id, state, req.weight, req.hosts_tenants)
                 .await
@@ -1414,11 +1603,27 @@ impl TopologyOps for Replicas {
                     ),
                 ));
             }
+            // FB-174: no move may still use it (source rows kept until cleanup).
+            if let Err(e) = forgebase_db::moves::check_removable(self.router()?, id).await {
+                return Err(move_err(e));
+            }
             if let Some(h) = self.router()?.set(id) {
-                let _ = forgebase_db::shards::unsubscribe_from_control(h.database(), &control, set.number).await;
+                self.unsubscribe_shard(&set, h.database()).await;
             }
             for n in topo.nodes_of(id).filter(|n| n.state != NodeState::Retired) {
                 retire_node(&control, n).await?;
+                // FB-174: a local shard node's data stays under
+                // postgres/retired/ until DELETE retired/{id}.
+                if n.kind == NodeKind::Local {
+                    if n.role == NodeRole::Primary {
+                        match self.shards.retire(&n.name).await {
+                            Ok(r) => tracing::info!(node = %n.name, path = %r.path.display(), "shard data retired"),
+                            Err(e) => tracing::warn!(node = %n.name, error = %e, "shard data not retired"),
+                        }
+                    } else if let Err(e) = self.local.remove(None, &n.name).await {
+                        tracing::warn!(node = %n.name, error = %e, "local replica of a removed shard not deleted");
+                    }
+                }
             }
             topology::update_set(&control, id, Some(SetState::Retired), None, Some(false))
                 .await
@@ -1499,6 +1704,118 @@ impl TopologyOps for Replicas {
         })
     }
 
+    fn move_tenant<'a>(
+        &'a self,
+        ctx: &'a AccessContext,
+        tenant: &'a str,
+        req: api::MoveBody,
+    ) -> OpsFuture<'a, api::Operation> {
+        Box::pin(async move {
+            let router = self.router()?;
+            let moves = self.moves()?;
+            let from = router
+                .placement(tenant)
+                .map_or_else(|| CONTROL_SET_ID.to_owned(), |p| p.set_id);
+            // One topology change per set: neither set may be busy.
+            let _one = self.changes.lock().await;
+            if let Some(busy) = self.active_ops().await?.into_iter().find(|j| {
+                j.kind != crate::moves::kinds::TENANT_CLEANUP
+                    && [j.payload.get("set"), j.payload.get("to")]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Json::as_str)
+                        .any(|s| s == from || s == req.to)
+            }) {
+                return Err(TopologyError::new(
+                    409,
+                    api::codes::OPERATION_IN_PROGRESS,
+                    format!(
+                        "operation {} ({}) is changing one of the two sets; wait for it or cancel it",
+                        busy.id, busy.kind
+                    ),
+                ));
+            }
+            let (_, job) = moves
+                .start_move(ctx, tenant, &req.to, ctx.principal.id().map(str::to_owned))
+                .await
+                .map_err(move_err)?;
+            Ok(operation_of(&job))
+        })
+    }
+
+    fn rebalance_plan(&self, req: api::RebalancePlanBody) -> OpsFuture<'_, api::RebalancePlanView> {
+        Box::pin(async move {
+            let plan = self
+                .moves()?
+                .plan(&forgebase_db::moves::PlanOptions {
+                    sets: req.sets,
+                    max_moves: req.max_moves,
+                })
+                .await
+                .map_err(move_err)?;
+            Ok(plan_view(&plan))
+        })
+    }
+
+    fn rebalance<'a>(&'a self, ctx: &'a AccessContext, req: api::RebalanceBody) -> OpsFuture<'a, api::Operation> {
+        Box::pin(async move {
+            let moves = self.moves()?;
+            let _one = self.changes.lock().await;
+            if let Some(busy) = self
+                .active_ops()
+                .await?
+                .into_iter()
+                .find(|j| j.kind != crate::moves::kinds::TENANT_CLEANUP)
+            {
+                return Err(TopologyError::new(
+                    409,
+                    api::codes::OPERATION_IN_PROGRESS,
+                    format!(
+                        "operation {} ({}) is running; a rebalance waits for every other change",
+                        busy.id, busy.kind
+                    ),
+                ));
+            }
+            let job = moves.start_rebalance(ctx, &req.plan_id).await.map_err(move_err)?;
+            Ok(operation_of(&job))
+        })
+    }
+
+    fn retired_data(&self) -> OpsFuture<'_, api::RetiredList> {
+        Box::pin(async move {
+            Ok(api::RetiredList {
+                items: self
+                    .shards
+                    .retired()
+                    .into_iter()
+                    .map(|r| api::RetiredInfo {
+                        id: r.id,
+                        name: r.name,
+                        set_id: r.set_id,
+                        bytes: r.bytes,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn delete_retired<'a>(&'a self, id: &'a str, confirm: &'a str) -> OpsFuture<'a, api::Removed> {
+        Box::pin(async move {
+            let found =
+                self.shards.retired().into_iter().find(|r| r.id == id).ok_or_else(|| {
+                    TopologyError::new(404, "retired_not_found", format!("no retired shard data {id}"))
+                })?;
+            check_confirm(confirm, &found.name)?;
+            let shards = self.shards.clone();
+            let id_owned = id.to_owned();
+            tokio::task::spawn_blocking(move || shards.delete_retired(&id_owned))
+                .await
+                .map_err(|e| TopologyError::internal(e.to_string()))?
+                .map_err(|e| TopologyError::internal(e.to_string()))?;
+            Ok(api::Removed { removed: id.to_owned() })
+        })
+    }
+
     fn operations<'a>(&'a self, ctx: &'a AccessContext, q: api::OperationQuery) -> OpsFuture<'a, api::OperationList> {
         Box::pin(async move {
             if q.active {
@@ -1568,9 +1885,39 @@ impl TopologyOps for Replicas {
                 serde_json::from_value(body).map_err(|e| TopologyError::invalid(format!("bad join request: {e}")))?;
             let source = service::ReplicationSource::from_handle(&primary, None, replication_sslmode(&self.config))
                 .map_err(svc_err)?;
-            let grant = service::redeem_join(&control, &source, &req, peer)
+            let mut grant = service::redeem_join(&control, &source, &req, peer)
                 .await
                 .map_err(svc_err)?;
+            if grant.role == NodeRole::Primary {
+                // FB-174: a shard primary on another host. Same roles as every
+                // node (the secrets go once over HTTPS); the server writes to it
+                // as forgebase_server at its listen address.
+                let listen = req
+                    .listen
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .ok_or_else(|| {
+                        TopologyError::invalid(
+                            "a shard primary must listen on TCP: run forgebase node join with --listen",
+                        )
+                    })?;
+                let file = Layout::primary(&self.data_dir).secrets_file();
+                let text = std::fs::read_to_string(&file).map_err(|e| TopologyError::internal(e.to_string()))?;
+                let pw = RoleSecrets::load(&file)
+                    .map_err(|e| TopologyError::internal(e.to_string()))?
+                    .and_then(|s| s.password(Role::Server).map(|p| Secret::new(p.to_owned())))
+                    .ok_or_else(|| TopologyError::internal("roles.secret has no forgebase_server password"))?;
+                let url = service::server_url(listen, &pw, source.sslmode);
+                let sealed =
+                    seal_node_url(&self.keyring, &grant.node_id, url.expose()).map_err(TopologyError::internal)?;
+                set_node_url(&control, &grant.node_id, Some(&sealed), None).await?;
+                grant.secrets = Some(text);
+                if let Err(e) = self.apply_hba_peers().await {
+                    tracing::warn!(error = %e.message, "pg_hba.conf peers not updated after a join");
+                }
+                return serde_json::to_value(&grant).map_err(|e| TopologyError::internal(e.to_string()));
+            }
             // The server's read pool on the replica: the reader's URL, sealed.
             if let Some(listen) = req.listen.as_deref().filter(|l| !l.trim().is_empty()) {
                 let pw = reader_password(&self.data_dir)?;
@@ -1609,8 +1956,21 @@ impl TopologyOps for Replicas {
             let control = self.control()?;
             let hb: service::Heartbeat =
                 serde_json::from_value(body).map_err(|e| TopologyError::invalid(format!("bad heartbeat: {e}")))?;
-            let before = self.node_row(id).await.ok().map(|n| n.state);
+            let row = self.node_row(id).await.ok();
+            let before = row.as_ref().map(|n| n.state);
             let reply = service::heartbeat(&control, id, key, &hb).await.map_err(svc_err)?;
+            // FB-174: a remote shard primary that runs is ready; the waiting
+            // `database.shard.add` activates it.
+            if let Some(n) = &row
+                && n.role == NodeRole::Primary
+                && n.kind == NodeKind::Remote
+                && n.state == NodeState::Provisioning
+                && hb.state == service::AgentState::Primary
+            {
+                topology::update_node_state(&control, id, NodeState::Ready)
+                    .await
+                    .map_err(db_err)?;
+            }
             if before != Some(reply.node_state) {
                 self.reload().await;
             }
@@ -1776,7 +2136,7 @@ impl Replicas {
             .unwrap_or(1);
         cancelled(ctx, "the clone")?;
         let control = self.control().map_err(fail)?;
-        let primary = self.need_primary().map_err(fail)?;
+        let primary = self.set_primary(&set).await.map_err(fail)?;
         // A retry after a lost lease: the row exists; rebuild it instead.
         let existing = topology::load(&control)
             .await
@@ -1841,7 +2201,11 @@ impl Replicas {
             report(ctx, stage("done", 100.0, format!("{} rejoined ({how:?})", n.name))).await;
             return Ok(json!({ "node": view.id, "state": view.state.as_str(), "how": format!("{how:?}") }));
         }
-        let primary = self.primary();
+        let primary = if n.set_id == CONTROL_SET_ID {
+            self.primary()
+        } else {
+            self.set_primary(&n.set_id).await.ok()
+        };
         let view = service::rebuild_replica(&control, &self.local, primary.as_deref(), &id)
             .await
             .map_err(|e| fail(svc_err(e)))?;
@@ -1928,12 +2292,147 @@ impl Replicas {
         Ok(json!({ "node": id, "promoted": true, "outcome": out, "restart_required": restart }))
     }
 
+    /// FB-174: waits for a remote shard's primary to join and run
+    /// (`forgebase node join` with a primary token), cancellable.
+    async fn wait_remote_primary(
+        &self,
+        ctx: &JobContext,
+        control: &Database,
+        set_id: &str,
+    ) -> Result<String, HandlerError> {
+        let started = std::time::Instant::now();
+        loop {
+            if ctx.is_cancelled() {
+                return Err(HandlerError::fatal(
+                    "cancelled while waiting for the shard's primary to join; remove the shard with DELETE shards/{id}",
+                ));
+            }
+            let topo = topology::load(control)
+                .await
+                .map_err(|e| HandlerError::retry(e.to_string()))?;
+            if let Some(n) = topo.primary_of(set_id)
+                && n.state == NodeState::Ready
+                && n.url_sealed.is_some()
+            {
+                return Ok(n.id.clone());
+            }
+            if started.elapsed() > REMOTE_PRIMARY_WAIT {
+                return Err(HandlerError::fatal(
+                    "the shard's primary did not join within an hour; make a new primary join token and run forgebase node join",
+                ));
+            }
+            report(
+                ctx,
+                stage(
+                    "waiting",
+                    2.0,
+                    "waiting for the primary: POST /api/system/database/join-tokens {set, role: \"primary\"}, then run the command on its host",
+                ),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    /// A connection with administrative rights: a superuser URL over a
+    /// local socket, or an external node's URL.
+    async fn open_admin(&self, url: &str, local: bool) -> Result<Database, DbError> {
+        let mut opts = DbOptions::from_config_target(&self.config.database, DbTarget::postgres(url, local));
+        opts.read_pool_size = 1;
+        Database::open(opts).await
+    }
+
+    /// The shard's `fb_control` subscription (FB-173), made with control's
+    /// superuser (slot, publication) and the shard's (subscription; an
+    /// external shard: its own URL's role).
+    async fn subscribe_shard(
+        &self,
+        set: &DbSet,
+        node: &DbNode,
+        shard_db: &Database,
+        conninfo: &forgebase_db::SecretString,
+    ) -> Result<(), DbError> {
+        let control_url = self
+            .control_admin_url()
+            .ok_or_else(|| DbError::Unsupported("no administrative URL of control".into()))?;
+        let control = self.open_admin(control_url.expose(), self.primary().is_some()).await?;
+        let shard = match (node.kind, self.shards.get(&node.name).await) {
+            (NodeKind::Local, Some(h)) => Some(self.open_admin(h.url(Role::Super).expose(), true).await?),
+            _ => None,
+        };
+        let r = async {
+            forgebase_db::shards::ensure_control_publication(&control).await?;
+            forgebase_db::shards::subscribe_to_control(
+                shard.as_ref().unwrap_or(shard_db),
+                &control,
+                set.number,
+                conninfo,
+            )
+            .await
+            .map(|_| ())
+        }
+        .await;
+        control.close().await;
+        if let Some(s) = shard {
+            s.close().await;
+        }
+        r
+    }
+
+    /// Drops a shard's `fb_control` subscription and control's slot with
+    /// the superusers (removal).
+    async fn unsubscribe_shard(&self, set: &DbSet, shard_db: &Database) {
+        let topo = self.router().ok().map(DbRouter::topology);
+        let node = topo.as_ref().and_then(|t| t.primary_of(&set.id)).cloned();
+        let r = async {
+            let control_url = self
+                .control_admin_url()
+                .ok_or_else(|| DbError::Unsupported("no administrative URL of control".into()))?;
+            let control = self.open_admin(control_url.expose(), self.primary().is_some()).await?;
+            let shard = match node {
+                Some(n) if n.kind == NodeKind::Local => match self.shards.get(&n.name).await {
+                    Some(h) => Some(self.open_admin(h.url(Role::Super).expose(), true).await?),
+                    None => None,
+                },
+                _ => None,
+            };
+            let r = forgebase_db::shards::unsubscribe_from_control(
+                shard.as_ref().unwrap_or(shard_db),
+                &control,
+                set.number,
+            )
+            .await;
+            control.close().await;
+            if let Some(s) = shard {
+                s.close().await;
+            }
+            r
+        }
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(shard = %set.name, error = %e, "fb_control subscription not dropped");
+        }
+    }
+
+    /// How a new shard reaches control for the `fb_control` subscription:
+    /// control's superuser socket for a shard on this host, an external
+    /// control's configured URL otherwise; `None` when there is no such way.
+    fn control_conninfo_for(&self, node: &DbNode) -> Option<forgebase_db::SecretString> {
+        if node.kind == NodeKind::Local {
+            return self.control_admin_url();
+        }
+        crate::moves::external_control_url(&self.config)
+    }
+
     async fn run_shard_add(&self, ctx: &JobContext) -> Result<Json, HandlerError> {
         let set_id = payload_str(ctx, "set")?.to_owned();
-        let node_id = payload_str(ctx, "node")?.to_owned();
         cancelled(ctx, "the shard was activated")?;
         let control = self.control().map_err(fail)?;
         let router = self.router().map_err(fail)?;
+        let node_id = match ctx.payload().get("node").and_then(Json::as_str) {
+            Some(n) => n.to_owned(),
+            None => self.wait_remote_primary(ctx, &control, &set_id).await?,
+        };
         let topo = topology::load(&control)
             .await
             .map_err(|e| HandlerError::retry(e.to_string()))?;
@@ -1947,6 +2446,25 @@ impl Replicas {
             .find(|n| n.id == node_id)
             .cloned()
             .ok_or_else(|| HandlerError::fatal(format!("node {node_id} not found")))?;
+        // FB-174: a shard primary on this server: initdb and bootstrap.
+        if node.kind == NodeKind::Local && self.shards.get(&node.name).await.is_none() {
+            report(
+                ctx,
+                stage(
+                    "provisioning",
+                    5.0,
+                    format!("creating the cluster of {} on this server", node.name),
+                ),
+            )
+            .await;
+            self.shards
+                .add(&node.name, &set.id)
+                .await
+                .map_err(|e| HandlerError::retry(e.to_string()))?;
+            topology::update_node_state(&control, &node.id, NodeState::Ready)
+                .await
+                .map_err(|e| HandlerError::retry(e.to_string()))?;
+        }
         report(ctx, stage("connecting", 10.0, format!("connecting to {}", node.name))).await;
         let connector = ReplicaConnector {
             inner: NodeConnector::new(self.keyring.clone(), self.config.database.clone()),
@@ -1961,14 +2479,60 @@ impl Replicas {
             stage("activating", 30.0, "migrating the shard and creating the collections"),
         )
         .await;
+        // FB-174: before the first shard, control's tenants get placement
+        // rows (their load counts) and relations to shared collections lose
+        // their SQL foreign keys (FB-171).
+        let first = !topo
+            .sets
+            .iter()
+            .any(|s| s.kind == SetKind::Shard && s.id != set.id && s.state != SetState::Retired);
+        if first {
+            if let Some(data) = self.data.get() {
+                match data.cross_shard_offenders().await {
+                    Ok(v) if !v.is_empty() => tracing::warn!(
+                        rules = v.len(),
+                        "rules follow relations to shared collections; they answer relation_crosses_shards once sharded"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "cross-shard rule check failed"),
+                }
+                data.drop_cross_placement_keys()
+                    .await
+                    .map_err(|e| HandlerError::retry(e.to_string()))?;
+            }
+            forgebase_db::moves::rebalance::ensure_control_placements(router)
+                .await
+                .map_err(|e| HandlerError::retry(e.to_string()))?;
+        }
         let backups = DataLayoutDirs::backups(&self.data_dir);
         let replay = self.data.get().map(|d| d as &dyn forgebase_db::shards::CatalogReplay);
+        let conninfo = self.control_conninfo_for(&node);
+        if conninfo.is_none() {
+            tracing::warn!(
+                shard = %set.name,
+                "no way for the shard to reach control: fb_control (record ACLs, direct logins) is not replicated to it"
+            );
+        }
+        // The fb_control subscription needs slot and subscription rights the
+        // server's own role lacks: it is made below with the superusers.
         let setup = forgebase_db::shards::ShardSetup {
             backups_dir: Some(&backups),
             replay,
             control_conninfo: None,
         };
         let activated = forgebase_db::shards::activate_shard(router, &set, &db, setup).await;
+        if activated.is_ok()
+            && let Some(conninfo) = &conninfo
+        {
+            report(
+                ctx,
+                stage("subscribing", 90.0, "replicating control's ACL tables to the shard"),
+            )
+            .await;
+            if let Err(e) = self.subscribe_shard(&set, &node, &db, conninfo).await {
+                tracing::warn!(shard = %set.name, error = %e, "fb_control subscription not made");
+            }
+        }
         db.close().await;
         let set = activated.map_err(|e| fail(router_err(e)))?;
         report(ctx, stage("done", 100.0, format!("{} is active", set.name))).await;
@@ -1983,6 +2547,8 @@ impl Replicas {
             config: self.config.clone(),
             keyring: self.keyring.clone(),
             local: self.local.clone(),
+            shards: self.shards.clone(),
+            moves: OnceLock::new(),
             primary: RwLock::new(self.primary()),
             promoted: tokio::sync::Mutex::new(Vec::new()),
             router: OnceLock::new(),

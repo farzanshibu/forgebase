@@ -39,7 +39,7 @@ it("backend line -> top queries -> policies -> direct login (password once) -> e
   await u.type(within(form).getByLabelText(/^Acts as/), "service:reporting");
   await u.click(within(form).getByRole("button", { name: "Create login" }));
   expect(await screen.findByTestId("login-password")).toHaveTextContent("s3cret-PASSWORD-once");
-  await u.click(screen.getByRole("button", { name: "I have copied it" }));
+  await u.click(await screen.findByRole("button", { name: "I have copied it" }));
   await waitFor(() => expect(screen.queryByTestId("login-password")).not.toBeInTheDocument());
   await u.click(await screen.findByRole("button", { name: "Revoke bi" }));
   await confirmDialog(/Revoke login fbu_bi/, "Revoke login", "bi");
@@ -53,7 +53,7 @@ it("backend line -> top queries -> policies -> direct login (password once) -> e
   // SQL editor: tick Read from replica and run.
   await u.click(within(tabs).getByRole("tab", { name: "SQL editor" }));
   await u.click(await screen.findByRole("checkbox", { name: "Read from replica" }));
-  await u.click(screen.getByRole("button", { name: "Run" }));
+  await u.click(await screen.findByRole("button", { name: "Run" }));
   await screen.findByRole("table", { name: "Result" });
   expect(pg.sql.at(-1)).toEqual({ sql: "SELECT 1 AS one", read_from_replica: true });
   expect(mock.problems).toEqual([]);

@@ -8,6 +8,9 @@
 //!   directory; the replaced data is kept, an interrupted restore is rolled back.
 //! * [`pg`]: the PostgreSQL side (FB-150): `pg_basebackup` backups of the bundled
 //!   engine, `pg_dump` backups of an external server, `pg_verifybackup`.
+//! * [`topology`]: backups and restores of a cluster with replicas and shards (FB-179):
+//!   one backup per set under one directory, a combined manifest, replica sources,
+//!   replicas rebuilt and schemas reconciled after a restore.
 //! * [`pre_migration`]: the snapshot taken before a schema change on PostgreSQL.
 //! * [`SnapshotStore`]: timestamped snapshots with retention and point-in-time
 //!   lookup.
@@ -28,6 +31,7 @@ pub mod pg;
 pub mod pre_migration;
 pub mod restore;
 pub mod snapshots;
+pub mod topology;
 pub mod transfer;
 pub mod verify;
 

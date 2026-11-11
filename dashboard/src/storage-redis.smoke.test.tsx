@@ -21,31 +21,31 @@ it("storage: create bucket -> enable versioning -> upload twice -> versions -> r
   expect(await screen.findByRole("region", { name: "No buckets yet" })).toBeInTheDocument();
   await u.click(screen.getAllByRole("button", { name: "New bucket" })[0]!);
   await u.type(await screen.findByLabelText(/^Name/), "smoke-files");
-  await u.click(screen.getByRole("button", { name: "Create bucket" }));
+  await u.click(await screen.findByRole("button", { name: "Create bucket" }));
   // creating a bucket opens it
   await screen.findByRole("heading", { name: "smoke-files" });
 
   await u.click(await screen.findByRole("tab", { name: "Policy" }));
   await u.click(await screen.findByRole("checkbox", { name: /Keep versions/ }));
-  await u.click(screen.getByRole("button", { name: "Save policy" }));
+  await u.click(await screen.findByRole("button", { name: "Save policy" }));
   expect((await screen.findAllByText("Bucket policy saved")).length).toBeGreaterThan(0); // a toast is announced and drawn
 
-  await u.click(screen.getByRole("tab", { name: "Objects" }));
+  await u.click(await screen.findByRole("tab", { name: "Objects" }));
   await u.upload(await screen.findByLabelText("Choose files"), new File(["one"], "a.txt", { type: "text/plain" }));
   await u.click(await screen.findByRole("button", { name: "Select a.txt" }));
-  await u.upload(screen.getByLabelText("Choose files"), new File(["three"], "a.txt", { type: "text/plain" }));
+  await u.upload(await screen.findByLabelText("Choose files"), new File(["three"], "a.txt", { type: "text/plain" }));
   const versions = await screen.findByRole("list", { name: "Versions" });
   await waitFor(() => expect(within(screen.getByRole("list", { name: "Versions" })).getAllByRole("listitem")).toHaveLength(2));
   void versions;
-  await u.click(screen.getByRole("button", { name: /Restore version/ }));
+  await u.click(await screen.findByRole("button", { name: /Restore version/ }));
   await waitFor(() => expect(within(screen.getByRole("list", { name: "Versions" })).getAllByRole("listitem")).toHaveLength(3));
 
-  await u.click(screen.getByRole("button", { name: "Generate URL" }));
+  await u.click(await screen.findByRole("button", { name: "Generate URL" }));
   expect(((await screen.findByLabelText("Signed URL")) as HTMLTextAreaElement).value).toContain("/signed/smoke-files/a.txt");
 
-  await u.click(screen.getByRole("tab", { name: "Access (ACL)" }));
+  await u.click(await screen.findByRole("tab", { name: "Access (ACL)" }));
   await u.type(await screen.findByLabelText(/^Grantee/), "user:bo");
-  await u.click(screen.getByRole("button", { name: "Add entry" }));
+  await u.click(await screen.findByRole("button", { name: "Add entry" }));
   expect((await screen.findAllByText("Access list saved")).length).toBeGreaterThan(0);
 
   await u.click(screen.getAllByRole("link", { name: "Storage" })[0]!);
@@ -72,18 +72,18 @@ it("redis: create key -> TTL -> hash edit -> console -> stats", async () => {
   await u.type(within(form).getByLabelText("Value"), "v1");
   await u.click(within(form).getByRole("button", { name: "Create key" }));
   await screen.findByLabelText("String value");
-  await u.click(screen.getByRole("button", { name: "Set TTL" }));
+  await u.click(await screen.findByRole("button", { name: "Set TTL" }));
   await waitFor(() => expect(st.ns.default!.cfg!.ttl_ms).toBe(60_000));
   expect(await screen.findByLabelText("Remaining TTL")).toHaveTextContent("60 s");
 
-  await u.click(screen.getByRole("tab", { name: "Console" }));
+  await u.click(await screen.findByRole("tab", { name: "Console" }));
   await u.type(await screen.findByLabelText("Command"), "SET h x{enter}");
   await waitFor(() => expect(st.execs).toContainEqual(["SET", "h", "x"]));
 
-  await u.click(screen.getByRole("tab", { name: "Keys" }));
+  await u.click(await screen.findByRole("tab", { name: "Keys" }));
   expect(await screen.findByRole("button", { name: "h" })).toBeInTheDocument();
 
-  await u.click(screen.getByRole("tab", { name: "Memory and stats" }));
+  await u.click(await screen.findByRole("tab", { name: "Memory and stats" }));
   expect(await screen.findByLabelText("Memory")).toBeInTheDocument();
   expect(mock.problems).toEqual([]);
 });

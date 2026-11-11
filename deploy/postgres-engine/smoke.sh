@@ -230,11 +230,14 @@ say "idle memory"
 sleep 5
 pm=$(head -1 "$DATA/postmaster.pid")
 # ps -o rss is in KiB on macOS and Linux (procps and busybox).
-rss=$(ps -A -o pid= -o ppid= -o rss= 2>/dev/null | awk -v pm="$pm" '$1 == pm || $2 == pm { s += $3; n++ } END { print s " " n }') || rss=""
+# Minimal images (debian slim, UBI minimal) have no ps: then nothing is measured.
+rss=$(ps -A -o pid= -o ppid= -o rss= 2>/dev/null | awk -v pm="$pm" '$1 == pm || $2 == pm { s += $3; n++ } END { if (n) print s " " n }') || rss=""
 if [ -n "$rss" ]; then
   set -- $rss
-  echo "  idle RSS: $1 KiB in $2 processes (postmaster $(ps -o rss= -p "$pm" | tr -d ' ') KiB)"
+  echo "  idle RSS: $1 KiB in $2 processes (postmaster $(ps -o rss= -p "$pm" 2>/dev/null | tr -d ' ') KiB)"
   echo "IDLE_RSS_KIB=$1" >"$W/measurements"
+else
+  echo "  idle RSS: not measured (no ps in this image)"
 fi
 
 say "pg_dump / pg_restore"

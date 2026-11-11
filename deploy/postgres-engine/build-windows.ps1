@@ -74,7 +74,7 @@ if (-not (Test-Path "$Deps\lib\lz4.lib")) {
 }
 if (-not (Test-Path "$Deps\bin\zstd.exe")) {
   Log "zstd (DLL and the CLI used for packing)"
-  CMakeDep "zstd" "build\cmake" @("-DZSTD_BUILD_SHARED=ON", "-DZSTD_BUILD_STATIC=OFF", "-DZSTD_BUILD_PROGRAMS=ON", "-DZSTD_BUILD_TESTS=OFF")
+  CMakeDep "zstd" "build\cmake" @("-DZSTD_BUILD_SHARED=ON", "-DZSTD_BUILD_STATIC=ON", "-DZSTD_BUILD_PROGRAMS=ON", "-DZSTD_BUILD_TESTS=OFF")
 }
 Get-ChildItem "$Deps\bin\*.dll", "$Deps\lib\*.lib" | ForEach-Object { "  $($_.Name)" }
 

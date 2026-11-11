@@ -148,9 +148,25 @@ struct NodeFile {
     engine: EngineIdentity,
     heartbeat_ms: u64,
     poll_wait_ms: u64,
+    /// `primary` for a shard primary bootstrapped here (FB-174); absent
+    /// (older files) or `replica` for a standby.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 impl NodeFile {
+    fn is_primary(&self) -> bool {
+        self.role.as_deref() == Some("primary")
+    }
+
+    fn layout_kind(&self) -> NodeKind {
+        if self.is_primary() {
+            NodeKind::Primary
+        } else {
+            NodeKind::Standby
+        }
+    }
+
     fn path(data_dir: &Path) -> PathBuf {
         data_dir.join(NODE_FILE)
     }
@@ -379,7 +395,18 @@ async fn join(data_dir: &Path, a: JoinArgs) -> anyhow::Result<ExitCode> {
         engine: grant.engine.clone(),
         heartbeat_ms: grant.heartbeat_ms,
         poll_wait_ms: grant.poll_wait_ms,
+        role: Some(grant.role.as_str().to_owned()),
     };
+    if file.is_primary() {
+        // A shard primary (FB-174): the cluster's roles, so the server and
+        // every other node log in with the same passwords.
+        let Some(secrets) = grant.secrets.as_deref() else {
+            bail!("the server sent no role passwords for this shard primary; upgrade the server");
+        };
+        let layout = Layout::node(data_dir, &grant.name, NodeKind::Primary)?;
+        private_dir(layout.postgres_dir())?;
+        write_private(&layout.secrets_file(), secrets.as_bytes())?;
+    }
     file.save(data_dir)?;
     eprintln!("joined: node {} of set {}", file.node_id, file.set);
     Agent::new(data_dir, file, &a.engine)?.run().await
@@ -409,7 +436,7 @@ enum Next {
 impl Agent {
     fn new(data_dir: &Path, file: NodeFile, args: &EngineArgs) -> anyhow::Result<Self> {
         let server = Server::parse(&file.server)?;
-        let layout = Layout::node(data_dir, &file.name, NodeKind::Standby)?;
+        let layout = Layout::node(data_dir, &file.name, file.layout_kind())?;
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             server,
@@ -440,12 +467,17 @@ impl Agent {
     }
 
     async fn run(mut self) -> anyhow::Result<ExitCode> {
-        self.write_secrets()?;
-        if !self.layout.pgdata().exists() {
-            self.clone_primary().await;
-        }
-        if self.layout.pgdata().exists() {
+        if self.file.is_primary() {
+            // initdb and bootstrap on the first start (roles.secret came with the join).
             self.start().await;
+        } else {
+            self.write_secrets()?;
+            if !self.layout.pgdata().exists() {
+                self.clone_primary().await;
+            }
+            if self.layout.pgdata().exists() {
+                self.start().await;
+            }
         }
         let (tx, mut rx) = mpsc::channel::<NodeCommand>(16);
         let poller = tokio::spawn(poll_loop(
@@ -517,9 +549,18 @@ impl Agent {
         self.state = AgentState::Starting;
         match Engine::prepare(&self.layout, &self.cfg).await {
             Ok(h) => {
-                eprintln!("PostgreSQL {} is running as a standby", h.version().text);
+                let what = if self.file.is_primary() {
+                    "a shard primary"
+                } else {
+                    "a standby"
+                };
+                eprintln!("PostgreSQL {} is running as {what}", h.version().text);
                 self.engine = Some(Arc::new(h));
-                self.state = AgentState::CatchingUp;
+                self.state = if self.file.is_primary() {
+                    AgentState::Primary
+                } else {
+                    AgentState::CatchingUp
+                };
                 self.detail = None;
             }
             Err(e) => {
@@ -611,6 +652,16 @@ impl Agent {
 
     async fn execute(&mut self, cmd: NodeCommand) -> Next {
         eprintln!("command {} {}", cmd.id, cmd.kind.as_str());
+        if self.file.is_primary() && cmd.kind != CommandKind::Stop {
+            self.answer(
+                &cmd.id,
+                Err(anyhow::anyhow!(
+                    "{} is a shard primary; only stop applies",
+                    self.file.name
+                )),
+            );
+            return Next::Continue;
+        }
         match cmd.kind {
             CommandKind::Stop => {
                 let remove = cmd.args.get("remove").and_then(serde_json::Value::as_bool) == Some(true);

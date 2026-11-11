@@ -3534,6 +3534,162 @@ router and its `SetConnector` are built, so FB-168's managed replicas
 there from `replicas.rs`; `NodeConnector::connect_replica` already opens
 sealed-URL replicas read-only and refuses local ones.
 
+## Addendum: FB-179, backups and restore with replicas and shards (2026-11-11)
+
+FB-179 implements §2.9 in `forgebase-backup` (`src/topology.rs`, new). The
+single-set backup (`backup::create`, `restore::restore`) and the SQLite
+backup are unchanged; a cluster is a separate path that reuses their
+pieces (`create_member`, the journaled `swap`, `verify_with`).
+
+**Configuration and CLI.** `[backup] source = "primary" | "replica"`
+(`FORGEBASE_BACKUP_SOURCE`, default `primary`; `Config.backup.source`,
+`forgebase_core::BackupSource`). `forgebase backup --cluster [DEST]
+[--source primary|replica]` backs up every set; without `DEST` it writes
+`<data dir>/backups/clusters/<UTC time>`. `--source` without `--cluster` is
+refused. `forgebase backup verify` and `forgebase restore` recognise a
+cluster backup by its `CLUSTER.json`. A plain `backup` of a data directory
+with replicas still refuses, and the message now names `--cluster`.
+`--cluster` needs PostgreSQL on the bundled engine.
+
+**Layout.** One directory, one backup per set, and a combined manifest:
+
+```text
+<dest>/CLUSTER.json          format 1: id, created, source, topology_epoch, placements, topology, sets[], warnings[]
+<dest>/control/              a normal backup of the control set (database, storage, indexes, key, roles.secret)
+<dest>/sets/<number>/        database-only backup of each shard set
+```
+
+Every member is a complete single-set backup with its own `MANIFEST.json`
+(`pg_basebackup -Fp -X stream`, `backup_manifest`, SHA-256 per file), so
+`verify_with` and `pg_verifybackup` work on each. `CLUSTER.json` is written
+last, atomically, after the directory is renamed from `<dest>.partial`: a
+directory without it is unfinished. Per set it records the id, name, number,
+kind, directory, method, schema version, **the node copied from, its role,
+timeline, start and end LSN** (read from PostgreSQL's own `backup_manifest`
+`WAL-Ranges`), the data directory the set's primary keeps (where a restore
+puts it back), the fallback reason, the SHA-256 of the member's
+`MANIFEST.json`, and file and byte counts. At the top: **the placement epoch**
+(`topology_epoch`, the topology epoch when the backup started), a summary of
+the placements (count, highest epoch, rows per set) and the topology (sets
+and nodes) as it was. Warnings: a tenant move not finished at the start (its
+rows may sit on two sets), a topology change while the backup ran, a replica
+that was asked for and not used. The control set is copied first, shards by
+number; each set is consistent in itself (a tenant lives on one set), the
+cluster is not one snapshot, which the epoch and the warnings make visible.
+
+**Replica source.** With `source = "replica"` a set is copied from the first
+healthy replica the caller offers (`SetSource.replicas`; the CLI offers local
+replicas in state `streaming` that run on this host): `pg_basebackup` as
+`forgebase_replicator` over the standby's own socket (FB-168), so the backup
+does not load the primary. A set without one is copied from its primary
+and the entry says so (`fallback`, plus a manifest warning); a scheduled
+backup must not fail because a replica is down. The standby's data directory
+carries `standby.signal` and `primary_conninfo`; the restore removes them
+from the staged copy (after `pg_verifybackup` and the hashes were checked),
+so the restored set starts as a primary and ends recovery at the backup's end
+LSN on a new timeline.
+
+**Restore.** `restore_cluster` verifies the cluster (`verify_cluster`: the
+combined manifest, every member, the member manifests' hashes against
+`CLUSTER.json`, nothing unlisted), refuses a running cluster of the data
+directory (the primary, every replica, every shard node: `postmaster.pid`),
+existing data without `--force`, a different PostgreSQL major, a mismatching
+master key, and a SQLite directory. It stages every set under `tmp/`, then
+**one journaled swap** moves the previous data aside (`backups/pre-restore-*`,
+never deleted) and installs every set; a crash at any point is rolled back by
+the next restore or `restore --recover`, all sets together. Each set returns
+to the data directory it was backed up from (`postgres/data` or
+`postgres/nodes/<name>/data`). Every other cluster of the directory (the
+replicas, a former primary) is moved aside too: it follows a history that no
+longer exists. A set copied logically (an external server) is loaded with
+`pg_restore` into the server the caller names (`ClusterRestoreOptions.external`).
+The restore rewrites `topology.json` from the backup's topology with every
+replica `needs_rebuild`, and writes `restore-pending.json` in the data
+directory.
+
+**After the restore: `complete_restore`.** The restored control database
+must run for this part, so it is a separate call (idempotent):
+
+1. **schema reconcile**: `shards::migrate_sets` brings control, then every
+   shard, to the schema head (FB-173's ordering, `migrating` while a shard
+   runs, one pre-migration snapshot per set). A backup taken by an older
+   build, or a set that was behind, is migrated here; the report lists what
+   was applied and what was up to date;
+2. every replica row of the restored topology is marked `needs_rebuild`
+   (`update_node_state`, epoch + 1): the router does not use it;
+3. `topology.json` is rewritten from the control tables;
+4. a `ReplicaRebuilder` rebuilds the replicas: **managed** ones
+   (`kind = local`) are re-cloned by `rebuild_replica`, remote ones are
+   queued for their agent, external ones stay `needs_rebuild` until the
+   operator confirms (the report lists them as `manual`);
+5. `restore-pending.json` is removed only when nothing is left; a failed
+   rebuild is retried by calling it again.
+
+Prepared transactions of an unfinished two-phase schema change come back with
+the physical copy; FB-173's recovery at server start decides them from the
+journal, as after a crash.
+
+**Verify.** `verify_cluster` reports per set (`pg_verifybackup`, hashes) and
+for the whole: exactly one control set, unique ids and numbers, schema
+versions agreeing with the members, members' manifest hashes, nothing
+unlisted, `CLUSTER.json` present.
+
+**Not done here.** Point-in-time recovery stays FB-156 (v0.4). The REST
+snapshot API (`BackupService`, retention) still handles one set. A shard
+primary on another host is not copied by the CLI (it names the host to back
+it up on); the library takes any `PgSource` (an external one is dumped).
+Cross-set consistency of a tenant move in flight is reported, not repaired
+(FB-174's move recovery owns that).
+
+**Tests.** `forgebase-backup/tests/cluster.rs` (real clusters from
+`shard_testing::Sharded`: control + two shards, rows on each; one shard still
+at schema 0): the backup layout and the combined manifest (epoch, placements,
+node, timeline, LSNs, schema versions, data directories), verify, restore of
+every set into an empty directory and the rows read back from the restored
+clusters, rows written after the backup absent, schema reconcile of the
+shard that was behind, damaged and incomplete backups refused (corrupt file,
+swapped member manifests, stray directory, missing `CLUSTER.json`, missing
+set, bad data directory), restore refused onto a running cluster and onto
+existing data without `--force`, a restore interrupted mid-swap rolled back.
+`tests/cluster_replicas.rs` (bundled engine, a real local replica): backup
+from the replica (`standby.signal` in the copy, node `r1`), fallback to the
+primary with a warning, restore refused while a node runs, restore of a replica
+backup as a primary with the backup's rows (no rows written after it), the
+stale replica moved aside, `needs_rebuild` in `topology.json` and in the
+control row when the rebuild is asked for, the replica rebuilt and streaming
+with the rows. CLI `backup_pg_e2e` (both backends): flag checks, SQLite
+refusal, a cluster backup of the single control set, verify, restore into an
+empty project.
+
+**Breaking.** `Config` gains `backup: BackupSettings` (`ConfigOverrides` has
+`backup_source`; struct literals need `..Default::default()`). New public
+`forgebase_backup::topology` module. `restore::KeySource`, `resolve_key`,
+`swap`, `move_to` and `remove_any` are `pub(crate)` now. A new
+`restore-pending.json` and rewritten `topology.json` appear in the data
+directory after a cluster restore.
+
+**For the server (not done here, `crates/forgebase-server/src/lib.rs`).** After
+the control database is open and migrated, and the replicas service
+(`LocalReplicas`, FB-168) and the router exist:
+`topology::read_pending(&layout)`; if it is `Some`, call
+`topology::complete_restore(&control, &layout, CompleteOptions { router:
+Some(&router), backups_dir: Some(&layout.backups_dir()), rebuilder: Some(&rb) })`
+with a `ReplicaRebuilder` that calls
+`replication::service::rebuild_replica(control, &replicas, Some(&primary),
+&node.id)` for local nodes and returns `RebuildOutcome::Manual` for external
+ones. Without it a restored cluster starts (the replicas' rows say
+`needs_rebuild` only in `topology.json`, the control rows keep the backup's
+states until the health monitor sees the replicas fail) and the operator
+rebuilds through the API.
+**For FB-176 (dashboard).** Show the backup source (`[backup] source`), the
+combined manifest of a cluster backup (sets, node, role, timeline, end LSN,
+epoch, warnings) and, after a restore, the `needs_rebuild` replicas with a
+rebuild action (`rebuild_replica`); a `restore-pending.json` in the data
+directory means a restore is not finished.
+**For FB-178 (topology CI).** A chaos case: back up from a replica while a
+tenant moves (the manifest warns), restore, and check that every replica
+rebuilds and that `migrate_sets` finds every set at head.
+
 ## Addendum: FB-175, topology configuration and admin API (2026-11-11)
 
 Built as §4 describes, plus the server wiring FB-168 left (its addendum,
@@ -3873,3 +4029,303 @@ need it; none in the tree). `GraphStats` has a new field `cypher`.
 `forgebase_data::Action` has a new variant (non-exhaustive).
 `RouterOptions` (API) has a new field `graph` (`..Default::default()`
 literals are unaffected). `RESERVED_PREFIXES` is `[&str; 9]`.
+## Addendum: FB-174, tenant moves, shard add/drain/remove, rebalance (2026-11-11)
+
+Built as §3.8–§3.9 describe, on FB-170's router and registry, FB-171/172's
+routing and FB-173's shard activation. Where the code differs from the
+text above, or decides something it left open, it is said here.
+
+**Files.** New: `crates/forgebase-db/src/moves/{mod, plan, pgsql, sync,
+switch, engine, rebalance}.rs`, `crates/forgebase-pgengine/src/shard.rs`,
+`crates/forgebase-server/src/moves.rs`, tests
+`crates/forgebase-db/tests/moves.rs`,
+`crates/forgebase-pgengine/tests/shards.rs`,
+`crates/forgebase-server/tests/moves_fb174.rs`. Shared edits are listed at
+the end.
+
+**Engine (`forgebase_db::moves`).** `begin` records a move (`preparing`);
+`run` drives `preparing → copying → catching_up → switching → cleanup` and
+resumes from the stored state after a restart; `abort`, `cleanup`, `undo`,
+`run_plan`. Every step is checkpointed in `_forgebase_db_moves.detail`
+(`MoveDetail`: the table plan, replica identities changed, indexes and
+pgmq queues created, rows per table, freeze length and its parts). Hooks
+(`MoveHooks`) reach the services; `MoveControl` carries progress and
+cancel.
+- **Checks at `begin`:** PostgreSQL (`400 postgres_required`), an open
+  target set that takes tenants (`shard_not_found`, `shard_unavailable`,
+  `shard_closed`), the tenant exists (environment or placement row),
+  `active` or in cleanup, no open move of it (`409 tenant_moving`), no
+  other move between the same two sets (`409 operation_in_progress`,
+  §3.12). A previous move still keeping its source rows is cleaned up
+  first, so the target never holds stale rows of the tenant. The target
+  must not hold rows of the tenant at prepare (`409 target_not_empty`).
+- **Table plan (`plan.rs`).** From `placement::TABLES` plus every base table
+  with a `_tenant` column (tenant-scoped collections) and the tenant's
+  pgmq queues. Each table gets a *predicate* (subqueries allowed; used to
+  verify, abort and clean up) and a *feed*:
+  - `publish`: a row filter on the table's own columns: the tenant column
+    (`tenant = '<t>'`; KV `tenant = 't:<t>'`, FB-172; collections
+    `_tenant = '<t>'`) or a constant list of **container** keys (vector
+    collections, queue topics, queue subscriptions, storage buckets).
+    Queue subscriptions and snapshots follow their topic and subscription,
+    not their `tenant` column (FB-172: a tenant's subscription to an
+    instance-wide topic stays on control).
+  - `stage` (deviation from "staging tables for order-defining tables"):
+    a row filter can only read the row, so tables whose parent is *data*
+    (job attempts, events and dependencies through the job; upload parts
+    through the upload; keyword rows through the vector item; record
+    versions through the record; snapshot items through the snapshot) are
+    copied by the engine into `fb_move.<id>_<n>` on the target (same
+    shape, primary key, no triggers) and reconciled by **bucket hashes**:
+    rows are spread over up to 4 096 buckets by an MD5 of their key; each
+    side computes per bucket the count and an MD5 over the sorted row
+    MD5s; differing buckets are deleted and copied again. A pass runs in
+    `copying`, one in `catching_up`, and the last one in the freeze makes
+    the staging table equal to the source. Rows travel as JSON
+    (`row_to_json` / `json_populate_recordset`), keyset-paged by the key.
+  - `whole`: the tenant's pgmq queue and archive tables (FB-164), published
+    without a filter; `pgmq.create` on the target first.
+  Record versions (no tenant column) are the versions of the tenant's
+  records in tenant-scoped collections, and of deleted records whose
+  earlier version's `data` names the tenant.
+- **Prepare.** Placement `moving`; schema `fb_move` with table `barrier`
+  on both sets (outside `forgebase`, so the registry's completeness test
+  never sees it); the target's missing indexes of published tables are
+  built `CONCURRENTLY` (the tenant's partial pgvector indexes, pgmq
+  indexes); `REPLICA IDENTITY FULL` on tables whose filter column is not
+  in the replica identity (restored after the switch unless another open
+  move from the same source still needs it); publication
+  `fb_move_<16 hex>` with the filters and the barrier (`move_id = '<id>'`);
+  the logical slot is created first on the source
+  (`pg_create_logical_replication_slot`, `failover` when the source set
+  has replicas and runs PostgreSQL 17+).
+- **Columns a set lacks.** A source column missing on the target (an
+  extension set up on one set only: pgvector's `vec`, FB-171's open point)
+  is published with a column list; the move is refused (`409
+  move_state`) while the tenant has values in it, at prepare and again in
+  the freeze, and for tables that also need `REPLICA IDENTITY FULL` (a
+  column list cannot leave out identity columns).
+- **Copy and catch-up** as §3.8 (`copy_data`, `origin = none`, `binary`,
+  `disable_on_error`, `create_slot = false`); progress = tables ready of
+  `pg_subscription_rel` and bytes of `pg_stat_progress_copy`; a disabled
+  subscription is `move_replication_failed` with the error counts of
+  `pg_stat_subscription_stats`. Catch-up ends when the slot's confirmed
+  position is less than 1 MiB behind (`max_lag_bytes`).
+- **Switch** (at most `move_freeze_timeout_ms`; every wait gets the time
+  left): placement `frozen`; `hooks.frozen` (KV `flush_tenant`,
+  `sync_pgcron_now`); **drain**: the router now counts handles routed to a
+  tenant (`DbRouter::in_flight`, `wait_drained`; a lease taken under the
+  state lock, so every handle routed before the freeze is counted);
+  `hooks.drain` (queue relays, control's `outbox_cursor:<set>` included);
+  barrier row on the source, awaited on the target; subscription
+  disabled; rows of **containers created during the move** (a new topic,
+  bucket, subscription: not in the constant filters) copied straight from
+  the source; the last staged pass; source digests; then **one target
+  transaction** with triggers off (`session_replication_role = replica`,
+  like the apply worker): staged rows into the real tables (job events
+  and attempts renumbered with the target's sequence in source order),
+  queue messages renumbered in `seq` order through a temporary map
+  (checked monotone), deliveries, pgmq messages' `seq`, subscription and
+  snapshot cursors remapped (a cursor keeps its place between its topic's
+  renumbered messages; with none left it is the target sequence's last
+  value), snapshot items mapped, record-source topics'
+  `source_after_seq` set to the target's outbox head, pgmq `msg_id`
+  sequences set past their rows; **verification** inside the same
+  transaction; commit; the flip (`place(t, to, cleanup)`, epoch + 1,
+  `topology.json`); waiting requests run on the target. Over the limit,
+  or any failure before the flip: rollback, placement `moving`, then the
+  abort (`move_freeze_timeout`, `move_verification_failed`, …).
+- **Verification:** per published table, row counts and a SHA-256 over the
+  sorted MD5s of the rows (columns that are renumbered or remapped left
+  out); above 100 000 rows of the tenant the same over a 1 % sample chosen
+  by row digest (the same rows on both sides). Staged tables are equal by
+  construction (bucket hashes) and their inserted counts are checked.
+- **After the flip** (deviation): `hooks.switched` (queue settings copied
+  to the target, `sync_pgcron_now`), then the subscription, slot and
+  publication are dropped and replica identities restored at once rather
+  than after the retention: a disabled subscription would keep the slot
+  and its WAL for 24 h, and undo is a move back that does not use them.
+  Only the source rows wait for the retention.
+- **Cleanup** (job `database.tenant.cleanup`, due `switched_at +
+  move_source_retention_hours`): the tenant's rows on the source deleted
+  deepest table first, in batches of 10 000, with triggers off (no outbox
+  rows, no realtime events, no cascades), pgmq queues dropped, partial
+  indexes built for the move dropped there; placement `active`; `done`.
+- **Abort** before the flip: subscription dropped, placement `active` on
+  the source (the tenant works again at once), `hooks.unfrozen`, copied
+  rows deleted on the target (only once a subscription existed), staging
+  tables, queues and indexes dropped, slot and publication dropped,
+  identities restored. A switched move cannot be aborted
+  (`move_state`); undo it.
+- **Undo** = a move back (`undo_of` in the detail); the original's
+  cleanup runs first.
+
+**Measured freeze** (bundled PostgreSQL 18 engine, three separate local
+clusters under the test suite's load, debug build): tenant with 300
+seeded posts, 300 KV keys, a job with 4 events, a topic with 567 messages
+and deliveries, a writer committing every 3 ms throughout: **540 ms**
+(drain 0, barrier 392, staged 5, source digests 99, switch transaction
+38, flip 1). On a running server (`moves_fb174.rs`: records every 5 ms,
+a realtime subscriber, a queue publisher every 7 ms and a consumer pulling
+and acknowledging; ~1 100–2 500 rows moved): **819 ms** (hooks 300,
+barrier 188, source digests 74, switch transaction 25, flip 215) and
+**4 149 ms** on a second run while other agents loaded the machine
+(barrier 2 758, flip 1 059): both under the 10 s limit, with no failed
+call, no lost or duplicated record, event or delivery; on a quiet machine
+**514 ms** (barrier 278, hooks 98, flip 85, switch transaction 17). A
+move through the API (`topology_fb174.rs`, a local shard, 30 records):
+**503 ms** quiet; under heavy load it reached 10–12 s once and the 10 s
+limit aborted it cleanly (tenant unfrozen, nothing changed), so the server
+tests run with a 60 s limit. The barrier wait is
+the apply worker's latency and dominates under load; the rest grows with
+the tenant's rows (digests). Plans estimate `150 ms + 4 ms per 1 000
+rows`.
+
+**Rebalance (`rebalance.rs`).** `refresh_stats` (one grouped scan per
+tenant-column table per set; KV by its `t:` scope; the server runs it
+hourly and before every plan; the stats job §3.4 did not exist),
+`ensure_control_placements` (FB-170: control rows for every environment
+before the first shard), `plan_rebalance` (§3.9: whole projects, smallest
+first, from the highest to the lowest score while the larger of the two
+new scores is below the old maximum, until the spread
+(max − min) ÷ max ≤ 10 % or `max_moves`, default 20), `plan_drain`
+(largest project first to the set whose score stays lowest),
+`drain_set` (state `draining`, plan), `check_removable` (no placements,
+no open move: `move_state` / `operation_in_progress`); plans are stored on
+control (`_forgebase_meta` `rebalance_plan:<id>`) and run within an hour;
+`run_plan` runs them one move at a time (skips tenants no longer on the
+planned source, stops at the first failure, cancel between moves).
+
+**Local shard nodes (`forgebase_pgengine::shard::LocalShards`).** `add`
+(`initdb` under `postgres/nodes/<name>`, the primary's bootstrap and role
+passwords, never on TCP, a `shard` marker holding the set id),
+`start_existing` (server start), `retire` (stop, move to
+`postgres/retired/<name>-<unix time>`), `retired`, `delete_retired`.
+
+**Remote shard primaries** (FB-168's join path, shared edits): a join token
+with `role = primary` is issued only for a shard that is `provisioning`
+and has no primary; `redeem_join` inserts a remote primary node and
+creates no slot; `JoinGrant` gains `role` and `secrets` (the cluster's
+`roles.secret`, added by the server, sent once over HTTPS);
+`forgebase node join` with such a grant writes the secrets and
+bootstraps a primary (`Layout::node(.., Primary)`) instead of cloning,
+reports `primary`, and answers only `stop`. `service::server_url` is the
+writer URL the server seals into the node.
+
+**Server (`forgebase_server::moves`).** `Moves` implements the hooks:
+`source_conninfo` (control's configured URL, a local shard's superuser
+socket, a node's sealed URL), `admin` (superuser connection for managed
+nodes: publications, slots, subscriptions and `session_replication_role`
+need it; the server's own role has none of those rights; external nodes
+use their URL's role), `prepare_target` (direct-login roles copied with the
+same SCRAM verifier, FB-153/FB-173), `frozen`, `drain`, `switched`,
+`unfrozen`. Reserved jobs `database.tenant.move`,
+`database.tenant.cleanup` (new), `database.shard.drain`,
+`database.rebalance` on queue `database`; `start_move`, `undo_move`,
+`plan`, `start_rebalance`, `start_drain`; `spawn_stats` (hourly).
+
+**Server wiring (FB-175's hand-over).**
+- Routes: `POST placements/{tenant}/move` (`{to, confirm}`, confirm = the
+  tenant id, `400 confirm_mismatch`; `202` operation `database.tenant.move`;
+  one topology change per set holds for both sets), `POST rebalance/plan`
+  (`max_moves` 1–500; `RebalancePlanView`: moves with sizes and estimated
+  freezes, loads before and after, spreads, `expires_at`), `POST
+  rebalance` (`{plan_id, confirm}`, confirm = the plan id; `202`
+  `database.rebalance`; refused while any other operation runs), new `GET
+  retired` and `DELETE retired/{id}?confirm=<node name>` (MFA step-up).
+  Admin check, step-up and audit as FB-175 (`db.topology.tenant.move`,
+  `db.topology.rebalance.plan`, `db.topology.rebalance`,
+  `db.topology.retired.delete`). Move errors keep their codes
+  (`tenant_moving`, `operation_in_progress`, `target_not_empty`,
+  `move_state`, `move_freeze_timeout`, `shard_not_found`, …).
+- `POST shards` takes `kind = local` (cluster created by the
+  `database.shard.add` job under `postgres/nodes/<name>`, opened over its
+  socket by the router's connector) and `remote` (the job waits up to an
+  hour for `forgebase node join` with a primary token, `POST join-tokens
+  {set, role: "primary"}`; the server answers the join with the role
+  passwords, seals `forgebase_server@<listen>` into the node, and marks it
+  `ready` on its first `primary` heartbeat). Before the first shard the
+  job writes control placement rows, drops cross-placement foreign keys
+  and logs rule offenders (FB-170, FB-171); a shard subscribes to
+  `fb_control` over control's superuser socket (local) or the configured
+  external control URL; otherwise it is skipped with a warning (a managed
+  control's superuser is socket-only).
+- `PATCH shards/{id}` to `draining` queues `database.shard.drain` (a fresh
+  drain plan, moves one at a time). `DELETE shards/{id}` also refuses while
+  a move uses the set (source rows until cleanup); a local primary's data
+  moves to `postgres/retired/`, local replicas of the shard are deleted.
+- Local replicas of a shard: `POST nodes {set: <shard>, kind: local}`
+  clones from the shard's local primary; remove and rebuild use it too.
+- Promote of a shard replica: `PoolSwitch::repoint` reloads the router,
+  which now **reopens a set whose primary node changed** (it kept the old
+  pool before) and returns that set's database.
+- Operations: the move job's stages are `preparing`, `copying`,
+  `catching_up`, `switching`, `cleanup`; `switching` and `cleanup` are
+  past the point of no return (cancel answers
+  `operation_not_cancellable`); cancel before that aborts the move
+  (nothing changed). `database.tenant.cleanup` jobs are not listed as
+  operations.
+- `[database.sharding]`: `move_freeze_timeout_ms` and
+  `move_source_retention_hours` reach `MoveOptions`;
+  `max_parallel_moves` is 1 by construction (plans run one move at a
+  time; one move per pair of sets).
+
+**Deviations, summed up.** Staged tables for data-parent tables instead of
+staging only order-defining ones (order-defining queue messages are
+renumbered in place); replication objects dropped right after the flip;
+undo is a move back; `database.tenant.cleanup` is a new reserved kind;
+`target_not_empty` and `move_state` are new codes; the router counts
+in-flight handles per tenant (`in_flight`, `wait_drained`); moves need a
+superuser-equivalent connection per set (the server's own role has no
+`REPLICATION`, `pg_create_subscription` or `session_replication_role`).
+
+**Shared edits outside Owns.** `forgebase-db`: `router.rs` (leases,
+`in_flight`, `wait_drained`, reopen on a new primary), `lib.rs` (module).
+`forgebase-pgengine`: `lib.rs` (module), `replication/service.rs` (primary
+join tokens, `JoinGrant.role` / `secrets`, `server_url`).
+`forgebase-cli`: `node.rs` (agent bootstraps a shard primary).
+`forgebase-api`: `system_database.rs` (routes, `TopologyOps` methods,
+shapes, codes `confirm_mismatch` / `target_not_empty`, OpenAPI).
+`forgebase-server`: `replicas.rs` (above), `lib.rs` (module, `Moves`
+built and registered), `Cargo.toml` (dev: `tokio-tungstenite`,
+`futures-util` sink).
+
+**Tests.** `forgebase-db/tests/moves.rs` (real clusters): a move under a
+writer with every row kind (posts with jsonb and bytea, KV, job events and
+attempts renumbered, messages renumbered, deliveries and cursors
+remapped), no lost or duplicated row, cleanup, undo; cancel and freeze
+timeout aborting with nothing changed, refusals; containers created
+during a move; a column the target lacks; rebalance plan, `run_plan`,
+drain, `check_removable`; SQLite refusal. `forgebase-pgengine/tests/shards.rs`:
+local shard lifecycle; primary join token, grant and bootstrap with the
+cluster's roles. `forgebase-server/tests/moves_fb174.rs`: the move under
+load on a running server (records, realtime, queue). `topology_fb174.rs`:
+the API (local shard add, move with confirmations, plan, rebalance,
+drain, removal, retired data, audit); SQLite `postgres_required`. Unit
+tests: planner, plan shapes, SQL builders, error codes, freeze accounting.
+
+**For FB-176 (dashboard).** Move dialog: target set, typed tenant id,
+`202` operation; progress from the operation (`stage`, `percent`,
+`message`: tables copied, KiB behind); result `freeze_ms`, `rows`. Undo =
+the same dialog with the original set while the move's cleanup is
+pending (the operation result has `from`). Rebalance: `POST
+rebalance/plan` shows `moves` (sizes, `est_freeze_ms`), `before` /
+`after` loads and spreads, `expires_at`; run with the typed plan id. Add
+shard: `kind` local / remote / external; remote shows "make a primary join
+token" (`POST join-tokens {set, role: "primary"}`) and the operation waits.
+Drain = `PATCH {state: "draining"}` (operation `database.shard.drain`).
+Retired data list with "Delete data" (typed node name).
+
+**For FB-178 (topology CI).** Engine tests need `FORGEBASE_TEST_PG_ENGINE`
+/ `FORGEBASE_PG_ENGINE_DIR` and a short `FORGEBASE_TEST_PG_TMP`;
+`forgebase-db --test moves` runs 5 tests in ~2 min (three clusters per
+test at most), `forgebase-pgengine --test shards` ~30 s, server
+`--test moves_fb174` and `--test topology_fb174` 1–4 min each. macOS
+allows 32 System V shared-memory segments (`kern.sysv.shmmni`): clusters
+killed by a crashed test leak theirs and the next `initdb` fails with
+"could not create shared memory segment"; remove segments with no
+attachment whose creator is gone (`ipcs -m -a`, `ipcrm -m`). Chaos ideas
+the suite does not cover yet: kill the source or target mid-copy (resume
+from `copying`), promote the source during a move (`failover` slots),
+crash between the switch transaction and the flip (abort cleans the
+target).
