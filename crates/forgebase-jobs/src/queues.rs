@@ -272,9 +272,8 @@ impl JobService {
     /// Removes the settings of a queue (its jobs stay; it has no limits then).
     pub async fn delete_queue(&self, ctx: &AccessContext, name: &str) -> Result<()> {
         let view = self.at_tenant(ctx.tenant.as_deref()).await?;
-        let out = view.delete_queue_here(ctx, name).await?;
-        view.mirror_queue(&queue_key(ctx.tenant.as_deref(), name)).await?;
-        Ok(out)
+        view.delete_queue_here(ctx, name).await?;
+        view.mirror_queue(&queue_key(ctx.tenant.as_deref(), name)).await
     }
 
     /// [`Self::delete_queue`] on this view's set.

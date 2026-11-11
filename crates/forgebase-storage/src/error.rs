@@ -1,7 +1,7 @@
 //! Errors of the storage service.
 
 use forgebase_core::{ErrorCode, ErrorKind};
-use forgebase_db::DbError;
+use forgebase_db::{DbError, RouterError};
 use forgebase_entitlements::EntitlementError;
 
 /// Errors of [`crate::StorageService`] and the drivers.
@@ -10,6 +10,12 @@ pub enum StorageError {
     /// Metadata store failure.
     #[error(transparent)]
     Db(#[from] DbError),
+    /// The bucket's database set cannot serve the call (ADR-0029 §3.5,
+    /// FB-172): its tenant is being moved (`tenant_moving`, 409), or the set
+    /// is unavailable or migrating (`shard_unavailable`, `shard_migrating`,
+    /// 503).
+    #[error(transparent)]
+    Router(#[from] RouterError),
     /// The quota engine refused (quota exceeded, feature not entitled).
     #[error(transparent)]
     Entitlement(EntitlementError),
@@ -117,6 +123,7 @@ impl ErrorCode for StorageError {
     fn code(&self) -> &'static str {
         match self {
             StorageError::Db(e) => e.code(),
+            StorageError::Router(e) => e.code(),
             StorageError::Entitlement(e) => e.code(),
             StorageError::Driver(_) => "storage_unavailable",
             StorageError::Unauthenticated => "unauthenticated",
@@ -136,6 +143,7 @@ impl ErrorCode for StorageError {
     fn kind(&self) -> ErrorKind {
         match self {
             StorageError::Db(e) => e.kind(),
+            StorageError::Router(e) => e.kind(),
             StorageError::Entitlement(e) => e.kind(),
             StorageError::Driver(_) => ErrorKind::Unavailable,
             StorageError::Unauthenticated => ErrorKind::Unauthenticated,

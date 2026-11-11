@@ -225,14 +225,17 @@ impl StorageService {
         Ok(())
     }
 
-    /// Serves a signed download.
+    /// Serves a signed download. The holder has no tenant context: the
+    /// bucket, and so its database set (FB-172), are found from the tenant
+    /// the URL carries (`t`, format 2; format 1 URLs name instance-wide
+    /// buckets only).
     pub async fn get_signed(&self, p: &SignedParams, range: Option<RangeSpec>) -> Result<ObjectRead> {
         if p.method != SignedMethod::Get {
             return Err(StorageError::SignatureInvalid);
         }
         self.verify_signed(p)?;
         let b = self.bucket_in(p.tenant.as_deref(), &p.bucket).await?;
-        self.read_row(&b.id, &p.key, p.version.as_deref(), range, None).await
+        self.read_row(&b, &p.key, p.version.as_deref(), range, None).await
     }
 
     /// Whether `ctx` may sign an upload URL for `key`: write access, and
@@ -248,7 +251,7 @@ impl StorageService {
     ) -> Result<()> {
         let check = self.authorize_write(ctx, b, key).await?;
         self.precheck_write(b, key, &check).await?;
-        let exists = match self.find_row(&b.id, key, None, None).await {
+        let exists = match self.find_row(b, key, None, None).await {
             Ok(r) => !r.delete_marker,
             Err(StorageError::NotFound(_)) => false,
             Err(e) => return Err(e),
@@ -262,8 +265,8 @@ impl StorageService {
                     size: None,
                     content_type: content_type.filter(|c| !c.is_empty()),
                 };
-                let stmt = new_row_check(self.inner.db.dialect(), &row, pred)?;
-                if self.inner.db.fetch_all(&stmt).await?.is_empty() {
+                let stmt = new_row_check(b.db.dialect(), &row, pred)?;
+                if b.db.fetch_all(&stmt).await?.is_empty() {
                     return Err(StorageError::Forbidden(
                         "the bucket's rules cannot be checked for every upload this URL would accept".into(),
                     ));

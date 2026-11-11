@@ -806,8 +806,8 @@ impl StorageService {
             forgebase_data::ResourceOp::View,
         )
         .await?;
-        let rows = self
-            .read_replica(
+        let rows =
+            b.db.read_replica(
                 "storage.bucket_usage",
                 "SELECT COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN 1 ELSE 0 END), 0), \
                         COUNT(*), \
@@ -836,6 +836,11 @@ impl StorageService {
     /// privileged caller sees the whole engine (`scope: engine`) and anyone
     /// else the instance-wide buckets (`scope: instance`). Stored bytes are
     /// the distinct blobs the scope references.
+    ///
+    /// Sharded (FB-172): a tenant's totals come from its set, the instance's
+    /// from control; the engine's are summed over every set (each set
+    /// counting the tenants it owns, so a move's copies are not counted
+    /// twice), with blobs shared by several sets counted once.
     pub async fn stats(&self, ctx: &forgebase_data::AccessContext) -> crate::Result<StorageStats> {
         self.authorize_platform(ctx, Action::StorageAdmin)?;
         let (scope, cond, params): (&str, &str, Vec<forgebase_db::Value>) = match &ctx.tenant {
@@ -843,26 +848,16 @@ impl StorageService {
             None if ctx.is_privileged() => ("engine", "1 = 1", vec![]),
             None => ("instance", "k.tenant IS NULL", vec![]),
         };
-        let rows = self
-            .read_replica(
-                "storage.stats",
-                &format!(
-                    "SELECT (SELECT COUNT(*) FROM _forgebase_storage_buckets k WHERE {cond}), \
-                        (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
-                          WHERE {cond} AND o.is_latest = 1 AND o.delete_marker = 0), \
-                        (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
-                          WHERE {cond}), \
-                        (SELECT COALESCE(SUM(o.size), 0) FROM _forgebase_storage_objects o \
-                          JOIN _forgebase_storage_buckets k ON k.name = o.bucket WHERE {cond} AND o.is_latest = 1 AND o.delete_marker = 0), \
-                        (SELECT COALESCE(SUM(b.size), 0) FROM _forgebase_storage_blobs b WHERE b.refcount > 0 AND b.sha256 IN \
-                          (SELECT o.blob_sha FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
-                           WHERE {cond})), \
-                        (SELECT COUNT(*) FROM _forgebase_storage_uploads u JOIN _forgebase_storage_buckets k ON k.name = u.bucket \
-                          WHERE {cond})"
-                ),
-                params,
-            )
-            .await?;
+        if scope == "engine"
+            && let Some(router) = self.router().filter(|r| r.is_sharded())
+        {
+            return self.engine_stats(router).await;
+        }
+        let db = match &ctx.tenant {
+            Some(t) => self.tenant_set(Some(t)).await?,
+            None => self.control(),
+        };
+        let rows = db.read_replica("storage.stats", &stats_sql(cond), params).await?;
         let r = rows
             .rows
             .first()
@@ -879,4 +874,82 @@ impl StorageService {
             tenant: ctx.tenant.clone(),
         })
     }
+
+    /// The engine's totals over every set of a sharded cluster.
+    async fn engine_stats(&self, router: &forgebase_db::DbRouter) -> crate::Result<StorageStats> {
+        let placements = router.placements();
+        let mut out = StorageStats {
+            scope: "engine".to_owned(),
+            ..StorageStats::default()
+        };
+        let mut blobs: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for set in router.sets() {
+            // The tenants this set owns: on control the instance-wide rows and
+            // every tenant not placed elsewhere, on a shard those placed there.
+            let control = set.is_control();
+            let tenants: Vec<forgebase_db::Value> = placements
+                .iter()
+                .filter(|p| (p.set_id == set.id()) != control)
+                .map(|p| p.tenant.as_str().into())
+                .collect();
+            let marks = (1..=tenants.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cond = match (control, tenants.is_empty()) {
+                (true, true) => "1 = 1".to_owned(),
+                (true, false) => format!("(k.tenant IS NULL OR k.tenant NOT IN ({marks}))"),
+                (false, true) => continue,
+                (false, false) => format!("k.tenant IN ({marks})"),
+            };
+            let db = crate::service::Db::of(set);
+            let rows = db
+                .read_replica("storage.stats", &stats_sql(&cond), tenants.clone())
+                .await?;
+            let r = rows
+                .rows
+                .first()
+                .ok_or_else(|| StorageError::Internal("no statistics".into()))?;
+            let n = |i: usize| crate::service::uint(r, i);
+            out.buckets += n(0);
+            out.objects += n(1);
+            out.versions += n(2);
+            out.logical_bytes += n(3);
+            out.open_uploads += n(5);
+            let shared = db
+                .read_replica(
+                    "storage.stats",
+                    &format!(
+                        "SELECT b.sha256, b.size FROM _forgebase_storage_blobs b WHERE b.refcount > 0 AND b.sha256 IN \
+                         (SELECT o.blob_sha FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+                          WHERE {cond})"
+                    ),
+                    tenants,
+                )
+                .await?;
+            for r in &shared.rows {
+                blobs.insert(crate::service::text(r, 0), crate::service::uint(r, 1));
+            }
+        }
+        out.stored_bytes = blobs.values().sum();
+        Ok(out)
+    }
+}
+
+/// The totals of one set for the buckets `cond` (over `k`) selects.
+fn stats_sql(cond: &str) -> String {
+    format!(
+        "SELECT (SELECT COUNT(*) FROM _forgebase_storage_buckets k WHERE {cond}), \
+            (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+              WHERE {cond} AND o.is_latest = 1 AND o.delete_marker = 0), \
+            (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+              WHERE {cond}), \
+            (SELECT COALESCE(SUM(o.size), 0) FROM _forgebase_storage_objects o \
+              JOIN _forgebase_storage_buckets k ON k.name = o.bucket WHERE {cond} AND o.is_latest = 1 AND o.delete_marker = 0), \
+            (SELECT COALESCE(SUM(b.size), 0) FROM _forgebase_storage_blobs b WHERE b.refcount > 0 AND b.sha256 IN \
+              (SELECT o.blob_sha FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
+               WHERE {cond})), \
+            (SELECT COUNT(*) FROM _forgebase_storage_uploads u JOIN _forgebase_storage_buckets k ON k.name = u.bucket \
+              WHERE {cond})"
+    )
 }
