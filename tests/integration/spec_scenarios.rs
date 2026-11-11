@@ -487,7 +487,10 @@ fn deploy_hello(fb: &Fb) {
 fn scenario_01_create_a_project() {
     let mut fb = Fb::start();
     if common::postgres() {
-        assert!(fb.data_dir().join("postgres").is_dir(), "init created the PostgreSQL cluster");
+        assert!(
+            fb.data_dir().join("postgres").is_dir(),
+            "init created the PostgreSQL cluster"
+        );
     } else {
         assert!(
             fb.data_dir().join("forgebase.db").is_file(),
@@ -564,13 +567,11 @@ fn scenario_02_create_a_sql_table() {
     fb.admin(
         "POST",
         "/api/v1/sql",
-        Some(
-            json!({"sql": if common::postgres() {
-                "CREATE TABLE invoices (id BIGSERIAL PRIMARY KEY, customer TEXT NOT NULL, total REAL)"
-            } else {
-                "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"
-            }}),
-        ),
+        Some(json!({"sql": if common::postgres() {
+            "CREATE TABLE invoices (id BIGSERIAL PRIMARY KEY, customer TEXT NOT NULL, total REAL)"
+        } else {
+            "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"
+        }})),
     )
     .expect(200);
     let ins = fb
