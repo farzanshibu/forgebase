@@ -118,7 +118,7 @@ mod sharded {
     }
 
     /// A realtime subscriber of `posts` in tenant `t1`: every record id of a
-    /// `record.create` event, and every frame type.
+    /// `record.created` event, and every frame type.
     struct Subscriber {
         created: Arc<Mutex<Vec<String>>>,
         frames: Arc<Mutex<BTreeMap<String, usize>>>,
@@ -149,8 +149,9 @@ mod sharded {
                         let _ = tx.send(());
                     }
                 }
-                if ty == "record.create" {
-                    c.lock().unwrap().push(j["data"]["id"].as_str().unwrap_or("").to_owned());
+                if ty == "record.created" {
+                    let id = j["data"]["id"].as_str().or_else(|| j["record_id"].as_str()).unwrap_or("");
+                    c.lock().unwrap().push(id.to_owned());
                 }
                 *f.lock().unwrap().entry(ty).or_insert(0) += 1;
             }
@@ -325,7 +326,18 @@ mod sharded {
         )
         .await
         .unwrap();
-        let done = moves::run(&router, &m, &Quiet, m.options(), &rec.id).await.unwrap();
+        let done = match moves::run(&router, &m, &Quiet, m.options(), &rec.id).await {
+            Ok(d) => d,
+            Err(e) => {
+                for c in &s.clusters {
+                    let log = std::fs::read_to_string(c.socket_dir().join("postgres.log")).unwrap_or_default();
+                    for l in log.lines().filter(|l| l.contains("ERROR") || l.contains("STATEMENT")) {
+                        eprintln!("[{}] {l}", c.name());
+                    }
+                }
+                panic!("move failed: {e}");
+            }
+        };
         assert_eq!(done.state, MoveState::Cleanup, "{:?}", done.error);
         eprintln!(
             "FREEZE server tenant=t1 freeze_ms={:?} parts={:?} rows={}",
@@ -386,7 +398,7 @@ mod sharded {
         let want_set: BTreeSet<&String> = want_published.iter().collect();
         assert_eq!(acked_set, want_set, "published {} acked {}", want_published.len(), acked.len());
         assert!(
-            scalar(&shard, "SELECT count(*) FROM _forgebase_queue_messages WHERE topic = 't1-orders'").await > 0
+            scalar(&shard, "SELECT count(*) FROM _forgebase_queue_messages WHERE topic LIKE '%t1-orders'").await > 0
         );
 
         // Cleanup through the server's hooks.

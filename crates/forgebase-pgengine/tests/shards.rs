@@ -208,6 +208,13 @@ async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clus
     let layout = Layout::node(&agent_dir, "far-1", NodeKind::Primary).unwrap();
     std::fs::create_dir_all(layout.postgres_dir()).unwrap();
     std::fs::write(layout.secrets_file(), wire.secrets.unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(layout.secrets_file(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(layout.postgres_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let mut agent_cfg = config(&engine);
     agent_cfg.socket_port = 18_437;
     let far = Engine::prepare(&layout, &agent_cfg).await.unwrap();
@@ -215,7 +222,7 @@ async fn a_shard_primary_joins_with_a_primary_token_and_bootstraps_with_the_clus
         "same server role and password");
     let url = far.url(Role::Server).expose().to_owned();
     assert_eq!(setting(&url, "max_prepared_transactions").await, "16");
-    let shown = service::server_url("10.0.0.7:5432", &forgebase_pgengine::Secret::new("pw".into()), SslMode::Require);
+    let shown = service::server_url("10.0.0.7:5432", &forgebase_pgengine::Secret::new("pw"), SslMode::Require);
     assert_eq!(shown.expose(), "postgres://forgebase_server:pw@10.0.0.7:5432/forgebase?sslmode=require");
     far.stop().await.unwrap();
     control.close().await;

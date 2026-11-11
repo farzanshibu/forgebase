@@ -425,7 +425,6 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
     pgsql::ensure_move_schema(target.database()).await?;
     let plan = plan::build(&ctx.control_set, source.database(), target.database(), &rec.tenant, &rec.id).await?;
     let mut detail = rec.detail.clone();
-    check_missing_columns(&source, &plan, target.name()).await?;
     if detail.plan.is_none() {
         let mut busy = Vec::new();
         for t in &plan.tables {
@@ -448,16 +447,25 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
             .await
             .map_err(|e| MoveError::State(format!("{} has no pgmq extension: {e}", target.name())))?;
     }
+    let mut created = false;
     for q in &plan.queues {
         if !pgsql::table_exists(target.database(), "pgmq", &format!("q_{q}")).await? {
             target
                 .run_autocommit(&[format!("SELECT pgmq.create({})", lit(q))])
                 .await?;
+            created = true;
         }
         if !detail.queues.contains(q) {
             detail.queues.push(q.clone());
         }
     }
+    // The queue tables exist on the target now: plan them with their columns.
+    let plan = if created {
+        plan::build(&ctx.control_set, source.database(), target.database(), &rec.tenant, &rec.id).await?
+    } else {
+        plan
+    };
+    check_missing_columns(&source, &plan, target.name()).await?;
     for t in plan.tables.iter().filter(|t| t.feed != Feed::Stage) {
         let have: Vec<String> = pgsql::indexes(target.database(), &t.schema, &t.table)
             .await?
@@ -515,6 +523,12 @@ async fn prepare(ctx: &Ctx<'_>, rec: &MoveRecord) -> Result<(), MoveError> {
 /// (an extension set up on the source only), and a table that would need
 /// both a column list and `REPLICA IDENTITY FULL`.
 async fn check_missing_columns(source: &SetHandle, plan: &MovePlan, target: &str) -> Result<(), MoveError> {
+    if let Some(t) = plan.tables.iter().find(|t| t.columns.is_empty()) {
+        return Err(MoveError::State(format!(
+            "{} has no column in common on the two sets",
+            t.name()
+        )));
+    }
     for t in plan.tables.iter().filter(|t| !t.missing.is_empty()) {
         if t.identity_full && t.feed == Feed::Publish {
             return Err(MoveError::State(format!(
