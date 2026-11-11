@@ -511,11 +511,15 @@ pub enum ResourceKind {
     Topic,
     /// A queue subscription ([`Action::QueueConsume`], `QueueRead`, `QueueAdmin`).
     Subscription,
+    /// A realtime channel ([`Action::ChannelSubscribe`] as `view`,
+    /// `ChannelPublish` as `create`; FB-136). The name is the channel's name
+    /// without its tenant prefix (`forgebase_realtime::channel`).
+    Channel,
 }
 
 impl ResourceKind {
     /// Every kind.
-    pub const ALL: [ResourceKind; 7] = [
+    pub const ALL: [ResourceKind; 8] = [
         ResourceKind::KvNamespace,
         ResourceKind::VectorCollection,
         ResourceKind::GraphLabel,
@@ -523,11 +527,12 @@ impl ResourceKind {
         ResourceKind::Bucket,
         ResourceKind::Topic,
         ResourceKind::Subscription,
+        ResourceKind::Channel,
     ];
 
     /// Stored and URL name: `kv_namespace`, `vector_collection`,
     /// `graph_label`, `graph_edge_type`, `bucket`, `queue_topic`,
-    /// `queue_subscription`.
+    /// `queue_subscription`, `realtime_channel`.
     pub fn as_str(self) -> &'static str {
         match self {
             ResourceKind::KvNamespace => "kv_namespace",
@@ -537,6 +542,7 @@ impl ResourceKind {
             ResourceKind::Bucket => "bucket",
             ResourceKind::Topic => "queue_topic",
             ResourceKind::Subscription => "queue_subscription",
+            ResourceKind::Channel => "realtime_channel",
         }
     }
 
@@ -554,6 +560,7 @@ impl ResourceKind {
             ResourceKind::Bucket => &[Action::StorageRead, Action::StorageWrite, Action::StorageAdmin],
             ResourceKind::Topic => &[Action::QueuePublish, Action::QueueRead, Action::QueueAdmin],
             ResourceKind::Subscription => &[Action::QueueConsume, Action::QueueRead, Action::QueueAdmin],
+            ResourceKind::Channel => &[Action::ChannelSubscribe, Action::ChannelPublish],
         }
     }
 
@@ -568,6 +575,7 @@ impl ResourceKind {
     /// | `graph_edge_type` | `id`, `type`, `source`, `target`, `properties` (JSON) |
     /// | `bucket` | `key`, `created_by`, `size`, `content_type`, `folders` (JSON array of the key's folder names) |
     /// | `queue_topic`, `queue_subscription` | none (rules may use `@request` only) |
+    /// | `realtime_channel` | none (`@request` only); operations `view` (subscribe) and `create` (publish, presence) |
     pub fn default_schema(self) -> ResourceSchema {
         use ResourceFieldType::{Json as J, Number as N, Text as T};
         let s = ResourceSchema::new(self);
@@ -588,6 +596,7 @@ impl ResourceKind {
                 .field("content_type", T)
                 .field("folders", J),
             ResourceKind::Topic | ResourceKind::Subscription => s,
+            ResourceKind::Channel => s.with_ops(&[ResourceOp::View, ResourceOp::Create]),
         }
     }
 }

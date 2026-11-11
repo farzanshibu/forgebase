@@ -1,4 +1,4 @@
--- 0030_queue_rls: queue tenancy, subscription owners and record views
+-- 0031_queue_rls: queue tenancy, subscription owners and record views
 -- (FB-141, rls-coverage G2 and G16).
 --
 -- * `tenant` on topics, subscriptions and snapshots: NULL for an

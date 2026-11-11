@@ -23,6 +23,7 @@ use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use serde_json::Value as Json;
 use tokio::sync::{Notify, watch};
 
+use crate::access::{JobAccess, KindAccess, Owner, RecordedContext, Scope};
 use crate::clock::{Clock, SystemClock};
 use crate::cron::Cron;
 use crate::error::JobError;
@@ -59,6 +60,45 @@ struct Inner {
     store: RwLock<Option<Arc<dyn ResultStore>>>,
     /// Cancellation signals of the handlers running in this process.
     local: Mutex<HashMap<String, Arc<watch::Sender<bool>>>>,
+    /// Tenancy, kinds and channel owners (FB-142).
+    access: RwLock<JobAccess>,
+}
+
+/// Who creates a job: recorded in `created_by`, `tenant` and `context`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Origin {
+    pub actor: String,
+    pub tenant: Option<String>,
+    pub context: Option<String>,
+}
+
+impl Origin {
+    /// The caller itself.
+    pub(crate) fn of(ctx: &AccessContext) -> Self {
+        Self {
+            actor: ctx.actor(),
+            tenant: ctx.tenant.clone(),
+            context: RecordedContext::encode(ctx),
+        }
+    }
+
+    /// A job created for `parent` by `ctx` (child jobs): the parent's tenant;
+    /// the parent's creator and context when the system (an in-process
+    /// handler) spawns it, else the caller's.
+    pub(crate) fn child(ctx: &AccessContext, parent: &Job) -> Self {
+        if ctx.is_system() {
+            Self {
+                actor: parent.created_by.clone(),
+                tenant: parent.tenant.clone(),
+                context: parent.context.clone(),
+            }
+        } else {
+            Self {
+                tenant: parent.tenant.clone(),
+                ..Self::of(ctx)
+            }
+        }
+    }
 }
 
 pub(crate) const JOB_COLS: &str = "id, queue, kind, payload, priority, status, run_at, attempts, max_attempts, \
@@ -66,11 +106,11 @@ pub(crate) const JOB_COLS: &str = "id, queue, kind, payload, priority, status, r
     visibility_until, cancel_requested, result, last_error, created_by, created_at, updated_at, started_at, \
     finished_at, progress_percent, progress_stage, progress_message, progress_at, checkpoint IS NOT NULL AS \
     has_checkpoint, checkpoint_at, timeout_ms, deadline_at, heartbeat_at, workflow_id, step, parent_id, compensates, \
-    waiting_for, result_ref, result_size";
+    waiting_for, result_ref, result_size, tenant, context";
 
 const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max_attempts, backoff_base_ms, \
     backoff_max_ms, visibility_timeout_ms, enabled, next_run_at, last_run_at, last_job_id, created_by, created_at, \
-    updated_at";
+    updated_at, tenant, context";
 
 /// Effects of a transaction, applied after it committed.
 #[derive(Debug, Default)]
@@ -111,7 +151,79 @@ impl JobService {
                 sink: RwLock::new(None),
                 store: RwLock::new(None),
                 local: Mutex::new(HashMap::new()),
+                access: RwLock::new(JobAccess::new()),
             }),
+        }
+    }
+
+    /// Shares `access` with this service (FB-142): the server hands the same
+    /// state to its [`crate::JobChannelAuthorizer`], so job channels follow
+    /// the visibility of the jobs. Kinds installed earlier are kept.
+    pub fn attach_access(&self, access: JobAccess) {
+        let mut cur = self.inner.access.write().unwrap_or_else(|p| p.into_inner());
+        let kinds: Vec<(String, KindAccess)> = cur.kinds_raw();
+        access.set_kinds(kinds);
+        *cur = access;
+    }
+
+    /// The tenancy state of this service (permission check, kinds, owners).
+    pub fn access(&self) -> JobAccess {
+        self.inner.access.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Records who may enqueue each kind of `registry` ([`KindAccess`]).
+    /// [`crate::start_pool`] calls it; call it yourself when the pool runs
+    /// elsewhere.
+    pub fn install_kinds(&self, registry: &crate::JobRegistry) {
+        self.access()
+            .set_kinds(registry.accesses().map(|(k, a)| (k.clone(), a.clone())));
+    }
+
+    /// Answers [`crate::READ_ALL_KEY`] with `check` (the policy engine).
+    pub fn attach_permissions(&self, check: crate::PermissionCheck) {
+        self.access().attach_permissions(check);
+    }
+
+    /// Fails with `not found` unless `ctx` may see job `id` (FB-142).
+    pub(crate) async fn visible(&self, ctx: &AccessContext, id: &str) -> Result<()> {
+        let scope = self.access().scope(ctx);
+        if scope == Scope::All {
+            return Ok(());
+        }
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT j.tenant, j.created_by, s.created_by AS schedule_creator FROM _forgebase_jobs j \
+                 LEFT JOIN _forgebase_job_schedules s ON s.id = j.schedule_id WHERE j.id = ?1",
+                vec![id.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            return Err(JobError::NotFound(id.to_owned()));
+        }
+        let r = Row::new(&rows, 0);
+        let owner = Owner {
+            tenant: r.opt_text("tenant"),
+            created_by: r.text("created_by"),
+        };
+        if !scope.sees(&owner, r.opt_text("schedule_creator").as_deref()) {
+            return Err(JobError::NotFound(id.to_owned()));
+        }
+        self.access().remember(id, owner);
+        Ok(())
+    }
+
+    /// Remembers the owners of `jobs` for job channel checks.
+    pub(crate) fn remember_jobs<'a>(&self, jobs: impl IntoIterator<Item = &'a Job>) {
+        let access = self.access();
+        for j in jobs {
+            access.remember(
+                &j.id,
+                Owner {
+                    tenant: j.tenant.clone(),
+                    created_by: j.created_by.clone(),
+                },
+            );
         }
     }
 
@@ -212,6 +324,7 @@ impl JobService {
             for (id, event) in &fx.jobs {
                 match fetch_job(self.backend(), id).await {
                     Ok(Some(job)) => {
+                        self.remember_jobs([&job]);
                         let data = serde_json::to_value(JobUpdate::of(&job, event)).unwrap_or(Json::Null);
                         if let Some(w) = &job.workflow_id {
                             sink.publish(channel(w), data.clone()).await;
@@ -224,6 +337,13 @@ impl JobService {
             }
             for id in &fx.workflows {
                 if let Ok(Some(workflow)) = crate::flow::fetch_workflow(self.backend(), id).await {
+                    self.access().remember(
+                        id,
+                        Owner {
+                            tenant: workflow.tenant.clone(),
+                            created_by: workflow.created_by.clone(),
+                        },
+                    );
                     let data = serde_json::to_value(WorkflowUpdate {
                         event: "workflow".into(),
                         workflow,
@@ -250,14 +370,32 @@ impl JobService {
     /// queue, nothing is inserted and the first job is returned with
     /// `created == false`. With `depends_on`, the job waits until every
     /// listed job succeeded (and is cancelled if one of them fails).
+    ///
+    /// The job records the caller's tenant and context (FB-142); a kind the
+    /// caller may not enqueue ([`KindAccess`]) is refused (`403`). With an
+    /// idempotency key, only a job the caller may see is returned; another
+    /// tenant's key never matches, and another caller's in the same tenant
+    /// is a conflict.
     pub async fn enqueue(&self, ctx: &AccessContext, new: NewJob) -> Result<(Job, bool)> {
         self.allow(ctx, Action::EnqueueJob)?;
         let now = self.now();
         let resolved = new.resolve(now)?;
-        let actor = ctx.actor();
+        self.access().admit(ctx, &new.kind, &new.payload)?;
+        let origin = Origin::of(ctx);
+        let scope = self.access().scope(ctx);
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = insert_job(&mut *tx, &resolved, None, &actor, now, &mut fx).await;
+        let r = async {
+            let (job, created) = insert_job(&mut *tx, &resolved, None, &origin, now, &mut fx).await?;
+            if !created && !scope.sees(&owner_of(&job), None) {
+                return Err(JobError::state(
+                    "idempotency_key_in_use",
+                    "another caller's job in this queue has this idempotency key",
+                ));
+            }
+            Ok((job, created))
+        }
+        .await;
         self.commit(tx, r, fx).await
     }
 
@@ -266,6 +404,7 @@ impl JobService {
     /// One job.
     pub async fn get(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ReadJobs)?;
+        self.visible(ctx, id).await?;
         fetch_job(self.backend(), id)
             .await?
             .ok_or_else(|| JobError::NotFound(id.to_owned()))
@@ -274,8 +413,8 @@ impl JobService {
     /// Jobs, newest first.
     pub async fn list(&self, ctx: &AccessContext, filter: JobFilter) -> Result<JobPage> {
         self.allow(ctx, Action::ReadJobs)?;
-        let mut where_sql = String::from("1 = 1");
         let mut params: Vec<Value> = Vec::new();
+        let mut where_sql = self.access().scope(ctx).sql("", true, &mut params);
         if let Some(status) = filter.status {
             params.push(status.as_str().into());
             where_sql.push_str(&format!(" AND status = ?{}", params.len()));
@@ -317,18 +456,17 @@ impl JobService {
                 params,
             ))
             .await?;
-        let items = (0..rows.len())
+        let items: Vec<Job> = (0..rows.len())
             .map(|i| job_from(&Row::new(&rows, i)))
             .collect::<Result<_>>()?;
+        self.remember_jobs(&items);
         Ok(JobPage { items, total })
     }
 
     /// The history of a job, oldest first.
     pub async fn events(&self, ctx: &AccessContext, id: &str) -> Result<Vec<JobEvent>> {
         self.allow(ctx, Action::ReadJobs)?;
-        if fetch_job(self.backend(), id).await?.is_none() {
-            return Err(JobError::NotFound(id.to_owned()));
-        }
+        self.visible(ctx, id).await?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -355,9 +493,7 @@ impl JobService {
     /// The attempts of a job with their timings, oldest first.
     pub async fn attempts(&self, ctx: &AccessContext, id: &str) -> Result<Vec<Attempt>> {
         self.allow(ctx, Action::ReadJobs)?;
-        if fetch_job(self.backend(), id).await?.is_none() {
-            return Err(JobError::NotFound(id.to_owned()));
-        }
+        self.visible(ctx, id).await?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -389,6 +525,7 @@ impl JobService {
     /// The last checkpoint of a job.
     pub async fn checkpoint(&self, ctx: &AccessContext, id: &str) -> Result<Checkpoint> {
         self.allow(ctx, Action::ReadJobs)?;
+        self.visible(ctx, id).await?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -411,6 +548,7 @@ impl JobService {
     /// kept there. `None` when the handler returned none.
     pub async fn result(&self, ctx: &AccessContext, id: &str) -> Result<Option<Json>> {
         self.allow(ctx, Action::ReadJobs)?;
+        self.visible(ctx, id).await?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -449,13 +587,19 @@ impl JobService {
         r.opt_json("result")
     }
 
-    /// Counts per state and queue.
+    /// Counts per state and queue, of the jobs the caller may see.
     pub async fn stats(&self, ctx: &AccessContext) -> Result<JobStats> {
         self.allow(ctx, Action::ReadJobs)?;
+        let mut params = Vec::new();
+        let scope = self.access().scope(ctx).sql("", true, &mut params);
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(
-                "SELECT queue, status, COUNT(*) AS n FROM _forgebase_jobs GROUP BY queue, status ORDER BY queue",
+            .fetch_all(&Statement::new(
+                format!(
+                    "SELECT queue, status, COUNT(*) AS n FROM _forgebase_jobs WHERE {scope} \
+                     GROUP BY queue, status ORDER BY queue"
+                ),
+                params,
             ))
             .await?;
         let mut totals: BTreeMap<String, i64> = ["queued", "running", "succeeded", "dead", "cancelled"]
@@ -496,6 +640,7 @@ impl JobService {
     /// cancelled job are cancelled with it.
     pub async fn cancel(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
+        self.visible(ctx, id).await?;
         let now = self.now();
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
@@ -511,6 +656,7 @@ impl JobService {
     /// count. Its checkpoint is kept, so the next attempt resumes from it.
     pub async fn retry(&self, ctx: &AccessContext, id: &str) -> Result<Job> {
         self.allow(ctx, Action::ManageJobs)?;
+        self.visible(ctx, id).await?;
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
         let r = retry_tx(&mut *tx, id, self.now(), &mut fx).await;
@@ -520,6 +666,7 @@ impl JobService {
     /// Deletes a finished job and its history (and its stored result).
     pub async fn delete(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
+        self.visible(ctx, id).await?;
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
         let r = delete_tx(&mut *tx, id, &mut fx).await;
@@ -636,21 +783,36 @@ impl JobService {
             ));
         }
         let now = self.now();
+        let limit = self.worker_limit(ctx);
         // Cheap read first: an idle poll must not take the single writer.
-        if !self.has_claimable(&req, now).await? {
+        if !self.has_claimable(&req, limit.as_ref(), now).await? {
             self.touch_worker(&req.worker_id, now).await?;
             return Ok(Vec::new());
         }
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
-        let r = claim_tx(&mut *tx, &req, max, now, &mut fx).await;
+        let r = claim_tx(&mut *tx, &req, limit.as_ref(), max, now, &mut fx).await;
         self.commit(tx, r, fx).await
     }
 
-    async fn has_claimable(&self, req: &ClaimRequest, now: i64) -> Result<bool> {
+    /// What a non-privileged worker may claim (FB-142): jobs of its own
+    /// tenant (none: jobs without a tenant) whose kind is public.
+    fn worker_limit(&self, ctx: &AccessContext) -> Option<WorkerLimit> {
+        if ctx.is_privileged() {
+            return None;
+        }
+        let access = self.access();
+        Some(WorkerLimit {
+            tenant: ctx.tenant.clone(),
+            excluded_kinds: access.unclaimable(),
+            public_with_prefix: access.public_with_prefix(),
+        })
+    }
+
+    async fn has_claimable(&self, req: &ClaimRequest, limit: Option<&WorkerLimit>, now: i64) -> Result<bool> {
         let blocked = self.backend().fetch_all(&blocked_queues_stmt(now)).await?;
         let blocked: Vec<String> = (0..blocked.len()).map(|i| Row::new(&blocked, i).text("name")).collect();
-        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &blocked, 1);
+        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &blocked, limit, 1);
         params.insert(0, now.into());
         let sql = format!(
             "SELECT \
@@ -775,19 +937,22 @@ impl JobService {
         }
         let now = self.now();
         let mut resolved = Vec::with_capacity(children.len());
+        let access = self.access();
         for c in &children {
             resolved.push(c.resolve(now)?);
+            access.admit(ctx, &c.kind, &c.payload)?;
         }
-        let actor = ctx.actor();
         let mut fx = Fx::default();
         let mut tx = self.begin().await?;
         let r = async {
             let parent = leased(&mut *tx, id, lease_id).await?;
+            // FB-142: children belong to the parent's tenant.
+            let origin = Origin::child(ctx, &parent);
             let mut out = Vec::with_capacity(resolved.len());
             for mut r in resolved {
                 r.parent_id = Some(parent.id.clone());
                 r.workflow_id.clone_from(&parent.workflow_id);
-                out.push(insert_job(&mut *tx, &r, None, &actor, now, &mut fx).await?.0);
+                out.push(insert_job(&mut *tx, &r, None, &origin, now, &mut fx).await?.0);
             }
             Ok(out)
         }
@@ -907,6 +1072,8 @@ impl JobService {
             new.visibility_timeout_ms,
         )?;
         let payload = check_payload(&new.payload)?;
+        self.access().admit(ctx, &new.kind, &new.payload)?;
+        let origin = Origin::of(ctx);
         let now = self.now();
         let next = cron
             .next_after(now)
@@ -926,7 +1093,8 @@ impl JobService {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_job_schedules (id, name, cron, queue, kind, payload, priority, max_attempts, \
                  backoff_base_ms, backoff_max_ms, visibility_timeout_ms, enabled, next_run_at, created_by, created_at, \
-                 updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+                 updated_at, tenant, context) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17)",
                 vec![
                     id.as_str().into(),
                     new.name.as_str().into(),
@@ -941,8 +1109,10 @@ impl JobService {
                     policy.visibility_timeout_ms.into(),
                     i64::from(new.enabled.unwrap_or(true)).into(),
                     next.into(),
-                    ctx.actor().into(),
+                    origin.actor.as_str().into(),
                     now.into(),
+                    origin.tenant.clone().into(),
+                    origin.context.clone().into(),
                 ],
             ))
             .await?;
@@ -955,10 +1125,19 @@ impl JobService {
     /// Changes a schedule. A new cron expression recomputes the next firing.
     pub async fn update_schedule(&self, ctx: &AccessContext, id: &str, patch: SchedulePatch) -> Result<Schedule> {
         self.allow(ctx, Action::ManageJobs)?;
+        self.schedule_visible(ctx, id).await?;
         let now = self.now();
+        let access = self.access();
         let mut tx = self.begin().await?;
         let r = async {
             let mut s = fetch_schedule_tx(&mut *tx, id).await?;
+            // FB-142: a new payload is the updater's: admitted for it and run
+            // with its context.
+            let mut context = None;
+            if let Some(p) = &patch.payload {
+                access.admit(ctx, &s.kind, p)?;
+                context = Some(RecordedContext::encode(ctx));
+            }
             if let Some(expr) = &patch.cron {
                 let cron = Cron::parse(expr).map_err(|e| JobError::invalid("invalid_cron", e.to_string()))?;
                 let next = cron
@@ -980,6 +1159,13 @@ impl JobService {
             }
             if let Some(p) = patch.priority {
                 s.priority = Policy::resolve(Some(p), None, None, None, None)?.priority;
+            }
+            if let Some(c) = context {
+                tx.execute(&Statement::new(
+                    "UPDATE _forgebase_job_schedules SET context = ?2 WHERE id = ?1",
+                    vec![id.into(), c.into()],
+                ))
+                .await?;
             }
             tx.execute(&Statement::new(
                 "UPDATE _forgebase_job_schedules SET cron = ?2, enabled = ?3, payload = ?4, priority = ?5, \
@@ -1004,6 +1190,7 @@ impl JobService {
     /// Deletes a schedule (jobs it already enqueued stay).
     pub async fn delete_schedule(&self, ctx: &AccessContext, id: &str) -> Result<()> {
         self.allow(ctx, Action::ManageJobs)?;
+        self.schedule_visible(ctx, id).await?;
         let mut tx = self.begin().await?;
         let r = async {
             let n = tx
@@ -1025,6 +1212,7 @@ impl JobService {
     /// One schedule.
     pub async fn schedule(&self, ctx: &AccessContext, id: &str) -> Result<Schedule> {
         self.allow(ctx, Action::ReadJobs)?;
+        self.schedule_visible(ctx, id).await?;
         let rows = self
             .backend()
             .fetch_all(&Statement::new(
@@ -1038,16 +1226,49 @@ impl JobService {
         schedule_from(&Row::new(&rows, 0))
     }
 
-    /// All schedules by name.
+    /// The schedules the caller may see, by name.
     pub async fn schedules(&self, ctx: &AccessContext) -> Result<Vec<Schedule>> {
         self.allow(ctx, Action::ReadJobs)?;
+        let mut params = Vec::new();
+        let scope = self.access().scope(ctx).sql("", false, &mut params);
         let rows = self
             .backend()
-            .fetch_all(&Statement::raw(format!(
-                "SELECT {SCHEDULE_COLS} FROM _forgebase_job_schedules ORDER BY name LIMIT 1000"
-            )))
+            .fetch_all(&Statement::new(
+                format!("SELECT {SCHEDULE_COLS} FROM _forgebase_job_schedules WHERE {scope} ORDER BY name LIMIT 1000"),
+                params,
+            ))
             .await?;
         (0..rows.len()).map(|i| schedule_from(&Row::new(&rows, i))).collect()
+    }
+
+    /// Fails with `schedule not found` unless `ctx` may see schedule `id`.
+    async fn schedule_visible(&self, ctx: &AccessContext, id: &str) -> Result<()> {
+        let scope = self.access().scope(ctx);
+        if scope == Scope::All {
+            return Ok(());
+        }
+        let rows = self
+            .backend()
+            .fetch_all(&Statement::new(
+                "SELECT tenant, created_by FROM _forgebase_job_schedules WHERE id = ?1",
+                vec![id.into()],
+            ))
+            .await?;
+        let visible = !rows.is_empty() && {
+            let r = Row::new(&rows, 0);
+            scope.sees(
+                &Owner {
+                    tenant: r.opt_text("tenant"),
+                    created_by: r.text("created_by"),
+                },
+                None,
+            )
+        };
+        if visible {
+            Ok(())
+        } else {
+            Err(JobError::ScheduleNotFound(id.to_owned()))
+        }
     }
 
     // ------------------------------------------------------------ maintenance
@@ -1249,6 +1470,8 @@ pub(crate) fn job_from(r: &Row<'_>) -> Result<Job> {
         result: r.opt_json("result")?,
         last_error: r.opt_text("last_error"),
         created_by: r.text("created_by"),
+        tenant: r.opt_text("tenant"),
+        context: r.opt_text("context"),
         created_at: iso(r.int("created_at")),
         updated_at: iso(r.int("updated_at")),
         started_at: r.opt_int("started_at").map(iso),
@@ -1309,6 +1532,7 @@ fn schedule_from(r: &Row<'_>) -> Result<Schedule> {
         last_run_at: r.opt_int("last_run_at").map(iso),
         last_job_id: r.opt_text("last_job_id"),
         created_by: r.text("created_by"),
+        tenant: r.opt_text("tenant"),
         created_at: iso(r.int("created_at")),
         updated_at: iso(r.int("updated_at")),
     })
@@ -1426,15 +1650,21 @@ pub(crate) async fn insert_job(
     tx: &mut dyn WriteTx,
     r: &Resolved,
     schedule_id: Option<&str>,
-    actor: &str,
+    origin: &Origin,
     now: i64,
     fx: &mut Fx,
 ) -> Result<(Job, bool)> {
     if let Some(key) = &r.idempotency_key {
+        // FB-142: keys are per tenant.
         let rows = tx
             .fetch_all(&Statement::new(
-                "SELECT id FROM _forgebase_jobs WHERE queue = ?1 AND idempotency_key = ?2",
-                vec![r.queue.as_str().into(), key.as_str().into()],
+                "SELECT id FROM _forgebase_jobs WHERE queue = ?1 AND idempotency_key = ?2 \
+                 AND COALESCE(tenant, '') = ?3",
+                vec![
+                    r.queue.as_str().into(),
+                    key.as_str().into(),
+                    origin.tenant.clone().unwrap_or_default().into(),
+                ],
             ))
             .await?;
         if !rows.is_empty() {
@@ -1489,9 +1719,10 @@ pub(crate) async fn insert_job(
     tx.execute(&Statement::new(
         "INSERT INTO _forgebase_jobs (id, queue, kind, payload, priority, status, run_at, max_attempts, \
          backoff_base_ms, backoff_max_ms, visibility_timeout_ms, idempotency_key, schedule_id, created_by, \
-         created_at, updated_at, timeout_ms, workflow_id, step, parent_id, compensates, compensate, waiting_for) \
+         created_at, updated_at, timeout_ms, workflow_id, step, parent_id, compensates, compensate, waiting_for, \
+         tenant, context) \
          VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16, ?17, ?18, \
-         ?19, ?20, ?21)",
+         ?19, ?20, ?21, ?22, ?23)",
         vec![
             id.as_str().into(),
             r.queue.as_str().into(),
@@ -1505,7 +1736,7 @@ pub(crate) async fn insert_job(
             r.policy.visibility_timeout_ms.into(),
             r.idempotency_key.clone().into(),
             schedule_id.map(str::to_owned).into(),
-            actor.into(),
+            origin.actor.as_str().into(),
             now.into(),
             timeout_ms.into(),
             r.workflow_id.clone().into(),
@@ -1514,6 +1745,8 @@ pub(crate) async fn insert_job(
             r.compensates.clone().into(),
             r.compensate.clone().into(),
             waiting.into(),
+            origin.tenant.clone().into(),
+            origin.context.clone().into(),
         ],
     ))
     .await?;
@@ -1532,6 +1765,14 @@ pub(crate) async fn insert_job(
     Ok((fetch_job_tx(tx, &id).await?, true))
 }
 
+/// The tenant and creator of a job.
+pub(crate) fn owner_of(job: &Job) -> Owner {
+    Owner {
+        tenant: job.tenant.clone(),
+        created_by: job.created_by.clone(),
+    }
+}
+
 /// Queues that hand out nothing right now: paused, at their concurrency
 /// limit, or out of rate budget in the current window.
 fn blocked_queues_stmt(now: i64) -> Statement {
@@ -1544,11 +1785,71 @@ fn blocked_queues_stmt(now: i64) -> Statement {
     )
 }
 
-/// `AND queue IN (...) AND kind IN (...) AND queue NOT IN (...)` with
-/// placeholders numbered after `taken`.
-fn claim_filter(queues: &[String], kinds: &[String], excluded: &[String], taken: usize) -> (String, Vec<Value>) {
+/// What a non-privileged worker may claim (FB-142).
+#[derive(Debug, Clone)]
+pub(crate) struct WorkerLimit {
+    /// Only jobs of this tenant (`None`: jobs without a tenant).
+    tenant: Option<String>,
+    /// Registered reserved and guarded kinds.
+    excluded_kinds: Vec<String>,
+    /// Public kinds that carry a reserved prefix.
+    public_with_prefix: Vec<String>,
+}
+
+/// `AND queue IN (...) AND kind IN (...) AND queue NOT IN (...)` (and a
+/// worker's tenant and kind limits) with placeholders numbered after `taken`.
+fn claim_filter(
+    queues: &[String],
+    kinds: &[String],
+    excluded: &[String],
+    limit: Option<&WorkerLimit>,
+    taken: usize,
+) -> (String, Vec<Value>) {
     let mut sql = String::new();
     let mut params: Vec<Value> = Vec::new();
+    if let Some(l) = limit {
+        match &l.tenant {
+            Some(t) => {
+                params.push(t.as_str().into());
+                sql.push_str(&format!(" AND tenant = ?{}", taken + params.len()));
+            }
+            None => sql.push_str(" AND tenant IS NULL"),
+        }
+        if !l.excluded_kinds.is_empty() {
+            let marks: Vec<String> = l
+                .excluded_kinds
+                .iter()
+                .map(|k| {
+                    params.push(k.as_str().into());
+                    format!("?{}", taken + params.len())
+                })
+                .collect();
+            sql.push_str(&format!(" AND kind NOT IN ({})", marks.join(", ")));
+        }
+        // Prefixes are constants of `[a-z.]`: no LIKE wildcards to escape.
+        let mut prefixes: Vec<String> = crate::access::RESERVED_PREFIXES
+            .iter()
+            .map(|p| format!("kind LIKE '{p}%'"))
+            .collect();
+        prefixes.sort();
+        let public: Vec<String> = l
+            .public_with_prefix
+            .iter()
+            .map(|k| {
+                params.push(k.as_str().into());
+                format!("?{}", taken + params.len())
+            })
+            .collect();
+        if public.is_empty() {
+            sql.push_str(&format!(" AND NOT ({})", prefixes.join(" OR ")));
+        } else {
+            sql.push_str(&format!(
+                " AND (kind IN ({}) OR NOT ({}))",
+                public.join(", "),
+                prefixes.join(" OR ")
+            ));
+        }
+    }
     for (col, list, op) in [
         ("queue", queues, "IN"),
         ("kind", kinds, "IN"),
@@ -1655,6 +1956,7 @@ async fn budget(tx: &mut dyn WriteTx, queue: &str, now: i64) -> Result<Budget> {
 async fn claim_tx(
     tx: &mut dyn WriteTx,
     req: &ClaimRequest,
+    limit: Option<&WorkerLimit>,
     max: i64,
     now: i64,
     fx: &mut Fx,
@@ -1672,7 +1974,7 @@ async fn claim_tx(
         if want <= 0 {
             break;
         }
-        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &excluded, 2);
+        let (filter, mut params) = claim_filter(&req.queues, &req.kinds, &excluded, limit, 2);
         params.insert(0, now.into());
         params.insert(1, want.into());
         let rows = tx
@@ -2202,7 +2504,13 @@ async fn fire_tx(tx: &mut dyn WriteTx, now: i64, fx: &mut Fx) -> Result<usize> {
             idempotency_key: Some(format!("schedule:{}:{due}", s.id)),
             ..Resolved::default()
         };
-        let (job, created) = insert_job(tx, &resolved, Some(&s.id), &format!("schedule:{}", s.name), now, fx).await?;
+        // FB-142: the schedule's tenant and its creator's recorded context.
+        let origin = Origin {
+            actor: format!("schedule:{}", s.name),
+            tenant: s.tenant.clone(),
+            context: r.opt_text("context"),
+        };
+        let (job, created) = insert_job(tx, &resolved, Some(&s.id), &origin, now, fx).await?;
         if created {
             fired += 1;
         }

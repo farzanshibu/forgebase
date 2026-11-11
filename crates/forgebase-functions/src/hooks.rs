@@ -20,6 +20,13 @@
 //! "record_id", "record", "actor", "seq"}` after (`record` is the stored row
 //! after the change, before it for deletes).
 //! Writes made by the system principal (migrations, internal jobs) skip hooks.
+//!
+//! **Invocation context (FB-142).** Hooks pass an explicit context: a
+//! before-hook acts as the writer (a privileged writer's hook acts as the
+//! function's identity in the writer's realm, organization and tenant, so
+//! function code never borrows administrator rights); an after-hook acts as
+//! the function's identity in the tenant recorded with the change, so it can
+//! read and write that tenant's tenant-scoped data under the collection rules.
 
 use std::sync::{Arc, Weak};
 
@@ -30,6 +37,7 @@ use forgebase_realtime::Event;
 use serde_json::{Map, Value as Json, json};
 
 use crate::error::FunctionError;
+use crate::jobs::invocation_context;
 use crate::model::{HookEvent, Trigger};
 use crate::{FunctionService, Inner, identity};
 
@@ -116,8 +124,9 @@ impl WriteGuard for HookGuard {
                         Trigger::Hook,
                         bytes.clone(),
                         write.ctx.request_id.clone(),
-                        // JavaScript hooks act as the writer.
-                        Some(write.ctx.clone()),
+                        // JavaScript hooks act as the writer; a privileged
+                        // writer does not lend its privileges (FB-142).
+                        Some(invocation_context(&name, Some(&write.ctx), None)),
                         |out| {
                             let v = rejection(out);
                             let status = match &v {
@@ -207,7 +216,9 @@ pub(crate) async fn after(svc: &FunctionService, ev: &Event) -> usize {
             continue;
         }
         runs += 1;
-        if let Err(e) = svc.invoke(&name, Trigger::Hook, &input, None).await {
+        // FB-142: the function's identity in the tenant of the change.
+        let caller = invocation_context(&name, None, ev.tenant.as_deref());
+        if let Err(e) = svc.invoke_as(&name, Trigger::Hook, &input, caller).await {
             tracing::warn!(function = %name, seq = ev.seq, error = %e, "after-hook failed");
         }
     }

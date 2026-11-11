@@ -593,14 +593,16 @@ async fn verify(env: &HostEnv, v: Json) -> HostResult {
     if token.is_empty() {
         return Ok(b"null".to_vec());
     }
+    // FB-142: a key's tenant binding (FB-138) is part of the answer.
     let res = if token.starts_with("fbk_") || token.starts_with("fbp_") {
-        auth.authenticate_key(token).await
+        auth.authenticate_key_bound(token).await.map(|b| (b.auth, b.tenant))
     } else {
-        auth.authenticate_access_token(token).await
+        auth.authenticate_access_token(token).await.map(|a| (a, None))
     };
     match res {
-        Ok(a) => {
-            let ctx = a.access_context(None);
+        Ok((a, tenant)) => {
+            let mut ctx = a.access_context(None);
+            ctx.tenant = tenant;
             let perms = env.services.permissions(&ctx);
             out(&auth_info(perms, &ctx))
         }

@@ -225,6 +225,15 @@ impl DataService {
         Ok(())
     }
 
+    /// Lower-case names of the fields of collection `name` the caller may not
+    /// read (hidden fields and field-level rules; empty for privileged
+    /// callers). For engines that copy record fields elsewhere, such as a
+    /// vector collection's `source_collection` (FB-139).
+    pub fn unreadable_fields(&self, ctx: &AccessContext, name: &str) -> Result<BTreeSet<String>, DataError> {
+        let coll = self.collection(name)?;
+        Ok(self.mask(ctx, &coll).hidden)
+    }
+
     /// The caller's read mask on `coll`.
     pub(crate) fn mask(&self, ctx: &AccessContext, coll: &Collection) -> FieldMask {
         read_mask(self.inner.authorizer.as_ref(), ctx, coll)

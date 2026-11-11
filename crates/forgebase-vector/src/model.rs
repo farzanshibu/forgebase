@@ -155,6 +155,13 @@ pub struct NewCollection {
     /// force) instead of approximate. Default from the server configuration.
     #[serde(default)]
     pub exact_threshold: Option<u32>,
+    /// The data collection the items are copied from, item id = record id
+    /// (FB-139). Searches and reads then re-check every item against that
+    /// collection's View rule as the caller, leave out the metadata keys the
+    /// caller may not read there, and refuse filters on them. Set at
+    /// creation only.
+    #[serde(default)]
+    pub source_collection: Option<String>,
 }
 
 /// A vector collection.
@@ -168,7 +175,10 @@ pub struct VectorCollection {
     pub fields: Vec<VectorField>,
     /// See [`NewCollection::exact_threshold`].
     pub exact_threshold: u32,
-    /// Number of items.
+    /// See [`NewCollection::source_collection`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_collection: Option<String>,
+    /// Number of items (that the caller's rule shows).
     pub items: u64,
     /// Creation time.
     pub created: String,

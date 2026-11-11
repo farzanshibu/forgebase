@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use forgebase_api::http::ApiJson;
 use forgebase_api::principal::Access;
 use forgebase_api::{ApiError, ApiExtension};
-use forgebase_data::{AccessContext, Action};
+use forgebase_data::{AccessContext, Action, ResourceOp};
 use serde::Serialize;
 use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{OpenApi, ToSchema};
@@ -32,8 +32,17 @@ fn api(e: VectorError) -> ApiError {
     ApiError::from_error(&e)
 }
 
-fn body<T>(s: &VectorService, ctx: &AccessContext, action: Action, body: Body<T>) -> Result<T, ApiError> {
-    s.authorize(ctx, action).map_err(api)?;
+/// Checks that the caller may do `op` on collection `name` at all before the
+/// body is read (FB-139: per collection, so resource keys and rules count).
+fn body<T>(
+    s: &VectorService,
+    ctx: &AccessContext,
+    action: Action,
+    name: &str,
+    op: ResourceOp,
+    body: Body<T>,
+) -> Result<T, ApiError> {
+    s.authorize_collection(ctx, action, name, op).map_err(api)?;
     Ok(body?.0)
 }
 
@@ -127,7 +136,12 @@ async fn list_collections(State(s): State<VectorService>, Access(ctx): Access) -
     responses((status = 201, description = "Created", body = VectorCollection),
               (status = 409, description = "The name is taken")))]
 async fn create_collection(State(s): State<VectorService>, Access(ctx): Access, new: Body<NewCollection>) -> ApiResult {
-    let new = body(&s, &ctx, Action::VectorAdmin, new)?;
+    // The name is in the body, so the service checks it; administration is
+    // granted by permissions only, which anonymous callers never hold.
+    if ctx.principal == forgebase_data::Principal::Anonymous {
+        return Err(api(VectorError::Unauthenticated));
+    }
+    let new = new?.0;
     let c = s.create_collection(&ctx, new).await.map_err(api)?;
     Ok((StatusCode::CREATED, Json(c)).into_response())
 }
@@ -169,7 +183,7 @@ async fn add_field(
     Path(name): Path<String>,
     spec: Body<FieldSpec>,
 ) -> ApiResult {
-    let spec = body(&s, &ctx, Action::VectorAdmin, spec)?;
+    let spec = body(&s, &ctx, Action::VectorAdmin, &name, ResourceOp::Update, spec)?;
     let f = s.add_field(&ctx, &name, spec).await.map_err(api)?;
     Ok((StatusCode::CREATED, Json(f)).into_response())
 }
@@ -198,7 +212,12 @@ async fn upsert(
     Path(name): Path<String>,
     req: Body<UpsertRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::VectorWrite, req)?;
+    // New items need `create`, existing ones `update`: either lets the body in.
+    if let Err(e) = s.authorize_collection(&ctx, Action::VectorWrite, &name, ResourceOp::Create) {
+        s.authorize_collection(&ctx, Action::VectorWrite, &name, ResourceOp::Update)
+            .map_err(|_| api(e))?;
+    }
+    let req = req?.0;
     ok(s.upsert(&ctx, &name, req.items).await.map_err(api)?)
 }
 
@@ -212,7 +231,7 @@ async fn delete_items(
     Path(name): Path<String>,
     req: Body<DeleteRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::VectorWrite, req)?;
+    let req = body(&s, &ctx, Action::VectorWrite, &name, ResourceOp::Delete, req)?;
     ok(DeleteResult {
         deleted: s.delete_items(&ctx, &name, req.ids).await.map_err(api)?,
     })
@@ -254,7 +273,7 @@ async fn search(
     Path(name): Path<String>,
     req: Body<SearchRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::VectorRead, req)?;
+    let req = body(&s, &ctx, Action::VectorRead, &name, ResourceOp::List, req)?;
     ok(s.search(&ctx, &name, req).await.map_err(api)?)
 }
 
@@ -268,7 +287,7 @@ async fn hybrid(
     Path(name): Path<String>,
     req: Body<HybridRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::VectorRead, req)?;
+    let req = body(&s, &ctx, Action::VectorRead, &name, ResourceOp::List, req)?;
     ok(s.hybrid(&ctx, &name, req).await.map_err(api)?)
 }
 
@@ -282,7 +301,7 @@ async fn rebuild(
     Path(name): Path<String>,
     req: Body<RebuildRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::VectorAdmin, req)?;
+    let req = body(&s, &ctx, Action::VectorAdmin, &name, ResourceOp::Update, req)?;
     let indexes = s.rebuild(&ctx, &name, req.field.as_deref()).await.map_err(api)?;
     Ok((StatusCode::ACCEPTED, Json(RebuildResponse { indexes })).into_response())
 }
@@ -305,6 +324,6 @@ async fn recall(
     Path(name): Path<String>,
     req: Body<RecallRequest>,
 ) -> ApiResult {
-    let req = body(&s, &ctx, Action::VectorAdmin, req)?;
+    let req = body(&s, &ctx, Action::VectorAdmin, &name, ResourceOp::View, req)?;
     ok(s.recall(&ctx, &name, req).await.map_err(api)?)
 }

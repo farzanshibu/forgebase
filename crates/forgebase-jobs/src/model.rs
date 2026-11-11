@@ -118,6 +118,13 @@ pub struct Job {
     pub last_error: Option<String>,
     /// Who enqueued it.
     pub created_by: String,
+    /// Tenant (project environment) of the enqueuer (FB-142); `null`: none.
+    pub tenant: Option<String>,
+    /// The enqueuer's recorded context (JSON, [`crate::RecordedContext`]);
+    /// not part of the API. `None`: the system.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub(crate) context: Option<String>,
     /// Creation time (RFC 3339).
     pub created_at: String,
     /// Last change (RFC 3339).
@@ -614,6 +621,8 @@ pub struct Schedule {
     pub last_job_id: Option<String>,
     /// Who created it.
     pub created_by: String,
+    /// Tenant of the creator (FB-142); its jobs run in it. `null`: none.
+    pub tenant: Option<String>,
     /// Creation time (RFC 3339).
     pub created_at: String,
     /// Last change (RFC 3339).

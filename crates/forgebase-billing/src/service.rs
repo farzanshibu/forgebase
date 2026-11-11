@@ -23,7 +23,7 @@ use forgebase_db::{Backend, Rows, Statement, TxMode, Value, WriteTx};
 use forgebase_entitlements::period::{civil_from_days, days_from_civil, days_in_month};
 use forgebase_entitlements::{Clock, EntitlementService, parse_subject, subject_key};
 use forgebase_jobs::JobService;
-use forgebase_policy::{Check, PolicyService};
+use forgebase_policy::{Check, Denial, PolicyError, PolicyService, Step};
 use serde_json::{Value as Json, json};
 
 use crate::error::{BillingError, Result};
@@ -181,6 +181,35 @@ pub(crate) fn check_subject(s: &str) -> Result<String> {
 
 pub(crate) fn org_of(subject: &str) -> Option<&str> {
     parse_subject(subject).ok().flatten()
+}
+
+/// SQL that is true when the billing subject in column `col` belongs to the
+/// realm bound at `?{p}` (G18), valid on SQLite and PostgreSQL. Mirrors
+/// [`forgebase_policy::Snapshot::realm_of_subject`]: organizations by
+/// `_forgebase_orgs.realm_id` (unknown ones match no realm), users by the
+/// realm naming their auth collection, service accounts by their realm
+/// (both `default` when none is recorded).
+pub(crate) fn subject_in_realm_sql(col: &str, p: usize) -> String {
+    format!(
+        "({col} IN (SELECT 'org:' || o.id FROM _forgebase_orgs o WHERE o.realm_id = ?{p}) \
+         OR (substr({col}, 1, 8) = 'service:' AND COALESCE((SELECT sa.realm FROM _forgebase_service_accounts sa \
+             WHERE 'service:' || sa.id = {col}), 'default') = ?{p}) \
+         OR (substr({col}, 1, 5) = 'user:' AND COALESCE((SELECT ri.realm_id FROM _forgebase_realm_identity ri \
+             WHERE substr({col}, 1, length(ri.collection) + 6) = 'user:' || ri.collection || '/'), 'default') = ?{p}))"
+    )
+}
+
+/// ` AND <subject in realm>` for an instance-wide read scoped to a realm
+/// ([`BillingService::can_read_all`]), with the realm pushed as the last of
+/// `params`; empty for privileged readers.
+pub(crate) fn realm_clause(realm: Option<&str>, col: &str, params: &mut Vec<Value>) -> String {
+    match realm {
+        None => String::new(),
+        Some(r) => {
+            params.push(r.to_owned().into());
+            format!(" AND {}", subject_in_realm_sql(col, params.len()))
+        }
+    }
 }
 
 pub(crate) fn check_key(key: &str, what: &str) -> Result<String> {
@@ -426,7 +455,7 @@ impl BillingService {
         }
     }
 
-    fn check(&self, ctx: &AccessContext, permission: &str, org: Option<&str>) -> Result<()> {
+    pub(crate) fn check(&self, ctx: &AccessContext, permission: &str, org: Option<&str>) -> Result<()> {
         self.inner.policy.check(
             ctx,
             &Check {
@@ -438,13 +467,38 @@ impl BillingService {
         Ok(())
     }
 
-    /// `permission` in the subject's organization, else at realm level.
+    /// Whether `subject` belongs to the caller's realm (G18): an
+    /// organization of that realm, or an identity whose home realm it is.
+    /// Unknown organizations belong to no realm.
+    pub(crate) fn in_caller_realm(&self, ctx: &AccessContext, subject: &str) -> bool {
+        self.inner
+            .policy
+            .snapshot()
+            .realm_of_subject(subject)
+            .is_some_and(|r| r == ctx.realm_id)
+    }
+
+    /// `permission` at realm level, for a subject of the caller's realm only
+    /// (G18): a realm-level grant never reaches another realm's subjects.
+    fn check_realm_level(&self, ctx: &AccessContext, subject: &str, permission: &str) -> Result<()> {
+        if !self.in_caller_realm(ctx, subject) {
+            return Err(PolicyError::Denied(Denial::at(
+                Step::Tenant,
+                format!("{permission}: the subject is not in realm {}", ctx.realm_id),
+            ))
+            .into());
+        }
+        self.check(ctx, permission, None)
+    }
+
+    /// `permission` in the subject's organization, else at realm level when
+    /// the subject is in the caller's realm.
     fn check_for(&self, ctx: &AccessContext, subject: &str, permission: &str) -> Result<()> {
         match org_of(subject) {
             Some(org) => self
                 .check(ctx, permission, Some(org))
-                .or_else(|e| self.check(ctx, permission, None).map_err(|_| e)),
-            None => self.check(ctx, permission, None),
+                .or_else(|e| self.check_realm_level(ctx, subject, permission).map_err(|_| e)),
+            None => self.check_realm_level(ctx, subject, permission),
         }
     }
 
@@ -478,25 +532,27 @@ impl BillingService {
     }
 
     /// May give money back or forgive it (credit notes, refunds, manual
-    /// payments, voiding): `billing:write` at realm level (operators) or
-    /// privileged callers. An organization's own billing manager must not
-    /// refund itself.
-    pub(crate) fn can_operate(&self, ctx: &AccessContext) -> Result<()> {
+    /// payments, voiding) for `subject`: `billing:write` at realm level
+    /// (operators of the subject's realm, G18) or privileged callers. An
+    /// organization's own billing manager must not refund itself.
+    pub(crate) fn can_operate(&self, ctx: &AccessContext, subject: &str) -> Result<()> {
         if ctx.is_privileged() {
             return Ok(());
         }
         self.require_caller(ctx)?;
-        self.check(ctx, "billing:write", None)
+        self.check_realm_level(ctx, subject, "billing:write")
     }
 
-    /// Instance-wide reads (statistics, every customer): privileged callers or
-    /// realm-level `billing:read`.
-    pub(crate) fn can_read_all(&self, ctx: &AccessContext) -> Result<()> {
+    /// Instance-wide reads (statistics, every customer): privileged callers
+    /// (every realm, `None`) or realm-level `billing:read` (the caller's realm
+    /// only, G18: lists filter with [`realm_clause`]).
+    pub(crate) fn can_read_all(&self, ctx: &AccessContext) -> Result<Option<String>> {
         if ctx.is_privileged() {
-            return Ok(());
+            return Ok(None);
         }
         self.require_caller(ctx)?;
-        self.check(ctx, "billing:read", None)
+        self.check(ctx, "billing:read", None)?;
+        Ok(Some(ctx.realm_id.clone()))
     }
 
     // -----------------------------------------------------------------------
@@ -1091,15 +1147,17 @@ impl BillingService {
 
     /// Every customer (realm-level `billing:read` or privileged).
     pub async fn customers(&self, ctx: &AccessContext, limit: Option<u32>) -> Result<Vec<Customer>> {
-        self.can_read_all(ctx)?;
+        let realm = self.can_read_all(ctx)?;
         let limit = i64::from(limit.unwrap_or(100).clamp(1, 1000));
+        let mut params = vec![limit.into()];
+        let only = realm_clause(realm.as_deref(), "subject", &mut params);
         let rows = self
             .fetch(
                 &format!(
-                    "SELECT {} FROM _forgebase_billing_customers ORDER BY created_at DESC LIMIT ?1",
+                    "SELECT {} FROM _forgebase_billing_customers WHERE 1 = 1{only} ORDER BY created_at DESC LIMIT ?1",
                     Self::CUSTOMER_COLUMNS
                 ),
-                vec![limit.into()],
+                params,
             )
             .await?;
         Ok(rows.rows.iter().map(|r| Self::customer_row(r)).collect())
@@ -1111,7 +1169,7 @@ impl BillingService {
         let subject = self.subject_for(ctx, input.subject.as_deref())?;
         self.can_manage(ctx, &subject)?;
         if input.tax_exempt.is_some() {
-            self.can_operate(ctx)?;
+            self.can_operate(ctx, &subject)?;
         }
         let email = check_text(input.email, "email", 254)?;
         let name = check_text(input.name, "name", 200)?;

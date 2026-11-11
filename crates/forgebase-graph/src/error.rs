@@ -61,6 +61,13 @@ impl From<DataError> for GraphError {
     }
 }
 
+impl From<forgebase_data::query::QueryError> for GraphError {
+    /// A rule that does not compile cannot be applied: fail closed.
+    fn from(e: forgebase_data::query::QueryError) -> Self {
+        GraphError::Forbidden(format!("a graph rule cannot be applied: {e}"))
+    }
+}
+
 impl ErrorCode for GraphError {
     fn code(&self) -> &'static str {
         match self {

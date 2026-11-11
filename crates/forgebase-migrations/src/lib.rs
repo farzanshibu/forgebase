@@ -177,8 +177,13 @@ pub static SYSTEM_MIGRATIONS: &[Migration] = &[
     ),
     Migration::new(
         30,
+        "job_tenant",
+        include_str!("../../../migrations/system/0030_job_tenant.sql"),
+    ),
+    Migration::new(
+        31,
         "queue_rls",
-        include_str!("../../../migrations/system/0030_queue_rls.sql"),
+        include_str!("../../../migrations/system/0031_queue_rls.sql"),
     ),
 ];
 

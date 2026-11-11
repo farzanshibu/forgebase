@@ -29,7 +29,7 @@ pub const MAX_KEY_LEN: usize = 200;
 /// (`engine:<action>:<name>`). Other engine keys with three segments (such
 /// as `engine:read_jobs:all`) are ordinary keys: `engine:<action>` does not
 /// grant them.
-pub const RESOURCE_ACTIONS: [&str; 15] = [
+pub const RESOURCE_ACTIONS: [&str; 17] = [
     "kv_read",
     "kv_write",
     "kv_admin",
@@ -45,6 +45,8 @@ pub const RESOURCE_ACTIONS: [&str; 15] = [
     "queue_publish",
     "queue_consume",
     "queue_admin",
+    "channel_subscribe",
+    "channel_publish",
 ];
 
 /// `(action, name)` of a resource key or pattern `engine:<action>:<name>`

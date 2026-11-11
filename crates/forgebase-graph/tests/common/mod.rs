@@ -143,8 +143,8 @@ pub fn ids(v: &Json) -> Vec<String> {
 }
 
 /// A test authorizer: user `reader` may read the graph, user `writer` may read
-/// and write it, user `rowfilter` gets a row-level filter (unsupported for the
-/// graph), everybody else is denied. Administrators may do everything.
+/// and write it, user `rowfilter` gets a filter that matches every row (a
+/// label rule since FB-139), everybody else is denied. Administrators may do everything.
 #[derive(Debug)]
 pub struct TestPolicy;
 

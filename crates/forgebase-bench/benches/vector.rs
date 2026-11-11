@@ -49,6 +49,7 @@ fn bench(c: &mut Criterion) {
                         expansion_search: None,
                     }],
                     exact_threshold: Some(threshold),
+                    source_collection: None,
                 },
             )
             .await

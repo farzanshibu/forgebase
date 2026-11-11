@@ -1,4 +1,4 @@
--- PostgreSQL twin of migrations/system/0030_queue_rls.sql (FB-141,
+-- PostgreSQL twin of migrations/system/0031_queue_rls.sql (FB-141,
 -- rls-coverage G2 and G16): tenant of topics, subscriptions and snapshots
 -- (a tenant resource is stored as `<tenant>/<name>`), the recorded owner
 -- context of a subscription, and the source row of record-change messages

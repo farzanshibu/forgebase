@@ -2307,11 +2307,353 @@ ever exposed, the rule fields are real columns, so policies can reuse them.
 "rotate signing key" action for administrators; expect `404` for objects a
 rule hides.
 
+## Addendum (FB-139): vector collection rules and graph label rules
+
+Written 2026-11-11 by FB-139. Closes `rls-coverage.md` G9 (vector) and G10
+(graph) on the FB-134 framework. Backend-neutral: no migration; the new SQL
+(a derived items table, a loose index scan over labels, `IN` lists,
+`coalesce`) is valid on both engines, and rules compile through
+`ResourceSchema::compile` with the backend's `Dialect`.
+
+**Data core helpers** (`forgebase-data`, small and listed):
+`DataService::authorize_resource(ctx, action, &ResourceRef) ->
+Result<Option<Predicate>>` (the system is allowed; `Some(p)` restricts
+items), `DataService::register_resource_schema`, and
+`DataService::unreadable_fields(ctx, collection)` (hidden fields plus
+field rules, lower case; empty for privileged callers).
+
+**Vector (G9).** Every call on one collection asks `authorize_resource`
+for `vector_collection <name>` with the operation of the call: `search` and
+`hybrid` are `list`; `get_item`, `get_collection`, `list_fields`,
+`wait_ready` are `view`; an upsert is `create` for a new item and `update`
+for an existing one; deletions are `delete`; administration
+(`create_collection` `create`, `delete_collection` `delete`, fields and
+`rebuild` `update`, `recall` `view`) and collection `stats` need the
+permission or an unconditional rule (a restricting rule cannot apply to
+them, so it is refused). Listing collections and `/vector/stats` keep the
+plain key and leave out collections the caller may not read at all. The
+engine registers `item_schema()` (`id`, `metadata`, the kind's default).
+A rule's predicate is ANDed with the caller's filter into every statement
+that reads items (`store::ITEMS` is the items table with `_data` exposed
+again as `metadata`): the ANN pre-filter key set, exact scans, the
+post-filter verification and the FTS5 keyword ranking, so a rule is a
+**pre-filter**, never applied after `k`. Writes check the stored row
+(update) and the written row (create, update) inside the transaction;
+deletes affect only matching items (others are ignored like unknown ids;
+`DELETE .../items/{id}` gives 404). Collection definitions count the items
+the caller's rule shows. The HTTP layer checks the collection before
+reading a body (upsert: `create` or `update`; `create_collection` refuses
+anonymous callers only, since the name is in the body).
+
+`source_collection` (new optional field of `NewCollection`, stored in the
+collection options, shown on `VectorCollection`; creation only, validated
+to exist): items are keyed by record id. For every caller but the system,
+each hit is re-checked with `DataService::get_record` as the caller (View
+rule, tenant; any failure but a database error hides the item), metadata
+keys that name fields the caller may not read are removed, and a caller's
+filter on such a key is refused as `unknown_field` (no oracle). Searches
+refill `k` by asking for 4× more candidates up to `MAX_K`; hybrid searches
+re-check within their `candidates` pool. The `text` and the vectors are
+returned as stored: do not put hidden record content in `text`.
+
+`tenant_required`: callers with a tenant use it; privileged callers
+without one keep the shared `''` scope; anyone else gets `400
+tenant_required` after authorisation. Edge functions call the same service
+methods as the caller (`ctx.vector`), so they get every check above;
+`ctx.admin.vector` (the system) bypasses rules and source re-checks.
+
+**Graph (G10).** A node's resource is its label (`graph_label`), an edge's
+its type (`graph_edge_type`); rule fields are the kinds' defaults, which
+are the tables' own columns. Reads (`list` for listings, neighbours,
+traversal, shortest path and stats; `view` for single nodes and edges)
+build a `GraphAccess`: the tenant's distinct labels and edge types (a
+recursive loose index scan, at most `MAX_RULE_NAMES` = 1000 each, else
+`400 graph_too_many_names`) each get a decision, compiled into one
+condition (`label IN (allowed…) OR (label = ? AND <predicate>) …`; denied
+names are absent, so labels created meanwhile stay hidden). An edge is
+visible when its type is and both of its nodes are. The traversal's
+recursive step joins the next node and applies both conditions, so a walk
+never crosses a hidden edge or enters a hidden node; shortest-path hops do
+the same; neighbours, listings and counts filter in their statements.
+Privileged callers and callers whose every decision is `Allow` get the
+statements unchanged. A caller for whom nothing at all is allowed gets
+`403` (on an empty graph, the decision for the name `*` decides). Writes
+ask the row's label or type: `create` (the new row must match a
+restricting rule), `update` (the stored row, and the changed row under the
+rule of its possibly new label), `delete` (and deleting a node needs the
+`delete` rule of every edge touching it, else `403`). A refused stored row
+is `404` when the caller may not view it, `403` otherwise; edges can only
+be created between nodes the caller may view. `tenant_required` as for
+vector; `stats` keeps the plain key and counts only what the rules show.
+
+**For FB-162 / FB-163.** `VectorService::item_rule(ctx, action, name, op)`
+returns `ItemRule { predicate }`; `ItemRule::compile(&mut SqlBuilder,
+alias)` gives the condition over a row exposing `id` and `metadata`.
+`GraphService::access(ctx, action, op)` returns `GraphAccess`;
+`is_unrestricted()` says whether any label or edge-type rule applies,
+`node_sql`/`edge_sql` give the conditions (numbered placeholders, safe to
+repeat in one statement), and `nodes`/`edges` are the per-kind `Rules`.
+
+**For FB-147 (PostgreSQL port).** Hybrid search on `tsvector` must AND the
+same `Filter` (rule plus caller filter) into the keyword query, and the
+pgvector path must use the rule as a pre-filter (`item_rule`). The graph
+walk on PostgreSQL must keep the per-step node join and the edge condition;
+`json_each` in the existing statements is the only SQLite-only construct
+left in these crates. **For FB-160 (AGE).** A derived AGE graph must be
+read through `GraphAccess` (or not at all for restricted callers), since
+openCypher queries do not see these conditions until FB-163. **For the
+dashboard vector and graph studios.** Offer `vector_collection` rules over
+`id`/`metadata.*` and `graph_label`/`graph_edge_type` rules over
+`properties.*`; show `source_collection` on a collection; administrators
+see everything, so preview a rule with `POST
+/api/v1/policies/resources/{kind}/{name}/check`.
+
+**Breaking.** Non-privileged callers without a tenant lose the shared
+vector scope and the shared `''` graph (`tenant_required`); a `Filter`
+decision for graph data is now applied instead of refused; an explicit
+deny of `engine:vector_read:<name>` now hides that collection from
+listings. `NewCollection` and `VectorCollection` gained a public field
+(`source_collection`), so struct literals add it; `store` functions of
+the vector crate take the dialect and an optional filter (crate-private).
+
+## Addendum (FB-136): billing, credits and realtime scoping
+
+Written 2026-11-11 by FB-136. Closes `rls-coverage.md` G18 (billing and
+credits) and G17 (realtime channels), and the FB-138 follow-up for
+realtime's in-band key authentication. Backend-neutral: the only new SQL is
+the realm filter below, checked on SQLite (the server suite) and on
+PostgreSQL 18.3 (a prepared statement over the same columns); no migration.
+
+**Realm-level grants stay in their realm (G18).** `billing:read` /
+`billing:write` (and `usage:write` for spending) held at realm level now
+reach a subject only when it belongs to the caller's realm
+(`ctx.realm_id`): an organization whose `_forgebase_orgs.realm_id` is that
+realm, a user whose auth collection that realm names, a service account
+of that realm (users and service accounts default to `default`, unknown
+organizations belong to no realm). The rule is
+`forgebase_policy::Snapshot::realm_of_subject` (new, public) and applies
+to every check: reads and management of a subject (`can_read`,
+`can_manage` in billing; reads and spends in credits), the operator
+actions that used to be subject-less (billing `can_operate(ctx, subject)`
+for tax exemption; mark-paid, void and credit notes look the invoice up
+first and answer `404` for another realm's invoice, `403` still comes first
+for a caller who is no operator at all; credits `can_mint(ctx, subject)` for
+top-ups, grants, consumption refunds and reversals). A refused fallback is
+a policy denial at step `tenant` (`403`), as before for a non-member.
+Organization-level grants are unchanged (policy step 2 already ties an
+organization to the caller's realm).
+
+**"All customers" lists are realm-filtered (G18).** `can_read_all` returns
+the realm the read is limited to (`None` for privileged callers, who still
+see every realm). Every instance-wide read applies
+`forgebase_billing::service::realm_clause` (an `AND` over the subject
+column, the realm as the last parameter): customers, subscriptions,
+invoices, payments, refunds and credit notes without a subject, store
+purchases, `admin/orders` (its `total` too), `admin/usage-meters`, the
+dunning queue, and every figure of `/billing/stats` (MRR, status counts,
+churn, revenue, refunds through their invoice, failed payments). The SQL
+(`subject_in_realm_sql`) mirrors `realm_of_subject` with
+`_forgebase_orgs`, `_forgebase_service_accounts.realm` and
+`_forgebase_realm_identity.collection` (unique), using only `||`, `substr`,
+`length`, `COALESCE` and scalar subqueries, valid on both engines; with
+paging the filter runs before `LIMIT`/`OFFSET`.
+
+**Channel namespaces (G17).** `forgebase_realtime::channel::resolve(ctx,
+name)` decides where a channel lives:
+- a caller with a tenant (bound key, selected `X-ForgeBase-Tenant`, a
+  function running for a tenant, the system with a tenant) is in
+  `t:<tenant>:`: `chat` is routed as `t:<tenant>:chat`; the explicit
+  `t:<tenant>:chat` names the same channel and is refused
+  (`403 tenant_mismatch`) to non-privileged callers of any other tenant or
+  of none; privileged callers may address any tenant's channel explicitly;
+- `global:<name>` is shared by every tenant; subscribing follows the
+  channel's permission or rule, publishing and joining presence need a
+  privileged caller (`403 global_channel`);
+- `jobs:<id>` (`SYSTEM_PREFIXES`, the job queue's own channels) is never
+  namespaced; `JobChannelAuthorizer` keeps deciding who reads it (FB-142);
+- callers without a tenant keep plain names (as before).
+Inside a tenant name, a reserved prefix (`t:`, `global:`, `jobs:`) is
+`400 invalid_channel`. Messages and presence frames carry the name the
+client used; rooms, the in-process bus and the cross-instance fan-out use
+the routed name (a rolling upgrade mixing versions would route tenant
+callers' channels differently for the overlap).
+
+**Channel rules (G17).** Channels are FB-134 resources of the new kind
+`realtime_channel` (`forgebase_data::ResourceKind::Channel`; operations
+`view` = subscribe and presence listing, `create` = publish and presence
+join; no item fields, `@request` only, so a rule is a yes/no). The two
+actions joined `perm::RESOURCE_ACTIONS`: `engine:channel_subscribe:<name>`
+and `engine:channel_publish:<name>` grant one channel, the plain keys keep
+meaning every channel (so existing grants are unchanged).
+`PolicyAuthorizer::authorize_channel` now asks `authorize_resource`; the
+name it sees is the tenant's own name for the channel
+(`Channel::rule_name`, without `t:<tenant>:`), so a rule is written once
+per channel and tells tenants apart with `@request.tenant`, e.g.
+`PUT /api/v1/policies/resources/realtime_channel/lobby {"rules": {"view":
+"@request.tenant != ''", "create": null}}`. Anonymous callers can now be
+admitted by a rule (`""`), as for other resources; before, only a
+permission could admit anyone. Rules are re-checked on every delivered
+message, as channel decisions were.
+
+**In-band keys keep their binding (FB-138).** Realtime's own
+authentication (`?access_token=` on the WebSocket/SSE upgrade, the
+`{"type":"auth"}` refresh, the periodic re-validation) uses
+`authenticate_key_bound`: a bound key's connection runs in its tenant (the
+binding was validated for the key's owner by the auth service), and in the
+identity's home realm (`access_context_for`; it was always `default`
+before). A refresh with a key bound to another tenant is
+`403 tenant_mismatch` (the connection's namespace is fixed), and a
+re-validation that finds the key's tenant changed or its owner gone closes
+the connection (`4001`).
+
+**Breaking.** Tenant-bound callers no longer meet callers of other tenants
+or tenant-less callers on plain channel names: cross-tenant broadcasts move
+to `global:` (published by the server or an administrator). A non-privileged
+caller publishing on `global:` is refused. Realm-level billing operators of
+one realm lose access to other realms' subjects and see only their realm in
+lists and statistics.
+
+**Edits outside FB-136's packages.** `forgebase-data/src/access.rs`
+(`ResourceKind::Channel`), `forgebase-policy/src/perm.rs` (two resource
+actions), `forgebase-policy/src/lib.rs` (`authorize_channel`),
+`forgebase-policy/src/snapshot.rs` (`realm_of_subject`),
+`forgebase-billing/src/{admin,stats,store}.rs` (the realm filter on their
+instance-wide reads). The OpenAPI description of
+`/api/v1/policies/resources/{kind}` still lists seven kinds (unchanged to
+keep the generated SDKs as they are); the kind list in the error message
+and the API itself include `realtime_channel`.
+
+**For FB-145 (billing and credits on PostgreSQL).** The realm filter is
+already portable; the surrounding `?N IS NULL OR subject = ?N` patterns
+need FB-143's `CAST(?N AS TEXT) IS NULL`. `realm_clause` always appends
+its parameter last, after `LIMIT`/`OFFSET` parameters, so numbering stays
+stable. **For FB-146 (realtime on PostgreSQL).** No SQL changed in
+realtime; routed channel names are memory and fan-out only. **For FB-152
+(native RLS).** Channels stay API-only; `realtime_channel` rules are not
+compiled into PostgreSQL policies. **For the dashboard.** Realtime studio:
+show and accept channel names as clients use them (the tenant prefix is
+implicit), offer `global:` for broadcasts (administrators only) and
+`realtime_channel` rules with `@request` only. Billing studio: a realm
+operator's lists and statistics are of their realm; a privileged caller
+still sees every realm.
+
+## Addendum (FB-142): jobs RLS and internal invocation contexts
+
+Written 2026-11-11 by FB-142. Closes `rls-coverage.md` G3 and G4 and the
+FB-142 part of G5 for the job queue (`forgebase-jobs`), `function.invoke`
+and record hooks (`forgebase-functions`). Backend-neutral: the new SQL is a
+migration pair and statements valid on both engines (`COALESCE`, `LIKE`
+with constant prefixes, `IS NULL`; no `?n IS NULL` parameter tests).
+
+**Tenant (G3).** Migration 0030 pair (`job_tenant`): `_forgebase_jobs.tenant`,
+`_forgebase_jobs.context`, `_forgebase_job_schedules.tenant`,
+`_forgebase_job_schedules.context`, `_forgebase_job_workflows.tenant`, index
+`_forgebase_jobs_by_tenant (tenant, created_at)`, and the idempotency index
+widened to `(queue, COALESCE(tenant, ''), idempotency_key)`; on PostgreSQL
+`context` is `jsonb`. A job takes the enqueuer's `ctx.tenant` (`NULL` = none); a schedule
+firing takes the schedule's tenant and context; child jobs and saga
+compensations take their parent's (or the compensated step's) tenant. Job,
+Schedule and Workflow JSON gain `tenant`; `context` never leaves the server.
+
+**Visibility** (`forgebase_jobs::JobAccess`, `Scope`). Privileged callers
+see every job. Others see jobs of their own tenant only (`tenant IS NULL`
+without one), and of those only the ones they created (or that a schedule
+they created fired) unless they hold `engine:read_jobs:all` (a plain key:
+`engine:read_jobs` does not grant it, `engine:*` and `*` do). Applied to
+list, stats, get, events, attempts, checkpoint, result, cancel, retry,
+delete, schedules (list, get, update, delete) and workflows (list, get,
+cancel); an invisible id answers `404` like a missing one. Idempotency keys
+are per tenant (another tenant's key never matches; another creator's in
+the same tenant is `409 idempotency_key_in_use`). The server answers the key
+with `PolicyService::has(ctx, key, ctx.org_id)` (which also runs policy
+steps 1 and 2) through `JobService::attach_permissions`.
+
+**Job channels.** `JobChannelAuthorizer` now also requires visibility for a
+non-privileged subscriber of `jobs:<id>`. `authorize_channel` is
+synchronous, so it reads owners remembered by the shared `JobAccess`
+(enqueued, published, read or listed since start; at most 100 000). A
+subscriber to a job not seen since a restart is refused until it reads or
+lists the job: clients (the dashboard) list or `GET` before subscribing.
+The server creates the authorizer first (`open_auth`) and hands its
+`access()` to the `JobService` (`attach_access`).
+
+**Kinds (G4).** `JobRegistry::register` now makes a kind **reserved**
+(system and privileged callers only); `register_public` and
+`register_guarded(kind, handler, guard)` (`EnqueueGuard::admit(ctx,
+payload)`) open it. `start_pool` installs the kinds
+(`JobService::install_kinds`). Kinds with the prefixes `function.`,
+`storage.`, `billing.`, `credits.`, `entitlements.`, `customize.`,
+`forgebase.` and `system.` are reserved even when no handler registered
+them (a module switched off cannot be handed jobs for later). Every other
+unregistered kind stays public (external workers). Enqueue, schedule
+creation, a schedule payload change, workflow steps and compensations, and
+`spawn_children` all ask `JobAccess::admit`. A non-privileged worker claims
+only public kinds of its own tenant (`tenant IS NULL` without one).
+
+**`function.invoke` (G4, G5).** Guarded: a non-privileged enqueuer must pass
+the function's HTTP invoke check (`public`, `authenticated`, or `permission` =
+`engine:invoke_function`) at enqueue; unknown and forbidden functions give
+the same `403`. The job records the enqueuer (`RecordedContext`: principal,
+realm, organization, tenant, scopes, impersonator; no roles: the policy
+engine resolves them again) and runs **as it**
+(`JobContext::enqueuer`, `FunctionService::invoke_as`): before the run the
+enqueuer must still pass the invoke check and hold `engine:enqueue_job` or
+`engine:manage_jobs` (which re-validates its tenant), and a user must still
+exist (its record gives `@request.auth.<field>`); otherwise the job fails for
+good. A changed schedule payload is recorded with the updater's context.
+**Privileged enqueuers do not lend their rights**: jobs of administrators,
+admin service accounts and the system run as the function's own identity
+`service:function.<name>` in the recorded realm, organization and tenant
+(the job's tenant for system jobs); only `service_role` reaches `ctx.admin`.
+
+**Hooks (G5 follow-up).** Hooks pass an explicit context
+(`invocation_context`): a before-hook acts as the writer, except that a
+privileged writer's hook acts as the function's identity in the writer's
+realm, organization and tenant; an after-hook acts as the function's
+identity in the tenant recorded with the change (`Event.tenant`), so it can
+use that tenant's tenant-scoped data under the collection rules.
+`FunctionService::invoke` (no context: the function's identity, no tenant)
+stays for tests.
+
+**`ctx.auth.verify`.** Uses `authenticate_key_bound` (FB-138): a bound key's
+tenant is reported in the answer's `tenant` (it was `null`).
+
+**Breaking.**
+- Non-privileged callers no longer see other callers' jobs (or other
+  tenants'): grant `engine:read_jobs:all` (seeded Owner `*` and Developer
+  `engine:*` hold it). Jobs, schedules and workflows from before 0030 have no
+  tenant: visible to callers without a tenant (their creator) and to
+  administrators.
+- Embedders' handlers registered with `register` become reserved: use
+  `register_public` for kinds HTTP callers may enqueue.
+- Kinds under the module prefixes above are refused to non-privileged
+  callers even without a handler.
+- `function.invoke` jobs of non-privileged callers act as the caller (rules
+  and tenancy apply), not as `service:function.<name>`; before-hooks of
+  administrators' writes no longer act as the administrator.
+
+**For FB-146 (jobs on PostgreSQL).** `context` is `jsonb` on PostgreSQL and
+`TEXT CHECK (json_valid(context))` on SQLite; the service reads it as text
+(`Row::opt_text`), like `payload`. The scope filter is `tenant = ?n` /
+`tenant IS NULL` plus `created_by = ?m OR schedule_id IN (SELECT ...)`;
+the claim filter adds `kind NOT IN (...)` and `NOT (kind LIKE 'p%' OR ...)`
+(PostgreSQL `LIKE` is case-sensitive, SQLite's is not for ASCII; both only
+exclude more). The idempotency lookup matches `COALESCE(tenant, '') = ?3`,
+the expression of the unique index on both engines.
+`rowid` ordering in list and workflow reads is unchanged (FB-146's).
+**For FB-147 (functions SQL).** No new functions tables; the execution log
+does not record the context a run used (a possible `actor` column).
+**For the dashboard jobs and functions studios.** Show `tenant` on jobs,
+schedules and workflows; list or `GET` a job before subscribing to its
+channel; explain `engine:read_jobs:all` in the roles editor; reserved kinds
+answer `403` (offer only public kinds and `function.invoke` of functions the
+user may invoke).
+
 ## Addendum (FB-141): queue tenancy, resource permissions and record views
 
 Written 2026-11-11 by FB-141. Closes `rls-coverage.md` G2 and G16 in
 `forgebase-queue`. Backend-neutral: new SQL uses numbered `?N`
-placeholders and constructs valid on both engines; migration pair 0030
+placeholders and constructs valid on both engines; migration pair 0031
 (`queue_rls`).
 
 **Tenant-scoped names (G16).** `_forgebase_queue_topics.tenant`,
@@ -2416,7 +2758,7 @@ owner view must stay in ForgeBase (it runs the data core's rules), not in
 pgmq: keep `source_row` with the message (pgmq message JSON can carry it)
 and fill `record` at read time. New SQL to check on PostgreSQL:
 `(tenant IS NULL OR tenant = ?1)` with a NULL parameter,
-`(?2 IS NULL OR topic = ?2)`, and the 0030 twin's `UPDATE ... WHERE topic
+`(?2 IS NULL OR topic = ?2)`, and the 0031 twin's `UPDATE ... WHERE topic
 IN (SELECT ...)`. Resource placement (ADR-0029 §3.2): `tenant` on topics
 and subscriptions is the placement key; instance-wide ones stay on
 control. **For the dashboard queues studio.** Show `tenant` on topics,
