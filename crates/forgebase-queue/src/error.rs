@@ -2,7 +2,7 @@
 
 use forgebase_core::{ErrorCode, ErrorKind};
 use forgebase_data::DataError;
-use forgebase_db::DbError;
+use forgebase_db::{DbError, RouterError};
 use forgebase_entitlements::EntitlementError;
 
 /// Errors of [`crate::QueueService`].
@@ -14,6 +14,11 @@ pub enum QueueError {
     /// Storage failure.
     #[error(transparent)]
     Db(#[from] DbError),
+    /// The database set of the topic or subscription cannot serve the call
+    /// now (FB-172): `tenant_moving` (409), `shard_unavailable` /
+    /// `shard_migrating` (503).
+    #[error(transparent)]
+    Router(#[from] RouterError),
     /// The quota engine refused the usage (`quota_exceeded`, ...).
     #[error(transparent)]
     Entitlement(#[from] EntitlementError),
@@ -79,6 +84,7 @@ impl ErrorCode for QueueError {
         match self {
             QueueError::Access(e) => e.code(),
             QueueError::Db(e) => e.code(),
+            QueueError::Router(e) => e.code(),
             QueueError::Entitlement(e) => e.code(),
             QueueError::Invalid { code, .. } | QueueError::Conflict { code, .. } => code,
             QueueError::TopicNotFound(_) => "topic_not_found",
@@ -98,6 +104,7 @@ impl ErrorCode for QueueError {
         match self {
             QueueError::Access(e) => e.kind(),
             QueueError::Db(e) => e.kind(),
+            QueueError::Router(e) => e.kind(),
             QueueError::Entitlement(e) => e.kind(),
             // The HTTP layer answers `413` for TooLarge.
             QueueError::Invalid { .. } | QueueError::TooLarge(_) => ErrorKind::InvalidInput,

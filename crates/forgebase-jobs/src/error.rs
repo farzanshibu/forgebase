@@ -2,7 +2,7 @@
 
 use forgebase_core::{ErrorCode, ErrorKind};
 use forgebase_data::DataError;
-use forgebase_db::DbError;
+use forgebase_db::{DbError, RouterError};
 
 /// Errors of [`crate::JobService`].
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +13,11 @@ pub enum JobError {
     /// Storage failure.
     #[error(transparent)]
     Db(#[from] DbError),
+    /// The tenant's database set cannot serve the call now (ADR-0029 §3.5,
+    /// FB-172): `tenant_moving` (409), `shard_unavailable` /
+    /// `shard_migrating` (503).
+    #[error(transparent)]
+    Router(#[from] RouterError),
     /// The request is not acceptable.
     #[error("{message}")]
     Invalid {
@@ -74,6 +79,7 @@ impl ErrorCode for JobError {
         match self {
             JobError::Access(e) => e.code(),
             JobError::Db(e) => e.code(),
+            JobError::Router(e) => e.code(),
             JobError::Invalid { code, .. } | JobError::State { code, .. } => code,
             JobError::NotFound(_) => "job_not_found",
             JobError::ScheduleNotFound(_) => "schedule_not_found",
@@ -89,6 +95,7 @@ impl ErrorCode for JobError {
         match self {
             JobError::Access(e) => e.kind(),
             JobError::Db(e) => e.kind(),
+            JobError::Router(e) => e.kind(),
             JobError::Invalid { .. } => ErrorKind::InvalidInput,
             JobError::NotFound(_) | JobError::ScheduleNotFound(_) | JobError::WorkflowNotFound(_) => {
                 ErrorKind::NotFound

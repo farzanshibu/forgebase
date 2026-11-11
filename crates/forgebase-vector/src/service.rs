@@ -40,11 +40,27 @@
 //! of an interrupted conversion are moved to it then (reconcile); every
 //! operation holds the engine's read lock, [`VectorService::convert`] its
 //! write lock.
+//!
+//! Database sets (ADR-0029 §3.5, FB-172). Without a router the service
+//! works on the data service's one backend, as before. With
+//! [`VectorService::attach_router`], a tenant's collections, fields, items,
+//! values and keyword rows live on the tenant's set and every call runs
+//! there (`DbRouter::for_tenant`: a frozen tenant waits, then `409
+//! tenant_moving`); the shared `''` scope lives on control. The storage
+//! engine is per set (each set has its own `ext.vector.engine` pin and
+//! pgvector), so one set can be pgvector and another portable. The
+//! in-process indexes (files keyed by collection id, unique across sets)
+//! are built from the set that owns the tenant, and follow it: when a
+//! move's flip names another set, the tenant's collections are taken from
+//! there on its next call. Start-up, warm-up, index repair and conversions
+//! run per set and leave out the tenants the set skips
+//! (`forgebase_jobs::excluded_tenants`: frozen ones everywhere, a partial
+//! copy of a tenant moving in, the stale copy of one moved out).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Once, RwLock};
+use std::sync::{Arc, Mutex, Once, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use forgebase_data::query::QueryError;
@@ -52,7 +68,8 @@ use forgebase_data::{
     AccessContext, Action, DataError, DataService, GetOptions, Predicate, Principal, ResourceKind, ResourceOp,
     ResourceRef,
 };
-use forgebase_db::{Backend, TxMode, WriteTx};
+use forgebase_db::topology::{CONTROL_SET_ID, PlacementState};
+use forgebase_db::{Backend, DbRouter, Dialect, RouterError, SetHandle, TenantRef, TxMode, WriteTx};
 use serde_json::Map;
 use tokio::task::JoinHandle;
 
@@ -68,6 +85,10 @@ use crate::pg::{self, Pgv};
 use crate::store::{self, CollectionRow};
 
 type Result<T> = std::result::Result<T, VectorError>;
+
+/// The backend of one call or task: the data service's, or a set's
+/// [`SetHandle`] (its primary, with its replica routing).
+type Db = Arc<dyn Backend>;
 
 /// Collection option naming the data collection the items were copied from
 /// (item id = record id), FB-139.
@@ -146,19 +167,49 @@ struct Inner {
     engine: Arc<dyn AnnEngine>,
     root: PathBuf,
     config: VectorConfig,
+    /// By (tenant, name). A tenant's collections come from one set: the
+    /// one that owns it (FB-172).
     collections: RwLock<HashMap<(String, String), Arc<Coll>>>,
-    /// The storage engine: read-locked by every operation for its whole
-    /// run, write-locked by a conversion.
-    storage: tokio::sync::RwLock<Storage>,
+    /// Every set opened so far by id (`control` first; just control
+    /// without a router).
+    sets: RwLock<BTreeMap<String, Arc<SetCtx>>>,
+    /// The database sets, once [`VectorService::attach_router`] ran.
+    router: OnceLock<DbRouter>,
+    /// Serialises opening sets.
+    opening: tokio::sync::Mutex<()>,
+    /// Tenants whose collections in memory are on another set than the one
+    /// their placement names (a move's flip), recomputed when the router
+    /// publishes a change.
+    moved: Mutex<Moved>,
     /// Serialises creating and dropping collections.
     catalog: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
 }
 
+/// See [`Inner::moved`].
+#[derive(Debug, Default)]
+struct Moved {
+    changes: Option<tokio::sync::watch::Receiver<u64>>,
+    tenants: HashSet<String>,
+}
+
+/// One database set's vector state (FB-172). Its backend is looked up at
+/// each use ([`VectorService::db_for`]), so a promoted primary is followed.
+#[derive(Debug)]
+struct SetCtx {
+    /// Set id ([`CONTROL_SET_ID`] for control and without a router).
+    id: String,
+    /// The set's storage engine: read-locked by every operation for its
+    /// whole run, write-locked by a conversion.
+    storage: tokio::sync::RwLock<Storage>,
+}
+
 #[derive(Debug)]
 struct Coll {
     row: CollectionRow,
+    /// The set holding its rows.
+    set: Arc<SetCtx>,
     exact_threshold: u32,
     /// Held across commit + index apply, saves, loads and rebuild hand-over.
     write: tokio::sync::Mutex<()>,
@@ -407,72 +458,112 @@ impl VectorService {
     /// built in the background (searches are exact meanwhile) and indexes
     /// of dropped fields removed.
     pub async fn open(data: DataService, indexes_dir: PathBuf, config: VectorConfig) -> Result<Self> {
+        let svc = Self::unopened(data, &indexes_dir, config)?;
+        let backend = Arc::clone(svc.inner.data.backend());
+        svc.open_set(CONTROL_SET_ID, &backend).await?;
+        Ok(svc)
+    }
+
+    /// [`Self::open`] with the database sets of `router` from the start
+    /// (FB-172): control's start-up (reconcile, collections, index repair)
+    /// already knows which tenants it owns and which it skips, then every
+    /// other set is opened as [`Self::attach_router`] does.
+    pub async fn open_routed(
+        data: DataService,
+        router: DbRouter,
+        indexes_dir: PathBuf,
+        config: VectorConfig,
+    ) -> Result<Self> {
+        let svc = Self::unopened(data, &indexes_dir, config)?;
+        let _ = svc.inner.router.set(router.clone());
+        let control: Db = if router.is_sharded() {
+            Arc::new(router.control())
+        } else {
+            Arc::clone(svc.inner.data.backend())
+        };
+        svc.open_set(CONTROL_SET_ID, &control).await?;
+        if router.is_sharded() {
+            svc.open_shards(&router).await?;
+        }
+        Ok(svc)
+    }
+
+    fn unopened(data: DataService, indexes_dir: &Path, config: VectorConfig) -> Result<Self> {
         describe_metrics();
         data.register_resource_schema(item_schema());
         let root = indexes_dir.join("vector");
         std::fs::create_dir_all(&root)?;
-        let backend = Arc::clone(data.backend());
-        let storage = Self::resolve(backend.as_ref(), config.batch).await?;
-        let pg_indexes = match &storage {
-            Storage::Pgvector(_) => pg::indexes(backend.as_ref()).await?,
-            Storage::Portable => HashMap::new(),
-        };
-        let rows = store::load_all(backend.as_ref()).await?;
-        let mut collections = HashMap::new();
-        for (row, fields) in rows {
-            let dir = root.join(row.id.to_string());
-            let exact_threshold = row
-                .options
-                .get("exact_threshold")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok())
-                .unwrap_or(config.exact_threshold);
-            let map = fields
-                .into_iter()
-                .map(|f| {
-                    let idx = match &storage {
-                        Storage::Portable => FieldIndex::unloaded(f, &dir),
-                        Storage::Pgvector(_) => {
-                            let valid = pg_indexes.get(&pg::spec(row.id, &f).name).is_some_and(|i| i.valid);
-                            FieldIndex::on_postgres(f, &dir, valid)
-                        }
-                    };
-                    (idx.def.name.clone(), Arc::new(idx))
-                })
-                .collect();
-            collections.insert(
-                (row.tenant.clone(), row.name.clone()),
-                Arc::new(Coll {
-                    row,
-                    exact_threshold,
-                    write: tokio::sync::Mutex::new(()),
-                    fields: RwLock::new(map),
-                    dropped: AtomicBool::new(false),
-                }),
-            );
-        }
-        let svc = Self {
+        Ok(Self {
             inner: Arc::new(Inner {
                 data,
                 engine: Arc::new(Usearch),
                 root,
                 config,
-                collections: RwLock::new(collections),
-                storage: tokio::sync::RwLock::new(storage.clone()),
+                collections: RwLock::new(HashMap::new()),
+                sets: RwLock::new(BTreeMap::new()),
+                router: OnceLock::new(),
+                opening: tokio::sync::Mutex::new(()),
+                moved: Mutex::new(Moved::default()),
                 catalog: tokio::sync::Mutex::new(()),
                 tasks: Mutex::new(Vec::new()),
                 stopping: AtomicBool::new(false),
             }),
+        })
+    }
+
+    /// Opens one set (FB-172; without a router: the one database):
+    /// resolves its storage engine (reconciling stray vectors), loads the
+    /// collections of the tenants it owns, repairs its pgvector indexes or
+    /// drops a pgvector past's leftovers, and registers it. Tenants the set
+    /// must skip ([`forgebase_jobs::excluded_tenants`]) are left out of the
+    /// reconcile and the builds.
+    async fn open_set(&self, id: &str, db: &Db) -> Result<Arc<SetCtx>> {
+        let excluded = self.excluded_on(id);
+        let storage = Self::resolve(db.as_ref(), self.inner.config.batch, &excluded).await?;
+        let pg_indexes = match &storage {
+            Storage::Pgvector(_) => pg::indexes(db.as_ref()).await?,
+            Storage::Portable => HashMap::new(),
         };
+        let rows = store::load_all(db.as_ref()).await?;
+        let set = Arc::new(SetCtx {
+            id: id.to_owned(),
+            storage: tokio::sync::RwLock::new(storage.clone()),
+        });
+        // Every index a row on this set names is kept, also those of
+        // tenants another set owns (a move's target builds them early).
+        let mut wanted = HashSet::new();
+        for (row, fields) in &rows {
+            for f in fields {
+                wanted.insert(pg::spec(row.id, f).name);
+            }
+        }
+        {
+            let mut map = self.inner.collections.write().unwrap_or_else(|p| p.into_inner());
+            for (row, fields) in rows {
+                if self.owner_of(&row.tenant) != id {
+                    continue;
+                }
+                let key = (row.tenant.clone(), row.name.clone());
+                let coll = self.make_coll(&set, &storage, &pg_indexes, row, fields);
+                if let Some(old) = map.insert(key, coll) {
+                    old.dropped.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        self.inner
+            .sets
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_owned(), Arc::clone(&set));
         match &storage {
-            Storage::Pgvector(_) => svc.repair_indexes(&pg_indexes),
-            Storage::Portable if pg::has_vec_column(backend.as_ref()).await? => {
+            Storage::Pgvector(_) => self.repair_indexes(&set, db, &wanted, &pg_indexes, &excluded),
+            Storage::Portable if pg::has_vec_column(db.as_ref()).await? => {
                 // HNSW indexes of a pgvector past (a conversion to portable
                 // that stopped before dropping them) only slow writes down.
-                let names: Vec<String> = pg::indexes(backend.as_ref()).await?.into_keys().collect();
+                let names: Vec<String> = pg::indexes(db.as_ref()).await?.into_keys().collect();
                 if !names.is_empty() {
-                    let db = Arc::clone(&backend);
-                    svc.track(tokio::spawn(async move {
+                    let db = Arc::clone(db);
+                    self.track(tokio::spawn(async move {
                         if let Err(e) = pg::drop_indexes(db.as_ref(), &names).await {
                             tracing::warn!(error = %e, "dropping leftover pgvector indexes failed");
                         }
@@ -481,22 +572,63 @@ impl VectorService {
             }
             Storage::Portable => {}
         }
-        Ok(svc)
+        Ok(set)
+    }
+
+    /// The in-memory collection of `row` on `set`.
+    fn make_coll(
+        &self,
+        set: &Arc<SetCtx>,
+        storage: &Storage,
+        pg_indexes: &HashMap<String, pg::IndexInfo>,
+        row: CollectionRow,
+        fields: Vec<VectorField>,
+    ) -> Arc<Coll> {
+        let dir = self.inner.root.join(row.id.to_string());
+        let exact_threshold = row
+            .options
+            .get("exact_threshold")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(self.inner.config.exact_threshold);
+        let map = fields
+            .into_iter()
+            .map(|f| {
+                let idx = match storage {
+                    Storage::Portable => FieldIndex::unloaded(f, &dir),
+                    Storage::Pgvector(_) => {
+                        let valid = pg_indexes.get(&pg::spec(row.id, &f).name).is_some_and(|i| i.valid);
+                        FieldIndex::on_postgres(f, &dir, valid)
+                    }
+                };
+                (idx.def.name.clone(), Arc::new(idx))
+            })
+            .collect();
+        Arc::new(Coll {
+            row,
+            set: Arc::clone(set),
+            exact_threshold,
+            write: tokio::sync::Mutex::new(()),
+            fields: RwLock::new(map),
+            dropped: AtomicBool::new(false),
+        })
     }
 
     /// The storage engine of this database (FB-162). See the module docs.
-    async fn resolve(db: &dyn Backend, batch: usize) -> Result<Storage> {
+    /// Vectors of `excluded` tenants are not reconciled (FB-172).
+    async fn resolve(db: &dyn Backend, batch: usize, excluded: &[String]) -> Result<Storage> {
         if db.dialect().name() != "postgres" {
             return Ok(Storage::Portable);
         }
         let pinned = pg::stored_engine(db).await?.as_deref() == Some("extension");
         let probe = pg::probe(db).await?;
         let rows = pg::batch_rows(batch, pg::max_dimension(db).await?);
+        let scope = pg::Rows::Except(excluded);
         if !pinned {
             // Vectors a conversion to pgvector left in `vec` before its last
             // batch (which records the engine) go back.
             if let Ok(pgv) = &probe {
-                let n = pg::move_all(db, pgv, VectorEngine::Portable, rows, false).await?;
+                let n = pg::move_all(db, pgv, VectorEngine::Portable, rows, false, scope).await?;
                 if n > 0 {
                     tracing::info!(
                         vectors = n,
@@ -518,7 +650,7 @@ impl VectorService {
             Ok(pgv) => {
                 // Vectors written portably under a pgvector pin (databases set
                 // up between FB-161 and FB-162, an unfinished conversion back).
-                let n = pg::move_all(db, &pgv, VectorEngine::Pgvector, rows, false).await?;
+                let n = pg::move_all(db, &pgv, VectorEngine::Pgvector, rows, false, scope).await?;
                 if n > 0 {
                     tracing::info!(vectors = n, "portable vectors moved to pgvector");
                 }
@@ -527,14 +659,24 @@ impl VectorService {
         }
     }
 
-    /// pgvector: builds every missing or invalid index in the background and
-    /// drops `fbv_` indexes no field owns (`existing`: what the database has).
-    fn repair_indexes(&self, existing: &HashMap<String, pg::IndexInfo>) {
-        let mut wanted = HashSet::new();
-        for coll in self.all_collections() {
+    /// pgvector: builds every missing or invalid index of `set`'s
+    /// collections in the background (not those of `excluded` tenants) and
+    /// drops `fbv_` indexes no row of the set names (`wanted`; `existing`:
+    /// what the database has).
+    fn repair_indexes(
+        &self,
+        set: &Arc<SetCtx>,
+        db: &Db,
+        wanted: &HashSet<String>,
+        existing: &HashMap<String, pg::IndexInfo>,
+        excluded: &[String],
+    ) {
+        for coll in self.colls_on(&set.id) {
+            if excluded.contains(&coll.row.tenant) {
+                continue;
+            }
             for f in coll.fields() {
                 let spec = pg::spec(coll.row.id, &f.def);
-                wanted.insert(spec.name.clone());
                 if spec.elem.is_some() && !f.pg_valid.load(Ordering::Relaxed) {
                     let detail = if existing.contains_key(&spec.name) {
                         "the index is invalid (an interrupted build)"
@@ -547,7 +689,7 @@ impl VectorService {
         }
         let orphans: Vec<String> = existing.keys().filter(|n| !wanted.contains(*n)).cloned().collect();
         if !orphans.is_empty() {
-            let db = Arc::clone(self.inner.data.backend());
+            let db = Arc::clone(db);
             self.track(tokio::spawn(async move {
                 if let Err(e) = pg::drop_indexes(db.as_ref(), &orphans).await {
                     tracing::warn!(error = %e, "dropping pgvector indexes of dropped fields failed");
@@ -556,26 +698,351 @@ impl VectorService {
         }
     }
 
-    /// The storage engine in use (FB-162).
+    // ------------------------------------------------------- database sets
+
+    /// Routes calls over the database sets of `router` (ADR-0029 §3.5,
+    /// FB-172): every set is opened ([`Self::open`]'s start-up per set:
+    /// its own engine, reconcile, collections of the tenants it owns, index
+    /// repair), control keeps only the collections of the tenants it owns,
+    /// and from now on each call runs on its tenant's set. With one set
+    /// nothing changes. Call once, after [`Self::open`] and before
+    /// [`Self::start_background`]; a second call is refused. Control's own
+    /// start-up ran in [`Self::open`] without the router (its reconcile and
+    /// index repair covered every row it holds); [`Self::open_routed`]
+    /// leaves out the tenants control skips from the start.
+    ///
+    /// # Errors
+    /// `400 router_attached` on a second call; a set that cannot be read.
+    pub async fn attach_router(&self, router: DbRouter) -> Result<()> {
+        if self.inner.router.set(router.clone()).is_err() {
+            return Err(VectorError::invalid(
+                "router_attached",
+                "the vector service has a router already",
+            ));
+        }
+        if !router.is_sharded() {
+            return Ok(());
+        }
+        // Control was opened before the router was known: what it holds of
+        // tenants another set owns (stale copies of moved tenants, partial
+        // copies of tenants moving in) goes.
+        let foreign: Vec<Arc<Coll>> = self
+            .colls_on(CONTROL_SET_ID)
+            .into_iter()
+            .filter(|c| self.owner_of(&c.row.tenant) != CONTROL_SET_ID)
+            .collect();
+        self.forget(&foreign);
+        self.open_shards(&router).await
+    }
+
+    /// Follows the router's changes and opens every set not open yet.
+    async fn open_shards(&self, router: &DbRouter) -> Result<()> {
+        let mut changes = router.subscribe();
+        changes.borrow_and_update();
+        self.inner.moved.lock().unwrap_or_else(|p| p.into_inner()).changes = Some(changes);
+        let _open = self.inner.opening.lock().await;
+        for h in router.sets() {
+            if self.known_set(h.id()).is_none() {
+                let db: Db = Arc::new(h.clone());
+                self.open_set(h.id(), &db).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The router, once attached.
+    fn router(&self) -> Option<&DbRouter> {
+        self.inner.router.get()
+    }
+
+    /// The set that owns `tenant`'s rows (brief rule 5): its placement's
+    /// set, else control (no placement, the shared `''` scope, no router).
+    fn owner_of(&self, tenant: &str) -> String {
+        match self.router().and_then(|r| r.placement(tenant)) {
+            Some(p) if !tenant.is_empty() => p.set_id,
+            _ => CONTROL_SET_ID.to_owned(),
+        }
+    }
+
+    /// The tenants background work on set `id` skips (none without shards).
+    fn excluded_on(&self, id: &str) -> Vec<String> {
+        match self.router().filter(|r| r.is_sharded()) {
+            Some(r) => forgebase_jobs::excluded_tenants(r, id),
+            None => Vec::new(),
+        }
+    }
+
+    fn known_set(&self, id: &str) -> Option<Arc<SetCtx>> {
+        self.inner
+            .sets
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    fn control_set(&self) -> Arc<SetCtx> {
+        self.known_set(CONTROL_SET_ID)
+            .expect("the vector service always has the control set")
+    }
+
+    /// The state of `h`'s set, opening it on first use (a shard added after
+    /// [`Self::attach_router`]).
+    async fn set_of(&self, h: &SetHandle) -> Result<Arc<SetCtx>> {
+        if let Some(s) = self.known_set(h.id()) {
+            return Ok(s);
+        }
+        let _open = self.inner.opening.lock().await;
+        if let Some(s) = self.known_set(h.id()) {
+            return Ok(s);
+        }
+        let db: Db = Arc::new(h.clone());
+        self.open_set(h.id(), &db).await
+    }
+
+    /// Every set: control first, then (with a router) every routable set,
+    /// opened if needed.
+    async fn every_set(&self) -> Result<Vec<Arc<SetCtx>>> {
+        let Some(router) = self.router() else {
+            return Ok(vec![self.control_set()]);
+        };
+        let mut out = Vec::new();
+        for h in router.sets() {
+            out.push(self.set_of(&h).await?);
+        }
+        Ok(out)
+    }
+
+    /// The current backend of `set`: the router's handle of it (so a new
+    /// primary or replica list is followed), or the data service's backend
+    /// without a router.
+    fn db_for(&self, set: &SetCtx) -> Result<Db> {
+        match self.router() {
+            None => Ok(Arc::clone(self.inner.data.backend())),
+            Some(r) => match r.set(&set.id) {
+                Some(h) => Ok(Arc::new(h)),
+                None => Err(RouterError::SetUnavailable(set.id.clone()).into()),
+            },
+        }
+    }
+
+    /// The set of the scope `tenant` and its backend for this call. A
+    /// frozen tenant waits (at most the router's freeze timeout, then `409
+    /// tenant_moving`); a tenant whose collections in memory came from
+    /// another set is taken over from this one first ([`Self::follow`]).
+    async fn here(&self, tenant: &str) -> Result<(Arc<SetCtx>, Db)> {
+        let Some(router) = self.router() else {
+            return Ok((self.control_set(), Arc::clone(self.inner.data.backend())));
+        };
+        let h = router.for_tenant(TenantRef::new(Some(tenant))).await?;
+        let set = self.set_of(&h).await?;
+        let db: Db = Arc::new(h);
+        if self.has_moved(tenant) {
+            self.follow(tenant, &set, &db).await?;
+            self.inner
+                .moved
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .tenants
+                .remove(tenant);
+        }
+        Ok((set, db))
+    }
+
+    /// Whether `tenant`'s collections in memory may be on another set than
+    /// its placement names. The scan runs only after the router published
+    /// a change.
+    fn has_moved(&self, tenant: &str) -> bool {
+        let mut moved = self.inner.moved.lock().unwrap_or_else(|p| p.into_inner());
+        let changed = moved
+            .changes
+            .as_mut()
+            .is_some_and(|rx| rx.has_changed().unwrap_or(false));
+        if changed {
+            if let Some(rx) = moved.changes.as_mut() {
+                rx.borrow_and_update();
+            }
+            let map = self.inner.collections.read().unwrap_or_else(|p| p.into_inner());
+            moved.tenants = map
+                .values()
+                .filter(|c| self.owner_of(&c.row.tenant) != c.set.id)
+                .map(|c| c.row.tenant.clone())
+                .collect();
+        }
+        moved.tenants.contains(tenant)
+    }
+
+    /// Schema changes (new collections, fields, drops) of a tenant that is
+    /// being moved answer `409 tenant_moving` (ADR-0029 §3.8 step 1: the
+    /// move's row filters list the tenant's collections).
+    fn schema_guard(&self, tenant: &str) -> Result<()> {
+        if let Some(p) = self.router().and_then(|r| r.placement(tenant))
+            && !tenant.is_empty()
+            && matches!(p.state, PlacementState::Moving | PlacementState::Frozen)
+        {
+            return Err(RouterError::TenantMoving(tenant.to_owned()).into());
+        }
+        Ok(())
+    }
+
+    /// Drops collections from memory without touching their rows or files
+    /// (another set owns them): running rebuilds stop, saves skip them.
+    fn forget(&self, colls: &[Arc<Coll>]) {
+        if colls.is_empty() {
+            return;
+        }
+        let mut map = self.inner.collections.write().unwrap_or_else(|p| p.into_inner());
+        for c in colls {
+            c.dropped.store(true, Ordering::Relaxed);
+            let key = (c.row.tenant.clone(), c.row.name.clone());
+            if map.get(&key).is_some_and(|cur| Arc::ptr_eq(cur, c)) {
+                map.remove(&key);
+            }
+        }
+    }
+
+    /// Takes `tenant` over on `set` when its collections in memory came from
+    /// another set (a move's flip, FB-172): their in-process indexes are
+    /// saved (the files are keyed by collection id, which a move keeps, so
+    /// the new set loads them when the change sequence matches) and dropped
+    /// from memory; the tenant's collections are read from `set`, vectors
+    /// the copy brought in the other engine's column are moved to `set`'s,
+    /// and on pgvector missing indexes are built.
+    async fn follow(&self, tenant: &str, set: &Arc<SetCtx>, db: &Db) -> Result<()> {
+        let stale = || -> Vec<Arc<Coll>> {
+            self.all_collections()
+                .into_iter()
+                .filter(|c| c.row.tenant == tenant && c.set.id != set.id)
+                .collect()
+        };
+        if stale().is_empty() {
+            return Ok(());
+        }
+        let storage = set.storage.read().await;
+        let _cat = self.inner.catalog.lock().await;
+        let old = stale();
+        if old.is_empty() {
+            return Ok(());
+        }
+        for c in &old {
+            let _w = c.write.lock().await;
+            if let Err(e) = self.save_locked(c).await {
+                tracing::warn!(collection = %c.row.name, error = %e, "saving the vector index of a moved tenant failed");
+            }
+            for f in c.fields() {
+                f.status().generation += 1;
+            }
+        }
+        self.forget(&old);
+        let rows = store::load_tenant(db.as_ref(), tenant).await?;
+        let cids: Vec<i64> = rows.iter().map(|(r, _)| r.id).collect();
+        if !cids.is_empty() && db.dialect().name() == "postgres" {
+            let batch = pg::batch_rows(self.inner.config.batch, pg::max_dimension(db.as_ref()).await?);
+            let moved = match &*storage {
+                Storage::Pgvector(pgv) => {
+                    pg::move_all(
+                        db.as_ref(),
+                        pgv,
+                        VectorEngine::Pgvector,
+                        batch,
+                        false,
+                        pg::Rows::Of(&cids),
+                    )
+                    .await?
+                }
+                Storage::Portable if pg::has_vec_column(db.as_ref()).await? => match pg::probe(db.as_ref()).await? {
+                    Ok(pgv) => {
+                        pg::move_all(
+                            db.as_ref(),
+                            &pgv,
+                            VectorEngine::Portable,
+                            batch,
+                            false,
+                            pg::Rows::Of(&cids),
+                        )
+                        .await?
+                    }
+                    Err(problems) => {
+                        tracing::warn!(?problems, %tenant, "vectors in column vec cannot be read without pgvector");
+                        0
+                    }
+                },
+                Storage::Portable => 0,
+            };
+            if moved > 0 {
+                tracing::info!(%tenant, set = %set.id, vectors = moved, "moved tenant's vectors converted to this set's engine");
+            }
+        }
+        let pg_indexes = match &*storage {
+            Storage::Pgvector(_) => pg::indexes(db.as_ref()).await?,
+            Storage::Portable => HashMap::new(),
+        };
+        let mut taken = Vec::new();
+        {
+            let mut map = self.inner.collections.write().unwrap_or_else(|p| p.into_inner());
+            for (row, fields) in rows {
+                let key = (row.tenant.clone(), row.name.clone());
+                if map.get(&key).is_some_and(|c| c.set.id == set.id) {
+                    continue;
+                }
+                let coll = self.make_coll(set, &storage, &pg_indexes, row, fields);
+                map.insert(key, Arc::clone(&coll));
+                taken.push(coll);
+            }
+        }
+        if storage.pg().is_some() {
+            for coll in &taken {
+                for f in coll.fields() {
+                    if pg::spec(coll.row.id, &f.def).elem.is_some() && !f.pg_valid.load(Ordering::Relaxed) {
+                        self.start_pg_build(coll, &f, "missing", "the tenant moved to this set".into());
+                    }
+                }
+            }
+        }
+        tracing::info!(%tenant, set = %set.id, collections = taken.len(), "vector collections follow the tenant's set");
+        Ok(())
+    }
+
+    /// The storage engine in use (FB-162): control's, or the one database's
+    /// without a router.
     pub async fn storage_engine(&self) -> VectorEngine {
-        self.inner.storage.read().await.kind()
+        self.control_set().storage.read().await.kind()
     }
 
-    fn db(&self) -> &dyn Backend {
-        self.inner.data.backend().as_ref()
+    /// The storage engine of every set opened so far, by set id (FB-172):
+    /// each set has its own pin and pgvector.
+    pub async fn storage_engines(&self) -> BTreeMap<String, VectorEngine> {
+        let sets: Vec<Arc<SetCtx>> = self
+            .inner
+            .sets
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        let mut out = BTreeMap::new();
+        for s in sets {
+            out.insert(s.id.clone(), s.storage.read().await.kind());
+        }
+        out
     }
 
-    /// The reads of one §2.5 call site (ADR-0029): through the replica
-    /// router when `replica`, else the primary. The portable engine's
-    /// in-process index follows the primary, so searches over it keep the
-    /// store reads there too (FB-169).
-    fn rdb(&self, what: &'static str, replica: bool) -> ReadVia<'_> {
+    /// The SQL dialect (every set has the control's).
+    fn dialect(&self) -> &dyn Dialect {
+        self.inner.data.backend().dialect()
+    }
+
+    /// The reads of one §2.5 call site (ADR-0029) on `db`: through the
+    /// replica router when `replica`, else the primary. The portable
+    /// engine's in-process index follows the primary, so searches over it
+    /// keep the store reads there too (FB-169).
+    fn rdb<'a>(db: &'a dyn Backend, what: &'static str, replica: bool) -> ReadVia<'a> {
         let intent = if replica {
             ReadIntent::replica(what)
         } else {
             ReadIntent::primary(what)
         };
-        ReadVia::new(self.db(), intent)
+        ReadVia::new(db, intent)
     }
 
     fn engine(&self) -> Arc<dyn AnnEngine> {
@@ -615,7 +1082,7 @@ impl VectorService {
 
     /// A rule as a filter of the items table (`None`: every item).
     fn rule_filter(&self, rule: Option<Predicate>) -> Result<Option<Filter>> {
-        Filter::restrict(self.db().dialect(), None, rule)
+        Filter::restrict(self.dialect(), None, rule)
     }
 
     /// Calls that are not about single items (administration, index
@@ -667,15 +1134,40 @@ impl VectorService {
         }
     }
 
-    fn coll(&self, ctx: &AccessContext, name: &str) -> Result<Arc<Coll>> {
+    /// Collection `name` of the caller's scope and the backend of its set
+    /// for this call (FB-172: the tenant's set; a frozen tenant waits).
+    async fn coll(&self, ctx: &AccessContext, name: &str) -> Result<(Arc<Coll>, Db)> {
         let tenant = Self::scope(ctx)?;
+        let (set, db) = self.here(&tenant).await?;
+        let found = self.lookup(&tenant, name);
+        if found.as_ref().is_some_and(|c| c.set.id != set.id) {
+            self.follow(&tenant, &set, &db).await?;
+        }
+        match self.lookup(&tenant, name) {
+            Some(c) if c.set.id == set.id => Ok((c, db)),
+            _ => Err(VectorError::CollectionNotFound(name.to_owned())),
+        }
+    }
+
+    fn lookup(&self, tenant: &str, name: &str) -> Option<Arc<Coll>> {
         self.inner
             .collections
             .read()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&(tenant, name.to_owned()))
+            .get(&(tenant.to_owned(), name.to_owned()))
             .cloned()
-            .ok_or_else(|| VectorError::CollectionNotFound(name.to_owned()))
+    }
+
+    /// The collections in memory whose rows are on set `id`.
+    fn colls_on(&self, id: &str) -> Vec<Arc<Coll>> {
+        self.inner
+            .collections
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|c| c.set.id == id)
+            .cloned()
+            .collect()
     }
 
     /// The record re-check for `coll`, unless the caller is the system or
@@ -736,18 +1228,27 @@ impl VectorService {
     // ------------------------------------------------------------ background
 
     /// Starts the warm-up (loads or rebuilds every index) and the periodic
-    /// saver. Call once, inside a Tokio runtime.
+    /// saver. Call once, inside a Tokio runtime. The warm-up runs over
+    /// every set's collections and leaves out tenants their set skips
+    /// (moving, FB-172); those load on first use.
     pub fn start_background(&self) {
         let svc = self.clone();
         self.track(tokio::spawn(async move {
+            let mut excluded: HashMap<String, Vec<String>> = HashMap::new();
             for coll in svc.all_collections() {
                 if svc.inner.stopping.load(Ordering::Relaxed) {
                     return;
                 }
                 // pgvector's indexes live in PostgreSQL: nothing to load.
-                let storage = svc.inner.storage.read().await;
+                let storage = coll.set.storage.read().await;
                 if storage.pg().is_some() {
-                    return;
+                    continue;
+                }
+                let skip = excluded
+                    .entry(coll.set.id.clone())
+                    .or_insert_with(|| svc.excluded_on(&coll.set.id));
+                if skip.contains(&coll.row.tenant) {
+                    continue;
                 }
                 let _w = coll.write.lock().await;
                 if let Err(e) = svc.ensure_loaded(&coll).await {
@@ -787,7 +1288,8 @@ impl VectorService {
         if coll.dropped.load(Ordering::Relaxed) {
             return Ok(0);
         }
-        let (seq, _) = store::change_seq(self.db(), coll.row.id).await?;
+        let db = self.db_for(&coll.set)?;
+        let (seq, _) = store::change_seq(db.as_ref(), coll.row.id).await?;
         let fields = coll.fields();
         let engine = self.engine();
         blocking(move || {
@@ -828,9 +1330,10 @@ impl VectorService {
         if unloaded.is_empty() {
             return Ok(());
         }
-        let (seq, _) = store::change_seq(self.db(), coll.row.id).await?;
+        let db = self.db_for(&coll.set)?;
+        let (seq, _) = store::change_seq(db.as_ref(), coll.row.id).await?;
         for f in unloaded {
-            let count = store::count_vectors(self.db(), coll.row.id, &f.def.name).await?;
+            let count = store::count_vectors(db.as_ref(), coll.row.id, &f.def.name).await?;
             let engine = self.engine();
             let fi = Arc::clone(&f);
             let loaded = blocking(move || Ok(fi.load(engine.as_ref(), seq, count))).await?;
@@ -907,7 +1410,10 @@ impl VectorService {
         started: Instant,
     ) -> Result<()> {
         let cid = coll.row.id;
-        let total = store::count_vectors(self.db(), cid, &f.def.name).await?;
+        // The rows of the set that holds the collection (its primary).
+        let db = self.db_for(&coll.set)?;
+        let db = db.as_ref();
+        let total = store::count_vectors(db, cid, &f.def.name).await?;
         f.total.store(total, Ordering::Relaxed);
         let engine = self.engine();
         let params = f.params;
@@ -922,7 +1428,7 @@ impl VectorService {
             if self.superseded(coll, f, generation) {
                 return Ok(());
             }
-            let page = store::scan(self.db(), cid, &f.def.name, None, after, self.inner.config.batch).await?;
+            let page = store::scan(db, cid, &f.def.name, None, after, self.inner.config.batch).await?;
             let Some(last) = page.last().map(|(k, _)| *k) else {
                 break;
             };
@@ -947,8 +1453,8 @@ impl VectorService {
             return Ok(());
         }
         let pending: Vec<u64> = f.status().pending.take().unwrap_or_default().into_iter().collect();
-        let current = store::vectors_by_keys(self.db(), cid, &f.def.name, &pending, None).await?;
-        let (seq, _) = store::change_seq(self.db(), cid).await?;
+        let current = store::vectors_by_keys(db, cid, &f.def.name, &pending, None).await?;
+        let (seq, _) = store::change_seq(db, cid).await?;
         let idx = Arc::clone(&fresh);
         let dim = f.def.dimension;
         blocking(move || {
@@ -1040,15 +1546,16 @@ impl VectorService {
         detail: &str,
         started: Instant,
     ) -> Result<()> {
-        // A conversion waits for running builds.
-        let storage = self.inner.storage.read().await;
+        // A conversion of the set waits for running builds.
+        let storage = coll.set.storage.read().await;
         let Some(pgv) = storage.pg() else {
             return Ok(());
         };
         if self.superseded(coll, f, generation) {
             return Ok(());
         }
-        let db = self.db();
+        let db = self.db_for(&coll.set)?;
+        let db = db.as_ref();
         let spec = pg::spec(coll.row.id, &f.def);
         let total = store::count_vectors(db, coll.row.id, &f.def.name).await?;
         f.total.store(total, Ordering::Relaxed);
@@ -1095,12 +1602,12 @@ impl VectorService {
     /// pgvector: builds the index of a new field now (it has no vectors; the
     /// build still scans the table, concurrently with writes). A failure
     /// leaves the field searchable exactly, with the reason.
-    async fn build_new_field(&self, pgv: &Pgv, cid: i64, f: &FieldIndex) {
+    async fn build_new_field(db: &dyn Backend, pgv: &Pgv, cid: i64, f: &FieldIndex) {
         let spec = pg::spec(cid, &f.def);
         if spec.elem.is_none() {
             return;
         }
-        match pg::build(self.db(), pgv, &spec, None).await {
+        match pg::build(db, pgv, &spec, None).await {
             Ok(()) => f.pg_valid.store(true, Ordering::Relaxed),
             Err(e) => {
                 tracing::error!(field = %f.def.name, error = %e, "creating the pgvector index failed; searches are exact");
@@ -1113,9 +1620,9 @@ impl VectorService {
 
     /// pgvector: drops the indexes of fields that are gone (left for the
     /// next start's clean-up when it fails).
-    async fn drop_field_indexes(&self, cid: i64, fields: &[VectorField]) {
+    async fn drop_field_indexes(db: &dyn Backend, cid: i64, fields: &[VectorField]) {
         let names: Vec<String> = fields.iter().map(|f| pg::spec(cid, f).name).collect();
-        if let Err(e) = pg::drop_indexes(self.db(), &names).await {
+        if let Err(e) = pg::drop_indexes(db, &names).await {
             tracing::warn!(error = %e, "dropping pgvector indexes failed; the next start drops them");
         }
     }
@@ -1162,8 +1669,9 @@ impl VectorService {
     pub async fn list_collections(&self, ctx: &AccessContext) -> Result<Vec<VectorCollection>> {
         self.authorize(ctx, Action::VectorRead)?;
         let tenant = Self::scope(ctx)?;
+        let (set, db) = self.here(&tenant).await?;
         let mut colls: Vec<Arc<Coll>> = self
-            .all_collections()
+            .colls_on(&set.id)
             .into_iter()
             .filter(|c| c.row.tenant == tenant)
             .collect();
@@ -1176,13 +1684,18 @@ impl VectorService {
                 Err(e) => return Err(e),
             };
             let filter = self.rule_filter(rule)?;
-            out.push(self.describe(&c, filter.as_ref(), "vector.list").await?);
+            out.push(Self::describe(db.as_ref(), &c, filter.as_ref(), "vector.list").await?);
         }
         Ok(out)
     }
 
-    async fn describe(&self, c: &Coll, filter: Option<&Filter>, what: &'static str) -> Result<VectorCollection> {
-        let db = self.rdb(what, true);
+    async fn describe(
+        db: &dyn Backend,
+        c: &Coll,
+        filter: Option<&Filter>,
+        what: &'static str,
+    ) -> Result<VectorCollection> {
+        let db = Self::rdb(db, what, true);
         let (items, _) = store::count_items(&db, c.row.id, filter).await?;
         let (_, updated) = store::change_seq(&db, c.row.id).await?;
         Ok(c.definition(items, updated))
@@ -1191,9 +1704,9 @@ impl VectorService {
     /// One collection (`items`: what the caller's view rule shows).
     pub async fn get_collection(&self, ctx: &AccessContext, name: &str) -> Result<VectorCollection> {
         let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
-        let c = self.coll(ctx, name)?;
+        let (c, db) = self.coll(ctx, name).await?;
         let filter = self.rule_filter(rule)?;
-        self.describe(&c, filter.as_ref(), "vector.get_collection").await
+        Self::describe(db.as_ref(), &c, filter.as_ref(), "vector.get_collection").await
     }
 
     fn field_def(&self, spec: &FieldSpec) -> Result<VectorField> {
@@ -1273,9 +1786,11 @@ impl VectorService {
             defs.push(d);
         }
         let exact_threshold = new.exact_threshold.unwrap_or(self.inner.config.exact_threshold);
-        let storage = self.inner.storage.read().await;
+        let (set, db) = self.here(&tenant).await?;
+        self.schema_guard(&tenant)?;
+        let storage = set.storage.read().await;
         let _cat = self.inner.catalog.lock().await;
-        if self.coll(ctx, &new.name).is_ok() {
+        if self.lookup(&tenant, &new.name).is_some_and(|c| c.set.id == set.id) {
             return Err(VectorError::CollectionExists(new.name));
         }
         let ts = now();
@@ -1284,7 +1799,7 @@ impl VectorService {
         if let Some(src) = &new.source_collection {
             options.insert(SOURCE_COLLECTION_OPTION.into(), src.clone().into());
         }
-        let mut tx = self.db().begin(TxMode::Normal).await?;
+        let mut tx = db.begin(TxMode::Normal).await?;
         let r = async {
             let id = store::insert_collection(&mut *tx, &tenant, &new.name, &new.description, &options, &ts).await?;
             for d in &defs {
@@ -1301,7 +1816,7 @@ impl VectorService {
                 None => FieldIndex::empty(d, &dir, self.inner.engine.as_ref())?,
                 Some(pgv) => {
                     let idx = FieldIndex::on_postgres(d, &dir, false);
-                    self.build_new_field(pgv, id, &idx).await;
+                    Self::build_new_field(db.as_ref(), pgv, id, &idx).await;
                     idx
                 }
             };
@@ -1316,6 +1831,7 @@ impl VectorService {
                 options,
                 created: ts.clone(),
             },
+            set: Arc::clone(&set),
             exact_threshold,
             write: tokio::sync::Mutex::new(()),
             fields: RwLock::new(fields),
@@ -1332,23 +1848,23 @@ impl VectorService {
     /// Drops a collection, its items, vectors and index files.
     pub async fn delete_collection(&self, ctx: &AccessContext, name: &str) -> Result<()> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Delete)?;
-        let storage = self.inner.storage.read().await;
+        let (coll, db) = self.coll(ctx, name).await?;
+        self.schema_guard(&coll.row.tenant)?;
+        let storage = coll.set.storage.read().await;
         let _cat = self.inner.catalog.lock().await;
-        let coll = self.coll(ctx, name)?;
         let _w = coll.write.lock().await;
-        let mut tx = self.db().begin(TxMode::Normal).await?;
+        if coll.dropped.load(Ordering::Relaxed) {
+            return Err(VectorError::CollectionNotFound(name.to_owned()));
+        }
+        let mut tx = db.begin(TxMode::Normal).await?;
         let r = store::delete_collection(&mut *tx, coll.row.id).await;
         finish(tx, r).await?;
         coll.dropped.store(true, Ordering::Relaxed);
         if storage.pg().is_some() {
             let defs: Vec<VectorField> = coll.fields().iter().map(|f| f.def.clone()).collect();
-            self.drop_field_indexes(coll.row.id, &defs).await;
+            Self::drop_field_indexes(db.as_ref(), coll.row.id, &defs).await;
         }
-        self.inner
-            .collections
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&(coll.row.tenant.clone(), coll.row.name.clone()));
+        self.forget(std::slice::from_ref(&coll));
         let dir = self.inner.root.join(coll.row.id.to_string());
         let _ = blocking(move || {
             if let Err(e) = std::fs::remove_dir_all(&dir)
@@ -1365,16 +1881,27 @@ impl VectorService {
     /// Vector fields of a collection.
     pub async fn list_fields(&self, ctx: &AccessContext, name: &str) -> Result<Vec<VectorField>> {
         self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
-        Ok(self.coll(ctx, name)?.fields().iter().map(|f| f.def.clone()).collect())
+        Ok(self
+            .coll(ctx, name)
+            .await?
+            .0
+            .fields()
+            .iter()
+            .map(|f| f.def.clone())
+            .collect())
     }
 
     /// Adds a vector field (existing items have no vector for it).
     pub async fn add_field(&self, ctx: &AccessContext, name: &str, spec: FieldSpec) -> Result<VectorField> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
+        self.schema_guard(&coll.row.tenant)?;
         let def = self.field_def(&spec)?;
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         let _w = coll.write.lock().await;
+        if coll.dropped.load(Ordering::Relaxed) {
+            return Err(VectorError::CollectionNotFound(name.to_owned()));
+        }
         {
             let fields = coll.fields.read().unwrap_or_else(|p| p.into_inner());
             if fields.len() >= MAX_FIELDS {
@@ -1390,7 +1917,7 @@ impl VectorService {
         if storage.pg().is_none() {
             self.ensure_loaded(&coll).await?;
         }
-        let mut tx = self.db().begin(TxMode::Normal).await?;
+        let mut tx = db.begin(TxMode::Normal).await?;
         let r = async {
             store::insert_field(&mut *tx, coll.row.id, &def).await?;
             store::bump(&mut *tx, coll.row.id, &now()).await
@@ -1402,7 +1929,7 @@ impl VectorService {
             None => FieldIndex::empty(def.clone(), &dir, self.inner.engine.as_ref())?,
             Some(pgv) => {
                 let idx = FieldIndex::on_postgres(def.clone(), &dir, false);
-                self.build_new_field(pgv, coll.row.id, &idx).await;
+                Self::build_new_field(db.as_ref(), pgv, coll.row.id, &idx).await;
                 idx
             }
         });
@@ -1416,14 +1943,18 @@ impl VectorService {
     /// Drops a vector field, its vectors and its index files.
     pub async fn delete_field(&self, ctx: &AccessContext, name: &str, field: &str) -> Result<()> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
-        let coll = self.coll(ctx, name)?;
-        let storage = self.inner.storage.read().await;
+        let (coll, db) = self.coll(ctx, name).await?;
+        self.schema_guard(&coll.row.tenant)?;
+        let storage = coll.set.storage.read().await;
         let _w = coll.write.lock().await;
+        if coll.dropped.load(Ordering::Relaxed) {
+            return Err(VectorError::CollectionNotFound(name.to_owned()));
+        }
         let f = coll.field(field)?;
         if storage.pg().is_none() {
             self.ensure_loaded(&coll).await?;
         }
-        let mut tx = self.db().begin(TxMode::Normal).await?;
+        let mut tx = db.begin(TxMode::Normal).await?;
         let r = async {
             store::delete_field(&mut *tx, coll.row.id, &f.def.name).await?;
             store::bump(&mut *tx, coll.row.id, &now()).await
@@ -1436,7 +1967,7 @@ impl VectorService {
             .remove(&f.def.name);
         f.status().generation += 1;
         if storage.pg().is_some() {
-            self.drop_field_indexes(coll.row.id, std::slice::from_ref(&f.def)).await;
+            Self::drop_field_indexes(db.as_ref(), coll.row.id, std::slice::from_ref(&f.def)).await;
         }
         let fi = Arc::clone(&f);
         let _ = blocking(move || {
@@ -1459,7 +1990,7 @@ impl VectorService {
             (Err(e), Err(_)) => return Err(e),
             (c, u) => (self.gate(c)?, self.gate(u)?),
         };
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
         if items.is_empty() || items.len() > MAX_BATCH {
             return Err(VectorError::invalid(
                 "invalid_batch",
@@ -1519,7 +2050,7 @@ impl VectorService {
             });
         }
 
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         let pgv = storage.pg();
         let _w = coll.write.lock().await;
         if coll.dropped.load(Ordering::Relaxed) {
@@ -1530,9 +2061,9 @@ impl VectorService {
         }
         let ts = now();
         let cid = coll.row.id;
-        let dialect = self.db().dialect();
+        let dialect = self.dialect();
         let unrestricted = matches!((&create, &update), (Gate::Allow, Gate::Allow));
-        let mut tx = self.db().begin(TxMode::Normal).await?;
+        let mut tx = db.begin(TxMode::Normal).await?;
         let r = async {
             let mut keys = Vec::with_capacity(prepared.len());
             let mut created = 0u64;
@@ -1597,11 +2128,11 @@ impl VectorService {
     /// One item with its vectors.
     pub async fn get_item(&self, ctx: &AccessContext, name: &str, id: &str) -> Result<Item> {
         let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
         check_id(id).map_err(|_| VectorError::ItemNotFound(id.to_owned()))?;
         let filter = self.rule_filter(rule)?;
-        let storage = self.inner.storage.read().await;
-        let db = self.rdb("vector.get", true);
+        let storage = coll.set.storage.read().await;
+        let db = Self::rdb(db.as_ref(), "vector.get", true);
         let mut row = store::get_item(&db, coll.row.id, id, filter.as_ref())
             .await?
             .ok_or_else(|| VectorError::ItemNotFound(id.to_owned()))?;
@@ -1633,7 +2164,7 @@ impl VectorService {
     /// unknown ids.
     pub async fn delete_items(&self, ctx: &AccessContext, name: &str, ids: Vec<String>) -> Result<u64> {
         let rule = self.rule(ctx, Action::VectorWrite, name, ResourceOp::Delete)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
         let filter = self.rule_filter(rule)?;
         if ids.is_empty() || ids.len() > MAX_BATCH {
             return Err(VectorError::invalid(
@@ -1644,14 +2175,14 @@ impl VectorService {
         for id in &ids {
             check_id(id)?;
         }
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         let _w = coll.write.lock().await;
         if storage.pg().is_none() {
             self.ensure_loaded(&coll).await?;
         }
         let cid = coll.row.id;
-        let dialect = self.db().dialect();
-        let mut tx = self.db().begin(TxMode::Normal).await?;
+        let dialect = self.dialect();
+        let mut tx = db.begin(TxMode::Normal).await?;
         let r = async {
             let keys = store::delete_items(&mut *tx, dialect, cid, &ids, filter.as_ref()).await?;
             if !keys.is_empty() {
@@ -1688,12 +2219,18 @@ impl VectorService {
 
     // ----------------------------------------------------------------- search
 
-    async fn count_for_exact(&self, cid: i64, f: &FieldIndex, filter: Option<&Filter>) -> Result<u64> {
+    async fn count_for_exact(
+        &self,
+        db: &dyn Backend,
+        cid: i64,
+        f: &FieldIndex,
+        filter: Option<&Filter>,
+    ) -> Result<u64> {
         let cap = self.inner.config.max_exact_scan;
         match filter {
-            None => store::count_vectors(self.db(), cid, &f.def.name).await,
+            None => store::count_vectors(db, cid, &f.def.name).await,
             Some(flt) => Ok(store::matching_keys(
-                self.db(),
+                db,
                 cid,
                 &f.def.name,
                 flt,
@@ -1706,6 +2243,7 @@ impl VectorService {
 
     async fn exact_scan(
         &self,
+        db: &dyn Backend,
         cid: i64,
         f: &FieldIndex,
         q: &[f32],
@@ -1715,7 +2253,7 @@ impl VectorService {
         let mut top = TopK::new(k);
         let mut after = 0u64;
         loop {
-            let page = store::scan(self.db(), cid, &f.def.name, filter, after, self.inner.config.batch).await?;
+            let page = store::scan(db, cid, &f.def.name, filter, after, self.inner.config.batch).await?;
             let Some(last) = page.last().map(|(k, _)| *k) else {
                 break;
             };
@@ -1728,10 +2266,18 @@ impl VectorService {
         Ok(top.into_sorted())
     }
 
-    async fn exact_keys(&self, cid: i64, f: &FieldIndex, q: &[f32], k: usize, keys: &[u64]) -> Result<Vec<Scored>> {
+    async fn exact_keys(
+        &self,
+        db: &dyn Backend,
+        cid: i64,
+        f: &FieldIndex,
+        q: &[f32],
+        k: usize,
+        keys: &[u64],
+    ) -> Result<Vec<Scored>> {
         let mut top = TopK::new(k);
         for chunk in keys.chunks(self.inner.config.batch.max(1)) {
-            for (key, bytes) in store::vectors_by_keys(self.db(), cid, &f.def.name, chunk, None).await? {
+            for (key, bytes) in store::vectors_by_keys(db, cid, &f.def.name, chunk, None).await? {
                 let v = metric::decode(&bytes, f.def.dimension)?;
                 top.push(key, metric::distance(f.def.metric, q, &v));
             }
@@ -1759,7 +2305,7 @@ impl VectorService {
     }
 
     async fn post_filter(
-        &self,
+        db: &dyn Backend,
         cid: i64,
         ix: Arc<dyn AnnIndex>,
         q: &[f32],
@@ -1771,7 +2317,7 @@ impl VectorService {
         for _ in 0..6 {
             let cand = Self::ann(Arc::clone(&ix), q.to_vec(), want, None).await?;
             let keys: Vec<u64> = cand.iter().map(|s| s.key).collect();
-            let ok = store::verify(self.db(), cid, &keys, filter).await?;
+            let ok = store::verify(db, cid, &keys, filter).await?;
             let hits: Vec<Scored> = cand.into_iter().filter(|s| ok.contains(&s.key)).take(k).collect();
             if hits.len() >= k || want >= size {
                 return Ok(hits);
@@ -1780,7 +2326,7 @@ impl VectorService {
         }
         let cand = Self::ann(Arc::clone(&ix), q.to_vec(), want, None).await?;
         let keys: Vec<u64> = cand.iter().map(|s| s.key).collect();
-        let ok = store::verify(self.db(), cid, &keys, filter).await?;
+        let ok = store::verify(db, cid, &keys, filter).await?;
         Ok(cand.into_iter().filter(|s| ok.contains(&s.key)).take(k).collect())
     }
 
@@ -1788,6 +2334,7 @@ impl VectorService {
     #[allow(clippy::too_many_arguments)]
     async fn knn(
         &self,
+        db: &dyn Backend,
         pgv: Option<&Pgv>,
         coll: &Arc<Coll>,
         f: &Arc<FieldIndex>,
@@ -1799,13 +2346,13 @@ impl VectorService {
         what: &'static str,
     ) -> Result<Knn> {
         if let Some(pgv) = pgv {
-            return self.knn_pg(pgv, coll, f, q, k, filter, mode, exact, what).await;
+            return self.knn_pg(db, pgv, coll, f, q, k, filter, mode, exact, what).await;
         }
         let cid = coll.row.id;
         let cfg = &self.inner.config;
         let threshold = coll.exact_threshold as usize;
         if exact {
-            let n = self.count_for_exact(cid, f, filter).await?;
+            let n = self.count_for_exact(db, cid, f, filter).await?;
             if n > cfg.max_exact_scan {
                 return Err(VectorError::invalid(
                     "exact_too_large",
@@ -1813,13 +2360,13 @@ impl VectorService {
                 ));
             }
             return Ok(Knn {
-                hits: self.exact_scan(cid, f, q, k, filter).await?,
+                hits: self.exact_scan(db, cid, f, q, k, filter).await?,
                 strategy: Strategy::Exact,
                 candidates: filter.map(|_| n),
             });
         }
         let Some(ix) = self.serving(coll, f).await? else {
-            let n = self.count_for_exact(cid, f, filter).await?;
+            let n = self.count_for_exact(db, cid, f, filter).await?;
             if n > cfg.max_exact_scan {
                 let reason = f.status().reason.clone().unwrap_or_else(|| "rebuilding".into());
                 return Err(VectorError::IndexNotReady(
@@ -1828,7 +2375,7 @@ impl VectorService {
                 ));
             }
             return Ok(Knn {
-                hits: self.exact_scan(cid, f, q, k, filter).await?,
+                hits: self.exact_scan(db, cid, f, q, k, filter).await?,
                 strategy: Strategy::ExactFallback,
                 candidates: filter.map(|_| n),
             });
@@ -1836,7 +2383,7 @@ impl VectorService {
         let Some(flt) = filter else {
             if ix.len() <= threshold {
                 return Ok(Knn {
-                    hits: self.exact_scan(cid, f, q, k, None).await?,
+                    hits: self.exact_scan(db, cid, f, q, k, None).await?,
                     strategy: Strategy::Exact,
                     candidates: None,
                 });
@@ -1848,12 +2395,12 @@ impl VectorService {
             });
         };
         if mode != FilterMode::Post {
-            let keys = store::matching_keys(self.db(), cid, &f.def.name, flt, cfg.max_prefilter + 1).await?;
+            let keys = store::matching_keys(db, cid, &f.def.name, flt, cfg.max_prefilter + 1).await?;
             if keys.len() <= cfg.max_prefilter {
                 let n = keys.len() as u64;
                 if keys.len() <= threshold {
                     return Ok(Knn {
-                        hits: self.exact_keys(cid, f, q, k, &keys).await?,
+                        hits: self.exact_keys(db, cid, f, q, k, &keys).await?,
                         strategy: Strategy::Exact,
                         candidates: Some(n),
                     });
@@ -1871,7 +2418,7 @@ impl VectorService {
                 // the matching set, so a selective filter never loses hits.
                 if n <= cfg.max_exact_scan {
                     return Ok(Knn {
-                        hits: self.exact_keys(cid, f, q, k, &keys).await?,
+                        hits: self.exact_keys(db, cid, f, q, k, &keys).await?,
                         strategy: Strategy::Exact,
                         candidates: Some(n),
                     });
@@ -1884,7 +2431,7 @@ impl VectorService {
             }
         }
         Ok(Knn {
-            hits: self.post_filter(cid, ix, q, k, flt).await?,
+            hits: Self::post_filter(db, cid, ix, q, k, flt).await?,
             strategy: Strategy::PostFilter,
             candidates: None,
         })
@@ -1904,6 +2451,7 @@ impl VectorService {
     #[allow(clippy::too_many_arguments)]
     async fn knn_pg(
         &self,
+        db: &dyn Backend,
         pgv: &Pgv,
         coll: &Coll,
         f: &FieldIndex,
@@ -1914,7 +2462,7 @@ impl VectorService {
         exact: bool,
         what: &'static str,
     ) -> Result<Knn> {
-        let via = self.rdb(what, true);
+        let via = Self::rdb(db, what, true);
         let db: &dyn Backend = &via;
         let cid = coll.row.id;
         let name = f.def.name.as_str();
@@ -2064,23 +2612,25 @@ impl VectorService {
     pub async fn search(&self, ctx: &AccessContext, name: &str, req: SearchRequest) -> Result<SearchResponse> {
         let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::List)?;
         let started = Instant::now();
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
+        let db = db.as_ref();
         let f = coll.pick(req.field.as_deref())?;
         let k = Self::check_k(req.k)?;
         let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, &req.vector)?;
-        let dialect = self.db().dialect();
+        let dialect = self.dialect();
         let filter = Filter::parse(dialect, req.filter.as_deref(), &req.params)?;
         let mut source = self.source_check(ctx, &coll)?;
         if let Some(sc) = &source {
             sc.check_filter(filter.as_ref())?;
         }
         let filter = Filter::restrict(dialect, filter, rule)?;
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         let pgv = storage.pg();
         let mut want = k;
         let (knn, mut items, mut vectors, kept) = loop {
             let knn = self
                 .knn(
+                    db,
                     pgv,
                     &coll,
                     &f,
@@ -2093,9 +2643,8 @@ impl VectorService {
                 )
                 .await?;
             let keys: Vec<u64> = knn.hits.iter().map(|s| s.key).collect();
-            let (items, vectors) = self
-                .hydrate(pgv, &coll, &f, &keys, req.include_vectors, "vector.search")
-                .await?;
+            let (items, vectors) =
+                Self::hydrate(db, pgv, &coll, &f, &keys, req.include_vectors, "vector.search").await?;
             let Some(sc) = source.as_mut() else {
                 break (knn, items, vectors, keys);
             };
@@ -2148,7 +2697,7 @@ impl VectorService {
     }
 
     async fn hydrate(
-        &self,
+        db: &dyn Backend,
         pgv: Option<&Pgv>,
         coll: &Coll,
         f: &FieldIndex,
@@ -2156,7 +2705,7 @@ impl VectorService {
         with_vectors: bool,
         what: &'static str,
     ) -> Result<(HashMap<u64, store::ItemRow>, HashMap<u64, Vec<f32>>)> {
-        let db = self.rdb(what, pgv.is_some());
+        let db = Self::rdb(db, what, pgv.is_some());
         let items = store::items_by_keys(&db, coll.row.id, keys).await?;
         let mut vectors = HashMap::new();
         if with_vectors {
@@ -2174,7 +2723,8 @@ impl VectorService {
     pub async fn hybrid(&self, ctx: &AccessContext, name: &str, req: HybridRequest) -> Result<HybridResponse> {
         let rule = self.rule(ctx, Action::VectorRead, name, ResourceOp::List)?;
         let started = Instant::now();
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
+        let db = db.as_ref();
         let k = Self::check_k(req.k)?;
         let candidates = req.candidates.unwrap_or_else(|| (req.k * 5).max(50)).min(MAX_K);
         if candidates == 0 {
@@ -2202,7 +2752,7 @@ impl VectorService {
                 "send a vector, a text, or both",
             ));
         }
-        let dialect = self.db().dialect();
+        let dialect = self.dialect();
         let filter = Filter::parse(dialect, req.filter.as_deref(), &req.params)?;
         let mut source = self.source_check(ctx, &coll)?;
         if let Some(sc) = &source {
@@ -2214,7 +2764,7 @@ impl VectorService {
             (None, false) => req.field.as_deref().map(|n| coll.field(n)).transpose()?,
         };
 
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         let pgv = storage.pg();
         let mut vector_strategy = None;
         let mut by_vector: Vec<(u64, f32)> = Vec::new();
@@ -2222,6 +2772,7 @@ impl VectorService {
             let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, v)?;
             let knn = self
                 .knn(
+                    db,
                     pgv,
                     &coll,
                     f,
@@ -2243,8 +2794,8 @@ impl VectorService {
         }
         let mut by_text: Vec<(u64, f64)> = Vec::new();
         if let Some(t) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
-            let expr = match_query(self.db().dialect(), t, req.text_operator)?;
-            let db = self.rdb("vector.hybrid", pgv.is_some() || req.vector.is_none());
+            let expr = match_query(dialect, t, req.text_operator)?;
+            let db = Self::rdb(db, "vector.hybrid", pgv.is_some() || req.vector.is_none());
             by_text = store::keyword(&db, coll.row.id, &expr, filter.as_ref(), candidates).await?;
         }
 
@@ -2266,12 +2817,9 @@ impl VectorService {
             .collect();
         let keys: Vec<u64> = fused.iter().map(|(k, _)| *k).collect();
         let (mut items, mut vectors) = match &field {
-            Some(f) => {
-                self.hydrate(pgv, &coll, f, &keys, req.include_vectors, "vector.hybrid")
-                    .await?
-            }
+            Some(f) => Self::hydrate(db, pgv, &coll, f, &keys, req.include_vectors, "vector.hybrid").await?,
             None => (
-                store::items_by_keys(&self.rdb("vector.hybrid", true), coll.row.id, &keys).await?,
+                store::items_by_keys(&Self::rdb(db, "vector.hybrid", true), coll.row.id, &keys).await?,
                 HashMap::new(),
             ),
         };
@@ -2325,12 +2873,13 @@ impl VectorService {
     /// A field that is already rebuilding is left alone.
     pub async fn rebuild(&self, ctx: &AccessContext, name: &str, field: Option<&str>) -> Result<Vec<IndexStatus>> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::Update)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
+        let db = db.as_ref();
         let targets = match field {
             Some(n) => vec![coll.field(n)?],
             None => coll.fields(),
         };
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         if let Some(pgv) = storage.pg() {
             let mut out = Vec::with_capacity(targets.len());
             for f in &targets {
@@ -2338,9 +2887,9 @@ impl VectorService {
                     self.start_pg_build(&coll, f, "manual", "requested by an administrator".into());
                 }
             }
-            let info = pg::indexes(self.db()).await?;
+            let info = pg::indexes(db).await?;
             for f in &targets {
-                out.push(self.pg_index_status(pgv, &coll, f, &info).await?);
+                out.push(Self::pg_index_status(db, pgv, &coll, f, &info).await?);
             }
             return Ok(out);
         }
@@ -2355,20 +2904,20 @@ impl VectorService {
         }
         let mut out = Vec::with_capacity(targets.len());
         for f in &targets {
-            out.push(self.index_status(&coll, f).await?);
+            out.push(self.index_status(db, &coll, f).await?);
         }
         Ok(out)
     }
 
     /// [`IndexStatus`] of a pgvector field (`info`: the `fbv_` indexes).
     async fn pg_index_status(
-        &self,
+        db: &dyn Backend,
         pgv: &Pgv,
         coll: &Coll,
         f: &FieldIndex,
         info: &HashMap<String, pg::IndexInfo>,
     ) -> Result<IndexStatus> {
-        let canonical = store::count_vectors(self.db(), coll.row.id, &f.def.name).await?;
+        let canonical = store::count_vectors(db, coll.row.id, &f.def.name).await?;
         let spec = pg::spec(coll.row.id, &f.def);
         let index = info.get(&spec.name);
         let valid = index.is_some_and(|i| i.valid);
@@ -2418,8 +2967,8 @@ impl VectorService {
         })
     }
 
-    async fn index_status(&self, coll: &Coll, f: &FieldIndex) -> Result<IndexStatus> {
-        let canonical = store::count_vectors(self.db(), coll.row.id, &f.def.name).await?;
+    async fn index_status(&self, db: &dyn Backend, coll: &Coll, f: &FieldIndex) -> Result<IndexStatus> {
+        let canonical = store::count_vectors(db, coll.row.id, &f.def.name).await?;
         let live = f.live();
         let es = live.as_ref().map(|l| l.stats()).unwrap_or_default();
         let st = f.status();
@@ -2461,22 +3010,23 @@ impl VectorService {
     /// so a caller whose view rule restricts items is refused.
     pub async fn stats(&self, ctx: &AccessContext, name: &str) -> Result<CollectionStats> {
         self.allow(ctx, Action::VectorRead, name, ResourceOp::View)?;
-        let coll = self.coll(ctx, name)?;
-        let db = self.rdb("vector.stats", true);
+        let (coll, primary) = self.coll(ctx, name).await?;
+        let primary = primary.as_ref();
+        let db = Self::rdb(primary, "vector.stats", true);
         let (items, with_text) = store::count_items(&db, coll.row.id, None).await?;
         let (seq, _) = store::change_seq(&db, coll.row.id).await?;
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         let mut indexes = Vec::new();
         match storage.pg() {
             None => {
                 for f in coll.fields() {
-                    indexes.push(self.index_status(&coll, &f).await?);
+                    indexes.push(self.index_status(primary, &coll, &f).await?);
                 }
             }
             Some(pgv) => {
-                let info = pg::indexes(self.db()).await?;
+                let info = pg::indexes(primary).await?;
                 for f in coll.fields() {
-                    indexes.push(self.pg_index_status(pgv, &coll, &f, &info).await?);
+                    indexes.push(Self::pg_index_status(primary, pgv, &coll, &f, &info).await?);
                 }
             }
         }
@@ -2493,8 +3043,9 @@ impl VectorService {
     pub async fn tenant_stats(&self, ctx: &AccessContext) -> Result<VectorStats> {
         self.authorize(ctx, Action::VectorRead)?;
         let tenant = Self::scope(ctx)?;
+        let (set, _) = self.here(&tenant).await?;
         Ok(Self::sum_stats(
-            self.all_collections().into_iter().filter(|c| c.row.tenant == tenant),
+            self.colls_on(&set.id).into_iter().filter(|c| c.row.tenant == tenant),
         ))
     }
 
@@ -2537,10 +3088,10 @@ impl VectorService {
     /// (loaded or rebuilt), or `timeout` passes. Returns whether it is ready.
     pub async fn wait_ready(&self, ctx: &AccessContext, name: &str, timeout: Duration) -> Result<bool> {
         self.rule(ctx, Action::VectorRead, name, ResourceOp::View)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, _) = self.coll(ctx, name).await?;
         let deadline = Instant::now() + timeout;
         loop {
-            if self.inner.storage.read().await.pg().is_none() {
+            if coll.set.storage.read().await.pg().is_none() {
                 let _w = coll.write.lock().await;
                 self.ensure_loaded(&coll).await?;
             }
@@ -2558,8 +3109,15 @@ impl VectorService {
     /// pgvector recall check: both orders come from SQL (the HNSW index, and
     /// the distance on the uncast column), and the comparison runs in SQL
     /// too ([`pg::recall_exact`]).
-    async fn pg_recall(&self, pgv: &Pgv, coll: &Coll, f: &FieldIndex, samples: u32, k: u32) -> Result<RecallReport> {
-        let db = self.db();
+    async fn pg_recall(
+        &self,
+        db: &dyn Backend,
+        pgv: &Pgv,
+        coll: &Coll,
+        f: &FieldIndex,
+        samples: u32,
+        k: u32,
+    ) -> Result<RecallReport> {
         let cid = coll.row.id;
         let spec = pg::spec(cid, &f.def);
         if spec.elem.is_none() || !f.pg_valid.load(Ordering::Relaxed) {
@@ -2608,7 +3166,8 @@ impl VectorService {
     /// exact results.
     pub async fn recall(&self, ctx: &AccessContext, name: &str, req: RecallRequest) -> Result<RecallReport> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::View)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
+        let db = db.as_ref();
         let f = coll.pick(req.field.as_deref())?;
         let samples = req.samples.unwrap_or(100);
         let k = req.k.unwrap_or(10);
@@ -2618,16 +3177,16 @@ impl VectorService {
                 format!("samples must be 1 to {MAX_RECALL_SAMPLES}, k 1 to 100"),
             ));
         }
-        let storage = self.inner.storage.read().await;
+        let storage = coll.set.storage.read().await;
         if let Some(pgv) = storage.pg() {
-            let report = self.pg_recall(pgv, &coll, &f, samples, k).await?;
+            let report = self.pg_recall(db, pgv, &coll, &f, samples, k).await?;
             f.status().last_recall = Some(report.clone());
             return Ok(report);
         }
         let ix = self.serving(&coll, &f).await?.ok_or_else(|| {
             VectorError::IndexNotReady(format!("{}.{}", coll.row.name, f.def.name), "rebuilding".into())
         })?;
-        let n = store::count_vectors(self.db(), coll.row.id, &f.def.name).await?;
+        let n = store::count_vectors(db, coll.row.id, &f.def.name).await?;
         if n == 0 {
             return Err(VectorError::invalid("no_vectors", "the field has no vectors"));
         }
@@ -2643,15 +3202,7 @@ impl VectorService {
         let mut all: Vec<(u64, Vec<f32>)> = Vec::with_capacity(usize::try_from(n).unwrap_or(0));
         let mut after = 0u64;
         loop {
-            let page = store::scan(
-                self.db(),
-                coll.row.id,
-                &f.def.name,
-                None,
-                after,
-                self.inner.config.batch,
-            )
-            .await?;
+            let page = store::scan(db, coll.row.id, &f.def.name, None, after, self.inner.config.batch).await?;
             let Some(last) = page.last().map(|(k, _)| *k) else {
                 break;
             };
@@ -2719,12 +3270,13 @@ impl VectorService {
     /// on the portable engine.
     pub async fn explain_search(&self, ctx: &AccessContext, name: &str, req: SearchRequest) -> Result<Vec<String>> {
         self.allow(ctx, Action::VectorAdmin, name, ResourceOp::View)?;
-        let coll = self.coll(ctx, name)?;
+        let (coll, db) = self.coll(ctx, name).await?;
+        let db = db.as_ref();
         let f = coll.pick(req.field.as_deref())?;
         let k = Self::check_k(req.k)?;
         let q = metric::validate(&f.def.name, f.def.dimension, f.def.metric, &req.vector)?;
-        let filter = Filter::parse(self.db().dialect(), req.filter.as_deref(), &req.params)?;
-        let storage = self.inner.storage.read().await;
+        let filter = Filter::parse(self.dialect(), req.filter.as_deref(), &req.params)?;
+        let storage = coll.set.storage.read().await;
         let Some(pgv) = storage.pg() else {
             return Err(VectorError::invalid(
                 "explain_unsupported",
@@ -2737,13 +3289,13 @@ impl VectorService {
             iterative: pgv.iterative && filter.is_some(),
             max_scan_tuples: pg::DEFAULT_MAX_SCAN_TUPLES,
         };
-        let Some(stmt) = pg::ann_statement(self.db(), pgv, &spec, &q, k, filter.as_ref(), scan)? else {
+        let Some(stmt) = pg::ann_statement(db, pgv, &spec, &q, k, filter.as_ref(), scan)? else {
             return Err(VectorError::invalid(
                 "explain_unsupported",
                 format!("{} has no HNSW index (exact search only)", f.def.name),
             ));
         };
-        Ok(self.db().explain(&stmt).await?.into_iter().map(|p| p.detail).collect())
+        Ok(db.explain(&stmt).await?.into_iter().map(|p| p.detail).collect())
     }
 
     // ------------------------------------------------------------- convert
@@ -2759,10 +3311,29 @@ impl VectorService {
     /// the engine's write lock: every other vector operation waits.
     /// Instance-wide (no tenant), `engine:vector_admin`.
     ///
+    /// Sharded (FB-172): every set is converted on its own (its pin, its
+    /// lock), control first; see [`Self::convert_set`].
+    ///
     /// # Errors
     /// `400 pgvector_unavailable` when converting to pgvector without a
     /// usable pgvector (with the layout problems), database errors.
     pub async fn convert(&self, ctx: &AccessContext, to: VectorEngine) -> Result<ConvertReport> {
+        self.convert_set(ctx, None, to).await
+    }
+
+    /// [`Self::convert`] of one database set (`Some(id)`) or of every set
+    /// (`None`). On each set the tenants it skips
+    /// ([`forgebase_jobs::excluded_tenants`]: a partial copy of a tenant
+    /// moving in, the stale copy of one moved out) keep their rows as they
+    /// are: the set that takes a tenant over converts its rows then
+    /// (`follow`). A set that still serves a tenant frozen by a move's
+    /// switch is not converted now: the other sets are, then `409
+    /// tenant_moving` (the `vector.convert` job retries; sets already
+    /// converted move nothing the second time).
+    ///
+    /// # Errors
+    /// As [`Self::convert`]; `404 shard_not_found` for an unknown set.
+    pub async fn convert_set(&self, ctx: &AccessContext, set: Option<&str>, to: VectorEngine) -> Result<ConvertReport> {
         self.authorize(ctx, Action::VectorAdmin)?;
         if ctx.tenant.is_some() {
             return Err(VectorError::invalid(
@@ -2770,14 +3341,14 @@ impl VectorService {
                 "vector.convert is instance-wide; call it without a tenant",
             ));
         }
-        let db = self.db();
-        if db.dialect().name() != "postgres" {
+        if self.dialect().name() != "postgres" {
             return match to {
                 VectorEngine::Portable => Ok(ConvertReport {
                     from: VectorEngine::Portable,
                     to,
                     vectors: 0,
                     indexes: 0,
+                    sets: Vec::new(),
                 }),
                 VectorEngine::Pgvector => Err(VectorError::invalid(
                     "pgvector_unavailable",
@@ -2785,13 +3356,77 @@ impl VectorService {
                 )),
             };
         }
+        let targets = match (set, self.router()) {
+            (None, _) => self.every_set().await?,
+            (Some(id), None) if id == CONTROL_SET_ID => vec![self.control_set()],
+            (Some(id), None) => return Err(RouterError::UnknownSet(id.to_owned()).into()),
+            (Some(id), Some(router)) => match router.set(id) {
+                Some(h) => vec![self.set_of(&h).await?],
+                None => return Err(RouterError::UnknownSet(id.to_owned()).into()),
+            },
+        };
+        let mut done: Vec<SetConvertReport> = Vec::new();
+        let mut waiting = None;
+        for s in &targets {
+            let db = self.db_for(s)?;
+            match self.convert_one(s, &db, to).await {
+                Ok(r) => done.push(r),
+                Err(VectorError::Router(RouterError::TenantMoving(t))) => {
+                    tracing::info!(set = %s.id, tenant = %t, "vector.convert waits for a tenant move on this set");
+                    waiting.get_or_insert(t);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if let Some(t) = waiting {
+            return Err(RouterError::TenantMoving(t).into());
+        }
+        let sharded = self.router().is_some_and(DbRouter::is_sharded);
+        let report = ConvertReport {
+            from: done.first().map_or(to, |r| r.from),
+            to,
+            vectors: done.iter().map(|r| r.vectors).sum(),
+            indexes: done.iter().map(|r| r.indexes).sum(),
+            sets: if sharded { done } else { Vec::new() },
+        };
+        tracing::info!(
+            from = report.from.as_str(),
+            to = report.to.as_str(),
+            vectors = report.vectors,
+            indexes = report.indexes,
+            sets = targets.len(),
+            "vector storage converted"
+        );
+        Ok(report)
+    }
+
+    /// Converts set `set` (see [`Self::convert_set`]).
+    async fn convert_one(&self, set: &Arc<SetCtx>, db: &Db, to: VectorEngine) -> Result<SetConvertReport> {
+        let db = db.as_ref();
         let probe = pg::probe(db).await?;
         if let (VectorEngine::Pgvector, Err(problems)) = (to, &probe) {
             return Err(VectorError::invalid("pgvector_unavailable", problems.join("; ")));
         }
-        let mut storage = self.inner.storage.write().await;
+        let excluded = self.excluded_on(&set.id);
+        // A tenant skipped here but still served here (frozen by a switch
+        // that may yet abort) would be left in the other column.
+        if let Some(c) = self
+            .colls_on(&set.id)
+            .into_iter()
+            .find(|c| excluded.contains(&c.row.tenant) && self.owner_of(&c.row.tenant) == set.id)
+        {
+            return Err(RouterError::TenantMoving(c.row.tenant.clone()).into());
+        }
+        let scope = pg::Rows::Except(&excluded);
+        let mut storage = set.storage.write().await;
         let from = storage.kind();
-        let colls = self.all_collections();
+        // Entries of a tenant that moved away and has not been followed yet
+        // are left as they are (the next call takes the tenant from its set).
+        let colls: Vec<Arc<Coll>> = self
+            .colls_on(&set.id)
+            .into_iter()
+            .filter(|c| !excluded.contains(&c.row.tenant))
+            .collect();
         // Portable rebuilds stop at their next check (their field is replaced).
         for c in &colls {
             let _w = c.write.lock().await;
@@ -2800,10 +3435,10 @@ impl VectorService {
             }
         }
         let batch = pg::batch_rows(self.inner.config.batch, pg::max_dimension(db).await?);
-        let report = match (to, probe) {
+        let (vectors, indexes) = match (to, probe) {
             (VectorEngine::Pgvector, Ok(pgv)) => {
                 let pgv = Arc::new(pgv);
-                let vectors = pg::move_all(db, &pgv, VectorEngine::Pgvector, batch, true).await?;
+                let vectors = pg::move_all(db, &pgv, VectorEngine::Pgvector, batch, true, scope).await?;
                 *storage = Storage::Pgvector(Arc::clone(&pgv));
                 let existing = pg::indexes(db).await?;
                 let mut indexes = 0;
@@ -2835,19 +3470,14 @@ impl VectorService {
                     })
                     .await;
                 }
-                ConvertReport {
-                    from,
-                    to,
-                    vectors,
-                    indexes,
-                }
+                (vectors, indexes)
             }
             (VectorEngine::Pgvector, Err(_)) => {
                 return Err(VectorError::Internal("pgvector probe changed".into()));
             }
             (VectorEngine::Portable, probe) => {
                 let vectors = match &probe {
-                    Ok(pgv) => pg::move_all(db, pgv, VectorEngine::Portable, batch, true).await?,
+                    Ok(pgv) => pg::move_all(db, pgv, VectorEngine::Portable, batch, true, scope).await?,
                     Err(problems) if pg::has_vec_column(db).await? => {
                         return Err(VectorError::invalid(
                             "pgvector_unavailable",
@@ -2881,23 +3511,24 @@ impl VectorService {
                     // older portable past are stale or match exactly).
                     self.ensure_loaded(c).await?;
                 }
-                ConvertReport {
-                    from,
-                    to,
-                    vectors,
-                    indexes: names.len() as u64,
-                }
+                (vectors, names.len() as u64)
             }
         };
         drop(storage);
         tracing::info!(
-            from = report.from.as_str(),
-            to = report.to.as_str(),
-            vectors = report.vectors,
-            indexes = report.indexes,
-            "vector storage converted"
+            set = %set.id,
+            from = from.as_str(),
+            to = to.as_str(),
+            vectors,
+            indexes,
+            "vector storage of a set converted"
         );
-        Ok(report)
+        Ok(SetConvertReport {
+            set: set.id.clone(),
+            from,
+            vectors,
+            indexes,
+        })
     }
 }
 

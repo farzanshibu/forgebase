@@ -114,11 +114,31 @@ fn u(n: i64) -> u64 {
 
 /// Every collection with its fields (all tenants), for start-up.
 pub(crate) async fn load_all(db: &dyn Backend) -> Result<Vec<(CollectionRow, Vec<VectorField>)>> {
+    load(db, None).await
+}
+
+/// The collections of one tenant with their fields (a tenant taken over
+/// from another set after a move, FB-172).
+pub(crate) async fn load_tenant(db: &dyn Backend, tenant: &str) -> Result<Vec<(CollectionRow, Vec<VectorField>)>> {
+    load(db, Some(tenant)).await
+}
+
+async fn load(db: &dyn Backend, tenant: Option<&str>) -> Result<Vec<(CollectionRow, Vec<VectorField>)>> {
+    let (only, only_fields, params) = match tenant {
+        None => ("", "", vec![]),
+        Some(t) => (
+            " WHERE tenant = ?1",
+            " WHERE collection_id IN (SELECT id FROM _forgebase_vector_collections WHERE tenant = ?1)",
+            vec![Value::Text(t.to_owned())],
+        ),
+    };
     let rows = db
         .fetch_all(&Statement::new(
-            "SELECT id, tenant, name, description, options, created_at \
-             FROM _forgebase_vector_collections ORDER BY id",
-            vec![],
+            format!(
+                "SELECT id, tenant, name, description, options, created_at \
+                 FROM _forgebase_vector_collections{only} ORDER BY id"
+            ),
+            params.clone(),
         ))
         .await?;
     let mut out = Vec::with_capacity(rows.len());
@@ -137,9 +157,11 @@ pub(crate) async fn load_all(db: &dyn Backend) -> Result<Vec<(CollectionRow, Vec
     }
     let fields = db
         .fetch_all(&Statement::new(
-            "SELECT collection_id, name, dimension, metric, quantization, connectivity, expansion_add, \
-             expansion_search, created_at FROM _forgebase_vector_fields ORDER BY collection_id, name",
-            vec![],
+            format!(
+                "SELECT collection_id, name, dimension, metric, quantization, connectivity, expansion_add, \
+                 expansion_search, created_at FROM _forgebase_vector_fields{only_fields} ORDER BY collection_id, name"
+            ),
+            params,
         ))
         .await?;
     let mut by_id: HashMap<i64, usize> = out.iter().enumerate().map(|(i, (c, _))| (c.id, i)).collect();

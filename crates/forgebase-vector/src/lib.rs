@@ -10,6 +10,7 @@
 //! | Hybrid search: FTS5 keyword + vector, Reciprocal Rank Fusion | [`VectorService::hybrid`] |
 //! | Recall check, index statistics, Prometheus metrics | [`VectorService::recall`], [`VectorService::stats`] |
 //! | PostgreSQL with pgvector: `vec` column, partial HNSW index per field, iterative scans, concurrent rebuilds, recall in SQL; `vector.convert` both ways (FB-162) | [`VectorService::storage_engine`], [`VectorService::convert`], [`register_jobs`] |
+//! | Database sets: a tenant's vectors on its set, an engine per set, in-process indexes loaded from every set and following a moved tenant, `409 tenant_moving` (FB-172) | [`VectorService::attach_router`], [`VectorService::open_routed`], [`VectorService::storage_engines`], [`VectorService::convert_set`] |
 //! | REST under `/api/v1/vector` with OpenAPI | [`router`], [`extension`], [`openapi`] |
 //!
 //! SQLite holds the only copy of every vector; the files under
