@@ -561,7 +561,7 @@ impl BillingService {
                 let mut t = Tx(tx.as_mut());
                 t.exec(
                     "UPDATE _forgebase_billing_subscriptions SET pending_price_id = ?2, version = version + 1,
-                         updated_at = MAX(?3, updated_at + 1) WHERE id = ?1",
+                         updated_at = CASE WHEN CAST(?3 AS BIGINT) > updated_at + 1 THEN CAST(?3 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                     vec![id.into(), new.id.clone().into(), now.into()],
                 )
                 .await?;
@@ -603,7 +603,7 @@ impl BillingService {
             }
             t.exec(
                 "UPDATE _forgebase_billing_subscriptions SET pending_price_id = NULL, version = version + 1,
-                     updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+                     updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                 vec![id.into(), now.into()],
             )
             .await?;
@@ -677,7 +677,7 @@ impl BillingService {
             if input.at_period_end && s.sub.status != SubscriptionStatus::Incomplete && s.sub.status != SubscriptionStatus::Paused {
                 t.exec(
                     "UPDATE _forgebase_billing_subscriptions SET cancel_at_period_end = 1, canceled_at = ?2, cancel_reason = ?3,
-                         version = version + 1, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+                         version = version + 1, updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                     vec![id.into(), now.into(), reason.clone().into()],
                 )
                 .await?;
@@ -722,7 +722,7 @@ impl BillingService {
                 t.exec(
                     "UPDATE _forgebase_billing_subscriptions SET status = 'canceled', canceled_at = ?2, ended_at = ?2,
                          cancel_reason = ?3, cancel_at_period_end = 0, version = version + 1,
-                         updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+                         updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                     vec![id.into(), now.into(), reason.clone().into()],
                 )
                 .await?;
@@ -754,7 +754,7 @@ impl BillingService {
             let mut t = Tx(tx.as_mut());
             t.exec(
                 "UPDATE _forgebase_billing_subscriptions SET status = 'paused', paused_at = ?2, version = version + 1,
-                     updated_at = MAX(?2, updated_at + 1) WHERE id = ?1 AND status = 'active'",
+                     updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1 AND status = 'active'",
                 vec![id.into(), now.into()],
             )
             .await?;
@@ -785,7 +785,7 @@ impl BillingService {
                 t.exec(
                     "UPDATE _forgebase_billing_subscriptions SET status = 'active', paused_at = NULL, cycle_anchor = ?2,
                          current_period_start = ?2, current_period_end = ?3, version = version + 1,
-                         updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+                         updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                     vec![id.into(), now.into(), end.into()],
                 )
                 .await?;
@@ -813,7 +813,7 @@ impl BillingService {
             } else if s.sub.cancel_at_period_end && s.sub.status != SubscriptionStatus::Canceled {
                 t.exec(
                     "UPDATE _forgebase_billing_subscriptions SET cancel_at_period_end = 0, canceled_at = NULL,
-                         cancel_reason = NULL, version = version + 1, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+                         cancel_reason = NULL, version = version + 1, updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                     vec![id.into(), now.into()],
                 )
                 .await?;
@@ -1069,7 +1069,7 @@ impl BillingService {
                 t.exec(
                     "UPDATE _forgebase_billing_subscriptions SET status = 'canceled', ended_at = ?2,
                          cancel_reason = COALESCE(cancel_reason, 'requested'), version = version + 1,
-                         updated_at = MAX(?3, updated_at + 1) WHERE id = ?1",
+                         updated_at = CASE WHEN CAST(?3 AS BIGINT) > updated_at + 1 THEN CAST(?3 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                     vec![id.clone().into(), end.into(), now.into()],
                 )
                 .await?;
@@ -1122,7 +1122,7 @@ impl BillingService {
             t.exec(
                 "UPDATE _forgebase_billing_subscriptions SET status = CASE WHEN status = 'trialing' THEN 'active' ELSE status END,
                      current_period_start = ?2, current_period_end = ?3, pending_price_id = NULL,
-                     version = version + 1, updated_at = MAX(?4, updated_at + 1) WHERE id = ?1",
+                     version = version + 1, updated_at = CASE WHEN CAST(?4 AS BIGINT) > updated_at + 1 THEN CAST(?4 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                 vec![id.clone().into(), end.into(), new_end.into(), now.into()],
             )
             .await?;
@@ -1175,7 +1175,7 @@ impl BillingService {
                 let n = t
                     .exec(
                         "UPDATE _forgebase_billing_subscriptions SET status = 'canceled', ended_at = ?2, canceled_at = ?2,
-                             cancel_reason = 'incomplete_expired', version = version + 1, updated_at = MAX(?2, updated_at + 1)
+                             cancel_reason = 'incomplete_expired', version = version + 1, updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END
                          WHERE id = ?1 AND status = 'incomplete'",
                         vec![id.clone().into(), now.into()],
                     )

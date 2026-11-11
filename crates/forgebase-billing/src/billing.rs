@@ -440,7 +440,7 @@ impl BillingService {
         };
         if applied > 0 || credit > 0 {
             t.exec(
-                "UPDATE _forgebase_billing_customers SET balance = balance - ?2 + ?3, updated_at = ?4 WHERE id = ?1",
+                "UPDATE _forgebase_billing_customers SET balance = balance - CAST(?2 AS BIGINT) + CAST(?3 AS BIGINT), updated_at = ?4 WHERE id = ?1",
                 vec![
                     spec.customer_id.clone().into(),
                     applied.into(),
@@ -1008,7 +1008,7 @@ impl BillingService {
             // Incomplete subscriptions start their first period now.
             t.exec(
                 "UPDATE _forgebase_billing_subscriptions SET status = 'active', version = version + 1,
-                     updated_at = MAX(?2, updated_at + 1)
+                     updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END
                  WHERE id = ?1 AND status IN ('incomplete', 'past_due')",
                 vec![s.clone().into(), now.into()],
             )
@@ -1062,7 +1062,7 @@ impl BillingService {
             .await?;
             t.exec(
                 "UPDATE _forgebase_billing_subscriptions SET status = 'past_due', version = version + 1,
-                     updated_at = MAX(?2, updated_at + 1)
+                     updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END
                  WHERE id = ?1 AND status IN ('active', 'trialing')",
                 vec![sub.into(), now.into()],
             )
@@ -1079,7 +1079,7 @@ impl BillingService {
         if settings.final_action == FinalAction::Cancel {
             t.exec(
                 "UPDATE _forgebase_billing_subscriptions SET status = 'canceled', ended_at = ?2, canceled_at = COALESCE(canceled_at, ?2),
-                     cancel_reason = 'payment_failed', version = version + 1, updated_at = MAX(?2, updated_at + 1)
+                     cancel_reason = 'payment_failed', version = version + 1, updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END
                  WHERE id = ?1 AND status <> 'canceled'",
                 vec![sub.clone().into(), now.into()],
             )
@@ -1252,7 +1252,7 @@ impl BillingService {
         let res = async {
             let mut t = Tx(tx.as_mut());
             t.exec(
-                "UPDATE _forgebase_billing_subscriptions SET synced_version = MAX(synced_version, ?2) WHERE id = ?1",
+                "UPDATE _forgebase_billing_subscriptions SET synced_version = CASE WHEN CAST(?2 AS BIGINT) > synced_version THEN CAST(?2 AS BIGINT) ELSE synced_version END WHERE id = ?1",
                 vec![sub_id.into(), s.sub.version.into()],
             )
             .await?;
@@ -1297,7 +1297,7 @@ impl BillingService {
             .fetch(
                 &format!(
                     "SELECT {INVOICE_COLUMNS} FROM {INVOICE_FROM}
-                     WHERE (?1 IS NULL OR i.subject = ?1) AND (?2 IS NULL OR i.status = ?2) AND i.status <> 'draft'{only}
+                     WHERE (CAST(?1 AS TEXT) IS NULL OR i.subject = ?1) AND (CAST(?2 AS TEXT) IS NULL OR i.status = ?2) AND i.status <> 'draft'{only}
                      ORDER BY i.created_at DESC, i.id DESC LIMIT ?3"
                 ),
                 params,
@@ -1332,7 +1332,7 @@ impl BillingService {
         let rows = self
             .fetch(
                 &format!(
-                    "SELECT {PAYMENT_COLUMNS} FROM _forgebase_billing_payments WHERE (?1 IS NULL OR subject = ?1){only}
+                    "SELECT {PAYMENT_COLUMNS} FROM _forgebase_billing_payments WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1){only}
                      ORDER BY created_at DESC, id DESC LIMIT ?2"
                 ),
                 params,
@@ -1353,7 +1353,7 @@ impl BillingService {
                     "SELECT r.id, r.payment_id, r.invoice_id, r.credit_note_id, r.provider, r.provider_ref, r.status, r.amount,
                             r.currency, r.reason, r.created_at
                      FROM _forgebase_billing_refunds r JOIN _forgebase_billing_invoices i ON i.id = r.invoice_id
-                     WHERE (?1 IS NULL OR i.subject = ?1){only} ORDER BY r.created_at DESC, r.id DESC LIMIT ?2"
+                     WHERE (CAST(?1 AS TEXT) IS NULL OR i.subject = ?1){only} ORDER BY r.created_at DESC, r.id DESC LIMIT ?2"
                 ),
                 params,
             )
@@ -1375,7 +1375,7 @@ impl BillingService {
         let rows = self
             .fetch(
                 &format!(
-                    "SELECT {NOTE_COLUMNS} FROM _forgebase_billing_credit_notes WHERE (?1 IS NULL OR subject = ?1){only}
+                    "SELECT {NOTE_COLUMNS} FROM _forgebase_billing_credit_notes WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1){only}
                      ORDER BY created_at DESC, id DESC LIMIT ?2"
                 ),
                 params,
@@ -1542,7 +1542,7 @@ impl BillingService {
                 let n = t
                     .exec(
                         "UPDATE _forgebase_billing_subscriptions SET status = 'canceled', ended_at = ?2, canceled_at = ?2,
-                             cancel_reason = 'invoice_voided', version = version + 1, updated_at = MAX(?2, updated_at + 1)
+                             cancel_reason = 'invoice_voided', version = version + 1, updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END
                          WHERE id = ?1 AND status = 'incomplete'",
                         vec![s.clone().into(), now.into()],
                     )

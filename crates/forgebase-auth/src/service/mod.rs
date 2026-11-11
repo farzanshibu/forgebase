@@ -727,7 +727,7 @@ impl AuthService {
             "INSERT INTO _forgebase_auth_lockouts (key, failures, window_start, locked_until, lock_count)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (key) DO UPDATE SET failures = ?2, window_start = ?3,
-                 locked_until = max(locked_until, ?4), lock_count = ?5",
+                 locked_until = CASE WHEN _forgebase_auth_lockouts.locked_until > ?4 THEN _forgebase_auth_lockouts.locked_until ELSE ?4 END, lock_count = ?5",
             vec![t(key), i(failures), i(window_start), i(locked_until), i(lock_count)],
         )
         .await?;
@@ -773,9 +773,9 @@ impl AuthService {
             "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator
              FROM _forgebase_auth_audit
              WHERE (CAST(?1 AS TEXT) IS NULL OR substr(event, 1, length(CAST(?1 AS TEXT))) = CAST(?1 AS TEXT))
-               AND (?2 IS NULL OR subject_id = ?2)
-               AND (?3 IS NULL OR id < ?3)
-               AND (?5 IS NULL OR realm = ?5)
+               AND (CAST(?2 AS TEXT) IS NULL OR subject_id = ?2)
+               AND (CAST(?3 AS BIGINT) IS NULL OR id < ?3)
+               AND (CAST(?5 AS TEXT) IS NULL OR realm = ?5)
              ORDER BY id DESC LIMIT ?4",
             vec![
                 ot(q.event.clone()),
@@ -796,7 +796,7 @@ impl AuthService {
             self.db(),
             "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator
              FROM _forgebase_auth_audit
-             WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3
+             WHERE subject_type = ?1 AND collection IS NOT DISTINCT FROM ?2 AND subject_id = ?3
                AND (event LIKE 'login%' OR event = 'mfa.verify')
              ORDER BY id DESC LIMIT ?4",
             vec![t(st), ot(coll), t(id), i(i64::from(limit.clamp(1, 200)))],
@@ -1390,7 +1390,7 @@ impl AuthService {
         Ok(tx
             .exec(
                 "UPDATE _forgebase_auth_sessions SET revoked_at = ?4, revoked_reason = ?5
-                 WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3 AND revoked_at IS NULL",
+                 WHERE subject_type = ?1 AND collection IS NOT DISTINCT FROM ?2 AND subject_id = ?3 AND revoked_at IS NULL",
                 vec![t(st), ot(coll), t(id), i(store::now()), t(reason)],
             )
             .await?
@@ -1444,7 +1444,7 @@ impl AuthService {
             "SELECT id, auth_method, mfa, cookie_hash IS NOT NULL AS cookie, ip, user_agent, device_name,
                     created_at, last_seen_at, expires_at, impersonator
              FROM _forgebase_auth_sessions
-             WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3
+             WHERE subject_type = ?1 AND collection IS NOT DISTINCT FROM ?2 AND subject_id = ?3
                AND revoked_at IS NULL AND expires_at > ?4 AND last_seen_at > ?5
              ORDER BY last_seen_at DESC LIMIT 200",
             vec![t(st), ot(coll), t(id), i(now), i(now - idle)],
@@ -1483,7 +1483,7 @@ impl AuthService {
             .exec(
                 "UPDATE _forgebase_auth_sessions SET revoked_at = ?5, revoked_reason = 'revoked'
                  WHERE id = ?1 AND revoked_at IS NULL
-                   AND (?6 OR (subject_type = ?2 AND collection IS ?3 AND subject_id = ?4))",
+                   AND (CAST(?6 AS BIGINT) = 1 OR (subject_type = ?2 AND collection IS NOT DISTINCT FROM ?3 AND subject_id = ?4))",
                 vec![
                     t(session_id),
                     t(st),
@@ -1672,7 +1672,7 @@ pub(crate) async fn audit_in(
         "INSERT INTO _forgebase_auth_audit (at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator, realm)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                  COALESCE((SELECT realm_id FROM _forgebase_realm_identity WHERE collection = ?6),
-                          CASE WHEN ?6 IS NULL THEN ?13 ELSE 'default' END))",
+                          CASE WHEN CAST(?6 AS TEXT) IS NULL THEN ?13 ELSE 'default' END))",
         vec![
             i(store::now()),
             t(event),

@@ -489,7 +489,7 @@ pub(crate) async fn return_packs(db: &mut Db<'_>, taken: &[(String, i64)], units
         }
         let give = back.min(*n);
         db.exec(
-            "UPDATE _forgebase_pack_grants SET remaining = MIN(units, remaining + ?1) WHERE id = ?2",
+            "UPDATE _forgebase_pack_grants SET remaining = CASE WHEN units < remaining + CAST(?1 AS BIGINT) THEN units ELSE remaining + CAST(?1 AS BIGINT) END WHERE id = ?2",
             vec![give.into(), id.clone().into()],
         )
         .await?;

@@ -581,8 +581,8 @@ impl AuthService {
         let revoked = tx
             .exec(
                 "UPDATE _forgebase_auth_sessions SET revoked_at = ?4, revoked_reason = ?5
-                 WHERE subject_type = ?1 AND collection IS ?2 AND subject_id = ?3 AND revoked_at IS NULL
-                   AND (?6 IS NULL OR id != ?6)",
+                 WHERE subject_type = ?1 AND collection IS NOT DISTINCT FROM ?2 AND subject_id = ?3 AND revoked_at IS NULL
+                   AND (CAST(?6 AS TEXT) IS NULL OR id != ?6)",
                 vec![
                     t(st),
                     ot(coll),
@@ -627,7 +627,7 @@ impl AuthService {
         // A new code or link replaces older unused ones of the same purpose.
         tx.exec(
             "UPDATE _forgebase_auth_one_time SET used_at = ?5
-             WHERE purpose = ?1 AND subject_type = ?2 AND collection IS ?3 AND subject_id = ?4 AND used_at IS NULL",
+             WHERE purpose = ?1 AND subject_type = ?2 AND collection IS NOT DISTINCT FROM ?3 AND subject_id = ?4 AND used_at IS NULL",
             vec![t(purpose), t(st), ot(coll.clone()), t(id.clone()), i(now)],
         )
         .await?;

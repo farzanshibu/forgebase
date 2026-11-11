@@ -116,7 +116,7 @@ impl CreditService {
                 }
                 t.exec(
                     "INSERT INTO _forgebase_credit_cursors (name, seq, updated_at) VALUES (?1, ?2, ?3)
-                     ON CONFLICT (name) DO UPDATE SET seq = MAX(seq, excluded.seq), updated_at = excluded.updated_at",
+                     ON CONFLICT (name) DO UPDATE SET seq = CASE WHEN excluded.seq > _forgebase_credit_cursors.seq THEN excluded.seq ELSE _forgebase_credit_cursors.seq END, updated_at = excluded.updated_at",
                     vec![USAGE_CURSOR.into(), last.into(), now.into()],
                 )
                 .await?;
@@ -196,7 +196,7 @@ impl CreditService {
                 "SELECT event_id, event_seq, event_at, at, subject, feature_key, units, rate, per_units, cost, charged,
                         shortfall, entry_id
                  FROM _forgebase_credit_usage
-                 WHERE event_seq > ?1 AND (?2 IS NULL OR subject = ?2) AND (NOT ?3 OR shortfall > 0)
+                 WHERE event_seq > ?1 AND (CAST(?2 AS TEXT) IS NULL OR subject = ?2) AND (CAST(?3 AS BIGINT) = 0 OR shortfall > 0)
                  ORDER BY event_seq LIMIT ?4",
                 vec![
                     after.unwrap_or(0).into(),

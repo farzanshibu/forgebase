@@ -191,7 +191,7 @@ async fn realm_configuration_is_admin_only_and_secrets_are_write_only() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.json);
     assert_eq!(r.json["config"]["turnstile"]["secret"], "********");
     let stored = h
-        .count("SELECT COUNT(*) FROM _forgebase_realm_identity WHERE realm_id = 'acme' AND config LIKE '%ts-secret-value%'")
+        .count("SELECT COUNT(*) FROM _forgebase_realm_identity WHERE realm_id = 'acme' AND CAST(config AS TEXT) LIKE '%ts-secret-value%'")
         .await;
     assert_eq!(stored, 0, "secret stored sealed");
     // Sending the mask back keeps the secret.
@@ -882,7 +882,7 @@ async fn ldap_refuses_wrong_passwords_unknown_users_injection_and_empty_password
     );
     assert_eq!(ldap.log().len(), before);
     assert!(
-        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'login' AND detail LIKE '%\"ldap\"%'")
+        h.count("SELECT COUNT(*) FROM _forgebase_auth_audit WHERE event = 'login' AND CAST(detail AS TEXT) LIKE '%\"ldap\"%'")
             .await
             >= 4
     );

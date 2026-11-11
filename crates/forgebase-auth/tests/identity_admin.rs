@@ -192,12 +192,12 @@ async fn social_providers_crud_with_write_only_sealed_secrets() {
 
     // Sealed at rest, not plaintext.
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE config LIKE '%s3cret-value%'")
+        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE CAST(config AS TEXT) LIKE '%s3cret-value%'")
             .await,
         0
     );
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE config LIKE '%sealed:%'")
+        h.count("SELECT count(*) FROM _forgebase_oauth_providers WHERE CAST(config AS TEXT) LIKE '%sealed:%'")
             .await,
         1
     );
@@ -387,7 +387,7 @@ async fn sms_gateway_per_realm_is_write_only_and_used_by_that_realm_only() {
     assert_eq!(r.json["config"]["bearer_token"], MASK);
     assert!(!r.json.to_string().contains("hook-token"));
     assert_eq!(
-        h.count("SELECT count(*) FROM _forgebase_sms_config WHERE config LIKE '%hook-token%'")
+        h.count("SELECT count(*) FROM _forgebase_sms_config WHERE CAST(config AS TEXT) LIKE '%hook-token%'")
             .await,
         0
     );

@@ -1402,9 +1402,9 @@ async fn no_secret_is_logged_stored_or_returned_after_creation() {
     assert!(!logs.contains(&format!("code={code}")) && !logs.contains(&format!("\"{code}\"")));
 
     // 2. Database: no plaintext anywhere (every text and blob cell of every table).
-    use forgebase_db::{Backend, Statement, Value as V};
+    use forgebase_db::{Backend, Dialect, Statement, Value as V};
     let tables =
-        h.db.fetch_all(&Statement::raw("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        h.db.fetch_all(&h.db.dialect().introspect_tables())
             .await
             .unwrap();
     let mut dump = String::new();
