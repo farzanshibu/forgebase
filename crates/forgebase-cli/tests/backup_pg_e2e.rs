@@ -178,10 +178,20 @@ fn a_physical_backup_restores_into_an_empty_project_and_db_dump_writes_a_portabl
         &["db", "dump", sql.to_str().unwrap(), "--plain", "--schema-only"],
     ));
     let text = std::fs::read_to_string(&sql).unwrap();
-    assert!(
-        text.contains("CREATE TABLE") && !text.contains("OWNER TO") && !text.contains("GRANT "),
-        "portable"
-    );
+    assert!(text.contains("CREATE TABLE"), "the schema is dumped");
+    // pg_dump writes each statement from the start of a line. Function
+    // bodies may hold the words (forgebase.fb_editor_grants() runs
+    // `EXECUTE format('GRANT SELECT …')`); only statements are not portable.
+    let not_portable: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            l.starts_with("GRANT ")
+                || l.starts_with("REVOKE ")
+                || l.starts_with("ALTER DEFAULT PRIVILEGES")
+                || (l.starts_with("ALTER ") && l.contains(" OWNER TO "))
+        })
+        .collect();
+    assert!(not_portable.is_empty(), "portable: {not_portable:#?}");
     assert!(!run(&app, e, &["db", "dump", sql.to_str().unwrap()]).status.success());
 
     // A second, empty project takes the backup: engine, marker and rows come along.
