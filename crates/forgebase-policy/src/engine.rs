@@ -109,7 +109,7 @@ fn hooks(
 }
 
 /// Effective permissions with the personal-scope owner rule.
-fn effective(snap: &Snapshot, ctx: &AccessContext, org: Option<&str>, owner: Option<&str>) -> Arc<Effective> {
+pub(crate) fn effective(snap: &Snapshot, ctx: &AccessContext, org: Option<&str>, owner: Option<&str>) -> Arc<Effective> {
     let principal = ctx.principal_key();
     let eff = snap.effective(&principal, &ctx.realm_id, org);
     if owner.is_some_and(|o| o == principal) {
@@ -161,7 +161,7 @@ pub(crate) fn run_check(snap: &Snapshot, h: &Hooks, ctx: &AccessContext, c: &Che
 
 /// ACL of a resource and its parents (an environment inherits its project's
 /// entries); deny anywhere wins.
-fn acl_chain(snap: &Snapshot, ctx: &AccessContext, r: &ResourceRef, key: &str, eff: &Effective) -> Grant {
+pub(crate) fn acl_chain(snap: &Snapshot, ctx: &AccessContext, r: &ResourceRef, key: &str, eff: &Effective) -> Grant {
     let principal = ctx.principal_key();
     let mut chain = vec![(r.kind.clone(), r.id.clone())];
     if r.kind == "environment"
@@ -211,7 +211,7 @@ fn rule_index(action: Action) -> Option<usize> {
 
 /// Whether API-key / PAT scopes cover a record action (defence in depth for
 /// callers that do not come through the HTTP scope check).
-fn scopes_allow(ctx: &AccessContext, coll: &str, write: bool) -> bool {
+pub(crate) fn scopes_allow(ctx: &AccessContext, coll: &str, write: bool) -> bool {
     let Some(scopes) = &ctx.scopes else { return true };
     let access = if write { "write" } else { "read" };
     scopes.iter().any(|s| {
@@ -313,10 +313,10 @@ fn ids_expr(ids: &[String], params: &mut HashMap<String, Json>, tag: &str) -> Ex
 }
 
 /// (owning organization, personal owner, environment) of a tenant.
-type TenantScope = (Option<String>, Option<String>, Option<String>);
+pub(crate) type TenantScope = (Option<String>, Option<String>, Option<String>);
 
 /// The organization owning a tenant, and its personal owner.
-fn tenant_scope(snap: &Snapshot, ctx: &AccessContext) -> Result<TenantScope, Denial> {
+pub(crate) fn tenant_scope(snap: &Snapshot, ctx: &AccessContext) -> Result<TenantScope, Denial> {
     let Some(t) = &ctx.tenant else {
         return Ok((None, None, None));
     };

@@ -47,7 +47,7 @@ pub mod testing;
 pub mod topology;
 
 pub use backend::{
-    Backend, BoxFuture, ExecResult, PlanStep, QueryLabel, Rows, SlowQuery, Statement, TxMode, Value, WriteTx,
+    Backend, BoxFuture, ExecResult, PlanStep, QueryLabel, Rows, RunAs, SlowQuery, Statement, TxMode, Value, WriteTx,
 };
 pub use dialect::{ColumnType, Dialect, JsonPathSeg, PG_FULLTEXT_SETUP, PG_UNACCENT_FN, PgDialect, SqliteDialect};
 pub use pg::extensions::{
@@ -616,6 +616,14 @@ impl Backend for Database {
 
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>> {
         self.backend().begin(mode)
+    }
+
+    fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
+        self.backend().begin_as(mode, run_as)
+    }
+
+    fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        self.backend().fetch_all_as(stmt, run_as)
     }
 
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>> {

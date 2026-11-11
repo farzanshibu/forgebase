@@ -292,6 +292,28 @@ async fn rows(db: &dyn Backend, sql: &str) -> Result<Rows, PolicyError> {
     Ok(db.fetch_all(&Statement::raw(sql)).await?)
 }
 
+/// A collection's rules from their stored text (list, view, create,
+/// update, delete; field rules as JSON). A rule that does not parse locks
+/// its action; a field rule that does not parse hides / freezes the field.
+pub fn policy_from_text(rules: [Option<&str>; 5], fields_json: &str) -> CollectionPolicy {
+    let mut p = CollectionPolicy::default();
+    for (slot, text) in p.rules.iter_mut().zip(rules) {
+        *slot = rule_spec(text).unwrap_or(None);
+    }
+    let fields: HashMap<String, FieldRuleText> = serde_json::from_str(fields_json).unwrap_or_default();
+    for (name, f) in fields {
+        let locked = || Some(RuleSpec::Expr(Rule::parse("1 = 0").expect("constant rule")));
+        p.fields.insert(
+            name.to_ascii_lowercase(),
+            FieldRule {
+                read: f.read.as_deref().map_or(Ok(None), |t| rule_spec(Some(t))).unwrap_or_else(|_| locked()),
+                write: f.write.as_deref().map_or(Ok(None), |t| rule_spec(Some(t))).unwrap_or_else(|_| locked()),
+            },
+        );
+    }
+    p
+}
+
 /// Parses a stored or submitted collection rule: `None` locked, `""` public.
 pub fn rule_spec(text: Option<&str>) -> Result<Option<RuleSpec>, PolicyError> {
     match text {
@@ -513,26 +535,8 @@ impl Snapshot {
         .await?
         .rows
         {
-            let mut p = CollectionPolicy::default();
-            for (i, slot) in p.rules.iter_mut().enumerate() {
-                // A stored rule that no longer parses locks the action.
-                *slot = rule_spec(r[i + 1].as_str()).unwrap_or(None);
-            }
-            let fields: HashMap<String, FieldRuleText> = r[6]
-                .as_str()
-                .and_then(|t| serde_json::from_str(t).ok())
-                .unwrap_or_default();
-            for (name, f) in fields {
-                // An unparsable field rule hides / freezes the field.
-                let locked = || Some(RuleSpec::Expr(Rule::parse("1 = 0").expect("constant rule")));
-                p.fields.insert(
-                    name.to_ascii_lowercase(),
-                    FieldRule {
-                        read: f.read.as_deref().map_or(Ok(None), |t| rule_spec(Some(t))).unwrap_or_else(|_| locked()),
-                        write: f.write.as_deref().map_or(Ok(None), |t| rule_spec(Some(t))).unwrap_or_else(|_| locked()),
-                    },
-                );
-            }
+            let rules = [1, 2, 3, 4, 5].map(|i| r[i].as_str());
+            let p = policy_from_text(rules, r[6].as_str().unwrap_or("{}"));
             snap.policies.insert(s(&r, 0), p);
         }
         for r in rows(db, "SELECT kind, name, action, rule FROM _forgebase_resource_rules")

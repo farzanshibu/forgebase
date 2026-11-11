@@ -360,7 +360,7 @@ impl DataService {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
-        let rows = self.inner.backend.fetch_all(&built.select).await?;
+        let rows = self.read_rows(ctx, Action::List, &coll, &built.select).await?;
         let more = rows.rows.len() > built.per_page as usize;
         let mut items: Vec<Record> = Vec::with_capacity(rows.rows.len().min(built.per_page as usize));
         let mut last_keys: Option<Vec<Json>> = None;
@@ -389,9 +389,7 @@ impl DataService {
             (None, None)
         } else {
             let n = self
-                .inner
-                .backend
-                .fetch_all(&built.count)
+                .read_rows(ctx, Action::List, &coll, &built.count)
                 .await?
                 .scalar()
                 .and_then(Value::as_i64)
@@ -430,7 +428,7 @@ impl DataService {
             ..ListQuery::default()
         };
         let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None)?;
-        let rows = self.inner.backend.fetch_all(&built.count).await?;
+        let rows = self.read_rows(ctx, Action::List, &coll, &built.count).await?;
         Ok(rows.scalar().and_then(Value::as_i64).unwrap_or(0).max(0) as u64)
     }
 
@@ -563,9 +561,7 @@ impl DataService {
         let limit = q.limit.unwrap_or(1000).clamp(1, 10_000);
         sql.push_str(&format!(" LIMIT {}", b.bind(i64::from(limit))));
         let rows = self
-            .inner
-            .backend
-            .fetch_all(&Statement::new(sql, b.into_params()))
+            .read_rows(ctx, Action::List, &coll, &Statement::new(sql, b.into_params()))
             .await?;
         Ok(rows
             .rows

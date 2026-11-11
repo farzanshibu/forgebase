@@ -213,7 +213,12 @@ pub(crate) async fn bootstrap(ep: &crate::process::Endpoint, secrets: &RoleSecre
              ALTER ROLE {reader} SET search_path = {SEARCH_PATH};
              ALTER ROLE {reader} SET default_transaction_read_only = on;
              GRANT {OWNER_ROLE} TO {server};
-             GRANT {RLS_ROLE} TO {server};"
+             GRANT {RLS_ROLE} TO {server};
+             GRANT {RLS_ROLE} TO {reader} WITH INHERIT FALSE, SET TRUE;
+             DO $fb$ BEGIN
+               IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'forgebase_login') THEN CREATE ROLE forgebase_login NOLOGIN; END IF;
+             END $fb$;
+             ALTER ROLE forgebase_login NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
         ),
     )
     .await?;

@@ -238,6 +238,43 @@ pub struct SlowQuery {
     pub label: Option<QueryLabel>,
 }
 
+/// Who statements run as under PostgreSQL native row-level security
+/// (FB-152, rls-coverage §3.3): `SET LOCAL ROLE <role>` plus
+/// `set_config('forgebase.claims', <claims>, true)` in the same transaction.
+/// SQLite has no roles: every method taking one ignores it there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunAs {
+    /// Role switched to (`forgebase_rls`). Lower-case letters, digits and `_`.
+    pub role: String,
+    /// The caller's claims as JSON text (read back by `forgebase.claims()`).
+    pub claims: String,
+}
+
+impl RunAs {
+    /// Runs as `role` with `claims`.
+    pub fn new(role: impl Into<String>, claims: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            claims: claims.into(),
+        }
+    }
+
+    /// Refuses role names that are not plain identifiers.
+    pub fn check(&self) -> Result<(), DbError> {
+        let ok = !self.role.is_empty()
+            && self.role.len() <= 63
+            && self
+                .role
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if ok {
+            Ok(())
+        } else {
+            Err(DbError::Statement(format!("invalid role name {:?}", self.role)))
+        }
+    }
+}
+
 /// A storage engine: SQLite now, PostgreSQL later.
 pub trait Backend: Send + Sync + fmt::Debug {
     /// SQL rendering rules of this engine.
@@ -249,6 +286,22 @@ pub trait Backend: Send + Sync + fmt::Debug {
 
     /// Starts a write transaction on the single writer.
     fn begin(&self, mode: TxMode) -> BoxFuture<'_, Result<Box<dyn WriteTx>, DbError>>;
+
+    /// Starts a write transaction whose statements all run as `run_as`
+    /// (PostgreSQL: `SET LOCAL ROLE` + claims for the whole transaction).
+    /// Default (SQLite): [`Backend::begin`].
+    fn begin_as<'a>(&'a self, mode: TxMode, run_as: &'a RunAs) -> BoxFuture<'a, Result<Box<dyn WriteTx>, DbError>> {
+        let _ = run_as;
+        self.begin(mode)
+    }
+
+    /// [`Backend::fetch_all`] as `run_as` (PostgreSQL: the read-only
+    /// transaction switches role and sets the claims first). Default
+    /// (SQLite): [`Backend::fetch_all`].
+    fn fetch_all_as<'a>(&'a self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let _ = run_as;
+        self.fetch_all(stmt)
+    }
 
     /// The engine's query plan for a statement (not executed).
     fn explain<'a>(&'a self, stmt: &'a Statement) -> BoxFuture<'a, Result<Vec<PlanStep>, DbError>>;
@@ -279,6 +332,25 @@ pub trait WriteTx: Send {
     /// Runs a statement and returns its rows (reads inside the transaction,
     /// `RETURNING` clauses).
     fn fetch_all<'a>(&'a mut self, stmt: &'a Statement) -> BoxFuture<'a, Result<Rows, DbError>>;
+
+    /// [`WriteTx::execute`] with only this statement run as `run_as`
+    /// (PostgreSQL: role and claims switched before it and back after it).
+    /// Default (SQLite): [`WriteTx::execute`].
+    fn execute_as<'a>(
+        &'a mut self,
+        stmt: &'a Statement,
+        run_as: &'a RunAs,
+    ) -> BoxFuture<'a, Result<ExecResult, DbError>> {
+        let _ = run_as;
+        self.execute(stmt)
+    }
+
+    /// [`WriteTx::fetch_all`] with only this statement run as `run_as`.
+    /// Default (SQLite): [`WriteTx::fetch_all`].
+    fn fetch_all_as<'a>(&'a mut self, stmt: &'a Statement, run_as: &'a RunAs) -> BoxFuture<'a, Result<Rows, DbError>> {
+        let _ = run_as;
+        self.fetch_all(stmt)
+    }
 
     /// Commits. Durable when this returns `Ok` (ADR-0001 `synchronous`).
     fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), DbError>>;
