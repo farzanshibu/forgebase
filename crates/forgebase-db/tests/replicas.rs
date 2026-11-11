@@ -268,16 +268,33 @@ async fn a_recovery_conflict_is_retried_on_the_primary() {
     };
     exec(&handle, "INSERT INTO rt (id) VALUES (1)").await;
     c.wait_caught_up().await.unwrap();
-    // The replica read holds a lock on rt for 1.5 s; the primary's ALTER
-    // TABLE replays an exclusive lock, which cancels it at once (delay 0).
+    // The replica read takes a lock on rt and holds it in pg_sleep. The
+    // primary's ALTER TABLE replays an exclusive lock, which cancels the read
+    // at once (delay 0). The ALTER only starts once the standby reports the
+    // read running, so the conflict cannot be missed on a loaded machine; the
+    // sleep is long only so it outlasts that wait, the conflict ends it early.
     let slow = Statement::new(
-        "SELECT CASE WHEN pg_is_in_recovery() THEN 1 ELSE 0 END AS standby, pg_sleep(1.5)::text AS slept, \
+        "SELECT CASE WHEN pg_is_in_recovery() THEN 1 ELSE 0 END AS standby, pg_sleep(120)::text AS slept, \
          (SELECT count(*) FROM rt) AS n",
+        Vec::new(),
+    );
+    let probe = c.open_standby().await.unwrap();
+    let running = Statement::new(
+        "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' \
+         AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(120)%'",
         Vec::new(),
     );
     let read = async { handle.fetch_routed(&slow, &replica()).await };
     let alter = async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let rows = probe.fetch_all(&running).await.unwrap();
+            if rows.scalar().and_then(Value::as_i64).unwrap_or(0) > 0 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the replica read never started");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         exec(handle.database(), "ALTER TABLE rt ADD COLUMN extra integer").await;
     };
     let (rows, ()) = tokio::join!(read, alter);
