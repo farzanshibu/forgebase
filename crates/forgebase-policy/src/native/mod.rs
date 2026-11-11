@@ -18,6 +18,7 @@
 //!   with their claims, [`forgebase_data::Authorizer::native_session`]).
 
 mod claims;
+mod fanout;
 mod generate;
 mod render;
 
@@ -29,6 +30,7 @@ use forgebase_db::{BoxFuture, RunAs, Statement, TxMode, WriteTx};
 use forgebase_schema::Collection;
 
 pub use claims::{CLAIMS_VERSION, claims};
+pub use fanout::{LoginRole, copy_login_role, create_login_role, drop_login_role, login_role_verifier};
 pub use generate::{Generated, apply, drop_objects, drop_unused_relations, generate, has_policies};
 
 use crate::{PolicyError, PolicyService};
@@ -223,60 +225,35 @@ impl PolicyService {
         for (c, g) in &generated {
             self.inner.native.record(c, g);
         }
-        let current = self
-            .backend()
-            .fetch_all(&Statement::new(
-                "SELECT value FROM _forgebase_meta WHERE key = ?1",
-                vec![FINGERPRINT_KEY.into()],
-            ))
-            .await?;
-        if current.scalar().and_then(|v| v.as_str()) == Some(print.as_str()) {
-            return Ok(());
-        }
-        let mut tx = self.backend().begin(TxMode::Normal).await?;
-        let result = async {
-            for (_, g) in &generated {
-                apply(&mut *tx, &g.statements).await?;
-            }
-            tx.execute(&Statement::new(
-                "INSERT INTO _forgebase_meta (key, value, updated_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                vec![
-                    FINGERPRINT_KEY.into(),
-                    print.clone().into(),
-                    forgebase_core::now_rfc3339().into(),
-                ],
-            ))
-            .await?;
-            Ok::<(), forgebase_db::DbError>(())
-        }
-        .await;
-        match result {
-            Ok(()) => tx.commit().await?,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e.into());
+        // Control, then every shard (FB-173): each set keeps its own
+        // fingerprint and is brought up to date on its own.
+        self.sync_native_on(self.backend(), &generated, &print).await?;
+        for (set, db) in self.shard_databases() {
+            if let Err(e) = self.sync_native_on(&db, &generated, &print).await {
+                tracing::warn!(set = %set, error = %e, "could not bring native policies up to date on a shard");
+                return Err(e);
             }
         }
         Ok(())
     }
 
     /// Regenerates one collection inside `tx` with `policy` (a rule change
-    /// before the snapshot reload).
+    /// before the snapshot reload); returns the statements (FB-173 runs them
+    /// on every shard too).
     pub(crate) async fn regenerate_in(
         &self,
         tx: &mut dyn WriteTx,
         coll: &Collection,
         policy: Option<&crate::snapshot::CollectionPolicy>,
-    ) -> Result<(), PolicyError> {
+    ) -> Result<Vec<String>, PolicyError> {
         let Some(mode) = self.native_rls_mode() else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let catalog = self.data()?.list_collections(&AccessContext::system()).await?;
         let g = generate(coll, policy, &catalog, mode);
         apply(tx, &g.statements).await?;
         self.inner.native.record(coll, &g);
-        Ok(())
+        Ok(g.statements)
     }
 
     /// Who `ctx` runs as for `action` on `coll` (`enforce` mode only, and

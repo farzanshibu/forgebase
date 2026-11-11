@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use forgebase_db::{Statement, TxMode, Value, WriteTx};
+use forgebase_db::{Backend, Statement, TxMode, Value, WriteTx};
 use forgebase_query::{StatementKind, analyze_statement, split_statements};
 use forgebase_schema::{
     Collection, CollectionType, Field, FieldKind, Storage, generate_id, is_valid_id, now_timestamp,
@@ -217,10 +217,17 @@ impl DataService {
             let statements = std::mem::take(&mut log.statements);
             record_history(&mut *tx, Some(&def), "create", &statements, None, Some(&def), &ctx.actor()).await?;
             cat.insert(def.clone());
-            Ok(def.clone())
+            let all: Vec<Collection> = cat.all().into_iter().cloned().collect();
+            let step = ShardStep::Create {
+                def: def.clone(),
+                view_sql: view_sql.clone(),
+                cat: cat.clone(),
+                all,
+            };
+            Ok((def.clone(), step))
         }
         .await;
-        let created = finish(tx, result).await?;
+        let created = self.finish_schema(tx, result, "create collection").await?;
         self.reload_locked().await?;
         Ok(created)
     }
@@ -317,6 +324,7 @@ impl DataService {
             {
                 return Err(DataError::AlreadyExists(format!("collection or table {}", def.name)));
             }
+            let mut managed: Vec<(IndexDefinition, String)> = Vec::new();
             let mut log = DdlLog::new(&mut *tx);
             if let Some(native) = self.native_policies() {
                 native.before_change(&mut *log.tx, &old).await?;
@@ -330,7 +338,8 @@ impl DataService {
                 def.fields = infer_view_fields(log.tx, d, &def.name).await?;
                 restore_views(&mut log, &saved).await?;
             } else {
-                self.alter_table(&mut log, &cat, &old, &def).await?;
+                managed = managed_indexes(log.tx, &old.id).await?;
+                self.alter_table(&mut log, &cat, &old, &def, &managed, true).await?;
             }
             log.exec(
                 "UPDATE _forgebase_collections SET name = ?2, definition = ?3, version = ?4, updated_at = ?5 WHERE id = ?1",
@@ -352,21 +361,34 @@ impl DataService {
                 let all: Vec<Collection> = after.all().into_iter().cloned().collect();
                 native.after_change(&mut *tx, &def, &all).await?;
             }
-            Ok(def.clone())
+            let step = ShardStep::Update {
+                old: old.clone(),
+                def: def.clone(),
+                view_sql: view_sql.clone(),
+                cat: cat.clone(),
+                after,
+                managed,
+            };
+            Ok((def.clone(), step))
         }
         .await;
-        let updated = finish(tx, result).await?;
+        let updated = self.finish_schema(tx, result, "update collection").await?;
         self.reload_locked().await?;
         Ok(updated)
     }
 
-    /// Applies the table changes between `old` and `new`.
+    /// Applies the table changes between `old` and `new`. `managed` are the
+    /// collection's managed indexes (control's catalog rows); with
+    /// `catalog_rows` (control) their rows are rewritten too, without (a
+    /// shard, FB-173) only the DDL runs.
     async fn alter_table(
         &self,
         log: &mut DdlLog<'_>,
         cat: &CatalogSnapshot,
         old: &Collection,
         new: &Collection,
+        managed: &[(IndexDefinition, String)],
+        catalog_rows: bool,
     ) -> Result<(), DataError> {
         let d = self.inner.backend.dialect();
         let q = |s: &str| d.quote_ident(s);
@@ -413,7 +435,7 @@ impl DataService {
         // Managed indexes: follow renames, refuse indexes on dropped fields.
         let mut manual: Vec<IndexDefinition> = Vec::new();
         let mut old_auto: Vec<IndexDefinition> = Vec::new();
-        for (mut def, origin) in managed_indexes(log.tx, &old.id).await? {
+        for (mut def, origin) in managed.iter().cloned() {
             if origin == "auto" {
                 old_auto.push(def);
                 continue;
@@ -552,6 +574,9 @@ impl DataService {
         }
 
         // Catalog rows of managed indexes.
+        if !catalog_rows {
+            return Ok(());
+        }
         log.exec(
             "DELETE FROM _forgebase_indexes WHERE collection_id = ?1",
             vec![new.id.clone().into()],
@@ -717,9 +742,10 @@ impl DataService {
                     return Err(view_conflict(&v.name, &format!("it reads {}", coll.name)));
                 }
             }
-            for (ix, _) in managed_indexes(log.tx, &coll.id).await? {
+            let managed = managed_indexes(log.tx, &coll.id).await?;
+            for (ix, _) in &managed {
                 if ix.kind == IndexKind::Fulltext {
-                    for sql in drop_index_sql(d, &ix) {
+                    for sql in drop_index_sql(d, ix) {
                         log.run(sql).await?;
                     }
                 }
@@ -746,10 +772,15 @@ impl DataService {
             .await?;
             cat = CatalogSnapshot::load_tx(&mut *tx).await?;
             verify_collections(d, &mut *tx, &cat).await?;
-            Ok(())
+            let step = ShardStep::Delete {
+                coll: coll.clone(),
+                after: cat,
+                managed,
+            };
+            Ok(((), step))
         }
         .await;
-        finish(tx, result).await?;
+        self.finish_schema(tx, result, "delete collection").await?;
         self.reload_locked().await
     }
 
@@ -969,5 +1000,478 @@ fn pg_convert(col: &str, from: Storage, to: Storage) -> String {
         (Text, Json) => format!("{col}::jsonb"),
         (_, Json) => format!("to_jsonb({col})"),
         (Integer, Integer) | (Bool, Bool) => col.to_owned(),
+    }
+}
+
+/// The schema work a shard repeats after control did it (ADR-0029 §3.7,
+/// FB-173). Every node runs the DDL against its own catalog (constraint and
+/// view names are read from the node); catalog rows, history and index rows
+/// stay on control.
+#[derive(Debug)]
+pub(crate) enum ShardStep {
+    Create {
+        def: Collection,
+        view_sql: Option<String>,
+        cat: CatalogSnapshot,
+        all: Vec<Collection>,
+    },
+    Update {
+        old: Collection,
+        def: Collection,
+        view_sql: Option<String>,
+        cat: CatalogSnapshot,
+        after: CatalogSnapshot,
+        managed: Vec<(IndexDefinition, String)>,
+    },
+    Delete {
+        coll: Collection,
+        after: CatalogSnapshot,
+        managed: Vec<(IndexDefinition, String)>,
+    },
+}
+
+impl DataService {
+    /// Makes schema changes run on every set of `router` (FB-173): once it
+    /// has shards, create, update and delete collection commit on control
+    /// and on every shard as one two-phase transaction. Once; `false` if a
+    /// router was attached already. Without shards nothing changes.
+    pub fn attach_shards(&self, router: forgebase_db::DbRouter) -> bool {
+        self.inner.shards.set(router).is_ok()
+    }
+
+    /// The attached router (FB-173), if any.
+    pub fn shard_router(&self) -> Option<&forgebase_db::DbRouter> {
+        self.inner.shards.get()
+    }
+
+    /// The router, when it has shards to fan out to.
+    fn sharded(&self) -> Option<&forgebase_db::DbRouter> {
+        self.inner.shards.get().filter(|r| r.is_sharded())
+    }
+
+    /// Commits a schema change: on one set, `tx` as before; on a sharded
+    /// cluster, `tx` (control) and the same step on every shard as one
+    /// two-phase transaction. Any failure rolls back everywhere.
+    pub(crate) async fn finish_schema<T>(
+        &self,
+        tx: Box<dyn WriteTx>,
+        result: Result<(T, ShardStep), DataError>,
+        purpose: &str,
+    ) -> Result<T, DataError> {
+        let (value, step) = match result {
+            Ok(v) => v,
+            Err(e) => return finish(tx, Err(e)).await,
+        };
+        let Some(router) = self.sharded() else {
+            return finish(tx, Ok(value)).await;
+        };
+        use forgebase_db::twophase::{self, Participant, TwoPhase};
+        let control = Participant::from(&router.control());
+        let shards: Vec<Participant> = router
+            .sets()
+            .iter()
+            .filter(|h| !h.is_control())
+            .map(Participant::from)
+            .collect();
+        for p in std::iter::once(&control).chain(&shards) {
+            if let Err(e) = twophase::check_supported(p).await {
+                let _ = tx.rollback().await;
+                return Err(forgebase_db::DbError::from(e).into());
+            }
+        }
+        let mut two = TwoPhase::new(&control.db, purpose);
+        if let Err(e) = two.prepare(&control, tx).await {
+            two.abort().await;
+            return Err(e.into());
+        }
+        for p in &shards {
+            let mut stx = match p.db.begin(TxMode::SchemaChange).await {
+                Ok(t) => t,
+                Err(e) => {
+                    two.abort().await;
+                    return Err(e.into());
+                }
+            };
+            if let Err(e) = self.apply_on_shard(&mut *stx, &step).await {
+                tracing::warn!(set = %p.set_id, error = %e, "schema change failed on a shard; rolled back everywhere");
+                let _ = stx.rollback().await;
+                two.abort().await;
+                return Err(e);
+            }
+            if let Err(e) = two.prepare(p, stx).await {
+                two.abort().await;
+                return Err(e.into());
+            }
+        }
+        match two.commit().await {
+            Ok(_) => Ok(value),
+            Err(e) => Err(forgebase_db::DbError::from(e).into()),
+        }
+    }
+
+    /// Runs `step` in a shard's transaction.
+    async fn apply_on_shard(&self, tx: &mut dyn WriteTx, step: &ShardStep) -> Result<(), DataError> {
+        let d = self.inner.backend.dialect();
+        match step {
+            ShardStep::Create { def, view_sql, cat, all } => {
+                let mut log = DdlLog::new(tx);
+                if let Some(q) = view_sql {
+                    log.run(create_view_sql(d, &def.name, q)).await?;
+                } else {
+                    log.run(create_table_sql(d, &def.name, def, cat)?).await?;
+                    self.create_table_indexes(&mut log, cat, def, &[]).await?;
+                }
+                if let Some(native) = self.native_policies() {
+                    native.after_change(&mut *log.tx, def, all).await?;
+                }
+            }
+            ShardStep::Update {
+                old,
+                def,
+                view_sql,
+                cat,
+                after,
+                managed,
+            } => {
+                let mut log = DdlLog::new(tx);
+                if let Some(native) = self.native_policies() {
+                    native.before_change(&mut *log.tx, old).await?;
+                }
+                if let Some(q) = view_sql {
+                    let saved = drop_dependent_views(&mut log, d, &old.name, None).await?;
+                    log.run(format!("DROP VIEW {}", rel(d, &old.name))).await?;
+                    log.run(create_view_sql(d, &def.name, q)).await?;
+                    restore_views(&mut log, &saved).await?;
+                } else {
+                    self.alter_table(&mut log, cat, old, def, managed, false).await?;
+                }
+                verify_collections(d, &mut *log.tx, after).await?;
+                if let Some(native) = self.native_policies() {
+                    let all: Vec<Collection> = after.all().into_iter().cloned().collect();
+                    native.after_change(&mut *log.tx, def, &all).await?;
+                }
+            }
+            ShardStep::Delete { coll, after, managed } => {
+                let mut log = DdlLog::new(tx);
+                if let Some(native) = self.native_policies() {
+                    native.before_change(&mut *log.tx, coll).await?;
+                }
+                let readers = crate::catalog::pg::dependent_views(log.tx, &pg_regclass(d, &coll.name), None).await?;
+                if let Some(v) = readers.first() {
+                    return Err(view_conflict(&v.name, &format!("it reads {}", coll.name)));
+                }
+                for (ix, _) in managed {
+                    if ix.kind == IndexKind::Fulltext {
+                        for sql in drop_index_sql(d, ix) {
+                            log.run(sql).await?;
+                        }
+                    }
+                }
+                let kind = if coll.is_view() { "VIEW" } else { "TABLE" };
+                log.run(format!("DROP {kind} IF EXISTS {}", rel(d, &coll.name))).await?;
+                verify_collections(d, &mut *log.tx, after).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The tenant index, the automatic indexes and `manual` (managed
+    /// indexes from control's rows) of a new table.
+    async fn create_table_indexes(
+        &self,
+        log: &mut DdlLog<'_>,
+        cat: &CatalogSnapshot,
+        def: &Collection,
+        manual: &[IndexDefinition],
+    ) -> Result<(), DataError> {
+        let d = self.inner.backend.dialect();
+        if is_tenant_scoped(def) {
+            log.run(format!(
+                "CREATE INDEX {} ON {} ({})",
+                d.quote_ident(&tenant_index_name(d, def)),
+                rel(d, &def.name),
+                d.quote_ident(TENANT_COLUMN)
+            ))
+            .await?;
+        }
+        for ix in auto_indexes(d, def).iter().chain(manual) {
+            for sql in create_index_sql(d, cat, def, ix)? {
+                log.run(sql).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates every collection of control's catalog on `target`, a new,
+    /// migrated shard (ADR-0029 §3.7: "a new shard replays the catalog"):
+    /// tables (relations to other collections added once every table
+    /// exists, so cycles work), tenant, automatic and managed indexes,
+    /// views (definitions read back from control) and native policies, in
+    /// one transaction. PostgreSQL only.
+    pub async fn replay_catalog(&self, target: &forgebase_db::Database) -> Result<(), DataError> {
+        let d = self.inner.backend.dialect();
+        if !is_pg(d) || target.kind() != forgebase_db::BackendKind::Postgres {
+            return Err(DataError::invalid(
+                "postgres_required",
+                "only PostgreSQL databases can be shards",
+            ));
+        }
+        let _guard = self.inner.schema_lock.lock().await;
+        let cat = CatalogSnapshot::load(self.inner.backend.as_ref()).await?;
+        let mut all: Vec<Collection> = cat.all().into_iter().cloned().collect();
+        all.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
+        // Managed (manual) indexes and view definitions, from control.
+        let rows = self
+            .inner
+            .backend
+            .fetch_all(&Statement::raw(
+                "SELECT collection_id, definition, origin FROM _forgebase_indexes ORDER BY name",
+            ))
+            .await?;
+        let mut manual: HashMap<String, Vec<IndexDefinition>> = HashMap::new();
+        for r in &rows.rows {
+            if r.get(2).and_then(Value::as_str) == Some("manual") {
+                let def: IndexDefinition = serde_json::from_str(r.get(1).and_then(Value::as_str).unwrap_or("{}"))?;
+                manual
+                    .entry(r.first().and_then(Value::as_str).unwrap_or_default().to_owned())
+                    .or_default()
+                    .push(def);
+            }
+        }
+        let mut tx = target.begin(TxMode::SchemaChange).await?;
+        let result = async {
+            let mut log = DdlLog::new(&mut *tx);
+            let mut later: Vec<(&Collection, &Field)> = Vec::new();
+            for c in all.iter().filter(|c| !c.is_view()) {
+                // Relations to other collections come after every table exists.
+                let mut first = c.clone();
+                first.fields.retain(|f| match f.kind.relation_target() {
+                    Some(t) if t != c.id => false,
+                    _ => true,
+                });
+                later.extend(
+                    c.fields
+                        .iter()
+                        .filter(|f| f.kind.relation_target().is_some_and(|t| t != c.id))
+                        .map(|f| (c, f)),
+                );
+                log.run(create_table_sql(d, &c.name, &first, &cat)?).await?;
+            }
+            for (c, f) in later {
+                log.run(format!(
+                    "ALTER TABLE {} ADD COLUMN {}",
+                    rel(d, &c.name),
+                    column_sql(d, f, relation_table(f, c, &cat)?.as_deref())
+                ))
+                .await?;
+            }
+            for c in all.iter().filter(|c| !c.is_view()) {
+                let m = manual.get(&c.id).cloned().unwrap_or_default();
+                self.create_table_indexes(&mut log, &cat, c, &m).await?;
+            }
+            for c in all.iter().filter(|c| c.is_view()) {
+                let def = self
+                    .inner
+                    .backend
+                    .fetch_all(&Statement::new(
+                        "SELECT pg_catalog.pg_get_viewdef(CAST(?1 AS regclass), true)",
+                        vec![pg_regclass(d, &c.name).into()],
+                    ))
+                    .await?;
+                let q = def
+                    .scalar()
+                    .and_then(Value::as_str)
+                    .map(|s| s.trim().trim_end_matches(';').to_owned())
+                    .ok_or_else(|| DataError::Internal(format!("view {} has no definition on control", c.name)))?;
+                log.run(create_view_sql(d, &c.name, &q)).await?;
+            }
+            verify_collections(d, &mut *log.tx, &cat).await?;
+            if let Some(native) = self.native_policies() {
+                for c in &all {
+                    native.after_change(&mut *log.tx, c, &all).await?;
+                }
+            }
+            Ok(())
+        }
+        .await;
+        finish(tx, result).await
+    }
+}
+
+impl forgebase_db::shards::CatalogReplay for DataService {
+    fn replay<'a>(
+        &'a self,
+        target: &'a forgebase_db::Database,
+    ) -> forgebase_db::BoxFuture<'a, Result<(), forgebase_db::DbError>> {
+        Box::pin(async move {
+            self.replay_catalog(target).await.map_err(|e| match e {
+                DataError::Db(e) => e,
+                other => forgebase_db::DbError::Statement(other.to_string()),
+            })
+        })
+    }
+}
+
+/// Per-set state of an index built with the index manager on a sharded
+/// cluster (`_forgebase_index_builds`, FB-173).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IndexBuild {
+    /// The shard.
+    pub set_id: String,
+    /// `building`, `ready` or `failed`.
+    pub state: String,
+    /// Why it failed.
+    pub error: Option<String>,
+    /// RFC 3339 time of the last change.
+    pub updated_at: String,
+}
+
+/// `CREATE [UNIQUE] INDEX x …` → `… INDEX CONCURRENTLY IF NOT EXISTS x …`,
+/// `DROP INDEX x` → `DROP INDEX CONCURRENTLY IF EXISTS x`; anything else as is.
+pub(crate) fn concurrently(sql: &str) -> String {
+    let t = sql.trim_start();
+    for (prefix, with) in [
+        ("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "),
+        ("CREATE INDEX ", "CREATE INDEX CONCURRENTLY IF NOT EXISTS "),
+        ("DROP INDEX ", "DROP INDEX CONCURRENTLY IF EXISTS "),
+    ] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            let rest = rest
+                .strip_prefix("IF NOT EXISTS ")
+                .or_else(|| rest.strip_prefix("IF EXISTS "))
+                .unwrap_or(rest);
+            return format!("{with}{rest}");
+        }
+    }
+    sql.to_owned()
+}
+
+impl DataService {
+    async fn set_build_state(&self, index: &str, set: &str, state: &str, error: Option<&str>) -> Result<(), DataError> {
+        let mut tx = self.begin(TxMode::Normal).await?;
+        let r = tx
+            .execute(&Statement::new(
+                "INSERT INTO _forgebase_index_builds (index_name, set_id, state, error, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (index_name, set_id) DO UPDATE SET state = excluded.state, error = excluded.error,
+                 updated_at = excluded.updated_at",
+                vec![
+                    index.into(),
+                    set.into(),
+                    state.into(),
+                    error.map(str::to_owned).into(),
+                    forgebase_core::now_rfc3339().into(),
+                ],
+            ))
+            .await;
+        finish(tx, r.map(|_| ()).map_err(DataError::from)).await
+    }
+
+    /// After control committed a new managed index: builds it on every
+    /// shard with `CREATE INDEX CONCURRENTLY` (ADR-0029 §3.7), one shard at
+    /// a time, recording `building` → `ready` or `failed` per set. A
+    /// failure on a shard does not undo the index elsewhere; it is
+    /// reported by [`DataService::index_builds`]. No-op without shards.
+    pub(crate) async fn build_index_on_shards(&self, coll: &Collection, def: &IndexDefinition) {
+        let Some(router) = self.sharded() else {
+            return;
+        };
+        let d = self.inner.backend.dialect();
+        let cat = self.catalog();
+        let statements = match create_index_sql(d, &cat, coll, def) {
+            Ok(s) => s.iter().map(|s| concurrently(s)).collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::warn!(index = %def.name, error = %e, "cannot render the index for the shards");
+                return;
+            }
+        };
+        let shards: Vec<_> = router.sets().into_iter().filter(|h| !h.is_control()).collect();
+        for h in &shards {
+            if let Err(e) = self.set_build_state(&def.name, h.id(), "building", None).await {
+                tracing::warn!(index = %def.name, set = %h.id(), error = %e, "cannot record the index build");
+            }
+        }
+        for h in &shards {
+            let outcome = h.database().run_autocommit(&statements).await;
+            let (state, error) = match &outcome {
+                Ok(()) => ("ready", None),
+                Err(e) => {
+                    // A failed concurrent build leaves an invalid index behind.
+                    let drop = drop_index_sql(d, def).iter().map(|s| concurrently(s)).collect::<Vec<_>>();
+                    let _ = h.database().run_autocommit(&drop).await;
+                    tracing::warn!(index = %def.name, set = %h.id(), error = %e, "index build failed on a shard");
+                    ("failed", Some(e.to_string()))
+                }
+            };
+            if let Err(e) = self.set_build_state(&def.name, h.id(), state, error.as_deref()).await {
+                tracing::warn!(index = %def.name, set = %h.id(), error = %e, "cannot record the index build");
+            }
+        }
+    }
+
+    /// After control dropped a managed index: drops it on every shard
+    /// (`DROP INDEX CONCURRENTLY IF EXISTS`). Its build rows went with the
+    /// catalog row.
+    pub(crate) async fn drop_index_on_shards(&self, def: &IndexDefinition) {
+        let Some(router) = self.sharded() else {
+            return;
+        };
+        let d = self.inner.backend.dialect();
+        let statements: Vec<String> = drop_index_sql(d, def).iter().map(|s| concurrently(s)).collect();
+        for h in router.sets().into_iter().filter(|h| !h.is_control()) {
+            if let Err(e) = h.database().run_autocommit(&statements).await {
+                tracing::warn!(index = %def.name, set = %h.id(), error = %e, "could not drop the index on a shard");
+            }
+        }
+    }
+
+    /// Per-set build state of managed index `name` (empty unless it was
+    /// built on shards with the index manager).
+    pub async fn index_builds(&self, ctx: &AccessContext, name: &str) -> Result<Vec<IndexBuild>, DataError> {
+        let rows = self
+            .inner
+            .backend
+            .fetch_all(&Statement::new(
+                "SELECT i.collection_id, b.set_id, b.state, b.error, b.updated_at FROM _forgebase_indexes i
+                 LEFT JOIN _forgebase_index_builds b ON b.index_name = i.name WHERE i.name = ?1 ORDER BY b.set_id",
+                vec![name.into()],
+            ))
+            .await?;
+        let Some(first) = rows.rows.first() else {
+            return Err(DataError::IndexNotFound(name.to_owned()));
+        };
+        let coll = self.collection(first.first().and_then(Value::as_str).unwrap_or_default())?;
+        self.authorize(ctx, Action::ManageIndexes, Some(&coll))?;
+        Ok(rows
+            .rows
+            .iter()
+            .filter_map(|r| {
+                let text = |i: usize| r.get(i).and_then(Value::as_str).map(str::to_owned);
+                Some(IndexBuild {
+                    set_id: text(1)?,
+                    state: text(2).unwrap_or_default(),
+                    error: text(3),
+                    updated_at: text(4).unwrap_or_default(),
+                })
+            })
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod fanout_tests {
+    use super::concurrently;
+
+    #[test]
+    fn index_statements_become_concurrent() {
+        assert_eq!(
+            concurrently("CREATE UNIQUE INDEX \"i\" ON public.\"t\" (\"a\")"),
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS \"i\" ON public.\"t\" (\"a\")"
+        );
+        assert_eq!(
+            concurrently("CREATE INDEX IF NOT EXISTS i ON t (a)"),
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS i ON t (a)"
+        );
+        assert_eq!(concurrently("DROP INDEX public.\"i\""), "DROP INDEX CONCURRENTLY IF EXISTS public.\"i\"");
+        assert_eq!(concurrently("ANALYZE t"), "ANALYZE t");
     }
 }

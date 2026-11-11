@@ -47,7 +47,7 @@ pub use access::{
     SecretHasher, SubjectRef, TENANT_COLUMN, TENANT_SCOPED_OPTION, is_tenant_scoped, reads_tenant_data,
 };
 pub use changes::{ChangeHook, ChangeOp, GuardRejection, PendingWrite, RecordChange, RowSnapshot, WriteGuard};
-pub use collections::SchemaChange;
+pub use collections::{IndexBuild, SchemaChange};
 pub use error::DataError;
 pub use indexes::{
     IndexDefinition, IndexInfo, IndexKey, IndexKind, IndexOrigin, IndexRecommendation, IndexStats, QueryPlan,
@@ -94,6 +94,9 @@ struct Inner {
     /// Native row-level security generator (FB-152, PostgreSQL), installed
     /// once at startup.
     native: OnceLock<Arc<dyn native::NativePolicies>>,
+    /// The database sets (FB-173, ADR-0029 §3.7): once sharded, schema
+    /// changes run on control and every shard as one two-phase commit.
+    shards: OnceLock<forgebase_db::DbRouter>,
 }
 
 impl DataService {
@@ -119,6 +122,7 @@ impl DataService {
                 change_hook: OnceLock::new(),
                 write_guard: OnceLock::new(),
                 native: OnceLock::new(),
+                shards: OnceLock::new(),
             }),
         })
     }

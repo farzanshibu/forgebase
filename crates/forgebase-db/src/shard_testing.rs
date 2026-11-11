@@ -297,3 +297,132 @@ impl Drop for TestCluster {
             .status();
     }
 }
+
+/// Opens shards from a map of node name to database.
+#[derive(Debug, Default)]
+pub struct MapConnector(std::sync::Mutex<std::collections::HashMap<String, Database>>);
+
+impl MapConnector {
+    /// Node `name` is `db`.
+    pub fn insert(&self, name: &str, db: Database) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_owned(), db);
+    }
+}
+
+impl crate::router::SetConnector for MapConnector {
+    fn connect<'a>(
+        &'a self,
+        _set: &'a crate::topology::DbSet,
+        primary: &'a crate::topology::DbNode,
+    ) -> crate::BoxFuture<'a, Result<Database, crate::DbError>> {
+        Box::pin(async move {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&primary.name)
+                .cloned()
+                .ok_or_else(|| crate::DbError::Unavailable(format!("no database for node {}", primary.name)))
+        })
+    }
+}
+
+/// A control cluster with a router, and shard clusters added one by one.
+#[derive(Debug)]
+pub struct Sharded {
+    /// Control's cluster first, then one per shard.
+    pub clusters: Vec<TestCluster>,
+    /// Control's database (migrated).
+    pub control: Database,
+    /// The router over control and every active shard.
+    pub router: crate::DbRouter,
+    /// Its connector (node `<set name>-primary` → the shard's database).
+    pub connector: std::sync::Arc<MapConnector>,
+}
+
+impl Sharded {
+    /// Starts control (database `forgebase`, migrated) and opens a router.
+    /// `None` without an engine.
+    ///
+    /// # Panics
+    /// When the cluster or router cannot be set up.
+    pub async fn start() -> Option<Self> {
+        let cluster = TestCluster::start("control", &[]).await?;
+        let control = cluster.database("forgebase").await;
+        let connector = std::sync::Arc::new(MapConnector::default());
+        let router = crate::DbRouter::open(
+            control.clone(),
+            crate::RouterOptions {
+                connector: Some(connector.clone()),
+                ..crate::RouterOptions::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("open the router: {e}"));
+        Some(Self {
+            clusters: vec![cluster],
+            control,
+            router,
+            connector,
+        })
+    }
+
+    /// Starts a cluster for a new shard `name` with an empty, unmigrated
+    /// database, and records the set (`provisioning`) and its primary
+    /// (`ready`) on control. Activate it with
+    /// [`crate::shards::activate_shard`].
+    ///
+    /// # Panics
+    /// When the cluster cannot start or the rows cannot be written.
+    pub async fn provision(&mut self, name: &str) -> (crate::topology::DbSet, Database) {
+        self.provision_with(name, &[]).await
+    }
+
+    /// [`Sharded::provision`] with extra `postgresql.conf` settings.
+    ///
+    /// # Panics
+    /// Like [`Sharded::provision`].
+    pub async fn provision_with(&mut self, name: &str, extra: &[(&str, &str)]) -> (crate::topology::DbSet, Database) {
+        use crate::topology::{self, NewNode, NewSet, NodeKind, NodeOrigin, NodeRole, NodeState};
+        let cluster = TestCluster::start(name, extra)
+            .await
+            .unwrap_or_else(|| panic!("no engine for shard {name}"));
+        cluster.exec("postgres", "CREATE DATABASE forgebase").await;
+        let db = cluster.open("forgebase").await;
+        let set = topology::insert_set(
+            &self.control,
+            &NewSet {
+                name: name.into(),
+                weight: 1,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("insert set {name}: {e}"));
+        let node = format!("{name}-primary");
+        topology::insert_node(
+            &self.control,
+            &NewNode {
+                set_id: set.id.clone(),
+                name: node.clone(),
+                kind: NodeKind::External,
+                role: NodeRole::Primary,
+                url_sealed: Some("sealed".into()),
+                state: NodeState::Ready,
+                weight: 1,
+                origin: NodeOrigin::Api,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("insert node {node}: {e}"));
+        self.connector.insert(&node, db.clone());
+        self.clusters.push(cluster);
+        (set, db)
+    }
+
+    /// How a shard reaches control (`CREATE SUBSCRIPTION … CONNECTION`).
+    pub fn control_conninfo(&self) -> SecretString {
+        SecretString::new(self.clusters[0].conninfo("forgebase"))
+    }
+}

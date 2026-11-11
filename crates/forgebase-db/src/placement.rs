@@ -259,6 +259,8 @@ pub static TABLES: &[TablePlacement] = &[
     control("_forgebase_collection_policies"),
     control("_forgebase_collections"),
     control("_forgebase_indexes"),
+    // Per-set state of index builds (FB-173), read and written on control.
+    control("_forgebase_index_builds"),
     control("_forgebase_schema_history"),
     // Prior versions of collection records: with the record's tenant.
     TablePlacement {
