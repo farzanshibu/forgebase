@@ -210,3 +210,96 @@ fn sqlite_projects_have_no_db_dump_and_do_not_restore_a_postgres_backup() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("SQLite"));
 }
+
+#[test]
+fn cluster_flags_are_checked_and_sqlite_has_no_cluster_backup() {
+    let e = pg();
+    let e = e.as_deref();
+    let tmp = tempdir();
+    let app = init(tmp.path(), e);
+    // --source is a cluster option.
+    let out = run(&app, e, &["backup", "--source", "replica"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--source applies to --cluster"));
+    // A bad value is refused by the parser.
+    let out = run(&app, e, &["backup", "--cluster", "--source", "nearest"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("primary"));
+    if e.is_none() {
+        let dest = tmp.path().join("cl");
+        let out = run(&app, e, &["backup", "--cluster", dest.to_str().unwrap()]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("bundled engine"));
+        assert!(!dest.exists());
+    }
+}
+
+#[test]
+fn a_cluster_backup_of_a_single_set_verifies_and_restores_into_an_empty_project() {
+    let Some(engine) = pg() else {
+        eprintln!("skipped: PostgreSQL only");
+        return;
+    };
+    let e = Some(engine.as_path());
+    let tmp = tempdir();
+    let app = init(tmp.path(), e);
+    admin(&app, e, "first@example.com");
+
+    // One directory, one backup per set (here: control only), a combined manifest.
+    let dest = tmp.path().join("cl");
+    let made = json(&run(
+        &app,
+        e,
+        &[
+            "backup",
+            "--cluster",
+            dest.to_str().unwrap(),
+            "--source",
+            "replica",
+            "--json",
+        ],
+    ));
+    let m = &made["manifest"];
+    assert_eq!(m["source"], "replica");
+    assert_eq!(m["sets"].as_array().unwrap().len(), 1);
+    assert_eq!(m["sets"][0]["name"], "control");
+    assert_eq!(m["sets"][0]["role"], "primary", "no replica: the primary was used");
+    assert!(
+        m["sets"][0]["fallback"]
+            .as_str()
+            .unwrap()
+            .contains("no healthy replica")
+    );
+    assert!(m["topology_epoch"].is_u64());
+    assert!(dest.join("CLUSTER.json").is_file() && dest.join("control/MANIFEST.json").is_file());
+    let text = ok(&run(&app, e, &["backup", "verify", dest.to_str().unwrap()]));
+    assert!(text.contains("cluster backup is valid"), "{text}");
+    // Without a destination it goes under backups/clusters.
+    let text = ok(&run(&app, e, &["backup", "--cluster"]));
+    assert!(
+        text.contains("backups/clusters/") || text.contains("backups\\clusters\\"),
+        "{text}"
+    );
+
+    // A second, empty project takes it: marker, rows and the pending file come along.
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let key = app.join("forgebase-data/auth/master.key");
+    let text = ok(&run(
+        &other,
+        e,
+        &["restore", dest.to_str().unwrap(), "--master-key", key.to_str().unwrap()],
+    ));
+    assert!(
+        text.contains("restored cluster backup") && text.contains("control"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.join("forgebase-data/forgebase.backend")).unwrap(),
+        "postgres-managed\n"
+    );
+    assert!(other.join("forgebase-data/restore-pending.json").is_file());
+    assert!(other.join("forgebase-data/topology.json").is_file());
+    let list = ok(&run(&other, e, &["admin", "list"]));
+    assert!(list.contains("first@example.com"), "{list}");
+}

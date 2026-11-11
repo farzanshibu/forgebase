@@ -3534,6 +3534,162 @@ router and its `SetConnector` are built, so FB-168's managed replicas
 there from `replicas.rs`; `NodeConnector::connect_replica` already opens
 sealed-URL replicas read-only and refuses local ones.
 
+## Addendum: FB-179, backups and restore with replicas and shards (2026-11-11)
+
+FB-179 implements §2.9 in `forgebase-backup` (`src/topology.rs`, new). The
+single-set backup (`backup::create`, `restore::restore`) and the SQLite
+backup are unchanged; a cluster is a separate path that reuses their
+pieces (`create_member`, the journaled `swap`, `verify_with`).
+
+**Configuration and CLI.** `[backup] source = "primary" | "replica"`
+(`FORGEBASE_BACKUP_SOURCE`, default `primary`; `Config.backup.source`,
+`forgebase_core::BackupSource`). `forgebase backup --cluster [DEST]
+[--source primary|replica]` backs up every set; without `DEST` it writes
+`<data dir>/backups/clusters/<UTC time>`. `--source` without `--cluster` is
+refused. `forgebase backup verify` and `forgebase restore` recognise a
+cluster backup by its `CLUSTER.json`. A plain `backup` of a data directory
+with replicas still refuses, and the message now names `--cluster`.
+`--cluster` needs PostgreSQL on the bundled engine.
+
+**Layout.** One directory, one backup per set, and a combined manifest:
+
+```text
+<dest>/CLUSTER.json          format 1: id, created, source, topology_epoch, placements, topology, sets[], warnings[]
+<dest>/control/              a normal backup of the control set (database, storage, indexes, key, roles.secret)
+<dest>/sets/<number>/        database-only backup of each shard set
+```
+
+Every member is a complete single-set backup with its own `MANIFEST.json`
+(`pg_basebackup -Fp -X stream`, `backup_manifest`, SHA-256 per file), so
+`verify_with` and `pg_verifybackup` work on each. `CLUSTER.json` is written
+last, atomically, after the directory is renamed from `<dest>.partial`: a
+directory without it is unfinished. Per set it records the id, name, number,
+kind, directory, method, schema version, **the node copied from, its role,
+timeline, start and end LSN** (read from PostgreSQL's own `backup_manifest`
+`WAL-Ranges`), the data directory the set's primary keeps (where a restore
+puts it back), the fallback reason, the SHA-256 of the member's
+`MANIFEST.json`, and file and byte counts. At the top: **the placement epoch**
+(`topology_epoch`, the topology epoch when the backup started), a summary of
+the placements (count, highest epoch, rows per set) and the topology (sets
+and nodes) as it was. Warnings: a tenant move not finished at the start (its
+rows may sit on two sets), a topology change while the backup ran, a replica
+that was asked for and not used. The control set is copied first, shards by
+number; each set is consistent in itself (a tenant lives on one set), the
+cluster is not one snapshot, which the epoch and the warnings make visible.
+
+**Replica source.** With `source = "replica"` a set is copied from the first
+healthy replica the caller offers (`SetSource.replicas`; the CLI offers local
+replicas in state `streaming` that run on this host): `pg_basebackup` as
+`forgebase_replicator` over the standby's own socket (FB-168), so the backup
+does not load the primary. A set without one is copied from its primary
+and the entry says so (`fallback`, plus a manifest warning); a scheduled
+backup must not fail because a replica is down. The standby's data directory
+carries `standby.signal` and `primary_conninfo`; the restore removes them
+from the staged copy (after `pg_verifybackup` and the hashes were checked),
+so the restored set starts as a primary and ends recovery at the backup's end
+LSN on a new timeline.
+
+**Restore.** `restore_cluster` verifies the cluster (`verify_cluster`: the
+combined manifest, every member, the member manifests' hashes against
+`CLUSTER.json`, nothing unlisted), refuses a running cluster of the data
+directory (the primary, every replica, every shard node: `postmaster.pid`),
+existing data without `--force`, a different PostgreSQL major, a mismatching
+master key, and a SQLite directory. It stages every set under `tmp/`, then
+**one journaled swap** moves the previous data aside (`backups/pre-restore-*`,
+never deleted) and installs every set; a crash at any point is rolled back by
+the next restore or `restore --recover`, all sets together. Each set returns
+to the data directory it was backed up from (`postgres/data` or
+`postgres/nodes/<name>/data`). Every other cluster of the directory (the
+replicas, a former primary) is moved aside too: it follows a history that no
+longer exists. A set copied logically (an external server) is loaded with
+`pg_restore` into the server the caller names (`ClusterRestoreOptions.external`).
+The restore rewrites `topology.json` from the backup's topology with every
+replica `needs_rebuild`, and writes `restore-pending.json` in the data
+directory.
+
+**After the restore: `complete_restore`.** The restored control database
+must run for this part, so it is a separate call (idempotent):
+
+1. **schema reconcile**: `shards::migrate_sets` brings control, then every
+   shard, to the schema head (FB-173's ordering, `migrating` while a shard
+   runs, one pre-migration snapshot per set). A backup taken by an older
+   build, or a set that was behind, is migrated here; the report lists what
+   was applied and what was up to date;
+2. every replica row of the restored topology is marked `needs_rebuild`
+   (`update_node_state`, epoch + 1): the router does not use it;
+3. `topology.json` is rewritten from the control tables;
+4. a `ReplicaRebuilder` rebuilds the replicas: **managed** ones
+   (`kind = local`) are re-cloned by `rebuild_replica`, remote ones are
+   queued for their agent, external ones stay `needs_rebuild` until the
+   operator confirms (the report lists them as `manual`);
+5. `restore-pending.json` is removed only when nothing is left; a failed
+   rebuild is retried by calling it again.
+
+Prepared transactions of an unfinished two-phase schema change come back with
+the physical copy; FB-173's recovery at server start decides them from the
+journal, as after a crash.
+
+**Verify.** `verify_cluster` reports per set (`pg_verifybackup`, hashes) and
+for the whole: exactly one control set, unique ids and numbers, schema
+versions agreeing with the members, members' manifest hashes, nothing
+unlisted, `CLUSTER.json` present.
+
+**Not done here.** Point-in-time recovery stays FB-156 (v0.4). The REST
+snapshot API (`BackupService`, retention) still handles one set. A shard
+primary on another host is not copied by the CLI (it names the host to back
+it up on); the library takes any `PgSource` (an external one is dumped).
+Cross-set consistency of a tenant move in flight is reported, not repaired
+(FB-174's move recovery owns that).
+
+**Tests.** `forgebase-backup/tests/cluster.rs` (real clusters from
+`shard_testing::Sharded`: control + two shards, rows on each; one shard still
+at schema 0): the backup layout and the combined manifest (epoch, placements,
+node, timeline, LSNs, schema versions, data directories), verify, restore of
+every set into an empty directory and the rows read back from the restored
+clusters, rows written after the backup absent, schema reconcile of the
+shard that was behind, damaged and incomplete backups refused (corrupt file,
+swapped member manifests, stray directory, missing `CLUSTER.json`, missing
+set, bad data directory), restore refused onto a running cluster and onto
+existing data without `--force`, a restore interrupted mid-swap rolled back.
+`tests/cluster_replicas.rs` (bundled engine, a real local replica): backup
+from the replica (`standby.signal` in the copy, node `r1`), fallback to the
+primary with a warning, restore refused while a node runs, restore of a replica
+backup as a primary with the backup's rows (no rows written after it), the
+stale replica moved aside, `needs_rebuild` in `topology.json` and in the
+control row when the rebuild is asked for, the replica rebuilt and streaming
+with the rows. CLI `backup_pg_e2e` (both backends): flag checks, SQLite
+refusal, a cluster backup of the single control set, verify, restore into an
+empty project.
+
+**Breaking.** `Config` gains `backup: BackupSettings` (`ConfigOverrides` has
+`backup_source`; struct literals need `..Default::default()`). New public
+`forgebase_backup::topology` module. `restore::KeySource`, `resolve_key`,
+`swap`, `move_to` and `remove_any` are `pub(crate)` now. A new
+`restore-pending.json` and rewritten `topology.json` appear in the data
+directory after a cluster restore.
+
+**For the server (not done here, `crates/forgebase-server/src/lib.rs`).** After
+the control database is open and migrated, and the replicas service
+(`LocalReplicas`, FB-168) and the router exist:
+`topology::read_pending(&layout)`; if it is `Some`, call
+`topology::complete_restore(&control, &layout, CompleteOptions { router:
+Some(&router), backups_dir: Some(&layout.backups_dir()), rebuilder: Some(&rb) })`
+with a `ReplicaRebuilder` that calls
+`replication::service::rebuild_replica(control, &replicas, Some(&primary),
+&node.id)` for local nodes and returns `RebuildOutcome::Manual` for external
+ones. Without it a restored cluster starts (the replicas' rows say
+`needs_rebuild` only in `topology.json`, the control rows keep the backup's
+states until the health monitor sees the replicas fail) and the operator
+rebuilds through the API.
+**For FB-176 (dashboard).** Show the backup source (`[backup] source`), the
+combined manifest of a cluster backup (sets, node, role, timeline, end LSN,
+epoch, warnings) and, after a restore, the `needs_rebuild` replicas with a
+rebuild action (`rebuild_replica`); a `restore-pending.json` in the data
+directory means a restore is not finished.
+**For FB-178 (topology CI).** A chaos case: back up from a replica while a
+tenant moves (the manifest warns), restore, and check that every replica
+rebuilds and that `migrate_sets` finds every set at head.
+
 ## Addendum: FB-175, topology configuration and admin API (2026-11-11)
 
 Built as §4 describes, plus the server wiring FB-168 left (its addendum,
