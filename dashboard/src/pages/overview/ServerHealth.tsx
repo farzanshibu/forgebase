@@ -9,7 +9,8 @@
  * "collecting…" shows only while a reported series has fewer than two points.
  */
 import { useId, useRef } from "react";
-import { ApiError, getMetrics, getSystemInfo, jobStats, kvInfo, pointFrom, pushHistory, readingFrom, storageQuotaBytes, storageStats, vectorStats } from "../../api";
+import { useOptionalSession } from "../../auth/session";
+import { ApiError, getMetrics, getSystemInfo, jobStats, kvInfo, pointFrom, pushHistory, readingFrom, storageQuotaFor, storageStats, vectorStats } from "../../api";
 import type { JobStats, KvStats, Point, Reading, StorageStats, SystemInfo, VectorStats } from "../../api";
 import { formatBytes, formatUptime } from "../../format";
 import { usePolling } from "../../hooks";
@@ -180,13 +181,18 @@ export function ServerHealth() {
   const prev = useRef<Reading>(undefined);
   const lastPresent = useRef<Set<MetricKey>>(new Set());
   const history = useRef<Point[]>([]);
+  // An administrator has no entitlements of their own (the server answers 400 subject_required): ask for none.
+  // While impersonating, the caller is the user, so ask for theirs.
+  const session = useOptionalSession();
+  const quotaSubject = useRef<"caller" | null>("caller");
+  quotaSubject.current = session?.admin && !session.impersonation ? null : "caller";
 
   const { data, loading, updatedAt, refresh } = usePolling<Snapshot>(async (signal) => {
     const [reading, info, storage, vector, jobs, kv] = await Promise.all([
       part(async () => readingFrom(await getMetrics(signal), Date.now())),
       part(() => getSystemInfo(signal)),
       part(async () => {
-        const [stats, quota] = await Promise.all([storageStats(signal), storageQuotaBytes(signal).catch(() => null)]);
+        const [stats, quota] = await Promise.all([storageStats(signal), storageQuotaFor(quotaSubject.current, signal).catch(() => null)]);
         return { stats, quota };
       }),
       part(() => vectorStats(signal)),
