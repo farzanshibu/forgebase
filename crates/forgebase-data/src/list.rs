@@ -16,6 +16,9 @@ use crate::indexes::{IndexDefinition, IndexKind};
 use crate::records::{Record, project, row_to_record, sql_to_json};
 use crate::{AccessContext, Action, DEFAULT_PER_PAGE, DataError, DataService, MAX_PER_PAGE, Predicate};
 
+/// `pg_trgm.similarity_threshold` unless the server changed it (ADR-0029 §1.8).
+const DEFAULT_FUZZY_THRESHOLD: f64 = 0.3;
+
 /// A record listing request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -32,6 +35,16 @@ pub struct ListQuery {
     pub expand: Vec<String>,
     /// Full-text query (needs a full-text index on the collection).
     pub search: Option<String>,
+    /// Fuzzy text (PostgreSQL with `pg_trgm`): records whose `fuzzy_fields`
+    /// are trigram-similar to it, best match first unless `sort` says
+    /// otherwise (ADR-0029 §1.8).
+    pub fuzzy: Option<String>,
+    /// Fields `fuzzy` compares (each needs a trigram index); every field of
+    /// the collection's trigram indexes when empty.
+    pub fuzzy_fields: Vec<String>,
+    /// Minimum similarity, 0 to 1 (default: `pg_trgm.similarity_threshold`,
+    /// 0.3). Below that default the match is no longer index-assisted.
+    pub fuzzy_threshold: Option<f64>,
     /// 1-based page (offset pagination). Ignored with `cursor`.
     pub page: Option<u32>,
     /// Page size (default 30, at most 500).
@@ -135,8 +148,9 @@ fn json_to_value(j: &Json) -> Result<Value, DataError> {
 }
 
 /// Sanitises a full-text query: every word is quoted, so FTS5 operators in
-/// user input are matched as text. PostgreSQL's `websearch_to_tsquery`
-/// never fails on user input, so there the words are passed as they are.
+/// user input are matched as text. PostgreSQL's `plainto_tsquery` quotes and
+/// ANDs the words itself and never fails on user input, so there the words
+/// are passed as they are (ADR-0029 §1.8).
 fn fts_query(text: &str, flavor: SqlFlavor) -> Option<String> {
     let terms: Vec<String> = text
         .split_whitespace()
@@ -171,6 +185,7 @@ impl DataService {
         q: &ListQuery,
         pred: Option<&Predicate>,
         fulltext: Option<&IndexDefinition>,
+        trigram: &[IndexDefinition],
     ) -> Result<BuiltList, DataError> {
         let d = self.inner.backend.dialect();
         let cat = self.catalog();
@@ -216,7 +231,54 @@ impl DataService {
             wheres.push(crate::indexes::fulltext_match(d, &cat, coll, fts, "t", &p)?);
         }
 
+        // `fuzzy` (FB-166): trigram match on the chosen fields; ordered by the
+        // best similarity unless the request sorts.
+        let mut fuzzy_order: Option<String> = None;
+        if let Some(text) = q.fuzzy.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            let fields = self.fuzzy_columns(&compiler, &opts, coll, q, trigram)?;
+            let p = b.bind(text.to_owned());
+            let mut cols = Vec::with_capacity(fields.len());
+            for path in &fields {
+                cols.push(compiler.scalar(&mut b, coll, "t", &FieldPath::parse(path)?)?);
+            }
+            let sims: Vec<String> = cols.iter().map(|c| format!("similarity({c}, {p})")).collect();
+            let best = if sims.len() == 1 {
+                sims[0].clone()
+            } else {
+                format!("GREATEST({})", sims.join(", "))
+            };
+            let matches: Vec<String> = match q.fuzzy_threshold {
+                // `%` uses `pg_trgm.similarity_threshold` and the GIN index.
+                None => cols.iter().map(|c| format!("{c} % {p}")).collect(),
+                // An explicit threshold above the default stays index
+                // assisted (`%` narrows, the comparison refines); below it
+                // `%` would cut too much, so only the comparison runs.
+                Some(t) => {
+                    let t = b.bind(Value::Real(t));
+                    cols.iter()
+                        .zip(&sims)
+                        .map(|(c, sim)| {
+                            if q.fuzzy_threshold.is_some_and(|t| t >= DEFAULT_FUZZY_THRESHOLD) {
+                                format!("({c} % {p} AND {sim} >= {t})")
+                            } else {
+                                format!("{sim} >= {t}")
+                            }
+                        })
+                        .collect()
+                }
+            };
+            wheres.push(matches.join(" OR "));
+            fuzzy_order = Some(format!("({best})::float8"));
+        }
+
         let mut sort: Vec<SortKey> = parse_sort(q.sort.as_deref().unwrap_or(""))?;
+        let fuzzy_sort = fuzzy_order.is_some() && sort.is_empty();
+        if fuzzy_sort {
+            sort.push(SortKey {
+                path: FieldPath::parse("_fuzzy")?,
+                desc: true,
+            });
+        }
         let ends_with_id = sort
             .last()
             .is_some_and(|k| k.path.to_string().eq_ignore_ascii_case("id"));
@@ -228,7 +290,11 @@ impl DataService {
         }
         let exprs: Vec<String> = sort
             .iter()
-            .map(|k| compiler.scalar(&mut b, coll, "t", &k.path))
+            .enumerate()
+            .map(|(i, k)| match (&fuzzy_order, fuzzy_sort && i == 0) {
+                (Some(sim), true) => Ok(sim.clone()),
+                _ => compiler.scalar(&mut b, coll, "t", &k.path),
+            })
             .collect::<Result<_, _>>()?;
         let sort_sig = sort
             .iter()
@@ -363,7 +429,8 @@ impl DataService {
     ) -> Result<ListResult, DataError> {
         let (coll, pred) = self.resolve(ctx, Action::List, collection)?;
         let fts = self.fulltext_index(&coll, q).await?;
-        let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref())?;
+        let trigram = self.trigram_indexes(&coll, q).await?;
+        let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref(), &trigram)?;
         let rows = self
             .read_rows(ctx, Action::List, &coll, &built.select, built.follows_relations)
             .await?;
@@ -433,7 +500,7 @@ impl DataService {
             params,
             ..ListQuery::default()
         };
-        let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None)?;
+        let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None, &[])?;
         let rows = self
             .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
             .await?;
@@ -583,6 +650,98 @@ impl DataService {
                 m
             })
             .collect())
+    }
+
+    /// The fields `fuzzy` compares: `fuzzy_fields` (each must be a key of a
+    /// trigram index and readable by the caller) or every key of the
+    /// collection's trigram indexes.
+    fn fuzzy_columns(
+        &self,
+        compiler: &Compiler<'_>,
+        opts: &forgebase_query::CompileOptions,
+        coll: &Collection,
+        q: &ListQuery,
+        trigram: &[IndexDefinition],
+    ) -> Result<Vec<String>, DataError> {
+        let _ = compiler;
+        let indexed: Vec<&str> = trigram
+            .iter()
+            .flat_map(|ix| ix.keys.iter().map(|k| k.path.as_str()))
+            .collect();
+        let refuse = || {
+            DataError::invalid(
+                "no_trigram_index",
+                format!("{} has no trigram index you can search", coll.name),
+            )
+        };
+        let wanted: Vec<String> = if q.fuzzy_fields.is_empty() {
+            let mut all: Vec<String> = indexed.iter().map(|s| (*s).to_owned()).collect();
+            all.dedup();
+            all
+        } else {
+            q.fuzzy_fields.clone()
+        };
+        if wanted.is_empty() {
+            return Err(refuse());
+        }
+        if q.fuzzy_threshold.is_some_and(|t| !(0.0..=1.0).contains(&t)) {
+            return Err(DataError::invalid(
+                "invalid_fuzzy_threshold",
+                "fuzzy_threshold is a number from 0 to 1",
+            ));
+        }
+        let mut out: Vec<String> = Vec::new();
+        for f in wanted {
+            let f = f.trim().to_owned();
+            // Masked fields are refused as for `search`, whether or not they
+            // are indexed: nothing tells the caller what they hold.
+            let root = f.split(['.', ':']).next().unwrap_or_default();
+            let hidden = match (&opts.field_guard, coll.field(root)) {
+                (Some(guard), Some(field)) => !guard.readable(coll, field),
+                _ => false,
+            };
+            if hidden || !indexed.contains(&f.as_str()) {
+                return Err(refuse());
+            }
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The trigram indexes of a collection, when the query is fuzzy; refuses
+    /// the query (`400 fuzzy_unsupported`) where `pg_trgm` is not in use.
+    pub(crate) async fn trigram_indexes(
+        &self,
+        coll: &Collection,
+        q: &ListQuery,
+    ) -> Result<Vec<IndexDefinition>, DataError> {
+        if q.fuzzy.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            return Ok(Vec::new());
+        }
+        if !self.inner.backend.feature_active(forgebase_db::Feature::Trigram) {
+            return Err(DataError::invalid(
+                "fuzzy_unsupported",
+                "fuzzy search needs PostgreSQL with the pg_trgm extension",
+            ));
+        }
+        let rows = self
+            .inner
+            .backend
+            .fetch_all(&Statement::new(
+                "SELECT definition FROM _forgebase_indexes WHERE collection_id = ?1 AND kind = 'btree' ORDER BY name",
+                vec![coll.id.clone().into()],
+            ))
+            .await?;
+        let mut out = Vec::new();
+        for text in rows.rows.iter().filter_map(|r| r.first().and_then(Value::as_str)) {
+            let def: IndexDefinition = serde_json::from_str(text)?;
+            if def.kind == IndexKind::Trigram {
+                out.push(def);
+            }
+        }
+        Ok(out)
     }
 
     /// The full-text index of a collection, when the query searches.

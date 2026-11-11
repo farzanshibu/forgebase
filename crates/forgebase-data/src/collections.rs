@@ -513,7 +513,7 @@ impl DataService {
             }
             for ix in &manual {
                 let stmts = match ix.kind {
-                    IndexKind::Btree => create_index_sql(d, &new_cat, new, ix)?,
+                    IndexKind::Btree | IndexKind::Trigram => create_index_sql(d, &new_cat, new, ix)?,
                     IndexKind::Fulltext => fts_trigger_sql(d, &new_cat, new, ix)?,
                 };
                 for sql in stmts {
