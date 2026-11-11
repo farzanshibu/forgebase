@@ -575,3 +575,80 @@ async fn to_postgres_refuses_a_stale_or_inconsistent_source() {
     assert!(err.to_string().contains("foreign keys"), "{err}");
     src.close().await;
 }
+
+async fn installed(db: &Database, ext: &str) -> bool {
+    db.fetch_all(&Statement::new(
+        "SELECT count(*) FROM pg_extension WHERE extname = ?1",
+        vec![ext.into()],
+    ))
+    .await
+    .unwrap()
+    .scalar()
+    .and_then(Value::as_i64)
+    .unwrap_or(0)
+        > 0
+}
+
+/// A project born on PostgreSQL with the server's extension setup (FB-161):
+/// vectors in pgvector and deliveries in pgmq where the engine has them.
+/// `--to sqlite` is refused while the data sits in an extension, and goes
+/// through once `prepare_portable` has moved it to portable rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn to_sqlite_brings_extension_data_to_portable_rows() {
+    let Some(pg) = forgebase_db::testing::postgres_test_db().await else {
+        eprintln!("skipped: no PostgreSQL engine configured");
+        return;
+    };
+    pg.setup_extensions(&forgebase_db::ExtensionSetup::default())
+        .await
+        .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let (src_dir, back_dir) = (tmp.path().join("pg"), tmp.path().join("back"));
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&back_dir).unwrap();
+    fixtures(&pg, &src_dir).await;
+    let (pgvector, pgmq) = (installed(&pg, "vector").await, installed(&pg, "pgmq").await);
+    eprintln!("pgvector {pgvector}, pgmq {pgmq}");
+
+    let (back, back_path) = sqlite_db(&back_dir).await;
+    let source = Endpoint {
+        db: &pg,
+        conn: &Conn::Postgres(pg_url(&pg)),
+    };
+    let target = Endpoint {
+        db: &back,
+        conn: &Conn::Sqlite(back_path.clone()),
+    };
+    if pgvector || pgmq {
+        let err = convert(source, target, &|_| {}).await.unwrap_err();
+        let ConvertError::Refused(problems) = &err else {
+            panic!("{err}");
+        };
+        let text = problems.join("\n");
+        if pgvector {
+            assert!(text.contains("vector.convert"), "{text}");
+        }
+        if pgmq {
+            assert!(text.contains("queue.convert"), "{text}");
+        }
+    }
+
+    let prepared = forgebase_convert::prepare_portable(&pg, &src_dir.join("indexes"))
+        .await
+        .unwrap();
+    assert_eq!(prepared.vectors.is_some(), pgvector, "{prepared:?}");
+    assert_eq!(prepared.deliveries.is_some(), pgmq, "{prepared:?}");
+
+    let report = convert(source, target, &|_| {}).await.unwrap();
+    assert_eq!(report.from, "postgres");
+    assert_eq!(report.derived_rows, 10);
+    let meta = back
+        .fetch_all(&Statement::raw(
+            "SELECT count(*) FROM _forgebase_meta WHERE key LIKE 'ext.%'",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(meta.scalar().and_then(Value::as_i64), Some(0), "extension pins are not copied");
+    check_services(&back, &back_dir).await;
+    back.close().await;
+}
