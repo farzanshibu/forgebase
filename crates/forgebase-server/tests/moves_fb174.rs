@@ -151,10 +151,10 @@ mod sharded {
                 let WsMessage::Text(t) = m else { continue };
                 let j: Json = serde_json::from_str(t.as_str()).unwrap();
                 let ty = j["type"].as_str().unwrap_or("").to_owned();
-                if ty == "subscribed" {
-                    if let Some(tx) = tx.take() {
-                        let _ = tx.send(());
-                    }
+                if ty == "subscribed"
+                    && let Some(tx) = tx.take()
+                {
+                    let _ = tx.send(());
                 }
                 if ty == "record.created" {
                     let id = j["data"]["id"]

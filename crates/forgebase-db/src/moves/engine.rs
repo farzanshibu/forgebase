@@ -105,7 +105,7 @@ pub async fn begin(
     }
     if let Some(busy) = open
         .iter()
-        .find(|m| m.tenant != tenant && m.from_set == from && m.to_set == req.to)
+        .find(|m| m.tenant != tenant && m.from_set == from && m.to_set == req.to && !m.is_switched())
     {
         return Err(MoveError::InProgress(format!(
             "another move ({}) runs from {from} to {}; one move at a time per pair of sets",

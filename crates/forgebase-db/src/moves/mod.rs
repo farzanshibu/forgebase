@@ -553,9 +553,11 @@ mod tests {
 
     #[test]
     fn details_round_trip() {
-        let mut d = MoveDetail::default();
-        d.freeze_ms = Some(42);
-        d.rows.insert("a".into(), 3);
+        let d = MoveDetail {
+            freeze_ms: Some(42),
+            rows: [("a".to_owned(), 3)].into_iter().collect(),
+            ..MoveDetail::default()
+        };
         let s = serde_json::to_string(&d).unwrap();
         let back: MoveDetail = serde_json::from_str(&s).unwrap();
         assert_eq!(back, d);

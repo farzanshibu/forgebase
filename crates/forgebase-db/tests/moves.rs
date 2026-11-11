@@ -586,14 +586,13 @@ async fn a_tenant_moves_under_load_with_no_lost_or_duplicated_row_then_cleans_up
     );
     // Replication objects are gone; the source keeps the rows until the cleanup.
     assert_eq!(publication_and_slot(&s.control).await, (0, 0));
-    assert_eq!(
+    assert!(
         int(
             &s.control,
             &format!("SELECT count(*) FROM public.posts WHERE _tenant = '{A}'")
         )
         .await
-            > 0,
-        true
+            > 0
     );
     assert!(moves::cleanup_due(&done, &options()).is_some());
 
