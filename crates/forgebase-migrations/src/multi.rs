@@ -310,7 +310,7 @@ mod tests {
                     pending: if self.pending {
                         vec![PendingMigration {
                             version: 2,
-                            name: "next".into(),
+                            name: "next",
                         }]
                     } else {
                         Vec::new()

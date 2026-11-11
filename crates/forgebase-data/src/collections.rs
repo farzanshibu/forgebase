@@ -1006,8 +1006,10 @@ fn pg_convert(col: &str, from: Storage, to: Storage) -> String {
 /// The schema work a shard repeats after control did it (ADR-0029 §3.7,
 /// FB-173). Every node runs the DDL against its own catalog (constraint and
 /// view names are read from the node); catalog rows, history and index rows
-/// stay on control.
+/// stay on control. One short-lived value per schema change, so the size
+/// gap between variants costs nothing worth a box.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ShardStep {
     Create {
         def: Collection,
@@ -1250,10 +1252,9 @@ impl DataService {
             for c in all.iter().filter(|c| !c.is_view()) {
                 // Relations to other collections come after every table exists.
                 let mut first = c.clone();
-                first.fields.retain(|f| match f.kind.relation_target() {
-                    Some(t) if t != c.id => false,
-                    _ => true,
-                });
+                first
+                    .fields
+                    .retain(|f| !matches!(f.kind.relation_target(), Some(t) if t != c.id));
                 later.extend(
                     c.fields
                         .iter()
