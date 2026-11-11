@@ -2571,7 +2571,13 @@ as `patches/0004-pr2581-no-catalog-read-outside-transaction.patch`
 (SHA-256 `de29e981…`, upstream commit verbatim; re-reviewed: the code diff is
 byte-identical to the PR head `4556939f` and to the merged commit, it returns
 false outside a live transaction and caches nothing), with its
-`[[sources.age.patches]]` table in `engine.lock`.
+`[[sources.age.patches]]` table in `engine.lock`. #2581 carried, human decision 2026-11-11.
+Failing before, proven: the new smoke check (session stopped while the
+invalidation queue overflows, then `ROLLBACK`) on the unpatched 1.8.0 engine
+fails with `ERROR: ResourceOwnerEnlarge called after release started`; with
+0004 it passes and 99 concurrent connections take every free PGPROC without a
+`failed to re-find shared lock object`. The aarch64-apple-darwin r1 archive
+was rebuilt and re-pinned (SHA-256 `907d08d9…`, 7,857,923 bytes, +73 bytes).
 
 **Build.** PGXS through the FB-130 hook. AGE's grammar is a GLR grammar
 built with `-Werror -Wno-error=conflicts-sr`, which needs GNU Bison 3; macOS
