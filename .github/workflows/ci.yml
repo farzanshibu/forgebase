@@ -59,7 +59,7 @@ jobs:
       # The functions crate's JavaScript tests time out when every test binary
       # and every test thread runs at once (FB-147): it runs on its own with two
       # test threads, everything else in parallel.
-      - run: cargo test --workspace --locked --exclude forgebase-functions
+      - run: cargo test --workspace --locked --no-fail-fast --exclude forgebase-functions
       - run: cargo test -p forgebase-functions --locked -- --test-threads=2
 
   # ---------------------------------------------------------------------------
@@ -185,12 +185,13 @@ jobs:
       # built binary (docs/qa.md), the binary running its managed PostgreSQL.
       - name: Black-box suites (tests/integration) on PostgreSQL
         if: matrix.scope != 'portable'
-        run: cargo test -p forgebase-cli --locked -- --test-threads=2
+        run: cargo test -p forgebase-cli --locked --no-fail-fast -- --test-threads=2
 
       - name: Every other crate on PostgreSQL
-        if: matrix.scope == 'workspace'
+        # Runs even when the black-box step failed, so one CI run lists every failure.
+        if: ${{ !cancelled() && matrix.scope == 'workspace' }}
         run: |
-          cargo test --workspace --locked --exclude forgebase-cli --exclude forgebase-functions
+          cargo test --workspace --locked --no-fail-fast --exclude forgebase-cli --exclude forgebase-functions
           # JavaScript tests time out under full parallel load (FB-147).
           cargo test -p forgebase-functions --locked -- --test-threads=2
 
@@ -199,7 +200,7 @@ jobs:
       - name: Portable run (every accelerator off)
         if: matrix.scope == 'portable'
         run: |
-          cargo test --workspace --locked --exclude forgebase-db --exclude forgebase-pgengine --exclude forgebase-functions
+          cargo test --workspace --locked --no-fail-fast --exclude forgebase-db --exclude forgebase-pgengine --exclude forgebase-functions
           cargo test -p forgebase-functions --locked -- --test-threads=2
 
   js-engine:

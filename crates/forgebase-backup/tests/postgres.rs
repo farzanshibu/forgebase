@@ -354,14 +354,14 @@ async fn restore_refuses_what_it_cannot_take() {
     .await
     .unwrap_err();
     assert!(
-        err.to_string().contains("FB-179") && err.to_string().contains("backup --cluster"),
+        err.to_string().contains("more than one PostgreSQL cluster") && err.to_string().contains("backup --cluster"),
         "{err}"
     );
     std::fs::create_dir_all(src.root.join("postgres/nodes/shard1")).unwrap();
     let err = backup::create(&src.inst.db, &src.inst.layout, &tmp.path().join("bk2"), src.opts())
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("FB-179"), "{err}");
+    assert!(err.to_string().contains("backup --cluster"), "{err}");
     std::fs::remove_dir_all(src.root.join("postgres/nodes")).unwrap();
 
     // A PostgreSQL database without the engine's tools cannot be backed up.
