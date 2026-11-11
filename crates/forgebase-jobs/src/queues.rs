@@ -298,12 +298,7 @@ async fn upsert(tx: &mut dyn WriteTx, scope: &Scope, ctx: &AccessContext, key: &
     tx.execute(&Statement::new(
         "INSERT INTO _forgebase_job_queues (name, tenant, created_by, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?4)",
-        vec![
-            key.into(),
-            ctx.tenant.clone().into(),
-            ctx.actor().into(),
-            now.into(),
-        ],
+        vec![key.into(), ctx.tenant.clone().into(), ctx.actor().into(), now.into()],
     ))
     .await?;
     Ok(())

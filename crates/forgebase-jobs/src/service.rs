@@ -2425,7 +2425,7 @@ async fn release_tx(tx: &mut dyn WriteTx, id: &str, lease: &str, now: i64, fx: &
         ("queued", "released")
     };
     tx.execute(&Statement::new(
-        "UPDATE _forgebase_jobs SET status = ?2, attempts = MAX(attempts - 1, 0), run_at = ?3, lease_id = NULL, \
+        "UPDATE _forgebase_jobs SET status = ?2, attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, run_at = ?3, lease_id = NULL, \
          visibility_until = NULL, deadline_at = NULL, finished_at = CASE WHEN ?2 = 'queued' THEN NULL ELSE CAST(?3 AS BIGINT) END, \
          updated_at = ?3 WHERE id = ?1",
         vec![id.into(), status.into(), now.into()],

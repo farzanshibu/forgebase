@@ -15,9 +15,9 @@ use forgebase_data::{AccessContext, Action, ResourceKind, ResourceOp};
 use forgebase_db::{Statement, Value, WriteTx};
 use forgebase_jobs::backoff_ms;
 
-use crate::history;
 use crate::access::bare;
 use crate::error::QueueError;
+use crate::history;
 use crate::model::{
     AckResult, MAX_ACK_DEADLINE_MS, MAX_ACK_IDS, MAX_PULL, NewSnapshot, PullRequest, ReceivedMessage, SeekRequest,
     SeekResult, Snapshot, check_name, iso, parse_time,
@@ -60,14 +60,30 @@ impl QueueService {
     /// must not contain a sort of the backlog).
     #[doc(hidden)]
     pub async fn explain_claim_plan(&self, ordering: bool) -> Result<Vec<String>> {
-        let rows = self
-            .backend()
+        let params = || vec!["s".into(), 0_i64.into(), 10_i64.into()];
+        if self.backend().dialect().name() != "postgres" {
+            let rows = self
+                .backend()
+                .fetch_all(&Statement::new(
+                    format!("EXPLAIN QUERY PLAN {}", ready_claim_sql(ordering)),
+                    params(),
+                ))
+                .await?;
+            return Ok(Row::all(&rows).map(|r| r.text("detail")).collect());
+        }
+        // PostgreSQL: an empty test table is cheapest to scan, so sequential
+        // scans are switched off to show whether the index serves the order
+        // (a `Sort` step then means it cannot).
+        let mut tx = self.begin().await?;
+        tx.execute(&Statement::raw("SET LOCAL enable_seqscan = off")).await?;
+        let rows = tx
             .fetch_all(&Statement::new(
-                format!("EXPLAIN QUERY PLAN {}", ready_claim_sql(ordering)),
-                vec!["s".into(), 0_i64.into(), 10_i64.into()],
+                format!("EXPLAIN (COSTS OFF) {}", ready_claim_sql(ordering)),
+                params(),
             ))
-            .await?;
-        Ok(Row::all(&rows).map(|r| r.text("detail")).collect())
+            .await;
+        tx.rollback().await?;
+        Ok(Row::all(&rows?).map(|r| r.text("QUERY PLAN")).collect())
     }
 
     /// Reads up to `MATERIALIZE_MAX` new topic messages into delivery rows of

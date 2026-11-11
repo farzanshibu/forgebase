@@ -162,7 +162,12 @@ async fn queue_settings_belong_to_a_tenant_and_govern_only_its_jobs() {
     assert!(seen.is_empty(), "bob sees no queue of another tenant: {seen:?}");
     let r = call(&env, &bob, Some(&tb), "GET", "/api/v1/jobs/queues/emails", None).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json()["configured"], false, "bob's emails queue is his own: {}", r.text());
+    assert_eq!(
+        r.json()["configured"],
+        false,
+        "bob's emails queue is his own: {}",
+        r.text()
+    );
     assert_eq!(r.json()["queued"], 0, "{}", r.text());
 
     // Bob's queue of the same name is not paused by Alice: his job is claimed,
@@ -218,7 +223,11 @@ async fn queue_settings_belong_to_a_tenant_and_govern_only_its_jobs() {
     assert_eq!(r.status, 200, "{}", r.text());
     let a = r.json();
     assert_eq!(
-        (a["configured"].clone(), a["paused"].clone(), a["default_priority"].clone()),
+        (
+            a["configured"].clone(),
+            a["paused"].clone(),
+            a["default_priority"].clone()
+        ),
         (json!(true), json!(true), json!(7)),
         "alice's settings are untouched: {a}"
     );

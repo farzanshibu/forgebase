@@ -44,15 +44,23 @@ fn only_pg_cron_fire_schedule_and_replication_apply_may_write_besides_forgebase(
         "logical replication parallel worker",
         "logical replication tablesync worker",
     ] {
-        assert_eq!(classify(t, "", "") , Writer::ReplicationApply, "{t}");
+        assert_eq!(classify(t, "", ""), Writer::ReplicationApply, "{t}");
     }
     assert!(classify("autovacuum worker", "", "autovacuum: ANALYZE x").allowed());
     // pg_cron running anything but the fire function, or a second client.
     for (t, app, q) in [
         ("pg_cron", "", "UPDATE _forgebase_jobs SET status = 'dead'"),
-        ("pg_cron", "", "SELECT forgebase.fire_schedule('a'); DELETE FROM _forgebase_jobs"),
+        (
+            "pg_cron",
+            "",
+            "SELECT forgebase.fire_schedule('a'); DELETE FROM _forgebase_jobs",
+        ),
         ("client backend", "pg_cron", "SELECT 1"),
-        ("client backend", "forgebase", "INSERT INTO _forgebase_queue_messages ..."),
+        (
+            "client backend",
+            "forgebase",
+            "INSERT INTO _forgebase_queue_messages ...",
+        ),
         ("client backend", "psql", fire),
         ("background worker", "", ""),
     ] {
