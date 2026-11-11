@@ -169,7 +169,12 @@ fn a_physical_backup_restores_into_an_empty_project_and_db_dump_writes_a_portabl
     // A second, empty project takes the backup: engine, marker and rows come along.
     let other = tmp.path().join("other");
     std::fs::create_dir_all(&other).unwrap();
-    let text = ok(&run(&other, e, &["restore", dest.to_str().unwrap()]));
+    let key = app.join("forgebase-data/auth/master.key");
+    let text = ok(&run(
+        &other,
+        e,
+        &["restore", dest.to_str().unwrap(), "--master-key", key.to_str().unwrap()],
+    ));
     assert!(text.contains("postgres") && text.contains("WAL"), "{text}");
     assert_eq!(
         std::fs::read_to_string(other.join("forgebase-data/forgebase.backend")).unwrap(),
