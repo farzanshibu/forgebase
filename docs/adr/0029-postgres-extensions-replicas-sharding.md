@@ -3562,9 +3562,14 @@ cypher_rules_unsupported` (the only use of that code). AGE's
 inside variable-length and shortest-path walks: a hidden node blocks a walk.
 Policies are `TO PUBLIC`: the server and reader roles bypass RLS (trusted,
 privileged callers), `forgebase_rls` and direct logins see what the claims
-allow (direct logins have none: nothing). Measured (aarch64 macOS, test
-engine, 5 000 nodes, `[*1..12]`): printed by
-`rules_cost_of_variable_length_traversals_is_measured`; see the done note.
+allow (direct logins have none: nothing). **Cost, measured** (aarch64
+macOS, test engine, 5 000 nodes and 5 000 edges, `MATCH ({__id:
+'n1'})-[*1..12]->(b) RETURN count(DISTINCT b)`, mean of 5): 3.0 ms without
+rules, 48.7 ms with label rules (`rules_cost_of_variable_length_traversals_
+is_measured` prints it). The difference is AGE rebuilding its traversal
+cache through SPI on every statement once a label table has RLS (FB-160
+note), so it grows with the tenant's graph, not with the walk; plain `MATCH`
+patterns are unaffected beyond the policy itself.
 
 **Derived graph.** Names, catch-all labels and properties as §1.5, plus
 `__source` / `__target` on edges (so results carry ForgeBase ids without a
@@ -3580,7 +3585,7 @@ prepended to the transaction's `search_path` (restored afterwards).
 `setup_extensions` when AGE is in use): `_forgebase_graph_age_ids (tenant,
 kind, id, age_id graphid)` + an index on `(tenant, kind, age_id)`;
 `_forgebase_graph_age_state (tenant, graph, state materialising | ready |
-stale | failed, phase, cursor_id, job_id, epoch, nodes, edges, done, error,
+stale | failed, phase, cursor_id, job_id, placed, nodes, edges, done, error,
 started_at, updated_at)`; both with RLS enabled (no policies), placement
 class tenant, move strategy `Rebuild`, listed in the new
 `placement::EXTENSION_TABLES` (they exist only where AGE runs, so
@@ -3615,11 +3620,17 @@ syncing); the next request starts over. `GET /graph/stats` gains `cypher:
 {state, graph, job_id, nodes, edges, done, error}` where AGE runs (absent
 elsewhere).
 
-**Moves.** The state row records the tenant's placement epoch (0 without
-shards). A different epoch reads as `stale` and the next request rebuilds
-from the canonical tables; a placement that is not `active` refuses a
-(re)build with `409 tenant_moving`. `GraphService::mark_cypher_stale(tenant)`
-is the hook for FB-174's switch (§3.8 step 4.7).
+**Moves.** The state row records the placement it was built for,
+`<set_id>@<moved_at>` (`''` without one). A move's flip changes it (and so
+does a move back within the retention window, which a set id alone would
+miss); `moving` and `frozen` do not, so the graph keeps answering and
+syncing during a move. A different value reads as `stale` and the next
+request rebuilds from the canonical tables; while the placement is not
+`active` a (re)build is refused with `409 tenant_moving`.
+`GraphService::mark_cypher_stale(tenant)` is the explicit hook for FB-174's
+switch (§3.8 step 4.7) on the source. (Keying on the placement epoch was
+tried first: every state change bumps it, which made a running move stop
+Cypher for the whole move.)
 
 **Execution.** `READ ONLY` transaction (`fetch_routed_as`), `SET LOCAL ROLE
 forgebase_rls` for non-privileged callers and `RunAs::session` (`SET ROLE
@@ -3657,6 +3668,13 @@ settings`, `with_setting`, `session`), `pg/mod.rs` (`set_run_as`),
 FB-171's `fetch_routed_as` files verbatim. `forgebase-data`:
 `Action::GraphCypher`. `forgebase-jobs`: `graph.` reserved prefix.
 `forgebase-api`: `RouterOptions::graph`.
+
+**Server wiring (not done here: `crates/forgebase-server/src/lib.rs` is
+FB-171's).** Build the service once, attach the router and the job hook,
+register the job, and hand it to the API (`RouterOptions::graph`); see the
+FB-163 done note for the exact lines. Until then the API builds a plain
+service: Cypher works, materialisation runs in a background task (`job_id:
+null`) and the graph service does not route by tenant on a sharded cluster.
 
 **Breaking.** `RunAs` has a new public field `settings` (struct literals
 need it; none in the tree). `GraphStats` has a new field `cypher`.

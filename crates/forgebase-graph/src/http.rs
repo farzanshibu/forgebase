@@ -467,7 +467,7 @@ async fn stats(State(g): State<GraphService>, Access(ctx): Access) -> ApiResult 
 /// graph label and edge-type rules apply inside the query. The first query
 /// of a tenant builds the graph (`409 graph_materialising` with the job id).
 #[utoipa::path(
-    post, path = "/api/v1/graph/cypher", tag = "graph",
+    post, path = "/api/v1/graph/cypher", operation_id = "graph_cypher", tag = "graph",
     request_body = CypherQuery,
     responses(
         (status = 200, description = "Columns and rows", body = CypherResult),
@@ -483,7 +483,7 @@ async fn cypher(State(g): State<GraphService>, Access(ctx): Access, Body(b): Bod
 /// Drops the tenant's derived openCypher graph (rebuilt on next use; the
 /// REST graph is not touched). Needs `engine:graph_cypher`.
 #[utoipa::path(
-    post, path = "/api/v1/graph/cypher/drop", tag = "graph",
+    post, path = "/api/v1/graph/cypher/drop", operation_id = "graph_cypher_drop", tag = "graph",
     responses(
         (status = 200, description = "Whether there was one", body = CypherDropped),
         (status = 400, description = "No Apache AGE (`cypher_unsupported`)"),
