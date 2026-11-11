@@ -1,5 +1,6 @@
 import { AuthApi, AuthManager, type AuthOptions } from "./auth";
 import { BillingApi } from "./billing";
+import type { CommitTokens, Consistency } from "./consistency";
 import { EntitlementsApi } from "./entitlements";
 import { Transport, type FetchLike, type RetryOptions } from "./http";
 import { CollectionsApi, RecordsApi, type Row } from "./records";
@@ -15,6 +16,11 @@ export interface ForgeBaseOptions extends AuthOptions {
   fetch?: FetchLike;
   /** Headers sent with every request (`X-Forgebase-Org`, tenant selection, ...). */
   headers?: Record<string, string>;
+  /**
+   * Read replicas (ADR-0029 §2.6): `"session"` (default) reads your own writes, through the commit
+   * tokens the SDK tracks; `"strong"` reads every call from the primary. Per call: `{ consistency }`.
+   */
+  consistency?: Consistency;
   realtime?: {
     transport?: RealtimeTransport;
     /** WebSocket constructor for runtimes without a global one (`import WebSocket from "ws"`). */
@@ -42,7 +48,13 @@ export class ForgeBase {
     readonly baseUrl: string,
     options: ForgeBaseOptions = {},
   ) {
-    this.transport = new Transport({ baseUrl, fetch: options.fetch, retry: options.retry, headers: options.headers });
+    this.transport = new Transport({
+      baseUrl,
+      fetch: options.fetch,
+      retry: options.retry,
+      headers: options.headers,
+      consistency: options.consistency,
+    });
     this.mgr = new AuthManager(this.transport, options);
     this.transport.credentials = this.mgr;
     this.auth = new AuthApi(this.transport, this.mgr);
@@ -72,6 +84,14 @@ export class ForgeBase {
     });
     this.queues = new QueuesApi(this.transport, options.retry?.sleep);
     this.jobs = new JobsApi(this.transport, this.realtime, options.retry?.sleep);
+  }
+
+  /**
+   * Commit tokens of this client's writes, sent as `X-ForgeBase-Read-After`. Realtime events that
+   * carry a position can feed it: `fb.commitTokens.note(token)`.
+   */
+  get commitTokens(): CommitTokens {
+    return this.transport.commitTokens;
   }
 
   /** Records of a collection: `fb.collection<Post>("posts").list({ sort: "-created" })`. */

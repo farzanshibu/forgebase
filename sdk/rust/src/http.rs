@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::auth::AuthState;
+use crate::consistency::{COMMIT_HEADER, CONSISTENCY_HEADER, CommitTokens, Consistency, READ_AFTER_HEADER};
 use crate::error::{ApiError, Error, Result, parse_retry_after};
 
 /// Retry policy for transient failures.
@@ -92,6 +93,8 @@ pub(crate) struct Req {
     /// Treat as safe to repeat even when the method is `POST` (the call carries an idempotency key).
     pub idempotent: bool,
     pub retry: Option<RetryPolicy>,
+    /// Overrides the client's consistency for this call.
+    pub consistency: Option<Consistency>,
 }
 
 impl Req {
@@ -105,6 +108,7 @@ impl Req {
             anonymous: false,
             idempotent: false,
             retry: None,
+            consistency: None,
         }
     }
     pub fn get(path: impl Into<String>) -> Self {
@@ -192,6 +196,10 @@ pub(crate) struct Transport {
     pub retry: RetryPolicy,
     pub auth: Arc<AuthState>,
     pub extra_headers: Vec<(String, String)>,
+    /// Commit tokens seen in responses, sent back as `X-ForgeBase-Read-After`.
+    pub tokens: Arc<CommitTokens>,
+    /// Default consistency of every call.
+    pub consistency: Consistency,
 }
 
 impl Transport {
@@ -230,6 +238,12 @@ impl Transport {
                     rb = rb.header(k, v);
                 }
             }
+            if let Some(read_after) = self.tokens.header() {
+                rb = rb.header(READ_AFTER_HEADER, read_after);
+            }
+            if req.consistency.unwrap_or(self.consistency) == Consistency::Strong {
+                rb = rb.header(CONSISTENCY_HEADER, "strong");
+            }
             for (k, v) in &req.headers {
                 rb = rb.header(k, v);
             }
@@ -250,6 +264,10 @@ impl Transport {
                     return Err(Error::Network(describe(&e)));
                 }
             };
+            // A failed request may still have committed (a batch, a partial import).
+            if let Some(token) = res.headers().get(COMMIT_HEADER).and_then(|v| v.to_str().ok()) {
+                self.tokens.note(token);
+            }
             let status = res.status().as_u16();
             if res.status().is_success() {
                 return Ok(res);

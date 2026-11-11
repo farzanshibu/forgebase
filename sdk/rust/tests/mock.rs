@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use forgebase_sdk::generated::NewJob;
-use forgebase_sdk::{ErrorKind, ForgeBase, ListOptions, RetryPolicy, SignInOptions};
+use forgebase_sdk::{Consistency, ErrorKind, ForgeBase, ListOptions, RetryPolicy, SignInOptions};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -597,4 +597,47 @@ async fn billing_store_verify_surfaces_a_conflict() {
         .await
         .expect_err("owned");
     assert_eq!(e.kind(), Some(ErrorKind::Conflict));
+}
+
+#[tokio::test]
+async fn commit_tokens_are_tracked_and_sent_back() {
+    let m = Mock::start(vec![
+        ok(json!({"items": [], "per_page": 30})),
+        Reply::Json(200, json!({"id": "r1"}), vec![("x-forgebase-commit", "control/0/1A")]),
+        Reply::Json(
+            409,
+            json!({"error": {"code": "conflict", "message": "x", "request_id": "r"}}),
+            vec![("X-ForgeBase-Commit", "s1/0/5")],
+        ),
+        ok(json!({"items": [], "per_page": 30})),
+    ])
+    .await;
+    let fb = m.client();
+    let posts = fb.collection("posts");
+    posts.list(&ListOptions::default()).await.expect("list");
+    posts.create(&json!({"title": "t"})).await.expect("create");
+    let _ = posts.create(&json!({"title": "t"})).await;
+    fb.with_consistency(Consistency::Strong)
+        .collection("posts")
+        .list(&ListOptions::default())
+        .await
+        .expect("strong list");
+    let calls = m.calls();
+    assert_eq!(calls[0].header("x-forgebase-read-after"), None, "nothing before the first commit");
+    assert_eq!(calls[0].header("x-forgebase-consistency"), None);
+    assert_eq!(calls[2].header("x-forgebase-read-after"), Some("control/0/1A"));
+    assert_eq!(calls[3].header("x-forgebase-read-after"), Some("control/0/1A, s1/0/5"));
+    assert_eq!(calls[3].header("x-forgebase-consistency"), Some("strong"));
+    assert_eq!(fb.commit_tokens().get("s1").as_deref(), Some("0/5"));
+}
+
+#[tokio::test]
+async fn strong_consistency_from_the_builder() {
+    let m = Mock::start(vec![ok(json!({"ok": true}))]).await;
+    let fb = ForgeBase::builder(&m.base)
+        .consistency(Consistency::Strong)
+        .build()
+        .expect("client");
+    fb.request("GET", "/api/v1/x", None).await.expect("request");
+    assert_eq!(m.calls()[0].header("x-forgebase-consistency"), Some("strong"));
 }

@@ -127,7 +127,9 @@ impl Replica {
 struct Inner {
     set_id: String,
     primary: Database,
-    replicas: Vec<Replica>,
+    /// Shared with the replica set a reload replaces, so health and
+    /// counters survive topology changes.
+    replicas: Vec<Arc<Replica>>,
     options: ReplicaOptions,
     /// Control, where health transitions are recorded (`None`: memory only).
     persist: Option<Database>,
@@ -207,16 +209,40 @@ impl ReplicaSet {
         options: ReplicaOptions,
         persist: Option<Database>,
     ) -> Self {
+        Self::open_after(set_id, primary, nodes, options, persist, None).await
+    }
+
+    /// [`ReplicaSet::open`] replacing `previous`: a node it already had
+    /// (same id and weight) keeps its health, counters and connection.
+    pub async fn open_after(
+        set_id: &str,
+        primary: Database,
+        nodes: Vec<ReplicaNode>,
+        options: ReplicaOptions,
+        persist: Option<Database>,
+        previous: Option<&ReplicaSet>,
+    ) -> Self {
         let replicas = nodes
             .into_iter()
-            .map(|n| Replica {
-                node: n.node,
-                db: n.db,
-                health: Mutex::new(Health::default()),
-                replay: AtomicU64::new(0),
-                in_flight: AtomicUsize::new(0),
-                reads: AtomicU64::new(0),
-                fallbacks: AtomicU64::new(0),
+            .map(|n| {
+                let kept = previous.and_then(|p| {
+                    p.inner
+                        .replicas
+                        .iter()
+                        .find(|r| r.node.id == n.node.id && r.node.weight == n.node.weight)
+                });
+                match kept {
+                    Some(r) => Arc::clone(r),
+                    None => Arc::new(Replica {
+                        node: n.node,
+                        db: n.db,
+                        health: Mutex::new(Health::default()),
+                        replay: AtomicU64::new(0),
+                        in_flight: AtomicUsize::new(0),
+                        reads: AtomicU64::new(0),
+                        fallbacks: AtomicU64::new(0),
+                    }),
+                }
             })
             .collect();
         let set = Self {

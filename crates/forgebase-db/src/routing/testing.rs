@@ -57,15 +57,22 @@ fn options(url: String) -> DbOptions {
 }
 
 impl ReplicaCluster {
-    /// Starts a primary (database [`DATABASE`] migrated) and a standby with
-    /// extra `standby_settings` (`max_standby_streaming_delay`, ...).
-    /// `None` when no engine is configured.
+    /// Starts a primary (database [`DATABASE`], not migrated) and a
+    /// standby with extra `standby_settings` (`max_standby_streaming_delay`,
+    /// ...). `None` when no engine is configured.
     pub async fn start(standby_settings: &[(&str, &str)]) -> Option<Result<Self, String>> {
         let engine = engine_dir()?;
-        Some(Self::start_with(&engine, standby_settings).await)
+        Some(Self::start_with(&engine, standby_settings, false).await)
     }
 
-    async fn start_with(engine: &Path, standby_settings: &[(&str, &str)]) -> Result<Self, String> {
+    /// [`ReplicaCluster::start`] with [`DATABASE`] migrated to head before
+    /// the standby is cloned (the `forgebase` schema, topology tables).
+    pub async fn start_migrated(standby_settings: &[(&str, &str)]) -> Option<Result<Self, String>> {
+        let engine = engine_dir()?;
+        Some(Self::start_with(&engine, standby_settings, true).await)
+    }
+
+    async fn start_with(engine: &Path, standby_settings: &[(&str, &str)], migrate: bool) -> Result<Self, String> {
         let base = std::env::var_os("FORGEBASE_TEST_PG_TMP")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
@@ -98,13 +105,15 @@ impl ReplicaCluster {
                 .map_err(|e| e.to_string())?;
         }
         let _ = admin.close().await;
-        let db = Database::open(options(url(&primary, DATABASE)))
-            .await
-            .map_err(|e| format!("open the primary: {e}"))?;
-        db.migrate(None)
-            .await
-            .map_err(|e| format!("migrate the primary: {e}"))?;
-        db.close().await;
+        if migrate {
+            let db = Database::open(options(url(&primary, DATABASE)))
+                .await
+                .map_err(|e| format!("open the primary: {e}"))?;
+            db.migrate(None)
+                .await
+                .map_err(|e| format!("migrate the primary: {e}"))?;
+            db.close().await;
+        }
         let standby = root.join("s");
         std::fs::create_dir_all(&standby).map_err(|e| e.to_string())?;
         let out = Command::new(cluster.bin.join("pg_basebackup"))

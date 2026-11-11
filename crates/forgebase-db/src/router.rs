@@ -746,12 +746,13 @@ impl DbRouter {
             return None;
         }
         Some(
-            ReplicaSet::open(
+            ReplicaSet::open_after(
                 handle.id(),
                 handle.db.clone(),
                 replicas,
                 options,
                 Some(self.inner.control_db.clone()),
+                old,
             )
             .await,
         )

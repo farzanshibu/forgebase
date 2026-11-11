@@ -28,7 +28,16 @@ const SERVED: &str = "SELECT CASE WHEN pg_is_in_recovery() THEN 1 ELSE 0 END AS 
                       (SELECT count(*) FROM rt WHERE id = 1) AS n";
 
 async fn cluster(settings: &[(&str, &str)]) -> Option<ReplicaCluster> {
-    match ReplicaCluster::start(settings).await {
+    ready(ReplicaCluster::start(settings).await)
+}
+
+/// With the primary migrated (the forgebase schema, topology tables).
+async fn migrated_cluster() -> Option<ReplicaCluster> {
+    ready(ReplicaCluster::start_migrated(&[]).await)
+}
+
+fn ready(cluster: Option<Result<ReplicaCluster, String>>) -> Option<ReplicaCluster> {
+    match cluster {
         None => {
             eprintln!("skipped: no PostgreSQL engine configured");
             None
@@ -208,7 +217,8 @@ async fn read_after_tokens_wait_for_the_replica_then_read_the_primary() {
     let started = Instant::now();
     assert_eq!(served(&handle, &replica().after_all(&commits)).await, (0, 1));
     assert!(
-        started.elapsed() >= Duration::from_millis(200),
+        // The poll stops when the next one would pass the deadline.
+        started.elapsed() >= Duration::from_millis(190),
         "{:?}",
         started.elapsed()
     );
@@ -280,7 +290,7 @@ async fn a_recovery_conflict_is_retried_on_the_primary() {
 
 #[tokio::test]
 async fn replicas_of_another_cluster_are_refused() {
-    let Some(mut c) = cluster(&[]).await else {
+    let Some(mut c) = migrated_cluster().await else {
         return;
     };
     let primary = c.open_primary().await.unwrap();
@@ -328,7 +338,7 @@ impl SetConnector for UrlConnector {
 
 #[tokio::test]
 async fn the_router_routes_control_reads_to_checked_replicas() {
-    let Some(mut c) = cluster(&[]).await else {
+    let Some(mut c) = migrated_cluster().await else {
         return;
     };
     let control = c.open_primary().await.unwrap();
