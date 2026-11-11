@@ -184,15 +184,14 @@ export function ServerHealth() {
   // An administrator has no entitlements of their own (the server answers 400 subject_required): ask for none.
   // While impersonating, the caller is the user, so ask for theirs.
   const session = useOptionalSession();
-  const quotaSubject = useRef<"caller" | null>("caller");
-  quotaSubject.current = session?.admin && !session.impersonation ? null : "caller";
+  const quotaSubject: "caller" | null = session?.admin && !session.impersonation ? null : "caller";
 
   const { data, loading, updatedAt, refresh } = usePolling<Snapshot>(async (signal) => {
     const [reading, info, storage, vector, jobs, kv] = await Promise.all([
       part(async () => readingFrom(await getMetrics(signal), Date.now())),
       part(() => getSystemInfo(signal)),
       part(async () => {
-        const [stats, quota] = await Promise.all([storageStats(signal), storageQuotaFor(quotaSubject.current, signal).catch(() => null)]);
+        const [stats, quota] = await Promise.all([storageStats(signal), storageQuotaFor(quotaSubject, signal).catch(() => null)]);
         return { stats, quota };
       }),
       part(() => vectorStats(signal)),
