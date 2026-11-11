@@ -204,11 +204,6 @@ fn scenario_21_restart_keeps_collections_and_records() {
 /// SPEC §27 #22: back up and restore the database.
 #[test]
 fn scenario_22_online_backup_then_restore_after_data_loss() {
-    // Backups on PostgreSQL (pg_basebackup) are FB-150; until then `backup` refuses.
-    if common::postgres() {
-        eprintln!("skipped on postgres: backups are FB-150");
-        return;
-    }
     let (_tmp, proj) = project();
     let data = proj.join("forgebase-data");
     let bundle = proj.join("seed");
@@ -254,10 +249,17 @@ fn scenario_22_online_backup_then_restore_after_data_loss() {
     assert!(msg.contains("stop the server before restoring"), "{msg}");
     server.stop();
 
-    for f in ["forgebase.db", "forgebase.db-wal", "forgebase.db-shm"] {
-        let _ = std::fs::remove_file(data.join(f));
+    if common::postgres() {
+        // The cluster is the database: wipe it and leave junk behind.
+        let _ = std::fs::remove_dir_all(data.join("postgres/data"));
+        std::fs::create_dir_all(data.join("postgres/data")).unwrap();
+        std::fs::write(data.join("postgres/data/PG_VERSION"), b"junk").unwrap();
+    } else {
+        for f in ["forgebase.db", "forgebase.db-wal", "forgebase.db-shm"] {
+            let _ = std::fs::remove_file(data.join(f));
+        }
+        std::fs::write(data.join("forgebase.db"), b"this is not a database").unwrap();
     }
-    std::fs::write(data.join("forgebase.db"), b"this is not a database").unwrap();
     let (healthy, report) = doctor(&proj, &[]);
     assert!(!healthy, "doctor must fail on a destroyed database: {report}");
     assert_eq!(check(&report, "database")["status"], "fail");
@@ -296,7 +298,11 @@ fn scenario_22_online_backup_then_restore_after_data_loss() {
 
     // Explicit backup directories restore too, and corruption is caught first.
     ok(&proj, &["restore", explicit.to_str().unwrap(), "--force"]);
-    let db = explicit.join("forgebase.db");
+    let db = if common::postgres() {
+        explicit.join("postgres/PG_VERSION")
+    } else {
+        explicit.join("forgebase.db")
+    };
     let mut bytes = std::fs::read(&db).unwrap();
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
