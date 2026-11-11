@@ -153,7 +153,9 @@ impl Tx<'_> {
     }
 
     async fn insert(&mut self, sql: &str, params: Vec<Value>) -> Result<i64> {
-        Ok(self.0.execute(&Statement::new(sql, params)).await?.last_insert_id)
+        // `RETURNING seq` (SQL must end with it): `last_insert_id` is empty on PostgreSQL.
+        let rows = self.0.fetch_all(&Statement::new(sql, params)).await?;
+        Ok(rows.rows.first().map_or(0, |r| int(r, 0)))
     }
 }
 
@@ -283,7 +285,8 @@ async fn insert_entry(
             "INSERT INTO _forgebase_credit_ledger (id, at, subject, kind, amount, balance_after, lot_id, ref_entry,
                  feature_key, units, usage_event_id, usage_seq, expires_at, idempotency_key, actor, reason,
                  external_ref, request_id, metadata, request)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+             RETURNING seq",
             vec![
                 id.clone().into(),
                 now.into(),
@@ -362,7 +365,7 @@ async fn add_balance(t: &mut Tx<'_>, subject: &str, amount: i64, now: i64) -> Re
     let n = t
         .exec(
             "UPDATE _forgebase_credit_accounts SET balance = balance + ?1, updated_at = ?2
-             WHERE subject = ?3 AND balance <= ?4 - ?1",
+             WHERE subject = ?3 AND balance <= CAST(?4 AS BIGINT) - CAST(?1 AS BIGINT)",
             vec![amount.into(), now.into(), subject.into(), i64::MAX.into()],
         )
         .await?;
@@ -496,7 +499,7 @@ pub(crate) async fn sweep_batch(t: &mut Tx<'_>, subject: Option<&str>, now: i64,
     let rows = t
         .fetch(
             "SELECT id, subject, entry_id, remaining FROM _forgebase_credit_lots
-             WHERE remaining > 0 AND expires_at IS NOT NULL AND expires_at <= ?1 AND (?2 IS NULL OR subject = ?2)
+             WHERE remaining > 0 AND expires_at IS NOT NULL AND expires_at <= ?1 AND (CAST(?2 AS TEXT) IS NULL OR subject = ?2)
              ORDER BY expires_at, id LIMIT ?3",
             vec![now.into(), subject.map(str::to_owned).into(), limit.into()],
         )
@@ -1078,7 +1081,7 @@ impl CreditService {
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {LOT_COLUMNS} FROM _forgebase_credit_lots
-                     WHERE subject = ?1 AND (?2 OR (remaining > 0 AND (expires_at IS NULL OR expires_at > ?3)))
+                     WHERE subject = ?1 AND (CAST(?2 AS BIGINT) = 1 OR (remaining > 0 AND (expires_at IS NULL OR expires_at > ?3)))
                      ORDER BY created_at, id LIMIT 1000"
                 ),
                 vec![subject.into(), all.into(), self.now().into()],
@@ -1103,8 +1106,8 @@ impl CreditService {
             .fetch_all(&Statement::new(
                 format!(
                     "SELECT {ENTRY_COLUMNS} FROM _forgebase_credit_ledger
-                     WHERE seq > ?1 AND (?2 IS NULL OR subject = ?2) AND (?3 IS NULL OR kind = ?3)
-                       AND (?4 IS NULL OR at >= ?4) AND (?5 IS NULL OR at < ?5)
+                     WHERE seq > ?1 AND (CAST(?2 AS TEXT) IS NULL OR subject = ?2) AND (CAST(?3 AS TEXT) IS NULL OR kind = ?3)
+                       AND (CAST(?4 AS BIGINT) IS NULL OR at >= ?4) AND (CAST(?5 AS BIGINT) IS NULL OR at < ?5)
                      ORDER BY seq LIMIT ?6"
                 ),
                 vec![

@@ -237,6 +237,7 @@ impl SqliteDatabase {
             backend: crate::BackendKind::Sqlite,
             server_version: sqlite_version.clone(),
             connections: None,
+            features: Vec::new(),
             path: self.inner.path.clone(),
             size_bytes: size(&self.inner.path),
             wal_size_bytes: size(Path::new(&wal)),

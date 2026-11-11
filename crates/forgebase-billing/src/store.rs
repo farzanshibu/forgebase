@@ -755,11 +755,11 @@ impl BillingService {
                         .exec(
                             "UPDATE _forgebase_billing_subscriptions SET status = ?2, current_period_start = ?3,
                                  current_period_end = ?4, trial_ends_at = ?5, cancel_at_period_end = ?6,
-                                 ended_at = ?7, canceled_at = CASE WHEN ?6 = 1 OR ?7 IS NOT NULL THEN COALESCE(canceled_at, ?9) END,
-                                 cancel_reason = CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END, provider = ?10,
-                                 version = version + 1, updated_at = MAX(?9, updated_at + 1)
+                                 ended_at = ?7, canceled_at = CASE WHEN ?6 = 1 OR CAST(?7 AS BIGINT) IS NOT NULL THEN COALESCE(canceled_at, ?9) END,
+                                 cancel_reason = CASE WHEN CAST(?7 AS BIGINT) IS NOT NULL THEN ?8 ELSE NULL END, provider = ?10,
+                                 version = version + 1, updated_at = CASE WHEN CAST(?9 AS BIGINT) > updated_at + 1 THEN CAST(?9 AS BIGINT) ELSE updated_at + 1 END
                              WHERE id = ?1 AND NOT (status = ?2 AND current_period_start = ?3 AND current_period_end = ?4
-                                 AND trial_ends_at IS ?5 AND cancel_at_period_end = ?6 AND ended_at IS ?7)",
+                                 AND trial_ends_at IS NOT DISTINCT FROM ?5 AND cancel_at_period_end = ?6 AND ended_at IS NOT DISTINCT FROM ?7)",
                             vec![
                                 sid.clone().into(),
                                 status.into(),
@@ -785,7 +785,7 @@ impl BillingService {
                     if items > 0 && n == 0 {
                         t.exec(
                             "UPDATE _forgebase_billing_subscriptions SET version = version + 1,
-                                 updated_at = MAX(?2, updated_at + 1) WHERE id = ?1",
+                                 updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE id = ?1",
                             vec![sid.clone().into(), now.into()],
                         )
                         .await?;
@@ -905,14 +905,14 @@ impl BillingService {
                      last_transaction_id, last_event_at, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'test', ?12, ?13, ?14, ?15, ?16, ?16)
                  ON CONFLICT (provider, purchase_id) DO UPDATE SET
-                     product_id = CASE WHEN ?17 THEN excluded.product_id ELSE product_id END,
-                     price_id = CASE WHEN ?17 THEN excluded.price_id ELSE price_id END,
+                     product_id = CASE WHEN CAST(?17 AS BIGINT) = 1 THEN excluded.product_id ELSE _forgebase_billing_store_purchases.product_id END,
+                     price_id = CASE WHEN CAST(?17 AS BIGINT) = 1 THEN excluded.price_id ELSE _forgebase_billing_store_purchases.price_id END,
                      status = excluded.status,
-                     auto_renew = CASE WHEN ?17 THEN excluded.auto_renew ELSE auto_renew END,
-                     expires_at = CASE WHEN ?17 THEN COALESCE(excluded.expires_at, expires_at) ELSE expires_at END,
+                     auto_renew = CASE WHEN CAST(?17 AS BIGINT) = 1 THEN excluded.auto_renew ELSE _forgebase_billing_store_purchases.auto_renew END,
+                     expires_at = CASE WHEN CAST(?17 AS BIGINT) = 1 THEN COALESCE(excluded.expires_at, _forgebase_billing_store_purchases.expires_at) ELSE _forgebase_billing_store_purchases.expires_at END,
                      subscription_id = excluded.subscription_id, order_id = excluded.order_id,
-                     last_transaction_id = COALESCE(excluded.last_transaction_id, last_transaction_id),
-                     last_event_at = MAX(last_event_at, excluded.last_event_at), updated_at = excluded.updated_at",
+                     last_transaction_id = COALESCE(excluded.last_transaction_id, _forgebase_billing_store_purchases.last_transaction_id),
+                     last_event_at = CASE WHEN excluded.last_event_at > _forgebase_billing_store_purchases.last_event_at THEN excluded.last_event_at ELSE _forgebase_billing_store_purchases.last_event_at END, updated_at = excluded.updated_at",
                 vec![
                     link_id.clone().into(),
                     provider.into(),

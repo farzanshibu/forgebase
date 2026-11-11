@@ -268,7 +268,7 @@ impl BillingService {
             .fetch(
                 &format!(
                     "SELECT COUNT(*) FROM _forgebase_billing_orders
-                     WHERE (?1 IS NULL OR subject = ?1) AND (?2 IS NULL OR status = ?2){only}"
+                     WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1) AND (CAST(?2 AS TEXT) IS NULL OR status = ?2){only}"
                 ),
                 params.clone(),
             )
@@ -284,7 +284,7 @@ impl BillingService {
             .fetch(
                 &format!(
                     "SELECT id, customer_id, subject, status, currency, invoice_id, created_at FROM _forgebase_billing_orders
-                     WHERE (?1 IS NULL OR subject = ?1) AND (?2 IS NULL OR status = ?2){only}
+                     WHERE (CAST(?1 AS TEXT) IS NULL OR subject = ?1) AND (CAST(?2 AS TEXT) IS NULL OR status = ?2){only}
                      ORDER BY created_at DESC, id DESC LIMIT ?{} OFFSET ?{}",
                     n + 1,
                     n + 2
@@ -324,7 +324,7 @@ impl BillingService {
         let only = realm_clause(realm.as_deref(), "subject", &mut params);
         let n = params.len();
         let filter = format!(
-            "window_end > ?1 AND window_start <= ?1 AND (?2 IS NULL OR subject = ?2) AND (?3 IS NULL OR feature_key = ?3)
+            "window_end > ?1 AND window_start <= ?1 AND (CAST(?2 AS TEXT) IS NULL OR subject = ?2) AND (CAST(?3 AS TEXT) IS NULL OR feature_key = ?3)
              AND (?4 <= 0 OR (limit_value IS NOT NULL AND limit_value > 0 AND used * 100.0 >= ?4 * limit_value)){only}"
         );
         let total = self
@@ -451,7 +451,7 @@ impl BillingService {
             let mut t = Tx(tx.as_mut());
             let n = t
                 .exec(
-                    &format!("UPDATE {table} SET active = 0, updated_at = MAX(?2, updated_at + 1) WHERE {column} = ?1 AND active = 1"),
+                    &format!("UPDATE {table} SET active = 0, updated_at = CASE WHEN CAST(?2 AS BIGINT) > updated_at + 1 THEN CAST(?2 AS BIGINT) ELSE updated_at + 1 END WHERE {column} = ?1 AND active = 1"),
                     vec![key.into(), now.into()],
                 )
                 .await?;

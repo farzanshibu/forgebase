@@ -249,7 +249,7 @@ impl BillingService {
                 &format!(
                     "SELECT {PRICE_COLUMNS} FROM _forgebase_billing_prices p
                      JOIN _forgebase_billing_products pr ON pr.id = p.product_id
-                     WHERE (?1 IS NULL OR pr.key = ?1) ORDER BY p.key"
+                     WHERE (CAST(?1 AS TEXT) IS NULL OR pr.key = ?1) ORDER BY p.key"
                 ),
                 vec![product.map(str::to_owned).into()],
             )

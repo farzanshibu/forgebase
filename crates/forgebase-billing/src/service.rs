@@ -158,7 +158,7 @@ impl Tx<'_> {
         let rows = self
             .fetch(
                 "INSERT INTO _forgebase_billing_sequences (prefix, next) VALUES (?1, 1)
-                 ON CONFLICT (prefix) DO UPDATE SET next = next + 1
+                 ON CONFLICT (prefix) DO UPDATE SET next = _forgebase_billing_sequences.next + 1
                  RETURNING next",
                 vec![prefix.into()],
             )
