@@ -62,6 +62,12 @@ pub struct SqlOptions {
     /// Each use is audited.
     #[serde(default)]
     pub show_secrets: bool,
+    /// Run a read statement on a replica when the database has one that has
+    /// replayed the caller's own writes (ADR-0029 §2.5; the dashboard's
+    /// "Read from replica" toggle). Writes, batches and `show_secrets` reads
+    /// stay on the primary. Ignored without replicas.
+    #[serde(default)]
+    pub read_from_replica: bool,
 }
 
 /// What a masked secret value reads as.
@@ -397,11 +403,12 @@ impl DataService {
             } else {
                 c.sql.clone()
             };
-            let rows = self
-                .inner
-                .backend
-                .fetch_all(&Statement::new(sql, c.params.clone()).uncached())
-                .await?;
+            let stmt = Statement::new(sql, c.params.clone()).uncached();
+            let rows = if opts.read_from_replica && !opts.show_secrets {
+                self.fetch_replica(&stmt, "sql.editor").await?
+            } else {
+                self.inner.backend.fetch_all(&stmt).await?
+            };
             let mut r = result_from(c.kind, rows, started);
             if opts.show_secrets {
                 // Shown only once the use is on record.

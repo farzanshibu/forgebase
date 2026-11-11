@@ -684,6 +684,11 @@ impl Actor {
         };
         let Some(sub) = self.subs.get_mut(id) else { return };
         let Some(ev) = decode_event(m) else { return };
+        // A record event carries the primary's commit position when the
+        // database has replicas: reads after the event see the record.
+        if let Some(c) = m.get("commit").and_then(Value::as_str) {
+            self.t.tokens.note(c);
+        }
         if let Some(c) = m.get("cursor").and_then(Value::as_u64) {
             let is_reset = matches!(ev, RealtimeEvent::Reset(_));
             if sub.cursor.is_none_or(|cur| c > cur) || is_reset {

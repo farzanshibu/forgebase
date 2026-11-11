@@ -807,7 +807,8 @@ impl StorageService {
         )
         .await?;
         let rows = self
-            .read(
+            .read_replica(
+                "storage.bucket_usage",
                 "SELECT COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN 1 ELSE 0 END), 0), \
                         COUNT(*), \
                         COALESCE(SUM(CASE WHEN is_latest = 1 AND delete_marker = 0 THEN size ELSE 0 END), 0), \
@@ -843,7 +844,8 @@ impl StorageService {
             None => ("instance", "k.tenant IS NULL", vec![]),
         };
         let rows = self
-            .read(
+            .read_replica(
+                "storage.stats",
                 &format!(
                     "SELECT (SELECT COUNT(*) FROM _forgebase_storage_buckets k WHERE {cond}), \
                         (SELECT COUNT(*) FROM _forgebase_storage_objects o JOIN _forgebase_storage_buckets k ON k.name = o.bucket \
