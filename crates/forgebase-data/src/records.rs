@@ -747,7 +747,8 @@ impl DataService {
             {
                 return Err(DataError::VersionConflict { expected, actual });
             }
-            self.delete_in_tx(ctx, &mut *tx, &coll, id, actual, 0, &mut pending).await
+            self.delete_in_tx(ctx, &mut *tx, &coll, id, actual, 0, &mut pending)
+                .await
         }
         .await;
         finish(tx, result).await?;
@@ -961,15 +962,15 @@ impl DataService {
         // Versions live on the record's set (keyed by the record, FB-170).
         let backend = self.route(ctx, &coll).await?;
         let rows = Self::fetch_replica_on(
-                &backend,
-                &Statement::new(
-                    "SELECT version, op, data, changed_at, actor FROM _forgebase_record_versions
+            &backend,
+            &Statement::new(
+                "SELECT version, op, data, changed_at, actor FROM _forgebase_record_versions
                  WHERE collection_id = ?1 AND record_id = ?2 ORDER BY version",
-                    vec![coll.id.clone().into(), id.into()],
-                ),
-                "records.versions",
-            )
-            .await?;
+                vec![coll.id.clone().into(), id.into()],
+            ),
+            "records.versions",
+        )
+        .await?;
         if !self
             .history_visible(&backend, ctx, &coll, id, pred.as_ref(), &rows)
             .await?
@@ -1002,18 +1003,18 @@ impl DataService {
         }
         // A live record the caller cannot see hides its history.
         let live = Self::fetch_replica_on(
-                backend,
-                &Statement::new(
-                    format!(
-                        "SELECT 1 FROM {} WHERE {} = ?1",
-                        d.quote_ident(&coll.name),
-                        d.quote_ident("id")
-                    ),
-                    vec![id.into()],
+            backend,
+            &Statement::new(
+                format!(
+                    "SELECT 1 FROM {} WHERE {} = ?1",
+                    d.quote_ident(&coll.name),
+                    d.quote_ident("id")
                 ),
-                "records.versions",
-            )
-            .await?;
+                vec![id.into()],
+            ),
+            "records.versions",
+        )
+        .await?;
         if !live.is_empty() {
             return Ok(false);
         }

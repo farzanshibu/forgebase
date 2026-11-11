@@ -84,11 +84,19 @@ async fn after_hooks_follow_every_sets_outbox_with_its_own_cursor() {
     }];
     svc.deploy(&admin(), r).await.unwrap();
     for t in ["t1", "t0"] {
-        data.create_record(&AccessContext::admin("root").with_tenant(t), "posts", json!({"title": t}))
-            .await
-            .unwrap();
+        data.create_record(
+            &AccessContext::admin("root").with_tenant(t),
+            "posts",
+            json!({"title": t}),
+        )
+        .await
+        .unwrap();
     }
-    assert_eq!(svc.run_after_hooks().await.unwrap(), 2, "one event on s1, one on control");
+    assert_eq!(
+        svc.run_after_hooks().await.unwrap(),
+        2,
+        "one event on s1, one on control"
+    );
     assert_eq!(svc.run_after_hooks().await.unwrap(), 0, "each set's cursor persisted");
     let on_shard = cursor(&shard).await.unwrap();
     assert_eq!(set_number_of(on_shard), set.number, "s1's cursor is in s1's range");

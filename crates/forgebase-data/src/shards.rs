@@ -338,7 +338,9 @@ impl DataService {
                         ))
                         .await?;
                     for k in &keys.rows {
-                        let Some(name) = k.first().and_then(Value::as_str) else { continue };
+                        let Some(name) = k.first().and_then(Value::as_str) else {
+                            continue;
+                        };
                         tx.execute(&Statement::raw(format!(
                             "ALTER TABLE {} DROP CONSTRAINT {}",
                             crate::ddl::rel(d, &c.name),
@@ -501,7 +503,10 @@ impl DataService {
                     (h.id().to_owned(), b)
                 })
                 .collect(),
-            _ => vec![(forgebase_db::topology::CONTROL_SET_ID.to_owned(), self.backend().clone())],
+            _ => vec![(
+                forgebase_db::topology::CONTROL_SET_ID.to_owned(),
+                self.backend().clone(),
+            )],
         };
         let ctx = AccessContext::system();
         for (set_id, backend) in sets {

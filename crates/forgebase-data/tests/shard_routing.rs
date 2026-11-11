@@ -52,10 +52,12 @@ async fn base_collections(data: &DataService) {
     .unwrap();
     data.create_collection(
         &sys,
-        coll(json!({"id": "posts_c", "name": "posts", "options": {"tenant_scoped": true}, "fields": [
-            {"name": "title", "type": "text"},
-            {"name": "author", "type": "relation", "collection_id": "users_c"}
-        ]})),
+        coll(
+            json!({"id": "posts_c", "name": "posts", "options": {"tenant_scoped": true}, "fields": [
+                {"name": "title", "type": "text"},
+                {"name": "author", "type": "relation", "collection_id": "users_c"}
+            ]}),
+        ),
     )
     .await
     .unwrap();
@@ -90,7 +92,14 @@ async fn one_set_behaves_as_before() {
         filter: Some("author.name = 'ann'".into()),
         ..ListQuery::default()
     };
-    assert_eq!(data.list_records(&admin_in("t1"), "posts", &q).await.unwrap().items.len(), 1);
+    assert_eq!(
+        data.list_records(&admin_in("t1"), "posts", &q)
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
     let rule = Predicate::parse("author.name = 'ann'", Default::default()).unwrap();
     let posts = data.get_collection(&common::admin(), "posts").await.unwrap();
     data.validate_predicate(&posts, &rule).unwrap();
@@ -170,7 +179,10 @@ mod sharded {
         ] {
             data.create_collection(&sys, coll(def)).await.unwrap();
         }
-        assert!(fk_count(&s.control, "posts").await >= 1, "control keeps its keys before a shard");
+        assert!(
+            fk_count(&s.control, "posts").await >= 1,
+            "control keeps its keys before a shard"
+        );
 
         let (set, shard) = s.provision("s1").await;
         shards::activate_shard(
@@ -204,7 +216,11 @@ mod sharded {
             .await
             .unwrap();
         let ann = ann["id"].as_str().unwrap().to_owned();
-        assert_eq!(count(&shard, "SELECT count(*) FROM users").await, 0, "shared rows stay on control");
+        assert_eq!(
+            count(&shard, "SELECT count(*) FROM users").await,
+            0,
+            "shared rows stay on control"
+        );
 
         // Existence check of a shared target on control.
         let e = data
@@ -238,20 +254,32 @@ mod sharded {
             .unwrap();
         assert_eq!(got["title"], "on s1");
         assert_eq!(got["expand"]["author"]["name"], "ann", "two-step expand from control");
-        assert!(data
-            .get_record(&admin_in("t0"), "posts", &p1, &GetOptions::default())
-            .await
-            .is_err());
-        data.update_record(&admin_in("t1"), "posts", &p1, json!({"title": "edited"}), Default::default())
-            .await
-            .unwrap();
+        assert!(
+            data.get_record(&admin_in("t0"), "posts", &p1, &GetOptions::default())
+                .await
+                .is_err()
+        );
+        data.update_record(
+            &admin_in("t1"),
+            "posts",
+            &p1,
+            json!({"title": "edited"}),
+            Default::default(),
+        )
+        .await
+        .unwrap();
         let list = data
             .list_records(&admin_in("t1"), "posts", &ListQuery::default())
             .await
             .unwrap();
         assert_eq!(list.items.len(), 1);
         assert_eq!(list.items[0]["title"], "edited");
-        assert_eq!(data.count_records(&admin_in("t1"), "posts", None, Default::default()).await.unwrap(), 1);
+        assert_eq!(
+            data.count_records(&admin_in("t1"), "posts", None, Default::default())
+                .await
+                .unwrap(),
+            1
+        );
 
         // tenant_required_sharded: tenant data without a tenant.
         let e = data
@@ -279,10 +307,18 @@ mod sharded {
             filter: Some("author.name = 'ann'".into()),
             ..ListQuery::default()
         };
-        let e = data.list_records(&admin_in("t1"), "posts", &crossing).await.unwrap_err();
+        let e = data
+            .list_records(&admin_in("t1"), "posts", &crossing)
+            .await
+            .unwrap_err();
         assert_eq!(code(&e), "relation_crosses_shards", "{e}");
         let e = data
-            .count_records(&admin_in("t1"), "posts", Some("author.name = 'ann'"), Default::default())
+            .count_records(
+                &admin_in("t1"),
+                "posts",
+                Some("author.name = 'ann'"),
+                Default::default(),
+            )
             .await
             .unwrap_err();
         assert_eq!(code(&e), "relation_crosses_shards");
@@ -301,7 +337,14 @@ mod sharded {
             filter: Some(format!("author = '{ann}'")),
             ..ListQuery::default()
         };
-        assert_eq!(data.list_records(&admin_in("t1"), "posts", &own).await.unwrap().items.len(), 1);
+        assert_eq!(
+            data.list_records(&admin_in("t1"), "posts", &own)
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
 
         // ON DELETE across sets: RESTRICT first.
         let bob = data
@@ -312,12 +355,16 @@ mod sharded {
         data.create_record(&admin_in("t1"), "duties", json!({"owner": bob}))
             .await
             .unwrap();
-        let e = data.delete_record(&common::admin(), "users", &bob, None).await.unwrap_err();
-        assert_eq!(code(&e), "record_referenced", "{e}");
-        assert!(data
-            .get_record(&common::admin(), "users", &bob, &GetOptions::default())
+        let e = data
+            .delete_record(&common::admin(), "users", &bob, None)
             .await
-            .is_ok());
+            .unwrap_err();
+        assert_eq!(code(&e), "record_referenced", "{e}");
+        assert!(
+            data.get_record(&common::admin(), "users", &bob, &GetOptions::default())
+                .await
+                .is_ok()
+        );
 
         // Cascade, set null and multi-value removal run on every set.
         for t in ["t1", "t0"] {
@@ -332,7 +379,11 @@ mod sharded {
         data.delete_record(&common::admin(), "users", &ann, None).await.unwrap();
         for db in [&shard, &s.control] {
             assert_eq!(count(db, "SELECT count(*) FROM likes").await, 0, "cascade");
-            assert_eq!(count(db, "SELECT count(*) FROM posts WHERE author IS NOT NULL").await, 0, "set null");
+            assert_eq!(
+                count(db, "SELECT count(*) FROM posts WHERE author IS NOT NULL").await,
+                0,
+                "set null"
+            );
             let sql = format!(
                 "SELECT count(*) FROM teams WHERE CAST(members AS text) NOT LIKE '%{ann}%' AND CAST(members AS text) LIKE '%{bob}%'"
             );

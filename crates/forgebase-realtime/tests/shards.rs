@@ -55,12 +55,15 @@ async fn ws(addr: SocketAddr, tenant: Option<&str>) -> Ws {
 }
 
 async fn outbox_len(db: &Database) -> i64 {
-    db.fetch_all(&Statement::new("SELECT count(*) FROM _forgebase_realtime_outbox", vec![]))
-        .await
-        .unwrap()
-        .scalar()
-        .and_then(Value::as_i64)
-        .unwrap()
+    db.fetch_all(&Statement::new(
+        "SELECT count(*) FROM _forgebase_realtime_outbox",
+        vec![],
+    ))
+    .await
+    .unwrap()
+    .scalar()
+    .and_then(Value::as_i64)
+    .unwrap()
 }
 
 /// The next record event (skipping other frames).
@@ -135,7 +138,9 @@ async fn events_flow_per_set_with_replay_resets_and_fan_in() {
     // Shared collections stay on control: their events come from control.
     let (_, sub) = a.subscribe(json!({"id": "w", "collection": "news"})).await;
     assert_eq!(sub["type"], "subscribed");
-    data.create_record(&t1, "news", json!({"body": "shared"})).await.unwrap();
+    data.create_record(&t1, "news", json!({"body": "shared"}))
+        .await
+        .unwrap();
     let e = next_event(&mut a).await;
     assert_eq!(e["id"], "w");
     assert_eq!(set_number_of(e["cursor"].as_i64().unwrap()), 0);
@@ -156,7 +161,11 @@ async fn events_flow_per_set_with_replay_resets_and_fan_in() {
         .subscribe(json!({"id": "m", "collection": "notes", "cursor": control_cursor}))
         .await;
     assert_eq!(sub["reset"], "tenant_moved", "{sub}");
-    assert!(frames.iter().any(|f| f["type"] == "reset" && f["reason"] == "tenant_moved"));
+    assert!(
+        frames
+            .iter()
+            .any(|f| f["type"] == "reset" && f["reason"] == "tenant_moved")
+    );
     assert_eq!(set_number_of(sub["cursor"].as_i64().unwrap()), set.number);
 
     // Privileged fan-in without a tenant: live events of every set, no
@@ -168,8 +177,12 @@ async fn events_flow_per_set_with_replay_resets_and_fan_in() {
     assert_eq!(sub["type"], "subscribed", "{sub}");
     assert_eq!(sub["reset"], "cursor_unsupported_sharded");
     assert!(sub["cursor"].is_null());
-    data.create_record(&t1, "notes", json!({"body": "s1 again"})).await.unwrap();
-    data.create_record(&t0, "notes", json!({"body": "on control"})).await.unwrap();
+    data.create_record(&t1, "notes", json!({"body": "s1 again"}))
+        .await
+        .unwrap();
+    data.create_record(&t0, "notes", json!({"body": "on control"}))
+        .await
+        .unwrap();
     let mut seen = vec![next_event(&mut c).await, next_event(&mut c).await];
     seen.sort_by_key(|e| e["cursor"].as_i64().unwrap());
     assert_eq!(seen[0]["data"]["body"], "on control");

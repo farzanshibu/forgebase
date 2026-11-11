@@ -303,9 +303,8 @@ async fn start_on(
     };
     // FB-173: in-doubt two-phase transactions are resolved at start and
     // every minute (PostgreSQL only; SQLite never prepares).
-    let recovery = (db.kind() == forgebase_db::BackendKind::Postgres).then(|| {
-        forgebase_db::twophase::spawn_recovery(router.clone(), forgebase_db::twophase::RECOVERY_INTERVAL)
-    });
+    let recovery = (db.kind() == forgebase_db::BackendKind::Postgres)
+        .then(|| forgebase_db::twophase::spawn_recovery(router.clone(), forgebase_db::twophase::RECOVERY_INTERVAL));
     shards::prepare_data(auth.data()).await;
     // First-run setup (FB-90): a one-time token while no administrator
     // exists. The caller prints it; it never goes to the log.

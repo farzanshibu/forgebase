@@ -83,7 +83,8 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
     std::fs::create_dir_all(key.parent().unwrap()).unwrap();
     let keyring = forgebase_auth::crypto::Keyring::load_or_create(&key).unwrap();
     let node = s.router.topology().nodes_of(&set.id).next().unwrap().clone();
-    let sealed = forgebase_server::shards::seal_node_url(&keyring, &node.id, &s.clusters[1].url_of("forgebase")).unwrap();
+    let sealed =
+        forgebase_server::shards::seal_node_url(&keyring, &node.id, &s.clusters[1].url_of("forgebase")).unwrap();
     let mut tx = s.control.begin(forgebase_db::TxMode::Normal).await.unwrap();
     tx.execute(&Statement::new(
         "UPDATE _forgebase_db_nodes SET url_sealed = ?1 WHERE id = ?2",
@@ -108,7 +109,11 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
     assert!(heads.contains_key(&0) && heads.contains_key(&set.number), "{heads:?}");
     // The after-hook cursor is per set (functions are on by default).
     assert_eq!(
-        scalar(&shard, "SELECT count(*) FROM _forgebase_function_cursors WHERE name = 'after_hooks'").await,
+        scalar(
+            &shard,
+            "SELECT count(*) FROM _forgebase_function_cursors WHERE name = 'after_hooks'"
+        )
+        .await,
         1
     );
 
@@ -127,11 +132,18 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
     }
     router.place("t1", &set.id, PlacementState::Active).await.unwrap();
     let admin = AccessContext::admin("root");
-    let u = data.create_record(&admin, "users", json!({"name": "ann"})).await.unwrap();
-    let uid = u["id"].as_str().unwrap().to_owned();
-    data.create_record(&admin.clone().with_tenant("t1"), "posts", json!({"title": "x", "author": uid}))
+    let u = data
+        .create_record(&admin, "users", json!({"name": "ann"}))
         .await
         .unwrap();
+    let uid = u["id"].as_str().unwrap().to_owned();
+    data.create_record(
+        &admin.clone().with_tenant("t1"),
+        "posts",
+        json!({"title": "x", "author": uid}),
+    )
+    .await
+    .unwrap();
     assert_eq!(scalar(&shard, "SELECT count(*) FROM posts").await, 1);
     let mut moved = false;
     for _ in 0..100 {
@@ -141,7 +153,11 @@ async fn sharded_server_opens_every_set_and_runs_per_set_loops() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(moved, "s1's dispatcher did not publish: {:?}", server.realtime().heads());
+    assert!(
+        moved,
+        "s1's dispatcher did not publish: {:?}",
+        server.realtime().heads()
+    );
 
     // Deleting the shared user runs ON DELETE on s1 through the job.
     data.delete_record(&admin, "users", &uid, None).await.unwrap();
