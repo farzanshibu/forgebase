@@ -396,6 +396,10 @@ fn doctor_flags_a_file_that_is_not_a_database() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn doctor_flags_damaged_pages() {
+    // Damages SQLite pages; the PostgreSQL check (amcheck) is in database_e2e.rs.
+    if common::postgres() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     assert!(run(root, &["init"]).status.success());

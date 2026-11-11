@@ -486,10 +486,14 @@ fn deploy_hello(fb: &Fb) {
 #[test]
 fn scenario_01_create_a_project() {
     let mut fb = Fb::start();
-    assert!(
-        fb.data_dir().join("forgebase.db").is_file(),
-        "init created the database"
-    );
+    if common::postgres() {
+        assert!(fb.data_dir().join("postgres").is_dir(), "init created the PostgreSQL cluster");
+    } else {
+        assert!(
+            fb.data_dir().join("forgebase.db").is_file(),
+            "init created the database"
+        );
+    }
     let (alice, _) = fb.user("alice@example.com");
     let org = fb
         .call(
@@ -561,7 +565,11 @@ fn scenario_02_create_a_sql_table() {
         "POST",
         "/api/v1/sql",
         Some(
-            json!({"sql": "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"}),
+            json!({"sql": if common::postgres() {
+                "CREATE TABLE invoices (id BIGSERIAL PRIMARY KEY, customer TEXT NOT NULL, total REAL)"
+            } else {
+                "CREATE TABLE invoices (id INTEGER PRIMARY KEY, customer TEXT NOT NULL, total REAL) STRICT"
+            }}),
         ),
     )
     .expect(200);
@@ -823,8 +831,12 @@ fn scenario_06_validate_index_usage_with_query_plans() {
             Some(plan_query.clone()),
         )
         .expect(200);
-    assert_eq!(after["indexes_used"], json!(["idx_items_cat_price"]), "{after}");
-    assert!(after["full_scans"].as_array().unwrap().is_empty(), "{after}");
+    // Plan shape is the engine's choice: SQLite takes the index; the PostgreSQL
+    // planner prefers a sequential scan on a table this small.
+    if !common::postgres() {
+        assert_eq!(after["indexes_used"], json!(["idx_items_cat_price"]), "{after}");
+        assert!(after["full_scans"].as_array().unwrap().is_empty(), "{after}");
+    }
     let rows = fb
         .admin("POST", "/api/v1/collections/items/records/query", Some(plan_query))
         .expect(200);
@@ -837,7 +849,9 @@ fn scenario_06_validate_index_usage_with_query_plans() {
             Some(json!({"sql": "SELECT * FROM items WHERE category = ?1 AND price > ?2", "params": ["c3", 100]})),
         )
         .expect(200);
-    assert_eq!(sql["indexes_used"], json!(["idx_items_cat_price"]), "{sql}");
+    if !common::postgres() {
+        assert_eq!(sql["indexes_used"], json!(["idx_items_cat_price"]), "{sql}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2051,6 +2065,12 @@ fn scenario_21_restart_the_server_and_verify_persistence() {
 /// while serving, data loss, restore, and every model back.
 #[test]
 fn scenario_22_back_up_and_restore_the_database() {
+    // `backup` on PostgreSQL arrives with FB-150 (pg_basebackup); until then the
+    // command refuses ("snapshot_to is not supported on the postgres backend").
+    if common::postgres() {
+        eprintln!("skipped on postgres: backups are FB-150");
+        return;
+    }
     let mut fb = Fb::start();
     fb.collection(json!({"name": "notes", "fields": [{"name": "text", "type": "text"}]}));
     let rows: Vec<Json> = (0..25).map(|i| json!({"text": format!("note {i}")})).collect();
@@ -2162,7 +2182,9 @@ fn scenario_23_rebuild_derived_indexes() {
             Some(json!({"filter": "category = 'c3'"})),
         )
         .expect(200);
-    assert_eq!(plan["indexes_used"], json!(["idx_items_cat"]), "{plan}");
+    if !common::postgres() {
+        assert_eq!(plan["indexes_used"], json!(["idx_items_cat"]), "{plan}");
+    }
 
     // Offline: the derived files are deleted; the next start rebuilds them.
     fb.stop();
