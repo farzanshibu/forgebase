@@ -8,9 +8,12 @@ import { Button, ErrorView } from "../../components/ui";
 import { notify } from "../../toaster";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { getDatabaseInfo } from "./info";
+import TopQueries from "./TopQueries";
 
 export default function SlowQueries() {
   const { data, error, loading, reload } = useLoad(slowQueries, "slow");
+  const info = useLoad(getDatabaseInfo, "database-info");
   const [threshold, setThreshold] = useState("");
   const [problem, setProblem] = useState<unknown>();
 
@@ -63,6 +66,7 @@ export default function SlowQueries() {
           )}
         </>
       )}
+      {info.data?.backend === "postgres" && <TopQueries />}
     </div>
   );
 }
