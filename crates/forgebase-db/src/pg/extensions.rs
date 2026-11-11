@@ -492,7 +492,10 @@ pub(crate) fn decide(f: Feature, mode: ExtensionMode, usable: Result<(), String>
                     "this database stores its {name} data on the portable engine; {name}.convert moves it to {ext}"
                 ),
             },
-            Err(why) => Decision::Portable { reason: why, pin: false },
+            Err(why) => Decision::Portable {
+                reason: why,
+                pin: false,
+            },
         },
         (_, Some(Pin::Extension)) => match usable {
             Ok(()) => Decision::Use,

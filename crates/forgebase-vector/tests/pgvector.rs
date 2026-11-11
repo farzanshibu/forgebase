@@ -116,7 +116,10 @@ async fn each_field_gets_a_partial_hnsw_index_of_its_metric_and_element_type() {
         );
     }
     assert!(has("m='16'") && has("ef_construction='128'"), "{defs:#?}");
-    assert!(defs.iter().all(|d| d.contains("collection_id = ")), "partial per collection");
+    assert!(
+        defs.iter().all(|d| d.contains("collection_id = ")),
+        "partial per collection"
+    );
 
     let mut rng = Rng::new(5);
     let items: Vec<UpsertItem> = (0..300)
@@ -148,16 +151,24 @@ async fn each_field_gets_a_partial_hnsw_index_of_its_metric_and_element_type() {
         let q: Vec<f32> = stored.vectors[f].iter().map(|x| *x as f32).collect();
         let r = h.svc.search(&ctx, "docs", query(f, &q, 5)).await.unwrap();
         assert_eq!(r.strategy, Strategy::Ann, "{f}");
-        assert_eq!(r.hits[0].id, "i7", "{f}: a stored vector is its own nearest");
-        // Distances are the float4 ones, also through a halfvec index.
         let mut exact = query(f, &q, 5);
         exact.exact = true;
         let e = h.svc.search(&ctx, "docs", exact).await.unwrap();
+        assert_eq!(r.hits[0].id, e.hits[0].id, "{f}: the index finds the exact nearest");
+        if f != "byte" {
+            // Under dot a longer vector can beat the query itself.
+            assert_eq!(r.hits[0].id, "i7", "{f}: a stored vector is its own nearest");
+        }
+        // Distances are the float4 ones, also through a halfvec index.
         assert!((r.hits[0].distance - e.hits[0].distance).abs() < 1e-6, "{f}");
     }
     let q: Vec<f32> = stored.vectors["huge"].iter().map(|x| *x as f32).collect();
     let r = h.svc.search(&ctx, "docs", query("huge", &q, 3)).await.unwrap();
-    assert_eq!((r.strategy, r.hits[0].id.as_str()), (Strategy::Exact, "i7"), "over 4000: exact");
+    assert_eq!(
+        (r.strategy, r.hits[0].id.as_str()),
+        (Strategy::Exact, "i7"),
+        "over 4000: exact"
+    );
     let s = h.svc.stats(&ctx, "docs").await.unwrap();
     for st in &s.indexes {
         assert_eq!(st.engine, "pgvector");
@@ -224,7 +235,9 @@ async fn searches_run_on_the_index_with_their_settings() {
         let r = h.svc.search(&ctx, "docs", req.clone()).await.unwrap();
         assert_eq!(r.hits.len(), 20, "{mode:?}");
         assert!(
-            r.hits.iter().all(|x| x.metadata.as_ref().unwrap()["n"].as_i64().unwrap() >= 1900),
+            r.hits
+                .iter()
+                .all(|x| x.metadata.as_ref().unwrap()["n"].as_i64().unwrap() >= 1900),
             "{mode:?}"
         );
     }
@@ -242,7 +255,10 @@ async fn a_rebuild_reindexes_concurrently() {
     let oid = "SELECT c.oid::bigint FROM pg_class c WHERE c.relname LIKE 'fbv\\_%' AND c.relkind = 'i'";
     let before = scalar(&h, oid).await;
     let started = h.svc.rebuild(&ctx, "docs", None).await.unwrap();
-    assert_eq!((started[0].state, started[0].serving.as_str()), (IndexState::Building, "ann"));
+    assert_eq!(
+        (started[0].state, started[0].serving.as_str()),
+        (IndexState::Building, "ann")
+    );
     // Writes go on while it runs.
     h.svc
         .upsert(&ctx, "docs", vec![item("new", "emb", &[5.0; 16], json!({}))])
@@ -253,8 +269,15 @@ async fn a_rebuild_reindexes_concurrently() {
     let st = &s.indexes[0];
     assert_eq!(st.last_rebuild.as_ref().unwrap().reason, "manual");
     assert_eq!(st.indexed_vectors, 3001);
-    assert_ne!(scalar(&h, oid).await, before, "REINDEX CONCURRENTLY swapped in a new index");
-    assert_eq!(scalar(&h, "SELECT COUNT(*) FROM pg_class WHERE relname LIKE 'fbv\\_%'").await, 1);
+    assert_ne!(
+        scalar(&h, oid).await,
+        before,
+        "REINDEX CONCURRENTLY swapped in a new index"
+    );
+    assert_eq!(
+        scalar(&h, "SELECT COUNT(*) FROM pg_class WHERE relname LIKE 'fbv\\_%'").await,
+        1
+    );
     let r = h.svc.search(&ctx, "docs", query("emb", &vectors[9], 1)).await.unwrap();
     assert_eq!((r.strategy, r.hits[0].id.as_str()), (Strategy::Ann, "v9"));
     let r = h.svc.search(&ctx, "docs", query("emb", &[5.0; 16], 1)).await.unwrap();
@@ -303,11 +326,20 @@ async fn convert_moves_the_vectors_both_ways() {
     if start == VectorEngine::Portable && !pgvector_installed(&h.db).await {
         let err = h.svc.convert(&ctx, VectorEngine::Pgvector).await.unwrap_err();
         assert!(
-            matches!(err, VectorError::Invalid { code: "pgvector_unavailable", .. }),
+            matches!(
+                err,
+                VectorError::Invalid {
+                    code: "pgvector_unavailable",
+                    ..
+                }
+            ),
             "{err:?}"
         );
         let r = h.svc.convert(&ctx, VectorEngine::Portable).await.unwrap();
-        assert_eq!((r.from, r.to, r.vectors), (VectorEngine::Portable, VectorEngine::Portable, 0));
+        assert_eq!(
+            (r.from, r.to, r.vectors),
+            (VectorEngine::Portable, VectorEngine::Portable, 0)
+        );
         return;
     }
     create(
@@ -354,14 +386,25 @@ async fn convert_moves_the_vectors_both_ways() {
         };
         assert_eq!(meta(&h).await.as_deref(), Some(pinned));
         assert_eq!(
-            scalar(&h, "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vec IS NOT NULL").await,
+            scalar(
+                &h,
+                "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vec IS NOT NULL"
+            )
+            .await,
             vec_rows
         );
         assert_eq!(
-            scalar(&h, "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vector IS NOT NULL").await,
+            scalar(
+                &h,
+                "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vector IS NOT NULL"
+            )
+            .await,
             bytea_rows
         );
-        assert_eq!(scalar(&h, "SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'").await, hnsw);
+        assert_eq!(
+            scalar(&h, "SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'").await,
+            hnsw
+        );
         wait_ready(&h.svc, &ctx, "docs").await;
         // The same vectors and answers on either engine.
         let after = vectors_of(&h, &ctx, &sample).await;
@@ -373,11 +416,27 @@ async fn convert_moves_the_vectors_both_ways() {
         let r = h.svc.search(&ctx, "docs", query("emb", &q, 10)).await.unwrap();
         assert_eq!((r.strategy, r.hits[0].id.as_str()), (Strategy::Ann, "v7"));
         let s = h.svc.stats(&ctx, "docs").await.unwrap();
-        let engine = if to == VectorEngine::Pgvector { "pgvector" } else { "usearch" };
-        assert!(s.indexes.iter().all(|i| i.engine == engine && i.indexed_vectors == 400), "{s:?}");
+        let engine = if to == VectorEngine::Pgvector {
+            "pgvector"
+        } else {
+            "usearch"
+        };
+        assert!(
+            s.indexes.iter().all(|i| i.engine == engine && i.indexed_vectors == 400),
+            "{s:?}"
+        );
         // Writes after the conversion land in the new storage.
         h.svc
-            .upsert(&ctx, "docs", vec![item("late", "emb", &[0.0, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], json!({}))])
+            .upsert(
+                &ctx,
+                "docs",
+                vec![item(
+                    "late",
+                    "emb",
+                    &[0.0, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    json!({}),
+                )],
+            )
             .await
             .unwrap();
         h.svc.delete_items(&ctx, "docs", vec!["late".into()]).await.unwrap();
@@ -403,30 +462,52 @@ async fn vectors_in_the_other_column_are_moved_at_open() {
     // Portable rows under a pgvector pin (databases set up between FB-161
     // and FB-162): convert away, then put the pin back behind its back.
     h.svc.convert(&ctx, VectorEngine::Portable).await.unwrap();
-    exec(&h, "UPDATE _forgebase_meta SET value = 'extension' WHERE key = 'ext.vector.engine'").await;
+    exec(
+        &h,
+        "UPDATE _forgebase_meta SET value = 'extension' WHERE key = 'ext.vector.engine'",
+    )
+    .await;
     let h = h.reopen_without_shutdown(cfg(10)).await;
     assert_eq!(h.svc.storage_engine().await, VectorEngine::Pgvector);
     assert_eq!(
-        scalar(&h, "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vector IS NOT NULL").await,
+        scalar(
+            &h,
+            "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vector IS NOT NULL"
+        )
+        .await,
         0
     );
     wait_ready(&h.svc, &ctx, "docs").await;
     let s = h.svc.stats(&ctx, "docs").await.unwrap();
     assert_eq!(s.indexes[0].last_rebuild.as_ref().unwrap().reason, "missing");
-    assert_eq!(h.svc.get_item(&ctx, "docs", "v3").await.unwrap().vectors, before.vectors);
+    assert_eq!(
+        h.svc.get_item(&ctx, "docs", "v3").await.unwrap().vectors,
+        before.vectors
+    );
     let r = h.svc.search(&ctx, "docs", query("emb", &vectors[3], 1)).await.unwrap();
     assert_eq!((r.strategy, r.hits[0].id.as_str()), (Strategy::Ann, "v3"));
 
     // pgvector rows under a portable pin (a conversion that stopped before
     // its last batch): moved back, the leftover index dropped.
-    exec(&h, "UPDATE _forgebase_meta SET value = 'portable' WHERE key = 'ext.vector.engine'").await;
+    exec(
+        &h,
+        "UPDATE _forgebase_meta SET value = 'portable' WHERE key = 'ext.vector.engine'",
+    )
+    .await;
     let h = h.reopen_without_shutdown(cfg(10)).await;
     assert_eq!(h.svc.storage_engine().await, VectorEngine::Portable);
     assert_eq!(
-        scalar(&h, "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vec IS NOT NULL").await,
+        scalar(
+            &h,
+            "SELECT COUNT(*) FROM _forgebase_vector_values WHERE vec IS NOT NULL"
+        )
+        .await,
         0
     );
-    assert_eq!(h.svc.get_item(&ctx, "docs", "v3").await.unwrap().vectors, before.vectors);
+    assert_eq!(
+        h.svc.get_item(&ctx, "docs", "v3").await.unwrap().vectors,
+        before.vectors
+    );
     let deadline = Instant::now() + Duration::from_secs(30);
     while scalar(&h, "SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'").await > 0 {
         assert!(Instant::now() < deadline, "leftover HNSW index not dropped");
@@ -444,9 +525,17 @@ async fn a_layout_mismatch_falls_back_to_portable_and_refuses_conversion() {
         return;
     }
     let ctx = admin();
-    exec(&h, "ALTER TABLE _forgebase_vector_values RENAME COLUMN vec TO vec_moved").await;
+    exec(
+        &h,
+        "ALTER TABLE _forgebase_vector_values RENAME COLUMN vec TO vec_moved",
+    )
+    .await;
     let h = h.reopen_without_shutdown(cfg(10)).await;
-    assert_eq!(h.svc.storage_engine().await, VectorEngine::Portable, "falls back with a warning");
+    assert_eq!(
+        h.svc.storage_engine().await,
+        VectorEngine::Portable,
+        "falls back with a warning"
+    );
     let err = h.svc.convert(&ctx, VectorEngine::Pgvector).await.unwrap_err();
     assert!(
         matches!(&err, VectorError::Invalid { code: "pgvector_unavailable", message } if message.contains("no column vec")),
@@ -458,7 +547,10 @@ async fn a_layout_mismatch_falls_back_to_portable_and_refuses_conversion() {
         .upsert(&ctx, "docs", vec![item("a", "emb", &[1.0, 2.0], json!({}))])
         .await
         .unwrap();
-    assert_eq!(h.svc.get_item(&ctx, "docs", "a").await.unwrap().vectors["emb"], vec![1.0, 2.0]);
+    assert_eq!(
+        h.svc.get_item(&ctx, "docs", "a").await.unwrap().vectors["emb"],
+        vec![1.0, 2.0]
+    );
 }
 
 #[tokio::test]
@@ -485,7 +577,14 @@ async fn bench_recall_and_latency() {
     let h = harness_with(cfg(0)).await;
     let ctx = admin();
     let engine = h.svc.storage_engine().await;
-    create(&h.svc, &ctx, "bench", vec![field("emb", DIM as u32, Metric::Cosine)], None).await;
+    create(
+        &h.svc,
+        &ctx,
+        "bench",
+        vec![field("emb", DIM as u32, Metric::Cosine)],
+        None,
+    )
+    .await;
     let t = Instant::now();
     let vectors = fill(&h.svc, &ctx, "bench", "emb", N, DIM, 42).await;
     wait_ready(&h.svc, &ctx, "bench").await;

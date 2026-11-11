@@ -638,7 +638,11 @@ async fn corrupt_stale_and_foreign_version_files_are_rebuilt() {
     let dir = index_dir(h.dir.path());
     if on_pgvector(&h.svc).await {
         // No index files to damage; a crash after unsaved writes loses nothing.
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "pgvector writes no index files");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "pgvector writes no index files"
+        );
         let h = h.reopen_without_shutdown(small(10)).await;
         same(&before, &queries(&h, &ctx, &qs).await);
         h.svc
@@ -722,7 +726,11 @@ async fn searches_fall_back_to_exact_while_the_index_is_rebuilt() {
         drop_hnsw_indexes(&h).await;
         let h = h.reopen_without_shutdown(small(10)).await;
         let r = h.svc.search(&ctx, "docs", query("emb", &vectors[42], 5)).await.unwrap();
-        assert!(matches!(r.strategy, Strategy::ExactFallback | Strategy::Ann), "{:?}", r.strategy);
+        assert!(
+            matches!(r.strategy, Strategy::ExactFallback | Strategy::Ann),
+            "{:?}",
+            r.strategy
+        );
         assert_eq!(r.hits[0].id, "v42");
         wait_ready(&h.svc, &ctx, "docs").await;
         let r = h.svc.search(&ctx, "docs", query("emb", &vectors[42], 5)).await.unwrap();
@@ -769,9 +777,8 @@ async fn searches_fall_back_to_exact_while_the_index_is_rebuilt() {
 
 /// Drops ForgeBase's HNSW indexes directly (pgvector engine).
 async fn drop_hnsw_indexes(h: &Harness) {
-    let rows = h
-        .db
-        .fetch_all(&forgebase_db::Statement::raw(
+    let rows =
+        h.db.fetch_all(&forgebase_db::Statement::raw(
             "SELECT indexname::text FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'",
         ))
         .await
@@ -790,15 +797,14 @@ async fn drop_hnsw_indexes(h: &Harness) {
 
 /// ForgeBase's HNSW indexes in the database (pgvector engine).
 async fn hnsw_indexes(h: &Harness) -> i64 {
-    h.db
-        .fetch_all(&forgebase_db::Statement::raw(
-            "SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'",
-        ))
-        .await
-        .unwrap()
-        .scalar()
-        .and_then(forgebase_db::Value::as_i64)
-        .unwrap()
+    h.db.fetch_all(&forgebase_db::Statement::raw(
+        "SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'fbv\\_%'",
+    ))
+    .await
+    .unwrap()
+    .scalar()
+    .and_then(forgebase_db::Value::as_i64)
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

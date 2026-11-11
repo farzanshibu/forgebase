@@ -75,12 +75,10 @@ fn lit(s: &str) -> String {
 }
 
 fn parse_version(v: &str) -> (u32, u32, u32) {
-    let mut it = v.split(|c: char| !c.is_ascii_digit()).map(|p| p.parse::<u32>().unwrap_or(0));
-    (
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-    )
+    let mut it = v
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
 }
 
 fn bad(what: &str) -> VectorError {
@@ -205,7 +203,9 @@ pub(crate) async fn probe(db: &dyn Backend) -> Result<std::result::Result<Pgv, V
         ))
         .await?;
     let Some(r) = rows.rows.first() else {
-        return Ok(Err(vec!["the vector extension (pgvector) is not installed in this database".into()]));
+        return Ok(Err(vec![
+            "the vector extension (pgvector) is not installed in this database".into(),
+        ]));
     };
     let version = r[0].as_str().unwrap_or_default().to_owned();
     let schema_name = r[1].as_str().unwrap_or_default().to_owned();
@@ -250,10 +250,7 @@ async fn columns(db: &dyn Backend) -> Result<HashMap<String, (String, bool)>> {
         .map(|r| {
             (
                 r[0].as_str().unwrap_or_default().to_owned(),
-                (
-                    r[1].as_str().unwrap_or_default().to_owned(),
-                    r[2].as_i64() == Some(1),
-                ),
+                (r[1].as_str().unwrap_or_default().to_owned(), r[2].as_i64() == Some(1)),
             )
         })
         .collect())
@@ -964,7 +961,11 @@ mod tests {
     #[test]
     fn index_ddl_names_the_cast_metric_and_predicate() {
         let s = spec(7, &field(16, Quantization::F32, Metric::Cosine));
-        assert!(s.name.starts_with("fbv_7_") && s.name.len() == "fbv_7_".len() + 12, "{}", s.name);
+        assert!(
+            s.name.starts_with("fbv_7_") && s.name.len() == "fbv_7_".len() + 12,
+            "{}",
+            s.name
+        );
         let sql = s.create_sql(&pgv(), true).unwrap();
         assert_eq!(
             sql,
@@ -976,10 +977,18 @@ mod tests {
             )
         );
         let wide = spec(7, &field(3000, Quantization::F32, Metric::Dot));
-        assert!(wide.create_sql(&pgv(), false).unwrap().contains("halfvec(3000))) \"forgebase\".halfvec_ip_ops"));
+        assert!(
+            wide.create_sql(&pgv(), false)
+                .unwrap()
+                .contains("halfvec(3000))) \"forgebase\".halfvec_ip_ops")
+        );
         let l2 = spec(7, &field(8, Quantization::I8, Metric::L2));
         assert!(l2.create_sql(&pgv(), false).unwrap().contains("halfvec_l2_ops"));
-        assert!(spec(7, &field(4096, Quantization::F32, Metric::L2)).create_sql(&pgv(), true).is_none());
+        assert!(
+            spec(7, &field(4096, Quantization::F32, Metric::L2))
+                .create_sql(&pgv(), true)
+                .is_none()
+        );
         // Another incarnation of the field (or other parameters): another name.
         let mut again = field(16, Quantization::F32, Metric::Cosine);
         again.created = "2026-11-12T00:00:00Z".into();

@@ -289,11 +289,7 @@ pub trait Backend: Send + Sync + fmt::Debug {
     /// [`DbError::Unsupported`] (SQLite has no such statements).
     fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
         let _ = statements;
-        Box::pin(async {
-            Err(DbError::Unsupported(
-                "maintenance statements need PostgreSQL".into(),
-            ))
-        })
+        Box::pin(async { Err(DbError::Unsupported("maintenance statements need PostgreSQL".into())) })
     }
 }
 

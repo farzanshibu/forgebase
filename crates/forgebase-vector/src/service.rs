@@ -431,9 +431,7 @@ impl VectorService {
                     let idx = match &storage {
                         Storage::Portable => FieldIndex::unloaded(f, &dir),
                         Storage::Pgvector(_) => {
-                            let valid = pg_indexes
-                                .get(&pg::spec(row.id, &f).name)
-                                .is_some_and(|i| i.valid);
+                            let valid = pg_indexes.get(&pg::spec(row.id, &f).name).is_some_and(|i| i.valid);
                             FieldIndex::on_postgres(f, &dir, valid)
                         }
                     };
@@ -498,7 +496,10 @@ impl VectorService {
             if let Ok(pgv) = &probe {
                 let n = pg::move_all(db, pgv, VectorEngine::Portable, rows, false).await?;
                 if n > 0 {
-                    tracing::info!(vectors = n, "vectors of an unfinished conversion moved back to the portable engine");
+                    tracing::info!(
+                        vectors = n,
+                        "vectors of an unfinished conversion moved back to the portable engine"
+                    );
                 }
             }
             return Ok(Storage::Portable);
@@ -1054,8 +1055,7 @@ impl VectorService {
         let info = pg::indexes(db).await?.remove(&spec.name);
         let valid = info.as_ref().is_some_and(|i| i.valid);
         f.pg_valid.store(valid, Ordering::Relaxed);
-        f.pg_bytes
-            .store(info.map(|i| i.bytes).unwrap_or(0), Ordering::Relaxed);
+        f.pg_bytes.store(info.map(|i| i.bytes).unwrap_or(0), Ordering::Relaxed);
         f.pg_indexed.store(total, Ordering::Relaxed);
         if self.superseded(coll, f, generation) {
             return Ok(());
@@ -2341,9 +2341,12 @@ impl VectorService {
             state: st.state,
             serving: if valid { "ann" } else { "exact" }.to_owned(),
             reason: st.reason.clone().or_else(|| {
-                spec.elem
-                    .is_none()
-                    .then(|| format!("pgvector indexes at most {} dimensions: exact search", pg::MAX_HALFVEC_DIMS))
+                spec.elem.is_none().then(|| {
+                    format!(
+                        "pgvector indexes at most {} dimensions: exact search",
+                        pg::MAX_HALFVEC_DIMS
+                    )
+                })
             }),
             progress: (st.state == IndexState::Building).then(|| f.progress()),
             canonical_vectors: canonical,

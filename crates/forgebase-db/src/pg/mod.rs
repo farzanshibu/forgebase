@@ -1159,9 +1159,7 @@ impl Backend for PgDatabase {
     fn maintenance<'a>(&'a self, statements: &'a [String]) -> BoxFuture<'a, Result<(), DbError>> {
         Box::pin(async move {
             if self.inner.read_only {
-                return Err(DbError::ReadOnly(
-                    "maintenance statements need the primary".into(),
-                ));
+                return Err(DbError::ReadOnly("maintenance statements need the primary".into()));
             }
             let opts = (*self.inner.writer.connect_options()).clone();
             let mut conn = sqlx::PgConnection::connect_with(&opts)

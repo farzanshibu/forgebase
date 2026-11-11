@@ -328,7 +328,12 @@ pub(crate) async fn replace_vectors(
         let stmt = match pgv {
             None => Statement::new(
                 "INSERT INTO _forgebase_vector_values (collection_id, field, key, vector) VALUES (?1, ?2, ?3, ?4)",
-                vec![cid.into(), (*field).into(), int_of(k), Value::Blob(crate::metric::encode(v))],
+                vec![
+                    cid.into(),
+                    (*field).into(),
+                    int_of(k),
+                    Value::Blob(crate::metric::encode(v)),
+                ],
             ),
             Some(p) => Statement::new(
                 format!(
