@@ -43,5 +43,5 @@ export const TOPOLOGY_PATH = "/system/topology";
 export const SQLITE_NOTICE = "This project uses SQLite. PostgreSQL is the default now: `forgebase db convert --to postgres` moves it.";
 
 /** True when the System studio should show the SQLite notice. */
-export const showSqliteNotice = (db: Pick<DatabaseInfo, "backend" | "default_backend"> | undefined): boolean =>
+export const showSqliteNotice = (db: Partial<Pick<DatabaseInfo, "backend" | "default_backend">> | undefined): boolean =>
   db?.backend === "sqlite" && db.default_backend === "postgres";
