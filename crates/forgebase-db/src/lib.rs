@@ -50,6 +50,10 @@ pub use backend::{
     Backend, BoxFuture, ExecResult, PlanStep, QueryLabel, Rows, SlowQuery, Statement, TxMode, Value, WriteTx,
 };
 pub use dialect::{ColumnType, Dialect, JsonPathSeg, PG_FULLTEXT_SETUP, PG_UNACCENT_FN, PgDialect, SqliteDialect};
+pub use pg::extensions::{
+    EXTENSION_DDL, EXTENSION_SCHEMA, ExtensionDdl, ExtensionError, ExtensionReport, ExtensionSetup, Feature,
+    FeatureState, FeatureStatus,
+};
 pub use pg::placeholders::{PlaceholderError, Translated, translate as translate_placeholders};
 pub use router::{DbRouter, RouterError, RouterOptions, SetConnector, SetHandle, TenantRef};
 pub use routing::{Lsn, PrimaryOnly, ReadRequest, ReadRouter, ReadTarget};
@@ -303,6 +307,10 @@ pub struct DatabaseInfo {
     pub server_version: String,
     /// Server connections to this database (PostgreSQL only).
     pub connections: Option<u32>,
+    /// Per accelerated feature, the engine it runs on (ADR-0029 §1.1), as
+    /// [`Database::setup_extensions`] left it; empty on SQLite and before
+    /// the setup ran.
+    pub features: Vec<FeatureStatus>,
 }
 
 /// Effective connection settings, read back from SQLite.
@@ -425,6 +433,56 @@ impl Database {
             Inner::Sqlite(db) => db.info().await,
             Inner::Postgres(db) => db.info().await,
         }
+    }
+
+    /// Sets up the PostgreSQL extensions the accelerated features use
+    /// (ADR-0029 §1.1): detects
+    /// what the server offers, decides each feature's engine from its mode
+    /// and its stored data, creates the extensions in use (superuser-only
+    /// ones through [`ExtensionSetup::admin_url`]), grants their schemas,
+    /// and applies their versioned DDL ([`EXTENSION_DDL`], recorded as
+    /// `ext.<feature>.schema`). Run it after [`Database::migrate`], once per
+    /// start; the result is kept for [`Database::feature_active`] and
+    /// [`Database::info`]. SQLite: an empty report, nothing to do.
+    ///
+    /// # Errors
+    /// [`ExtensionError::Refused`] when a feature is `on` without a usable
+    /// extension, or the configured mode contradicts the engine the
+    /// database stores that feature's data with (all problems at once).
+    pub async fn setup_extensions(&self, setup: &ExtensionSetup) -> Result<ExtensionReport, ExtensionError> {
+        match &*self.inner {
+            Inner::Sqlite(_) => Ok(ExtensionReport::default()),
+            Inner::Postgres(db) => db.setup_extensions(setup).await,
+        }
+    }
+
+    /// What [`Database::setup_extensions`] would decide, without creating,
+    /// granting or recording anything (one-off commands, diagnostics).
+    /// SQLite: an empty report.
+    pub async fn detect_extensions(
+        &self,
+        modes: &forgebase_core::config::PostgresExtensions,
+    ) -> Result<ExtensionReport, DbError> {
+        match &*self.inner {
+            Inner::Sqlite(_) => Ok(ExtensionReport::default()),
+            Inner::Postgres(db) => db.detect_extensions(modes).await,
+        }
+    }
+
+    /// The report of the latest [`Database::setup_extensions`] on this
+    /// handle; `None` on SQLite and before it ran.
+    pub fn extensions(&self) -> Option<Arc<ExtensionReport>> {
+        match &*self.inner {
+            Inner::Sqlite(_) => None,
+            Inner::Postgres(db) => db.extension_report(),
+        }
+    }
+
+    /// Whether `feature` runs on its PostgreSQL extension: how the
+    /// accelerated engines choose their path. No query; `false` on SQLite
+    /// and until [`Database::setup_extensions`] ran.
+    pub fn feature_active(&self, feature: Feature) -> bool {
+        self.extensions().is_some_and(|r| r.is_active(feature))
     }
 
     /// Checks the database for damage and returns the problems found (empty

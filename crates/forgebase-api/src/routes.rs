@@ -127,54 +127,56 @@ struct DatabaseSummary {
     features: Map<String, Value>,
 }
 
-/// `database.features` of the system info: for each accelerated feature its
-/// configured mode, the PostgreSQL extension and whether the server has it.
-/// Every feature runs on its portable engine until its accelerator package
-/// (FB-161 to FB-166) switches it over, so `engine` is `portable` here.
+/// `database.features` of the system info (ADR-0029 §1.1): per accelerated
+/// feature the engine it runs on (`pgvector 0.8.7` or `portable`), its
+/// state (`active`, `portable`, `off`), mode, extension and versions, and
+/// why it is portable. From the server's extension setup; a process that
+/// did not run it (tests, tools) detects without changing anything.
 async fn feature_engines(state: &AppState) -> Map<String, Value> {
     let mut out = Map::new();
-    let rt = state.database_runtime();
-    if state.db().kind() != forgebase_db::BackendKind::Postgres {
+    let db = state.db();
+    if db.kind() != forgebase_db::BackendKind::Postgres {
         return out;
     }
-    let names: Vec<&str> = rt.extensions.iter().map(|(_, ext, _)| *ext).collect();
-    let mut found: std::collections::BTreeMap<String, (Option<String>, Option<String>)> = Default::default();
-    let list = names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join(", ");
-    if !names.is_empty() {
-        let stmt = forgebase_db::Statement::raw(format!(
-            "SELECT a.name::text, a.default_version::text, e.extversion::text \
-             FROM pg_available_extensions a LEFT JOIN pg_extension e ON e.extname = a.name \
-             WHERE a.name IN ({list})"
-        ));
-        match forgebase_db::Backend::fetch_all(state.db(), &stmt).await {
-            Ok(rows) => {
-                for row in rows.rows {
-                    let text = |i: usize| row.get(i).and_then(|v| v.as_str()).map(str::to_owned);
-                    if let Some(name) = text(0) {
-                        found.insert(name, (text(1), text(2)));
-                    }
+    let report = match db.extensions() {
+        Some(r) => (*r).clone(),
+        None => {
+            let mut modes = forgebase_core::config::PostgresExtensions::default();
+            for (feature, _, mode) in &state.database_runtime().extensions {
+                let Ok(mode) = mode.parse::<forgebase_core::config::ExtensionMode>() else {
+                    continue;
+                };
+                match forgebase_db::Feature::from_name(feature) {
+                    Some(forgebase_db::Feature::Vector) => modes.vector = mode,
+                    Some(forgebase_db::Feature::Graph) => modes.graph = mode,
+                    Some(forgebase_db::Feature::Queue) => modes.queue = mode,
+                    Some(forgebase_db::Feature::Cron) => modes.cron = mode,
+                    Some(forgebase_db::Feature::Trigram) => modes.trigram = mode,
+                    None => {}
                 }
             }
-            Err(e) => tracing::debug!(error = %e, "cannot list PostgreSQL extensions"),
+            match db.detect_extensions(&modes).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(error = %e, "cannot detect PostgreSQL extensions");
+                    return out;
+                }
+            }
         }
-    }
-    for (feature, ext, mode) in &rt.extensions {
-        let (available, installed) = found.get(*ext).cloned().unwrap_or((None, None));
-        let state = match (*mode, &available, &installed) {
-            ("off", _, _) => "off",
-            (_, _, Some(_)) => "installed",
-            (_, Some(_), None) => "available",
-            _ => "unavailable",
-        };
+    };
+    for f in report.features {
         out.insert(
-            (*feature).to_owned(),
+            f.feature.name().to_owned(),
             json!({
-                "engine": "portable",
-                "mode": mode,
-                "extension": ext,
-                "available": available,
-                "installed": installed,
-                "state": state,
+                "engine": f.engine,
+                "state": f.state.as_str(),
+                "mode": f.mode.as_str(),
+                "extension": f.extension,
+                "available": f.available,
+                "installed": f.installed,
+                "schema": f.schema,
+                "schema_version": f.schema_version,
+                "reason": f.reason,
             }),
         );
     }

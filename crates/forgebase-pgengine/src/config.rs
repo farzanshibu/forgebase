@@ -94,6 +94,8 @@ pub struct EngineConfig {
     pub settings: BTreeMap<String, String>,
     /// pg_cron preload (`[database.postgres.extensions] cron`).
     pub cron: ExtensionMode,
+    /// Apache AGE preload per role (`[database.postgres.extensions] graph`).
+    pub graph: ExtensionMode,
     /// `log_min_duration_statement` (the slow-query threshold); `None` = off.
     pub slow_query: Option<Duration>,
     /// How long to wait for the engine to accept connections.
@@ -121,6 +123,7 @@ impl Default for EngineConfig {
             socket_port: 5432,
             settings: BTreeMap::new(),
             cron: ExtensionMode::Auto,
+            graph: ExtensionMode::Auto,
             slow_query: None,
             ready_timeout: Duration::from_secs(30),
             stop_timeout: Duration::from_secs(30),
