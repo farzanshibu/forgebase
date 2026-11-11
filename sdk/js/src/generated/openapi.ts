@@ -1743,6 +1743,420 @@ export interface paths {
         patch: operations["doc_system_config"];
         trace?: never;
     };
+    "/api/system/database/agent/join": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `forgebase node join`: redeems a join token (`401 join_token_invalid`,
+         *     `409 engine_mismatch`) and returns the agent's grant.
+         */
+        post: operations["database_agent_join"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/agent/nodes/{id}/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The agent's long-poll for commands (`?wait_ms=`, `resend=1`). */
+        get: operations["database_agent_commands"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/agent/nodes/{id}/heartbeat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The agent's heartbeat (state, replay position, free disk, command answers). */
+        post: operations["database_agent_heartbeat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/join-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A one-time token (15 minutes) and the `forgebase node join` command
+         *     that adds a replica on another host. The token is shown once; the
+         *     audit log records its id.
+         */
+        post: operations["database_join_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a replica: `local` clones one on this server (`202` operation
+         *     `database.node.add`); `external` registers one you run (`201` node).
+         */
+        post: operations["database_node_add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/nodes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One node with its lag history (last hour, one-minute buckets). */
+        get: operations["database_node"];
+        put?: never;
+        post?: never;
+        /**
+         * Removes a replica (`?confirm=<name>`); its replication slot is dropped.
+         *     MFA step-up.
+         */
+        delete: operations["database_node_remove"];
+        options?: never;
+        head?: never;
+        /** Changes a replica's weight (share of reads; 0 takes it out of rotation). */
+        patch: operations["database_node_update"];
+        trace?: never;
+    };
+    "/api/system/database/nodes/{id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promotes a replica to primary (`202` operation `database.promote`).
+         *     MFA step-up. After a promote of control's primary the server must be
+         *     restarted (`restart_required` in the topology).
+         */
+        post: operations["database_node_promote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/nodes/{id}/promote-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The promote dialog's estimate: the replica's position against the
+         *     primary's, and whether the primary answers.
+         */
+        get: operations["database_node_promote_check"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/nodes/{id}/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebuilds a replica (fresh clone), or rejoins an old primary that needs
+         *     a rebuild (`pg_rewind`, else a fresh clone): `202` operation
+         *     `database.node.rebuild`.
+         */
+        post: operations["database_node_rebuild"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Topology operations, newest first (`?active=1`: queued and running only). */
+        get: operations["database_operations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/operations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One operation. */
+        get: operations["database_operation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/operations/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancels an operation at its next safe point (`409
+         *     operation_not_cancellable` past it, for example after a promote's fence).
+         */
+        post: operations["database_operation_cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/placements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tenants with their set, project, size estimate and state; filters
+         *     `set`, `project`, `q`; `cursor` and `limit` pages.
+         */
+        get: operations["database_placements"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/placements/{tenant}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moves a tenant to another set online (`{to, confirm}`: `202`
+         *     operation `database.tenant.move`; ADR-0029 §3.8). MFA step-up. Moving
+         *     back to the set a move came from is its undo.
+         */
+        post: operations["database_tenant_move"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/rebalance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs a rebalance plan (`{plan_id, confirm}`: `202` operation
+         *     `database.rebalance`), its moves one at a time. MFA step-up.
+         */
+        post: operations["database_rebalance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/rebalance/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A rebalance plan (moves, sizes, freeze estimates; ADR-0029 §3.9): whole
+         *     projects from the most to the least loaded set until the spread of load
+         *     scores is within 10 % or `max_moves` (default 20). Changes nothing; the
+         *     plan can be run for an hour.
+         */
+        post: operations["database_rebalance_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/retired": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Data of removed shards kept on this server's disk
+         *     (`postgres/retired/<name>-<time>`).
+         */
+        get: operations["database_retired"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/retired/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deletes the data of a removed shard (`?confirm=<node name>`). MFA step-up. */
+        delete: operations["database_retired_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/shards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adds a shard with its primary (`202` operation `database.shard.add`):
+         *     migrated, catalog replayed, subscribed to control, then `active`.
+         */
+        post: operations["database_shard_add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/system/database/shards/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes an empty shard (`?confirm=<name>`; `409 shard_not_empty`).
+         *     MFA step-up.
+         */
+        delete: operations["database_shard_remove"];
+        options?: never;
+        head?: never;
+        /**
+         * Changes a shard: `state` `active` or `draining` (takes no new tenants;
+         *     moving its tenants out comes with FB-174), `weight`, `hosts_tenants`.
+         */
+        patch: operations["database_shard_update"];
+        trace?: never;
+    };
+    "/api/system/database/topology": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sets, nodes, health, lag, tenant counts, epoch and running operations. */
+        get: operations["database_topology"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/features": {
         parameters: {
             query?: never;
@@ -2949,7 +3363,7 @@ export interface paths {
         };
         /**
          * Lists records.
-         * @description Query string: `filter`, `p.<name>` (filter parameters), `sort` (`-created,name`), `fields`, `expand`, `search`, `page`, `per_page` (max 500), `cursor`, `skip_total`.
+         * @description Query string: `filter`, `p.<name>` (filter parameters), `sort` (`-created,name`), `fields`, `expand`, `search` (full text; the words are ANDed), `fuzzy` (trigram match, PostgreSQL with pg_trgm: `400 fuzzy_unsupported` elsewhere), `fuzzy_fields` (fields with a trigram index), `fuzzy_threshold` (0 to 1, default 0.3), `page`, `per_page` (max 500), `cursor`, `skip_total`.
          */
         get: operations["records_list"];
         put?: never;
@@ -4289,6 +4703,48 @@ export interface paths {
         get: operations["types"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/graph/cypher": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A read-only openCypher query on the tenant's derived Apache AGE graph
+         *     (PostgreSQL with AGE; FB-163). Needs `engine:graph_cypher`; the caller's
+         *     graph label and edge-type rules apply inside the query. The first query
+         *     of a tenant builds the graph (`409 graph_materialising` with the job id).
+         */
+        post: operations["graph_cypher"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/graph/cypher/drop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Drops the tenant's derived openCypher graph (rebuilt on next use; the
+         *     REST graph is not touched). Needs `engine:graph_cypher`.
+         */
+        post: operations["graph_cypher_drop"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6673,6 +7129,7 @@ export interface paths {
         /**
          * Runs one parameterised SQL statement. Reads return at most 10 000 rows
          *     (`truncated`); transaction control, `ATTACH`, `VACUUM` and writable pragmas are refused.
+         *     Secret columns are masked unless the body sets `show_secrets` (audited).
          */
         post: operations["execute"];
         delete?: never;
@@ -6690,7 +7147,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Runs 1 to 1000 statements in one all-or-nothing transaction. */
+        /**
+         * Runs 1 to 1000 statements in one all-or-nothing transaction. With
+         *     `show_secrets` the audit entry commits with the batch.
+         */
         post: operations["sql_batch"];
         delete?: never;
         options?: never;
@@ -6739,7 +7199,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One table or view. */
+        /**
+         * One table or view. System tables are described to administrators only;
+         *     anyone else gets 404, as for a missing table.
+         */
         get: operations["table"];
         put?: never;
         post?: never;
@@ -7004,6 +7467,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage/maintenance/rotate-signing-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replaces the URL signing key: every signed URL issued so far stops
+         *     working (administrators).
+         */
+        post: operations["rotate_signing_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/storage/signed/{bucket}/{key}": {
         parameters: {
             query?: never;
@@ -7197,6 +7680,106 @@ export interface paths {
         /** Applies a retention policy now. */
         post: operations["prune_backups"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/db-logins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every named login. */
+        get: operations["db_logins_list"];
+        put?: never;
+        /**
+         * Creates a login bound to one principal and at most one tenant. The
+         *     password is shown once.
+         */
+        post: operations["db_logins_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/db-logins/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One login. */
+        get: operations["db_logins_get"];
+        put?: never;
+        post?: never;
+        /** Drops a login: its sessions end and its role is removed. */
+        delete: operations["db_logins_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/db-logins/{name}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A new password (and optionally a new expiry). Open sessions stay. */
+        post: operations["db_logins_rotate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/extensions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The allow list and the feature extensions, with what the engine offers
+         *     and what is installed.
+         */
+        get: operations["extensions_list"];
+        put?: never;
+        /**
+         * Creates an allowed extension in schema `public`, as the database
+         *     administrator. Idempotent.
+         */
+        post: operations["extensions_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/extensions/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Drops an extension this endpoint manages (`RESTRICT`: refused while
+         *     objects use it).
+         */
+        delete: operations["extensions_drop"];
         options?: never;
         head?: never;
         patch?: never;
@@ -7809,6 +8392,11 @@ export interface components {
              */
             version: number;
         };
+        /** @description `202 Accepted` body. */
+        Accepted: {
+            /** @description The operation. */
+            operation: components["schemas"]["Operation"];
+        };
         /** @description Versions to accept. */
         AcceptInput: {
             /** @description Agreements and the version accepted. */
@@ -7855,6 +8443,31 @@ export interface components {
             permission: components["schemas"]["Permission"];
             /** @description Key prefix the grant covers (`""`: the whole bucket). */
             prefix?: string;
+        };
+        /** @description Answer of `POST /api/system/database/nodes`: an operation (`local`) or the node (`external`). */
+        Added: {
+            node?: components["schemas"]["NodeInfo"] | null;
+            operation?: components["schemas"]["Operation"] | null;
+        };
+        /** @description Body of `POST /api/system/database/nodes`. */
+        AddNode: {
+            /**
+             * @description `local` (a replica on this server, cloned now), or `external` (a
+             *     replica you run, at `url`). Replicas on other hosts join with a
+             *     join token instead.
+             */
+            kind: string;
+            /** @description Node name: 1 to 32 of `a-z 0-9 - _`, not `primary`. */
+            name: string;
+            /** @description Set id (default `control`). */
+            set?: string;
+            /** @description `external` only: `postgres://` URL (stored sealed, never shown again). */
+            url?: string | null;
+            /**
+             * Format: int32
+             * @description Share of replica reads (default 1).
+             */
+            weight?: number | null;
         };
         /** @description An add-on. */
         Addon: {
@@ -7906,6 +8519,18 @@ export interface components {
              * @description Quantity (0 removes it).
              */
             quantity: number;
+        };
+        /** @description Body of `POST /api/system/database/shards`. */
+        AddShard: {
+            /** @description Display name (unique ignoring case). */
+            name: string;
+            /** @description Its primary. */
+            node: components["schemas"]["ShardNode"];
+            /**
+             * Format: int32
+             * @description Relative capacity (default 1).
+             */
+            weight?: number | null;
         };
         AggregateBody: {
             aggregates?: components["schemas"]["AggregateSpecBody"][] | null;
@@ -8101,6 +8726,8 @@ export interface components {
             key: string;
             name?: string | null;
             scopes?: string[] | null;
+            /** @description Tenant the key is bound to (FB-138). */
+            tenant?: string | null;
         };
         /** @description Body of the token and API key creation endpoints. */
         AuthKeyRequest: {
@@ -8109,6 +8736,12 @@ export interface components {
             name: string;
             /** @description `<area>:read|write[:<name>]`. */
             scopes: string[];
+            /**
+             * @description Bind the key to this tenant (environment id): requests then act in it
+             *     only (another `X-ForgeBase-Tenant` is refused) and RESP sessions run in
+             *     it. The owner must be able to use the tenant (FB-138).
+             */
+            tenant?: string | null;
         };
         /** @description `{active_kid}`. */
         AuthKeyRotated: {
@@ -8609,6 +9242,8 @@ export interface components {
             name: string;
             /** @description Principal key of the creator. */
             owner: string;
+            /** @description Owning tenant (FB-140); `null` for an instance-wide bucket. */
+            tenant?: string | null;
             /** @description RFC 3339 time of the last change. */
             updated_at: string;
             /** @description Whether overwrites and deletes keep earlier versions. */
@@ -9041,6 +9676,11 @@ export interface components {
          * @enum {string}
          */
         CouponKind: "percent" | "amount";
+        /** @description Body of `POST /system/extensions`. */
+        CreateExtension: {
+            /** @description An allowed extension name. */
+            name: string;
+        };
         /** @description Body of `POST /system/backups`. */
         CreateSnapshot: {
             /** @description Include derived index files (default true). */
@@ -9282,6 +9922,121 @@ export interface components {
              * @description Rolling window length.
              */
             window_secs?: number | null;
+        };
+        /** @description `POST /graph/cypher/drop`. */
+        CypherDropped: {
+            /** @description Whether there was a derived graph to drop. */
+            dropped: boolean;
+        };
+        /** @description `POST /graph/cypher`. */
+        CypherQuery: {
+            /**
+             * Format: int32
+             * @description Most rows to return, 1 to 1000 (default 100).
+             */
+            limit?: number | null;
+            /** @description Query parameters (`$name` in the query), a JSON object. */
+            params?: Record<string, never> | null;
+            /** @description One read-only openCypher query with a final `RETURN` (no `RETURN *`). */
+            query: string;
+            /**
+             * Format: int32
+             * @description Statement timeout in milliseconds, 1 to 30 000 (default 10 000).
+             */
+            timeout_ms?: number | null;
+        };
+        /** @description The rows of an openCypher query. */
+        CypherResult: {
+            /** @description One name per `RETURN` item (its alias, else its text). */
+            columns: string[];
+            /**
+             * @description The rows: one JSON value per column. Vertices come back as
+             *     `{id, label, properties}`, edges as `{id, type, source, target,
+             *     directed, properties}` and paths as `{nodes, edges}`, with ForgeBase
+             *     ids.
+             */
+            rows: Record<string, never>[][];
+            /** @description More rows matched than `limit`. */
+            truncated: boolean;
+        };
+        /** @description The state of a tenant's derived openCypher graph (in `GET /graph/stats`). */
+        CypherStatus: {
+            /**
+             * Format: int64
+             * @description Rows copied so far.
+             */
+            done: number;
+            /**
+             * Format: int64
+             * @description Edges to copy.
+             */
+            edges: number;
+            /** @description Why materialisation failed. */
+            error?: string | null;
+            /** @description The AGE graph name. */
+            graph: string;
+            /** @description The `graph.materialise` job, when one runs it. */
+            job_id?: string | null;
+            /**
+             * Format: int64
+             * @description Nodes to copy (when materialisation started).
+             */
+            nodes: number;
+            /**
+             * @description `none` (never used), `materialising`, `ready`, `stale` (rebuilt on
+             *     next use) or `failed`.
+             */
+            state: string;
+        };
+        /** @description A named login, as listed. */
+        DbLogin: {
+            /** @description SQL editor rights. */
+            admin: boolean;
+            /** @description Last claims refresh. */
+            claims_at?: string | null;
+            /**
+             * Format: int64
+             * @description `CONNECTION LIMIT`.
+             */
+            connection_limit: number;
+            /** @description When. */
+            created_at: string;
+            /** @description Who created it. */
+            created_by: string;
+            /**
+             * @description The claims are present (`false`: the principal or tenant is gone, or
+             *     an admin login, whose sessions bypass row-level security).
+             */
+            has_claims: boolean;
+            /**
+             * Format: int64
+             * @description `idle_in_transaction_session_timeout` (ms).
+             */
+            idle_timeout_ms: number;
+            /** @description Name. */
+            name: string;
+            /** @description Principal key it acts as. */
+            principal: string;
+            /** @description Reads only. */
+            readonly: boolean;
+            /** @description PostgreSQL role (`fbu_<name>`). */
+            role: string;
+            /** @description Last password rotation. */
+            rotated_at?: string | null;
+            /**
+             * Format: int64
+             * @description `statement_timeout` (ms).
+             */
+            statement_timeout_ms: number;
+            /** @description Tenant. */
+            tenant?: string | null;
+            /** @description Expiry. */
+            valid_until?: string | null;
+        };
+        /** @description `{items}` of `GET /system/db-logins`. */
+        DbLoginList: {
+            /** @description Logins, by name. */
+            items: components["schemas"]["DbLogin"][];
         };
         /** @description A message that used up its delivery attempts. */
         DeadLetter: {
@@ -9646,6 +10401,22 @@ export interface components {
          * @enum {string}
          */
         Enforcement: "hard" | "soft";
+        /** @description The database engine that wrote a backup (ADR-0028 §5). */
+        EngineInfo: {
+            /** @description `sqlite` or `postgres`. */
+            kind: string;
+            /**
+             * Format: int32
+             * @description PostgreSQL: major version. A physical backup restores on this major only.
+             */
+            major?: number | null;
+            /** @description How the database was copied. */
+            method: components["schemas"]["Method"];
+            /** @description PostgreSQL: `managed` (the bundled engine) or `external`. */
+            mode?: string | null;
+            /** @description PostgreSQL: server version, such as `18.3`. */
+            version?: string | null;
+        };
         /** @description Effective entitlements of a subject (and member). */
         Entitlements: {
             /** @description Whether the subscription entitles (else the default plan applies). */
@@ -9797,6 +10568,31 @@ export interface components {
              */
             lots: number;
         };
+        /** @description One extension of the allow list or of a feature. */
+        ExtensionInfo: {
+            /** @description The engine ships it (`pg_available_extensions`). */
+            available: boolean;
+            /** @description The engine's description. */
+            comment?: string | null;
+            /** @description Version the engine offers. */
+            default_version?: string | null;
+            /** @description Installed version. */
+            installed_version?: string | null;
+            /**
+             * @description Who manages it: `api` (this endpoint), `schema` (ForgeBase's own
+             *     migrations), or `feature:<name>` (`[database.postgres.extensions]`).
+             */
+            managed_by: string;
+            /** @description `CREATE EXTENSION` name. */
+            name: string;
+            /** @description Schema it lives in, when installed. */
+            schema?: string | null;
+        };
+        /** @description `{items}` of `GET /system/extensions`. */
+        ExtensionList: {
+            /** @description The allow list and the feature extensions, by name. */
+            items: components["schemas"]["ExtensionInfo"][];
+        };
         /** @description Body of a failure report. */
         FailBody: {
             /** @description What went wrong. */
@@ -9925,7 +10721,7 @@ export interface components {
          * @description What a file is.
          * @enum {string}
          */
-        FileKind: "database" | "storage" | "index" | "key";
+        FileKind: "database" | "storage" | "index" | "key" | "postgres" | "dump";
         /**
          * @description When a metadata filter is applied relative to the vector search.
          * @enum {string}
@@ -10031,6 +10827,7 @@ export interface components {
         GrantSource: "plan" | "trial" | "addon" | "custom" | "override";
         /** @description Counts for the admin explorer. */
         GraphStats: {
+            cypher?: components["schemas"]["CypherStatus"] | null;
             /** @description Edge count per relationship type. */
             edge_types: components["schemas"]["TypeCount"][];
             /**
@@ -10237,7 +11034,10 @@ export interface components {
         IndexDefinitionSchema: {
             collection: string;
             keys: components["schemas"]["IndexKeySchema"][];
-            /** @description `btree` (default) or `fulltext`. */
+            /**
+             * @description `btree` (default), `fulltext` or `trigram` (PostgreSQL with pg_trgm;
+             *     `400 index_kind_unsupported` elsewhere).
+             */
             kind?: string | null;
             name?: string | null;
             partial?: string | null;
@@ -11829,6 +12629,8 @@ export interface components {
             status: components["schemas"]["JobStatus"];
             /** @description Step name inside the workflow. */
             step?: string | null;
+            /** @description Tenant (project environment) of the enqueuer (FB-142); `null`: none. */
+            tenant?: string | null;
             /**
              * Format: int64
              * @description Longest run of one attempt in ms (`null`: no limit).
@@ -11957,6 +12759,28 @@ export interface components {
             /** @description Workflow. */
             workflow_id?: string | null;
         };
+        /** @description A join token, shown once. */
+        JoinToken: {
+            /** @description The command to run on the other host. */
+            command: string;
+            /** @description RFC 3339 (15 minutes). */
+            expires_at: string;
+            /** @description Token id (in the audit log). */
+            id: string;
+            /** @description Role. */
+            role: string;
+            /** @description Set id. */
+            set: string;
+            /** @description The token (`fbj_…`); only its hash is stored. */
+            token: string;
+        };
+        /** @description Body of `POST /api/system/database/join-tokens`. */
+        JoinTokenBody: {
+            /** @description `replica` (default). Shard primaries on other hosts come with FB-174. */
+            role?: string;
+            /** @description Set id (default `control`). */
+            set?: string;
+        };
         /** @description Master key handling recorded in a backup. */
         KeyInfo: {
             /**
@@ -12009,7 +12833,10 @@ export interface components {
             /** @description Rules (deny by default). */
             items: components["schemas"]["KvRule"][];
         };
-        /** @description Engine-wide statistics. */
+        /**
+         * @description Statistics: engine-wide for a privileged caller without a tenant, else
+         *     those of the caller's tenant (FB-138).
+         */
         KvStats: {
             /** @description Live pub/sub channels. */
             channels: number;
@@ -12030,9 +12857,12 @@ export interface components {
              * @description Reads that found a key.
              */
             hits: number;
-            /** @description Keys of all tenants (expired keys not yet swept included). */
+            /** @description Keys (expired keys not yet swept included). */
             keys: number;
-            /** @description Memory budget in bytes (`0` = unlimited). */
+            /**
+             * @description Memory budget in bytes (`0` = unlimited): the engine's, or the
+             *     per-tenant budget `kv.tenant_max_bytes` for `scope = tenant`.
+             */
             max_memory_bytes: number;
             /**
              * Format: int64
@@ -12041,10 +12871,29 @@ export interface components {
             misses: number;
             /** @description Whether changes are written to SQLite. */
             persistent: boolean;
+            /** @description `engine` (every tenant) or `tenant` (the caller's tenant only). */
+            scope: string;
+            /** @description The tenant the figures are for (`scope = tenant`). */
+            tenant?: string | null;
             /** @description Keys changed in memory and not yet written to SQLite. */
             unsaved_keys: number;
             /** @description Estimated memory in use, bytes. */
             used_memory_bytes: number;
+        };
+        /** @description One lag sample. */
+        LagSample: {
+            /** @description RFC 3339 minute. */
+            at: string;
+            /**
+             * Format: int64
+             * @description Highest byte lag in that minute.
+             */
+            lag_bytes: number;
+            /**
+             * Format: int64
+             * @description Highest time lag in that minute.
+             */
+            lag_ms: number;
         };
         /**
          * @description Language a version was written in.
@@ -12197,12 +13046,28 @@ export interface components {
             expand?: string[] | null;
             fields?: string[] | null;
             filter?: string | null;
+            /**
+             * @description Fuzzy text: trigram similarity, best match first (PostgreSQL with
+             *     pg_trgm; `400 fuzzy_unsupported` otherwise).
+             */
+            fuzzy?: string | null;
+            /**
+             * @description Fields `fuzzy` compares; each needs a trigram index (default: all
+             *     fields of the collection's trigram indexes).
+             */
+            fuzzy_fields?: string[] | null;
+            /**
+             * Format: double
+             * @description Minimum similarity from 0 to 1 (default 0.3).
+             */
+            fuzzy_threshold?: number | null;
             /** Format: int32 */
             page?: number | null;
             /** @description Values of `{:name}` parameters, typed. */
             params: Record<string, never>;
             /** Format: int32 */
             per_page?: number | null;
+            /** @description Full-text query (needs a full-text index). */
             search?: string | null;
             skip_total?: boolean | null;
             /** @description e.g. `-created,name` */
@@ -12241,6 +13106,49 @@ export interface components {
             /** @description New value. */
             value: components["schemas"]["Bin"];
         };
+        /** @description A login with its password, returned once by create and rotate. */
+        LoginSecret: {
+            /** @description `psql` connection string over the Unix socket, without the password. */
+            hint: string;
+            /** @description The login. */
+            login: components["schemas"]["DbLogin"];
+            /** @description The generated password: shown once, never stored by ForgeBase. */
+            password: string;
+        };
+        /**
+         * @description A login to create (`forgebase db login create`, `POST
+         *     /api/v1/system/db-logins`).
+         */
+        LoginSpec: {
+            /**
+             * @description The SQL editor's rights (`forgebase_sql_admin`, bypasses row-level
+             *     security); platform administrators only.
+             */
+            admin?: boolean;
+            /**
+             * Format: int32
+             * @description `CONNECTION LIMIT` (1 to 100, default 10).
+             */
+            connection_limit?: number | null;
+            /** @description `[a-z][a-z0-9_]{0,39}`; the role is `fbu_<name>`. */
+            name: string;
+            /**
+             * @description Principal key the login acts as: `user:<collection>/<id>` or
+             *     `service:<id>`. Optional for `admin` logins (default: the creator).
+             */
+            principal?: string | null;
+            /** @description Reads only (member of `forgebase_login`, not `forgebase_login_write`). */
+            readonly?: boolean;
+            /**
+             * Format: int64
+             * @description `statement_timeout` in milliseconds (1 to 3 600 000, default 30 000).
+             */
+            statement_timeout_ms?: number | null;
+            /** @description The one tenant the login's statements are scoped to. */
+            tenant?: string | null;
+            /** @description Expiry (`VALID UNTIL`), RFC 3339 such as `2027-01-31T00:00:00Z`. */
+            valid_until?: string | null;
+        };
         /** @description A line the function logged. */
         LogLine: {
             /** @description `debug`, `info`, `warn` or `error`. */
@@ -12277,6 +13185,12 @@ export interface components {
         Manifest: {
             /** @description RFC 3339 creation time (UTC). */
             created: string;
+            /**
+             * @description Only the database is in this backup (pre-migration snapshots): a
+             *     restore leaves storage, indexes and the master key alone.
+             */
+            database_only?: boolean;
+            engine?: components["schemas"]["EngineInfo"] | null;
             /** @description Every file with size and hash. */
             files: components["schemas"]["FileEntry"][];
             /** @description ForgeBase version that wrote it. */
@@ -12296,6 +13210,8 @@ export interface components {
             label?: string | null;
             /** @description Master key handling. */
             master_key: components["schemas"]["KeyInfo"];
+            /** @description Why this backup was taken, for managed ones (`pre-migration`). */
+            note?: string | null;
             /**
              * Format: int64
              * @description Highest applied system migration in the copied database.
@@ -12379,6 +13295,11 @@ export interface components {
          */
         MeterState: "ok" | "warn" | "critical" | "over";
         /**
+         * @description How the database was copied.
+         * @enum {string}
+         */
+        Method: "vacuum" | "basebackup" | "dump";
+        /**
          * @description Distance function of a vector field.
          * @enum {string}
          */
@@ -12407,6 +13328,13 @@ export interface components {
             amount: number;
             /** @description ISO 4217 code, upper case. */
             currency: string;
+        };
+        /** @description Body of `POST /api/system/database/placements/{tenant}/move`. */
+        MoveBody: {
+            /** @description The tenant id, typed by the operator. */
+            confirm: string;
+            /** @description Target set id. */
+            to: string;
         };
         /** @description Body of `POST /mset`. */
         MsetBody: {
@@ -12756,6 +13684,16 @@ export interface components {
             /** @description Deleted node id. */
             id: string;
         };
+        /** @description `GET /api/system/database/nodes/{id}`. */
+        NodeDetail: {
+            /**
+             * @description Last hour, one-minute buckets, oldest first (kept in memory: empty
+             *     after a restart).
+             */
+            lag_history: components["schemas"]["LagSample"][];
+            /** @description The node. */
+            node: components["schemas"]["NodeInfo"];
+        };
         /** @description Node filter: label and property equality (all must match). */
         NodeFilter: {
             /** @description Only nodes with this label. */
@@ -12765,6 +13703,65 @@ export interface components {
              *     or booleans; keys are `A-Z a-z 0-9 _ -`. At most 8.
              */
             properties?: Record<string, never> | null;
+        };
+        /** @description One server of a set. */
+        NodeInfo: {
+            /**
+             * @description The `forgebase node` agent of a remote node: `state`, `address`,
+             *     `replay_lsn`, `disk_free`, `last_seen_at`.
+             */
+            agent?: Record<string, never> | null;
+            /** @description RFC 3339. */
+            created_at: string;
+            /** @description PostgreSQL version. */
+            engine_version?: string | null;
+            /** @description Id. */
+            id: string;
+            /** @description Serves reads now (replicas). */
+            in_rotation?: boolean | null;
+            /** @description `local` (this server), `remote` (`forgebase node`) or `external`. */
+            kind: string;
+            /**
+             * Format: int64
+             * @description Bytes of changes behind (replicas).
+             */
+            lag_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description Time behind the primary at the last sample (replicas).
+             */
+            lag_ms?: number | null;
+            /** @description The latest failure while out of rotation. */
+            last_error?: string | null;
+            /** @description Name (`postgres/nodes/<name>` for local nodes). */
+            name: string;
+            /** @description `api`, or `config` (declared in `forgebase.toml`: read-only). */
+            origin: string;
+            /** @description Last replayed position (`X/Y`). */
+            replay_lsn?: string | null;
+            /** @description `primary` or `replica`. */
+            role: string;
+            /** @description Set id. */
+            set: string;
+            /**
+             * @description `provisioning`, `ready`, `catching_up`, `streaming`, `lagging`,
+             *     `unreachable`, `needs_rebuild` or `promoting`.
+             */
+            state: string;
+            /** @description Cluster system identifier. */
+            system_identifier?: string | null;
+            /**
+             * Format: int64
+             * @description Timeline.
+             */
+            timeline?: number | null;
+            /** @description RFC 3339. */
+            updated_at: string;
+            /**
+             * Format: int32
+             * @description Share of replica reads.
+             */
+            weight: number;
         };
         /** @description A page of nodes. */
         NodePage: {
@@ -12808,6 +13805,53 @@ export interface components {
             objects: components["schemas"]["ObjectInfo"][];
             /** @description "Directories" when a delimiter was given. */
             prefixes: string[];
+        };
+        /** @description A topology operation (a job of a reserved `database.*` kind). */
+        Operation: {
+            /** @description Cancel was asked for. */
+            cancel_requested: boolean;
+            /** @description It can still be cancelled. */
+            cancellable: boolean;
+            /** @description RFC 3339. */
+            created_at: string;
+            /** @description Who started it. */
+            created_by: string;
+            /** @description RFC 3339. */
+            finished_at?: string | null;
+            /** @description Job id; progress streams on channel `jobs:<id>`. */
+            id: string;
+            /** @description `database.node.add`, `database.promote`, … */
+            kind: string;
+            /** @description Why it failed. */
+            last_error?: string | null;
+            /** @description Node it changes. */
+            node?: string | null;
+            progress?: components["schemas"]["OperationProgress"] | null;
+            /** @description Result of a finished operation. */
+            result?: Record<string, never> | null;
+            /** @description Set it changes. */
+            set?: string | null;
+            /** @description RFC 3339. */
+            started_at?: string | null;
+            /** @description `pending`, `running`, `succeeded`, `failed`, `cancelled`, `dead`. */
+            status: string;
+        };
+        /** @description A page of operations. */
+        OperationList: {
+            /** @description Newest first. */
+            items: components["schemas"]["Operation"][];
+        };
+        /** @description Progress of an operation. */
+        OperationProgress: {
+            /** @description Detail. */
+            message?: string | null;
+            /**
+             * Format: double
+             * @description 0 to 100.
+             */
+            percent?: number | null;
+            /** @description Stage (`cloning`, `starting`, `fencing`, `promoting`, …). */
+            stage?: string | null;
         };
         /** @description A one-time order. */
         Order: {
@@ -13094,6 +14138,38 @@ export interface components {
          * @enum {string}
          */
         Permission: "read" | "write" | "admin";
+        /** @description One tenant's placement. */
+        PlacementInfo: {
+            /**
+             * Format: int64
+             * @description Estimated bytes.
+             */
+            est_bytes: number;
+            /**
+             * Format: int64
+             * @description Estimated rows.
+             */
+            est_rows: number;
+            /** @description RFC 3339 of the last move. */
+            moved_at?: string | null;
+            /** @description Its organization, when known. */
+            organization?: string | null;
+            /** @description Its project, when known. */
+            project?: string | null;
+            /** @description Set id. */
+            set: string;
+            /** @description `active`, `moving`, `frozen` or `cleanup`. */
+            state: string;
+            /** @description Tenant (environment id). */
+            tenant: string;
+        };
+        /** @description A page of placements. */
+        PlacementPage: {
+            /** @description Tenants by id. */
+            items: components["schemas"]["PlacementInfo"][];
+            /** @description Cursor of the next page (`None`: last page). */
+            next_cursor?: string | null;
+        };
         /** @description A plan. */
         Plan: {
             /** @description Can be assigned. */
@@ -13164,6 +14240,32 @@ export interface components {
              * @description Trial length.
              */
             trial_days?: number;
+        };
+        /** @description One move of a rebalance plan. */
+        PlannedMoveInfo: {
+            /**
+             * Format: int64
+             * @description Estimated bytes.
+             */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description Estimated freeze in milliseconds.
+             */
+            est_freeze_ms: number;
+            /** @description From set id. */
+            from: string;
+            /** @description Its project (a project's environments move together). */
+            project?: string | null;
+            /**
+             * Format: int64
+             * @description Estimated rows.
+             */
+            rows: number;
+            /** @description Tenant. */
+            tenant: string;
+            /** @description To set id. */
+            to: string;
         };
         PlanStepSchema: {
             detail: string;
@@ -13443,6 +14545,30 @@ export interface components {
             /** @description Phase name (at most 128 characters). */
             stage?: string | null;
         };
+        /** @description Body of `POST /api/system/database/nodes/{id}/promote`. */
+        PromoteBody: {
+            /** @description "The old primary is down": promote even though recent commits may be lost. */
+            accept_data_loss?: boolean;
+            /** @description The node name, typed by the operator. */
+            confirm: string;
+        };
+        /** @description `GET /api/system/database/nodes/{id}/promote-check`. */
+        PromoteCheck: {
+            /**
+             * Format: int64
+             * @description Bytes the replica is behind (when both are known).
+             */
+            behind_bytes?: number | null;
+            /** @description The primary's position (when it answers). */
+            primary_lsn?: string | null;
+            /**
+             * @description The old primary answers: a promote loses nothing. `false`: the
+             *     dialog shows "the old primary is down" and needs `accept_data_loss`.
+             */
+            primary_reachable: boolean;
+            /** @description The replica's replay position. */
+            replayed?: string | null;
+        };
         /**
          * @description How to bill a plan change.
          * @enum {string}
@@ -13694,6 +14820,11 @@ export interface components {
             /** @description Created (RFC 3339) when configured. */
             created_at?: string | null;
             /**
+             * @description Who saved the settings first (FB-146); `null`: not configured, or
+             *     configured before FB-146.
+             */
+            created_by?: string | null;
+            /**
              * Format: int64
              * @description In the dead-letter queue.
              */
@@ -13734,6 +14865,11 @@ export interface components {
              * @description Finished successfully (until purged).
              */
             succeeded: number;
+            /**
+             * @description Tenant whose jobs these settings govern (FB-146); `null`: the jobs
+             *     without a tenant.
+             */
+            tenant?: string | null;
             /** @description Last settings change (RFC 3339) when configured. */
             updated_at?: string | null;
             /**
@@ -13847,6 +14983,8 @@ export interface components {
             push?: components["schemas"]["PushConfig"] | null;
             /** @description Webhook signing secret: returned only when it is created. */
             push_secret?: string | null;
+            /** @description Owning tenant (FB-141); `None` for an instance-wide subscription. */
+            tenant?: string | null;
             /** @description Topic. */
             topic: string;
             /** @description Last changed (RFC 3339). */
@@ -14000,6 +15138,53 @@ export interface components {
              * @description Active subscriptions.
              */
             subscriptions: number;
+        };
+        /** @description Body of `POST /api/system/database/rebalance`. */
+        RebalanceBody: {
+            /** @description The plan id, typed by the operator. */
+            confirm: string;
+            /** @description From the plan. */
+            plan_id: string;
+        };
+        /** @description Body of `POST /api/system/database/rebalance/plan`. */
+        RebalancePlanBody: {
+            /**
+             * Format: int32
+             * @description Most moves in the plan.
+             */
+            max_moves?: number | null;
+            /** @description Sets to balance (default all). */
+            sets?: string[] | null;
+        };
+        /** @description `POST /api/system/database/rebalance/plan`: shown before it runs. */
+        RebalancePlanView: {
+            /** @description Loads after the plan. */
+            after: components["schemas"]["SetLoadInfo"][];
+            /** @description Loads now. */
+            before: components["schemas"]["SetLoadInfo"][];
+            /** @description RFC 3339. */
+            created_at: string;
+            /**
+             * Format: int64
+             * @description Sum of the estimated freezes.
+             */
+            est_freeze_ms: number;
+            /** @description RFC 3339: after this the plan must be made again. */
+            expires_at: string;
+            /** @description Plan id (type it to run the plan). */
+            id: string;
+            /** @description Moves, in the order they run (one at a time). */
+            moves: components["schemas"]["PlannedMoveInfo"][];
+            /**
+             * Format: double
+             * @description Spread after.
+             */
+            spread_after: number;
+            /**
+             * Format: double
+             * @description Spread of the scores now ((max − min) ÷ max).
+             */
+            spread_before: number;
         };
         /** @description The last completed rebuild. */
         RebuildInfo: {
@@ -14194,6 +15379,11 @@ export interface components {
          * @enum {string}
          */
         RefundStatus: "pending" | "succeeded" | "failed";
+        /** @description Answer of the removals. */
+        Removed: {
+            /** @description The removed node or set id. */
+            removed: string;
+        };
         /** @description Body of a lease renewal. */
         RenewBody: {
             /**
@@ -14270,6 +15460,25 @@ export interface components {
              */
             max_age_days?: number | null;
         };
+        /** @description Data of a removed shard kept on disk. */
+        RetiredInfo: {
+            /**
+             * Format: int64
+             * @description Bytes on disk.
+             */
+            bytes: number;
+            /** @description Id (`<node name>-<unix time>`). */
+            id: string;
+            /** @description The shard node's name (type it to delete). */
+            name: string;
+            /** @description The set it held. */
+            set_id?: string | null;
+        };
+        /** @description `GET /api/system/database/retired`. */
+        RetiredList: {
+            /** @description Oldest first. */
+            items: components["schemas"]["RetiredInfo"][];
+        };
         /** @description Revenue of one currency in one bucket. */
         RevenuePoint: {
             /** @description Currency. */
@@ -14325,6 +15534,21 @@ export interface components {
              */
             version?: number | null;
         };
+        /** @description Body of `POST /system/db-logins/{name}/rotate`. */
+        RotateBody: {
+            /** @description New expiry (RFC 3339); absent keeps the current one. */
+            valid_until?: string | null;
+        };
+        /**
+         * @description `run_as` of a SQL editor body (FB-153): whose claims the statements run
+         *     with.
+         */
+        RunAsBody: {
+            /** @description Principal key: `user:<collection>/<id>` or `service:<id>`. */
+            principal: string;
+            /** @description The tenant to act in. */
+            tenant?: string | null;
+        };
         /** @description Answer of `GET /{ns}/keys`. */
         ScanResponse: {
             /** @description Pass back as `cursor` for the next page; `"0"` when done. */
@@ -14352,6 +15576,11 @@ export interface components {
             cron: string;
             /** @description Fires only while enabled. */
             enabled: boolean;
+            /**
+             * @description What fires it: `forgebase` (the server's tick) or `pg_cron` (FB-165;
+             *     PostgreSQL with the extension, expressions it reads like ForgeBase).
+             */
+            fired_by: string;
             /** @description Schedule id. */
             id: string;
             /** @description Handler name. */
@@ -14367,7 +15596,10 @@ export interface components {
             max_attempts: number;
             /** @description Unique name. */
             name: string;
-            /** @description Next firing (RFC 3339). */
+            /**
+             * @description Next firing (RFC 3339). For a schedule pg_cron fires it is computed
+             *     from the expression when read.
+             */
             next_run_at: string;
             /** @description Handler input. */
             payload: Record<string, never>;
@@ -14378,6 +15610,8 @@ export interface components {
             priority: number;
             /** @description Queue of the jobs. */
             queue: string;
+            /** @description Tenant of the creator (FB-142); its jobs run in it. `null`: none. */
+            tenant?: string | null;
             /** @description Last change (RFC 3339). */
             updated_at: string;
             /**
@@ -14569,6 +15803,66 @@ export interface components {
             /** @description Only set when the key exists. */
             xx?: boolean;
         };
+        /** @description One set (control or a shard). */
+        SetInfo: {
+            /**
+             * Format: int64
+             * @description Sum of the tenants' estimated sizes in bytes.
+             */
+            est_bytes: number;
+            /** @description Takes new tenants. */
+            hosts_tenants: boolean;
+            /** @description Id (`control` for control). */
+            id: string;
+            /** @description `control` or `shard`. */
+            kind: string;
+            /** @description Display name. */
+            name: string;
+            /**
+             * Format: int32
+             * @description Set number (0 for control).
+             */
+            number: number;
+            /** @description `provisioning`, `active`, `draining`, `migrating` or `retired`. */
+            state: string;
+            /**
+             * Format: int64
+             * @description Tenants placed on it (control also serves tenants with no placement row).
+             */
+            tenants: number;
+            /**
+             * Format: int32
+             * @description Relative capacity.
+             */
+            weight: number;
+        };
+        /** @description A set's load in a plan (bytes ÷ weight). */
+        SetLoadInfo: {
+            /**
+             * Format: int64
+             * @description Estimated bytes.
+             */
+            bytes: number;
+            /** @description Set name. */
+            name: string;
+            /**
+             * Format: double
+             * @description Bytes ÷ weight.
+             */
+            score: number;
+            /** @description Set id. */
+            set_id: string;
+            /**
+             * Format: int64
+             * @description Tenants.
+             */
+            tenants: number;
+            /**
+             * Format: int32
+             * @description Weight.
+             */
+            weight: number;
+        };
         /** @description `POST /api/setup/admin` body. */
         SetupAdminRequest: {
             /** @description Cookie session (default `true`); `false` returns bearer tokens instead. */
@@ -14585,6 +15879,18 @@ export interface components {
         SetupStatus: {
             /** @description `true` while no administrator exists. */
             setup_required: boolean;
+        };
+        /** @description Where a new shard's primary runs. */
+        ShardNode: {
+            /**
+             * @description `external` (a server you run, at `url`). `local` and `remote` shard
+             *     primaries come with FB-174.
+             */
+            kind: string;
+            /** @description Node name. */
+            name: string;
+            /** @description `external` only: `postgres://` URL of an empty database (stored sealed). */
+            url?: string | null;
         };
         /**
          * @description Which end of a list.
@@ -14664,6 +15970,8 @@ export interface components {
             name: string;
             /** @description Subscription. */
             subscription: string;
+            /** @description Owning tenant (FB-141); `None` for an instance-wide snapshot. */
+            tenant?: string | null;
             /** @description Topic. */
             topic: string;
             /**
@@ -14710,6 +16018,12 @@ export interface components {
             units?: number | null;
         };
         SqlBatchBody: {
+            run_as?: components["schemas"]["RunAsBody"] | null;
+            /**
+             * @description Return secret columns unmasked for the whole batch and allow
+             *     statements that name them; audited once per batch. Default `false`.
+             */
+            show_secrets?: boolean | null;
             /** @description 1 to 1000 statements, run in one all-or-nothing transaction. */
             statements: components["schemas"]["SqlStatementBody"][];
         };
@@ -14722,15 +16036,31 @@ export interface components {
             duration_ms: number;
             /** @description `read`, `write`, `schema` or `maintenance`. */
             kind: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Rowid of the last insert (SQLite; `null` on PostgreSQL: use `RETURNING`).
+             */
             last_insert_id?: number | null;
             rows: Record<string, never>[][];
             /** Format: int64 */
             rows_affected: number;
+            /**
+             * @description `true` when secret values in `rows` read `"********"` (send
+             *     `show_secrets` to see them); absent otherwise.
+             */
+            secrets_masked?: boolean | null;
             truncated: boolean;
         };
         SqlStatementBody: {
             params?: Record<string, never>[] | null;
+            run_as?: components["schemas"]["RunAsBody"] | null;
+            /**
+             * @description `POST /sql` only (a batch sets it on the batch body): return secret
+             *     columns (`password`, `token_key`, password fields) unmasked and allow
+             *     statements that name them. Each use is audited (`sql.show_secrets`
+             *     in `GET /api/auth/audit`). Default `false`.
+             */
+            show_secrets?: boolean | null;
             /** @description One SQL statement; positional parameters `?` / `?1`. */
             sql: string;
         };
@@ -14762,10 +16092,17 @@ export interface components {
              */
             open_uploads: number;
             /**
+             * @description What the figures cover (FB-140): `tenant`, `instance` (buckets
+             *     without a tenant) or `engine` (everything; privileged callers).
+             */
+            scope: string;
+            /**
              * Format: int64
              * @description Physical bytes stored (after deduplication).
              */
             stored_bytes: number;
+            /** @description The tenant of `scope: tenant`. */
+            tenant?: string | null;
             /**
              * Format: int64
              * @description Object versions, including deleted and older ones.
@@ -15375,6 +16712,8 @@ export interface components {
             /** @description JSON Schema of message data. */
             schema?: Record<string, never> | null;
             source?: components["schemas"]["RecordSource"] | null;
+            /** @description Owning tenant (FB-141); `None` for an instance-wide topic. */
+            tenant?: string | null;
             /** @description Last changed (RFC 3339). */
             updated_at: string;
         };
@@ -15459,6 +16798,29 @@ export interface components {
             /** @description New schema (applies to later publishes). */
             schema?: Record<string, never> | null;
         };
+        /** @description `GET /api/system/database/topology`. */
+        TopologyView: {
+            /** @description `postgres` or `sqlite`. */
+            backend: string;
+            /** @description PostgreSQL version of the control primary, when known. */
+            engine_version?: string | null;
+            /**
+             * Format: int64
+             * @description Topology epoch (grows on every change).
+             */
+            epoch: number;
+            /** @description Every node that is not retired. */
+            nodes: components["schemas"]["NodeInfo"][];
+            /** @description Operations queued or running. */
+            operations: components["schemas"]["Operation"][];
+            /**
+             * @description Set after a promote of control's primary: the server must be
+             *     restarted to move its connections to the new primary.
+             */
+            restart_required?: string | null;
+            /** @description Control first, then shards by number. */
+            sets: components["schemas"]["SetInfo"][];
+        };
         /** @description A node reached by a traversal. */
         TraversedNode: {
             /**
@@ -15536,6 +16898,26 @@ export interface components {
             count: number;
             /** @description Relationship type. */
             type: string;
+        };
+        /** @description Body of `PATCH /api/system/database/nodes/{id}`. */
+        UpdateNode: {
+            /**
+             * Format: int32
+             * @description Share of replica reads, 0 to 1000 (0 takes it out of rotation).
+             */
+            weight: number;
+        };
+        /** @description Body of `PATCH /api/system/database/shards/{id}`. */
+        UpdateShard: {
+            /** @description Takes new tenants. */
+            hosts_tenants?: boolean | null;
+            /** @description `active` or `draining` (takes no new tenants). */
+            state?: string | null;
+            /**
+             * Format: int32
+             * @description Relative capacity, 1 to 1000.
+             */
+            weight?: number | null;
         };
         /** @description A multipart or resumable upload session. */
         Upload: {
@@ -16003,11 +17385,13 @@ export interface components {
             fields: components["schemas"]["VectorField"][];
             /**
              * Format: int64
-             * @description Number of items.
+             * @description Number of items (that the caller's rule shows).
              */
             items: number;
             /** @description Name. */
             name: string;
+            /** @description See [`NewCollection::source_collection`]. */
+            source_collection?: string | null;
             /** @description Last change of the definition or the data. */
             updated: string;
         };
@@ -16069,6 +17453,14 @@ export interface components {
             fields?: components["schemas"]["FieldSpec"][];
             /** @description `[A-Za-z][A-Za-z0-9_]{0,62}`, unique in the tenant. */
             name: string;
+            /**
+             * @description The data collection the items are copied from, item id = record id
+             *     (FB-139). Searches and reads then re-check every item against that
+             *     collection's View rule as the caller, leave out the metadata keys the
+             *     caller may not read there, and refuse filters on them. Set at
+             *     creation only.
+             */
+            source_collection?: string | null;
         };
         /** @description Progress of a rebuild. */
         VectorProgress: {
@@ -16257,6 +17649,8 @@ export interface components {
              * @description Jobs it runs at once.
              */
             concurrency: number;
+            /** @description Who registered it (FB-146); `null`: registered before FB-146. */
+            created_by?: string | null;
             /** @description Worker id. */
             id: string;
             /** @description Handlers it runs (empty: all). */
@@ -16271,6 +17665,8 @@ export interface components {
             queues: string[];
             /** @description First seen (RFC 3339). */
             registered_at: string;
+            /** @description Tenant of the caller that registered it (FB-146); `null`: none. */
+            tenant?: string | null;
         };
         /** @description Workers. */
         WorkerList: {
@@ -16297,6 +17693,8 @@ export interface components {
             on_failure: components["schemas"]["FailurePolicy"];
             /** @description State. */
             status: components["schemas"]["WorkflowStatus"];
+            /** @description Tenant of the creator (FB-142). `null`: none. */
+            tenant?: string | null;
             /** @description Last change (RFC 3339). */
             updated_at: string;
         };
@@ -23427,6 +24825,765 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+        };
+    };
+    database_agent_join: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description The grant (agent key, replication login) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    database_agent_commands: {
+        parameters: {
+            query?: {
+                /** @description 1: also commands sent but never answered */
+                resend?: number;
+                /** @description Longest wait */
+                wait_ms?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Commands */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    database_agent_heartbeat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Reply */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+        };
+    };
+    database_join_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JoinTokenBody"];
+            };
+        };
+        responses: {
+            /** @description The token */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinToken"];
+                };
+            };
+        };
+    };
+    database_node_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddNode"];
+            };
+        };
+        responses: {
+            /** @description External replica added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Added"];
+                };
+            };
+            /** @description Clone started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+            /** @description invalid_request, postgres_required, node_mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description node_exists, operation_in_progress */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description node_unreachable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_node: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The node */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeDetail"];
+                };
+            };
+            /** @description node_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_node_remove: {
+        parameters: {
+            query: {
+                /** @description The node name */
+                confirm: string;
+            };
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Removed"];
+                };
+            };
+            /** @description confirm_mismatch, node_unsupported (a primary) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description mfa_step_up_required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_node_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNode"];
+            };
+        };
+        responses: {
+            /** @description The node */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeInfo"];
+                };
+            };
+        };
+    };
+    database_node_promote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromoteBody"];
+            };
+        };
+        responses: {
+            /** @description Promote started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+            /** @description confirm_mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description mfa_step_up_required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description operation_in_progress, node_state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_node_promote_check: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Estimate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromoteCheck"];
+                };
+            };
+        };
+    };
+    database_node_rebuild: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Node id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rebuild started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+        };
+    };
+    database_operations: {
+        parameters: {
+            query?: {
+                /** @description Queued and running only */
+                active?: boolean;
+                /** @description 1 to 200 (50) */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Operations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationList"];
+                };
+            };
+        };
+    };
+    database_operation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation (job) id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description operation_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_operation_cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation (job) id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancel requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+        };
+    };
+    database_placements: {
+        parameters: {
+            query?: {
+                /** @description next_cursor of the previous page */
+                cursor?: string;
+                /** @description 1 to 200 (50) */
+                limit?: number;
+                /** @description Project id */
+                project?: string;
+                /** @description Tenant id contains */
+                q?: string;
+                /** @description Set id */
+                set?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlacementPage"];
+                };
+            };
+        };
+    };
+    database_tenant_move: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tenant id */
+                tenant: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveBody"];
+            };
+        };
+        responses: {
+            /** @description Move started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+            /** @description confirm_mismatch, invalid_request, postgres_required, shard_closed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description shard_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description tenant_moving, operation_in_progress, target_not_empty */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_rebalance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RebalanceBody"];
+            };
+        };
+        responses: {
+            /** @description Rebalance started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+            /** @description confirm_mismatch, postgres_required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description move_not_found (unknown plan) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description move_state (plan expired), operation_in_progress */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_rebalance_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RebalancePlanBody"];
+            };
+        };
+        responses: {
+            /** @description The plan */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RebalancePlanView"];
+                };
+            };
+            /** @description invalid_request, postgres_required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_retired: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Retired data */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetiredList"];
+                };
+            };
+        };
+    };
+    database_retired_delete: {
+        parameters: {
+            query: {
+                /** @description The shard node's name */
+                confirm: string;
+            };
+            header?: never;
+            path: {
+                /** @description Retired data id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Removed"];
+                };
+            };
+            /** @description confirm_mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_shard_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddShard"];
+            };
+        };
+        responses: {
+            /** @description Shard add started */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Accepted"];
+                };
+            };
+            /** @description sharding_unsupported, invalid_request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_shard_remove: {
+        parameters: {
+            query: {
+                /** @description The shard name */
+                confirm: string;
+            };
+            header?: never;
+            path: {
+                /** @description Set id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Removed"];
+                };
+            };
+            /** @description shard_not_empty */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    database_shard_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Set id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateShard"];
+            };
+        };
+        responses: {
+            /** @description The shard */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetInfo"];
+                };
+            };
+        };
+    };
+    database_topology: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The topology (SQLite: one server) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyView"];
+                };
+            };
+            /** @description No credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -33464,6 +35621,105 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    graph_cypher: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CypherQuery"];
+            };
+        };
+        responses: {
+            /** @description Columns and rows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CypherResult"];
+                };
+            };
+            /** @description Invalid or writing query (`cypher_invalid`, `cypher_read_only`, `cypher_error`, `cypher_timeout`), or no Apache AGE (`cypher_unsupported`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No `engine:graph_cypher`, or rules that cannot be applied (`cypher_rules_unsupported`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `graph_materialising` (with `job_id`): the tenant's graph is being built; or `tenant_moving` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    graph_cypher_drop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether there was one */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CypherDropped"];
+                };
+            };
+            /** @description No Apache AGE (`cypher_unsupported`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Authentication required (anonymous callers are denied) */
             401: {
@@ -44873,6 +47129,49 @@ export interface operations {
             };
         };
     };
+    rotate_signing_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rotated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not an administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     signed_get: {
         parameters: {
             query?: never;
@@ -45723,6 +48022,438 @@ export interface operations {
             };
             /** @description Not allowed */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    db_logins_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logins */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DbLoginList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    db_logins_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginSpec"];
+            };
+        };
+        responses: {
+            /** @description The login and its password */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginSecret"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    db_logins_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Login name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The login */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DbLogin"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    db_logins_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Login name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dropped */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    db_logins_rotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Login name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RotateBody"];
+            };
+        };
+        responses: {
+            /** @description The login and its new password */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginSecret"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    extensions_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Extensions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtensionList"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    extensions_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateExtension"];
+            };
+        };
+        responses: {
+            /** @description Installed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtensionInfo"];
+                };
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    extensions_drop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Extension name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dropped */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request (error.code says why; validation errors list `details.fields`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required (anonymous callers are denied) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description No such collection, record or index (or not visible to the caller) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

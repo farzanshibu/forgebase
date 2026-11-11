@@ -51,6 +51,13 @@ pub struct Acceptance {
     pub version: i64,
 }
 
+/// `202 Accepted` body.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Accepted {
+    /// The operation.
+    pub operation: Operation,
+}
+
 /// Body of an ack or nack.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AckRequest {
@@ -88,6 +95,47 @@ pub struct AclEntry {
     /// Key prefix the grant covers (`""`: the whole bucket).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
+}
+
+/// Body of `POST /api/system/database/nodes`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AddNode {
+    /// `local` (a replica on this server, cloned now), or `external` (a
+    /// replica you run, at `url`). Replicas on other hosts join with a
+    /// join token instead.
+    pub kind: String,
+    /// Node name: 1 to 32 of `a-z 0-9 - _`, not `primary`.
+    pub name: String,
+    /// Set id (default `control`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
+    /// `external` only: `postgres://` URL (stored sealed, never shown again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Share of replica reads (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<i64>,
+}
+
+/// Body of `POST /api/system/database/shards`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AddShard {
+    /// Display name (unique ignoring case).
+    pub name: String,
+    /// Its primary.
+    pub node: ShardNode,
+    /// Relative capacity (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<i64>,
+}
+
+/// Answer of `POST /api/system/database/nodes`: an operation (`local`) or the node (`external`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Added {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<Operation>,
 }
 
 /// An add-on.
@@ -365,6 +413,9 @@ pub struct AuthKeyCreated {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    /// Tenant the key is bound to (FB-138).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
 }
 
 /// Body of the token and API key creation endpoints.
@@ -376,6 +427,11 @@ pub struct AuthKeyRequest {
     /// `<area>:read|write[:<name>]`.
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Bind the key to this tenant (environment id): requests then act in it
+    /// only (another `X-ForgeBase-Tenant` is refused) and RESP sessions run in
+    /// it. The owner must be able to use the tenant (FB-138).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
 }
 
 /// `{active_kid}`.
@@ -938,6 +994,9 @@ pub struct Bucket {
     pub name: String,
     /// Principal key of the creator.
     pub owner: String,
+    /// Owning tenant (FB-140); `null` for an instance-wide bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// RFC 3339 time of the last change.
     pub updated_at: String,
     /// Whether overwrites and deletes keep earlier versions.
@@ -1417,6 +1476,13 @@ pub enum CouponKind {
     Unknown,
 }
 
+/// Body of `POST /system/extensions`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreateExtension {
+    /// An allowed extension name.
+    pub name: String,
+}
+
 /// Body of `POST /system/backups`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CreateSnapshot {
@@ -1649,6 +1715,115 @@ pub struct CustomerInput {
     /// Operators: tax exempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tax_exempt: Option<bool>,
+}
+
+/// `POST /graph/cypher/drop`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CypherDropped {
+    /// Whether there was a derived graph to drop.
+    pub dropped: bool,
+}
+
+/// `POST /graph/cypher`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CypherQuery {
+    /// Most rows to return, 1 to 1000 (default 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// Query parameters (`$name` in the query), a JSON object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    /// One read-only openCypher query with a final `RETURN` (no `RETURN *`).
+    pub query: String,
+    /// Statement timeout in milliseconds, 1 to 30 000 (default 10 000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i64>,
+}
+
+/// The rows of an openCypher query.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CypherResult {
+    /// One name per `RETURN` item (its alias, else its text).
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// The rows: one JSON value per column. Vertices come back as
+    /// `{id, label, properties}`, edges as `{id, type, source, target,
+    /// directed, properties}` and paths as `{nodes, edges}`, with ForgeBase
+    /// ids.
+    #[serde(default)]
+    pub rows: Vec<Vec<serde_json::Value>>,
+    /// More rows matched than `limit`.
+    pub truncated: bool,
+}
+
+/// The state of a tenant's derived openCypher graph (in `GET /graph/stats`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CypherStatus {
+    /// Rows copied so far.
+    pub done: i64,
+    /// Edges to copy.
+    pub edges: i64,
+    /// Why materialisation failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The AGE graph name.
+    pub graph: String,
+    /// The `graph.materialise` job, when one runs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// Nodes to copy (when materialisation started).
+    pub nodes: i64,
+    /// `none` (never used), `materialising`, `ready`, `stale` (rebuilt on
+    /// next use) or `failed`.
+    pub state: String,
+}
+
+/// A named login, as listed.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DbLogin {
+    /// SQL editor rights.
+    pub admin: bool,
+    /// Last claims refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_at: Option<String>,
+    /// `CONNECTION LIMIT`.
+    pub connection_limit: i64,
+    /// When.
+    pub created_at: String,
+    /// Who created it.
+    pub created_by: String,
+    /// The claims are present (`false`: the principal or tenant is gone, or
+    /// an admin login, whose sessions bypass row-level security).
+    pub has_claims: bool,
+    /// `idle_in_transaction_session_timeout` (ms).
+    pub idle_timeout_ms: i64,
+    /// Name.
+    pub name: String,
+    /// Principal key it acts as.
+    pub principal: String,
+    /// Reads only.
+    pub readonly: bool,
+    /// PostgreSQL role (`fbu_<name>`).
+    pub role: String,
+    /// Last password rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotated_at: Option<String>,
+    /// `statement_timeout` (ms).
+    pub statement_timeout_ms: i64,
+    /// Tenant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// Expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
+}
+
+/// `{items}` of `GET /system/db-logins`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct DbLoginList {
+    /// Logins, by name.
+    #[serde(default)]
+    pub items: Vec<DbLogin>,
 }
 
 /// A message that used up its delivery attempts.
@@ -2055,6 +2230,24 @@ pub enum Enforcement {
     Unknown,
 }
 
+/// The database engine that wrote a backup (ADR-0028 §5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineInfo {
+    /// `sqlite` or `postgres`.
+    pub kind: String,
+    /// PostgreSQL: major version. A physical backup restores on this major only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major: Option<i64>,
+    /// How the database was copied.
+    pub method: Method,
+    /// PostgreSQL: `managed` (the bundled engine) or `external`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// PostgreSQL: server version, such as `18.3`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
 /// Effective entitlements of a subject (and member).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Entitlements {
@@ -2215,6 +2408,38 @@ pub struct ExpiryReport {
     pub credits: i64,
     /// Lots emptied.
     pub lots: i64,
+}
+
+/// One extension of the allow list or of a feature.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ExtensionInfo {
+    /// The engine ships it (`pg_available_extensions`).
+    pub available: bool,
+    /// The engine's description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// Version the engine offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_version: Option<String>,
+    /// Installed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    /// Who manages it: `api` (this endpoint), `schema` (ForgeBase's own
+    /// migrations), or `feature:<name>` (`[database.postgres.extensions]`).
+    pub managed_by: String,
+    /// `CREATE EXTENSION` name.
+    pub name: String,
+    /// Schema it lives in, when installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+}
+
+/// `{items}` of `GET /system/extensions`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ExtensionList {
+    /// The allow list and the feature extensions, by name.
+    #[serde(default)]
+    pub items: Vec<ExtensionInfo>,
 }
 
 /// Body of a failure report.
@@ -2378,6 +2603,10 @@ pub enum FileKind {
     Index,
     #[serde(rename = "key")]
     Key,
+    #[serde(rename = "postgres")]
+    Postgres,
+    #[serde(rename = "dump")]
+    Dump,
     /// A value this SDK version does not know (kept so newer servers do not break old clients).
     #[serde(other)]
     Unknown,
@@ -2522,6 +2751,8 @@ pub enum GrantSource {
 /// Counts for the admin explorer.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GraphStats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cypher: Option<CypherStatus>,
     /// Edge count per relationship type.
     #[serde(default)]
     pub edge_types: Vec<TypeCount>,
@@ -2745,7 +2976,8 @@ pub struct IndexDefinitionSchema {
     pub collection: String,
     #[serde(default)]
     pub keys: Vec<IndexKeySchema>,
-    /// `btree` (default) or `fulltext`.
+    /// `btree` (default), `fulltext` or `trigram` (PostgreSQL with pg_trgm;
+    /// `400 index_kind_unsupported` elsewhere).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4473,6 +4705,9 @@ pub struct Job {
     /// Step name inside the workflow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
+    /// Tenant (project environment) of the enqueuer (FB-142); `null`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Longest run of one attempt in ms (`null`: no limit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<i64>,
@@ -4608,6 +4843,34 @@ pub struct JobUpdate {
     pub workflow_id: Option<String>,
 }
 
+/// A join token, shown once.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct JoinToken {
+    /// The command to run on the other host.
+    pub command: String,
+    /// RFC 3339 (15 minutes).
+    pub expires_at: String,
+    /// Token id (in the audit log).
+    pub id: String,
+    /// Role.
+    pub role: String,
+    /// Set id.
+    pub set: String,
+    /// The token (`fbj_…`); only its hash is stored.
+    pub token: String,
+}
+
+/// Body of `POST /api/system/database/join-tokens`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct JoinTokenBody {
+    /// `replica` (default). Shard primaries on other hosts come with FB-174.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Set id (default `control`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
+}
+
 /// Master key handling recorded in a backup.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct KeyInfo {
@@ -4669,7 +4932,8 @@ pub struct KvRuleList {
     pub items: Vec<KvRule>,
 }
 
-/// Engine-wide statistics.
+/// Statistics: engine-wide for a privileged caller without a tenant, else
+/// those of the caller's tenant (FB-138).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct KvStats {
     /// Live pub/sub channels.
@@ -4682,18 +4946,35 @@ pub struct KvStats {
     pub expired_keys: i64,
     /// Reads that found a key.
     pub hits: i64,
-    /// Keys of all tenants (expired keys not yet swept included).
+    /// Keys (expired keys not yet swept included).
     pub keys: i64,
-    /// Memory budget in bytes (`0` = unlimited).
+    /// Memory budget in bytes (`0` = unlimited): the engine's, or the
+    /// per-tenant budget `kv.tenant_max_bytes` for `scope = tenant`.
     pub max_memory_bytes: i64,
     /// Reads that found nothing.
     pub misses: i64,
     /// Whether changes are written to SQLite.
     pub persistent: bool,
+    /// `engine` (every tenant) or `tenant` (the caller's tenant only).
+    pub scope: String,
+    /// The tenant the figures are for (`scope = tenant`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Keys changed in memory and not yet written to SQLite.
     pub unsaved_keys: i64,
     /// Estimated memory in use, bytes.
     pub used_memory_bytes: i64,
+}
+
+/// One lag sample.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LagSample {
+    /// RFC 3339 minute.
+    pub at: String,
+    /// Highest byte lag in that minute.
+    pub lag_bytes: i64,
+    /// Highest time lag in that minute.
+    pub lag_ms: i64,
 }
 
 /// Language a version was written in.
@@ -4861,6 +5142,17 @@ pub struct ListQueryBody {
     pub fields: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// Fuzzy text: trigram similarity, best match first (PostgreSQL with
+    /// pg_trgm; `400 fuzzy_unsupported` otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzzy: Option<String>,
+    /// Fields `fuzzy` compares; each needs a trigram index (default: all
+    /// fields of the collection's trigram indexes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzzy_fields: Option<Vec<String>>,
+    /// Minimum similarity from 0 to 1 (default 0.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzzy_threshold: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<i64>,
     /// Values of `{:name}` parameters, typed.
@@ -4868,6 +5160,7 @@ pub struct ListQueryBody {
     pub params: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_page: Option<i64>,
+    /// Full-text query (needs a full-text index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4921,6 +5214,48 @@ pub struct LogLine {
     pub message: String,
 }
 
+/// A login with its password, returned once by create and rotate.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LoginSecret {
+    /// `psql` connection string over the Unix socket, without the password.
+    pub hint: String,
+    /// The login.
+    pub login: DbLogin,
+    /// The generated password: shown once, never stored by ForgeBase.
+    pub password: String,
+}
+
+/// A login to create (`forgebase db login create`, `POST
+/// /api/v1/system/db-logins`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct LoginSpec {
+    /// The SQL editor's rights (`forgebase_sql_admin`, bypasses row-level
+    /// security); platform administrators only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin: Option<bool>,
+    /// `CONNECTION LIMIT` (1 to 100, default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_limit: Option<i64>,
+    /// `[a-z][a-z0-9_]{0,39}`; the role is `fbu_<name>`.
+    pub name: String,
+    /// Principal key the login acts as: `user:<collection>/<id>` or
+    /// `service:<id>`. Optional for `admin` logins (default: the creator).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    /// Reads only (member of `forgebase_login`, not `forgebase_login_write`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<bool>,
+    /// `statement_timeout` in milliseconds (1 to 3 600 000, default 30 000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_timeout_ms: Option<i64>,
+    /// The one tenant the login's statements are scoped to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// Expiry (`VALID UNTIL`), RFC 3339 such as `2027-01-31T00:00:00Z`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
+}
+
 /// What is left of one top-up or grant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Lot {
@@ -4948,6 +5283,12 @@ pub struct Lot {
 pub struct Manifest {
     /// RFC 3339 creation time (UTC).
     pub created: String,
+    /// Only the database is in this backup (pre-migration snapshots): a
+    /// restore leaves storage, indexes and the master key alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineInfo>,
     /// Every file with size and hash.
     #[serde(default)]
     pub files: Vec<FileEntry>,
@@ -4966,6 +5307,9 @@ pub struct Manifest {
     pub label: Option<String>,
     /// Master key handling.
     pub master_key: KeyInfo,
+    /// Why this backup was taken, for managed ones (`pre-migration`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// Highest applied system migration in the copied database.
     pub schema_version: i64,
 }
@@ -5073,6 +5417,20 @@ pub enum MeterState {
     Unknown,
 }
 
+/// How the database was copied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Method {
+    #[serde(rename = "vacuum")]
+    Vacuum,
+    #[serde(rename = "basebackup")]
+    Basebackup,
+    #[serde(rename = "dump")]
+    Dump,
+    /// A value this SDK version does not know (kept so newer servers do not break old clients).
+    #[serde(other)]
+    Unknown,
+}
+
 /// Distance function of a vector field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Metric {
@@ -5112,6 +5470,15 @@ pub struct Money {
     pub amount: i64,
     /// ISO 4217 code, upper case.
     pub currency: String,
+}
+
+/// Body of `POST /api/system/database/placements/{tenant}/move`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MoveBody {
+    /// The tenant id, typed by the operator.
+    pub confirm: String,
+    /// Target set id.
+    pub to: String,
 }
 
 /// Body of `POST /mset`.
@@ -5474,6 +5841,17 @@ pub struct NodeDeleted {
     pub id: String,
 }
 
+/// `GET /api/system/database/nodes/{id}`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NodeDetail {
+    /// Last hour, one-minute buckets, oldest first (kept in memory: empty
+    /// after a restart).
+    #[serde(default)]
+    pub lag_history: Vec<LagSample>,
+    /// The node.
+    pub node: NodeInfo,
+}
+
 /// Node filter: label and property equality (all must match).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NodeFilter {
@@ -5484,6 +5862,60 @@ pub struct NodeFilter {
     /// or booleans; keys are `A-Z a-z 0-9 _ -`. At most 8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub properties: Option<serde_json::Value>,
+}
+
+/// One server of a set.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NodeInfo {
+    /// The `forgebase node` agent of a remote node: `state`, `address`,
+    /// `replay_lsn`, `disk_free`, `last_seen_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<serde_json::Value>,
+    /// RFC 3339.
+    pub created_at: String,
+    /// PostgreSQL version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
+    /// Id.
+    pub id: String,
+    /// Serves reads now (replicas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_rotation: Option<bool>,
+    /// `local` (this server), `remote` (`forgebase node`) or `external`.
+    pub kind: String,
+    /// Bytes of changes behind (replicas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lag_bytes: Option<i64>,
+    /// Time behind the primary at the last sample (replicas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lag_ms: Option<i64>,
+    /// The latest failure while out of rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Name (`postgres/nodes/<name>` for local nodes).
+    pub name: String,
+    /// `api`, or `config` (declared in `forgebase.toml`: read-only).
+    pub origin: String,
+    /// Last replayed position (`X/Y`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_lsn: Option<String>,
+    /// `primary` or `replica`.
+    pub role: String,
+    /// Set id.
+    pub set: String,
+    /// `provisioning`, `ready`, `catching_up`, `streaming`, `lagging`,
+    /// `unreachable`, `needs_rebuild` or `promoting`.
+    pub state: String,
+    /// Cluster system identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_identifier: Option<String>,
+    /// Timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<i64>,
+    /// RFC 3339.
+    pub updated_at: String,
+    /// Share of replica reads.
+    pub weight: i64,
 }
 
 /// A page of nodes.
@@ -5537,6 +5969,67 @@ pub struct ObjectPage {
     /// "Directories" when a delimiter was given.
     #[serde(default)]
     pub prefixes: Vec<String>,
+}
+
+/// A topology operation (a job of a reserved `database.*` kind).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Operation {
+    /// Cancel was asked for.
+    pub cancel_requested: bool,
+    /// It can still be cancelled.
+    pub cancellable: bool,
+    /// RFC 3339.
+    pub created_at: String,
+    /// Who started it.
+    pub created_by: String,
+    /// RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// Job id; progress streams on channel `jobs:<id>`.
+    pub id: String,
+    /// `database.node.add`, `database.promote`, …
+    pub kind: String,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Node it changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<OperationProgress>,
+    /// Result of a finished operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// Set it changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
+    /// RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// `pending`, `running`, `succeeded`, `failed`, `cancelled`, `dead`.
+    pub status: String,
+}
+
+/// A page of operations.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OperationList {
+    /// Newest first.
+    #[serde(default)]
+    pub items: Vec<Operation>,
+}
+
+/// Progress of an operation.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OperationProgress {
+    /// Detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    /// Stage (`cloning`, `starting`, `fencing`, `promoting`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 /// A one-time order.
@@ -5885,6 +6378,41 @@ pub enum Permission {
     Unknown,
 }
 
+/// One tenant's placement.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlacementInfo {
+    /// Estimated bytes.
+    pub est_bytes: i64,
+    /// Estimated rows.
+    pub est_rows: i64,
+    /// RFC 3339 of the last move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_at: Option<String>,
+    /// Its organization, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    /// Its project, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Set id.
+    pub set: String,
+    /// `active`, `moving`, `frozen` or `cleanup`.
+    pub state: String,
+    /// Tenant (environment id).
+    pub tenant: String,
+}
+
+/// A page of placements.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlacementPage {
+    /// Tenants by id.
+    #[serde(default)]
+    pub items: Vec<PlacementInfo>,
+    /// Cursor of the next page (`None`: last page).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 /// A plan.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Plan {
@@ -5967,6 +6495,26 @@ pub struct PlanStepSchema {
     pub detail: String,
     pub id: i64,
     pub parent: i64,
+}
+
+/// One move of a rebalance plan.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlannedMoveInfo {
+    /// Estimated bytes.
+    pub bytes: i64,
+    /// Estimated freeze in milliseconds.
+    pub est_freeze_ms: i64,
+    /// From set id.
+    pub from: String,
+    /// Its project (a project's environments move together).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Estimated rows.
+    pub rows: i64,
+    /// Tenant.
+    pub tenant: String,
+    /// To set id.
+    pub to: String,
 }
 
 /// Body of `POST .../lists/{key}/pop`.
@@ -6296,6 +6844,33 @@ pub struct ProgressReport {
     pub stage: Option<String>,
 }
 
+/// Body of `POST /api/system/database/nodes/{id}/promote`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PromoteBody {
+    /// "The old primary is down": promote even though recent commits may be lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_data_loss: Option<bool>,
+    /// The node name, typed by the operator.
+    pub confirm: String,
+}
+
+/// `GET /api/system/database/nodes/{id}/promote-check`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PromoteCheck {
+    /// Bytes the replica is behind (when both are known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind_bytes: Option<i64>,
+    /// The primary's position (when it answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_lsn: Option<String>,
+    /// The old primary answers: a promote loses nothing. `false`: the
+    /// dialog shows "the old primary is down" and needs `accept_data_loss`.
+    pub primary_reachable: bool,
+    /// The replica's replay position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed: Option<String>,
+}
+
 /// How to bill a plan change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Proration {
@@ -6596,6 +7171,10 @@ pub struct QueueInfo {
     /// Created (RFC 3339) when configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    /// Who saved the settings first (FB-146); `null`: not configured, or
+    /// configured before FB-146.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     /// In the dead-letter queue.
     pub dead: i64,
     /// Priority of jobs enqueued without one.
@@ -6619,6 +7198,10 @@ pub struct QueueInfo {
     pub running: i64,
     /// Finished successfully (until purged).
     pub succeeded: i64,
+    /// Tenant whose jobs these settings govern (FB-146); `null`: the jobs
+    /// without a tenant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Last settings change (RFC 3339) when configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
@@ -6708,6 +7291,9 @@ pub struct QueueSubscription {
     /// Webhook signing secret: returned only when it is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_secret: Option<String>,
+    /// Owning tenant (FB-141); `None` for an instance-wide subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Topic.
     pub topic: String,
     /// Last changed (RFC 3339).
@@ -6856,6 +7442,52 @@ pub struct RealtimeStats {
     pub slow_consumers: i64,
     /// Active subscriptions.
     pub subscriptions: i64,
+}
+
+/// Body of `POST /api/system/database/rebalance`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RebalanceBody {
+    /// The plan id, typed by the operator.
+    pub confirm: String,
+    /// From the plan.
+    pub plan_id: String,
+}
+
+/// Body of `POST /api/system/database/rebalance/plan`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RebalancePlanBody {
+    /// Most moves in the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_moves: Option<i64>,
+    /// Sets to balance (default all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sets: Option<Vec<String>>,
+}
+
+/// `POST /api/system/database/rebalance/plan`: shown before it runs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RebalancePlanView {
+    /// Loads after the plan.
+    #[serde(default)]
+    pub after: Vec<SetLoadInfo>,
+    /// Loads now.
+    #[serde(default)]
+    pub before: Vec<SetLoadInfo>,
+    /// RFC 3339.
+    pub created_at: String,
+    /// Sum of the estimated freezes.
+    pub est_freeze_ms: i64,
+    /// RFC 3339: after this the plan must be made again.
+    pub expires_at: String,
+    /// Plan id (type it to run the plan).
+    pub id: String,
+    /// Moves, in the order they run (one at a time).
+    #[serde(default)]
+    pub moves: Vec<PlannedMoveInfo>,
+    /// Spread after.
+    pub spread_after: f64,
+    /// Spread of the scores now ((max − min) ÷ max).
+    pub spread_before: f64,
 }
 
 /// The last completed rebuild.
@@ -7037,6 +7669,13 @@ pub enum RefundStatus {
     Unknown,
 }
 
+/// Answer of the removals.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Removed {
+    /// The removed node or set id.
+    pub removed: String,
+}
+
 /// Body of a lease renewal.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RenewBody {
@@ -7116,6 +7755,28 @@ pub struct Retention {
     pub max_age_days: Option<i64>,
 }
 
+/// Data of a removed shard kept on disk.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RetiredInfo {
+    /// Bytes on disk.
+    pub bytes: i64,
+    /// Id (`<node name>-<unix time>`).
+    pub id: String,
+    /// The shard node's name (type it to delete).
+    pub name: String,
+    /// The set it held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_id: Option<String>,
+}
+
+/// `GET /api/system/database/retired`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RetiredList {
+    /// Oldest first.
+    #[serde(default)]
+    pub items: Vec<RetiredInfo>,
+}
+
 /// Revenue of one currency in one bucket.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RevenuePoint {
@@ -7156,6 +7817,25 @@ pub struct RollbackBody {
     pub version: Option<i64>,
 }
 
+/// Body of `POST /system/db-logins/{name}/rotate`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RotateBody {
+    /// New expiry (RFC 3339); absent keeps the current one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
+}
+
+/// `run_as` of a SQL editor body (FB-153): whose claims the statements run
+/// with.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RunAsBody {
+    /// Principal key: `user:<collection>/<id>` or `service:<id>`.
+    pub principal: String,
+    /// The tenant to act in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+}
+
 /// Answer of `GET /{ns}/keys`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScanResponse {
@@ -7181,6 +7861,9 @@ pub struct Schedule {
     pub cron: String,
     /// Fires only while enabled.
     pub enabled: bool,
+    /// What fires it: `forgebase` (the server's tick) or `pg_cron` (FB-165;
+    /// PostgreSQL with the extension, expressions it reads like ForgeBase).
+    pub fired_by: String,
     /// Schedule id.
     pub id: String,
     /// Handler name.
@@ -7195,7 +7878,8 @@ pub struct Schedule {
     pub max_attempts: i64,
     /// Unique name.
     pub name: String,
-    /// Next firing (RFC 3339).
+    /// Next firing (RFC 3339). For a schedule pg_cron fires it is computed
+    /// from the expression when read.
     pub next_run_at: String,
     /// Handler input.
     #[serde(default)]
@@ -7204,6 +7888,9 @@ pub struct Schedule {
     pub priority: i64,
     /// Queue of the jobs.
     pub queue: String,
+    /// Tenant of the creator (FB-142); its jobs run in it. `null`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Last change (RFC 3339).
     pub updated_at: String,
     /// Visibility timeout of the jobs in ms.
@@ -7433,6 +8120,46 @@ pub struct SetBody {
     pub xx: Option<bool>,
 }
 
+/// One set (control or a shard).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SetInfo {
+    /// Sum of the tenants' estimated sizes in bytes.
+    pub est_bytes: i64,
+    /// Takes new tenants.
+    pub hosts_tenants: bool,
+    /// Id (`control` for control).
+    pub id: String,
+    /// `control` or `shard`.
+    pub kind: String,
+    /// Display name.
+    pub name: String,
+    /// Set number (0 for control).
+    pub number: i64,
+    /// `provisioning`, `active`, `draining`, `migrating` or `retired`.
+    pub state: String,
+    /// Tenants placed on it (control also serves tenants with no placement row).
+    pub tenants: i64,
+    /// Relative capacity.
+    pub weight: i64,
+}
+
+/// A set's load in a plan (bytes ÷ weight).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SetLoadInfo {
+    /// Estimated bytes.
+    pub bytes: i64,
+    /// Set name.
+    pub name: String,
+    /// Bytes ÷ weight.
+    pub score: f64,
+    /// Set id.
+    pub set_id: String,
+    /// Tenants.
+    pub tenants: i64,
+    /// Weight.
+    pub weight: i64,
+}
+
 /// `POST /api/setup/admin` body.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SetupAdminRequest {
@@ -7454,6 +8181,19 @@ pub struct SetupAdminRequest {
 pub struct SetupStatus {
     /// `true` while no administrator exists.
     pub setup_required: bool,
+}
+
+/// Where a new shard's primary runs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ShardNode {
+    /// `external` (a server you run, at `url`). `local` and `remote` shard
+    /// primaries come with FB-174.
+    pub kind: String,
+    /// Node name.
+    pub name: String,
+    /// `external` only: `postgres://` URL of an empty database (stored sealed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// Which end of a list.
@@ -7558,6 +8298,9 @@ pub struct Snapshot {
     pub name: String,
     /// Subscription.
     pub subscription: String,
+    /// Owning tenant (FB-141); `None` for an instance-wide snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Topic.
     pub topic: String,
     /// Messages that were unacknowledged at the time.
@@ -7610,6 +8353,12 @@ pub struct SpendInput {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SqlBatchBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<RunAsBody>,
+    /// Return secret columns unmasked for the whole batch and allow
+    /// statements that name them; audited once per batch. Default `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_secrets: Option<bool>,
     /// 1 to 1000 statements, run in one all-or-nothing transaction.
     #[serde(default)]
     pub statements: Vec<SqlStatementBody>,
@@ -7628,11 +8377,16 @@ pub struct SqlResultSchema {
     pub duration_ms: f64,
     /// `read`, `write`, `schema` or `maintenance`.
     pub kind: String,
+    /// Rowid of the last insert (SQLite; `null` on PostgreSQL: use `RETURNING`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_insert_id: Option<i64>,
     #[serde(default)]
     pub rows: Vec<Vec<serde_json::Value>>,
     pub rows_affected: i64,
+    /// `true` when secret values in `rows` read `"********"` (send
+    /// `show_secrets` to see them); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets_masked: Option<bool>,
     pub truncated: bool,
 }
 
@@ -7640,6 +8394,14 @@ pub struct SqlResultSchema {
 pub struct SqlStatementBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<RunAsBody>,
+    /// `POST /sql` only (a batch sets it on the batch body): return secret
+    /// columns (`password`, `token_key`, password fields) unmasked and allow
+    /// statements that name them. Each use is audited (`sql.show_secrets`
+    /// in `GET /api/auth/audit`). Default `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_secrets: Option<bool>,
     /// One SQL statement; positional parameters `?` / `?1`.
     pub sql: String,
 }
@@ -7658,8 +8420,14 @@ pub struct StorageStats {
     pub objects: i64,
     /// Open upload sessions.
     pub open_uploads: i64,
+    /// What the figures cover (FB-140): `tenant`, `instance` (buckets
+    /// without a tenant) or `engine` (everything; privileged callers).
+    pub scope: String,
     /// Physical bytes stored (after deduplication).
     pub stored_bytes: i64,
+    /// The tenant of `scope: tenant`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Object versions, including deleted and older ones.
     pub versions: i64,
 }
@@ -8259,6 +9027,9 @@ pub struct Topic {
     pub schema: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<RecordSource>,
+    /// Owning tenant (FB-141); `None` for an instance-wide topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Last changed (RFC 3339).
     pub updated_at: String,
 }
@@ -8319,6 +9090,31 @@ pub struct TopicPatch {
     /// New schema (applies to later publishes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
+}
+
+/// `GET /api/system/database/topology`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopologyView {
+    /// `postgres` or `sqlite`.
+    pub backend: String,
+    /// PostgreSQL version of the control primary, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
+    /// Topology epoch (grows on every change).
+    pub epoch: i64,
+    /// Every node that is not retired.
+    #[serde(default)]
+    pub nodes: Vec<NodeInfo>,
+    /// Operations queued or running.
+    #[serde(default)]
+    pub operations: Vec<Operation>,
+    /// Set after a promote of control's primary: the server must be
+    /// restarted to move its connections to the new primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_required: Option<String>,
+    /// Control first, then shards by number.
+    #[serde(default)]
+    pub sets: Vec<SetInfo>,
 }
 
 /// Body of `POST /traverse`.
@@ -8399,6 +9195,27 @@ pub struct TypeCount {
     pub count: i64,
     /// Relationship type.
     pub r#type: String,
+}
+
+/// Body of `PATCH /api/system/database/nodes/{id}`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UpdateNode {
+    /// Share of replica reads, 0 to 1000 (0 takes it out of rotation).
+    pub weight: i64,
+}
+
+/// Body of `PATCH /api/system/database/shards/{id}`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UpdateShard {
+    /// Takes new tenants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts_tenants: Option<bool>,
+    /// `active` or `draining` (takes no new tenants).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Relative capacity, 1 to 1000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<i64>,
 }
 
 /// A multipart or resumable upload session.
@@ -8786,10 +9603,13 @@ pub struct VectorCollection {
     /// Vector fields.
     #[serde(default)]
     pub fields: Vec<VectorField>,
-    /// Number of items.
+    /// Number of items (that the caller's rule shows).
     pub items: i64,
     /// Name.
     pub name: String,
+    /// See \[`NewCollection::source_collection`\].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_collection: Option<String>,
     /// Last change of the definition or the data.
     pub updated: String,
 }
@@ -8845,6 +9665,13 @@ pub struct VectorNewCollection {
     pub fields: Option<Vec<FieldSpec>>,
     /// `[A-Za-z][A-Za-z0-9_]{0,62}`, unique in the tenant.
     pub name: String,
+    /// The data collection the items are copied from, item id = record id
+    /// (FB-139). Searches and reads then re-check every item against that
+    /// collection's View rule as the caller, leave out the metadata keys the
+    /// caller may not read there, and refuse filters on them. Set at
+    /// creation only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_collection: Option<String>,
 }
 
 /// Progress of a rebuild.
@@ -9053,6 +9880,9 @@ pub struct WebhookOutcome {
 pub struct Worker {
     /// Jobs it runs at once.
     pub concurrency: i64,
+    /// Who registered it (FB-146); `null`: registered before FB-146.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     /// Worker id.
     pub id: String,
     /// Handlers it runs (empty: all).
@@ -9070,6 +9900,9 @@ pub struct Worker {
     pub queues: Vec<String>,
     /// First seen (RFC 3339).
     pub registered_at: String,
+    /// Tenant of the caller that registered it (FB-146); `null`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
 }
 
 /// Workers.
@@ -9104,6 +9937,9 @@ pub struct Workflow {
     pub on_failure: FailurePolicy,
     /// State.
     pub status: WorkflowStatus,
+    /// Tenant of the creator (FB-142). `null`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Last change (RFC 3339).
     pub updated_at: String,
 }
@@ -9132,6 +9968,9 @@ pub struct WorkflowDetail {
     pub on_failure: FailurePolicy,
     /// State.
     pub status: WorkflowStatus,
+    /// Tenant of the creator (FB-142). `null`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
     /// Last change (RFC 3339).
     pub updated_at: String,
     /// Its jobs in creation order: steps, child jobs and compensations.
