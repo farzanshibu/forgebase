@@ -83,6 +83,56 @@ struct StateInner {
     policy: Option<PolicyService>,
     realtime: Option<forgebase_realtime::RealtimeService>,
     collectors: Vec<MetricsCollector>,
+    database: DatabaseRuntime,
+}
+
+/// What `/api/system/info` and `/health/ready` report about the database
+/// beyond the [`Database`] handle (FB-148): the PostgreSQL mode, the
+/// extension switches and, when this process runs the bundled engine, its
+/// state.
+#[derive(Clone, Default)]
+pub struct DatabaseRuntime {
+    /// `managed` or `external` on PostgreSQL; `None` on SQLite.
+    pub mode: Option<&'static str>,
+    /// Where the data lives, for display: the SQLite file, the bundled
+    /// cluster's directory, or the external server's URL without password.
+    pub location: Option<String>,
+    /// `(feature, PostgreSQL extension, mode)` from `[database.postgres.extensions]`.
+    pub extensions: Vec<(&'static str, &'static str, &'static str)>,
+    /// The bundled engine's state, when this process runs it.
+    pub engine: Option<Arc<dyn Fn() -> EngineReport + Send + Sync>>,
+}
+
+impl std::fmt::Debug for DatabaseRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseRuntime")
+            .field("mode", &self.mode)
+            .field("location", &self.location)
+            .field("extensions", &self.extensions)
+            .field("engine", &self.engine.as_ref().map(|e| e()))
+            .finish()
+    }
+}
+
+/// The bundled PostgreSQL engine as the server sees it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EngineReport {
+    /// `ready`, `restarting`, `failed` or `stopped`.
+    pub state: &'static str,
+    /// PostgreSQL version (`18.6`).
+    pub version: String,
+    /// Postmaster pid while running.
+    pub pid: Option<u32>,
+    /// Restarts after crashes since the server started.
+    pub restarts: u32,
+    /// The last failure, if any.
+    pub last_error: Option<String>,
+    /// Unix socket directory (`None` on Windows).
+    pub socket_dir: Option<String>,
+    /// TCP address, when direct TCP logins are on.
+    pub tcp: Option<String>,
+    /// Start-up warnings (a missing optional module).
+    pub warnings: Vec<String>,
 }
 
 /// An async hook that refreshes gauges just before `/metrics` renders.
@@ -138,6 +188,7 @@ impl AppState {
                 policy: None,
                 realtime: None,
                 collectors: Vec::new(),
+                database: DatabaseRuntime::default(),
             }),
         })
     }
@@ -177,6 +228,7 @@ impl AppState {
                 policy: None,
                 realtime: None,
                 collectors: Vec::new(),
+                database: DatabaseRuntime::default(),
             }),
         }
     }
@@ -233,6 +285,18 @@ impl AppState {
     /// Registered metrics collectors.
     pub(crate) fn collectors(&self) -> &[MetricsCollector] {
         &self.inner.collectors
+    }
+
+    /// Same state with what the server knows about its database engine
+    /// (FB-148): shown by `/api/system/info`, checked by `/health/ready`.
+    pub fn with_database_runtime(mut self, runtime: DatabaseRuntime) -> Self {
+        Arc::make_mut(&mut self.inner).database = runtime;
+        self
+    }
+
+    /// What the server knows about its database engine.
+    pub fn database_runtime(&self) -> &DatabaseRuntime {
+        &self.inner.database
     }
 
     /// The realtime service, when configured.
@@ -631,6 +695,101 @@ mod tests {
         );
         assert!(j["database"]["size_bytes"].as_u64().unwrap() > 0);
         assert!(j["database"]["path"].as_str().unwrap().ends_with("forgebase.db"));
+    }
+
+    /// FB-148: the backend, the engine and the feature engines, on the test
+    /// backend (`FORGEBASE_TEST_BACKEND=postgres` for PostgreSQL).
+    #[tokio::test]
+    async fn info_and_readiness_report_the_backend_and_the_engine() {
+        let test = forgebase_db::testing::test_backend().await;
+        let layout = DataLayout::new(test.data_dir().join("data"));
+        layout.ensure().unwrap();
+        let pg = test.kind() == forgebase_db::BackendKind::Postgres;
+        let extensions = vec![
+            ("vector", "vector", "auto"),
+            ("graph", "age", "off"),
+            ("queue", "pgmq", "auto"),
+            ("cron", "pg_cron", "on"),
+            ("trigram", "pg_trgm", "auto"),
+        ];
+        let engine_state = std::sync::Arc::new(std::sync::Mutex::new("ready"));
+        let seen = engine_state.clone();
+        let runtime = DatabaseRuntime {
+            mode: pg.then_some("managed"),
+            location: pg.then(|| "/srv/fb/postgres/data".to_owned()),
+            extensions: if pg { extensions } else { Vec::new() },
+            engine: pg.then(|| {
+                let f: Arc<dyn Fn() -> EngineReport + Send + Sync> = Arc::new(move || EngineReport {
+                    state: *seen.lock().unwrap(),
+                    version: "18.6".into(),
+                    pid: Some(4242),
+                    restarts: 1,
+                    last_error: Some("the postmaster exited unexpectedly".into()),
+                    socket_dir: Some("/srv/fb/postgres/run".into()),
+                    tcp: None,
+                    warnings: Vec::new(),
+                });
+                f
+            }),
+        };
+        let state = AppState::new(test.database().clone(), layout)
+            .await
+            .unwrap()
+            .with_database_runtime(runtime);
+        let app = router(state, RouterOptions::default());
+
+        let (s, _, j, text) = call(&app, Method::GET, "/api/system/info", &[]).await;
+        assert_eq!(s, StatusCode::OK, "{text}");
+        let d = &j["database"];
+        assert_eq!(d["backend"], if pg { "postgres" } else { "sqlite" });
+        assert!(d["server_version"].as_str().is_some_and(|v| !v.is_empty()), "{d}");
+        if pg {
+            assert_eq!(d["mode"], "managed");
+            assert_eq!(d["path"], "/srv/fb/postgres/data");
+            assert_eq!(d["engine"]["state"], "ready");
+            assert_eq!(d["engine"]["version"], "18.6");
+            assert_eq!(d["engine"]["pid"], 4242);
+            assert!(d["connections"].as_u64().is_some(), "{d}");
+            let f = d["features"].as_object().unwrap();
+            assert_eq!(
+                f.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["cron", "graph", "queue", "trigram", "vector"]
+            );
+            for (name, v) in f {
+                assert_eq!(v["engine"], "portable", "{name}: {v}");
+            }
+            assert_eq!(f["graph"]["state"], "off");
+            assert_eq!(f["graph"]["extension"], "age");
+            // pg_trgm is a contrib module: every PostgreSQL has it.
+            assert!(f["trigram"]["available"].as_str().is_some(), "{f:?}");
+            assert!(
+                ["available", "installed"].contains(&f["trigram"]["state"].as_str().unwrap()),
+                "{f:?}"
+            );
+        } else {
+            assert_eq!(d["mode"], serde_json::Value::Null);
+            assert_eq!(d["engine"], serde_json::Value::Null);
+            assert_eq!(d["features"], serde_json::json!({}));
+        }
+
+        // The readiness body keeps its contract shape (docs/PLAN.md §5).
+        let (s, _, j, _) = call(&app, Method::GET, "/health/ready", &[]).await;
+        assert_eq!(s, StatusCode::OK, "{j}");
+        assert_eq!(
+            j,
+            serde_json::json!({"status": "ready", "checks": {"database": "ok", "storage": "ok"}})
+        );
+        if pg {
+            // A restarting engine fails readiness (ADR-0028 §4.3).
+            *engine_state.lock().unwrap() = "restarting";
+            let (s, _, j, _) = call(&app, Method::GET, "/health/ready", &[]).await;
+            assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{j}");
+            assert_eq!(j["checks"]["database"], "error");
+            assert_eq!(
+                j["errors"]["database"],
+                "the bundled PostgreSQL is restarting: the postmaster exited unexpectedly"
+            );
+        }
     }
 
     #[tokio::test]

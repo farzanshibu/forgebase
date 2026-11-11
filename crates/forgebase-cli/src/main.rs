@@ -15,6 +15,7 @@
 //! forgebase functions deploy <NAME> <FILE.wasm>   deploy a function version (also: logs <NAME> [--follow])
 //! forgebase queues publish|pull|tail   publish to a topic, pull from a subscription, follow a topic
 //! forgebase jobs watch <ID>            follow a long-running job's progress until it finishes
+//! forgebase db status|psql             the database engine; psql on the bundled PostgreSQL
 //! ```
 //!
 //! Configuration precedence: flags > `FORGEBASE_*` environment > config file > defaults.
@@ -22,6 +23,7 @@
 mod admin;
 mod commands;
 mod dataops;
+mod db;
 mod doctor;
 mod dotenv;
 mod functions;
@@ -37,10 +39,16 @@ use clap::{Args, Parser, Subcommand};
 use forgebase_core::config::{ConfigLoader, ConfigOverrides};
 use forgebase_core::{LoadedConfig, LogFormat};
 
+/// `forgebase --version`: lite builds (no bundled PostgreSQL) say so (ADR-0029 §6).
+#[cfg(feature = "bundled-postgres")]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(not(feature = "bundled-postgres"))]
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (lite: SQLite only, no bundled PostgreSQL)");
+
 #[derive(Debug, Parser)]
 #[command(
     name = "forgebase",
-    version,
+    version = VERSION,
     about = "ForgeBase: a single-binary backend with an embedded database",
     propagate_version = true
 )]
@@ -127,6 +135,9 @@ enum Command {
         /// The first administrator (FB-90).
         #[command(flatten)]
         admin: admin::InitAdminArgs,
+        /// The database engine (FB-148).
+        #[command(flatten)]
+        database: commands::InitDatabaseArgs,
     },
     /// Start the server and serve until Ctrl-C / SIGTERM.
     Serve,
@@ -183,6 +194,8 @@ enum Command {
     Queues(Box<queues::QueuesCli>),
     /// Follow long-running jobs on a running server.
     Jobs(Box<queues::JobsCli>),
+    /// The database engine: status, and psql on the bundled PostgreSQL.
+    Db(Box<db::DbCli>),
 }
 
 fn main() -> ExitCode {
@@ -211,7 +224,7 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let g = &cli.global;
     match cli.command {
-        Command::Init { dir, admin } => commands::init(g, &dir, &admin).await,
+        Command::Init { dir, admin, database } => commands::init(g, &dir, &admin, &database).await,
         Command::Serve => commands::serve(g).await,
         Command::Migrate { status } => commands::migrate(g, status).await,
         Command::Status { json } => commands::status(g, json).await,
@@ -225,5 +238,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Functions(f) => functions::run(g, f.server, f.command).await,
         Command::Queues(q) => queues::run_queues(g, q.server, q.command).await,
         Command::Jobs(j) => queues::run_jobs(g, j.server, j.command).await,
+        Command::Db(d) => db::run(g, *d).await,
     }
 }

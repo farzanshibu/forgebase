@@ -2,7 +2,6 @@
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use forgebase_core::Config;
 use forgebase_data::AccessContext;
 use forgebase_jobs::{ClaimRequest, NewJob, NewWorker};
 use forgebase_queue::{NewMessage, NewSubscription, NewTopic, PullRequest};
@@ -11,7 +10,8 @@ use serde_json::json;
 fn bench(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let tmp = tempfile::tempdir_in(std::env::var_os("TMPDIR").unwrap_or_else(|| "/tmp".into())).unwrap();
-    let mut cfg = Config::defaults(tmp.path());
+    // FB-148: SQLite or the bundled PostgreSQL (FORGEBASE_TEST_BACKEND).
+    let mut cfg = forgebase_bench::config(tmp.path());
     cfg.server.host = "127.0.0.1".into();
     cfg.server.port = 0;
     let server = rt.block_on(forgebase_server::start(&cfg)).unwrap();

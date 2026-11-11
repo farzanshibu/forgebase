@@ -8,13 +8,22 @@
 //! WAL size and leftover staging files. `--deep` also hashes the newest
 //! snapshot. Nothing is created or modified; the database is opened read-only.
 //! Exit code 1 when any check fails.
+//!
+//! On the bundled PostgreSQL (FB-148) it also checks the engine (files
+//! against the archive manifest, the `postgres` binary runs), the cluster
+//! (`PG_VERSION` against the engine, permissions), `roles.secret` and a
+//! postmaster left behind, and runs `amcheck` (`bt_index_check` on every
+//! B-tree index) as the cluster's superuser. With no server running it
+//! starts the engine under the data-directory lock for the checks and stops
+//! it afterwards.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use forgebase_core::{Config, DataLayout};
-use forgebase_db::{Database, DbOptions};
+use forgebase_core::{Config, DataLayout, LoadedConfig};
+use forgebase_db::Database;
 use forgebase_server::DataDirLock;
+use forgebase_server::database::{self, Access, BackendMarker, PrimaryDatabase};
 use serde::Serialize;
 
 use crate::GlobalArgs;
@@ -76,7 +85,7 @@ pub async fn run(g: &GlobalArgs, as_json: bool, deep: bool) -> anyhow::Result<Ex
                     format!("loaded {}", f.display())
                 });
             r.push("config", Level::Ok, source);
-            check_instance(&mut r, &loaded.config, deep).await;
+            check_instance(&mut r, &loaded, deep).await;
         }
         Err(e) => r.push("config", Level::Fail, format!("{e:#}")),
     }
@@ -112,7 +121,8 @@ pub async fn run(g: &GlobalArgs, as_json: bool, deep: bool) -> anyhow::Result<Ex
     })
 }
 
-async fn check_instance(r: &mut Report, config: &Config, deep: bool) {
+async fn check_instance(r: &mut Report, loaded: &LoadedConfig, deep: bool) {
+    let config = &loaded.config;
     let layout = DataLayout::new(&config.data_dir);
     let root = layout.root();
 
@@ -148,17 +158,47 @@ async fn check_instance(r: &mut Report, config: &Config, deep: bool) {
         }
     }
 
-    // Database integrity and migrations.
-    let db_path = layout.database_path();
-    if !db_path.is_file() {
+    // Backend, engine, database integrity and migrations.
+    let marker = match database::resolve(config, crate::commands::explicit_backend(loaded), &layout) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            r.push("backend", Level::Fail, e.to_string());
+            None
+        }
+    };
+    let initialized = database::is_initialized(&layout);
+    if let Some(m) = marker {
+        let detail = match crate::commands::sqlite_notice(initialized.then_some(m)) {
+            Some(n) => format!("{}; {n}", m.label()),
+            None => m.label().to_owned(),
+        };
+        r.push("backend", Level::Ok, detail);
+    }
+    if marker == Some(BackendMarker::PostgresManaged) && initialized {
+        check_engine(r, config, &layout).await;
+    }
+    let mut primary: Option<PrimaryDatabase> = None;
+    if marker.is_none() {
+        r.push("database", Level::Fail, "the backend could not be decided");
+        r.push("migrations", Level::Fail, "no database");
+    } else if !initialized {
         r.push(
             "database",
             Level::Fail,
-            format!("{} is missing (run `forgebase init`)", db_path.display()),
+            format!("{} holds no database (run `forgebase init`)", root.display()),
         );
         r.push("migrations", Level::Fail, "no database");
     } else {
-        check_database(r, config, &layout).await;
+        match crate::commands::open_attached(loaded, Access::Super).await {
+            Ok(p) => {
+                check_database(r, &p, &layout).await;
+                primary = Some(p);
+            }
+            Err(e) => {
+                r.push("database", Level::Fail, format!("{e:#}"));
+                r.push("migrations", Level::Fail, "database cannot be opened");
+            }
+        }
     }
 
     // Storage (canonical blobs) and indexes (derived).
@@ -194,12 +234,121 @@ async fn check_instance(r: &mut Report, config: &Config, deep: bool) {
     }
 
     check_disk(r, root);
-    check_extras(r, config, &layout, deep).await;
+    check_extras(r, config, &layout, primary.as_deref(), deep).await;
+    if let Some(p) = primary {
+        p.close().await;
+    }
     check_port(r, config, &layout).await;
 }
 
+/// The bundled engine's files, cluster, passwords and processes.
+async fn check_engine(r: &mut Report, config: &Config, layout: &DataLayout) {
+    use forgebase_pgengine::{EngineDir, EngineOrigin, MIN_MAJOR, RoleSecrets};
+    let el = database::engine_layout(layout);
+    let pgdata = el.pgdata();
+    let major = std::fs::read_to_string(pgdata.join("PG_VERSION"))
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok());
+    match database::engine_root(&config.database, layout) {
+        None => r.push(
+            "engine",
+            Level::Warn,
+            format!(
+                "no extracted engine in {}; the next start extracts the bundled one",
+                el.engines_dir().display()
+            ),
+        ),
+        Some(root) => {
+            let extracted = root.starts_with(el.engines_dir());
+            let verified = if extracted {
+                forgebase_pgengine::archive::verify_extracted(&root)
+                    .map(|m| format!(", {} files match the manifest", m.files.len()))
+            } else {
+                Ok(String::new())
+            };
+            match (verified, EngineDir::open(&root, EngineOrigin::Dir).await) {
+                (Err(e), _) => r.push("engine", Level::Fail, format!("{}: {e}", root.display())),
+                (_, Err(e)) => r.push("engine", Level::Fail, e.to_string()),
+                (Ok(files), Ok(engine)) => {
+                    let v = &engine.version;
+                    if v.major < MIN_MAJOR {
+                        r.push(
+                            "engine",
+                            Level::Fail,
+                            format!("PostgreSQL {} is older than {MIN_MAJOR}", v.text),
+                        );
+                    } else if major.is_some_and(|m| m != v.major) {
+                        r.push(
+                            "engine",
+                            Level::Fail,
+                            format!(
+                                "the cluster was created by PostgreSQL {} and the engine is {}; ForgeBase never upgrades a major on its own",
+                                major.unwrap_or_default(),
+                                v.text
+                            ),
+                        );
+                    } else {
+                        r.push(
+                            "engine",
+                            Level::Ok,
+                            format!("PostgreSQL {} in {}{files}", v.text, root.display()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    match loose_permissions(&pgdata) {
+        Some(mode) => r.push(
+            "cluster",
+            Level::Fail,
+            format!(
+                "{} has mode {mode:o}; PostgreSQL refuses to start unless it is 0700",
+                pgdata.display()
+            ),
+        ),
+        None => r.push(
+            "cluster",
+            Level::Ok,
+            format!(
+                "{} (PostgreSQL {}, owner-only)",
+                pgdata.display(),
+                major.map_or("?".to_owned(), |m| m.to_string())
+            ),
+        ),
+    }
+    match RoleSecrets::load(&el.secrets_file()) {
+        Ok(Some(_)) => r.push(
+            "roles",
+            Level::Ok,
+            format!("{} present, owner-only", el.secrets_file().display()),
+        ),
+        Ok(None) => r.push(
+            "roles",
+            Level::Fail,
+            format!(
+                "{} is missing: ForgeBase cannot log in to the cluster; restore it from a backup",
+                el.secrets_file().display()
+            ),
+        ),
+        Err(e) => r.push("roles", Level::Fail, e.to_string()),
+    }
+    if DataDirLock::probe(layout).is_none()
+        && let Some(pm) = database::postmaster(layout)
+    {
+        r.push(
+            "postmaster",
+            Level::Warn,
+            format!(
+                "a PostgreSQL left behind by a stopped server is running (pid {}); the next start stops it first",
+                pm.pid
+            ),
+        );
+    }
+}
+
 /// Master key, interrupted restore, snapshots, blobs, vector index files, WAL, staging leftovers.
-async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, deep: bool) {
+async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, db: Option<&Database>, deep: bool) {
     if !layout.root().is_dir() {
         return;
     }
@@ -214,10 +363,11 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, deep
     check_snapshots(r, layout, deep).await;
     check_staging(r, layout);
     check_index_files(r, layout);
-    if layout.database_path().is_file() {
-        let opts = DbOptions::from_config(&config.database, layout.database_path()).read_only();
-        if let Ok(db) = Database::open(opts).await {
+    if let Some(db) = db {
+        {
+            // PostgreSQL's WAL is bounded by max_wal_size and recycled by checkpoints.
             if let Ok(info) = db.info().await
+                && info.backend == forgebase_db::BackendKind::Sqlite
                 && info.wal_size_bytes > WAL_WARN_BYTES
             {
                 r.push(
@@ -230,9 +380,8 @@ async fn check_extras(r: &mut Report, config: &Config, layout: &DataLayout, deep
                 );
             }
             if config.storage.driver == forgebase_core::StorageDriverKind::Local {
-                check_blobs(r, &db, layout).await;
+                check_blobs(r, db, layout).await;
             }
-            db.close().await;
         }
     }
 }
@@ -447,17 +596,11 @@ async fn check_blobs(r: &mut Report, db: &Database, layout: &DataLayout) {
     }
 }
 
-async fn check_database(r: &mut Report, config: &Config, layout: &DataLayout) {
+async fn check_database(r: &mut Report, primary: &PrimaryDatabase, layout: &DataLayout) {
     let path = layout.database_path();
-    let opts = DbOptions::from_config(&config.database, &path).read_only();
-    let db = match Database::open(opts).await {
-        Ok(db) => db,
-        Err(e) => {
-            r.push("database", Level::Fail, e.to_string());
-            r.push("migrations", Level::Fail, "database cannot be opened");
-            return;
-        }
-    };
+    let db = primary.db();
+    let sqlite = primary.marker() == BackendMarker::Sqlite;
+    let check_name = if sqlite { "integrity_check" } else { "amcheck" };
 
     let integrity = db.integrity_check().await;
     let fk = db.foreign_key_violations().await;
@@ -468,17 +611,23 @@ async fn check_database(r: &mut Report, config: &Config, layout: &DataLayout) {
             r.push(
                 "database",
                 Level::Fail,
-                format!(
-                    "integrity_check found {} problem(s): {}",
-                    problems.len(),
-                    shown.join("; ")
-                ),
+                format!("{check_name} found {} problem(s): {}", problems.len(), shown.join("; ")),
             );
         }
-        (Err(e), _, _) => r.push("database", Level::Fail, format!("integrity_check failed: {e}")),
+        (Err(e), _, _) => r.push("database", Level::Fail, format!("{check_name} failed: {e}")),
         (Ok(_), Ok(n), _) if n > 0 => r.push("database", Level::Fail, format!("{n} foreign-key violation(s)")),
         (Ok(_), Err(e), _) => r.push("database", Level::Fail, format!("foreign_key_check failed: {e}")),
         (Ok(_), Ok(_), Err(e)) => r.push("database", Level::Fail, e.to_string()),
+        (Ok(_), Ok(_), Ok(info)) if !sqlite => r.push(
+            "database",
+            Level::Ok,
+            format!(
+                "{} ok ({} bytes, PostgreSQL {}, amcheck and foreign keys clean)",
+                crate::commands::database_line(primary, layout),
+                info.size_bytes,
+                info.server_version
+            ),
+        ),
         (Ok(_), Ok(_), Ok(info)) => {
             let detail = format!(
                 "{} ok ({} bytes, wal {} bytes, sqlite {})",
@@ -524,7 +673,6 @@ async fn check_database(r: &mut Report, config: &Config, layout: &DataLayout) {
             format!("schema v{} (latest)", s.current_version),
         ),
     }
-    db.close().await;
 }
 
 fn check_disk(r: &mut Report, root: &Path) {
