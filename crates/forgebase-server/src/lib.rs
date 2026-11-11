@@ -45,6 +45,7 @@ pub mod database;
 mod function_services;
 mod job_results;
 mod lock;
+pub mod moves;
 pub mod shards;
 
 use std::net::SocketAddr;

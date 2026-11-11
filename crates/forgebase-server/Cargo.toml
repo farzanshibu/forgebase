@@ -55,6 +55,9 @@ tempfile.workspace = true
 forgebase-graph.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
+# FB-174: a realtime subscriber over WebSocket in tests/moves_fb174.rs.
+tokio-tungstenite.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 
 [lints]
 workspace = true
