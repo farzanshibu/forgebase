@@ -432,7 +432,7 @@ impl DataService {
         let trigram = self.trigram_indexes(&coll, q).await?;
         let built = self.build_list(ctx, &coll, q, pred.as_ref(), fts.as_ref(), &trigram)?;
         let rows = self
-            .read_rows(ctx, Action::List, &coll, &built.select, built.follows_relations)
+            .read_rows(ctx, Action::List, &coll, &built.select, built.follows_relations, "records.list")
             .await?;
         let more = rows.rows.len() > built.per_page as usize;
         let mut items: Vec<Record> = Vec::with_capacity(rows.rows.len().min(built.per_page as usize));
@@ -462,7 +462,7 @@ impl DataService {
             (None, None)
         } else {
             let n = self
-                .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
+                .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations, "records.list")
                 .await?
                 .scalar()
                 .and_then(Value::as_i64)
@@ -502,7 +502,7 @@ impl DataService {
         };
         let built = self.build_list(ctx, &coll, &q, pred.as_ref(), None, &[])?;
         let rows = self
-            .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations)
+            .read_rows(ctx, Action::List, &coll, &built.count, built.follows_relations, "records.list")
             .await?;
         Ok(rows.scalar().and_then(Value::as_i64).unwrap_or(0).max(0) as u64)
     }
@@ -637,7 +637,7 @@ impl DataService {
         sql.push_str(&format!(" LIMIT {}", b.bind(i64::from(limit))));
         let follows = b.follows_relations();
         let rows = self
-            .read_rows(ctx, Action::List, &coll, &Statement::new(sql, b.into_params()), follows)
+            .read_rows(ctx, Action::List, &coll, &Statement::new(sql, b.into_params()), follows, "records.aggregate")
             .await?;
         Ok(rows
             .rows
