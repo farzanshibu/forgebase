@@ -9,9 +9,7 @@ use forgebase_data::db::Value;
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 
-use super::{
-    AuthService, ClientInfo, audit_in, flows::normalize_email, is_unique_violation, require_admin, subject_cols,
-};
+use super::{AuthService, ClientInfo, audit_in, flows::normalize_email, is_unique_violation, subject_cols};
 use crate::crypto;
 use crate::password::check_password_policy;
 use crate::scopes::{Scope, parse_scopes};
@@ -283,7 +281,8 @@ impl AuthService {
     // Service accounts
     // -----------------------------------------------------------------------
 
-    /// Creates a service account (administrators).
+    /// Creates a service account (administrators). A realm administrator
+    /// (FB-137) creates `service` accounts in their own realm only.
     pub async fn create_service_account(
         &self,
         caller: &Authenticated,
@@ -292,7 +291,7 @@ impl AuthService {
         description: &str,
         role: &str,
     ) -> Result<ServiceAccountView, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
         let name = name.trim();
         if name.is_empty() || name.len() > 100 || name.chars().any(char::is_control) {
             return Err(AuthError::invalid("name must be 1-100 printable characters"));
@@ -303,8 +302,19 @@ impl AuthService {
         let realm = ci
             .realm
             .clone()
+            .or_else(|| scope.realm().map(str::to_owned))
             .unwrap_or_else(|| forgebase_data::DEFAULT_REALM.to_owned());
         crate::realm::check_realm_id(&realm)?;
+        if let Some(mine) = scope.realm() {
+            if realm != mine {
+                return Err(super::outside_realm());
+            }
+            if role == "admin" {
+                return Err(AuthError::Forbidden(
+                    "only platform administrators create admin service accounts".into(),
+                ));
+            }
+        }
         let known = crate::store::read(
             self.data().backend(),
             "SELECT 1 AS x FROM _forgebase_realms WHERE id = ?1",
@@ -359,13 +369,14 @@ impl AuthService {
         self.get_service_account(caller, &id).await
     }
 
-    /// One service account (administrators).
+    /// One service account (administrators; a realm administrator sees the
+    /// non-admin accounts of their realm, others are not found).
     pub async fn get_service_account(&self, caller: &Authenticated, id: &str) -> Result<ServiceAccountView, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
         let r = read(
             self.data().backend(),
-            "SELECT * FROM _forgebase_service_accounts WHERE id = ?1",
-            vec![t(id)],
+            "SELECT * FROM _forgebase_service_accounts WHERE id = ?1 AND (?2 IS NULL OR (realm = ?2 AND role <> 'admin'))",
+            vec![t(id), ot(scope.realm().map(str::to_owned))],
         )
         .await?;
         first(&r)
@@ -373,13 +384,15 @@ impl AuthService {
             .ok_or_else(|| AuthError::NotFound("service account not found".into()))
     }
 
-    /// Every service account (administrators).
+    /// Every service account (administrators; a realm administrator lists
+    /// the non-admin accounts of their realm).
     pub async fn list_service_accounts(&self, caller: &Authenticated) -> Result<Vec<ServiceAccountView>, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
         let r = read(
             self.data().backend(),
-            "SELECT * FROM _forgebase_service_accounts ORDER BY created_at, id",
-            vec![],
+            "SELECT * FROM _forgebase_service_accounts WHERE (?1 IS NULL OR (realm = ?1 AND role <> 'admin'))
+             ORDER BY created_at, id",
+            vec![ot(scope.realm().map(str::to_owned))],
         )
         .await?;
         Ok(rows(&r).map(sa_view).collect())
@@ -392,9 +405,13 @@ impl AuthService {
         ci: &ClientInfo,
         id: &str,
     ) -> Result<(), AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
         if matches!(&caller.subject, Subject::ServiceAccount { id: me, .. } if me == id) {
             return Err(AuthError::Forbidden("a service account cannot delete itself".into()));
+        }
+        if scope != super::AdminScope::Platform {
+            // Not found outside the realm administrator's realm.
+            self.get_service_account(caller, id).await?;
         }
         let mut tx = Tx::begin(self.data().backend()).await?;
         tx.exec(
@@ -566,7 +583,7 @@ impl AuthService {
         expires_in_days: Option<u32>,
         opts: &KeyOptions,
     ) -> Result<CreatedKey, AuthError> {
-        require_admin(caller)?;
+        // A realm administrator only finds the non-admin accounts of their realm.
         let sa = self.get_service_account(caller, service_account_id).await?;
         if sa.disabled {
             return Err(AuthError::Conflict("service account is disabled".into()));
@@ -579,39 +596,54 @@ impl AuthService {
             .await
     }
 
-    /// API keys, optionally of one service account (administrators).
+    /// API keys, optionally of one service account (administrators; a realm
+    /// administrator sees those of their realm's non-admin accounts).
     pub async fn list_api_keys(
         &self,
         caller: &Authenticated,
         service_account_id: Option<&str>,
     ) -> Result<Vec<ApiKeyView>, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
         let r = read(
             self.data().backend(),
             &format!(
                 "SELECT {KEY_COLS} FROM _forgebase_auth_api_keys WHERE kind = 'api_key' AND (?1 IS NULL OR owner_id = ?1)
+                   AND (?2 IS NULL OR owner_id IN
+                        (SELECT id FROM _forgebase_service_accounts WHERE realm = ?2 AND role <> 'admin'))
                  ORDER BY created_at DESC, id"
             ),
-            vec![ot(service_account_id.map(str::to_owned))],
+            vec![
+                ot(service_account_id.map(str::to_owned)),
+                ot(scope.realm().map(str::to_owned)),
+            ],
         )
         .await?;
         Ok(rows(&r).map(key_view).collect())
     }
 
     /// Revokes an API key or PAT. Owners may revoke their own PATs;
-    /// administrators any key.
+    /// administrators any key; realm administrators (FB-137) the keys of
+    /// their realm's users and non-admin service accounts.
     pub async fn revoke_key(&self, caller: &Authenticated, ci: &ClientInfo, key_id: &str) -> Result<(), AuthError> {
         super::reject_impersonated(caller)?;
         let (st, coll, id) = subject_cols(&caller.subject);
         let admin = caller.subject.is_admin();
+        let (realm_sql, realm_params) = match self.admin_scope(caller).ok().as_ref().and_then(|s| s.realm()) {
+            Some(r) => self.realm_principals_sql(r, "owner_type", "collection", "owner_id", 7),
+            None => ("1 = 0".to_owned(), Vec::new()),
+        };
+        let mut params = vec![t(key_id), i(self.now()), t(st), ot(coll), t(id), i(i64::from(admin))];
+        params.extend(realm_params);
         let mut tx = Tx::begin(self.data().backend()).await?;
         let r = tx
             .read(
-                "UPDATE _forgebase_auth_api_keys SET revoked_at = ?2
-                 WHERE id = ?1 AND revoked_at IS NULL
-                   AND (?6 OR (kind = 'pat' AND owner_type = ?3 AND collection IS ?4 AND owner_id = ?5))
-                 RETURNING kind",
-                vec![t(key_id), i(self.now()), t(st), ot(coll), t(id), i(i64::from(admin))],
+                &format!(
+                    "UPDATE _forgebase_auth_api_keys SET revoked_at = ?2
+                     WHERE id = ?1 AND revoked_at IS NULL
+                       AND (?6 OR (kind = 'pat' AND owner_type = ?3 AND collection IS ?4 AND owner_id = ?5) OR {realm_sql})
+                     RETURNING kind"
+                ),
+                params,
             )
             .await?;
         let Some(row) = first(&r) else {
@@ -892,6 +924,11 @@ impl AuthService {
         }
         if let Some(s) = &caller.scopes {
             out["scopes"] = json!(s.iter().map(Scope::as_str).collect::<Vec<_>>());
+        }
+        // FB-137: what the caller administers (`"platform"`, `{"realm": id}`),
+        // for the dashboard; absent for non-administrators.
+        if let Ok(scope) = self.admin_scope(caller) {
+            out["admin_scope"] = json!(scope);
         }
         if matches!(
             caller.credential,

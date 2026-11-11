@@ -6,13 +6,16 @@
 //! no cookie, never passes a second factor, and cannot change credentials
 //! (see `reject_impersonated`). Every audit row written while it is in use
 //! records the administrator.
+//!
+//! Realm administrators (FB-137: `identity:admin` through a realm binding)
+//! impersonate, view and manage the users of their own realm only, and
+//! cannot impersonate another realm administrator. Platform administrators
+//! are unchanged.
 
 use serde::Serialize;
 use serde_json::{Value as Json, json};
 
-use super::{
-    AuditEntry, AuthService, ClientInfo, SessionView, audit_entry, audit_in, reject_impersonated, require_admin,
-};
+use super::{AdminScope, AuditEntry, AuthService, ClientInfo, SessionView, audit_entry, audit_in, reject_impersonated};
 use crate::store::{Tx, first, i, now, ot, read, rfc3339, rows, t};
 use crate::{AuthError, AuthMethod, Authenticated, CredentialKind, Subject};
 
@@ -34,7 +37,8 @@ pub struct ImpersonationGrant {
     pub expires_at: String,
     /// Session id (use it to end the impersonation).
     pub session_id: String,
-    /// The administrator acting.
+    /// The administrator acting: a platform administrator's id, or a realm
+    /// administrator's principal (`user:<collection>/<id>`).
     pub impersonator: String,
     /// The user being impersonated.
     pub subject: Subject,
@@ -47,7 +51,7 @@ pub struct ImpersonationGrant {
 pub struct ImpersonationView {
     /// Session id.
     pub session_id: String,
-    /// Administrator who acted.
+    /// Administrator who acted (an id, or a realm administrator's principal).
     pub admin_id: String,
     /// Target, `user:<collection>/<id>`.
     pub target: String,
@@ -79,7 +83,7 @@ fn parse_user_principal(principal: &str) -> Result<(String, String), AuthError> 
 
 impl AuthService {
     /// Starts an impersonation of a user (administrators with a plain, MFA-passed
-    /// session only).
+    /// session only; a realm administrator's target lives in their realm).
     pub async fn impersonate(
         &self,
         caller: &Authenticated,
@@ -89,8 +93,16 @@ impl AuthService {
         ttl_minutes: Option<u32>,
     ) -> Result<ImpersonationGrant, AuthError> {
         reject_impersonated(caller)?;
-        let Subject::Admin { id: admin_id } = &caller.subject else {
+        let scope = match &caller.subject {
+            Subject::Admin { .. } | Subject::User { .. } => self.admin_scope(caller).ok(),
+            _ => None,
+        };
+        let Some(scope) = scope else {
             return Err(AuthError::Forbidden("only administrators can impersonate users".into()));
+        };
+        let admin_id = match &caller.subject {
+            Subject::Admin { id } => id.clone(),
+            other => other.actor(),
         };
         if !matches!(
             caller.credential,
@@ -120,6 +132,12 @@ impl AuthService {
             collection,
             id: user_id,
         };
+        self.require_admin_of(caller, &target)?;
+        if scope != AdminScope::Platform && self.realm_admin_realm(&target).is_some() {
+            return Err(AuthError::Forbidden(
+                "cannot_impersonate_admin: realm administrators cannot be impersonated by a realm administrator".into(),
+            ));
+        }
         if !self.subject_exists(&target).await? {
             return Err(AuthError::NotFound("user not found".into()));
         }
@@ -169,21 +187,28 @@ impl AuthService {
             expires_in,
             expires_at: rfc3339(expires_at),
             session_id: sid,
-            impersonator: admin_id.clone(),
+            impersonator: admin_id,
             subject: target,
             reason: reason.to_owned(),
         })
     }
 
-    /// Impersonations, newest first (administrators).
+    /// Impersonations, newest first (administrators; a realm administrator
+    /// sees those of their realm's users).
     pub async fn list_impersonations(&self, caller: &Authenticated) -> Result<Vec<ImpersonationView>, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
+        let (realm_sql, params) = match scope.realm() {
+            Some(r) => self.realm_users_sql(r, "collection", 1),
+            None => ("1 = 1".to_owned(), Vec::new()),
+        };
         let r = read(
             self.db(),
-            "SELECT id, collection, subject_id, impersonator, impersonation_reason, created_at, expires_at, revoked_at
-             FROM _forgebase_auth_sessions WHERE impersonator IS NOT NULL
-             ORDER BY created_at DESC, id LIMIT 200",
-            vec![],
+            &format!(
+                "SELECT id, collection, subject_id, impersonator, impersonation_reason, created_at, expires_at, revoked_at
+                 FROM _forgebase_auth_sessions WHERE impersonator IS NOT NULL AND {realm_sql}
+                 ORDER BY created_at DESC, id LIMIT 200"
+            ),
+            params,
         )
         .await?;
         let n = now();
@@ -205,8 +230,9 @@ impl AuthService {
             .collect())
     }
 
-    /// Ends an impersonation now: any administrator, or the impersonation
-    /// session itself. Takes effect on the next request.
+    /// Ends an impersonation now: any administrator of the target (a realm
+    /// administrator: of their realm's users), or the impersonation session
+    /// itself. Takes effect on the next request.
     pub async fn end_impersonation(
         &self,
         caller: &Authenticated,
@@ -214,16 +240,25 @@ impl AuthService {
         session_id: &str,
     ) -> Result<(), AuthError> {
         let own = caller.impersonator.is_some() && caller.session_id() == Some(session_id);
-        if !own {
-            require_admin(caller)?;
-        }
+        let realm = if own {
+            None
+        } else {
+            self.admin_scope(caller)?.realm().map(str::to_owned)
+        };
+        let (realm_sql, mut params) = match &realm {
+            Some(r) => self.realm_users_sql(r, "collection", 3),
+            None => ("1 = 1".to_owned(), Vec::new()),
+        };
+        params.splice(0..0, [t(session_id), i(now())]);
         let mut tx = Tx::begin(self.db()).await?;
         let r = tx
             .read(
-                "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = 'impersonation_ended'
-                 WHERE id = ?1 AND impersonator IS NOT NULL AND revoked_at IS NULL
-                 RETURNING collection, subject_id",
-                vec![t(session_id), i(now())],
+                &format!(
+                    "UPDATE _forgebase_auth_sessions SET revoked_at = ?2, revoked_reason = 'impersonation_ended'
+                     WHERE id = ?1 AND impersonator IS NOT NULL AND revoked_at IS NULL AND {realm_sql}
+                     RETURNING collection, subject_id"
+                ),
+                params,
             )
             .await?;
         let Some(row) = first(&r) else {
@@ -250,6 +285,17 @@ impl AuthService {
     // The administrator's view of a user
     // -----------------------------------------------------------------------
 
+    /// The user `collection`/`id` as an administrator's target: platform
+    /// administrators reach every user, realm administrators their realm's.
+    fn admin_user(&self, caller: &Authenticated, collection: &str, id: &str) -> Result<Subject, AuthError> {
+        let subject = Subject::User {
+            collection: collection.to_owned(),
+            id: id.to_owned(),
+        };
+        self.require_admin_of(caller, &subject)?;
+        Ok(subject)
+    }
+
     /// A user with their MFA state and session count (administrators).
     pub async fn admin_user_detail(
         &self,
@@ -257,12 +303,8 @@ impl AuthService {
         collection: &str,
         id: &str,
     ) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        let subject = self.admin_user(caller, collection, id)?;
         let user = self.user_view(collection, id).await?;
-        let subject = Subject::User {
-            collection: collection.to_owned(),
-            id: id.to_owned(),
-        };
         let sessions = self.sessions_of(&subject, None).await?;
         let last = read(
             self.db(),
@@ -287,16 +329,9 @@ impl AuthService {
         collection: &str,
         id: &str,
     ) -> Result<Vec<SessionView>, AuthError> {
-        require_admin(caller)?;
+        let subject = self.admin_user(caller, collection, id)?;
         self.user_view(collection, id).await?;
-        self.sessions_of(
-            &Subject::User {
-                collection: collection.to_owned(),
-                id: id.to_owned(),
-            },
-            None,
-        )
-        .await
+        self.sessions_of(&subject, None).await
     }
 
     /// Revokes every active session of a user (administrators); returns the
@@ -308,12 +343,8 @@ impl AuthService {
         collection: &str,
         id: &str,
     ) -> Result<u64, AuthError> {
-        require_admin(caller)?;
+        let subject = self.admin_user(caller, collection, id)?;
         self.user_view(collection, id).await?;
-        let subject = Subject::User {
-            collection: collection.to_owned(),
-            id: id.to_owned(),
-        };
         let mut tx = Tx::begin(self.db()).await?;
         let n = tx
             .exec(
@@ -345,7 +376,7 @@ impl AuthService {
         id: &str,
         limit: u32,
     ) -> Result<Vec<AuditEntry>, AuthError> {
-        require_admin(caller)?;
+        self.admin_user(caller, collection, id)?;
         let r = read(
             self.db(),
             "SELECT id, at, event, outcome, actor, subject_type, collection, subject_id, ip, user_agent, request_id, detail, impersonator
@@ -359,16 +390,22 @@ impl AuthService {
         Ok(rows(&r).map(audit_entry).collect())
     }
 
-    /// Every API key and PAT, newest first (administrators).
+    /// Every API key and PAT, newest first (administrators; a realm
+    /// administrator sees the keys of their realm's users and non-admin
+    /// service accounts).
     pub async fn list_all_keys(&self, caller: &Authenticated) -> Result<Vec<super::ApiKeyView>, AuthError> {
-        require_admin(caller)?;
+        let scope = self.admin_scope(caller)?;
+        let (realm_sql, params) = match scope.realm() {
+            Some(r) => self.realm_principals_sql(r, "owner_type", "collection", "owner_id", 1),
+            None => ("1 = 1".to_owned(), Vec::new()),
+        };
         let r = read(
             self.data().backend(),
             &format!(
-                "SELECT {} FROM _forgebase_auth_api_keys ORDER BY created_at DESC, id LIMIT 500",
+                "SELECT {} FROM _forgebase_auth_api_keys WHERE {realm_sql} ORDER BY created_at DESC, id LIMIT 500",
                 super::machine::KEY_COLS
             ),
-            vec![],
+            params,
         )
         .await?;
         Ok(rows(&r).map(super::machine::key_view).collect())

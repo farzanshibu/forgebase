@@ -3,6 +3,9 @@
 //! SMS gateway. Secrets are write-only: the API shows `"********"`, a string
 //! sets one, `""` clears it, and `"********"`, `null` or an absent field keep
 //! the stored value. At rest they are sealed under the master key.
+//!
+//! Platform administrators reach every realm; a realm administrator
+//! (`identity:admin` through a realm binding, FB-137) only their own.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -10,7 +13,7 @@ use serde::Serialize;
 use serde_json::{Value as Json, json};
 
 use crate::realm::SECRET_MASK;
-use crate::service::{ClientInfo, audit_in, require_admin};
+use crate::service::{ClientInfo, audit_in};
 use crate::social::ProviderConfig;
 use crate::store::{Tx, first, i, read, rfc3339, rows, t};
 use crate::{AuthError, AuthService, Authenticated};
@@ -178,7 +181,7 @@ impl AuthService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<AdminConsent>, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         let r = read(
             self.data().backend(),
@@ -218,7 +221,7 @@ impl AuthService {
         realm: &str,
         id: &str,
     ) -> Result<(), AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         let mut tx = Tx::begin(self.data().backend()).await?;
         let r = tx
             .read(
@@ -261,7 +264,7 @@ impl AuthService {
     /// Current and retired OIDC signing key ids of a realm (administrators).
     /// Never exposes key material; `kid` is public (it is in the JWKS).
     pub async fn list_oidc_keys(&self, caller: &Authenticated, realm: &str) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         // Make sure the realm has a signing key, like the JWKS endpoint does.
         self.oidc_jwks(realm).await?;
@@ -341,7 +344,7 @@ impl AuthService {
     /// Social providers of a realm: the ones created over REST plus the ones
     /// defined in `oauth-providers.json` (read-only). Secrets never leave.
     pub async fn list_realm_providers(&self, caller: &Authenticated, realm: &str) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         let r = read(
             self.data().backend(),
@@ -375,7 +378,7 @@ impl AuthService {
 
     /// One social provider of a realm (administrators).
     pub async fn get_realm_provider(&self, caller: &Authenticated, realm: &str, id: &str) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         if let Some((cfg, c, u)) = self.stored_provider(realm, id).await? {
             return Ok(self.provider_view(realm, id, &cfg, c, u));
@@ -400,7 +403,7 @@ impl AuthService {
         id: &str,
         mut body: Json,
     ) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         if self.providers().is_file_defined(realm, id) {
             return Err(AuthError::Conflict(format!(
@@ -464,7 +467,7 @@ impl AuthService {
         realm: &str,
         id: &str,
     ) -> Result<(), AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         if self.providers().is_file_defined(realm, id) {
             return Err(AuthError::Conflict(format!(
@@ -543,7 +546,7 @@ impl AuthService {
     /// The SMS gateway configuration of a realm, secrets masked
     /// (administrators). `configured: false` means the instance gateway is used.
     pub async fn get_realm_sms(&self, caller: &Authenticated, realm: &str) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         let s = self.stored_sms(realm).await?;
         Ok(self.sms_view(realm, s.as_ref().map(|(c, a, b)| (c, *a, *b))))
@@ -560,7 +563,7 @@ impl AuthService {
         realm: &str,
         mut body: Json,
     ) -> Result<Json, AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         if !body.is_object() {
             return Err(AuthError::invalid("sms configuration must be an object"));
@@ -604,7 +607,7 @@ impl AuthService {
         ci: &ClientInfo,
         realm: &str,
     ) -> Result<(), AuthError> {
-        require_admin(caller)?;
+        self.require_realm_admin(caller, realm)?;
         self.realm_identity(realm)?;
         let mut tx = Tx::begin(self.data().backend()).await?;
         let n = tx
