@@ -4371,12 +4371,13 @@ nightly job's summary and artifact; it was not run when this was written
 - A replica added through the API while the server runs is not used by the
   data core until the next start: the data service holds control's handle from
   open time, so record writes carry no `X-ForgeBase-Commit` and record reads
-  never reach the replica.
+  never reach the replica. (Fixed by FIX-15, below.)
 - With shards present, a control-set record write returned no
   `X-ForgeBase-Commit` even after a restart (seen in the `cluster` suite; the
-  test prints `FINDING` and does not fail).
+  test prints `FINDING` and does not fail). (Fixed by FIX-15, below.)
 - An anonymous login straight after a signup can read a replica that has not
   replayed the user (404 `record_not_found`): anonymous callers have no token.
+  (Fixed by FIX-15, below.)
 - Creating an environment never calls `place_new_tenant`; tenants stay on
   control until moved, so the harness places them with `router().place`.
   (Fixed by FIX-15, below.)
@@ -4408,3 +4409,56 @@ in `place_new_tenant`'s `requested`). Test: `crates/forgebase-policy/tests/
 placement_fix15.rs` (real clusters). The topology suite now creates tenants
 through the real path: `Topo::add_shard` keeps control from taking tenants,
 `Topo::takes_tenants` toggles a shard, and `Topo::place` is gone.
+
+**FIX-15 (replica read path).** Three findings above, one fix each; test:
+`crates/forgebase-server/tests/topology_fix15.rs` (a real local replica added
+through `POST /nodes`).
+1. *Replicas added or removed while the server runs.* Cause: `open_auth`
+   gave auth, policy and the data core `Arc::new(router.control())`, a
+   `SetHandle` copied at open. `DbRouter::reload` builds new handles with the
+   new replica set, but nobody held them, so an added replica was never used
+   (and a removed one stayed in use) until a restart. Fix:
+   `DbRouter::control_backend()` returns a `ControlBackend` that takes
+   `router.control()` again on every call (control's primary database never
+   changes while the router lives; a promote restarts the server). The same
+   pattern as FB-174's reopen on a new primary: the router owns the current
+   handle, holders ask for it. Added, a replica serves record reads and
+   writes answer `X-ForgeBase-Commit` at once; removed, both stop at once.
+2. *No `X-ForgeBase-Commit` on control-set writes with shards present.*
+   Cause: the token is captured in one place, `SetHandle::begin`, which
+   wraps the transaction in `TokenTx` when the set has replicas; its commit
+   (`COMMIT; SELECT pg_current_wal_insert_lsn()`) records `<set>/<lsn>` in
+   the request scope and the API answers it. A shared collection's write on
+   a sharded server takes the same data-core backend as on one set (no
+   shard-specific branch), so the header is missing exactly when that
+   backend has no replicas: the open-time copy of (1). It did not
+   reproduce on current main: one `cluster` run with the old copy put back
+   printed no `FINDING` (both replicas were in the copy at each reopen), so
+   the run FB-178 reported most likely opened the data core before a
+   replica was open and checked; the copy then stayed without replicas
+   while the router later took them in (as the tests saw). Not proven; the
+   live backend of (1) removes that window either way. Also `SetHandle::begin_as` (writes as a native-RLS
+   role) now records the token like `begin`; it did not before. Tests: a
+   local shard plus a replica, a shared collection's write answers
+   `control/…` before and after a restart; the `cluster` case asserts the
+   token on every control-set write with three shards and two replicas.
+3. *Anonymous sign-in right after a signup (404).* Cause: the password check
+   reads the user on the primary (`store::read`), but the answer is built by
+   `AuthService::user_view`, which read the user through the data core's
+   `get_record`, a §2.5 replica read; an anonymous caller carries no token,
+   so a replica that had not replayed the signup answered
+   `record_not_found`. Fix: `user_view` reads inside the new
+   `routing::scope::on_primary` (a nested `strong` scope whose commits still
+   reach the request's `X-ForgeBase-Commit`). Chosen over "signup returns a
+   token and login honours it" because it is one call site and needs no
+   client change: every identity flow (password and passkey sign-in,
+   refresh, verification, reset, MFA, social and OIDC sign-in,
+   impersonation, `/me`) builds its answer with `user_view`, while a token
+   would only cover clients that carry it from signup to login (not a user
+   who signs up on one device and signs in on another, nor a reset link
+   opened in a new browser). Cost: one primary read per sign-in or refresh.
+   The test pauses the replica's replay (`pg_wal_replay_pause()`), signs up,
+   checks the replica lacks the user and signs in at once.
+The topology suite asserts both instead of printing `FINDING`: the
+`cluster` case no longer restarts before it uses the replicas and requires
+the commit token; `Topo::user` signs in once, without retries.
