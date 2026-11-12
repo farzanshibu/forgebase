@@ -226,12 +226,14 @@ async fn long_task_resumes_after_restart_and_its_large_result_lives_in_storage()
     let sys = AccessContext::system();
 
     // First run: an external worker claims the job, checkpoints, then dies with the server.
+    // The lease must outlive claim -> checkpoint on a loaded runner (1 s lost it in CI:
+    // LeaseLost); the second run reclaims it once it expires, well inside its 180 s wait.
     let server = start_with_jobs(&cfg, JobRegistry::new(), pool(100)).await.unwrap();
     let job = server
         .jobs()
         .enqueue(
             &sys,
-            NewJob::new("crunch", json!(null)).visibility_timeout(Duration::from_secs(1)),
+            NewJob::new("crunch", json!(null)).visibility_timeout(Duration::from_secs(10)),
         )
         .await
         .unwrap()
