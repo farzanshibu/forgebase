@@ -107,6 +107,11 @@ export function gettingStartedSteps(project: ProjectState, opts: { adminEmail?: 
 // ---- Connect your app
 
 /** The name the snippet uses while the project has no collection. */
+/** A step title inside a sentence: "Create an API key" → "create an API key" (only the first letter, so "API" stays). */
+export function midSentence(title: string): string {
+  return title.charAt(0).toLowerCase() + title.slice(1);
+}
+
 export const PLACEHOLDER_COLLECTION = "posts";
 
 /** Connect and list the first page of a collection, in JavaScript, Rust and curl. UseFromCode shows the install command above each tab. */

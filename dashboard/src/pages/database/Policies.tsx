@@ -10,30 +10,30 @@ import { Table } from "panelui-web/table";
 import { EmptyState } from "../../components/EmptyState";
 import { HelpTip } from "../../components/HelpTip";
 import { SkeletonTable } from "../../components/Skeleton";
-import { Button, ErrorView, Panel } from "../../components/ui";
+import { Button, ErrorView } from "../../components/ui";
+import { Badge } from "panelui-web/badge";
+import { TableCard } from "./parts";
 import { useLoad } from "../../hooks";
 import { isGenerated, loadPolicies, widens, type PolicyRow } from "./pgHelpers";
 
 function PolicyTable({ rows, label }: { rows: PolicyRow[]; label: string }) {
   return (
-    <div className="overflow-x-auto">
-      <Table aria-label={label} className="w-full text-left text-sm">
-        <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-          <Table.Row><Table.Head className="py-1">Table</Table.Head><Table.Head>Policy</Table.Head><Table.Head>Applies to</Table.Head><Table.Head>Kind</Table.Head><Table.Head>Rule</Table.Head></Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {rows.map((p) => (
-            <Table.Row key={`${p.schema}.${p.table}.${p.name}`} className="border-t border-border align-top">
-              <Table.Cell className="py-1 font-mono text-xs">{p.schema === "public" ? p.table : `${p.schema}.${p.table}`}</Table.Cell>
-              <Table.Cell className="font-mono text-xs">{p.name}{widens(p) && <span className="ml-2 rounded border border-warning/50 px-1.5 py-0.5 text-[0.625rem] text-warning">widens</span>}</Table.Cell>
-              <Table.Cell className="text-xs">{p.command}</Table.Cell>
-              <Table.Cell className="text-xs">{p.mode.toLowerCase()}</Table.Cell>
-              <Table.Cell className="max-w-md break-all font-mono text-xs text-muted-foreground">{p.using || p.check || "–"}</Table.Cell>
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table>
-    </div>
+    <Table framed density="compact" aria-label={label}>
+      <Table.Header className="bg-muted/40">
+        <Table.Row><Table.Head>Table</Table.Head><Table.Head>Policy</Table.Head><Table.Head>Applies to</Table.Head><Table.Head>Kind</Table.Head><Table.Head>Rule</Table.Head></Table.Row>
+      </Table.Header>
+      <Table.Body>
+        {rows.map((p) => (
+          <Table.Row key={`${p.schema}.${p.table}.${p.name}`} className="align-top">
+            <Table.Cell className="py-2 font-mono text-xs">{p.schema === "public" ? p.table : `${p.schema}.${p.table}`}</Table.Cell>
+            <Table.Cell className="py-2 font-mono text-xs">{p.name}{widens(p) && <Badge variant="warning" size="sm" className="ml-2 font-sans">widens</Badge>}</Table.Cell>
+            <Table.Cell className="py-2 text-xs">{p.command}</Table.Cell>
+            <Table.Cell className="py-2"><Badge variant={p.mode.toLowerCase() === "restrictive" ? "info" : "secondary"} size="sm">{p.mode.toLowerCase()}</Badge></Table.Cell>
+            <Table.Cell className="max-w-md py-2 break-all font-mono text-xs text-muted-foreground">{p.using || p.check || "–"}</Table.Cell>
+          </Table.Row>
+        ))}
+      </Table.Body>
+    </Table>
   );
 }
 
@@ -50,10 +50,12 @@ export default function Policies() {
       {loading && !data && !error && <SkeletonTable rows={4} columns={5} label="Loading policies" />}
       {data && (
         <>
-          <p className="text-sm text-muted-foreground">
-            <HelpTip term="native_policy">Policies</HelpTip> decide which rows a direct login sees. ForgeBase generates the <code>fb_*</code> ones from your rules; anything else here was written by hand.
-            <Button className="ml-3" onClick={reload}>Refresh</Button>
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              <HelpTip term="native_policy">Policies</HelpTip> decide which rows a direct login sees. ForgeBase generates the <code>fb_*</code> ones from your rules; anything else here was written by hand.
+            </p>
+            <Button onClick={reload}>Refresh</Button>
+          </div>
           {widening.length > 0 && (
             <div role="alert" className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm">
               <p className="font-medium">{widening.length === 1 ? "A hand-written policy widens access" : `${widening.length} hand-written policies widen access`}</p>
@@ -62,16 +64,16 @@ export default function Policies() {
               </p>
             </div>
           )}
-          <Panel title={`Hand-written (${written.length})`}>
+          <TableCard title={`Hand-written (${written.length})`}>
             {written.length === 0
-              ? <EmptyState compact title="No hand-written policies" why="Every policy here comes from your ForgeBase rules. A policy you add with SQL appears here, with a warning if it widens access." />
+              ? <div className="p-4"><EmptyState compact title="No hand-written policies" why="Every policy here comes from your ForgeBase rules. A policy you add with SQL appears here, with a warning if it widens access." /></div>
               : <PolicyTable rows={written} label="Hand-written policies" />}
-          </Panel>
-          <Panel title={`Generated by ForgeBase (${generated.length})`}>
+          </TableCard>
+          <TableCard title={`Generated by ForgeBase (${generated.length})`}>
             {generated.length === 0
-              ? <EmptyState compact title="No generated policies" why="ForgeBase writes them when native row-level security is on. Direct logins see nothing without them." />
+              ? <div className="p-4"><EmptyState compact title="No generated policies" why="ForgeBase writes them when native row-level security is on. Direct logins see nothing without them." /></div>
               : <PolicyTable rows={generated} label="Generated policies" />}
-          </Panel>
+          </TableCard>
         </>
       )}
     </div>

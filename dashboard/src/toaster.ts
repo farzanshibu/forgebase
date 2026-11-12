@@ -53,11 +53,22 @@ function go(to: string) {
 
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
+/**
+ * Fired on `window` after a save, create or delete toast: something on the server changed. The shell's Getting
+ * started guide listens, so finishing a step (a first collection, key, file or function) moves it on at once.
+ */
+export const CHANGED_EVENT = "forgebase:changed";
+function changed() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(CHANGED_EVENT));
+}
+
 export const notify = {
   saved(what: string, description?: string) {
+    changed();
     return toaster.add({ title: `${cap(what)} saved`, description, type: "success" });
   },
   created(what: string, href?: string) {
+    changed();
     return toaster.add({
       title: `${cap(what)} created`,
       type: "success",
@@ -65,6 +76,7 @@ export const notify = {
     });
   },
   deleted(what: string) {
+    changed();
     return toaster.add({ title: `${cap(what)} deleted`, type: "success" });
   },
   copied(what = "Text") {

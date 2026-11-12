@@ -123,7 +123,7 @@ describe("accent colour", () => {
     expect(root.dataset.accent).toBe("violet");
     await userEvent.setup().click(screen.getByRole("button", { name: "Theme and accent colour" }));
     expect(await screen.findByRole("menuitemradio", { name: "Violet" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("menuitemradio", { name: "Amber" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("menuitemradio", { name: "Orange" })).toHaveAttribute("aria-checked", "false");
   });
 
   it("offers every preset", async () => {

@@ -15,7 +15,7 @@ import { Card } from "panelui-web/card";
 import { Button } from "../../components/ui";
 import { Skeleton } from "../../components/Skeleton";
 import { LinkButton } from "./LinkButton";
-import { gettingStartedSteps } from "./model";
+import { gettingStartedSteps, midSentence } from "./model";
 import type { ProjectState } from "./state";
 
 const COLLAPSE_KEY = "forgebase.admin.gettingStarted.collapsed";
@@ -116,7 +116,7 @@ export function GettingStarted({ project, adminEmail, disabled, showDone: shown,
         <div className="min-w-0">
           <Card.Title as="h2" id={headingId} className="text-base font-semibold">Getting started</Card.Title>
           <Card.Description>
-            {done} of {steps.length} done. {next ? `Next: ${next.title.toLowerCase()}.` : "Every step is done."}
+            {done} of {steps.length} done. {next ? `Next: ${midSentence(next.title)}.` : "Every step is done."}
           </Card.Description>
           <div role="progressbar" aria-label="Getting started progress" aria-valuenow={done} aria-valuemin={0} aria-valuemax={steps.length} aria-valuetext={`${done} of ${steps.length} steps done`} className="mt-2 h-1.5 w-48 max-w-full overflow-hidden rounded-full bg-muted">
             <div className="h-full rounded-full bg-success transition-[width]" style={{ width: `${pct}%` }} />

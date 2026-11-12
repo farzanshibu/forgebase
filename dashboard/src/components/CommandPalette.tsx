@@ -13,13 +13,16 @@
  * Arrow keys move, Enter goes, Escape closes. It is a dialog holding a combobox, so screen readers announce it.
  * A studio whose feature is off is neither listed nor queried. To add a resource kind, add a SOURCES entry.
  */
-import { Search01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { Add01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Command } from "panelui-web/command";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CREATE_ACTIONS, GROUPS, studioHref, type Studio } from "../studios";
 import { cachedResources, isMac, loadResources, paletteKeys, type PaletteResource } from "./paletteData";
+import { resourceIcon, studioIcon } from "./studioIcons";
+
+const glyph = (svg: IconSvgElement) => <HugeiconsIcon icon={svg} size={16} strokeWidth={1.8} aria-hidden="true" />;
 
 export function CommandPalette({ studios }: { studios: Studio[] }) {
   const [open, setOpen] = useState(false);
@@ -86,7 +89,7 @@ export function CommandPalette({ studios }: { studios: Studio[] }) {
           <Command.Empty>Nothing matches “{search}”. Try a studio name, such as Storage, or a resource name.</Command.Empty>
           <Command.Group heading="Go to">
             {studios.map((s) => (
-              <Command.Item key={`go:${s.path}`} value={`go:${s.path}`} textValue={s.label} keywords={[s.title, groupLabel(s), s.summary].filter(Boolean)} subtitle={s.group ? groupLabel(s) : undefined} onSelect={() => go(studioHref(s))}>
+              <Command.Item key={`go:${s.path}`} value={`go:${s.path}`} textValue={s.label} keywords={[s.title, groupLabel(s), s.summary].filter(Boolean)} subtitle={s.group ? groupLabel(s) : undefined} icon={glyph(studioIcon(s.path))} onSelect={() => go(studioHref(s))}>
                 {s.label}
               </Command.Item>
             ))}
@@ -94,7 +97,7 @@ export function CommandPalette({ studios }: { studios: Studio[] }) {
               (s.tabs ?? [])
                 .filter((t) => t.to !== studioHref(s))
                 .map((t) => (
-                  <Command.Item key={`tab:${t.to}`} value={`tab:${t.to}`} textValue={`${s.label} ${t.label}`} keywords={[s.title]} kind="Section" onSelect={() => go(t.to)}>
+                  <Command.Item key={`tab:${t.to}`} value={`tab:${t.to}`} textValue={`${s.label} ${t.label}`} keywords={[s.title]} kind="Section" icon={glyph(studioIcon(s.path))} onSelect={() => go(t.to)}>
                     {s.label} › {t.label}
                   </Command.Item>
                 )),
@@ -103,7 +106,7 @@ export function CommandPalette({ studios }: { studios: Studio[] }) {
           {creates.length > 0 && (
             <Command.Group heading="Create">
               {creates.map((a) => (
-                <Command.Item key={`new:${a.to}`} value={`new:${a.to}`} textValue={a.label} keywords={a.keywords} kind="Action" onSelect={() => go(a.to)}>
+                <Command.Item key={`new:${a.to}`} value={`new:${a.to}`} textValue={a.label} keywords={a.keywords} kind="Action" icon={glyph(Add01Icon)} onSelect={() => go(a.to)}>
                   {a.label}
                 </Command.Item>
               ))}
@@ -112,7 +115,7 @@ export function CommandPalette({ studios }: { studios: Studio[] }) {
           <Command.Group heading="Resources">
             {resources === undefined && open && <Command.Loading>Loading collections, buckets, functions and topics…</Command.Loading>}
             {(resources ?? []).map((r) => (
-              <Command.Item key={`res:${r.to}`} value={`res:${r.to}`} textValue={r.name} keywords={[r.kind]} kind={r.kind} onSelect={() => go(r.to)}>
+              <Command.Item key={`res:${r.to}`} value={`res:${r.to}`} textValue={r.name} keywords={[r.kind]} kind={r.kind} icon={glyph(resourceIcon(r.kind))} onSelect={() => go(r.to)}>
                 {r.name}
               </Command.Item>
             ))}

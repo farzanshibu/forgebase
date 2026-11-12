@@ -1,15 +1,16 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
-import { Fire03Icon } from "@hugeicons/core-free-icons";
+import { CheckmarkCircle02Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Alert } from "panelui-web/alert";
-import { Card } from "panelui-web/card";
 import { Input } from "panelui-web/input";
 import { ApiError, createSetupAdmin } from "../../api";
 import { useSession } from "../../auth/session";
 import ThemeMenu from "../../components/ThemeMenu";
+import { AuthShell, BrandMark } from "../../components/AuthShell";
 import { ErrorPanel } from "../../components/ErrorPanel";
 import { FormField } from "../../components/FormField";
+import { PasswordInput, PasswordStrength } from "../../components/PasswordInput";
 import { Button, Loading } from "../../components/ui";
 import FeaturesFlow from "./FeaturesFlow";
 import { useFeatureData } from "./features";
@@ -31,24 +32,22 @@ export default function SetupPage() {
   if (!authed && !setup.required) return <Navigate to="/" replace />;
   if (authed && !created && !setup.loading && !setup.required) return <Navigate to="/" replace />;
 
+  // Step 1 (not signed in yet): the administrator form, in the same frame as sign-in.
+  if (!authed) return <CreateAdmin onCreated={() => setCreated(true)} />;
+
   return (
-    <main className="relative min-h-svh bg-background p-4 md:p-8">
-      <div className="absolute end-4 top-4">
-        <ThemeMenu />
-      </div>
-      <div className="mx-auto max-w-5xl space-y-6">
+    <main className="relative min-h-svh bg-background">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(50rem_18rem_at_50%_-20%,color-mix(in_oklab,var(--primary)_10%,transparent),transparent)]" />
+      <div className="relative mx-auto max-w-5xl space-y-8 px-4 py-6 md:px-8 md:py-10">
         <header className="flex items-center gap-3">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground" aria-hidden="true">
-            <HugeiconsIcon icon={Fire03Icon} size={22} strokeWidth={2} />
-          </span>
-          <div>
+          <BrandMark />
+          <div className="min-w-0 flex-1">
             <h1 className="text-xl font-semibold tracking-tight">Set up ForgeBase</h1>
-            <p className="text-sm text-muted-foreground">First run: create the administrator, choose features, then configure them.</p>
+            <p className="text-sm text-muted-foreground">Choose the features this server runs, then configure them. You can change all of it later in Features and settings.</p>
           </div>
+          <ThemeMenu />
         </header>
-        {!authed ? (
-          <CreateAdmin onCreated={() => setCreated(true)} />
-        ) : features.loading ? (
+        {features.loading ? (
           <Loading what="Features" />
         ) : features.snapshot ? (
           <FeaturesFlow snapshot={features.snapshot} apply={features.apply} before={1} />
@@ -57,6 +56,27 @@ export default function SetupPage() {
         )}
       </div>
     </main>
+  );
+}
+
+const STEPS = ["Administrator", "Features", "Configure", "Done"];
+
+/** Where the wizard is: four bars, the current step's name in bold. Same steps as FeaturesFlow shows after step 1. */
+function SetupProgress({ current }: { current: number }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium uppercase tracking-wider text-primary">
+        Step {current + 1} of {STEPS.length}
+      </p>
+      <ol aria-label="Setup steps" className="grid grid-cols-4 gap-2">
+        {STEPS.map((s, i) => (
+          <li key={s} aria-current={i === current ? "step" : undefined} className="space-y-1.5">
+            <span aria-hidden="true" className={`block h-1 rounded-full ${i <= current ? "bg-primary" : "bg-border"}`} />
+            <span className={`block truncate text-xs ${i === current ? "font-medium text-foreground" : "text-muted-foreground"}`}>{s}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -110,47 +130,82 @@ function CreateAdmin({ onCreated }: { onCreated: () => void }) {
     }
   }
 
+  const fromLink = params.get("token") !== null && token !== "" && !errors.token;
+  const tokenField = (
+    <FormField
+      label="Setup token"
+      error={errors.token}
+      help={
+        fromLink ? (
+          <span className="inline-flex items-center gap-1 text-success">
+            <HugeiconsIcon icon={CheckmarkCircle02Icon} size={14} strokeWidth={2} aria-hidden="true" />
+            Filled in from your setup link.
+          </span>
+        ) : (
+          <>Printed by <code>forgebase serve</code> as the setup link; it fills in when you open that link.</>
+        )
+      }
+    >
+      {(p) => <Input {...p} className="w-full font-mono text-xs" value={token} onChange={(e) => { setToken(e.target.value); clear("token"); }} autoComplete="off" spellCheck={false} placeholder="Paste the token from the server log" required />}
+    </FormField>
+  );
+
   return (
-    <Card className="max-w-md" aria-label="Create administrator">
-      <Card.Header>
-        <h2 className="text-lg font-semibold tracking-tight">Create the administrator</h2>
-        <Card.Description>This account manages the server. It can be created once.</Card.Description>
-      </Card.Header>
-      <Card.Content>
-        <form onSubmit={submit} aria-label="Create administrator" className="space-y-4" noValidate>
-          <FormField label="Email" error={errors.email}>
-            {(p) => <Input {...p} className="w-full" type="email" value={email} onChange={(e) => { setEmail(e.target.value); clear("email"); }} autoComplete="username" required />}
-          </FormField>
-          <FormField label="Password" help={`At least ${PASSWORD_MIN} characters. A long phrase of several words is easy to remember and hard to guess.`} error={errors.password}>
-            {(p) => <Input {...p} className="w-full" type="password" value={password} onChange={(e) => { setPassword(e.target.value); clear("password"); }} autoComplete="new-password" required />}
-          </FormField>
-          <FormField label="Confirm password" error={confirmError}>
-            {(p) => (
-              <Input
-                {...p} className="w-full" type="password" value={confirm} autoComplete="new-password" required
-                onChange={(e) => { setConfirm(e.target.value); clear("confirm"); }}
-                onBlur={() => confirm !== "" && setConfirmTouched(true)}
-              />
-            )}
-          </FormField>
-          <FormField label="Setup token" error={errors.token} help={<>Printed by <code>forgebase serve</code> as the setup link; it fills in when you open that link.</>}>
-            {(p) => <Input {...p} className="w-full font-mono" value={token} onChange={(e) => { setToken(e.target.value); clear("token"); }} autoComplete="off" spellCheck={false} required />}
-          </FormField>
-          {error !== undefined &&
-            (error instanceof ApiError && error.code === "setup_complete" ? (
-              <Alert tone="info" variant="plain">
-                <Alert.Icon />
-                <Alert.Title>Setup is already complete</Alert.Title>
-                <Alert.Description>An administrator exists. <Link className="underline" to="/">Sign in</Link> instead.</Alert.Description>
-              </Alert>
-            ) : (
-              <ErrorPanel error={error} />
-            ))}
-          <Button type="submit" tone="primary" className="w-full" disabled={busy}>
-            Create administrator
-          </Button>
-        </form>
-      </Card.Content>
-    </Card>
+    <AuthShell
+      width="md"
+      eyebrow={<SetupProgress current={0} />}
+      title="Create the administrator"
+      description="This account manages the whole server. It can be created once; add more administrators later from Authentication."
+    >
+      <form onSubmit={submit} aria-label="Create administrator" className="space-y-5" noValidate>
+        {!fromLink && token === "" && (
+          <div className="flex gap-2.5 rounded-xl border border-info/25 bg-info/5 p-3 text-xs text-foreground">
+            <HugeiconsIcon icon={InformationCircleIcon} size={16} strokeWidth={1.8} className="mt-px shrink-0 text-info" aria-hidden="true" />
+            <p>
+              When it starts, <code>forgebase serve</code> prints a setup link. Open that link to fill in the token below, or paste
+              the token by hand. It proves you can see the server's log.
+            </p>
+          </div>
+        )}
+        <FormField label="Email" error={errors.email}>
+          {(p) => <Input {...p} className="w-full" type="email" value={email} onChange={(e) => { setEmail(e.target.value); clear("email"); }} autoComplete="username" placeholder="you@example.com" autoFocus required />}
+        </FormField>
+        <FormField label="Password" help={`At least ${PASSWORD_MIN} characters. A long phrase of several words is easy to remember and hard to guess.`} error={errors.password}>
+          {(p) => (
+            <div className="space-y-2">
+              <PasswordInput {...p} value={password} onChange={(e) => { setPassword(e.target.value); clear("password"); }} autoComplete="new-password" required />
+              <PasswordStrength value={password} min={PASSWORD_MIN} />
+            </div>
+          )}
+        </FormField>
+        <FormField
+          label="Confirm password"
+          error={confirmError}
+          help={confirm !== "" && !mismatch ? <span className="inline-flex items-center gap-1 text-success"><HugeiconsIcon icon={CheckmarkCircle02Icon} size={14} strokeWidth={2} aria-hidden="true" />The passwords match.</span> : undefined}
+        >
+          {(p) => (
+            <PasswordInput
+              {...p} value={confirm} autoComplete="new-password" required
+              onChange={(e) => { setConfirm(e.target.value); clear("confirm"); }}
+              onBlur={() => confirm !== "" && setConfirmTouched(true)}
+            />
+          )}
+        </FormField>
+        {tokenField}
+        {error !== undefined &&
+          (error instanceof ApiError && error.code === "setup_complete" ? (
+            <Alert tone="info" variant="plain">
+              <Alert.Icon />
+              <Alert.Title>Setup is already complete</Alert.Title>
+              <Alert.Description>An administrator exists. <Link className="underline" to="/">Sign in</Link> instead.</Alert.Description>
+            </Alert>
+          ) : (
+            <ErrorPanel error={error} />
+          ))}
+        <Button type="submit" tone="primary" className="h-10 w-full text-sm" disabled={busy}>
+          {busy ? "Creating administrator…" : "Create administrator"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

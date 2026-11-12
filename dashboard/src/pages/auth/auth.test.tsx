@@ -41,7 +41,7 @@ describe("Users", () => {
 describe("User detail", () => {
   it("shows MFA, sessions and history; revokes one and all sessions", async () => {
     renderAuth("/auth/users/users/u1");
-    expect(await screen.findByText("enabled")).toBeInTheDocument();
+    expect(await screen.findByText("Enabled")).toBeInTheDocument(); // MFA
     expect(await screen.findByText("Laptop", { exact: false })).toBeInTheDocument();
     expect(await screen.findByText("login.failed")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("Revoke session s1"));
@@ -49,7 +49,7 @@ describe("User detail", () => {
     expect(fake.sessions.map((s) => s.id)).toEqual(["s2"]);
     await userEvent.click(screen.getByRole("button", { name: "Revoke all" }));
     await userEvent.click(screen.getByRole("button", { name: /confirm revoke all/i }));
-    expect(await screen.findByText("No active sessions.")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No active sessions" })).toBeInTheDocument();
     expect(fake.sessions).toHaveLength(0);
   });
   it("suspends and unsuspends", async () => {
@@ -220,7 +220,7 @@ describe("API keys", () => {
     expect(within(keys).getByText("deploy")).toBeInTheDocument();
     expect(within(keys).queryByText("my-script")).not.toBeInTheDocument();
     const tokens = screen.getByRole("region", { name: "Personal tokens" });
-    expect(tokens).toHaveTextContent("Personal tokens (for scripts you run yourself)");
+    expect(tokens).toHaveTextContent("For scripts you run yourself");
     expect(within(tokens).getByText("my-script")).toBeInTheDocument();
     expect(within(tokens).getByText("acme")).toBeInTheDocument();
     await userEvent.click(within(keys).getByRole("button", { name: "Revoke deploy" }));
@@ -248,14 +248,16 @@ describe("API keys", () => {
 describe("Audit log", () => {
   it("filters by event prefix, pages older entries, highlights the impersonator", async () => {
     renderAuth("/auth/audit");
-    expect(await screen.findByText("adm1")).toBeInTheDocument();
+    // the impersonating administrator is named by e-mail
+    expect(await screen.findByText("root@example.com")).toBeInTheDocument();
     expect(screen.getAllByRole("row")).toHaveLength(51);
-    await userEvent.click(screen.getByRole("button", { name: "Load older" }));
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(61));
     expect(fake.requests.some((r) => r.includes("before=11"))).toBe(true);
     await userEvent.type(screen.getByLabelText("Event prefix"), "login.failed");
     await userEvent.click(screen.getByRole("button", { name: "Filter" }));
-    await waitFor(() => expect(screen.queryAllByText("success")).toHaveLength(0));
+    await waitFor(() => expect(screen.queryAllByText("Success")).toHaveLength(0));
+    expect(screen.getAllByText("Failure").length).toBeGreaterThan(0);
     expect(fake.requests.some((r) => r.includes("event=login.failed"))).toBe(true);
   });
   it("authorization tab shows the failed pipeline step", async () => {
@@ -263,7 +265,7 @@ describe("Audit log", () => {
     await userEvent.click(await screen.findByRole("tab", { name: "Authorization" }));
     expect(await screen.findByText("permission", { selector: "span" })).toBeInTheDocument();
     expect(screen.getByText("data:posts:delete")).toBeInTheDocument();
-    expect(screen.getByText("adm1")).toBeInTheDocument();
+    expect(await screen.findByText("root@example.com")).toBeInTheDocument();
   });
 });
 

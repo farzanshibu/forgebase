@@ -3,8 +3,9 @@ import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionProvider, useSession } from "./auth/session";
 import Layout from "./components/Layout";
 import RouteLoading from "./components/RouteLoading";
-import { Spinner } from "panelui-web/spinner";
 import { Toast } from "panelui-web/toast";
+import { Compass01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import ThemeProvider from "./theme/ThemeProvider";
 import { toaster } from "./toaster";
 import { useSetupStatus } from "./pages/setup/useSetupStatus";
@@ -63,16 +64,11 @@ function Gate() {
   const { pathname } = useLocation();
   if (status !== "loading" && pathname.replace(/\/+$/, "") === "/setup")
     return (
-      <Suspense fallback={<RouteLoading />}>
+      <Suspense fallback={<RouteLoading variant="screen" />}>
         <SetupPage />
       </Suspense>
     );
-  if (status === "loading")
-    return (
-      <p className="flex min-h-svh items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Spinner aria-hidden="true" role="presentation" /> Loading…
-      </p>
-    );
+  if (status === "loading") return <RouteLoading variant="screen" />;
   if (status === "anonymous") return <SignIn />;
   return <Studios />;
 }
@@ -80,10 +76,10 @@ function Gate() {
 /** Sign-in, or the first-run setup while the server has no administrator. */
 function SignIn() {
   const setup = useSetupStatus();
-  if (setup.loading) return <RouteLoading />;
+  if (setup.loading) return <RouteLoading variant="screen" />;
   if (setup.required) return <Navigate to="/setup" replace />;
   return (
-    <Suspense fallback={<RouteLoading />}>
+    <Suspense fallback={<RouteLoading variant="screen" />}>
       <LoginPage />
     </Suspense>
   );
@@ -106,10 +102,14 @@ function Studios() {
 
 function NotFound() {
   return (
-    <div className="max-w-xl">
-      <h1 className="text-2xl font-semibold tracking-tight">Page not found</h1>
+    <div className="mx-auto flex max-w-lg flex-col items-center py-16 text-center">
+      <span className="mb-5 flex size-14 items-center justify-center rounded-2xl border border-border bg-card text-muted-foreground shadow-sm" aria-hidden="true">
+        <HugeiconsIcon icon={Compass01Icon} size={26} strokeWidth={1.6} />
+      </span>
+      <p className="font-mono text-xs font-medium uppercase tracking-widest text-primary">404</p>
+      <h1 className="mt-2 text-2xl font-semibold tracking-tight">Page not found</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        This address is not a page in the dashboard. Pick a studio from the sidebar, press Ctrl+K (⌘K on a Mac) to search, or go back to{" "}
+        This address is not a page in the dashboard. Pick a studio from the sidebar, press <kbd className="rounded border border-border bg-muted px-1 py-px text-xs">Ctrl+K</kbd> (⌘K on a Mac) to search, or go back to{" "}
         <Link to="/" className="font-medium text-primary underline-offset-2 hover:underline">
           Overview
         </Link>

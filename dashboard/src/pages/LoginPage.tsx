@@ -9,20 +9,25 @@
  */
 import { useState, type FormEvent } from "react";
 import { useSession } from "../auth/session";
-import { Fire03Icon } from "@hugeicons/core-free-icons";
+import { Building03Icon, ServerStack01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Alert } from "panelui-web/alert";
-import { Card } from "panelui-web/card";
 import { Input } from "panelui-web/input";
-import ThemeMenu from "../components/ThemeMenu";
+import { AuthShell } from "../components/AuthShell";
 import { ErrorPanel } from "../components/ErrorPanel";
 import { FormField } from "../components/FormField";
-import { Button } from "../components/ui";
+import { PasswordInput } from "../components/PasswordInput";
+import { Button, CopyButton } from "../components/ui";
 
 const KINDS = [
-  { id: "admin", label: "Instance administrator", help: "Manages the whole server. Use the administrator account made when the server was set up." },
-  { id: "user", label: "Realm administrator", help: "Manages one realm. Sign in with your normal user account in that realm: you do not need an instance administrator account." },
+  { id: "admin", label: "Instance administrator", short: "Instance admin", icon: ServerStack01Icon, help: "Manages the whole server. Use the administrator account made when the server was set up." },
+  { id: "user", label: "Realm administrator", short: "Realm admin", icon: Building03Icon, help: "Manages one realm. Sign in with your normal user account in that realm: you do not need an instance administrator account." },
 ] as const;
+
+const RECOVERY = [
+  { what: "List the administrator accounts", cmd: "forgebase admin list" },
+  { what: "Set a new password", cmd: "forgebase admin reset-password --email you@example.com" },
+];
 
 export default function LoginPage() {
   const { signIn, submitMfa, mfaRequired, expiredNotice } = useSession();
@@ -50,76 +55,116 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative flex min-h-svh items-center justify-center bg-background p-4">
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(60rem_30rem_at_50%_-10%,color-mix(in_oklab,var(--primary)_14%,transparent),transparent)]" />
-      <div className="absolute end-4 top-4">
-        <ThemeMenu />
-      </div>
-      <div className="relative w-full max-w-sm space-y-4">
-        <Card>
-          <Card.Header>
-            <span className="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground" aria-hidden="true">
-              <HugeiconsIcon icon={Fire03Icon} size={22} strokeWidth={2} />
-            </span>
-            <h1 className="text-lg font-semibold leading-tight tracking-tight">ForgeBase admin</h1>
-            <Card.Description>{mfaRequired ? "Two-step verification: one more code to finish signing in." : "Sign in to manage this server."}</Card.Description>
-          </Card.Header>
-          <Card.Content>
-            <form onSubmit={submit} aria-label="Sign in" className="space-y-4">
-              {expiredNotice && (
-                <Alert tone="info" variant="plain">
-                  <Alert.Icon />
-                  <Alert.Title>Your session expired. Sign in again.</Alert.Title>
-                </Alert>
-              )}
-              {mfaRequired ? (
-                <FormField label="Authentication code" help="Enter the code from your authenticator app, or a recovery code.">
-                  {(p) => (
-                    <Input {...p} className="w-full" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" inputMode="numeric" autoFocus required />
-                  )}
-                </FormField>
-              ) : (
-                <>
-                  <fieldset className="space-y-2">
-                    <legend className="mb-1 text-sm font-medium">Sign in as</legend>
-                    {KINDS.map((k) => (
-                      <label key={k.id} className="flex cursor-pointer items-start gap-2 rounded-md border border-border p-2 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                        <input type="radio" name="sign-in-kind" className="mt-1" checked={as === k.id} onChange={() => { setAs(k.id); setError(undefined); }} />
-                        <span>
-                          <span className="block font-medium">{k.label}</span>
-                          <span className="block text-xs text-muted-foreground">{k.help}</span>
-                        </span>
-                      </label>
-                    ))}
-                  </fieldset>
-                  {as === "user" && (
-                    <FormField label="Realm" help="The realm you manage. Leave it empty for the default realm.">
-                      {(p) => <Input {...p} className="w-full" value={realm} onChange={(e) => setRealm(e.target.value)} autoComplete="organization" placeholder="default" />}
-                    </FormField>
-                  )}
-                  <FormField label="Email">
-                    {(p) => <Input {...p} className="w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" autoFocus required />}
-                  </FormField>
-                  <FormField label="Password">
-                    {(p) => <Input {...p} className="w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />}
-                  </FormField>
-                </>
-              )}
-              <ErrorPanel error={error} />
-              <Button type="submit" tone="primary" className="w-full" disabled={busy}>
-                {busy ? (mfaRequired ? "Verifying…" : "Signing in…") : mfaRequired ? "Verify" : "Sign in"}
-              </Button>
-            </form>
-          </Card.Content>
-        </Card>
-        {!mfaRequired && (
-          <p className="px-1 text-xs leading-relaxed text-muted-foreground">
-            Instance administrator and forgot the password? On the server, run{" "}
-            <code className="font-mono text-foreground">forgebase admin list</code> to see the accounts, or{" "}
-            <code className="font-mono text-foreground">forgebase admin reset-password --email you@example.com</code> to set a new password.
-          </p>
+    <AuthShell
+      title={mfaRequired ? "Two-step verification" : "Sign in to ForgeBase"}
+      description={mfaRequired ? "One more code to finish signing in." : "Manage this server's data, users and services."}
+      footer={!mfaRequired && as === "admin" && <ForgotPassword />}
+    >
+      <form onSubmit={submit} aria-label="Sign in" className="space-y-5">
+        {expiredNotice && (
+          <Alert tone="info" variant="plain">
+            <Alert.Icon />
+            <Alert.Title>Your session expired. Sign in again.</Alert.Title>
+          </Alert>
         )}
+        {mfaRequired ? (
+          <FormField label="Authentication code" help="Enter the code from your authenticator app, or a recovery code.">
+            {(p) => (
+              <Input
+                {...p}
+                className="w-full text-center font-mono text-lg tracking-[0.3em]"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                autoFocus
+                required
+              />
+            )}
+          </FormField>
+        ) : (
+          <>
+            <fieldset className="space-y-2">
+              <legend className="mb-2 text-sm font-medium">Sign in as</legend>
+              {/* A segmented control: two radios drawn as one switch, the chosen kind's explanation under it. */}
+              <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-muted/60 p-1">
+                {KINDS.map((k) => (
+                  <label
+                    key={k.id}
+                    className="relative flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground has-[:checked]:bg-card has-[:checked]:text-foreground has-[:checked]:shadow-sm has-[:checked]:ring-1 has-[:checked]:ring-border has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                  >
+                    <input
+                      type="radio"
+                      name="sign-in-kind"
+                      className="sr-only"
+                      checked={as === k.id}
+                      aria-label={k.label}
+                      aria-describedby={`sign-in-kind-${k.id}`}
+                      onChange={() => {
+                        setAs(k.id);
+                        setError(undefined);
+                      }}
+                    />
+                    <HugeiconsIcon icon={k.icon} size={16} strokeWidth={1.8} aria-hidden="true" />
+                    {/* Short on screen; the radio's name is the full kind (it contains the visible words, WCAG 2.5.3). */}
+                    <span aria-hidden="true">{k.short}</span>
+                  </label>
+                ))}
+              </div>
+              {KINDS.map((k) => (
+                <p key={k.id} id={`sign-in-kind-${k.id}`} hidden={as !== k.id} className="text-xs leading-relaxed text-muted-foreground">
+                  {k.help}
+                </p>
+              ))}
+            </fieldset>
+            {as === "user" && (
+              <FormField label="Realm" help="The realm you manage. Leave it empty for the default realm.">
+                {(p) => <Input {...p} className="w-full" value={realm} onChange={(e) => setRealm(e.target.value)} autoComplete="organization" placeholder="default" />}
+              </FormField>
+            )}
+            <FormField label="Email">
+              {(p) => (
+                <Input {...p} className="w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" placeholder="you@example.com" autoFocus required />
+              )}
+            </FormField>
+            <FormField label="Password">
+              {(p) => <PasswordInput {...p} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />}
+            </FormField>
+          </>
+        )}
+        <ErrorPanel error={error} />
+        <Button type="submit" tone="primary" className="h-10 w-full text-sm" disabled={busy}>
+          {busy ? (mfaRequired ? "Verifying…" : "Signing in…") : mfaRequired ? "Verify" : "Sign in"}
+        </Button>
+      </form>
+    </AuthShell>
+  );
+}
+
+/** Instance administrators reset a lost password on the server: the two commands, copyable, behind a disclosure. */
+function ForgotPassword() {
+  return (
+    <details className="group rounded-xl border border-border bg-card/60 text-sm open:bg-card">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-xl px-4 py-3 font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        Forgot your password?
+        <span className="text-xs transition-transform group-open:rotate-180" aria-hidden="true">
+          ▾
+        </span>
+      </summary>
+      <div className="space-y-3 border-t border-border px-4 py-3">
+        <p className="text-xs text-muted-foreground">An instance administrator resets it on the server, from a terminal:</p>
+        {RECOVERY.map((r) => (
+          <div key={r.cmd} className="space-y-1">
+            <p className="text-xs font-medium">{r.what}</p>
+            <div className="flex items-center gap-2 rounded-lg bg-muted px-2.5 py-1.5">
+              <code className="min-w-0 flex-1 truncate text-xs" title={r.cmd}>
+                {r.cmd}
+              </code>
+              <CopyButton text={r.cmd} label="Copy" className="h-7 shrink-0 px-2 text-xs" />
+            </div>
+          </div>
+        ))}
       </div>
-    </main>
+    </details>
   );
 }

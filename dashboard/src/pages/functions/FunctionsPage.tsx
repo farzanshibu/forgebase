@@ -1,4 +1,5 @@
 import { Link, Route, Routes } from "react-router-dom";
+import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/PageHeader";
 import FunctionList from "./FunctionList";
 import NewFunction from "./NewFunction";
@@ -13,7 +14,7 @@ export default function FunctionsPage() {
       <Route path="new" element={<NewFunction />} />
       <Route path="logs" element={<RequestSearch />} />
       <Route path="f/:name/*" element={<FunctionView />} />
-      <Route path="*" element={<div className="space-y-4"><PageHeader studio="functions" /><p className="text-muted-foreground">No such page in Functions. <Link className="text-primary hover:underline" to="/functions">Back to functions</Link></p></div>} />
+      <Route path="*" element={<div className="space-y-6"><PageHeader studio="functions" /><EmptyState compact title="No such page in Functions" why="The link may be old or mistyped." action={<Link className="text-sm font-medium text-primary hover:underline" to="/functions">See all functions</Link>} /></div>} />
     </Routes>
   );
 }

@@ -17,6 +17,8 @@ import { useCreateParam, useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import { validate } from "../../validate";
 import { buildBody, createCollectionBody, loadSample, SAMPLE_NAME } from "./create";
+import { Facts } from "../../components/Facts";
+import { count } from "../functions/util";
 import { bytes } from "./util";
 
 export default function VectorCollections() {
@@ -42,16 +44,23 @@ export default function VectorCollections() {
   }
 
   const newButton = <Button tone="primary" onClick={() => setCreating(true)}>New collection</Button>;
+  const n = list.data?.length ?? 0;
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageHeader studio="vector" primary={newButton} />
       {stats.data && (
-        <p aria-label="Vector totals" className="text-sm text-muted-foreground">
-          {stats.data.collections} collections · {stats.data.indexes} indexes ({stats.data.building} building) · {stats.data.indexed_vectors} indexed vectors · {bytes(stats.data.memory_bytes)} index memory
-        </p>
+        <Facts
+          label="Vector totals"
+          items={[
+            { label: "Collections", value: count(stats.data.collections) },
+            { label: "Indexes", value: <>{count(stats.data.indexes)}{stats.data.building > 0 && <span className="ml-1.5 text-xs font-normal text-warning">{stats.data.building} building</span>}</> },
+            { label: "Indexed vectors", value: count(stats.data.indexed_vectors) },
+            { label: "Index memory", value: bytes(stats.data.memory_bytes) },
+          ]}
+        />
       )}
       <ErrorView error={sampleError ?? list.error} onRetry={list.reload} />
-      {list.loading && !list.error && <SkeletonTable rows={3} columns={5} label="Loading collections" />}
+      {list.loading && !list.error && <SkeletonTable rows={3} columns={4} label="Loading collections" />}
       {list.data && list.data.length === 0 && (
         <EmptyState
           title="No vector collections yet"
@@ -62,41 +71,48 @@ export default function VectorCollections() {
         />
       )}
       {list.data && list.data.length > 0 && (
-        <Table aria-label="Vector collections" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-            <Table.Row>
-              <Table.Head className="py-2">Name</Table.Head>
-              <Table.Head>Fields</Table.Head>
-              <Table.Head>Items</Table.Head>
-              <Table.Head>Description</Table.Head>
-              <Table.Head><span className="sr-only">Actions</span></Table.Head>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {list.data.map((c) => (
-              <Table.Row key={c.name} className="border-t border-border">
-                <Table.Cell className="py-2">
-                  <Link className="text-primary hover:underline" to={`/vector/c/${encodeURIComponent(c.name)}`}>
-                    {c.name}
-                  </Link>
-                </Table.Cell>
-                <Table.Cell className="font-mono text-xs">{c.fields.map((f) => `${f.name}(${f.dimension}, ${f.metric})`).join(", ") || "none"}</Table.Cell>
-                <Table.Cell>{c.items}</Table.Cell>
-                <Table.Cell className="text-muted-foreground">{c.description}</Table.Cell>
-                <Table.Cell className="text-right">
-                  <ConfirmDialog
-                    trigger={<Button tone="danger" aria-label={`Delete ${c.name}`}>Delete</Button>}
-                    title={`Delete vector collection ${c.name}?`}
-                    consequence="Every record and its index are deleted. Apps that search it get 404. This cannot be undone."
-                    confirmLabel="Delete collection"
-                    confirmText={c.name}
-                    onConfirm={async () => { await deleteVectorCollection(c.name); notify.deleted(`Collection ${c.name}`); reload(); }}
-                  />
-                </Table.Cell>
+        <section aria-labelledby="vc-list" className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <h2 id="vc-list" className="text-sm font-medium">Collections</h2>
+            <span className="text-xs tabular-nums text-muted-foreground">{n} {n === 1 ? "collection" : "collections"}</span>
+          </header>
+          <Table aria-label="Vector collections" framed density="compact" className="w-full text-left text-sm">
+            <Table.Header className="text-xs text-muted-foreground">
+              <Table.Row>
+                <Table.Head>Name</Table.Head>
+                <Table.Head>Vector fields</Table.Head>
+                <Table.Head align="end">Items</Table.Head>
+                <Table.Head><span className="sr-only">Actions</span></Table.Head>
               </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+            </Table.Header>
+            <Table.Body>
+              {list.data.map((c) => (
+                <Table.Row key={c.name} className="border-t border-border hover:bg-muted/40">
+                  <Table.Cell className="max-w-sm py-2.5">
+                    <Link className="font-mono font-medium text-primary hover:underline" to={`/vector/c/${encodeURIComponent(c.name)}`}>{c.name}</Link>
+                    {c.description && <span className="block truncate text-xs text-muted-foreground" title={c.description}>{c.description}</span>}
+                  </Table.Cell>
+                  <Table.Cell>
+                    {c.fields.length === 0 ? <span className="text-muted-foreground">none</span> : (
+                      <span className="flex flex-wrap gap-1">{c.fields.map((f) => <span key={f.name} className="rounded border border-border bg-muted/40 px-1.5 font-mono text-xs leading-5">{`${f.name}(${f.dimension}, ${f.metric})`}</span>)}</span>
+                    )}
+                  </Table.Cell>
+                  <Table.Cell align="end">{count(c.items)}</Table.Cell>
+                  <Table.Cell align="end">
+                    <ConfirmDialog
+                      trigger={<Button tone="danger" aria-label={`Delete ${c.name}`}>Delete</Button>}
+                      title={`Delete vector collection ${c.name}?`}
+                      consequence="Every record and its index are deleted. Apps that search it get 404. This cannot be undone."
+                      confirmLabel="Delete collection"
+                      confirmText={c.name}
+                      onConfirm={async () => { await deleteVectorCollection(c.name); notify.deleted(`Collection ${c.name}`); reload(); }}
+                    />
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </section>
       )}
       <NewCollectionSheet open={creating} onOpenChange={setCreating} onCreated={reload} />
     </div>

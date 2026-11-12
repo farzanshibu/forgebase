@@ -24,4 +24,4 @@ export function useRun(after?: () => void) {
   return { run, error, busy, clearError: () => setError(undefined) };
 }
 
-export const rowCls = (deny?: boolean) => `border-t border-border ${deny ? "bg-destructive/10" : ""}`;
+export const rowCls = (deny?: boolean) => (deny ? "bg-destructive/5 hover:bg-destructive/10" : "");

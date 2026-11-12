@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert } from "panelui-web/alert";
 import { Steps } from "panelui-web/steps";
+import { CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { ServerFeature, FeaturesResponse } from "../../api";
 import { ErrorPanel } from "../../components/ErrorPanel";
 import { Button } from "../../components/ui";
@@ -60,6 +62,9 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
   const visibleKeys = new Set(sections.flatMap((f) => f.settings.map((s) => s.key)));
   const elsewhere = Object.entries(d.serverErr).filter(([k]) => !visibleKeys.has(k) && !k.endsWith(".enabled"));
   const idx = ORDER.indexOf(step);
+  const onCount = features.filter((f) => f.always_on || d.isOn(f)).length;
+  // Next / Save stay in reach on a long step: the same sticky bar as Features and settings.
+  const bar = "sticky bottom-0 z-10 -mx-1 flex items-center justify-between gap-3 border-t border-border bg-background/95 px-1 py-3 backdrop-blur";
 
   return (
     <div className="space-y-6">
@@ -93,7 +98,12 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
       {step === "map" && (
         <section aria-label="Feature map" className="space-y-4">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight">Feature map</h2>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-lg font-semibold tracking-tight">Feature map</h2>
+              <span className="text-sm text-muted-foreground tabular-nums">
+                {onCount} of {features.length} on
+              </span>
+            </div>
             <p className="text-sm text-muted-foreground">Choose what this server runs. A feature that is off answers “disabled” and starts nothing.</p>
             <p className="text-sm text-muted-foreground" data-testid="database-engines-note">The database engine is chosen when the project is created: PostgreSQL (the default) or SQLite (one file). <code>forgebase db convert --to postgres</code> moves an SQLite project.</p>
           </div>
@@ -108,7 +118,8 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
               );
             })}
           </ul>
-          <div className="flex justify-end">
+          <div className={bar}>
+            <span className="text-sm text-muted-foreground">You can change this later in System › Features and settings.</span>
             <Button tone="primary" onClick={() => setStep("configure")}>
               Next: configure
             </Button>
@@ -141,7 +152,7 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
             </Alert>
           )}
           {d.saveErr !== undefined && Object.keys(d.serverErr).length === 0 && <ErrorPanel error={d.saveErr} />}
-          <div className="flex items-center justify-between gap-2">
+          <div className={bar}>
             <Button onClick={() => setStep("map")}>Back</Button>
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground" aria-live="polite">
@@ -156,8 +167,16 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
       )}
 
       {step === "done" && (
-        <section aria-label="Done" className="space-y-4">
-          <h2 className="text-lg font-semibold tracking-tight">Done</h2>
+        <section aria-label="Done" className="mx-auto max-w-2xl space-y-5 rounded-2xl border border-border bg-card p-6 shadow-sm md:p-8">
+          <div className="flex items-center gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-success/10 text-success ring-4 ring-success/5" aria-hidden="true">
+              <HugeiconsIcon icon={CheckmarkCircle02Icon} size={22} strokeWidth={2} />
+            </span>
+            <div>
+              <h2 className="text-lg font-semibold tracking-tight">Done</h2>
+              <p className="text-sm text-muted-foreground">ForgeBase is set up. {onCount} of {features.length} features are on.</p>
+            </div>
+          </div>
           {saved.length > 0 ? (
             <p className="text-sm">
               Saved {saved.length === 1 ? "1 setting" : `${saved.length} settings`} to <code>{written ?? snapshot.config_file}</code>: {saved.join(", ")}.

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getNode, neighbors, shortestPath, traverse } from "../../api";
 import type { Direction, GraphEdge, GraphNode, Neighbor, Page } from "../../api";
-import { Button, ErrorView, Panel } from "../../components/ui";
+import { Button, ErrorView } from "../../components/ui";
+import { FormField } from "../../components/FormField";
 import { layout, type Pos } from "./layout";
 import { Input } from "panelui-web/input";
 import { Sel } from "../../components/controls";
@@ -110,26 +111,33 @@ export default function GraphExplorer() {
   const sel = selected ? view.nodes.get(selected) : undefined;
   return (
     <div className="space-y-4">
-      <Panel title="Explorer controls">
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="text-sm">Start node id<Input size="sm" aria-label="Start node id" className="mt-1 block" value={start} onChange={(e) => setStart(e.target.value)} /></label>
-          <Button tone="primary" onClick={() => void loadStart(start.trim())} disabled={!start.trim()}>Load node</Button>
-          <label className="text-sm">Direction
-            <Sel aria-label="Direction" className="mt-1" value={direction} onChange={(v) => setDirection(v as Direction)} options={[{ value: "both", label: "both" }, { value: "out", label: "out" }, { value: "in", label: "in" }]} />
-          </label>
-          <Button onClick={() => void expand()}>Expand neighbours</Button>
-          <label className="text-sm">Depth<Input size="sm" aria-label="Depth" type="number" min={1} max={10} className="mt-1 block w-20" value={depth} onChange={(e) => setDepth(e.target.value)} /></label>
-          <Button onClick={() => void runTraverse()}>Traverse</Button>
-          <label className="text-sm">Path to<Input size="sm" aria-label="Path target id" className="mt-1 block" value={pathTo} onChange={(e) => setPathTo(e.target.value)} /></label>
-          <Button onClick={() => void findPath()}>Find path</Button>
-          <Button onClick={() => { setView(EMPTY); setSelected(undefined); setPath(undefined); setStatus(undefined); }}>Clear</Button>
+      <section aria-label="Explorer controls" className="space-y-3 rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+          <div className="flex items-end gap-2">
+            <FormField label="Start node id">{(p) => <Input {...p} size="sm" aria-label="Start node id" className="w-48 font-mono" placeholder="alice" value={start} onChange={(e) => setStart(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && start.trim()) void loadStart(start.trim()); }} />}</FormField>
+            <Button tone="primary" onClick={() => void loadStart(start.trim())} disabled={!start.trim()}>Load node</Button>
+          </div>
+          <span aria-hidden="true" className="hidden h-8 w-px bg-border md:block" />
+          <div className="flex flex-wrap items-end gap-2">
+            <FormField label="Direction">{(p) => <Sel {...p} aria-label="Direction" className="w-24" value={direction} onChange={(v) => setDirection(v as Direction)} options={[{ value: "both", label: "both" }, { value: "out", label: "out" }, { value: "in", label: "in" }]} />}</FormField>
+            <Button onClick={() => void expand()} disabled={!selected}>Expand neighbours</Button>
+          </div>
+          <div className="flex items-end gap-2">
+            <FormField label="Depth">{(p) => <Input {...p} size="sm" aria-label="Depth" type="number" min={1} max={10} className="w-16 tabular-nums" value={depth} onChange={(e) => setDepth(e.target.value)} />}</FormField>
+            <Button onClick={() => void runTraverse()} disabled={!selected}>Traverse</Button>
+          </div>
+          <div className="flex items-end gap-2">
+            <FormField label="Path to">{(p) => <Input {...p} size="sm" aria-label="Path target id" className="w-36 font-mono" placeholder="node id" value={pathTo} onChange={(e) => setPathTo(e.target.value)} />}</FormField>
+            <Button onClick={() => void findPath()} disabled={!selected}>Find path</Button>
+          </div>
+          <Button className="ml-auto" onClick={() => { setView(EMPTY); setSelected(undefined); setPath(undefined); setStatus(undefined); }} disabled={view.nodes.size === 0}>Clear</Button>
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">Select a node in the canvas, then expand, traverse from it or find the shortest path to another node id.</p>
-      </Panel>
+        <p className="text-xs text-muted-foreground">{selected ? <>Selected <span className="font-mono text-foreground">{selected}</span>. Expand, traverse from it, or find the shortest path to another node.</> : "Load a node, then select one in the canvas to expand, traverse from it or find the shortest path to another node."}</p>
+      </section>
       <ErrorView error={error} />
-      {status && <p role="status" className="text-sm text-success">{status}</p>}
-      <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
-        <svg role="img" aria-label="Graph canvas" viewBox={`0 0 ${W} ${H}`} className="w-full rounded-lg border border-border bg-background">
+      {status && <p role="status" className="rounded-lg border border-success/40 bg-success/5 px-3 py-2 text-sm text-success">{status}</p>}
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+        <svg role="img" aria-label="Graph canvas" viewBox={`0 0 ${W} ${H}`} className="w-full rounded-xl border border-border bg-card [background-image:radial-gradient(var(--border)_1px,transparent_1px)] [background-size:20px_20px]">
           <defs>
             <marker id="arrow" viewBox="0 0 10 10" refX="24" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style={{ fill: "var(--muted-foreground)" }} /></marker>
           </defs>
@@ -157,17 +165,22 @@ export default function GraphExplorer() {
             );
           })}
         </svg>
-        <Panel title={sel ? `Node ${sel.id}` : "Details"}>
-          {sel ? (
-            <div className="text-sm">
-              <p className="text-muted-foreground">Label: {sel.label || "none"}</p>
-              <pre aria-label="Node properties" className="mt-2 max-h-72 overflow-auto text-xs text-foreground/80">{JSON.stringify(sel.properties, null, 2)}</pre>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">{view.nodes.size === 0 ? "Load a node to begin." : "Select a node."}</p>
-          )}
-          <p className="mt-3 text-xs text-muted-foreground">{view.nodes.size} nodes · {view.edges.size} edges on screen</p>
-        </Panel>
+        <section aria-label="Node details" className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="border-b border-border px-4 py-2.5">
+            <h2 className="truncate text-sm font-medium" title={sel?.id}>{sel ? <>Node <span className="font-mono">{sel.id}</span></> : "Details"}</h2>
+          </header>
+          <div className="px-4 py-3">
+            {sel ? (
+              <div className="space-y-2 text-sm">
+                <p className="flex items-center gap-2 text-muted-foreground">Label {sel.label ? <span className="rounded border border-border bg-muted/40 px-1.5 font-mono text-xs leading-5 text-foreground">{sel.label}</span> : "none"}</p>
+                <pre aria-label="Node properties" className="max-h-72 overflow-auto rounded-lg border border-border bg-muted/40 p-2 font-mono text-xs leading-5 text-foreground">{JSON.stringify(sel.properties, null, 2)}</pre>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">{view.nodes.size === 0 ? "Load a node to begin." : "Select a node."}</p>
+            )}
+          </div>
+          <p className="border-t border-border px-4 py-2 text-xs tabular-nums text-muted-foreground">{view.nodes.size} nodes · {view.edges.size} edges on screen</p>
+        </section>
       </div>
     </div>
   );

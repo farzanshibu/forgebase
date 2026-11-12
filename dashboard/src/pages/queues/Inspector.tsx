@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ackQueueMessages, listQueueSubscriptions, listQueueTopics, nackQueueMessages, publishQueueMessages, streamQueueSubscription } from "../../api";
 import type { ReceivedMessage } from "../../api";
-import { Button, ErrorView, Panel } from "../../components/ui";
+import { Button, ErrorView } from "../../components/ui";
+import { Dot, Section } from "../jobs/ops";
 import { EmptyState } from "../../components/EmptyState";
 import { HelpTip } from "../../components/HelpTip";
 import { useLoad } from "../../hooks";
@@ -22,6 +23,7 @@ export default function Inspector() {
   const [error, setError] = useState<unknown>();
   const ctrl = useRef<AbortController | null>(null);
   const seq = useRef(0);
+  const uid = useId();
 
   const stop = () => { ctrl.current?.abort(); ctrl.current = null; setLive(null); };
   useEffect(() => () => ctrl.current?.abort(), []);
@@ -50,52 +52,74 @@ export default function Inspector() {
     }
   }
   const held = lines.filter((l) => l.state === "held").map((l) => l.ack_id);
+  const pull = (subs.data ?? []).filter((s) => !s.push);
 
   return (
     <div className="space-y-4">
-      <Panel title="Listen">
-        <p className="mb-3 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">Watch a subscription <HelpTip term="subscription" /> deliver messages live, and acknowledge each one. Record messages show the subscription owner&apos;s view; a message the owner may not see is withheld and does not appear.</p>
+      <Section
+        title="Listen"
+        description={<span className="inline-flex flex-wrap items-center gap-1">Watch a subscription <HelpTip term="subscription" /> deliver messages live, and acknowledge each one. Record messages show the subscription owner&apos;s view; a message the owner may not see is withheld and does not appear.</span>}
+      >
         <form onSubmit={start} className="flex flex-wrap items-end gap-3 text-sm">
-          <label>Subscription
-            <Sel aria-label="Subscription" className="ml-2" value={sub} onChange={setSub} options={[{ value: "", label: "choose…" }, ...(subs.data ?? []).filter((s) => !s.push).map((s) => ({ value: s.name, label: `${s.name} (${s.topic})` }))]} />
-          </label>
-          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Most in flight <Input size="sm" className="ml-2 w-16" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} /></label><HelpTip term="ack_deadline" /></span>
+          <div className="min-w-56 flex-1 sm:max-w-sm">
+            <span className="mb-1.5 block font-medium">Subscription</span>
+            <Sel aria-label="Subscription" className="w-full" value={sub} onChange={setSub} disabled={!!live} placeholder={pull.length ? "Choose a pull subscription" : "No pull subscriptions yet"} options={pull.map((s) => ({ value: s.name, label: `${s.name} (${s.topic})` }))} />
+          </div>
+          <div>
+            <span className="mb-1.5 flex items-center gap-1 font-medium"><label htmlFor={`${uid}flow`}>Most in flight</label><HelpTip term="ack_deadline" /></span>
+            <Input id={`${uid}flow`} size="sm" className="w-24 tabular-nums" inputMode="numeric" value={flow} onChange={(e) => setFlow(e.target.value)} disabled={!!live} />
+          </div>
           {live ? <Button onClick={stop}>Stop listening</Button> : <Button type="submit" tone="primary" disabled={!sub}>Listen</Button>}
-          {live && <span role="status" className="text-success">Listening on {live}</span>}
+          {live && <span role="status" className="inline-flex items-center gap-2 self-center text-success"><Dot tone="ok" pulse />Listening on {live}</span>}
         </form>
-        <p className="mt-2 text-xs text-muted-foreground">Deliveries are leased to this page until you ack or nack them; unacknowledged ones return after the ack deadline.</p>
+        <p className="mt-3 text-xs text-muted-foreground">Deliveries are leased to this page until you ack or nack them; unacknowledged ones return after the ack deadline.</p>
         <div className="mt-3"><ErrorView error={error ?? subs.error} /></div>
-      </Panel>
-      <Publish topics={(topics.data ?? []).filter((t) => !t.source).map((t) => t.name)} />
-      <Panel title="Deliveries" actions={<div className="flex gap-2"><Button disabled={held.length === 0} onClick={() => void settle(held, "ack")}>Ack all</Button><Button onClick={() => setLines([])} disabled={lines.length === 0}>Clear</Button></div>}>
+      </Section>
+      <Section
+        title="Deliveries"
+        count={lines.length || undefined}
+        description={lines.length ? `${held.length} waiting for an ack. Newest first; the last 200 are kept.` : undefined}
+        actions={<><Button disabled={held.length === 0} onClick={() => void settle(held, "ack")}>Ack all</Button><Button onClick={() => setLines([])} disabled={lines.length === 0}>Clear</Button></>}
+      >
         {lines.length === 0 ? <EmptyState compact title="No deliveries yet" why="Choose a pull subscription and press Listen. Publish a message below to see one arrive." /> : (
-          <ul aria-label="Deliveries" className="space-y-2 text-sm">
+          <ul aria-label="Deliveries" className="divide-y divide-border rounded-lg border border-border text-sm">
             {lines.map((l) => (
-              <li key={l.n} className="rounded border border-border p-2">
-                <div className="flex flex-wrap items-center gap-x-3">
-                  <span className="text-muted-foreground">seq {l.message.seq}</span><span className="font-mono text-xs">{l.message.id}</span>
-                  <span>attempt {l.delivery_attempt}</span>
-                  <span className={l.state === "held" ? "text-warning" : "text-muted-foreground"}>{l.state}</span>
-                  {l.state === "held" && <>
-                    <button type="button" className="text-success hover:underline" aria-label={`Ack ${l.message.id}`} onClick={() => void settle([l.ack_id], "ack")}>Ack</button>
-                    <button type="button" className="text-destructive hover:underline" aria-label={`Nack ${l.message.id}`} onClick={() => void settle([l.ack_id], "nack")}>Nack</button>
-                  </>}
+              <li key={l.n} className="px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${STATE_CLASS[l.state]}`}>{l.state}</span>
+                  <span className="tabular-nums text-muted-foreground">seq {l.message.seq}</span>
+                  <span className="min-w-0 truncate font-mono text-xs" title={l.message.id}>{l.message.id}</span>
+                  <span className="text-xs text-muted-foreground">attempt {l.delivery_attempt}</span>
+                  {l.state === "held" && (
+                    <span className="ml-auto flex gap-2">
+                      <Button aria-label={`Ack ${l.message.id}`} onClick={() => void settle([l.ack_id], "ack")}>Ack</Button>
+                      <Button tone="danger" aria-label={`Nack ${l.message.id}`} onClick={() => void settle([l.ack_id], "nack")}>Nack</Button>
+                    </span>
+                  )}
                 </div>
-                <pre className="mt-1 overflow-x-auto font-mono text-xs">{JSON.stringify(l.message.data)}</pre>
+                <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/40 px-2 py-1.5 font-mono text-xs">{JSON.stringify(l.message.data)}</pre>
               </li>
             ))}
           </ul>
         )}
-      </Panel>
+      </Section>
+      <Publish topics={(topics.data ?? []).filter((t) => !t.source).map((t) => t.name)} />
     </div>
   );
 }
+
+const STATE_CLASS: Record<Line["state"], string> = {
+  held: "border-warning/40 bg-warning/10 text-warning",
+  acked: "border-success/40 bg-success/10 text-success",
+  nacked: "border-destructive/40 bg-destructive/10 text-destructive",
+};
 
 function Publish({ topics }: { topics: string[] }) {
   const [topic, setTopic] = useState("");
   const [data, setData] = useState('{"hello":"world"}');
   const [error, setError] = useState<unknown>();
   const [last, setLast] = useState("");
+  const uid = useId();
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(undefined);
@@ -110,16 +134,20 @@ function Publish({ topics }: { topics: string[] }) {
     }
   }
   return (
-    <Panel title="Publish">
+    <Section title="Publish" description="Send a message to a topic and watch it arrive above. Topics that carry record changes are not offered.">
       <form onSubmit={(e) => void submit(e)} className="flex flex-wrap items-end gap-3 text-sm">
-        <label>Topic
-          <Sel aria-label="Topic" className="ml-2" value={topic} onChange={setTopic} options={[{ value: "", label: "choose…" }, ...topics.map((t) => ({ value: t, label: t }))]} />
-        </label>
-        <label>Data (JSON)<Input size="sm" className="ml-2 w-72 font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
-        <Button type="submit" disabled={!topic}>Publish</Button>
-        {last && <span role="status" className="text-success">{last}</span>}
+        <div className="min-w-48">
+          <span className="mb-1.5 block font-medium">Topic</span>
+          <Sel aria-label="Topic" className="w-full" value={topic} onChange={setTopic} placeholder={topics.length ? "Choose a topic" : "No topics yet"} options={topics.map((t) => ({ value: t, label: t }))} />
+        </div>
+        <div className="min-w-64 flex-1">
+          <label htmlFor={`${uid}data`} className="mb-1.5 block font-medium">Data (JSON)</label>
+          <Input id={`${uid}data`} size="sm" spellCheck={false} className="w-full font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} />
+        </div>
+        <Button type="submit" tone="primary" disabled={!topic}>Publish</Button>
       </form>
+      {last && <p className="mt-2 text-sm text-success">{last}</p>}
       <div className="mt-3"><ErrorView error={error} /></div>
-    </Panel>
+    </Section>
   );
 }

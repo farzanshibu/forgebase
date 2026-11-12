@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { Badge } from "panelui-web/badge";
+import { Table } from "panelui-web/table";
 import { deleteFunction, listFunctions } from "../../api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
@@ -10,17 +12,18 @@ import { Button } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import DeployForm from "./DeployForm";
+import { AccessBadge } from "./parts";
 import { when } from "./util";
-import { Table } from "panelui-web/table";
 
 export default function FunctionList() {
   const list = useLoad(listFunctions, "functions");
   const nav = useNavigate();
   const [uploading, setUploading] = useState(false);
   const upload = <Button onClick={() => setUploading((d) => !d)}>{uploading ? "Cancel upload" : "Upload .wasm"}</Button>;
+  const n = list.data?.length ?? 0;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <PageHeader studio="functions" secondary={upload} primary={<Button tone="primary" onClick={() => nav("/functions/new")}>New function</Button>} />
       {uploading && <DeployForm onDone={(d) => nav(`/functions/f/${encodeURIComponent(d.function.name)}`)} />}
       <ErrorPanel error={list.error} onRetry={list.reload} />
@@ -35,35 +38,48 @@ export default function FunctionList() {
         />
       )}
       {list.data && list.data.length > 0 && (
-        <Table aria-label="Functions" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-            <Table.Row><Table.Head className="py-2">Name</Table.Head><Table.Head>Active</Table.Head><Table.Head>Latest</Table.Head><Table.Head>HTTP access</Table.Head><Table.Head>Updated</Table.Head><Table.Head /></Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {list.data.map((f) => (
-              <Table.Row key={f.name} className="border-t border-border">
-                <Table.Cell className="py-2">
-                  <Link className="text-primary hover:underline" to={`/functions/f/${encodeURIComponent(f.name)}`}>{f.name}</Link>
-                  {f.description && <span className="ml-2 text-muted-foreground">{f.description}</span>}
-                </Table.Cell>
-                <Table.Cell>v{f.active_version}</Table.Cell>
-                <Table.Cell>v{f.latest_version}</Table.Cell>
-                <Table.Cell>{f.access}</Table.Cell>
-                <Table.Cell className="text-muted-foreground">{when(f.updated_at)}</Table.Cell>
-                <Table.Cell className="text-right">
-                  <ConfirmDialog
-                    trigger={<Button tone="danger" aria-label={`Delete ${f.name}`}>Delete</Button>}
-                    title={`Delete function ${f.name}?`}
-                    consequence="Every version, its secrets and its logs are deleted. Apps and hooks that call it get an error."
-                    confirmLabel="Delete function"
-                    confirmText={f.name}
-                    onConfirm={async () => { await deleteFunction(f.name); notify.deleted(`Function ${f.name}`); list.reload(); }}
-                  />
-                </Table.Cell>
+        <section className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <h2 className="text-sm font-medium">All functions</h2>
+            <span className="text-xs tabular-nums text-muted-foreground">{n} {n === 1 ? "function" : "functions"}</span>
+          </header>
+          <Table aria-label="Functions" framed density="compact" className="w-full text-left text-sm">
+            <Table.Header className="text-xs text-muted-foreground">
+              <Table.Row>
+                <Table.Head>Name</Table.Head>
+                <Table.Head align="end">Active</Table.Head>
+                <Table.Head align="end">Latest</Table.Head>
+                <Table.Head>HTTP access</Table.Head>
+                <Table.Head>Updated</Table.Head>
+                <Table.Head><span className="sr-only">Actions</span></Table.Head>
               </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+            </Table.Header>
+            <Table.Body>
+              {list.data.map((f) => (
+                <Table.Row key={f.name} className="border-t border-border hover:bg-muted/40">
+                  <Table.Cell className="max-w-md py-2.5">
+                    <Link className="font-mono font-medium text-primary hover:underline" to={`/functions/f/${encodeURIComponent(f.name)}`}>{f.name}</Link>
+                    {f.description && <span className="block truncate text-xs text-muted-foreground" title={f.description}>{f.description}</span>}
+                  </Table.Cell>
+                  <Table.Cell align="end"><Badge variant="success" size="sm" className="font-mono">v{f.active_version}</Badge></Table.Cell>
+                  <Table.Cell align="end" className={`font-mono ${f.latest_version !== f.active_version ? "text-warning" : "text-muted-foreground"}`} title={f.latest_version !== f.active_version ? "A newer version exists but is not active" : undefined}>v{f.latest_version}</Table.Cell>
+                  <Table.Cell><AccessBadge access={f.access} /></Table.Cell>
+                  <Table.Cell className="whitespace-nowrap font-mono text-xs text-muted-foreground">{when(f.updated_at)}</Table.Cell>
+                  <Table.Cell align="end">
+                    <ConfirmDialog
+                      trigger={<Button tone="danger" aria-label={`Delete ${f.name}`}>Delete</Button>}
+                      title={`Delete function ${f.name}?`}
+                      consequence="Every version, its secrets and its logs are deleted. Apps and hooks that call it get an error."
+                      confirmLabel="Delete function"
+                      confirmText={f.name}
+                      onConfirm={async () => { await deleteFunction(f.name); notify.deleted(`Function ${f.name}`); list.reload(); }}
+                    />
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </section>
       )}
     </div>
   );

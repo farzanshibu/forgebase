@@ -1,8 +1,15 @@
 import { Card } from "panelui-web/card";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Link } from "react-router-dom";
 import type { FeatureSetting, ServerFeature, SettingValue } from "../../api";
 import SettingField from "./SettingField";
-import { groupSettings } from "./settingUtil";
+import { featureIcon } from "./featureIcons";
+import { groupSettings, settingsAnchor } from "./settingUtil";
+
+const settingCount = (groups: { rows: unknown[] }[]) => {
+  const n = groups.reduce((sum, g) => sum + g.rows.length, 0);
+  return n === 1 ? "1 setting" : `${n} settings`;
+};
 
 /** One card per feature with its settings (the on/off switch lives on the feature map), grouped by what they configure. */
 export default function SettingsSections({ features, valueOf, errorOf, onEdit }: {
@@ -17,9 +24,13 @@ export default function SettingsSections({ features, valueOf, errorOf, onEdit }:
         const groups = groupSettings(f);
         if (groups.length === 0) return null;
         return (
-          <Card key={f.id} aria-label={`${f.name} settings`}>
-            <Card.Header>
-              <h3 className="font-medium">{f.name}</h3>
+          <Card key={f.id} id={settingsAnchor(f.id)} aria-label={`${f.name} settings`} className="scroll-mt-6">
+            <Card.Header className="flex flex-row items-center gap-2.5">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground" aria-hidden="true">
+                <HugeiconsIcon icon={featureIcon(f.id)} size={15} strokeWidth={1.8} />
+              </span>
+              <h3 className="min-w-0 flex-1 font-medium">{f.name}</h3>
+              <span className="text-xs text-muted-foreground tabular-nums">{settingCount(groups)}</span>
             </Card.Header>
             <Card.Content className="space-y-2">
               {groups.map((g) => (

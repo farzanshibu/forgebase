@@ -39,10 +39,13 @@ export function Sel<T extends string | number = string>({ value, onChange, optio
 }) {
   const items = options.map((o) => (typeof o === "object" ? o : { value: o, label: String(o) }));
   const known = items.some((o) => o.value === value);
+  // The Select treats "" as no value and shows the placeholder: an option such as { value: "", label: "Any type" }
+  // is the placeholder by default, so the trigger reads "Any type", not blank.
+  const emptyLabel = items.find((o) => o.value === "")?.label;
   return (
     <Select<T> items={items} value={known ? value : null} onValueChange={(v) => onChange((v ?? "") as T)} disabled={disabled} required={required} name={name}>
       <Select.Trigger id={id} size={size} aria-label={ariaLabel} className={className}>
-        <Select.Value placeholder={placeholder ?? ""} />
+        <Select.Value placeholder={placeholder ?? (typeof emptyLabel === "string" || typeof emptyLabel === "number" ? String(emptyLabel) : "")} />
       </Select.Trigger>
       <Select.Content>
         {items.map((o) => (

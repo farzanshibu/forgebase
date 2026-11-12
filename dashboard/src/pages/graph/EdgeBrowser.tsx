@@ -13,6 +13,7 @@ import { FormField } from "../../components/FormField";
 import { Pager } from "../../components/Pager";
 import { SkeletonTable } from "../../components/Skeleton";
 import { Button, ErrorView } from "../../components/ui";
+import { useCreateParam } from "../../hooks";
 import { notify } from "../../toaster";
 import { parseJsonObject } from "../vector/util";
 import { usePaged } from "./usePaged";
@@ -23,7 +24,7 @@ interface Filters { type: string; source: string; target: string }
 export default function EdgeBrowser() {
   const [f, setF] = useState<Filters>({ type: "", source: "", target: "" });
   const [applied, setApplied] = useState<Filters>(f);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useCreateParam();
   const [editing, setEditing] = useState<GraphEdge>();
   const { items, next, more, loaded, error, reload, setError } = usePaged(
     (after, s) => listEdges({ type: applied.type, source: applied.source, target: applied.target, after, limit: PAGE }, s),
@@ -34,50 +35,66 @@ export default function EdgeBrowser() {
     notify.deleted(`Edge ${id}`);
     reload();
   }
-  const field = (k: keyof Filters, label: string) => (
-    <FormField label={label}>{(p) => <Input {...p} size="sm" aria-label={`${label} filter`} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} />}</FormField>
+  const field = (k: keyof Filters, label: string, placeholder: string) => (
+    <Input size="sm" aria-label={`${label} filter`} className="w-36 font-mono" placeholder={placeholder} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} />
   );
   const filtered = !!(applied.type || applied.source || applied.target);
 
   return (
     <div className="space-y-4">
-      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setApplied(f); }}>
-        {field("type", "Type")}{field("source", "Source")}{field("target", "Target")}
-        <Button type="submit">Apply filter</Button>
-        <Button type="button" tone="primary" className="ml-auto" onClick={() => setCreating(true)}>New edge</Button>
-      </form>
       <ErrorView error={error} onRetry={reload} />
       {!loaded && !error && <SkeletonTable rows={4} columns={6} label="Loading edges" />}
-      {loaded && items.length === 0 && (
-        filtered
-          ? <EmptyState compact title="No edges match" why="Change the filters, or clear them to see every edge." />
-          : <EmptyState title="No edges yet" why="An edge is a relationship between two nodes, like “alice knows bob”. Create nodes first, then connect them here." action={<Button tone="primary" onClick={() => setCreating(true)}>New edge</Button>} docs="docs/adr/0006-graph.md" />
+      {loaded && items.length === 0 && !filtered && (
+        <EmptyState title="No edges yet" why="An edge is a relationship between two nodes, like “alice knows bob”. Create nodes first, then connect them here." action={<Button tone="primary" onClick={() => setCreating(true)}>New edge</Button>} docs="docs/adr/0006-graph.md" />
       )}
-      {loaded && items.length > 0 && (
-        <Table aria-label="Edges" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Id</Table.Head><Table.Head>Type</Table.Head><Table.Head>Source</Table.Head><Table.Head>Target</Table.Head><Table.Head>Properties</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
-          <Table.Body>
-            {items.map((e) => (
-              <Table.Row key={e.id} className="border-t border-border">
-                <Table.Cell className="py-2 font-mono">{e.id}</Table.Cell><Table.Cell>{e.type}</Table.Cell>
-                <Table.Cell className="font-mono">{e.source}</Table.Cell><Table.Cell className="font-mono">{e.target}{e.directed ? "" : " (undirected)"}</Table.Cell>
-                <Table.Cell className="max-w-xs truncate font-mono text-xs text-muted-foreground">{JSON.stringify(e.properties)}</Table.Cell>
-                <Table.Cell className="space-x-2 text-right">
-                  <Button onClick={() => setEditing(e)}>Edit {e.id}</Button>
-                  <ConfirmDialog
-                    trigger={<Button tone="danger" aria-label={`Delete ${e.id}`}>Delete</Button>}
-                    title={`Delete edge ${e.id}?`}
-                    consequence="The relationship is removed. Both nodes stay."
-                    confirmLabel="Delete edge"
-                    onConfirm={() => remove(e.id).catch((err: unknown) => setError(err))}
-                  />
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+      {loaded && (items.length > 0 || filtered) && (
+        <section aria-labelledby="graph-edges" className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+            <h2 id="graph-edges" className="text-sm font-medium">Edges</h2>
+            <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setApplied(f); }}>
+              {field("type", "Type", "Type")}{field("source", "Source", "Source node id")}{field("target", "Target", "Target node id")}
+              <Button type="submit">Apply filter</Button>
+              {filtered && <Button type="button" onClick={() => { const none = { type: "", source: "", target: "" }; setF(none); setApplied(none); }}>Clear</Button>}
+            </form>
+          </header>
+          {items.length === 0 ? (
+            <div className="p-4"><EmptyState compact title="No edges match" why="Change the filters, or clear them to see every edge." /></div>
+          ) : (
+            <Table aria-label="Edges" framed density="compact" className="w-full text-left text-sm">
+              <Table.Header className="text-xs text-muted-foreground"><Table.Row><Table.Head>Id</Table.Head><Table.Head>Relationship</Table.Head><Table.Head>Properties</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+              <Table.Body>
+                {items.map((e) => (
+                  <Table.Row key={e.id} className="border-t border-border hover:bg-muted/40">
+                    <Table.Cell className="max-w-40 truncate py-2 font-mono text-xs text-muted-foreground" title={e.id}>{e.id}</Table.Cell>
+                    <Table.Cell>
+                      <span className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs">
+                        <span className="max-w-40 truncate" title={e.source}>{e.source}</span>
+                        <span aria-hidden="true" className="text-muted-foreground">—</span>
+                        <span className="rounded border border-primary/30 bg-primary/5 px-1.5 leading-5 text-foreground">{e.type}</span>
+                        <span aria-hidden="true" className="text-muted-foreground">{e.directed ? "→" : "—"}</span>
+                        <span className="max-w-40 truncate" title={e.target}>{e.target}</span>
+                        {!e.directed && <span className="font-sans text-muted-foreground">(undirected)</span>}
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell className="max-w-xs truncate font-mono text-xs text-muted-foreground" title={JSON.stringify(e.properties)}>{JSON.stringify(e.properties)}</Table.Cell>
+                    <Table.Cell align="end" className="space-x-2 whitespace-nowrap">
+                      <Button aria-label={`Edit ${e.id}`} onClick={() => setEditing(e)}>Edit</Button>
+                      <ConfirmDialog
+                        trigger={<Button tone="danger" aria-label={`Delete ${e.id}`}>Delete</Button>}
+                        title={`Delete edge ${e.id}?`}
+                        consequence="The relationship is removed. Both nodes stay."
+                        confirmLabel="Delete edge"
+                        onConfirm={() => remove(e.id).catch((err: unknown) => setError(err))}
+                      />
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table>
+          )}
+          {items.length > 0 && <div className="border-t border-border px-4 pb-3"><Pager mode="more" shown={items.length} hasMore={!!next} onMore={() => void more()} noun="edges" label="More edges" /></div>}
+        </section>
       )}
-      {loaded && items.length > 0 && <Pager mode="more" shown={items.length} hasMore={!!next} onMore={() => void more()} noun="edges" label="More edges" />}
       <EdgeSheet open={creating} onOpenChange={setCreating} onDone={reload} />
       {editing && <EdgeSheet key={editing.id} open edge={editing} onOpenChange={(o) => !o && setEditing(undefined)} onDone={reload} />}
     </div>

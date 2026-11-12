@@ -52,3 +52,6 @@ export function groupSettings(f: ServerFeature): { title: string | null; rows: F
     .sort(([a], [b]) => groupRank(a) - groupRank(b))
     .map(([g, rows]) => ({ title: g === "" ? null : (GROUP_TITLES[g] ?? g.replace(/[._]/g, " ").replace(/^./, (c) => c.toUpperCase())), rows }));
 }
+
+/** The anchor of a feature's settings card, for the "Jump to" list on Features and settings. */
+export const settingsAnchor = (featureId: string) => `settings-${featureId}`;

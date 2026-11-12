@@ -14,7 +14,8 @@ export const MODES: { id: ThemeMode; label: string }[] = [
 
 /** Accent presets; the colours live in src/index.css under `[data-accent="<id>"]`. */
 export const ACCENTS = [
-  { id: "amber", label: "Amber" },
+  // The id stays "amber" so a stored choice keeps working; the colour is the forge orange.
+  { id: "amber", label: "Orange" },
   { id: "indigo", label: "Indigo" },
   { id: "emerald", label: "Emerald" },
   { id: "rose", label: "Rose" },

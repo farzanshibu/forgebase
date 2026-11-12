@@ -13,6 +13,8 @@ import { Button, ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import { managedWords } from "./pgHelpers";
+import { Badge } from "panelui-web/badge";
+import { TableCard } from "./parts";
 
 const removable = (e: ExtensionInfo) => e.managed_by === "api" && !!e.installed_version;
 
@@ -37,19 +39,23 @@ export default function Extensions() {
       {loading && !data && !error && <SkeletonTable rows={5} columns={6} label="Loading extensions" />}
       {data && data.length === 0 && <EmptyState compact title="No extensions listed" why="The server reported none for this PostgreSQL engine." />}
       {data && data.length > 0 && (
-        <div className="overflow-x-auto">
-          <Table aria-label="Extensions" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-              <Table.Row><Table.Head className="py-1">Extension</Table.Head><Table.Head>Managed by</Table.Head><Table.Head>Version</Table.Head><Table.Head>What it does</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row>
+        <TableCard title="Extensions" count={data.length} description={`${data.filter((e) => e.installed_version).length} installed`}>
+          <Table framed density="compact" aria-label="Extensions">
+            <Table.Header className="bg-muted/40">
+              <Table.Row><Table.Head>Extension</Table.Head><Table.Head>Managed by</Table.Head><Table.Head>Version</Table.Head><Table.Head>What it does</Table.Head><Table.Head align="end"><span className="sr-only">Actions</span></Table.Head></Table.Row>
             </Table.Header>
             <Table.Body>
               {data.map((e) => (
-                <Table.Row key={e.name} className="border-t border-border align-top">
-                  <Table.Cell className="py-1 font-mono text-xs">{e.name}</Table.Cell>
-                  <Table.Cell>{managedWords(e.managed_by)}</Table.Cell>
-                  <Table.Cell className="whitespace-nowrap text-xs">{e.installed_version ? `${e.installed_version} installed` : e.available ? `${e.default_version ?? "?"} available` : "not in this engine"}</Table.Cell>
-                  <Table.Cell className="max-w-md text-xs text-muted-foreground">{e.comment ?? ""}</Table.Cell>
-                  <Table.Cell className="whitespace-nowrap text-right">
+                <Table.Row key={e.name} className="align-top">
+                  <Table.Cell className="py-2 font-mono text-xs">{e.name}</Table.Cell>
+                  <Table.Cell className="py-2 text-xs">{managedWords(e.managed_by)}</Table.Cell>
+                  <Table.Cell className="py-2 whitespace-nowrap">
+                    {e.installed_version
+                      ? <Badge variant="success" size="sm" dot>{e.installed_version} installed</Badge>
+                      : <span className="text-xs text-muted-foreground">{e.available ? `${e.default_version ?? "?"} available` : "not in this engine"}</span>}
+                  </Table.Cell>
+                  <Table.Cell className="max-w-md py-2 text-xs text-muted-foreground">{e.comment ?? ""}</Table.Cell>
+                  <Table.Cell align="end" className="py-2 whitespace-nowrap">
                     {e.managed_by === "api" && !e.installed_version && <Button disabled={!e.available} aria-label={`Install ${e.name}`} onClick={() => void install(e.name)}>Install</Button>}
                     {removable(e) && (
                       <ConfirmDialog
@@ -67,7 +73,7 @@ export default function Extensions() {
               ))}
             </Table.Body>
           </Table>
-        </div>
+        </TableCard>
       )}
     </div>
   );

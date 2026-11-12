@@ -7,7 +7,8 @@ import { Table } from "panelui-web/table";
 import { createExtension, listExtensions } from "../../api";
 import { EmptyState } from "../../components/EmptyState";
 import { SkeletonTable } from "../../components/Skeleton";
-import { Button, ErrorView, Panel } from "../../components/ui";
+import { Button, ErrorView } from "../../components/ui";
+import { TableCard } from "./parts";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import { runSqlStatement } from "./sqlRequest";
@@ -43,34 +44,38 @@ export default function TopQueries() {
     }
   }
   return (
-    <Panel title="Top queries by total time" actions={<Button onClick={reload}>Refresh</Button>}>
-      <ErrorView error={error} onRetry={reload} />
-      <ErrorView error={problem} />
-      {loading && !data && !error && <SkeletonTable rows={3} columns={5} label="Loading top queries" />}
-      {data && !data.installed && (
-        <EmptyState compact title="pg_stat_statements is not installed" why="This extension counts every statement's calls and time, so you can see which queries cost the most." action={<Button tone="primary" onClick={() => void install()}>Install pg_stat_statements</Button>} />
-      )}
-      {data?.installed && data.items.length === 0 && <EmptyState compact title="No statements counted yet" why="Statements appear here after the database has run them." />}
-      {data?.installed && data.items.length > 0 && (
-        <div className="overflow-x-auto">
-          <Table aria-label="Top queries" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-              <Table.Row><Table.Head className="py-1">SQL</Table.Head><Table.Head>Calls</Table.Head><Table.Head>Total</Table.Head><Table.Head>Mean</Table.Head><Table.Head>Rows</Table.Head></Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {data.items.map((q, i) => (
-                <Table.Row key={i} className="border-t border-border align-top">
-                  <Table.Cell className="max-w-xl py-1 font-mono text-xs break-all">{q.query}</Table.Cell>
-                  <Table.Cell>{q.calls}</Table.Cell>
-                  <Table.Cell className="whitespace-nowrap">{q.total_ms.toFixed(1)} ms</Table.Cell>
-                  <Table.Cell className="whitespace-nowrap">{q.mean_ms.toFixed(2)} ms</Table.Cell>
-                  <Table.Cell>{q.rows}</Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
+    <TableCard title="Top queries by total time" description="From pg_stat_statements: the statements that used the most database time." actions={<Button onClick={reload}>Refresh</Button>}>
+      {(error !== undefined || problem !== undefined) && (
+        <div className="space-y-2 p-4">
+          <ErrorView error={error} onRetry={reload} />
+          <ErrorView error={problem} />
         </div>
       )}
-    </Panel>
+      {loading && !data && !error && <div className="p-4"><SkeletonTable rows={3} columns={5} label="Loading top queries" /></div>}
+      {data && !data.installed && (
+        <div className="p-4">
+          <EmptyState compact title="pg_stat_statements is not installed" why="This extension counts every statement's calls and time, so you can see which queries cost the most." action={<Button tone="primary" onClick={() => void install()}>Install pg_stat_statements</Button>} />
+        </div>
+      )}
+      {data?.installed && data.items.length === 0 && <div className="p-4"><EmptyState compact title="No statements counted yet" why="Statements appear here after the database has run them." /></div>}
+      {data?.installed && data.items.length > 0 && (
+        <Table framed density="compact" aria-label="Top queries">
+          <Table.Header className="bg-muted/40">
+            <Table.Row><Table.Head>Statement</Table.Head><Table.Head align="end">Calls</Table.Head><Table.Head align="end">Total</Table.Head><Table.Head align="end">Mean</Table.Head><Table.Head align="end">Rows</Table.Head></Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {data.items.map((q, i) => (
+              <Table.Row key={i} className="align-top">
+                <Table.Cell className="max-w-xl py-2 font-mono text-xs break-all">{q.query}</Table.Cell>
+                <Table.Cell align="end" className="py-2">{q.calls}</Table.Cell>
+                <Table.Cell align="end" className="py-2 whitespace-nowrap">{q.total_ms.toFixed(1)} ms</Table.Cell>
+                <Table.Cell align="end" className="py-2 whitespace-nowrap">{q.mean_ms.toFixed(2)} ms</Table.Cell>
+                <Table.Cell align="end" className="py-2">{q.rows}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table>
+      )}
+    </TableCard>
   );
 }

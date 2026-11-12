@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installBackups } from "../../test/backupMock";
+import { confirmDialog, sheet, toast } from "../../test/dataStudioMock";
 import { parseCount } from "./util";
 
 afterEach(() => {
@@ -51,22 +52,26 @@ describe("System Studio backups", () => {
     expect(mock.problems).toEqual([]);
   });
 
-  it("says so when there are no snapshots", async () => {
+  it("says so when there are no snapshots, and offers Back up now", async () => {
     const { st } = setup();
     st.items = [];
     renderStudio("/system/backups");
-    expect(await screen.findByText(/No snapshots yet/)).toBeInTheDocument();
+    const empty = await screen.findByRole("region", { name: "No snapshots yet" });
+    expect(within(empty).getByRole("button", { name: "Back up now" })).toBeInTheDocument();
   });
 
   it("creates a snapshot with a label and the retention", async () => {
     const { mock, st } = setup();
     renderStudio("/system/backups");
     await screen.findByRole("table", { name: "Snapshots" });
-    await userEvent.type(screen.getByLabelText(/Label/), "nightly");
     await userEvent.type(screen.getByLabelText("Keep last"), "5");
-    await userEvent.click(screen.getByRole("checkbox", { name: "Include indexes" }));
-    await userEvent.click(screen.getByRole("button", { name: "Create snapshot" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Created snapshot 2026-11-10T01-00-00Z");
+    await userEvent.click(screen.getByRole("button", { name: "Back up now" }));
+    const form = await sheet("Back up now");
+    expect(form).toHaveTextContent("it keeps the newest 5");
+    await userEvent.type(within(form).getByLabelText(/Label/), "nightly");
+    await userEvent.click(within(form).getByRole("checkbox", { name: "Include indexes" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Create snapshot" }));
+    await toast("Snapshot 2026-11-10T01-00-00Z created");
     expect(st.created).toEqual([{ label: "nightly", include_indexes: false, retention: { keep_last: 5 } }]);
     expect(await screen.findByText("nightly")).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
@@ -96,7 +101,7 @@ describe("System Studio backups", () => {
     await userEvent.type(screen.getByLabelText(/Delete older than/), "30");
     await userEvent.click(screen.getByRole("button", { name: "Prune now" }));
     expect(st.pruned).toEqual([]);
-    await userEvent.click(screen.getByRole("button", { name: "Confirm prune now" }));
+    await confirmDialog("Prune snapshots now?", "Prune snapshots");
     expect(await screen.findByRole("status")).toHaveTextContent("Pruned 1 snapshot: 2026-11-08T10-00-00Z");
     expect(st.pruned).toEqual([{ keep_last: 1, max_age_days: 30 }]);
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Snapshots" })).getAllByRole("row")).toHaveLength(2));
@@ -108,9 +113,12 @@ describe("System Studio backups", () => {
     renderStudio("/system/backups");
     await screen.findByRole("table", { name: "Snapshots" });
     await userEvent.type(screen.getByLabelText(/Delete older than/), "0");
-    expect(screen.getByRole("alert")).toHaveTextContent(/whole number/);
-    expect(screen.getByRole("button", { name: "Create snapshot" })).toBeDisabled();
+    // The error sits under its field.
+    expect(screen.getByLabelText(/Delete older than/)).toHaveAccessibleDescription(/whole number/);
     expect(screen.getByRole("button", { name: "Prune now" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Back up now" }));
+    const form = await sheet("Back up now");
+    expect(within(form).getByRole("button", { name: "Create snapshot" })).toBeDisabled();
     expect(st.pruned).toEqual([]);
   });
 
@@ -119,9 +127,9 @@ describe("System Studio backups", () => {
     renderStudio("/system/backups");
     const table = await screen.findByRole("table", { name: "Snapshots" });
     const row = within(table).getAllByRole("row")[1]!;
-    await userEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Delete 2026-11-09T10-00-00Z" }));
     expect(st.items).toHaveLength(2);
-    await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await confirmDialog("Delete snapshot 2026-11-09T10-00-00Z?", "Delete snapshot");
     expect(await screen.findByRole("status")).toHaveTextContent("Deleted snapshot 2026-11-09T10-00-00Z");
     expect(st.items.map((s) => s.id)).toEqual(["2026-11-08T10-00-00Z"]);
     expect(mock.problems).toEqual([]);

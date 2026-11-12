@@ -1,70 +1,109 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { EmptyState } from "../../components/EmptyState";
 import { deleteStoreProduct, listPrices, listStoreProducts, listStorePurchases, putStoreProduct, STORE_PROVIDERS } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
+import { Button, ConfirmButton, ErrorView } from "../../components/ui";
 import { Sel } from "../../components/controls";
+import { CreateSheet } from "../../components/CreateSheet";
+import { FormField } from "../../components/FormField";
+import { SkeletonTable } from "../../components/Skeleton";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Field, SubjectLink, Th } from "./shared";
-import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
+import { notify } from "../../toaster";
+import { BillingError, Filter, None, Note, SubjectLink, TableCard, Tag } from "./shared";
+import { words } from "./util";
 import { useAct } from "./useAct";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { Badge } from "../../components/StatusBadge";
+import { IdText } from "../../components/IdText";
+import { Th } from "../../components/TableCard";
+import { When } from "../../components/Time";
 
 /** Store states that grant access are green; the rest follow the shared tones through this map. */
-const PURCHASE_TONE: Record<string, string> = { grace: "past_due", on_hold: "paused", expired: "canceled", revoked: "refunded", replaced: "canceled" };
-const PurchaseBadge = ({ status }: { status: string }) => <Badge status={PURCHASE_TONE[status] ?? status} label={status} />;
+const PurchaseBadge = ({ status }: { status: string }) => <Badge status={status}>{words(status)}</Badge>;
+const STORE_NAMES: Record<string, string> = { app_store: "App Store", google_play: "Google Play", creem: "Creem" };
+const storeName = (id: string) => STORE_NAMES[id] ?? id;
+
+type Mapping = { provider: string; product_id: string; price: string };
 
 function StoreProducts() {
   const products = useLoad(listStoreProducts, "store-products");
   const prices = useLoad((s) => listPrices(undefined, s), "store-prices");
   const act = useAct(products.reload);
+  const [sheet, setSheet] = useState<"new" | "edit">();
   const [provider, setProvider] = useState<string>(STORE_PROVIDERS[0]!);
   const [productId, setProductId] = useState("");
   const [price, setPrice] = useState("");
   const [filter, setFilter] = useState("");
   const rows = (products.data ?? []).filter((p) => !filter || p.provider === filter);
-  const edit = (p: { provider: string; product_id: string; price: string }) => { setProvider(p.provider); setProductId(p.product_id); setPrice(p.price); };
-  const save = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const ok = await act.run(() => putStoreProduct(provider, productId.trim(), price), "Mapping saved");
-    if (ok) { setProductId(""); setPrice(""); }
+  const openSheet = (p?: Mapping) => {
+    setProvider(p?.provider ?? STORE_PROVIDERS[0]!);
+    setProductId(p?.product_id ?? "");
+    setPrice(p?.price ?? "");
+    setSheet(p ? "edit" : "new");
   };
+  const add = <Button tone="primary" onClick={() => openSheet()}>Map a store product</Button>;
   return (
-    <Panel title="Store products" actions={<label className="text-sm">Store<Sel aria-label="Filter store" value={filter} onChange={setFilter} options={[{ value: "", label: "all" }, ...STORE_PROVIDERS]} className="ml-2" /></label>}>
-      <BillingError error={products.error} />
-      {products.loading && !products.error && <Loading what="Loading store products" />}
-      {products.data && rows.length === 0 && <EmptyState compact title="No store products mapped." why="A store product id maps to one price: recurring for a store subscription, one-time otherwise." />}
-      {rows.length > 0 && (
-        <Table aria-label="Store products" className={TABLE}>
-          <Table.Header className={THEAD}><Table.Row><Th>Store</Th><Th>Store product id</Th><Th>Price</Th><Th>Kind</Th><Th>Changed</Th><Th /></Table.Row></Table.Header>
-          <Table.Body>
-            {rows.map((p) => (
-              <Table.Row key={`${p.provider}/${p.product_id}`} className={ROW}>
-                <Table.Cell className="py-2 pr-3">{p.provider}</Table.Cell><Table.Cell className="font-mono text-xs">{p.product_id}</Table.Cell><Table.Cell className="font-mono text-xs">{p.price}</Table.Cell>
-                <Table.Cell>{p.kind}</Table.Cell><Table.Cell className="text-muted-foreground">{when_(p.updated_at)}</Table.Cell>
-                <Table.Cell className="space-x-2 whitespace-nowrap">
-                  <Button onClick={() => edit(p)} aria-label={`Edit ${p.provider} ${p.product_id}`}>Edit</Button>
-                  <ConfirmButton label={`Delete ${p.provider} ${p.product_id}`} disabled={act.busy} onConfirm={() => void act.run(() => deleteStoreProduct(p.provider, p.product_id), "Mapping deleted")} />
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
-      )}
-      <form onSubmit={save} aria-label="Store product mapping" className="mt-4 space-y-3 border-t border-border pt-4">
-        <div className={FORM_GRID}>
-          <Field label="Mapping store"><Sel value={provider} onChange={setProvider} options={STORE_PROVIDERS} /></Field>
-          <Field label="Store product id"><Input size="sm" value={productId} onChange={(e) => setProductId(e.target.value)} required placeholder="com.example.pro.monthly" /></Field>
-          <Field label="Sold as price">
-            <Sel value={price} onChange={setPrice} required options={[{ value: "", label: "choose a price" }, ...(prices.data ?? []).filter((p) => p.active && p.type !== "metered").map((p) => ({ value: p.key, label: `${p.key} (${p.type})` }))]} />
-          </Field>
-        </div>
-        <ErrorView error={act.error} />
-        {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
-        <Button type="submit" tone="primary" disabled={act.busy}>Save mapping</Button>
-        <p className="text-xs text-muted-foreground">Saving an existing store product id re-maps it. The price type decides what is delivered: a recurring price becomes a subscription, a one-time price an order.</p>
-      </form>
-    </Panel>
+    <>
+      <TableCard
+        title="Store products"
+        count={products.data ? rows.length : undefined}
+        description="Each store product id is sold as one price: a recurring price becomes a subscription, a one-time price an order."
+        actions={add}
+        toolbar={<Filter label="Store">{(id) => <Sel placeholder="All stores" id={id} aria-label="Filter store" value={filter} onChange={setFilter} options={[{ value: "", label: "All stores" }, ...STORE_PROVIDERS.map((s) => ({ value: s, label: storeName(s) }))]} className="w-40" />}</Filter>}
+      >
+        <BillingError error={products.error} />
+        {products.loading && !products.error && <SkeletonTable rows={3} columns={5} label="Loading store products" />}
+        {products.data && rows.length === 0 && <EmptyState compact title="No store products mapped" why="Map a store product id to a price so a store purchase grants it: recurring for a store subscription, one-time otherwise." action={filter ? undefined : add} />}
+        {rows.length > 0 && (
+          <Table framed aria-label="Store products">
+            <Table.Header><Table.Row><Th>Store</Th><Th>Store product id</Th><Th>Price</Th><Th>Kind</Th><Th>Changed</Th><Th><span className="sr-only">Actions</span></Th></Table.Row></Table.Header>
+            <Table.Body>
+              {rows.map((p) => (
+                <Table.Row key={`${p.provider}/${p.product_id}`}>
+                  <Table.Cell className="whitespace-nowrap">{storeName(p.provider)}</Table.Cell>
+                  <Table.Cell><IdText value={p.product_id} what="product id" /></Table.Cell>
+                  <Table.Cell className="font-mono text-xs">{p.price}</Table.Cell>
+                  <Table.Cell><Tag>{words(p.kind)}</Tag></Table.Cell>
+                  <Table.Cell className="text-muted-foreground"><When iso={p.updated_at} day /></Table.Cell>
+                  <Table.Cell className="whitespace-nowrap text-right">
+                    <span className="inline-flex gap-2">
+                      <Button onClick={() => openSheet(p)} aria-label={`Edit ${p.provider} ${p.product_id}`}>Edit</Button>
+                      <ConfirmButton label={`Delete ${p.provider} ${p.product_id}`} short="Delete" consequence="New purchases of this store product no longer grant anything. Past purchases stay." disabled={act.busy} onConfirm={() => void act.run(() => deleteStoreProduct(p.provider, p.product_id), "Mapping deleted")} />
+                    </span>
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        )}
+      </TableCard>
+      <ErrorView error={act.error} />
+      <Note>{act.note}</Note>
+      <CreateSheet
+        open={!!sheet}
+        onOpenChange={(v) => { if (!v) setSheet(undefined); }}
+        title={sheet === "edit" ? "Edit mapping" : "Map a store product"}
+        description="Saving an existing store product id re-maps it. The price type decides what is delivered."
+        submitLabel="Save mapping"
+        canSubmit={!!productId.trim() && !!price}
+        onSubmit={async () => {
+          await putStoreProduct(provider, productId.trim(), price);
+          products.reload();
+          notify.saved("Mapping");
+        }}
+      >
+        <FormField label="Mapping store">
+          {(p) => <Sel {...p} value={provider} onChange={setProvider} disabled={sheet === "edit"} options={STORE_PROVIDERS.map((s) => ({ value: s, label: storeName(s) }))} />}
+        </FormField>
+        <FormField label="Store product id" help="The product id as the store knows it.">
+          {(p) => <Input {...p} size="sm" className="font-mono" value={productId} disabled={sheet === "edit"} onChange={(e) => setProductId(e.target.value)} placeholder="com.example.pro.monthly" />}
+        </FormField>
+        <FormField label="Sold as price" help="Metered prices cannot be sold through a store.">
+          {(p) => <Sel {...p} value={price} onChange={setPrice} placeholder="Choose a price" options={(prices.data ?? []).filter((x) => x.active && x.type !== "metered").map((x) => ({ value: x.key, label: `${x.key} (${words(x.type)})` }))} />}
+        </FormField>
+      </CreateSheet>
+    </>
   );
 }
 
@@ -73,38 +112,52 @@ function StorePurchases() {
   const [status, setStatus] = useState("");
   const purchases = useLoad((s) => listStorePurchases(subject || undefined, s), `store-purchases:${subject}`);
   const rows = (purchases.data ?? []).filter((p) => !status || p.status === status);
+  const toolbar = (
+    <>
+      <Filter label="Status">
+        {(id) => <Sel placeholder="All statuses" id={id} value={status} onChange={setStatus} options={[{ value: "", label: "All statuses" }, ...["active", "trialing", "grace", "on_hold", "paused", "expired", "refunded", "revoked", "pending", "replaced"].map((s) => ({ value: s, label: words(s) }))]} className="w-40" />}
+      </Filter>
+      <Filter label="Subject">
+        {(id) => <Input id={id} size="sm" className="w-56 font-mono" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="All subjects" />}
+      </Filter>
+    </>
+  );
   return (
-    <Panel title="Store purchases" actions={<Button onClick={purchases.reload}>Refresh</Button>}>
-      <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">
-        <label>Status<Sel value={status} onChange={setStatus} options={[{ value: "", label: "all" }, ...["active", "trialing", "grace", "on_hold", "paused", "expired", "refunded", "revoked", "pending", "replaced"]]} className="ml-2" /></label>
-        <label>Subject<Input size="sm" className="ml-2 w-56" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="all subjects" /></label>
-      </div>
+    <TableCard title="Store purchases" count={purchases.data ? rows.length : undefined} description="Purchases the stores reported, verified and mirrored here." actions={<Button onClick={purchases.reload} disabled={purchases.loading}>Refresh</Button>} toolbar={toolbar}>
       <BillingError error={purchases.error} />
-      {purchases.loading && !purchases.error && <Loading what="Loading store purchases" />}
-      {purchases.data && rows.length === 0 && <EmptyState compact title="No store purchases match." why="Change the filters to see more." />}
+      {purchases.loading && !purchases.error && <SkeletonTable rows={3} columns={7} label="Loading store purchases" />}
+      {purchases.data && rows.length === 0 && <EmptyState compact title="No store purchases match" why="Purchases appear here once a store reports one. Change the filters to see more." />}
       {rows.length > 0 && (
-        <Table aria-label="Store purchases" className={TABLE}>
-          <Table.Header className={THEAD}><Table.Row><Th>Purchase</Th><Th>Store</Th><Th>Subject</Th><Th>Status</Th><Th>Product</Th><Th>Price</Th><Th>Renews</Th><Th>Expires</Th><Th>Mode</Th></Table.Row></Table.Header>
+        <Table framed aria-label="Store purchases">
+          <Table.Header><Table.Row><Th>Purchase</Th><Th>Store</Th><Th>Customer</Th><Th>Status</Th><Th>Product</Th><Th>Price</Th><Th>Renews</Th><Th>Expires</Th><Th>Mode</Th></Table.Row></Table.Header>
           <Table.Body>
             {rows.map((p) => (
-              <Table.Row key={p.id} className={ROW}>
-                <Table.Cell className="py-2 pr-3 font-mono text-xs">{p.purchase_id}</Table.Cell><Table.Cell>{p.provider}</Table.Cell><Table.Cell><SubjectLink subject={p.subject} /></Table.Cell>
-                <Table.Cell><PurchaseBadge status={p.status} /></Table.Cell><Table.Cell className="font-mono text-xs">{p.product_id}</Table.Cell><Table.Cell className="font-mono text-xs">{p.price}</Table.Cell>
-                <Table.Cell>{p.kind === "subscription" ? (p.auto_renew ? "auto-renews" : "ends") : "one-time"}</Table.Cell><Table.Cell className="text-muted-foreground">{p.expires_at ? when_(p.expires_at) : "-"}</Table.Cell>
-                <Table.Cell>{p.environment}</Table.Cell>
+              <Table.Row key={p.id}>
+                <Table.Cell><IdText value={p.purchase_id} what="purchase id" /></Table.Cell>
+                <Table.Cell className="whitespace-nowrap">{storeName(p.provider)}</Table.Cell>
+                <Table.Cell><SubjectLink subject={p.subject} /></Table.Cell>
+                <Table.Cell><PurchaseBadge status={p.status} /></Table.Cell>
+                <Table.Cell className="max-w-48 truncate font-mono text-xs" title={p.product_id}>{p.product_id}</Table.Cell>
+                <Table.Cell className="font-mono text-xs">{p.price}</Table.Cell>
+                <Table.Cell className="whitespace-nowrap">{p.kind === "subscription" ? (p.auto_renew ? "auto-renews" : "ends") : "one-time"}</Table.Cell>
+                <Table.Cell className="text-muted-foreground">{p.expires_at ? <When iso={p.expires_at} day /> : <None />}</Table.Cell>
+                <Table.Cell><Tag>{p.environment}</Tag></Table.Cell>
               </Table.Row>
             ))}
           </Table.Body>
         </Table>
       )}
-    </Panel>
+    </TableCard>
   );
 }
 
 export default function Stores() {
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">App Store, Google Play and Creem are merchants of record: the store takes the payment, ForgeBase verifies and mirrors it. Credentials are set under Providers and settings.</p>
+    <div className="space-y-5">
+      <p className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+        App Store, Google Play and Creem are merchants of record: the store takes the payment, ForgeBase verifies and mirrors it. Set their credentials under{" "}
+        <Link to="/billing/settings" className="font-medium text-primary underline-offset-2 hover:underline">Settings</Link>.
+      </p>
       <StoreProducts />
       <StorePurchases />
     </div>

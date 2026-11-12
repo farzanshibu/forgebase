@@ -33,15 +33,16 @@
   --accent: #f4f4f5;
   --accent-foreground: #18181b;
   --border: #e4e4e7;
-  --input: #d4d4d8;
+  /* Field outlines: 3.38:1 on white, 3.24:1 on the page (WCAG 1.4.11 asks 3:1 for a control's boundary). */
+  --input: #8b8b94;
 
   --success: #065f46;
-  --warning: #92400e;
+  --warning: #7c5a00; /* yellow-olive: never the same hue as the orange primary (it was the same hex before). */
   --info: #1d4ed8;
   --destructive: #b91c1c;
 
-  /* Accent preset "amber" (default). */
-  --primary: #92400e;
+  /* Accent preset "amber" (default, "Orange" in the menu: the forge colour). */
+  --primary: #b03c0a;
   --primary-foreground: #ffffff;
 
   --chart-2: #0d9488;
@@ -66,14 +67,15 @@
   --accent: #27272a;
   --accent-foreground: #fafafa;
   --border: #27272a;
-  --input: #3f3f46;
+  /* 3.14:1 on a card, 3.34:1 on the page. */
+  --input: #63636b;
 
   --success: #34d399;
-  --warning: #fbbf24;
+  --warning: #facc15;
   --info: #60a5fa;
   --destructive: #f87171;
 
-  --primary: #fbbf24;
+  --primary: #fb923c;
   --primary-foreground: #18181b;
 
   --chart-2: #2dd4bf;
@@ -83,8 +85,8 @@
 }
 
 /* Accent presets: light value, then dark value. Keep in step with ACCENTS in src/theme/theme.ts. */
-[data-accent="amber"] { --primary: #92400e; --primary-foreground: #ffffff; }
-.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #fbbf24; --primary-foreground: #18181b; }
+[data-accent="amber"] { --primary: #b03c0a; --primary-foreground: #ffffff; }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #fb923c; --primary-foreground: #18181b; }
 
 [data-accent="indigo"] { --primary: #4f46e5; --primary-foreground: #ffffff; }
 .dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #818cf8; --primary-foreground: #09090b; }
@@ -108,8 +110,9 @@
 }
 
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* Bundled (src/main.tsx imports the files): the same type on every OS, nothing loaded from the network. */
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -147,8 +150,37 @@
 @layer base {
   * { @apply border-border; }
   html { @apply bg-background; }
-  body { @apply bg-background font-sans text-foreground antialiased; }
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    /* Inter: open digits, a single-storey a and a flat-top 1/l read better in dense tables and ids. */
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    text-rendering: optimizeLegibility;
+  }
   ::selection { background: color-mix(in oklab, var(--primary) 30%, transparent); }
+
+  /* Headings: one weight and tracking everywhere, so studio pages line up. */
+  h1, h2, h3, h4 { text-wrap: balance; letter-spacing: -0.011em; }
+  p { text-wrap: pretty; }
+
+  /* Numbers in tables and stats line up in columns. */
+  table, [data-slot="stat"], time { font-variant-numeric: tabular-nums; }
+
+  /* Code reads as code: the mono face, no ligatures, a touch smaller than the text around it. */
+  code, kbd, samp, pre { font-family: var(--font-mono); font-variant-ligatures: none; }
+  :not(pre) > code { font-size: 0.9em; }
+
+  /* Thin, themed scrollbars (the shell, tables, editors). */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent; }
+}
+
+/*
+ * Nav rail group headings (BUILD, OPERATE…): PanelUI draws them at 10px in muted-foreground at 70% opacity, which is
+ * 3.62:1 in light. Full muted-foreground and 11px: 7.7:1 light, 7.6:1 dark. Unlayered, so it wins over the utilities.
+ */
+[data-slot="nav-rail-group-label"] > span:first-child {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0.06em;
 }
 
 /* Native checkboxes, radios and ranges take the accent colour. */

@@ -24,10 +24,11 @@ export default function OverviewPage() {
   const [showDone, setShowDone] = useState(false);
   // A finished checklist folds into one line; Connect your app then takes the full width instead of half.
   const folded = !showDone && !!project.data && gettingStartedSteps(project.data, { disabled }).every((s) => s.done);
+  // Side by side only on very wide screens: below that each card gets the full width, so the snippet is not clipped.
   return (
     <div className="max-w-6xl space-y-8">
       <PageHeader studio="" />
-      <div className={`grid items-start gap-4 ${folded ? "" : "xl:grid-cols-2"}`}>
+      <div className={`grid items-start gap-4 ${folded ? "" : "2xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]"}`}>
         <GettingStarted project={project.data} adminEmail={admin?.email} disabled={disabled} showDone={showDone} onShowDoneChange={setShowDone} />
         <ConnectApp collection={newest?.name} />
       </div>

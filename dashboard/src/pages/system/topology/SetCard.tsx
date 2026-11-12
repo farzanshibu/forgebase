@@ -12,6 +12,7 @@ import { formatBytes } from "../../../format";
 import { usePolling } from "../../../hooks";
 import { Chip, Sparkline, StateChip } from "./ui";
 import { kindLabel, lagText, roleLabel } from "./util";
+import { TH } from "../../jobs/ops";
 
 /** What a menu can ask the page to do. */
 export type NodeAction = "promote" | "rebuild" | "remove" | "weight";
@@ -82,6 +83,7 @@ export function SetCard({ set, nodes, onNodeAction, onSetAction }: {
   onSetAction: (a: SetAction, s: TopologySet) => void;
 }) {
   const st = SET_STATE[set.state] ?? { label: set.state, tone: "neutral" as const };
+  const healthy = nodes.filter((n) => n.state === "ready" || n.state === "streaming").length;
   return (
     <Card aria-label={set.name} data-set={set.id}>
       <Card.Header className="flex flex-wrap items-center justify-between gap-2">
@@ -90,6 +92,7 @@ export function SetCard({ set, nodes, onNodeAction, onSetAction }: {
             {set.name}
             <Chip tone={st.tone}>{st.label}</Chip>
             {set.kind === "shard" && !set.hosts_tenants && set.state === "active" && <Chip tone="neutral" title="This shard takes no new tenants.">No new tenants</Chip>}
+            {nodes.length > 0 && <Chip tone={healthy === nodes.length ? "ok" : healthy === 0 ? "bad" : "warn"} title="Servers that are ready or streaming">{healthy} of {nodes.length} servers healthy</Chip>}
           </h3>
           <p className="text-xs text-muted-foreground">
             {set.kind === "control" ? "The primary server and its replicas. Also holds the server's own data." : `Shard ${set.number}`}
@@ -101,7 +104,7 @@ export function SetCard({ set, nodes, onNodeAction, onSetAction }: {
       </Card.Header>
       <Card.Content className="overflow-x-auto">
         <Table aria-label={`${set.name} servers`} className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+          <Table.Header className={TH}>
             <Table.Row>
               <Table.Head className="py-1">Server</Table.Head>
               <Table.Head>Where</Table.Head>
@@ -114,7 +117,7 @@ export function SetCard({ set, nodes, onNodeAction, onSetAction }: {
           </Table.Header>
           <Table.Body>
             {nodes.map((n) => (
-              <Table.Row key={n.id} className="border-t border-border align-top" data-node={n.name}>
+              <Table.Row key={n.id} className="border-t border-border align-top hover:bg-muted/40" data-node={n.name}>
                 <Table.Cell className="py-2">
                   <span className="font-medium">{n.name}</span>
                   <span className="ml-2 text-xs text-muted-foreground">{roleLabel(n.role)}</span>

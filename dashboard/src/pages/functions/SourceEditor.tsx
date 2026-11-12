@@ -1,4 +1,7 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { FileCodeIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Badge } from "panelui-web/badge";
 import { deployFunction, getFunctionTypes } from "../../api";
 import type { Deployed, FunctionLanguage, InvokeAccess, VersionConfig } from "../../api";
 import { Button, ErrorView, Loading } from "../../components/ui";
@@ -54,11 +57,13 @@ export interface SourceEditorProps {
   access?: InvokeAccess;
   /** Accessible name of the editor; default "<name> source". Pass a fixed one when the name is still being typed. */
   label?: string;
+  /** Shown in the status bar when nothing else is: which version is being edited and when it was deployed. */
+  context?: ReactNode;
   onDeployed: (d: Deployed) => void;
 }
 
-/** Editor, capability switches and Deploy for one JS/TS function. */
-export default function SourceEditor({ name, language, initialSource, storageKey, capabilities, config, description, access, label, onDeployed }: SourceEditorProps) {
+/** IDE-lite editor for one JS/TS function: a toolbar (file, Save draft, Deploy), Monaco, a status bar, a Problems list and the capability switches. */
+export default function SourceEditor({ name, language, initialSource, storageKey, capabilities, config, description, access, label, context, onDeployed }: SourceEditorProps) {
   const [draft] = useState(() => readDraft(storageKey));
   const restored = draft !== undefined && draft.source !== initialSource;
   const [source, setSource] = useState(restored ? draft.source : initialSource);
@@ -113,9 +118,12 @@ export default function SourceEditor({ name, language, initialSource, storageKey
     }
   }
 
+  const dirty = source !== initialSource;
+  const fileName = language === "typescript" ? "index.ts" : "index.js";
+  const typesWords = types ? (types.bundled ? "Types: bundled copy" : "Types: from the server") : "";
   return (
     <div
-      className="space-y-3"
+      className="space-y-4"
       onKeyDown={(e) => {
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
           e.preventDefault();
@@ -123,33 +131,55 @@ export default function SourceEditor({ name, language, initialSource, storageKey
         }
       }}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
-        <span>{language === "typescript" ? "TypeScript" : "JavaScript"} · <kbd className="rounded border border-border px-1">Ctrl/Cmd+S</kbd> saves a draft in this browser</span>
-        {types && <span>Types: {types.bundled ? "bundled copy (the server's could not be loaded)" : "from the server"}</span>}
-      </div>
       {restoredAt && (
-        <p role="status" className="flex items-center gap-3 text-sm">
-          Restored your unsaved draft{restoredAt ? ` from ${restoredAt.replace("T", " ").replace(/\.\d+Z$/, "Z")}` : ""}.
+        <p role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+          <span>Restored your unsaved draft{restoredAt ? ` from ${restoredAt.replace("T", " ").replace(/\.\d+Z$/, "Z")}` : ""}.</span>
           <Button onClick={() => { setSource(initialSource); clearDraft(storageKey); setRestoredAt(""); }}>Discard draft</Button>
         </p>
       )}
-      <Suspense fallback={<Loading what="Loading editor" />}>
-        <CodeEditor label={label ?? `${name || "function"} source`} language={language} value={source} onChange={setSource} types={types?.dts} issues={issues} />
-      </Suspense>
+      <section aria-label="Code editor" className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2 text-sm">
+            <HugeiconsIcon icon={FileCodeIcon} size={16} strokeWidth={1.8} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+            <span className="truncate font-mono">{fileName}</span>
+            <Badge variant="outline" size="sm">{language === "typescript" ? "TypeScript" : "JavaScript"}</Badge>
+            {dirty && <span className="flex items-center gap-1 text-xs text-muted-foreground"><span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />Not deployed</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button onClick={saveDraft} title="Ctrl/Cmd+S">Save draft</Button>
+            <Button tone="primary" onClick={() => void deploy()} disabled={busy || !name} title={!name ? "Give the function a valid name first" : "Deploy as the active version"}>{busy ? "Deploying…" : "Deploy"}</Button>
+          </div>
+        </div>
+        <Suspense fallback={<div className="flex h-[28rem] items-center justify-center"><Loading what="Loading editor" /></div>}>
+          <CodeEditor frameless label={label ?? `${name || "function"} source`} language={language} value={source} onChange={setSource} types={types?.dts} issues={issues} />
+        </Suspense>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-2">
+            {busy ? <span role="status">Deploying…</span>
+              : issues.length > 0 ? <span className="font-medium text-destructive">Deploy failed: {issues.length} compile {issues.length === 1 ? "error" : "errors"}</span>
+                : error ? <span className="font-medium text-destructive">Deploy failed</span>
+                  : !name ? <span>Give the function a valid name to deploy it.</span>
+                  : note ? <span role="status">{note}</span>
+                    : context ?? null}
+          </span>
+          <span className="flex flex-wrap items-center gap-3">
+            <span><kbd className="rounded border border-border bg-background px-1 font-mono">Ctrl/Cmd+S</kbd> saves a draft in this browser</span>
+            {types && <span title={types.bundled ? "The server's types could not be loaded, so IntelliSense uses the copy bundled with the dashboard." : undefined}>{typesWords}</span>}
+          </span>
+        </div>
+      </section>
       {issues.length > 0 && (
-        <ul aria-label="Compile errors" role="alert" className="space-y-1 rounded-md border border-destructive/50 p-3 text-sm">
-          {issues.map((i, n) => (
-            <li key={n}><span className="font-mono text-destructive">Line {i.line}, column {i.column}</span>: {i.message}</li>
-          ))}
-        </ul>
+        <div className="overflow-hidden rounded-xl border border-destructive/40">
+          <p className="border-b border-destructive/30 bg-destructive/5 px-3 py-1.5 text-xs font-medium text-destructive">Problems ({issues.length})</p>
+          <ul aria-label="Compile errors" role="alert" className="divide-y divide-border text-sm">
+            {issues.map((i, n) => (
+              <li key={n} className="flex gap-3 px-3 py-2"><span className="shrink-0 font-mono text-xs leading-5 text-destructive">Line {i.line}, column {i.column}</span><span className="min-w-0 break-words">{i.message}</span></li>
+            ))}
+          </ul>
+        </div>
       )}
-      <CapabilitySwitches value={caps} onChange={setCaps} />
-      <div className="flex items-center gap-3">
-        <Button tone="primary" onClick={() => void deploy()} disabled={busy || !name}>Deploy</Button>
-        <Button onClick={saveDraft}>Save draft</Button>
-        {note && <span role="status" className="text-sm text-muted-foreground">{note}</span>}
-      </div>
       <ErrorView error={error} />
+      <CapabilitySwitches value={caps} onChange={setCaps} />
     </div>
   );
 }

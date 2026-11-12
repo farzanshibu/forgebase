@@ -1,7 +1,10 @@
 import { lazy, Suspense, useState } from "react";
 import { getVersionSource, listFunctionVersions, rollbackFunction } from "../../api";
 import type { FunctionInfo, VersionInfo, VersionSource } from "../../api";
+import { Badge } from "panelui-web/badge";
+import { SkeletonTable } from "../../components/Skeleton";
 import { Button, ErrorView, Loading } from "../../components/ui";
+import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
 import DeployForm from "./DeployForm";
 import { when } from "./util";
@@ -20,20 +23,20 @@ function SourceView({ name, version, active, types }: { name: string; version: V
   if (!src.data) return <Loading what="Loading source" />;
   const { v, current } = src.data;
   return (
-    <div className="space-y-2" aria-label={`Source of v${version.version}`} role="group">
-      <div className="flex items-center gap-2 text-sm">
-        <span>v{version.version} · {v.language} · read-only</span>
+    <div className="overflow-hidden rounded-xl border border-border bg-card" aria-label={`Source of v${version.version}`} role="group">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-2 text-sm">
+        <span className="flex items-center gap-2"><span className="font-mono font-medium">v{version.version}</span><span className="text-muted-foreground">{v.language} · read-only</span></span>
         {current && (
-          <>
-            <Button aria-pressed={!diff} onClick={() => setDiff(false)}>Source</Button>
-            <Button aria-pressed={diff} onClick={() => setDiff(true)}>Diff against current (v{active?.version})</Button>
-          </>
+          <span className="flex gap-2">
+            <Button aria-pressed={!diff} onClick={() => setDiff(false)} className={!diff ? "bg-accent" : ""}>Source</Button>
+            <Button aria-pressed={diff} onClick={() => setDiff(true)} className={diff ? "bg-accent" : ""}>Diff against current (v{active?.version})</Button>
+          </span>
         )}
       </div>
-      <Suspense fallback={<Loading what="Loading editor" />}>
+      <Suspense fallback={<div className="p-4"><Loading what="Loading editor" /></div>}>
         {diff && current
-          ? <CodeEditor key="diff" label={`Diff v${version.version} against v${active?.version}`} language={v.language} value={v.source} original={current.source} readOnly types={types} height="24rem" />
-          : <CodeEditor key="src" label={`v${version.version} source`} language={v.language} value={v.source} readOnly types={types} height="24rem" />}
+          ? <CodeEditor key="diff" frameless label={`Diff v${version.version} against v${active?.version}`} language={v.language} value={v.source} original={current.source} readOnly types={types} height="24rem" />
+          : <CodeEditor key="src" frameless label={`v${version.version} source`} language={v.language} value={v.source} readOnly types={types} height="24rem" />}
       </Suspense>
     </div>
   );
@@ -60,16 +63,10 @@ export default function VersionsTab({ info, onChanged }: { info: FunctionInfo; o
   }
 
   const active = versions.data?.find((v) => v.active);
+  const n = versions.data?.length ?? 0;
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Newest first. Rolling back restores the version's code and its whole configuration.</p>
-        <div className="flex gap-2">
-          <Button onClick={() => void rollback()}>Roll back to previous</Button>
-          <Button tone="primary" onClick={() => setDeploying((d) => !d)}>{deploying ? "Cancel" : "Deploy new version"}</Button>
-        </div>
-      </div>
-      {note && <p role="status" className="text-sm text-success">{note}</p>}
+      {note && <p role="status" className="rounded-lg border border-success/40 bg-success/5 px-3 py-2 text-sm text-success">{note}</p>}
       {deploying && (
         <DeployForm
           key={active?.version ?? 0}
@@ -85,31 +82,47 @@ export default function VersionsTab({ info, onChanged }: { info: FunctionInfo; o
         />
       )}
       <ErrorView error={error ?? versions.error} />
-      {versions.loading && !versions.error && <Loading what="Loading versions" />}
-      {versions.data && (
-        <Table className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-            <Table.Row><Table.Head className="py-2">Version</Table.Head><Table.Head>Runtime</Table.Head><Table.Head>Language</Table.Head><Table.Head>Size</Table.Head><Table.Head>Capabilities</Table.Head><Table.Head>Limits</Table.Head><Table.Head>Deployed</Table.Head><Table.Head /></Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {versions.data.map((v) => (
-              <Table.Row key={v.version} className="border-t border-border align-top">
-                <Table.Cell className="py-2">v{v.version} {v.active && <span className="ml-1 rounded bg-success/15 px-1.5 py-0.5 text-xs text-success">active</span>}</Table.Cell>
-                <Table.Cell>{v.runtime ?? "wasm"}</Table.Cell>
-                <Table.Cell>{v.language ?? "-"}</Table.Cell>
-                <Table.Cell title={v.sha256}>{v.size} B</Table.Cell>
-                <Table.Cell className="font-mono text-xs">{v.capabilities.join(", ") || "none"}</Table.Cell>
-                <Table.Cell className="font-mono text-xs">{v.limits.timeout_ms} ms · {v.limits.max_concurrency} concurrent</Table.Cell>
-                <Table.Cell className="text-muted-foreground">{when(v.created_at)} by {v.created_by}</Table.Cell>
-                <Table.Cell className="space-x-2 text-right">
-                  {(v.runtime ?? "wasm") === "js" && <Button aria-label={`View source v${v.version}`} aria-pressed={viewing === v.version} onClick={() => setViewing(viewing === v.version ? undefined : v.version)}>Source</Button>}
-                  {!v.active && <Button aria-label={`Activate v${v.version}`} onClick={() => void rollback(v.version)}>Activate</Button>}
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
-      )}
+      <section aria-labelledby="fn-versions" className="overflow-hidden rounded-xl border border-border bg-card">
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h2 id="fn-versions" className="text-sm font-medium">Versions{n ? <span className="ml-2 text-xs font-normal tabular-nums text-muted-foreground">{n}</span> : null}</h2>
+            <p className="text-xs text-muted-foreground">Newest first. Activating or rolling back restores that version's code and its whole configuration.</p>
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => void rollback()}>Roll back to previous</Button>
+            <Button tone="primary" onClick={() => setDeploying((d) => !d)}>{deploying ? "Cancel" : "Deploy new version"}</Button>
+          </div>
+        </header>
+        {versions.loading && !versions.error && <div className="p-4"><SkeletonTable rows={3} columns={6} label="Loading versions" /></div>}
+        {versions.data && (
+          <Table framed density="compact" className="w-full text-left text-sm">
+            <Table.Header className="text-xs text-muted-foreground">
+              <Table.Row><Table.Head>Version</Table.Head><Table.Head>Runtime</Table.Head><Table.Head>Language</Table.Head><Table.Head align="end">Size</Table.Head><Table.Head>Capabilities</Table.Head><Table.Head>Limits</Table.Head><Table.Head>Deployed</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {versions.data.map((v) => (
+                <Table.Row key={v.version} className={`border-t border-border align-top hover:bg-muted/40 ${viewing === v.version ? "bg-muted/40" : ""}`}>
+                  <Table.Cell className="whitespace-nowrap py-2.5"><span className="font-mono font-medium">v{v.version}</span> {v.active && <Badge variant="success" size="sm" dot className="ml-1">active</Badge>}</Table.Cell>
+                  <Table.Cell><span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{v.runtime ?? "wasm"}</span></Table.Cell>
+                  <Table.Cell className="text-muted-foreground">{v.language ?? "-"}</Table.Cell>
+                  <Table.Cell align="end" className="whitespace-nowrap" title={`SHA-256 ${v.sha256}`}>{formatBytes(v.size)}</Table.Cell>
+                  <Table.Cell className="max-w-56">
+                    {v.capabilities.length === 0 ? <span className="text-muted-foreground">none</span> : (
+                      <span className="flex flex-wrap gap-1">{v.capabilities.map((c) => <span key={c} className="rounded border border-border px-1 font-mono text-[0.6875rem] leading-4">{c}</span>)}</span>
+                    )}
+                  </Table.Cell>
+                  <Table.Cell className="whitespace-nowrap font-mono text-xs text-muted-foreground">{v.limits.timeout_ms} ms · {v.limits.max_concurrency} concurrent</Table.Cell>
+                  <Table.Cell className="text-xs text-muted-foreground"><span className="block whitespace-nowrap font-mono">{when(v.created_at)}</span><span className="block max-w-48 truncate" title={v.created_by}>by {v.created_by}</span></Table.Cell>
+                  <Table.Cell align="end" className="space-x-2 whitespace-nowrap">
+                    {(v.runtime ?? "wasm") === "js" && <Button aria-label={`View source v${v.version}`} aria-pressed={viewing === v.version} onClick={() => setViewing(viewing === v.version ? undefined : v.version)}>{viewing === v.version ? "Hide source" : "Source"}</Button>}
+                    {!v.active && <Button aria-label={`Activate v${v.version}`} onClick={() => void rollback(v.version)}>Activate</Button>}
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        )}
+      </section>
       {viewing !== undefined && versions.data?.find((v) => v.version === viewing) && (
         <SourceView name={info.name} version={versions.data.find((v) => v.version === viewing)!} active={active} />
       )}

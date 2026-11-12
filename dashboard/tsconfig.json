@@ -13,8 +13,9 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "paths": { "monaco-esm/*": ["./node_modules/monaco-editor/esm/vs/*"] },
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "demo", "vite.config.ts", "vite.demo.config.ts"]
 }

@@ -1,4 +1,5 @@
 import { Route, Routes, useParams } from "react-router-dom";
+import { Badge } from "panelui-web/badge";
 import { RouteTabs } from "../../components/controls";
 import { getFunction } from "../../api";
 import { ErrorPanel } from "../../components/ErrorPanel";
@@ -11,17 +12,20 @@ import TestTab from "./TestTab";
 import LogsTab from "./LogsTab";
 import SecretsTab from "./SecretsTab";
 import VersionsTab from "./VersionsTab";
+import { Facts } from "../../components/Facts";
+import { ACCESS_LABEL, when } from "./util";
 
 export default function FunctionView() {
   const { name = "" } = useParams();
   const info = useLoad((s) => getFunction(name, s), `fn:${name}`);
   const base = `/functions/f/${encodeURIComponent(name)}`;
   const d = info.data;
+  const behind = d ? d.latest_version - d.active_version : 0;
   return (
     <div className="space-y-4">
       <PageHeader
         title={name}
-        description={d ? <span aria-label="Function summary">Active v{d.active_version} of {d.latest_version} · HTTP access {d.access} · principal <span className="font-mono">{d.principal}</span></span> : "Function"}
+        description={d?.description || "Function"}
         docs="docs/adr/0017-functions.md"
         secondary={<UseFromCodeButton kind="function" name={name} />}
       />
@@ -29,6 +33,24 @@ export default function FunctionView() {
       {info.loading && !info.error && <SkeletonLines lines={3} label="Loading function" />}
       {d && (
         <>
+          <Facts
+            label="Function summary"
+            items={[
+              {
+                label: "Status",
+                value: (
+                  <span className="flex items-center gap-2">
+                    <Badge variant="success" size="sm" dot>Live</Badge>
+                    <span>Active v{d.active_version} of {d.latest_version}</span>
+                    {behind > 0 && <Badge variant="warning" size="sm">v{d.latest_version} not active</Badge>}
+                  </span>
+                ),
+              },
+              { label: "HTTP access", value: ACCESS_LABEL[d.access] ?? d.access },
+              { label: "Last change", value: when(d.updated_at), mono: true },
+              { label: "Runs as", value: d.principal, mono: true, title: "The service principal the function's calls run as" },
+            ]}
+          />
           <RouteTabs label="Function tabs" tabs={[{ to: base, label: "Versions", end: true }, { to: `${base}/code`, label: "Editor" }, { to: `${base}/test`, label: "Test" }, { to: `${base}/logs`, label: "Logs" }, { to: `${base}/secrets`, label: "Secrets" }]} />
           <Routes>
             <Route index element={<VersionsTab info={d} onChanged={info.reload} />} />

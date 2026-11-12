@@ -21,14 +21,23 @@ describe("Jobs queues and list", () => {
   it("shows queue statistics and filters jobs by status and queue", async () => {
     const { mock } = setup();
     renderStudio("/jobs");
-    expect(await screen.findByLabelText("Job totals")).toHaveTextContent("1 queued · 1 running · 1 succeeded · 1 dead · 0 cancelled");
+    expect(await screen.findByLabelText("Job totals")).toHaveTextContent("Queued1Running1Succeeded1Dead1Cancelled0");
     const jobs = await screen.findByRole("table", { name: "Jobs" });
     expect(within(jobs).getAllByRole("row")).toHaveLength(5);
 
-    await pick(screen.getByLabelText("Status"), "dead (dead-letter)");
+    await pick(screen.getByLabelText("Status"), "Dead (dead-letter)");
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(2));
     expect(screen.getByRole("link", { name: "job_d" })).toBeInTheDocument();
-    await pick(screen.getByLabelText("Status"), "all");
+    await pick(screen.getByLabelText("Status"), "All statuses");
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(5));
+
+    // A total card filters by its status, and pressing it again clears the filter.
+    const dead = within(screen.getByLabelText("Job totals")).getByRole("button", { name: /Dead/ });
+    await userEvent.click(dead);
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(2));
+    expect(dead).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(dead);
+    await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(5));
 
     await userEvent.click(screen.getByRole("button", { name: "Show jobs of mail" }));
     await waitFor(() => expect(within(screen.getByRole("table", { name: "Jobs" })).getAllByRole("row")).toHaveLength(2));

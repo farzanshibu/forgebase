@@ -18,6 +18,7 @@ import { formatBytes } from "../../../format";
 import { useCursorList } from "../../../hooks";
 import { toaster } from "../../../toaster";
 import { Chip, ActionDialog } from "./ui";
+import { StatGrid, TH, type StatItem } from "../../jobs/ops";
 import { formatLag, freezeText, newestFirst, operationLabel, setName, statusInfo } from "./util";
 
 const done = (title: string, description?: string) => toaster.add({ title, description, type: "success" });
@@ -30,24 +31,16 @@ export function SummaryStrip({ view, operations }: { view: TopologyView; operati
   const last = newestFirst(operations)[0];
   const shards = view.sets.filter((s) => s.kind === "shard").length;
   const tenants = view.sets.reduce((a, s) => a + s.tenants, 0);
-  const items: { label: string; value: string; tone?: "bad" | "warn" }[] = [
+  const lastTone = last ? statusInfo(last.status).tone : undefined;
+  const items: StatItem[] = [
     { label: "Backend", value: `${view.backend === "postgres" ? "PostgreSQL" : "SQLite"}${view.engine_version ? ` ${view.engine_version}` : ""}` },
-    { label: "Servers healthy", value: `${healthy} of ${nodes.length}`, tone: healthy < nodes.length ? "warn" : undefined },
+    { label: "Servers healthy", value: `${healthy} of ${nodes.length}`, tone: healthy < nodes.length ? "warn" : "ok" },
     { label: "Highest replica lag", value: lags.length ? formatLag(Math.max(...lags)) : "no replicas" },
     { label: "Shards", value: String(shards) },
     { label: "Tenants", value: String(tenants) },
-    { label: "Last operation", value: last ? `${operationLabel(last.kind)}: ${statusInfo(last.status).label}` : "none yet", tone: last && statusInfo(last.status).tone === "bad" ? "bad" : undefined },
+    { label: "Last operation", value: last ? `${operationLabel(last.kind)}: ${statusInfo(last.status).label}` : "none yet", tone: lastTone === "bad" ? "bad" : undefined, title: last ? `${operationLabel(last.kind)}: ${statusInfo(last.status).label}` : undefined },
   ];
-  return (
-    <dl aria-label="Summary" className="grid grid-cols-2 gap-3 rounded-xl border border-border p-4 sm:grid-cols-3 lg:grid-cols-6">
-      {items.map((i) => (
-        <div key={i.label} className="min-w-0">
-          <dt className="text-xs text-muted-foreground">{i.label}</dt>
-          <dd className={`truncate text-sm font-medium ${i.tone === "bad" ? "text-destructive" : i.tone === "warn" ? "text-warning" : ""}`} title={i.value}>{i.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
+  return <StatGrid label="Summary" items={items} />;
 }
 
 /** One operation: stage, progress bar, message, cancel while it is allowed, and a link to its job. */
@@ -171,7 +164,7 @@ export function PlacementsPanel({ sets, onChanged }: { sets: TopologySet[]; onCh
       {list.items.length > 0 && (
         <div className="overflow-x-auto">
           <Table aria-label="Tenants" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
+            <Table.Header className={TH}>
               <Table.Row><Table.Head className="py-1">Tenant</Table.Head><Table.Head>Project</Table.Head><Table.Head>Organization</Table.Head><Table.Head>Set</Table.Head><Table.Head>Size</Table.Head><Table.Head>State</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row>
             </Table.Header>
             <Table.Body>
@@ -228,7 +221,7 @@ export function RebalancePanel({ sets, onChanged }: { sets: TopologySet[]; onCha
       {plan && plan.moves.length > 0 && (
         <div className="mt-3 space-y-3">
           <Table aria-label="Rebalance plan" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Tenant</Table.Head><Table.Head>From</Table.Head><Table.Head>To</Table.Head><Table.Head>Size</Table.Head><Table.Head>Writes pause</Table.Head></Table.Row></Table.Header>
+            <Table.Header className={TH}><Table.Row><Table.Head className="py-1">Tenant</Table.Head><Table.Head>From</Table.Head><Table.Head>To</Table.Head><Table.Head>Size</Table.Head><Table.Head>Writes pause</Table.Head></Table.Row></Table.Header>
             <Table.Body>
               {plan.moves.map((m) => (
                 <Table.Row key={m.tenant} className="border-t border-border">

@@ -114,7 +114,8 @@ describe("Functions Studio logs", () => {
     const list = await screen.findByRole("list", { name: "Executions" });
     expect(await within(list).findAllByRole("listitem")).toHaveLength(50);
     expect(within(list).getByText("boom")).toBeInTheDocument();
-    expect(within(list).getByText("[info] hi there")).toBeInTheDocument();
+    // Each log line shows its level in its own column (coloured by level) and the message beside it.
+    expect(within(list).getByText("hi there").closest("[data-level]")).toHaveAttribute("data-level", "info");
 
     await pick(screen.getByLabelText("Status"), "trap");
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
@@ -136,7 +137,7 @@ describe("Functions Studio logs", () => {
     const list = await screen.findByRole("list", { name: "Executions" });
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     expect(within(list).getByText("req-bbb")).toBeInTheDocument();
-    expect(within(list).queryByText("[info] first")).not.toBeInTheDocument();
+    expect(within(list).queryByText("first")).not.toBeInTheDocument();
     expect(within(list).getAllByRole("button", { name: "Copy request id" }).length).toBeGreaterThan(0);
     // The error row is an ErrorPanel: the message, the next step and the request id.
     expect(within(list).getByRole("alert")).toHaveTextContent("unreachable executed");

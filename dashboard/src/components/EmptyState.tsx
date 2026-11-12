@@ -40,17 +40,20 @@ export function EmptyState({ title, why, action, sample, docs, icon = PackageOpe
   return (
     <section
       aria-label={title}
-      className={`flex flex-col items-center rounded-xl border border-dashed border-border text-center ${compact ? "gap-1.5 px-4 py-6" : "gap-2 px-6 py-10"} ${className}`.trim()}
+      className={`flex flex-col items-center rounded-xl border border-dashed border-border text-center ${compact ? "gap-1.5 px-4 py-6" : "gap-2 bg-card/50 px-6 py-12"} ${className}`.trim()}
     >
       {!compact && (
-        <span className="mb-1 flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground" aria-hidden="true">
-          <HugeiconsIcon icon={icon} size={20} strokeWidth={1.8} />
+        <span
+          className="mb-2 flex size-12 items-center justify-center rounded-xl border border-border bg-card text-primary shadow-sm ring-4 ring-primary/5"
+          aria-hidden="true"
+        >
+          <HugeiconsIcon icon={icon} size={22} strokeWidth={1.7} />
         </span>
       )}
       <h2 className={compact ? "text-sm font-medium" : "text-base font-semibold tracking-tight"}>{title}</h2>
       <p className="max-w-md text-sm text-muted-foreground">{why}</p>
       {(action || sample || docs) && (
-        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
           {action}
           {sample}
           {docs && <DocsLink doc={docs} />}

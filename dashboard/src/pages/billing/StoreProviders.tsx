@@ -3,8 +3,8 @@ import { useState } from "react";
 import { deleteProvider, putProvider } from "../../api";
 import type { ProviderAccount } from "../../api";
 import { Button, ConfirmButton, ErrorView } from "../../components/ui";
-import { Sel } from "../../components/controls";
-import { Badge, Field } from "./shared";
+import { Sel, Toggle } from "../../components/controls";
+import { Field, Note, ProviderFacts, ProviderFrame } from "./shared";
 import { useAct } from "./useAct";
 import { Input } from "panelui-web/input";
 
@@ -20,6 +20,8 @@ interface Spec {
   placeholder?: string;
   /** `platform_keys`: a JSON array, sent as an array. */
   json?: boolean;
+  /** A line of help under the field. */
+  help?: string;
 }
 interface Card { id: string; title: string; kind: "store" | "payment"; test: string; fields: Spec[]; apiBase?: "required" | "optional" }
 
@@ -61,7 +63,7 @@ const CARDS: Card[] = [
       { name: "appid", label: "App id", where: "config" }, { name: "merchant_serial", label: "Merchant certificate serial", where: "config" },
       { name: "notify_url", label: "Notify URL", where: "config" },
       { name: "private_key", label: "Merchant private key (write-only)", where: "config", secret: true, multiline: true },
-      { name: "platform_keys", label: 'Platform keys (write-only, JSON [{"serial", "pem"}])', where: "config", secret: true, multiline: true, json: true },
+      { name: "platform_keys", label: 'Platform keys (write-only, JSON [{"serial", "pem"}])', where: "config", secret: true, multiline: true, json: true, help: 'A JSON array like [{"serial": "…", "pem": "…"}].' },
     ],
   },
 ];
@@ -105,54 +107,52 @@ function ProviderForm({ card, account, onChanged }: { card: Card; account?: Prov
     // Secrets never stay in the page after a save.
     if (ok) setValues((s) => Object.fromEntries(Object.entries(s).filter(([k]) => !card.fields.find((f) => f.name === k)?.secret)));
   };
+  const keep = (f: Spec) => f.secret && isSet(f);
   return (
-    <section aria-label={`${card.id} provider`} className="rounded-lg border border-border bg-card p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-medium">{card.title} <span className="text-xs font-normal text-muted-foreground">{card.kind === "store" ? "merchant of record" : "payment provider"}</span></h3>
-        <Badge status={account ? (account.enabled ? "active" : "paused") : "canceled"} label={account ? (account.enabled ? "configured" : "disabled") : "not configured"} />
-      </div>
-      <p aria-label={`${card.id} test mode`} className="mt-1 rounded bg-warning/10 px-2 py-1 text-xs text-warning">Test mode{account ? ` (${account.environment})` : ""}. {card.test}</p>
-      {account && (
-        <p className="mt-2 text-sm text-muted-foreground">
-          {account.hint ? `Key ${account.hint}` : "Credentials sealed"}{account.api_base ? <>, API base <span className="font-mono text-xs">{account.api_base}</span></> : ""} · {card.kind === "store" ? "notifications" : "webhook"} <span className="font-mono text-xs">{account.webhook_path}</span>
-        </p>
-      )}
-      <form onSubmit={save} className="mt-3 space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          {card.fields.map((f) => (
-            <Field key={f.name} label={`${card.id} ${f.label}`} className={f.multiline ? "sm:col-span-2" : ""}>
-              {f.options ? (
-                <Sel value={values[f.name] ?? (shown(f) || f.options[0]) ?? ""} onChange={(v) => set(f.name, v)} options={f.options} />
-              ) : f.multiline ? (
-                <Textarea minRows={5} className="font-mono text-xs" autoComplete="off" spellCheck={false} value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
-              ) : (
-                <Input size="sm" type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={f.secret && isSet(f) ? "leave blank to keep" : f.placeholder} required={!(f.secret && isSet(f))} />
-              )}
-            </Field>
-          ))}
-          {card.apiBase && (
-            <Field label={`${card.id} API base${card.apiBase === "required" ? "" : " (optional)"}`} className="sm:col-span-2">
-              <Input size="sm" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={account?.api_base ?? "https://..."} />
-            </Field>
-          )}
+    <ProviderFrame label={`${card.id} provider`} title={card.title} kind={card.kind === "store" ? "Merchant of record" : "Payment provider"} account={account}>
+      <form onSubmit={save} className="flex flex-1 flex-col">
+        <div className="flex-1 space-y-3 p-4">
+          <p aria-label={`${card.id} test mode`} className="rounded-md bg-warning/10 px-2 py-1.5 text-xs text-warning">
+            <span className="font-medium">Test mode{account ? ` (${account.environment})` : ""}.</span> {card.test}
+          </p>
+          {account && <ProviderFacts account={account} hook={card.kind === "store" ? "Notification URL" : "Webhook URL"} />}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {card.fields.map((f) => (
+              <Field key={f.name} label={f.label.replace(/ \(write-only.*\)$/, "")} help={[f.help, keep(f) ? "Stored. Leave blank to keep it." : f.secret ? "Write-only: never shown again." : undefined].filter(Boolean).join(" ") || undefined} className={f.multiline ? "sm:col-span-2" : ""}>
+                {f.options ? (
+                  <Sel aria-label={`${card.id} ${f.label}`} value={values[f.name] ?? (shown(f) || f.options[0]) ?? ""} onChange={(v) => set(f.name, v)} options={f.options} />
+                ) : f.multiline ? (
+                  <Textarea aria-label={`${card.id} ${f.label}`} minRows={4} className="font-mono text-xs" autoComplete="off" spellCheck={false} value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={keep(f) ? "leave blank to keep" : f.placeholder} required={!keep(f)} />
+                ) : (
+                  <Input size="sm" aria-label={`${card.id} ${f.label}`} className={f.secret ? "" : "font-mono"} type={f.secret ? "password" : "text"} autoComplete="off" value={values[f.name] ?? shown(f)} onChange={(e) => set(f.name, e.target.value)} placeholder={keep(f) ? "leave blank to keep" : f.placeholder} required={!keep(f)} />
+                )}
+              </Field>
+            ))}
+            {card.apiBase && (
+              <Field label={`API base${card.apiBase === "required" ? "" : " (optional)"}`} help={card.apiBase === "required" ? "Required: a sandbox or mock host." : undefined} className="sm:col-span-2">
+                <Input size="sm" aria-label={`${card.id} API base${card.apiBase === "required" ? "" : " (optional)"}`} className="font-mono" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder={account?.api_base ?? "https://..."} />
+              </Field>
+            )}
+          </div>
+          <Toggle checked={enabled} onChange={setEnabled} label="Enabled" />
+          {bad && <p role="alert" className="text-sm font-medium text-destructive">{bad}</p>}
+          <ErrorView error={act.error} />
         </div>
-        <label className="flex items-center gap-2 text-sm text-foreground/80"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />Enabled</label>
-        {bad && <p role="alert" className="text-sm text-destructive">{bad}</p>}
-        <ErrorView error={act.error} />
-        {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
-        <div className="flex gap-2">
-          <Button type="submit" tone="primary" disabled={act.busy}>Save {card.id}</Button>
-          {account && <ConfirmButton label={`Remove ${card.id}`} disabled={act.busy} onConfirm={() => void act.run(() => deleteProvider(card.id), "Removed")} />}
-        </div>
-        <p className="text-xs text-muted-foreground">Secrets are never shown back. A secret or field left blank keeps its stored value; only what you change is replaced.</p>
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-muted/30 px-4 py-3">
+          <span className="flex items-center gap-2">
+            {account && <ConfirmButton label={`Remove ${card.id}`} short="Remove" consequence={`${card.title} purchases are no longer verified. Its stored credentials are deleted.`} disabled={act.busy} onConfirm={() => void act.run(() => deleteProvider(card.id), "Removed")} />}
+            <Note>{act.note}</Note>
+          </span>
+          <Button type="submit" tone="primary" aria-label={`Save ${card.id}`} disabled={act.busy}>{act.busy ? "Saving…" : "Save"}</Button>
+        </footer>
       </form>
-    </section>
+    </ProviderFrame>
   );
 }
 
 export default function StoreProviders({ accounts, onChanged }: { accounts: ProviderAccount[]; onChanged: () => void }) {
   return (
-    <div aria-label="Store and regional providers" className="grid gap-4 lg:grid-cols-2">
+    <div role="group" aria-label="Store and regional providers" className="grid gap-4 xl:grid-cols-2">
       {CARDS.map((c) => <ProviderForm key={c.id} card={c} account={accounts.find((a) => a.provider === c.id)} onChanged={onChanged} />)}
     </div>
   );

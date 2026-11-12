@@ -81,7 +81,7 @@ export const STUDIOS: Studio[] = [
   {
     path: "auth", label: "Authentication", title: "Authentication", term: "api_key", group: "users", docs: "docs/adr/0004-auth.md",
     summary: "Users, sessions, API keys and the audit log.",
-    tabs: [{ to: "/auth", label: "Users" }, { to: "/auth/service-accounts", label: "Service accounts" }, { to: "/auth/keys", label: "API keys" }, { to: "/auth/audit", label: "Audit log" }, { to: "/auth/admins", label: "Admins" }],
+    tabs: [{ to: "/auth", label: "Users" }, { to: "/auth/keys", label: "API keys" }, { to: "/auth/service-accounts", label: "Service accounts" }, { to: "/auth/audit", label: "Audit log" }, { to: "/auth/admins", label: "Admins" }],
   },
   {
     path: "access", label: "Access", title: "Access", term: "role", group: "users", docs: "docs/adr/0008-policy.md", feature: "access",

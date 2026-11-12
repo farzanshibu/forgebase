@@ -9,6 +9,7 @@ import { ErrorPanel } from "../../components/ErrorPanel";
 import { PageHeader } from "../../components/PageHeader";
 import { SkeletonLines } from "../../components/Skeleton";
 import { useLoad } from "../../hooks";
+import { RunStatus } from "./parts";
 import { when } from "./util";
 
 const NEWEST = 500;
@@ -36,12 +37,12 @@ export default function RequestSearch() {
       <PageHeader title="Find a request in the logs" term="request_id" description="Paste a request id from an error to see the function run that carried it." docs={null} />
       <form
         aria-label="Find a request"
-        className="flex max-w-xl items-end gap-2 text-sm"
+        className="flex max-w-2xl items-end gap-2 text-sm"
         onSubmit={(e) => { e.preventDefault(); const v = draft.trim(); setParams(v ? { request: v } : {}, { replace: true }); }}
       >
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-1 flex-col gap-1 font-medium">
           Request id
-          <Input className="w-full font-mono text-xs" value={draft} placeholder="Paste a request id" onChange={(e) => setDraft(e.target.value)} />
+          <Input size="sm" className="w-full font-mono text-xs" value={draft} placeholder="Paste a request id" onChange={(e) => setDraft(e.target.value)} />
         </label>
         <Button type="submit" tone="primary">Search</Button>
       </form>
@@ -56,15 +57,15 @@ export default function RequestSearch() {
       )}
       <ul aria-label="Matching executions" className="space-y-2">
         {(result.data ?? []).map(({ fn, log }) => (
-          <li key={log.id} className="rounded-md border border-border bg-card p-3 text-sm">
-            <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <Link className="font-medium text-primary hover:underline" to={`/functions/f/${encodeURIComponent(fn)}/logs?request=${encodeURIComponent(log.request_id ?? id)}`}>{fn}</Link>
-              <span className={log.status === "ok" ? "text-success" : "text-destructive"}>{log.status}</span>
-              <span>{log.duration_ms} ms</span>
-              <span className="text-muted-foreground">{when(log.created_at)}</span>
-              {log.request_id && <><span className="font-mono text-xs">{log.request_id}</span><CopyButton text={log.request_id} label="Copy request id" /></>}
+          <li key={log.id} className={`rounded-xl border bg-card px-4 py-3 text-sm ${log.status === "ok" ? "border-border" : "border-destructive/40"}`}>
+            <p className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+              <Link className="font-mono font-medium text-primary hover:underline" to={`/functions/f/${encodeURIComponent(fn)}/logs?request=${encodeURIComponent(log.request_id ?? id)}`}>{fn}</Link>
+              <RunStatus status={log.status} />
+              <span className="font-mono text-xs text-muted-foreground">{when(log.created_at)}</span>
+              <span className="text-xs tabular-nums">{log.duration_ms} ms</span>
+              {log.request_id && <span className="ml-auto flex min-w-0 items-center gap-2"><span className="truncate font-mono text-xs">{log.request_id}</span><CopyButton text={log.request_id} label="Copy request id" className="h-7 px-2 text-xs" /></span>}
             </p>
-            {log.error && <p className="mt-1 text-destructive">{log.error}</p>}
+            {log.error && <p className="mt-2 rounded-lg bg-destructive/5 px-3 py-2 font-mono text-xs text-destructive">{log.error}</p>}
           </li>
         ))}
       </ul>

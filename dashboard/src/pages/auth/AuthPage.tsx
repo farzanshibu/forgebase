@@ -1,6 +1,7 @@
 import { Route, Routes, useNavigate } from "react-router-dom";
 import { useAdminScope, PlatformOnly } from "../../auth/scope";
 import { RouteTabs } from "../../components/controls";
+import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/PageHeader";
 import { Button } from "../../components/ui";
 import Admins from "./Admins";
@@ -11,7 +12,8 @@ import UserDetail from "./UserDetail";
 import Users from "./Users";
 
 const TABS = [
-  { to: "/auth", label: "Users", end: true },
+  // Not `end`: user detail pages (/auth/users/…) keep the Users tab marked.
+  { to: "/auth", label: "Users", end: false },
   { to: "/auth/keys", label: "API keys", end: false },
   { to: "/auth/service-accounts", label: "Service accounts", end: false },
   { to: "/auth/audit", label: "Audit log", end: false },
@@ -35,7 +37,7 @@ export default function AuthPage() {
           <Route path="keys" element={<ApiKeys />} />
           <Route path="audit" element={<AuditLog />} />
           <Route path="admins" element={<PlatformOnly what="Administrators"><Admins /></PlatformOnly>} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in Authentication.</p>} />
+          <Route path="*" element={<EmptyState compact title="No such page in Authentication" why="The link may be old. Pick a section from the tabs above." />} />
         </Routes>
       </div>
     </div>

@@ -1,15 +1,21 @@
-import { useState } from "react";
-import { EmptyState } from "../../components/EmptyState";
-import { authzMe, deleteRole, listCollections, listRoles, putRole, type Role } from "../../api";
-import { Button, ConfirmButton, ErrorView, Loading, Panel } from "../../components/ui";
-import { useLoad } from "../../hooks";
-import PermissionMatrix from "./PermissionMatrix";
-import { ActionError, TextField } from "./shared";
-import { useRun } from "./util";
+import { Input } from "panelui-web/input";
 import { Table } from "panelui-web/table";
+import { useEffect, useRef, useState } from "react";
+import { authzMe, deleteRole, listCollections, listRoles, putRole, type Role } from "../../api";
+import { EmptyState } from "../../components/EmptyState";
+import { ErrorPanel } from "../../components/ErrorPanel";
+import { SkeletonTable } from "../../components/Skeleton";
+import { Button, ConfirmButton } from "../../components/ui";
+import { useLoad } from "../../hooks";
+import { notify } from "../../toaster";
+import PermissionMatrix from "./PermissionMatrix";
+import { ActionError, Field, TextField } from "./shared";
+import { useRun } from "./util";
+import { Badge } from "../../components/StatusBadge";
+import { CardBody, HEAD_ROW, TableCard, Th } from "../../components/TableCard";
 
 /** Roles of an org (`org` set) or of the realm. Seeded roles are read-only unless the caller is a super-admin. */
-export default function RolesPanel({ org }: { org?: string }) {
+export default function RolesPanel({ org, title = "Roles" }: { org?: string; title?: string }) {
   const key = `roles:${org ?? "realm"}`;
   const roles = useLoad((s) => listRoles(org, s), key);
   const me = useLoad((s) => authzMe(org, s), `me:${org ?? ""}`);
@@ -23,35 +29,55 @@ export default function RolesPanel({ org }: { org?: string }) {
   const current = roles.data?.find((r) => r.key === editing);
   return (
     <div className="space-y-4">
-      <ErrorView error={roles.error} />
-      {roles.loading && !roles.error && <Loading what="Loading roles" />}
-      {roles.data && roles.data.length === 0 && <EmptyState compact title="No roles." why="A role is a named set of permissions you give to members. Add one below." />}
-      {roles.data && roles.data.length > 0 && (
-        <Table className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-            <Table.Row><Table.Head className="py-2">Key</Table.Head><Table.Head>Name</Table.Head><Table.Head>Scope</Table.Head><Table.Head>Allow</Table.Head><Table.Head>Deny</Table.Head><Table.Head /></Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {roles.data.map((r) => {
-              const locked = (r.system && !superAdmin) || !r.assignable;
-              return (
-                <Table.Row key={r.id} className="border-t border-border">
-                  <Table.Cell className="py-2 font-mono">{r.key}</Table.Cell>
-                  <Table.Cell>{r.name}{r.system && <span className="ml-2 text-xs text-muted-foreground">seeded</span>}{!r.assignable && <span className="ml-2 text-xs text-muted-foreground">not assignable</span>}</Table.Cell>
-                  <Table.Cell>{r.org_id ? "org" : "realm"}</Table.Cell>
-                  <Table.Cell>{r.allow.length}</Table.Cell>
-                  <Table.Cell className={r.deny.length ? "text-destructive" : ""}>{r.deny.length}</Table.Cell>
-                  <Table.Cell className="space-x-2 text-right">
-                    <Button onClick={() => setEditing(r.key)}>{locked ? "View" : "Edit"}</Button>
-                    {!r.system && (org ? r.org_id === org : !r.org_id) && <ConfirmButton label="Delete" onConfirm={() => void run(() => deleteRole(org, r.key))} />}
-                  </Table.Cell>
-                </Table.Row>
-              );
-            })}
-          </Table.Body>
-        </Table>
-      )}
-      <Button tone="primary" onClick={() => setEditing("new")}>New role</Button>
+      <TableCard
+        title={title}
+        count={roles.data?.length}
+        description={org ? "Named sets of permissions you give to members and teams of this organization. Seeded roles come with the server." : "Roles that apply across the whole realm, given to accounts with a realm binding."}
+        actions={<Button tone="primary" onClick={() => setEditing("new")}>New role</Button>}
+      >
+        {!!roles.error && <CardBody><ErrorPanel error={roles.error} onRetry={roles.reload} /></CardBody>}
+        {roles.loading && !roles.data && !roles.error && <CardBody><SkeletonTable rows={4} columns={5} label="Loading roles" /></CardBody>}
+        {roles.data?.length === 0 && <CardBody><EmptyState compact title="No roles yet" why="A role is a named set of permissions you give to members. Make one with New role." /></CardBody>}
+        {!!roles.data?.length && (
+          <Table framed className="text-sm" aria-label={title}>
+            <Table.Header className={HEAD_ROW}>
+              <Table.Row><Th>Role</Th><Th>Kind</Th><Th>Applies to</Th><Th align="end">Allows</Th><Th align="end">Denies</Th><Th><span className="sr-only">Actions</span></Th></Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {roles.data.map((r) => {
+                const locked = (r.system && !superAdmin) || !r.assignable;
+                return (
+                  <Table.Row key={r.id} aria-selected={editing === r.key || undefined}>
+                    <Table.Cell className="max-w-80">
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate font-medium">{r.name}</span>
+                        <code className="truncate font-mono text-xs text-muted-foreground">{r.key}</code>
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span className="flex flex-wrap gap-1">
+                        {r.system ? <Badge tone="neutral" title="Comes with the server">Seeded</Badge> : <Badge>Custom</Badge>}
+                        {!r.assignable && <Badge tone="warn" title="Cannot be given to members">Not assignable</Badge>}
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell className="text-muted-foreground">{r.org_id ? "This organization" : "Whole realm"}</Table.Cell>
+                    <Table.Cell align="end">{r.allow.length}</Table.Cell>
+                    <Table.Cell align="end" className={r.deny.length ? "font-medium text-destructive" : "text-muted-foreground"}>{r.deny.length}</Table.Cell>
+                    <Table.Cell align="end">
+                      <span className="inline-flex items-center gap-2">
+                        <Button onClick={() => setEditing(r.key)}>{locked ? "View" : "Edit"}</Button>
+                        {!r.system && (org ? r.org_id === org : !r.org_id) && (
+                          <ConfirmButton label="Delete" consequence={`Role ${r.key} is removed. Members and teams that hold it lose its permissions.`} onConfirm={() => void run(() => deleteRole(org, r.key))} />
+                        )}
+                      </span>
+                    </Table.Cell>
+                  </Table.Row>
+                );
+              })}
+            </Table.Body>
+          </Table>
+        )}
+      </TableCard>
       <ActionError error={error} />
       {editing && (
         <RoleEditor
@@ -59,7 +85,7 @@ export default function RolesPanel({ org }: { org?: string }) {
           role={current}
           collections={(cols.data ?? []).filter((c) => !c.system && c.type !== "view").map((c) => c.name)}
           readOnly={!!current && ((current.system && !superAdmin) || !current.assignable)}
-          onSave={(r) => void run(() => putRole(org, r))}
+          onSave={(r) => void run(async () => { await putRole(org, r); notify.saved(`Role ${r.key}`); })}
           onCancel={() => setEditing(null)}
         />
       )}
@@ -76,18 +102,41 @@ function RoleEditor({ role, collections, readOnly, onSave, onCancel }: {
   const [description, setDescription] = useState(role?.description ?? "");
   const [allow, setAllow] = useState(role?.allow ?? []);
   const [deny, setDeny] = useState(role?.deny ?? []);
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    ref.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, []);
   return (
-    <Panel title={role ? `Role ${role.key}${readOnly ? " (read-only)" : ""}` : "New role"}>
-      <div className="mb-3 grid gap-3 sm:grid-cols-3">
-        <TextField label="Key" value={key} onChange={role ? () => {} : setKey} placeholder="support_agent" />
-        <TextField label="Name" value={name} onChange={setName} />
-        <TextField label="Description" value={description} onChange={setDescription} />
+    <section ref={ref} aria-label={role ? `Role ${role.key}` : "New role"} className="scroll-mt-4 rounded-xl border border-primary/30 bg-card shadow-sm">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold">
+            {role ? <>Role <code className="font-mono">{role.key}</code></> : "New role"}
+            {readOnly && <Badge tone="neutral">Read-only</Badge>}
+          </h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {readOnly ? "Seeded roles can be changed by a super administrator only." : "Pick what the role allows and denies. A deny wins over an allow from any other role."}
+          </p>
+        </div>
+      </header>
+      <div className="space-y-4 px-4 py-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          {role ? (
+            <Field label="Key" help="A role's key cannot change.">
+              <Input size="sm" className="font-mono" value={key} readOnly disabled />
+            </Field>
+          ) : (
+            <TextField label="Key" value={key} onChange={setKey} placeholder="support_agent" mono help="Letters, digits and underscores." />
+          )}
+          <TextField label="Name" value={name} onChange={setName} placeholder="Support agent" />
+          <TextField label="Description" value={description} onChange={setDescription} placeholder="What the role is for" />
+        </div>
+        <PermissionMatrix allow={allow} deny={deny} collections={collections} readOnly={readOnly} onChange={(a, d) => { setAllow(a); setDeny(d); }} />
       </div>
-      <PermissionMatrix allow={allow} deny={deny} collections={collections} readOnly={readOnly} onChange={(a, d) => { setAllow(a); setDeny(d); }} />
-      <div className="mt-3 flex gap-2">
-        {!readOnly && <Button tone="primary" onClick={() => onSave({ key, name: name || key, description, allow, deny })}>Save role</Button>}
+      <footer className="flex justify-end gap-2 border-t border-border px-4 py-3">
         <Button onClick={onCancel}>Close</Button>
-      </div>
-    </Panel>
+        {!readOnly && <Button tone="primary" disabled={!key} onClick={() => onSave({ key, name: name || key, description, allow, deny })}>Save role</Button>}
+      </footer>
+    </section>
   );
 }

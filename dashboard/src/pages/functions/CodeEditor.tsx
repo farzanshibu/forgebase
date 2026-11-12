@@ -17,12 +17,14 @@ interface Props {
   /** Compile errors to mark on their lines. */
   issues?: CompileIssue[];
   height?: string;
+  /** Draw no border of its own (the editor sits inside a frame with a toolbar and a status bar). */
+  frameless?: boolean;
 }
 
 const OWNER = "forgebase-deploy";
 
 /** Monaco editor (or diff editor). Lazy-loaded by its users; everything Monaco is imported from here. */
-export default function CodeEditor({ label, language, value, onChange, readOnly, original, types, issues, height = "28rem" }: Props) {
+export default function CodeEditor({ label, language, value, onChange, readOnly, original, types, issues, height = "28rem", frameless = false }: Props) {
   const { dark } = useTheme();
   const host = useRef<HTMLDivElement>(null);
   const model = useRef<monaco.editor.ITextModel>(null);
@@ -85,5 +87,5 @@ export default function CodeEditor({ label, language, value, onChange, readOnly,
     })));
   }, [issues]);
 
-  return <div ref={host} role="region" aria-label={label} className="overflow-hidden rounded-md border border-border" style={{ height }} />;
+  return <div ref={host} role="region" aria-label={label} className={frameless ? "overflow-hidden" : "overflow-hidden rounded-lg border border-border"} style={{ height }} />;
 }

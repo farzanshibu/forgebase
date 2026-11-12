@@ -91,6 +91,38 @@ export function describeScope(scope: string): string {
   return name ? `${what} in ${name}` : `${what}, all ${a.resource}s`;
 }
 
+/** One chip in a key list: the scopes of one area (and resource) folded into plain words. */
+export interface ScopeSummary {
+  /** "Records: read and write", "Files (avatars): read", "Full access". */
+  label: string;
+  /** The scope strings behind the label, for a tooltip. */
+  scopes: string[];
+  /** Grants everything (`*`) or everything in an area (`<area>:*`). */
+  wide: boolean;
+}
+
+/** Folds scope strings by area and resource: `collections:read` + `collections:write` read "Records: read and write". */
+export function summarizeScopes(scopes: readonly string[]): ScopeSummary[] {
+  const out = new Map<string, ScopeSummary & { access: Set<string> }>();
+  for (const s of scopes) {
+    if (s === "*") {
+      out.set("*", { label: "Full access", scopes: [s], wide: true, access: new Set() });
+      continue;
+    }
+    const [area = s, access = "", name] = s.split(":");
+    const key = `${area}:${name ?? ""}`;
+    const a = AREAS.find((x) => x.id === area);
+    const g = out.get(key) ?? { label: "", scopes: [], wide: false, access: new Set<string>() };
+    g.scopes.push(s);
+    g.access.add(access);
+    if (access === "*") g.wide = true;
+    const what = g.access.has("*") ? "everything" : ["read", "write"].filter((x) => g.access.has(x)).join(" and ") || [...g.access].join(", ");
+    g.label = `${a?.label ?? area}${name ? ` (${name})` : ""}: ${what}`;
+    out.set(key, g);
+  }
+  return [...out.values()].map(({ label, scopes: list, wide }) => ({ label, scopes: list, wide }));
+}
+
 /** A request the key can make, for the curl example next to the secret. `null` when the key reads nothing. */
 export function readExample(scopes: readonly string[], url: string): { what: string; curl: string } | null {
   const enc = encodeURIComponent;

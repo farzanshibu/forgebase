@@ -3,15 +3,23 @@ import { EmptyState } from "../../components/EmptyState";
 import { useSearchParams } from "react-router-dom";
 import { creditBalance, getCustomer, listCustomers, listSubscriptions, putCustomer } from "../../api";
 import type { Customer } from "../../api";
-import { Button, ErrorView, Loading, Panel } from "../../components/ui";
-import { Sel } from "../../components/controls";
+import { Button, ErrorView } from "../../components/ui";
+import { Check, Sel } from "../../components/controls";
+import { DetailSheet } from "../../components/CreateSheet";
+import { SkeletonLines, SkeletonTable } from "../../components/Skeleton";
 import { useLoad } from "../../hooks";
-import { Badge, BillingError, Field, Money, Th } from "./shared";
-import { FORM_GRID, ROW, TABLE, THEAD, when_ } from "./util";
+import { BillingError, Field, Filter, Money, None, Note, TableCard } from "./shared";
+import { FORM_GRID } from "./util";
 import { useAct } from "./useAct";
 import { formatCount } from "./money";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
+import { Badge } from "../../components/StatusBadge";
+import { Stat, StatGrid } from "../../components/Stats";
+import { Th } from "../../components/TableCard";
+import { When } from "../../components/Time";
+
+const card = (c: Customer) => (c.has_payment_method ? c.payment_method_label ?? "saved" : "none");
 
 function Detail({ subject }: { subject: string }) {
   const customer = useLoad((s) => getCustomer(subject, s), `customer:${subject}`);
@@ -28,39 +36,47 @@ function Detail({ subject }: { subject: string }) {
     setDraft(undefined);
   };
   return (
-    <Panel title={`Customer ${subject}`}>
+    <div className="space-y-5">
       <BillingError error={customer.error} />
-      {customer.loading && !customer.error && <Loading what="Loading customer" />}
+      {customer.loading && !customer.error && <SkeletonLines lines={4} label="Loading customer" />}
       {c && form && (
-        <div className="space-y-4">
-          <dl aria-label="Customer summary" className="grid gap-3 text-sm sm:grid-cols-4">
-            <div><dt className="text-muted-foreground">Balance</dt><dd><Money amount={c.balance} currency={c.currency} /></dd></div>
-            <div><dt className="text-muted-foreground">Payment method</dt><dd>{c.has_payment_method ? c.payment_method_label ?? "saved" : "none"}</dd></div>
-            <div><dt className="text-muted-foreground">Provider</dt><dd>{c.provider ?? "none"}</dd></div>
-            <div><dt className="text-muted-foreground">Credits</dt><dd>{credits.data ? formatCount(credits.data.balance) : credits.error ? "n/a" : "…"}</dd></div>
-          </dl>
-          <form onSubmit={save} aria-label="Edit customer" className="space-y-3">
-            <div className={FORM_GRID}>
-              <Field label="Billing email"><Input size="sm" value={form.email} onChange={(e) => setDraft({ ...form, email: e.target.value })} /></Field>
-              <Field label="Name"><Input size="sm" value={form.name} onChange={(e) => setDraft({ ...form, name: e.target.value })} /></Field>
-              <Field label="Tax region"><Input size="sm" value={form.region} onChange={(e) => setDraft({ ...form, region: e.target.value })} placeholder="IN, DE, US-CA" /></Field>
-              <Field label="Currency"><Input size="sm" value={form.currency} maxLength={3} onChange={(e) => setDraft({ ...form, currency: e.target.value.toUpperCase() })} /></Field>
-              <label className="flex items-center gap-2 text-sm text-foreground/80"><input type="checkbox" checked={form.taxExempt} onChange={(e) => setDraft({ ...form, taxExempt: e.target.checked })} />Tax exempt</label>
-            </div>
-            <ErrorView error={act.error} />
-            {act.note && <p role="status" className="text-sm text-success">{act.note}</p>}
-            <Button type="submit" tone="primary" disabled={act.busy}>Save customer</Button>
-          </form>
-          <div>
-            <h3 className="text-xs uppercase text-muted-foreground">Subscriptions</h3>
-            {subs.data && subs.data.length === 0 && <EmptyState compact title="No subscriptions." why="This customer has no subscription." />}
-            <ul aria-label="Customer subscriptions" className="mt-1 space-y-1 text-sm">
-              {(subs.data ?? []).map((s) => <li key={s.id}><Badge status={s.status} /> <span className="font-mono text-xs">{s.items.map((i) => `${i.price}×${i.quantity}`).join(", ")}</span> <span className="text-muted-foreground">renews {when_(s.current_period_end)}</span></li>)}
+        <>
+          <StatGrid label="Customer summary" columns={2}>
+            <Stat label="Balance" value={<Money amount={c.balance} currency={c.currency} />} hint={c.balance < 0 ? "in credit" : c.balance > 0 ? "owed" : undefined} />
+            <Stat label="Credits" value={credits.data ? formatCount(credits.data.balance) : credits.error ? "n/a" : "…"} />
+            <Stat label="Payment method" value={<span className="text-base">{card(c)}</span>} />
+            <Stat label="Provider" value={<span className="text-base">{c.provider ?? "none"}</span>} />
+          </StatGrid>
+          <section aria-labelledby="cust-subs" className="space-y-2">
+            <h3 id="cust-subs" className="text-sm font-semibold">Subscriptions</h3>
+            {subs.data && subs.data.length === 0 && <EmptyState compact title="No subscriptions" why="This customer has no subscription. Start one under Subscriptions." />}
+            <ul aria-label="Customer subscriptions" className="divide-y divide-border rounded-lg border border-border text-sm empty:hidden">
+              {(subs.data ?? []).map((s) => (
+                <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                  <span className="flex items-center gap-2"><Badge status={s.status} /><span className="font-mono text-xs">{s.items.map((i) => `${i.price}×${i.quantity}`).join(", ")}</span></span>
+                  <span className="text-xs text-muted-foreground">renews <When iso={s.current_period_end} day /></span>
+                </li>
+              ))}
             </ul>
-          </div>
-        </div>
+          </section>
+          <form onSubmit={save} aria-label="Edit customer" className="space-y-3 border-t border-border pt-4">
+            <h3 className="text-sm font-semibold">Billing details</h3>
+            <div className={FORM_GRID}>
+              <Field label="Billing email"><Input size="sm" type="email" value={form.email} onChange={(e) => setDraft({ ...form, email: e.target.value })} /></Field>
+              <Field label="Name"><Input size="sm" value={form.name} onChange={(e) => setDraft({ ...form, name: e.target.value })} /></Field>
+              <Field label="Tax region" help="Country or region code, such as IN, DE or US-CA."><Input size="sm" className="font-mono" value={form.region} onChange={(e) => setDraft({ ...form, region: e.target.value })} placeholder="IN" /></Field>
+              <Field label="Currency"><Input size="sm" className="font-mono" value={form.currency} maxLength={3} onChange={(e) => setDraft({ ...form, currency: e.target.value.toUpperCase() })} /></Field>
+            </div>
+            <Check checked={form.taxExempt} onChange={(v) => setDraft({ ...form, taxExempt: v })} label="Tax exempt" description="No tax is added to this customer's invoices." />
+            <ErrorView error={act.error} />
+            <div className="flex items-center gap-3">
+              <Button type="submit" tone="primary" disabled={act.busy || !draft}>{act.busy ? "Saving…" : "Save customer"}</Button>
+              <Note>{act.note}</Note>
+            </div>
+          </form>
+        </>
       )}
-    </Panel>
+    </div>
   );
 }
 
@@ -71,35 +87,54 @@ export default function Customers() {
   const list = useLoad((s) => listCustomers(500, s), "customers");
   const [filter, setFilter] = useState<"" | "user" | "org">("");
   const rows = (list.data ?? []).filter((c: Customer) => (filter === "org" ? c.subject.startsWith("org:") : filter === "user" ? !c.subject.startsWith("org:") : true));
+  const open = (s: string) => { setLookup(s); setParams(s ? { subject: s } : {}); };
+  const toolbar = (
+    <>
+      <Filter label="Type">
+        {(id) => <Sel placeholder="All customers" id={id} value={filter} onChange={(v) => setFilter(v as "" | "user" | "org")} options={[{ value: "", label: "All customers" }, { value: "user", label: "Users" }, { value: "org", label: "Organizations" }]} className="w-40" />}
+      </Filter>
+      <form className="ml-auto flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); open(lookup.trim()); }}>
+        <Filter label="Subject">
+          {(id) => <Input id={id} size="sm" className="w-56 font-mono" value={lookup} onChange={(e) => setLookup(e.target.value)} placeholder="org:acme or a user key" />}
+        </Filter>
+        <Button type="submit" disabled={!lookup.trim()}>Open</Button>
+      </form>
+    </>
+  );
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3 text-sm">
-        <label>Type
-          <Sel value={filter} onChange={(v) => setFilter(v as "" | "user" | "org")} options={[{ value: "", label: "all" }, { value: "user", label: "users" }, { value: "org", label: "organizations" }]} className="ml-2" />
-        </label>
-        <form className="flex items-end gap-2" onSubmit={(e) => { e.preventDefault(); setParams(lookup ? { subject: lookup } : {}); }}>
-          <label>Subject<Input size="sm" className="ml-2 w-56" value={lookup} onChange={(e) => setLookup(e.target.value)} placeholder="org:acme or a user key" /></label>
-          <Button type="submit">Open</Button>
-        </form>
-      </div>
       <BillingError error={list.error} />
-      {list.loading && !list.error && <Loading what="Loading customers" />}
-      {list.data && rows.length === 0 && <EmptyState compact title="No customers match." why="Change the search to see more." />}
-      {rows.length > 0 && (
-        <Table aria-label="Customers" className={TABLE}>
-          <Table.Header className={THEAD}><Table.Row><Th>Subject</Th><Th>Email</Th><Th>Currency</Th><Th>Balance</Th><Th>Payment method</Th><Th>Since</Th></Table.Row></Table.Header>
-          <Table.Body>
-            {rows.map((c) => (
-              <Table.Row key={c.id} className={ROW}>
-                <Table.Cell className="py-2 pr-3"><button type="button" className="font-mono text-xs text-primary hover:underline" aria-label={`Open ${c.subject}`} onClick={() => { setLookup(c.subject); setParams({ subject: c.subject }); }}>{c.subject}</button></Table.Cell>
-                <Table.Cell>{c.email ?? "-"}</Table.Cell><Table.Cell>{c.currency}</Table.Cell><Table.Cell><Money amount={c.balance} currency={c.currency} /></Table.Cell>
-                <Table.Cell>{c.has_payment_method ? c.payment_method_label ?? "saved" : "none"}</Table.Cell><Table.Cell className="text-muted-foreground">{when_(c.created_at)}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
-      )}
-      {subject && <Detail key={subject} subject={subject} />}
+      <TableCard title="Customers" count={list.data ? rows.length : undefined} description="Users and organizations that have a billing record." toolbar={toolbar}>
+        {list.loading && !list.error && <SkeletonTable rows={4} columns={5} label="Loading customers" />}
+        {list.data && rows.length === 0 && (
+          list.data.length === 0
+            ? <EmptyState title="No customers yet" why="A customer is created when a user or an organization first subscribes, orders or gets credits." />
+            : <EmptyState compact title="No customers match" why="Change the type filter to see more." />
+        )}
+        {rows.length > 0 && (
+          <Table framed aria-label="Customers">
+            <Table.Header><Table.Row><Th>Customer</Th><Th>Email</Th><Th>Currency</Th><Th align="end">Balance</Th><Th>Payment method</Th><Th>Since</Th></Table.Row></Table.Header>
+            <Table.Body>
+              {rows.map((c) => (
+                <Table.Row key={c.id} aria-selected={c.subject === subject || undefined}>
+                  <Table.Cell>
+                    <button type="button" className="max-w-[16rem] truncate font-mono text-xs text-primary hover:underline" title={c.subject} aria-label={`Open ${c.subject}`} onClick={() => open(c.subject)}>{c.subject}</button>
+                    {c.name && <span className="block text-xs text-muted-foreground">{c.name}</span>}
+                  </Table.Cell>
+                  <Table.Cell>{c.email ?? <None />}</Table.Cell>
+                  <Table.Cell className="font-mono text-xs">{c.currency}</Table.Cell>
+                  <Table.Cell align="end"><Money amount={c.balance} currency={c.currency} /></Table.Cell>
+                  <Table.Cell>{c.has_payment_method ? card(c) : <span className="text-muted-foreground">none</span>}</Table.Cell>
+                  <Table.Cell className="text-muted-foreground"><When iso={c.created_at} day /></Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        )}
+      </TableCard>
+      <DetailSheet open={!!subject} onOpenChange={(v) => { if (!v) open(""); }} title={<span className="font-mono">{subject}</span>} description="Customer">
+        {subject && <Detail key={subject} subject={subject} />}
+      </DetailSheet>
     </div>
   );
 }

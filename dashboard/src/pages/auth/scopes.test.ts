@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildScopes, describeScope, emptyChoice, parseScopes, readExample } from "./scopes";
+import { buildScopes, describeScope, emptyChoice, parseScopes, readExample, summarizeScopes } from "./scopes";
 
 const choice = (area: string, o: Partial<ReturnType<typeof emptyChoice>>) => ({ ...emptyChoice(area), ...o });
 
@@ -46,5 +46,17 @@ describe("readExample", () => {
   });
   it("has nothing to read for a write-only key", () => {
     expect(readExample(["storage:write"], "http://x")).toBeNull();
+  });
+});
+
+describe("summarizeScopes", () => {
+  it("folds read and write of one area into one chip, in plain words", () => {
+    expect(summarizeScopes(["collections:read", "collections:write", "storage:read"]).map((s) => s.label)).toEqual(["Records: read and write", "Files: read"]);
+  });
+  it("names the resource and flags wide grants", () => {
+    const [one, all, star] = summarizeScopes(["collections:read:posts", "kv:*", "*"]);
+    expect(one).toMatchObject({ label: "Records (posts): read", wide: false, scopes: ["collections:read:posts"] });
+    expect(all).toMatchObject({ label: "Key-value: everything", wide: true });
+    expect(star).toMatchObject({ label: "Full access", wide: true });
   });
 });

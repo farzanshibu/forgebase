@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   ApiError, binFrom, binText, kvClearTtl, kvDelete, kvGet, kvHashDelete, kvHashSet, kvListPop, kvListPush, kvListRemove, kvListSet, kvSetAdd, kvSetRemove, kvSetString, kvSetTtl,
   kvStreamAdd, kvStreamDelete, kvZAdd, kvZRemove,
@@ -8,7 +8,8 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { HelpTip } from "../../components/HelpTip";
 import { SkeletonLines } from "../../components/Skeleton";
-import { Button, ErrorView, Panel } from "../../components/ui";
+import { Badge } from "panelui-web/badge";
+import { Button, CopyButton, ErrorView } from "../../components/ui";
 import { notify } from "../../toaster";
 import { formatBytes } from "../../format";
 import { useLoad } from "../../hooks";
@@ -21,6 +22,8 @@ import { Sel } from "../../components/controls";
 type Act = (f: () => Promise<unknown>) => Promise<void>;
 interface EditorProps { ns: string; data: KvKey; act: Act }
 
+const SIZE_NOUN: Record<string, string> = { hash: "fields", stream: "entries", list: "items", set: "members", zset: "members" };
+
 export default function KeyViewer({ ns, keyName, onGone, onChanged }: { ns: string; keyName: string; onGone: () => void; onChanged: () => void }) {
   const kv = useLoad((s) => kvGet(ns, keyName, 1000, s), `kv:${ns}:${keyName}`);
   const [error, setError] = useState<unknown>();
@@ -31,19 +34,16 @@ export default function KeyViewer({ ns, keyName, onGone, onChanged }: { ns: stri
   if (kv.error instanceof ApiError && kv.error.status === 404) return <EmptyState compact title={`Key ${keyName} is gone`} why="It was deleted or it expired." action={<Button onClick={onGone}>Back to keys</Button>} />;
   const d = kv.data;
   return (
-    <div className="space-y-4" aria-label="Key details">
-      <Panel title={keyName} actions={d && <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground/80">{d.type}</span>}>
-        <ErrorView error={kv.error} />
-        {kv.loading && !kv.error && <SkeletonLines lines={3} label="Loading key" />}
-        {d && (
-          <>
-            <p className="text-sm text-muted-foreground" aria-label="Key summary">
-              {d.type === "string" ? `${formatBytes(d.size)}` : `${d.size} ${d.type === "hash" ? "fields" : d.type === "stream" ? "entries" : d.type === "list" ? "items" : "members"}`}
-              {" · "}<HelpTip term="ttl">TTL</HelpTip>{" "}<span aria-label="Remaining TTL">{formatTtl(d.ttl_ms)}</span>
-              {d.truncated && <span className="text-warning"> · showing the first 1000 only</span>}
-            </p>
-            <div className="mt-3"><Ttl ns={ns} data={d} act={act} /></div>
-            <div className="mt-3">
+    <div className="min-w-0 space-y-4" aria-label="Key details">
+      <section aria-labelledby="kv-key-name" className="overflow-hidden rounded-xl border border-border bg-card">
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            {d && <Badge variant="info" size="sm" className="font-mono">{d.type}</Badge>}
+            <h2 id="kv-key-name" className="truncate font-mono text-sm font-medium" title={keyName}>{keyName}</h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <CopyButton text={keyName} label="Copy key" />
+            {d && (
               <ConfirmDialog
                 trigger={<Button tone="danger">Delete key</Button>}
                 title={`Delete key ${keyName}?`}
@@ -51,20 +51,37 @@ export default function KeyViewer({ ns, keyName, onGone, onChanged }: { ns: stri
                 confirmLabel="Delete key"
                 onConfirm={async () => { await kvDelete(ns, keyName); notify.deleted(`Key ${keyName}`); onGone(); }}
               />
-            </div>
-          </>
-        )}
-        <div className="mt-2"><ErrorView error={error} /></div>
-      </Panel>
+            )}
+          </div>
+        </header>
+        <div className="space-y-3 px-4 py-3">
+          <ErrorView error={kv.error} />
+          {kv.loading && !kv.error && <SkeletonLines lines={3} label="Loading key" />}
+          {d && (
+            <>
+              <dl aria-label="Key summary" className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+                <div><dt className="text-xs text-muted-foreground">Type</dt><dd className="font-mono">{d.type}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Size</dt><dd className="tabular-nums">{d.type === "string" ? formatBytes(d.size) : `${d.size} ${SIZE_NOUN[d.type] ?? "members"}`}{d.truncated && <span className="ml-1 text-xs text-warning">(first 1000 shown)</span>}</dd></div>
+                <div><dt className="flex items-center gap-1 text-xs text-muted-foreground"><HelpTip term="ttl">TTL</HelpTip></dt><dd><span aria-label="Remaining TTL" className={`tabular-nums ${d.ttl_ms === null || d.ttl_ms === undefined ? "text-muted-foreground" : ""}`}>{formatTtl(d.ttl_ms)}</span></dd></div>
+              </dl>
+              <Ttl ns={ns} data={d} act={act} />
+            </>
+          )}
+          <ErrorView error={error} />
+        </div>
+      </section>
       {d && (
-        <Panel title="Value">
-          {d.type === "string" && <StringEditor ns={ns} data={d} act={act} />}
-          {d.type === "hash" && <HashEditor ns={ns} data={d} act={act} />}
-          {d.type === "list" && <ListEditor ns={ns} data={d} act={act} />}
-          {d.type === "set" && <SetEditor ns={ns} data={d} act={act} />}
-          {d.type === "zset" && <ZSetEditor ns={ns} data={d} act={act} />}
-          {d.type === "stream" && <StreamEditor ns={ns} data={d} act={act} />}
-        </Panel>
+        <section aria-labelledby="kv-key-value" className="overflow-hidden rounded-xl border border-border bg-card">
+          <h3 id="kv-key-value" className="border-b border-border px-4 py-2.5 text-sm font-medium">Value</h3>
+          <div className="p-4">
+            {d.type === "string" && <StringEditor ns={ns} data={d} act={act} />}
+            {d.type === "hash" && <HashEditor ns={ns} data={d} act={act} />}
+            {d.type === "list" && <ListEditor ns={ns} data={d} act={act} />}
+            {d.type === "set" && <SetEditor ns={ns} data={d} act={act} />}
+            {d.type === "zset" && <ZSetEditor ns={ns} data={d} act={act} />}
+            {d.type === "stream" && <StreamEditor ns={ns} data={d} act={act} />}
+          </div>
+        </section>
       )}
     </div>
   );
@@ -75,9 +92,10 @@ function Ttl({ ns, data, act }: EditorProps) {
   const [unit, setUnit] = useState(1000);
   const ms = Math.round(Number(amount) * unit);
   return (
-    <div className="flex flex-wrap items-end gap-2 text-sm">
-      <label>Expire in<Input size="sm" aria-label="TTL amount" type="number" min="1" className="ml-2 w-24" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
-      <Sel aria-label="TTL unit" value={unit} onChange={setUnit} options={TTL_UNITS.map((u) => ({ value: u.ms, label: u.label }))} />
+    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 px-3 py-2 text-sm">
+      <span className="text-muted-foreground">Expire in</span>
+      <Input size="sm" aria-label="TTL amount" type="number" min="1" className="w-20 tabular-nums" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      <Sel aria-label="TTL unit" className="w-28" value={unit} onChange={setUnit} options={TTL_UNITS.map((u) => ({ value: u.ms, label: u.label }))} />
       <Button disabled={!(ms > 0)} onClick={() => void act(() => kvSetTtl(ns, data.key, ms))}>Set TTL</Button>
       <Button disabled={data.ttl_ms === null || data.ttl_ms === undefined} onClick={() => void act(() => kvClearTtl(ns, data.key))}>Remove TTL</Button>
     </div>
@@ -105,8 +123,8 @@ function HashEditor({ ns, data, act }: EditorProps) {
     <div className="space-y-3">
       {fields.length === 0 && <EmptyState compact title="No fields" why="Add the first field below." />}
       {fields.length > 0 && (
-        <Table aria-label="Hash fields" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Field</Table.Head><Table.Head>Value</Table.Head><Table.Head /></Table.Row></Table.Header>
+        <Table aria-label="Hash fields" density="compact" className="w-full text-left text-sm">
+          <Table.Header className="text-xs text-muted-foreground"><Table.Row><Table.Head className="py-1">Field</Table.Head><Table.Head>Value</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
           <Table.Body>
             {fields.map(([f, v]) => {
               const cur = edits[f] ?? binText(v);
@@ -142,9 +160,9 @@ function ListEditor({ ns, data, act }: EditorProps) {
     <div className="space-y-3">
       {items.length === 0 && <EmptyState compact title="The list is empty" why="Push a value below." />}
       {items.length > 0 && (
-        <ol aria-label="List items" className="space-y-1 text-sm">
+        <ol aria-label="List items" className="divide-y divide-border rounded-lg border border-border text-sm">
           {items.map((it, i) => (
-            <li key={i} className="flex items-center gap-2"><span className="w-8 text-right text-xs text-muted-foreground">{i}</span>{editing === i ? (
+            <li key={i} className="flex items-center gap-2 px-2 py-1.5"><span className="w-8 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">{i}</span>{editing === i ? (
                 <>
                   <Input size="sm" aria-label={`Item ${i} value`} className="flex-1 font-mono text-xs" value={draft} onChange={(e) => setDraft(e.target.value)} />
                   <Button tone="primary" aria-label={`Save item ${i}`} onClick={() => void act(async () => { await kvListSet(ns, data.key, i, binFrom(draft)); setEditing(null); })}>Save</Button>
@@ -179,9 +197,9 @@ function SetEditor({ ns, data, act }: EditorProps) {
     <div className="space-y-3">
       {members.length === 0 && <EmptyState compact title="The set is empty" why="Add a member below." />}
       {members.length > 0 && (
-        <ul aria-label="Set members" className="space-y-1 text-sm">
+        <ul aria-label="Set members" className="divide-y divide-border rounded-lg border border-border text-sm">
           {members.map((m) => (
-            <li key={binText(m)} className="flex items-center gap-2"><span className="flex-1 break-all font-mono text-xs">{binText(m)}</span>
+            <li key={binText(m)} className="flex items-center gap-2 px-3 py-1.5"><span className="flex-1 break-all font-mono text-xs">{binText(m)}</span>
               <Button tone="danger" aria-label={`Remove member ${binText(m)}`} onClick={() => void act(() => kvSetRemove(ns, data.key, [m]))}>Remove</Button>
             </li>
           ))}
@@ -204,8 +222,8 @@ function ZSetEditor({ ns, data, act }: EditorProps) {
     <div className="space-y-3">
       {rows.length === 0 && <EmptyState compact title="The sorted set is empty" why="Add a member with a score below." />}
       {rows.length > 0 && (
-        <Table aria-label="Sorted set members" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-1">Member</Table.Head><Table.Head>Score</Table.Head><Table.Head /></Table.Row></Table.Header>
+        <Table aria-label="Sorted set members" density="compact" className="w-full text-left text-sm">
+          <Table.Header className="text-xs text-muted-foreground"><Table.Row><Table.Head className="py-1">Member</Table.Head><Table.Head>Score</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
           <Table.Body>
             {rows.map((r) => {
               const m = binText(r.member);
@@ -213,7 +231,7 @@ function ZSetEditor({ ns, data, act }: EditorProps) {
               return (
                 <Table.Row key={m} className="border-t border-border">
                   <Table.Cell className="py-1.5 pr-2 font-mono text-xs">{m}</Table.Cell>
-                  <Table.Cell><Input size="sm" aria-label={`Score of ${m}`} className="w-28" value={cur} onChange={(e) => setScores({ ...scores, [m]: e.target.value })} /></Table.Cell>
+                  <Table.Cell><Input size="sm" aria-label={`Score of ${m}`} className="w-28 font-mono tabular-nums" value={cur} onChange={(e) => setScores({ ...scores, [m]: e.target.value })} /></Table.Cell>
                   <Table.Cell className="space-x-1 whitespace-nowrap pl-2 text-right">
                     <Button aria-label={`Save score of ${m}`} disabled={cur === String(r.score) || !Number.isFinite(Number(cur)) || cur === ""} onClick={() => void act(async () => { await kvZAdd(ns, data.key, [{ member: r.member, score: Number(cur) }]); setScores((e) => omit(e, m)); })}>Save</Button>
                     <Button tone="danger" aria-label={`Remove ${m}`} onClick={() => void act(() => kvZRemove(ns, data.key, [r.member]))}>Remove</Button>
@@ -251,10 +269,10 @@ function StreamEditor({ ns, data, act }: EditorProps) {
           {entries.map((e) => {
             const id = binText(e.id);
             return (
-              <li key={id} className="rounded border border-border p-2">
-                <div className="flex items-center justify-between"><span className="font-mono text-xs text-warning">{id}</span>
+              <li key={id} className="rounded-lg border border-border px-3 py-2">
+                <div className="flex items-center justify-between gap-2"><span className="font-mono text-xs font-medium text-primary">{id}</span>
                   <Button tone="danger" aria-label={`Delete entry ${id}`} onClick={() => void act(() => kvStreamDelete(ns, data.key, [id]))}>Delete</Button></div>
-                <dl className="mt-1 grid grid-cols-[8rem_1fr] gap-y-0.5 font-mono text-xs">{Object.entries(e.fields).map(([k, v]) => (<><dt key={`k${k}`} className="text-muted-foreground">{k}</dt><dd key={`v${k}`}>{binText(v)}</dd></>))}</dl>
+                <dl className="mt-1 grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-0.5 font-mono text-xs">{Object.entries(e.fields).map(([k, v]) => (<Fragment key={k}><dt className="truncate text-muted-foreground" title={k}>{k}</dt><dd className="break-all">{binText(v)}</dd></Fragment>))}</dl>
               </li>
             );
           })}

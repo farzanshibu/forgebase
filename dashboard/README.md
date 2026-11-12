@@ -6,10 +6,31 @@ React 19, Vite and Tailwind CSS v4, built with [PanelUI web](https://panelui.dev
 ```sh
 npm ci
 npm run dev      # http://localhost:5173/admin/, proxies /api, /health and /metrics to 127.0.0.1:8090
+npm run demo     # http://127.0.0.1:5173/admin/, no server needed: every API call answered in the browser
 npm test         # vitest
 npm run lint
 npm run build
 ```
+
+## Two ways to run it
+
+- **Against a server** (`npm run dev`): start `forgebase serve` first (it listens on 127.0.0.1:8090), then
+  sign in with your administrator. Vite hot-reloads the UI; the API is the real one.
+- **Demo mode** (`npm run demo`): the same app with the API answered by the fakes the tests use
+  (`src/test/*Mock.ts`, checked against `openapi.json`), so every studio has sample data. Nothing is sent
+  anywhere and a reload resets it. You start signed in as `root@example.com` (password `correct-horse`).
+  Open `/admin/?first-run` for a fresh server instead: the first-run setup, with the setup token filled
+  in, then the Getting started journey. The entry point is `demo/main.tsx`; it is not part of `npm run build`.
+
+## The first journey
+
+A new developer should get from an empty server to a working app without reading docs
+([dashboard-ux.md](../docs/requirements/dashboard-ux.md)): create the administrator, a collection with a
+record, an API key, upload a file, deploy a function. Overview shows the full checklist; on every other page
+the **Getting started** button in the top bar (`components/JourneyGuide.tsx`) shows how far along the
+project is and opens the next step in one click. It moves on by itself when a create, save or delete
+toast fires (`CHANGED_EVENT` in `src/toaster.ts`), disappears once every step is done, and "Hide this
+guide" turns it off for the browser.
 
 ## Themes and the accent colour
 
@@ -18,7 +39,7 @@ right of the sign-in page). It holds two choices:
 
 - **Theme**: Light, Dark, or System. System follows the operating system's
   `prefers-color-scheme` and switches live when the system does. System is the default.
-- **Accent colour**: Amber (the default), Indigo, Emerald, Rose, Sky or Violet. The accent
+- **Accent colour**: Orange (the default; stored as `amber` so older choices keep working), Indigo, Emerald, Rose, Sky or Violet. The accent
   colours primary buttons, links, the active row in the sidebar, focus rings and charts.
 
 Both choices are kept per browser in `localStorage` under `forgebase.admin.theme` and
@@ -39,7 +60,15 @@ windows), the choice lasts until the page is reloaded.
   the `dark` class, `data-accent` and `color-scheme` on `<html>` before the first paint, so the
   page never flashes the wrong theme. `src/theme/` keeps `<html>` in step once React runs.
   If a Content-Security-Policy is ever added to `/admin/`, allow that script by its hash.
-- Fonts are the system stack; the dashboard loads nothing from the network.
+- Fonts are bundled: Inter Variable for the interface and JetBrains Mono Variable for code, ids and
+  snippets (`@fontsource-variable/*`, OFL-1.1, imported in `src/main.tsx`). Vite copies the woff2 files
+  into `dist/assets`, so the dashboard still loads nothing from the network; the browser only fetches the
+  Latin subsets it needs (about 90 kB). The type scale: 12px (`text-xs`) badges, help and captions, 14px
+  (`text-sm`) body, tables, inputs and buttons, 16px (`text-base`) card titles, 24px (`text-2xl`) page titles.
+  Use those classes, not `text-[13px]`-style one-offs. The one exception is the 11px uppercase group
+  headings in the nav rail (set in `src/index.css`).
+- Colours: the warning colour (`--warning`) is a yellow-olive, never the same hue as the orange primary,
+  and field outlines (`--input`) meet the 3:1 contrast WCAG asks of a control's boundary.
 
 ### Adding an accent
 

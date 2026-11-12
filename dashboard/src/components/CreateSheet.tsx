@@ -18,6 +18,7 @@
  *
  * `onSubmit` throws to keep the sheet open: the error shows at the top (field errors go to FormFields via
  * `fieldErrors(error)` when you pass `onError`). Returning `{ what, href }` raises the "created" toast and navigates.
+ * An edit form in the same sheet passes `toast="saved"` ("Schema saved"), or `toast={false}` when it toasts itself.
  */
 import { Sheet } from "panelui-web/sheet";
 import { useState, type FormEvent, type ReactNode } from "react";
@@ -45,10 +46,12 @@ export interface CreateSheetProps {
   onSubmit: () => Promise<CreateResult | void>;
   /** Called with a failure, so the form can map `fieldErrors(error)` onto its fields. */
   onError?: (error: unknown) => void;
+  /** The toast for a returned `{ what }`: "created" (default), "saved" for an edit form, or false for none. */
+  toast?: "created" | "saved" | false;
   children: ReactNode;
 }
 
-export function CreateSheet({ open, onOpenChange, title, description, submitLabel = "Create", canSubmit = true, onSubmit, onError, children }: CreateSheetProps) {
+export function CreateSheet({ open, onOpenChange, title, description, submitLabel = "Create", canSubmit = true, onSubmit, onError, toast = "created", children }: CreateSheetProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
   const navigate = useNavigate();
@@ -62,7 +65,8 @@ export function CreateSheet({ open, onOpenChange, title, description, submitLabe
       setBusy(false);
       onOpenChange(false);
       if (r) {
-        notify.created(r.what);
+        if (toast === "created") notify.created(r.what);
+        else if (toast === "saved") notify.saved(r.what);
         if (r.href) navigate(r.href);
       }
     } catch (err) {

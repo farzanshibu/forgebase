@@ -267,7 +267,7 @@ describe("Test panel", () => {
     expect(within(result).getByText("HTTP 200")).toBeInTheDocument();
     expect(within(result).getByLabelText("Response headers")).toHaveTextContent("content-type: application/json");
     expect(within(result).getByLabelText("Response body")).toHaveTextContent('"hello": "world"');
-    expect(await within(result).findByText("[info] echo ran")).toBeInTheDocument();
+    expect((await within(result).findByText("echo ran")).closest("[data-level]")).toHaveAttribute("data-level", "info");
     const call = st.invokes[0]!;
     expect(call).toMatchObject({ method: "PUT", path: "/api/v1/functions/echo/invoke/items", body: { n: 1 } });
     expect(new URLSearchParams(call.query).get("name")).toBe("Ada");
@@ -287,7 +287,7 @@ describe("Test panel", () => {
     expect(within(result).getByRole("button", { name: "Copy request id" })).toBeInTheDocument();
     expect(within(result).getByRole("link", { name: "Find in logs" })).toHaveAttribute("href", "/functions/f/echo/logs?request=req-echo");
     // Only this run's log lines are shown.
-    expect(await within(result).findByText("[info] echo ran")).toBeInTheDocument();
+    expect((await within(result).findByText("echo ran")).closest("[data-level]")).toHaveAttribute("data-level", "info");
   });
 
   it("Find in logs search: a request id from an error lists the function run that carried it", async () => {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { listCollections } from "../../api";
 import type { FunctionLanguage, InvokeAccess } from "../../api";
 import { Panel } from "../../components/ui";
@@ -49,20 +49,19 @@ export default function NewFunction() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="New function" description="Start from a template, edit the code, then deploy it. The Test tab opens next." docs="docs/adr/0017-functions.md"
-        secondary={<Link to="/functions" className="text-sm text-primary hover:underline">Back to functions</Link>} />
-      <Panel title="Template">
+      <PageHeader title="New function" description="Start from a template, edit the code, then deploy it. The Test tab opens next." docs="docs/adr/0017-functions.md" />
+      <Panel title="1. Template">
         <div role="group" aria-label="Templates" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {TEMPLATES.map((x) => (
             <button key={x.id} type="button" aria-pressed={x.id === tpl} onClick={() => setTpl(x.id)}
-              className={`rounded-lg border p-3 text-left text-sm hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${x.id === tpl ? "border-primary bg-muted/40" : "border-border"}`}>
+              className={`rounded-lg border p-3 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${x.id === tpl ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border"}`}>
               <span className="block font-medium">{x.label}</span>
               <span className="block text-xs text-muted-foreground">{x.description}</span>
             </button>
           ))}
         </div>
       </Panel>
-      <Panel title="Settings">
+      <Panel title="2. Settings">
         <form aria-label="Function settings" onSubmit={(e) => e.preventDefault()} className="grid gap-3 md:grid-cols-2">
           <FormField label="Name" required help="Lower-case letters, digits, dashes and underscores." error={typedName !== undefined ? nameError : undefined}>
             {(p) => <Input {...p} size="sm" className="w-full" value={name} onChange={(e) => setTypedName(e.target.value)} />}
@@ -84,10 +83,13 @@ export default function NewFunction() {
         </form>
         <div className="mt-2"><ErrorPanel error={collections.error} onRetry={collections.reload} /></div>
       </Panel>
-      <Panel title={`Code: ${name || "new function"}`}>
+      <section aria-labelledby="fn-new-code" className="space-y-3">
+        <div>
+          <h2 id="fn-new-code" className="text-sm font-medium">3. Code: <span className="font-mono">{name || "new function"}</span></h2>
+          <p className="text-xs text-muted-foreground">Changing the template, collection or language starts the code again from the template. Deploy opens the Test tab.</p>
+        </div>
         {waiting ? <SkeletonLines lines={4} label="Loading collections" /> : (
           <>
-            <p className="mb-3 text-xs text-muted-foreground">Changing the template, collection or language starts the code again from the template.</p>
             <SourceEditor
               key={`${tpl}:${lang}:${collection}`}
               name={nameError ? "" : name}
@@ -106,7 +108,7 @@ export default function NewFunction() {
             />
           </>
         )}
-      </Panel>
+      </section>
     </div>
   );
 }

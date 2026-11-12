@@ -23,7 +23,7 @@ describe("Vector Studio collections", () => {
     const { mock } = setup();
     renderStudio("/vector");
     expect(await screen.findByRole("link", { name: "docs" })).toBeInTheDocument();
-    expect(await screen.findByLabelText("Vector totals")).toHaveTextContent("1 collections");
+    expect(await screen.findByLabelText("Vector totals")).toHaveTextContent(/Collections\s*1/);
     expect(screen.getByText("embedding(3, l2)")).toBeInTheDocument();
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument(); // A-22: no tab row with a single tab
 

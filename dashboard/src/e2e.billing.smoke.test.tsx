@@ -24,7 +24,7 @@ it("walks every Billing Studio screen from the sidebar and runs one real action 
     if (g.pages.length > 1) await u.click(within(await screen.findByRole("tablist", { name: `${g.label} pages` })).getByRole("tab", { name }));
   };
 
-  await go("Catalog");
+  await go("Products");
   expect(await screen.findByRole("table", { name: "Products" })).toHaveTextContent("Pro");
 
   await go("Customers");
@@ -35,21 +35,24 @@ it("walks every Billing Studio screen from the sidebar and runs one real action 
   await u.click(await screen.findByRole("button", { name: "Manage sub1" }));
   await u.click(await screen.findByRole("button", { name: "Pause" }));
   await waitFor(() => expect(st.subscriptions[0]!.status).toBe("paused"));
+  // Manage opens a side sheet: close it before using the tabs behind it.
+  await u.keyboard("{Escape}");
 
   await go("Orders");
-  await u.type(await screen.findByLabelText("Order subject"), "org:acme");
+  await u.type(await screen.findByLabelText("Subject"), "org:acme");
   await u.click(await screen.findByRole("button", { name: "Show orders" }));
   expect(await screen.findByRole("table", { name: "Orders" })).toHaveTextContent("ord1");
 
-  await go("Usage meters");
-  await u.type(await screen.findByLabelText("Usage subject"), "org:acme");
+  await go("Usage");
+  await u.type(await screen.findByLabelText("Subject"), "org:acme");
   await u.click(await screen.findByRole("button", { name: "Show usage" }));
   expect(await screen.findByLabelText("api_calls usage")).toHaveTextContent("750 / 1,000");
 
   await go("Invoices");
   await u.click(await screen.findByRole("link", { name: "INV-inv1" }));
   expect(await screen.findByRole("table", { name: "Invoice lines" })).toHaveTextContent("Pro plan (monthly)");
-  await u.click(await screen.findByRole("link", { name: "Back to invoices" }));
+  // The way back is the breadcrumb (Billing › Invoices › INV-inv1), not a page link.
+  await u.click(within(await screen.findByRole("navigation", { name: "Breadcrumb" })).getByRole("link", { name: "Invoices" }));
 
   await go("Payments");
   expect(await screen.findByRole("table", { name: "Payments" })).toHaveTextContent("card_declined");

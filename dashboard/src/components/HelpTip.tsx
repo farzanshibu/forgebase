@@ -23,7 +23,7 @@ export function HelpTip({ term, children }: { term: GlossaryTerm; children?: Rea
         type="button"
         aria-label={`What is ${entry.short}?`}
         aria-describedby={id}
-        className="inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-border text-[0.625rem] font-semibold leading-none text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-border text-xs font-semibold leading-none text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
       >
         ?
       </Tooltip.Trigger>

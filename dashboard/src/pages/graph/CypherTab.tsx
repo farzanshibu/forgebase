@@ -5,6 +5,7 @@ import { Textarea } from "panelui-web/textarea";
 import { ApiError, cypher, dropCypherGraph, graphStats } from "../../api";
 import type { CypherResult, CypherStatus } from "../../api";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
 import { SkeletonLines } from "../../components/Skeleton";
 import { Button, ErrorView, Panel } from "../../components/ui";
@@ -172,9 +173,7 @@ export default function CypherTab() {
   if (stats.error && !stats.data) return <ErrorView error={stats.error} onRetry={stats.reload} />;
   if (stats.data && !stats.data.cypher) {
     return (
-      <Panel title="openCypher">
-        <p className="text-sm text-muted-foreground">openCypher is not available on this server. It needs PostgreSQL with Apache AGE; the Nodes, Edges, Explorer and Query runner tabs work everywhere.</p>
-      </Panel>
+      <EmptyState compact title="openCypher is off on this server" why="openCypher is not available on this server. It needs PostgreSQL with Apache AGE; the Nodes, Edges, Explorer and Query runner tabs work everywhere." docs="docs/adr/0006-graph.md" />
     );
   }
 
@@ -222,14 +221,14 @@ function Results({ result, limit }: { result: CypherResult; limit: number }) {
       {n === 0 ? (
         <p className="text-sm text-muted-foreground">The query ran and matched nothing.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <Table aria-label="Query results" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase text-muted-foreground">
-              <Table.Row>{result.columns.map((c, i) => <Table.Head key={i} className="py-1 pr-4">{c}</Table.Head>)}</Table.Row>
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <Table aria-label="Query results" framed density="compact" className="w-full text-left text-sm">
+            <Table.Header className="bg-muted/40 text-xs text-muted-foreground">
+              <Table.Row>{result.columns.map((c, i) => <Table.Head key={i} className="py-1 pr-4 font-mono">{c}</Table.Head>)}</Table.Row>
             </Table.Header>
             <Table.Body>
               {result.rows.map((r, i) => (
-                <Table.Row key={i} className="border-t border-border align-top">
+                <Table.Row key={i} className="border-t border-border align-top hover:bg-muted/40">
                   {r.map((v, j) => <Table.Cell key={j} className="py-1 pr-4"><Cell value={v} /></Table.Cell>)}
                 </Table.Row>
               ))}

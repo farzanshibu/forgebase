@@ -5,6 +5,7 @@ import { pick } from "../../test/pick";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installBilling } from "../../test/billingMock";
+import { sheet, toast } from "../../test/dataStudioMock";
 import { GROUPS, groupOf } from "./groups";
 
 // Sign-in answers /api/auth/me; a test sets `adminScope.value` to see Billing as a realm administrator.
@@ -113,14 +114,16 @@ describe("Catalog", () => {
     const { mock } = setup();
     renderStudio("/billing/catalog");
     await screen.findByRole("table", { name: "Products" });
-    const pf = screen.getByRole("form", { name: "New product" });
+    await userEvent.click(screen.getByRole("button", { name: "New product" }));
+    const pf = await sheet("New product");
     await userEvent.type(within(pf).getByLabelText("Product key"), "scale");
     await userEvent.type(within(pf).getByLabelText("Product name"), "Scale");
     await userEvent.click(within(pf).getByRole("button", { name: "Save product" }));
-    expect(await within(pf).findByRole("status")).toHaveTextContent("Product saved");
+    await toast(/Product Scale created/);
     expect(lastBody(mock, "put /api/v1/billing/products/{key}")).toMatchObject({ name: "Scale", kind: "plan", active: true });
 
-    const form = screen.getByRole("form", { name: "New price" });
+    await userEvent.click(screen.getByRole("button", { name: "New price" }));
+    const form = await sheet("New price");
     await userEvent.type(within(form).getByLabelText("Price key"), "scale_usage");
     await pick(within(form).getByLabelText("Price type"), "metered");
     await userEvent.type(within(form).getByLabelText("Metered feature"), "api_calls");
@@ -131,7 +134,7 @@ describe("Catalog", () => {
     await userEvent.click(within(form).getByLabelText(/^Other currencies/));
     await userEvent.paste("EUR=0.09");
     await userEvent.click(within(form).getByRole("button", { name: "Save price" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent("Price saved");
+    await toast(/Price scale_usage created/);
     expect(lastBody(mock, "put /api/v1/billing/prices/{key}")).toMatchObject({
       type: "metered", scheme: "graduated", currency: "USD", unit_amount: 10, feature: "api_calls",
       tiers: [{ up_to: 100, unit_amount: 10, flat_amount: 0 }, { up_to: null, unit_amount: 5, flat_amount: 0 }],
@@ -158,11 +161,12 @@ describe("Catalog", () => {
     const { mock } = setup();
     renderStudio("/billing/catalog");
     await screen.findByRole("table", { name: "Products" });
-    const form = await screen.findByRole("form", { name: "New price" });
+    await userEvent.click(screen.getByRole("button", { name: "New price" }));
+    const form = await sheet("New price");
     await userEvent.type(within(form).getByLabelText("Price key"), "bad");
     await userEvent.type(within(form).getByLabelText("Unit amount"), "1.234");
-    await userEvent.click(within(form).getByRole("button", { name: "Save price" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent("not a valid USD amount");
+    expect(within(form).getByText("1.234 is not a valid USD amount")).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Save price" })).toBeDisabled();
     expect(mock.calls).not.toContain("put /api/v1/billing/prices/bad");
   });
 
@@ -248,9 +252,9 @@ describe("Subscriptions", () => {
     expect(preview).toHaveTextContent(/Unused credit -\$14\.50, new charge \$49\.50, net \$35\.00/);
     expect(preview).not.toHaveTextContent(/Estimate/);
     expect(mock.bodies["post /api/v1/billing/subscriptions/{id}/change/preview"]!.at(-1)).toEqual({ price: "team_month", proration: "create_prorations", at_period_end: false });
-    await userEvent.click(within(group).getByLabelText("At period end"));
+    await userEvent.click(within(group).getByRole("checkbox", { name: "At period end" }));
     expect(await within(group).findByText(/nothing is charged now/)).toBeInTheDocument();
-    await userEvent.click(within(group).getByLabelText("At period end"));
+    await userEvent.click(within(group).getByRole("checkbox", { name: "At period end" }));
     await within(group).findByText(/net \$35\.00/);
     await userEvent.click(within(group).getByRole("button", { name: "Apply plan change" }));
     await waitFor(() => expect(st.subscriptions.find((s) => s.id === "sub1")!.items[0]!.price).toBe("team_month"));
@@ -260,12 +264,13 @@ describe("Subscriptions", () => {
   it("starts a trial subscription", async () => {
     const { mock } = setup();
     renderStudio("/billing/subscriptions");
-    const form = await screen.findByRole("form", { name: "New subscription" });
+    await userEvent.click(await screen.findByRole("button", { name: "New subscription" }));
+    const form = await sheet("New subscription");
     await userEvent.type(within(form).getByLabelText(/^Subscriber/), "usr_new");
     await pick(within(form).getByLabelText("Recurring price"), "pro_month");
     await userEvent.type(within(form).getByLabelText(/^Trial days/), "30");
     await userEvent.click(within(form).getByRole("button", { name: "Start subscription" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent("Subscribed");
+    await toast(/Subscription for usr_new created/);
     expect(lastBody(mock, "post /api/v1/billing/subscriptions")).toMatchObject({ subject: "usr_new", items: [{ price: "pro_month", quantity: 1 }], trial_days: 30 });
     expect(await within(screen.getByRole("table", { name: "Subscriptions" })).findByText("trialing")).toBeInTheDocument();
   });
@@ -280,18 +285,20 @@ describe("Orders", () => {
     expect(rows("Orders")).toHaveLength(51); // header + first page
     expect(await within(table).findByText("$10.00")).toBeInTheDocument();
     const paging = screen.getByLabelText("Orders paging");
-    expect(paging).toHaveTextContent("1-50 of 60");
+    expect(paging).toHaveTextContent("1–50 of 60");
     expect(mock.bodies["get /api/v1/billing/admin/orders"]).toBeDefined();
     await userEvent.click(within(paging).getByRole("button", { name: "Next" }));
-    await waitFor(() => expect(screen.getByLabelText("Orders paging")).toHaveTextContent("51-60 of 60"));
+    await waitFor(() => expect(screen.getByLabelText("Orders paging")).toHaveTextContent("51–60 of 60"));
     expect(rows("Orders")).toHaveLength(11);
-    await userEvent.type(screen.getByLabelText("Order subject"), "usr_ana");
+    await userEvent.type(screen.getByLabelText("Subject"), "usr_ana");
     await userEvent.click(screen.getByRole("button", { name: "Show orders" }));
     await waitFor(() => expect(rows("Orders")).toHaveLength(2));
-    const form = screen.getByRole("form", { name: "New order" });
+    await userEvent.click(screen.getByRole("button", { name: "New order" }));
+    const form = await sheet("New order");
+    expect(within(form).getByLabelText("Customer")).toHaveValue("usr_ana");
     await pick(within(form).getByLabelText("One-time price"), "credits_once");
     await userEvent.click(within(form).getByRole("button", { name: "Create order" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent("Order created");
+    await toast("Order created");
     expect(lastBody(mock, "post /api/v1/billing/orders")).toMatchObject({ subject: "usr_ana", items: [{ price: "credits_once", quantity: 1 }] });
   });
 });
@@ -318,7 +325,7 @@ describe("Usage meters", () => {
   it("shows quota alerts for a filtered subject", async () => {
     setup();
     renderStudio("/billing/usage");
-    await userEvent.type(await screen.findByLabelText("Usage subject"), "org:acme");
+    await userEvent.type(await screen.findByLabelText("Subject"), "org:acme");
     await userEvent.click(screen.getByRole("button", { name: "Show usage" }));
     expect(await screen.findByRole("table", { name: "Quota alerts" })).toHaveTextContent("90%");
   });
@@ -336,7 +343,7 @@ describe("Invoices", () => {
     await userEvent.click(screen.getByRole("link", { name: "INV-inv2" }));
     const lines = await screen.findByRole("table", { name: "Invoice lines" });
     expect(lines).toHaveTextContent("Pro plan (monthly)");
-    expect(screen.getByLabelText("Invoice totals")).toHaveTextContent("Due¥2,900");
+    expect(screen.getByLabelText("Invoice totals")).toHaveTextContent("Amount due¥2,900");
   });
 
   it("shows tax per line and totals for a paid invoice", async () => {
@@ -378,7 +385,7 @@ describe("Invoices", () => {
     expect(await within(form).findByRole("status")).toHaveTextContent("Refund issued");
     expect(lastBody(mock, "post /api/v1/billing/invoices/{id}/credit-notes")).toMatchObject({ amount: 1050, to_balance: false, reason: "partial" });
     expect(await screen.findByRole("table", { name: "Invoice credit notes" })).toHaveTextContent("$10.50");
-    await userEvent.click(within(form).getByLabelText(/Credit to customer balance/));
+    await userEvent.click(within(form).getByRole("checkbox", { name: /Credit to customer balance/ }));
     await userEvent.click(within(form).getByRole("button", { name: "Issue credit note" }));
     await waitFor(() => expect(lastBody(mock, "post /api/v1/billing/invoices/{id}/credit-notes")).toMatchObject({ to_balance: true }));
   });
@@ -390,7 +397,7 @@ describe("Payments", () => {
     renderStudio("/billing/payments");
     const table = await screen.findByRole("table", { name: "Payments" });
     expect(table).toHaveTextContent("card_declined: Your card was declined");
-    expect(screen.getByLabelText("Failed payments")).toHaveTextContent("1 failed");
+    expect(screen.getByLabelText("Payment summary")).toHaveTextContent("Failed1");
     await pick(screen.getByLabelText("Status"), "succeeded");
     expect(rows("Payments")).toHaveLength(2);
     expect(await within(await screen.findByRole("table", { name: "Refunds" })).findByText("$5.00")).toBeInTheDocument();
@@ -412,13 +419,14 @@ describe("Coupons", () => {
     const { mock } = setup();
     renderStudio("/billing/coupons");
     expect(await screen.findByRole("table", { name: "Coupons" })).toHaveTextContent("15% off");
-    const form = screen.getByRole("form", { name: "New coupon" });
+    await userEvent.click(screen.getByRole("button", { name: "New coupon" }));
+    const form = await sheet("New coupon");
     await userEvent.type(within(form).getByLabelText("Coupon code"), "SPRING");
     await userEvent.type(within(form).getByLabelText("Percent off"), "12.5");
     await pick(within(form).getByLabelText("Duration"), "repeating");
     await userEvent.type(within(form).getByLabelText("Cycles"), "3");
     await userEvent.click(within(form).getByRole("button", { name: "Save coupon" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent("Coupon saved");
+    await toast(/Coupon SPRING created/);
     expect(lastBody(mock, "put /api/v1/billing/coupons/{code}")).toMatchObject({ kind: "percent", percent_bp: 1250, duration: "repeating", duration_cycles: 3 });
     expect(await screen.findByText("12.5% off")).toBeInTheDocument();
   });
@@ -426,7 +434,8 @@ describe("Coupons", () => {
   it("creates an amount coupon in minor units", async () => {
     const { mock } = setup();
     renderStudio("/billing/coupons");
-    const form = await screen.findByRole("form", { name: "New coupon" });
+    await userEvent.click(await screen.findByRole("button", { name: "New coupon" }));
+    const form = await sheet("New coupon");
     await userEvent.type(within(form).getByLabelText("Coupon code"), "TENOFF");
     await pick(within(form).getByLabelText("Coupon kind"), "amount");
     await userEvent.type(within(form).getByLabelText("Amount off"), "10");
@@ -461,7 +470,7 @@ describe("Credits", () => {
     expect(summary).toHaveTextContent("Shortfall25");
     expect(await screen.findByRole("table", { name: "Credit consumption" })).toHaveTextContent("ai_generation");
     expect(screen.getByRole("list", { name: "Credit rates" })).toHaveTextContent("10 credits per 1 units");
-    await userEvent.type(screen.getByLabelText("Ledger subject"), "org:acme");
+    await userEvent.type(screen.getByLabelText("Subject"), "org:acme");
     await userEvent.click(screen.getByRole("button", { name: "Open ledger" }));
     expect(await screen.findByLabelText("Credit balance")).toHaveTextContent("960");
     expect(await screen.findByText("ledger consistent")).toBeInTheDocument();
@@ -519,7 +528,7 @@ describe("Providers and settings", () => {
     const { mock } = setup();
     renderStudio("/billing/settings");
     const form = await screen.findByRole("form", { name: "Billing settings" });
-    const retry = within(form).getByLabelText("Retry days (comma separated)");
+    const retry = within(form).getByLabelText("Retry days");
     await userEvent.clear(retry);
     await userEvent.type(retry, "2, 4");
     await pick(within(form).getByLabelText("After the last retry"), "leave_past_due");
@@ -530,7 +539,7 @@ describe("Providers and settings", () => {
     await userEvent.type(within(tax).getByLabelText("Tax region"), "DE");
     await userEvent.type(within(tax).getByLabelText("Tax name"), "VAT");
     await userEvent.type(within(tax).getByLabelText("Rate percent"), "19");
-    await userEvent.click(within(tax).getByRole("button", { name: "Save tax rate" }));
+    await userEvent.click(within(tax).getByRole("button", { name: "Add tax rate" }));
     await waitFor(() => expect(lastBody(mock, "put /api/v1/billing/tax-rates/{region}")).toEqual({ name: "VAT", rate_bp: 1900, active: true }));
     expect(await screen.findByRole("table", { name: "Webhook events" })).toHaveTextContent("invoice.paid");
   });
@@ -576,23 +585,27 @@ describe("Stores", () => {
     const { mock, st } = setup();
     renderStudio("/billing/stores");
     await screen.findByRole("table", { name: "Store products" });
-    const form = screen.getByRole("form", { name: "Store product mapping" });
+    await userEvent.click(screen.getByRole("button", { name: "Map a store product" }));
+    const form = await sheet("Map a store product");
     await pick(within(form).getByLabelText("Mapping store"), "creem");
     await userEvent.type(within(form).getByLabelText("Store product id"), "prod_abc");
     expect(within(form).queryByRole("option", { name: /pro_tiers/ })).not.toBeInTheDocument(); // metered prices cannot be sold by a store
     await pick(within(form).getByLabelText("Sold as price"), "pro_month");
     await userEvent.click(within(form).getByRole("button", { name: "Save mapping" }));
-    expect(await within(form).findByRole("status")).toHaveTextContent("Mapping saved");
+    await toast("Mapping saved");
     expect(lastBody(mock, "put /api/v1/billing/store-products/{provider}/{product_id}")).toEqual({ price: "pro_month" });
     expect(mock.calls).toContain("put /api/v1/billing/store-products/creem/prod_abc");
     expect(st.storeProducts.find((p) => p.product_id === "prod_abc")).toMatchObject({ provider: "creem", kind: "subscription" });
     // Edit loads the row into the form; saving re-maps it.
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Map a store product" })).not.toBeInTheDocument());
     await userEvent.click(await screen.findByRole("button", { name: "Edit app_store com.acme.pro.monthly" }));
-    expect(within(form).getByLabelText("Store product id")).toHaveValue("com.acme.pro.monthly");
-    await pick(within(form).getByLabelText("Sold as price"), "pro_month");
-    await userEvent.click(within(form).getByRole("button", { name: "Save mapping" }));
+    const edit = await sheet("Edit mapping");
+    expect(within(edit).getByLabelText("Store product id")).toHaveValue("com.acme.pro.monthly");
+    await pick(within(edit).getByLabelText("Sold as price"), "pro_month");
+    await userEvent.click(within(edit).getByRole("button", { name: "Save mapping" }));
     await waitFor(() => expect(st.storeProducts.find((p) => p.product_id === "com.acme.pro.monthly")!.price).toBe("pro_month"));
     // Delete needs a confirmation.
+    await waitFor(() => expect(screen.queryByRole("form", { name: "Edit mapping" })).not.toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "Delete google_play coins_100" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm delete google_play coins_100" }));
     await waitFor(() => expect(st.storeProducts.some((p) => p.product_id === "coins_100")).toBe(false));
@@ -605,7 +618,7 @@ describe("Stores", () => {
     st.storePurchases = [];
     renderStudio("/billing/stores");
     expect(await screen.findByText(/No store products mapped/)).toBeInTheDocument();
-    expect(await screen.findByText("No store purchases match.")).toBeInTheDocument();
+    expect(await screen.findByText("No store purchases match")).toBeInTheDocument();
   });
 
   it("is a tab of the studio", async () => {

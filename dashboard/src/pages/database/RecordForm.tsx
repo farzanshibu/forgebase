@@ -39,7 +39,7 @@ export function RecordForm({ collection, draft, onChange, errors = {}, collectio
   return (
     <div className="space-y-4">
       {fields.map((f) => (
-        <FormField key={f.name} label={f.name} required={!!f.required && controlFor(f) !== "password"} error={errors[f.name]} help={helpFor(f)}>
+        <FormField key={f.name} label={<>{f.name} <span className="ml-1 rounded bg-muted px-1 py-0.5 font-mono text-[0.625rem] font-normal text-muted-foreground">{String(f.type)}</span></>} required={!!f.required && controlFor(f) !== "password"} error={errors[f.name]} help={helpFor(f)}>
           {(p) => <FieldControl field={f} p={p} value={draft[f.name]} onChange={(v) => onChange(f.name, v)} collections={collections} disabled={disabled} />}
         </FormField>
       ))}

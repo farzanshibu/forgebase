@@ -21,6 +21,7 @@ import { OperationsPanel, PlacementsPanel, RebalancePanel, SummaryStrip } from "
 import { SetCard, type NodeAction, type SetAction } from "./SetCard";
 import { activeIds, useJobChannels, useOperations, useTopology } from "./hooks";
 import { StateChip } from "./ui";
+import { Section } from "../../jobs/ops";
 import { TOPOLOGY_DOCS, kindLabel, nodesOf } from "./util";
 
 const CONVERT = "forgebase db convert --to postgres";
@@ -137,7 +138,7 @@ export default function TopologyPage() {
       {view && !sqlite && (
         <>
           {view.restart_required && (
-            <div role="alert" className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-sm">
+            <div role="alert" className="rounded-xl border border-warning/50 bg-warning/10 p-4 text-sm">
               <p className="font-medium">Restart the server to finish</p>
               <p className="text-muted-foreground">{view.restart_required} Until then, requests that need the control database fail. Restart ForgeBase and it continues by itself.</p>
             </div>
@@ -156,11 +157,9 @@ export default function TopologyPage() {
           <OperationsPanel operations={ops.data} error={ops.error} loading={ops.loading} onChanged={changed} />
           {sets.length > 1 && <PlacementsPanel sets={sets} onChanged={changed} />}
           {sets.length > 1 && <RebalancePanel sets={sets} onChanged={changed} />}
-          <section aria-label="Reading from replicas" className="rounded-xl border border-border p-4">
-            <h2 className="mb-2 text-sm font-medium">Reading from replicas in your app</h2>
-            <p className="mb-3 text-xs text-muted-foreground">By default a read sees your own earlier writes, even when a replica answers it. Ask for <code>strong</code> to read from the primary, or send the <code>X-ForgeBase-Read-After</code> header yourself.</p>
+          <Section label="Reading from replicas" title="Reading from replicas in your app" description={<>By default a read sees your own earlier writes, even when a replica answers it. Ask for <code>strong</code> to read from the primary, or send the <code>X-ForgeBase-Read-After</code> header yourself.</>}>
             <UseFromCode title={null} snippet={consistencySnippet(serverUrl())} />
-          </section>
+          </Section>
         </>
       )}
 

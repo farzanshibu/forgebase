@@ -35,43 +35,51 @@ export default function NodeBrowser() {
 
   return (
     <div className="space-y-4">
-      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setApplied(label.trim()); }}>
-        <FormField label="Label">{(p) => <Input {...p} size="sm" aria-label="Label filter" value={label} onChange={(e) => setLabel(e.target.value)} />}</FormField>
-        <Button type="submit">Apply filter</Button>
-      </form>
       <ErrorView error={error} onRetry={reload} />
       {!loaded && !error && <SkeletonTable rows={4} columns={4} label="Loading nodes" />}
-      {loaded && items.length === 0 && (
-        applied
-          ? <EmptyState compact title="No nodes with this label" why="Change the label, or clear the filter to see every node." />
-          : <EmptyState title="No nodes yet" why="A node is a thing in your graph, like a person or a product. Give it a label to group similar nodes, and properties to describe it." action={<Button tone="primary" onClick={() => setCreating(true)}>New node</Button>} docs="docs/adr/0006-graph.md" />
+      {loaded && items.length === 0 && !applied && (
+        <EmptyState title="No nodes yet" why="A node is a thing in your graph, like a person or a product. Give it a label to group similar nodes, and properties to describe it." action={<Button tone="primary" onClick={() => setCreating(true)}>New node</Button>} docs="docs/adr/0006-graph.md" />
       )}
-      {loaded && items.length > 0 && (
-        <Table aria-label="Nodes" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground"><Table.Row><Table.Head className="py-2">Id</Table.Head><Table.Head>Label</Table.Head><Table.Head>Properties</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
-          <Table.Body>
-            {items.map((n) => (
-              <Table.Row key={n.id} className="border-t border-border">
-                <Table.Cell className="py-2 font-mono">{n.id}</Table.Cell>
-                <Table.Cell>{n.label}</Table.Cell>
-                <Table.Cell className="max-w-sm truncate font-mono text-xs text-muted-foreground">{JSON.stringify(n.properties)}</Table.Cell>
-                <Table.Cell className="space-x-2 text-right">
-                  <Link className="text-primary hover:underline" to={`/graph/explorer?node=${encodeURIComponent(n.id)}`}>Explore</Link>
-                  <Button onClick={() => setEditing(n)}>Edit {n.id}</Button>
-                  <ConfirmDialog
-                    trigger={<Button tone="danger" aria-label={`Delete ${n.id}`}>Delete</Button>}
-                    title={`Delete node ${n.id}?`}
-                    consequence="The node and every edge that touches it are deleted."
-                    confirmLabel="Delete node"
-                    onConfirm={() => remove(n.id).catch((e: unknown) => setError(e))}
-                  />
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+      {loaded && (items.length > 0 || applied) && (
+        <section aria-labelledby="graph-nodes" className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+            <h2 id="graph-nodes" className="text-sm font-medium">Nodes{applied && <span className="ml-1 font-normal text-muted-foreground">labelled <span className="font-mono text-foreground">{applied}</span></span>}</h2>
+            <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); setApplied(label.trim()); }}>
+              <Input size="sm" aria-label="Label filter" className="w-48 font-mono" placeholder="Filter by label" value={label} onChange={(e) => setLabel(e.target.value)} />
+              <Button type="submit">Apply filter</Button>
+              {applied && <Button type="button" onClick={() => { setLabel(""); setApplied(""); }}>Clear</Button>}
+            </form>
+          </header>
+          {items.length === 0 ? (
+            <div className="p-4"><EmptyState compact title="No nodes with this label" why="Change the label, or clear the filter to see every node." /></div>
+          ) : (
+            <Table aria-label="Nodes" framed density="compact" className="w-full text-left text-sm">
+              <Table.Header className="text-xs text-muted-foreground"><Table.Row><Table.Head>Id</Table.Head><Table.Head>Label</Table.Head><Table.Head>Properties</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row></Table.Header>
+              <Table.Body>
+                {items.map((n) => (
+                  <Table.Row key={n.id} className="border-t border-border hover:bg-muted/40">
+                    <Table.Cell className="max-w-48 truncate py-2 font-mono" title={n.id}>{n.id}</Table.Cell>
+                    <Table.Cell>{n.label ? <span className="rounded border border-border bg-muted/40 px-1.5 font-mono text-xs leading-5">{n.label}</span> : <span className="text-muted-foreground">none</span>}</Table.Cell>
+                    <Table.Cell className="max-w-sm truncate font-mono text-xs text-muted-foreground" title={JSON.stringify(n.properties)}>{JSON.stringify(n.properties)}</Table.Cell>
+                    <Table.Cell align="end" className="space-x-2 whitespace-nowrap">
+                      <Link className="text-xs font-medium text-primary hover:underline" to={`/graph/explorer?node=${encodeURIComponent(n.id)}`}>Explore</Link>
+                      <Button aria-label={`Edit ${n.id}`} onClick={() => setEditing(n)}>Edit</Button>
+                      <ConfirmDialog
+                        trigger={<Button tone="danger" aria-label={`Delete ${n.id}`}>Delete</Button>}
+                        title={`Delete node ${n.id}?`}
+                        consequence="The node and every edge that touches it are deleted."
+                        confirmLabel="Delete node"
+                        onConfirm={() => remove(n.id).catch((e: unknown) => setError(e))}
+                      />
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table>
+          )}
+          {items.length > 0 && <div className="border-t border-border px-4 pb-3"><Pager mode="more" shown={items.length} hasMore={!!next} onMore={() => void more()} noun="nodes" label="More nodes" /></div>}
+        </section>
       )}
-      {loaded && items.length > 0 && <Pager mode="more" shown={items.length} hasMore={!!next} onMore={() => void more()} noun="nodes" label="More nodes" />}
       <NodeSheet open={creating} onOpenChange={setCreating} onDone={reload} />
       {editing && <NodeSheet key={editing.id} open node={editing} onOpenChange={(o) => !o && setEditing(undefined)} onDone={reload} />}
     </div>

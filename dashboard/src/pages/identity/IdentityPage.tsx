@@ -2,12 +2,13 @@ import { Route, Routes } from "react-router-dom";
 import { useState } from "react";
 import { listRealmIdentities } from "../../api";
 import { PageHeader } from "../../components/PageHeader";
+import { EmptyState } from "../../components/EmptyState";
 import { HelpTip } from "../../components/HelpTip";
 import { PlatformOnly, useAdminScope } from "../../auth/scope";
-import { ErrorView, Loading } from "../../components/ui";
+import { ErrorView } from "../../components/ui";
 import { RouteTabs, Sel } from "../../components/controls";
+import { SkeletonTable } from "../../components/Skeleton";
 import { useLoad } from "../../hooks";
-import { Field } from "../access/shared";
 import AgreementsPage from "./AgreementsPage";
 import BrandingPage from "./BrandingPage";
 import ClientsPage from "./ClientsPage";
@@ -41,22 +42,22 @@ export default function IdentityPage() {
       <PageHeader
         studio="identity"
         secondary={
-          <span className="flex items-end gap-1">
-            <Field label="Realm">
-              <Sel aria-label="Realm" value={realm} onChange={setRealm} options={names.length ? names : [realm]} />
-            </Field>
-            <HelpTip term="realm" />
-          </span>
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-card py-1 pl-3 pr-1">
+            <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              Realm <HelpTip term="realm" />
+            </span>
+            <Sel aria-label="Realm" value={realm} onChange={setRealm} options={names.length ? names : [realm]} className="min-w-36 font-mono" />
+          </div>
         }
       />
       <RouteTabs label="Identity sections" tabs={platform ? TABS : TABS.filter((t) => t.to !== "/identity/clients")} className="mt-4" />
       <div className="mt-6">
-        <ErrorView error={realms.error} />
-        {realms.loading && !realms.error && <Loading what="Loading realms" />}
+        <ErrorView error={realms.error} onRetry={realms.reload} />
+        {realms.loading && !realms.error && <SkeletonTable rows={3} columns={5} label="Loading realms" />}
         {realms.data && (
           <RealmCtx.Provider value={realm}>
             <Routes>
-              <Route index element={<RealmsPage realms={realms.data} reload={realms.reload} onPick={setRealm} />} />
+              <Route index element={<RealmsPage realms={realms.data} reload={realms.reload} current={realm} onPick={setRealm} />} />
               <Route path="clients" element={<PlatformOnly what="Client apps"><ClientsPage /></PlatformOnly>} />
               <Route path="providers" element={<ProvidersPage realms={realms.data} reload={realms.reload} />} />
               <Route path="consents" element={<ConsentsPage />} />
@@ -64,7 +65,7 @@ export default function IdentityPage() {
               <Route path="domains" element={<DomainsPage />} />
               <Route path="email" element={<EmailPage />} />
               <Route path="legal" element={<AgreementsPage />} />
-              <Route path="*" element={<p className="text-muted-foreground">No such page in Identity.</p>} />
+              <Route path="*" element={<EmptyState title="No such page in Identity" why="Pick a section from the tabs above." />} />
             </Routes>
           </RealmCtx.Provider>
         )}

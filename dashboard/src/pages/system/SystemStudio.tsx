@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { PlatformOnly } from "../../auth/scope";
 import { RouteTabs } from "../../components/controls";
+import { PageTabsContext } from "../../components/pageTabs";
 import SystemPage from "../SystemPage";
 import BackupsPage from "./BackupsPage";
 import FeaturesPage from "../setup/FeaturesPage";
@@ -13,18 +14,23 @@ const TABS = [
   { to: "/system/backups", label: "Backups" },
 ];
 
-/** System: live health and build information, features and settings, database topology (replicas and shards), and backups. Each page draws its own PageHeader. Platform administrators only. */
+/**
+ * System: live health and build information, features and settings, database topology (replicas and shards), and backups.
+ * Each page draws its own PageHeader; the section tabs show under it (PageTabsContext), as in the other studios.
+ * Platform administrators only.
+ */
 export default function SystemStudio() {
   return (
     <PlatformOnly what="System">
-      <RouteTabs label="System sections" tabs={TABS} className="mb-6" />
-      <Routes>
-        <Route index element={<SystemPage />} />
-        <Route path="features" element={<FeaturesPage />} />
-        <Route path="topology" element={<TopologyPage />} />
-        <Route path="backups" element={<BackupsPage />} />
-        <Route path="*" element={<p className="text-muted-foreground">No such page in System.</p>} />
-      </Routes>
+      <PageTabsContext.Provider value={<RouteTabs label="System sections" tabs={TABS} />}>
+        <Routes>
+          <Route index element={<SystemPage />} />
+          <Route path="features" element={<FeaturesPage />} />
+          <Route path="topology" element={<TopologyPage />} />
+          <Route path="backups" element={<BackupsPage />} />
+          <Route path="*" element={<p className="text-muted-foreground">No such page in System.</p>} />
+        </Routes>
+      </PageTabsContext.Provider>
     </PlatformOnly>
   );
 }

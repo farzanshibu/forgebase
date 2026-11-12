@@ -53,7 +53,7 @@ describe("openCypher tab: where it shows", () => {
   it("is hidden, and says why, on a server without Apache AGE", async () => {
     const { mock } = setup({ cypher: undefined });
     renderStudio("/graph");
-    await screen.findByText("4 nodes", {}, T);
+    await screen.findByRole("link", { name: "4 nodes" }, T);
     expect(screen.queryByRole("tab", { name: "openCypher" })).not.toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });

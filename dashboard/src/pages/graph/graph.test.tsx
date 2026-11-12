@@ -22,8 +22,8 @@ describe("Graph Studio overview", () => {
   it("shows the graph with node, edge and edge-type counts", async () => {
     const { mock } = setup();
     renderStudio("/graph");
-    expect(await screen.findByText("4 nodes")).toBeInTheDocument();
-    expect(screen.getByText("3 edges")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "4 nodes" })).toHaveAttribute("href", "/graph/nodes");
+    expect(screen.getByRole("link", { name: "3 edges" })).toHaveAttribute("href", "/graph/edges");
     expect(screen.getByText("KNOWS").closest("tr")).toHaveTextContent("2");
     expect(mock.problems).toEqual([]);
   });
@@ -58,7 +58,7 @@ describe("Graph Studio overview, empty state and rules", () => {
     const kinds: string[] = [];
     mock.on("GET", "/api/v1/policies/resources/{kind}", ({ params }) => { kinds.push(params.kind!); return { status: 200, body: { kind: params.kind, fields: [{ name: "properties", type: "json" }], operations: ["list", "view", "create", "update", "delete"], actions: [], items: [] } }; });
     renderStudio("/graph");
-    await screen.findByText("4 nodes");
+    await screen.findByRole("link", { name: "4 nodes" });
     await userEvent.type(screen.getByLabelText(/^Label/), "person");
     await userEvent.click(screen.getByRole("button", { name: "Show rules" }));
     expect(await screen.findByLabelText("List (scan or search) rule")).toBeInTheDocument();

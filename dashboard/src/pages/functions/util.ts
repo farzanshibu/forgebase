@@ -1,4 +1,4 @@
-import type { HookEventName, HookSpec } from "../../api";
+import type { HookEventName, HookSpec, InvokeAccess } from "../../api";
 import { HOOK_EVENTS } from "../../api";
 
 /** Read a file's bytes (FileReader works in browsers and jsdom alike). */
@@ -92,3 +92,13 @@ export function parseHeaderLines(text: string): Record<string, string> {
   }
   return out;
 }
+
+/** Who may call a function over HTTP, in plain words. */
+export const ACCESS_LABEL: Record<InvokeAccess, string> = {
+  permission: "Callers with the permission",
+  authenticated: "Any signed-in caller",
+  public: "Anyone (public)",
+};
+
+/** Thousands separators for counters such as fuel and item counts. */
+export const count = (n: number) => n.toLocaleString("en-US");

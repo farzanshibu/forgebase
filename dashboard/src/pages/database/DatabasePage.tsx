@@ -1,5 +1,8 @@
 import { Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { RouteTabs } from "../../components/controls";
+import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/PageHeader";
 import { Button } from "../../components/ui";
 import { useLoad } from "../../hooks";
@@ -42,11 +45,11 @@ function Section() {
         studio="database"
         primary={onLogins
           ? <Button tone="primary" onClick={() => nav("/database/logins?new=1")}>New direct login</Button>
-          : <Button tone="primary" onClick={() => nav("/database/new")}>New collection</Button>}
+          : <Button tone="primary" onClick={() => nav("/database/new")}><HugeiconsIcon icon={PlusSignIcon} size={14} strokeWidth={2} aria-hidden="true" />New collection</Button>}
       >
         <BackendInfo info={info} />
       </PageHeader>
-      <RouteTabs label="Database sections" tabs={tabs} className="mt-4" />
+      <RouteTabs label="Database sections" tabs={tabs} className="mt-5" />
       <div className="mt-6"><Outlet /></div>
     </div>
   );
@@ -56,6 +59,11 @@ function Section() {
 function Pg({ what, children }: { what: string; children: React.ReactNode }) {
   const { data: info } = useLoad(getDatabaseInfo, "database-info");
   return <PgOnly info={info} what={what}>{children}</PgOnly>;
+}
+
+function NotFound() {
+  const nav = useNavigate();
+  return <EmptyState title="No such page in the Database studio" why="The link may be old or mistyped. The list of collections is the place to start." action={<Button onClick={() => nav("/database")}>All collections</Button>} />;
 }
 
 export default function DatabasePage() {
@@ -72,7 +80,7 @@ export default function DatabasePage() {
       </Route>
       <Route path="new" element={<SchemaDesigner />} />
       <Route path="c/:name/*" element={<CollectionView />} />
-      <Route path="*" element={<p className="text-muted-foreground">No such page in the Database studio.</p>} />
+      <Route path="*" element={<NotFound />} />
     </Routes>
   );
 }

@@ -11,7 +11,8 @@
  *
  * A page that knows better names (a record's title instead of its id) overrides the trail (useCrumbs is in crumbs.ts):
  *   useCrumbs([{ label: "Database", to: "/database" }, { label: "posts", to: "/database/c/posts" }, { label: record.title }]);
- * The last crumb is the current page and is not a link.
+ * The last crumb is the current page and is not a link. A trail of one (a studio's main page) is screen-reader only,
+ * since the page's h1 already says the same word right under it.
  */
 import { Breadcrumb } from "panelui-web/breadcrumb";
 import { useContext, useMemo, useState, type ReactNode } from "react";
@@ -29,8 +30,10 @@ export function Breadcrumbs({ className = "" }: { className?: string }) {
   const { pathname } = useLocation();
   const ctx = useContext(CrumbContext);
   const trail = ctx?.override && ctx.override.path === pathname ? finish(ctx.override.crumbs) : crumbsFor(pathname);
+  // One crumb only repeats the page's own h1 ("Billing" over "Billing"): keep it for screen readers, hide it on screen.
+  const single = trail.length <= 1;
   return (
-    <Breadcrumb size="sm" maxItems={5} className={`min-w-0 ${className}`.trim()}>
+    <Breadcrumb size="sm" maxItems={5} className={`min-w-0 ${single ? "sr-only" : ""} ${className}`.trim()}>
       <Breadcrumb.List className="flex-nowrap">
         {trail.map((c, i) => (
           <Breadcrumb.Item key={`${i}:${c.label}`} className="min-w-0">

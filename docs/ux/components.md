@@ -32,6 +32,29 @@ ask god (FB-98 has merged) and it is added here.
 | Section tabs | `RouteTabs` (router driven) | `components/controls` |
 | Validate a name as the user types | `validate.collectionName`, `bucketName`, `functionName`, `topicName`, `namespaceName`, `json`, `integer`, `required`, `all` | `validate` |
 | Better breadcrumb names on a detail page | `useCrumbs([...])` | `components/crumbs` |
+| A list or table in a card: title, count, filters, pager | `TableCard` with `Th`, `NUM` and `HEAD_ROW`; `CardBody` pads an empty state, skeleton or error inside it: `<TableCard title="Invoices" count={n} toolbar={…} footer={<Pager … />}><Table framed …>…</Table></TableCard>` | `components/TableCard` |
+| Key figures as small cards | `StatGrid` with `items`, or `Stat` children: `<StatGrid label="Job counts" items={[{ label: "Failed", value: 2, tone: "bad" }]} />` | `components/Stats` |
+| Key facts under a detail page's header | `Facts` (tuples or objects; falsy items are skipped; `columns` for a grid): `<Facts label="Bucket facts" items={[["Versioning", "On"], { label: "Id", value: id, mono: true }]} />` | `components/Facts` |
+| A time from the API | `When`: "5 min ago" with the exact local and UTC time on hover, `day` for a date: `<When value={key.last_used_at} fallback="Never" />` | `components/Time` (words in `components/timeFormat`) |
+| A long id, or a value to copy | `IdText` (cut to fit, copy icon): `<IdText id={job.id} noun="job" />`; an icon-only copy is `<CopyIcon text={url} label="Copy webhook URL" />` (= `CopyButton iconOnly`) | `components/IdText`, `components/ui` |
+| A status | `Badge` with `status` (tone, dot and words from the status): `<Badge status={invoice.status} />`; your own words: `<Badge tone="ok" dot>Active</Badge>`; a bare `Dot`; `statusTone(s)` for your own markup | `components/StatusBadge`, `components/statusTone` |
+| Roles, scopes or kinds as tags | `Chips` (`max` folds the rest into "+3 more") or one `Chip`: `<Chips items={user.roles} max={3} />` | `components/Chips` |
+| An icon-only row action | `IconButton` (`label` is its name and tooltip; also a ConfirmDialog trigger): `<IconButton icon={Delete02Icon} label="Delete field title" tone="danger" onClick={…} />` | `components/ui` |
+
+## Status colours
+
+One colour means one thing in every studio; `statusTone(status)` holds the list, and `Badge status` uses it.
+Keep the studio's own words; only the colour comes from here.
+
+| Colour | Tone | Statuses |
+|---|---|---|
+| Green | `ok` | succeeded, paid, active, healthy, enabled, verified, configured, sent |
+| Blue | `info` | queued, open, pending, scheduled, draft, trialing |
+| Amber | `warn` | running (the dot pulses), processing, warning, expiring, retrying, grace |
+| Red | `bad` | failed, past_due, error, down, suspended, revoked, uncollectible, dead |
+| Grey | `neutral` | cancelled, canceled, void, archived, disabled, paused, expired, and any word it does not know |
+
+`tone="default"` is the outline badge for a kind that is not a state ("Custom", "Admin").
 
 ## The page skeleton
 
@@ -81,9 +104,22 @@ const list = useLoad(listBuckets, "buckets");
     docs="docs/adr/0018-object-storage.md"
   />
 )}
-{list.data && list.data.length > 0 && <Table aria-label="Buckets">…</Table>}
+{list.data && list.data.length > 0 && (
+  <TableCard title="Buckets" count={list.data.length} actions={<Button onClick={list.reload}>Refresh</Button>}>
+    <Table framed density="compact" aria-label="Buckets">
+      <Table.Header className={HEAD_ROW}><Table.Row><Th>Name</Th><Th>Status</Th><Th>Created</Th><Th align="end">Objects</Th></Table.Row></Table.Header>
+      <Table.Body>{list.data.map((b) => (
+        <Table.Row key={b.name}>
+          <Table.Cell>{b.name}</Table.Cell><Table.Cell><Badge status={b.status} /></Table.Cell>
+          <Table.Cell><When value={b.created_at} /></Table.Cell><Table.Cell className={NUM}>{b.objects}</Table.Cell>
+        </Table.Row>
+      ))}</Table.Body>
+    </Table>
+  </TableCard>
+)}
 ```
 
+- Inside a TableCard, wrap an ErrorPanel, Skeleton or EmptyState in `CardBody` so it gets the card's padding.
 - A filtered list with no match: `<EmptyState compact title="No users match" why="Clear the search to see every user." />`.
 - Starter copy for the big empty states is in [audit.md A-09](audit.md).
 
@@ -115,6 +151,7 @@ const nameError = (touched ? validate.bucketName(name) : undefined) ?? fieldErro
 ```
 
 - Success closes the sheet, toasts "Bucket avatars created" and opens `href`.
+- An edit form in the same sheet passes `toast="saved"` ("Schema saved"); `toast={false}` when it toasts itself.
 - With `onError`, the sheet's ErrorPanel hides the field list, because the
   fields show their own errors. Without it, the panel lists them.
 - The palette's Create actions go to `/storage?new=1`, `/queues?new=1`,
@@ -143,6 +180,9 @@ const nameError = (touched ? validate.bucketName(name) : undefined) ?? fieldErro
 - `ConfirmButton label="Delete x" onConfirm={…}` still works; its action reads
   "Confirm delete x". Move to ConfirmDialog when you touch the screen, adding
   `consequence` and `confirmText`.
+- A row action with short words: `ConfirmButton label="Archive price pro_month" short="Archive"`.
+  The button reads "Archive"; its accessible name, the question and the confirm
+  button use the full label.
 
 ## Errors
 

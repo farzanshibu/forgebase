@@ -10,7 +10,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { fieldErrors } from "../../components/ErrorPanel";
 import { FormField } from "../../components/FormField";
 import { SkeletonLines, SkeletonTable } from "../../components/Skeleton";
-import { Button, ErrorView } from "../../components/ui";
+import { Button, CopyButton, ErrorView } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
 import { parseJsonObject, parseVector } from "./util";
@@ -52,37 +52,41 @@ export default function VectorRecords({ collection, onChanged }: { collection: V
         <EmptyState title="No records yet" why="A record is an embedding with optional metadata and text. Add one here, or upsert many from your code." action={addButton} docs="docs/adr/0012-vector.md" />
       )}
       {data && data.length > 0 && (
-        <div>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-sm text-muted-foreground">
-              {data.length} records{data.length >= BROWSE_LIMIT ? ` (first ${BROWSE_LIMIT} shown)` : ""}
-            </p>
+        <section aria-labelledby="vr-count" className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
+            <div className="min-w-0">
+              <h2 id="vr-count" className="text-sm font-medium">{data.length} records{data.length >= BROWSE_LIMIT ? ` (first ${BROWSE_LIMIT} shown)` : ""}</h2>
+              <p className="text-xs text-muted-foreground">Select an id to see the whole record, with its vectors.</p>
+            </div>
             {addButton}
-          </div>
-          <Table aria-label="Records" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-              <Table.Row><Table.Head className="py-2">Id</Table.Head><Table.Head>Metadata</Table.Head><Table.Head>Text</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row>
+          </header>
+          <Table aria-label="Records" framed density="compact" className="w-full table-fixed text-left text-sm">
+            <Table.Header className="text-xs text-muted-foreground">
+              <Table.Row><Table.Head className="w-[28%]">Id</Table.Head><Table.Head className="w-[32%]">Metadata</Table.Head><Table.Head>Text</Table.Head><Table.Head className="w-24"><span className="sr-only">Actions</span></Table.Head></Table.Row>
             </Table.Header>
             <Table.Body>
-              {data.map((h) => (
-                <Table.Row key={h.id} className="border-t border-border">
-                  <Table.Cell className="py-2"><button type="button" className="font-mono text-primary hover:underline" onClick={() => setSelected(h.id)}>{h.id}</button></Table.Cell>
-                  <Table.Cell className="max-w-xs truncate font-mono text-xs text-muted-foreground">{JSON.stringify(h.metadata ?? {})}</Table.Cell>
-                  <Table.Cell className="max-w-xs truncate text-muted-foreground">{h.text ?? ""}</Table.Cell>
-                  <Table.Cell className="text-right">
-                    <ConfirmDialog
-                      trigger={<Button tone="danger" aria-label={`Delete ${h.id}`}>Delete</Button>}
-                      title={`Delete record ${h.id}?`}
-                      consequence="The record and its vectors are removed from the collection and its index."
-                      confirmLabel="Delete record"
-                      onConfirm={() => remove(h.id).catch((e: unknown) => { setFail(e); })}
-                    />
-                  </Table.Cell>
-                </Table.Row>
-              ))}
+              {data.map((h) => {
+                const meta = JSON.stringify(h.metadata ?? {});
+                return (
+                  <Table.Row key={h.id} className="border-t border-border hover:bg-muted/40">
+                    <Table.Cell className="py-2"><button type="button" title={h.id} className="block max-w-full truncate rounded text-left font-mono text-primary hover:underline focus-visible:outline-2 focus-visible:outline-ring" onClick={() => setSelected(h.id)}>{h.id}</button></Table.Cell>
+                    <Table.Cell className="truncate font-mono text-xs text-muted-foreground" title={meta}>{meta === "{}" ? "–" : meta}</Table.Cell>
+                    <Table.Cell className="truncate text-muted-foreground" title={h.text ?? undefined}>{h.text ?? ""}</Table.Cell>
+                    <Table.Cell align="end">
+                      <ConfirmDialog
+                        trigger={<Button tone="danger" aria-label={`Delete ${h.id}`}>Delete</Button>}
+                        title={`Delete record ${h.id}?`}
+                        consequence="The record and its vectors are removed from the collection and its index."
+                        confirmLabel="Delete record"
+                        onConfirm={() => remove(h.id).catch((e: unknown) => { setFail(e); })}
+                      />
+                    </Table.Cell>
+                  </Table.Row>
+                );
+              })}
             </Table.Body>
           </Table>
-        </div>
+        </section>
       )}
       {selected && <ItemDetail key={selected} name={collection.name} id={selected} onClose={() => setSelected(undefined)} />}
       {adding && <UpsertSheet collection={collection} onClose={() => setAdding(false)} onDone={done} />}
@@ -96,7 +100,12 @@ function ItemDetail({ name, id, onClose }: { name: string; id: string; onClose: 
     <DetailSheet open onOpenChange={(o) => !o && onClose()} title={`Item ${id}`} description={`In ${name}.`}>
       <ErrorView error={error} />
       {loading && !error && <SkeletonLines lines={4} label="Loading item" />}
-      {data && <pre aria-label="Item JSON" className="max-h-[70vh] overflow-auto rounded bg-muted/60 p-3 text-xs text-foreground/80">{JSON.stringify(data, null, 2)}</pre>}
+      {data && (
+        <div className="space-y-2">
+          <div className="flex justify-end"><CopyButton text={JSON.stringify(data, null, 2)} label="Copy JSON" /></div>
+          <pre aria-label="Item JSON" className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">{JSON.stringify(data, null, 2)}</pre>
+        </div>
+      )}
     </DetailSheet>
   );
 }

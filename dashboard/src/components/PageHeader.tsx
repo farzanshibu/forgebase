@@ -13,7 +13,8 @@
  */
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactNode } from "react";
+import { useContext, type ReactNode } from "react";
+import { PageTabsContext } from "./pageTabs";
 import type { GlossaryTerm } from "../glossary";
 import { useServerVersion } from "../hooks";
 import { HelpTip } from "./HelpTip";
@@ -37,13 +38,15 @@ export interface PageHeaderProps {
   className?: string;
 }
 
+
 export function PageHeader({ studio, title, term, description, docs, primary, secondary, children, className = "" }: PageHeaderProps) {
+  const tabs = useContext(PageTabsContext);
   const s = studio !== undefined ? studioByPath(studio) : undefined;
   const heading = title ?? s?.title;
   const text = description ?? s?.summary;
   const helpTerm = term === null ? undefined : (term ?? s?.term);
   const doc = docs === null ? undefined : (docs ?? s?.docs);
-  return (
+  const header = (
     <header className={`flex flex-wrap items-start justify-between gap-x-6 gap-y-3 ${className}`.trim()}>
       <div className="min-w-0 max-w-3xl">
         <div className="flex items-center gap-2">
@@ -51,7 +54,7 @@ export function PageHeader({ studio, title, term, description, docs, primary, se
           {helpTerm && <HelpTip term={helpTerm} />}
         </div>
         {(text || doc) && (
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 max-w-[65ch] text-sm text-muted-foreground">
             {text}
             {doc && (
               <>
@@ -70,6 +73,13 @@ export function PageHeader({ studio, title, term, description, docs, primary, se
         </div>
       )}
     </header>
+  );
+  if (!tabs) return header;
+  return (
+    <>
+      {header}
+      <div className="mt-4">{tabs}</div>
+    </>
   );
 }
 

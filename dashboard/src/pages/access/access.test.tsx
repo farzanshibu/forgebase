@@ -51,11 +51,14 @@ describe("catalogue", () => {
 describe("organizations", () => {
   it("lists, creates and links to an organization", async () => {
     open("/access");
-    expect(await screen.findByRole("link", { name: "acme" })).toHaveAttribute("href", "/access/orgs/org_acme");
-    await userEvent.type(screen.getByLabelText("Org slug"), "globex");
-    await userEvent.type(screen.getByLabelText("Org name"), "Globex");
-    await userEvent.click(screen.getByRole("button", { name: "Create organization" }));
-    expect(await screen.findByRole("link", { name: "globex" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Acme Inc" })).toHaveAttribute("href", "/access/orgs/org_acme");
+    await userEvent.click(screen.getByRole("button", { name: "New organization" }));
+    const form = await screen.findByRole("form", { name: "New organization" });
+    await userEvent.type(within(form).getByLabelText("Name"), "Globex");
+    expect(within(form).getByLabelText(/^Slug/)).toHaveValue("globex"); // the slug follows the name
+    await userEvent.click(within(form).getByRole("button", { name: "Create organization" }));
+    // the sheet opens the new organization
+    expect(await screen.findByRole("heading", { name: "Globex" })).toBeInTheDocument();
     expect(last("post /api/v1/orgs")).toEqual({ slug: "globex", name: "Globex" });
   });
 
@@ -69,10 +72,13 @@ describe("organizations", () => {
 
   it("renames and deletes an organization", async () => {
     open(ORG);
-    expect(await screen.findByText("Acme Inc")).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Rename to"), "Acme Corp");
+    expect(await screen.findByRole("heading", { name: "Acme Inc" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Rename" }));
-    expect(await screen.findByText("Acme Corp")).toBeInTheDocument();
+    const dlg = await screen.findByRole("dialog");
+    await userEvent.clear(within(dlg).getByLabelText("New name"));
+    await userEvent.type(within(dlg).getByLabelText("New name"), "Acme Corp");
+    await userEvent.click(within(dlg).getByRole("button", { name: "Save name" }));
+    expect(await screen.findByRole("heading", { name: "Acme Corp" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Delete organization" }));
     const confirm = within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete organization" });
     expect(confirm).toBeDisabled(); // the org's slug must be typed first
@@ -91,7 +97,7 @@ describe("organizations", () => {
 describe("projects and environments", () => {
   it("lists environments, adds one, creates and deletes a project", async () => {
     open(`${ORG}/projects`);
-    expect(await screen.findByText("Web (web)")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Project web" })).toHaveTextContent("Web");
     expect(within(await screen.findByLabelText("Environments of web")).getByText("development")).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("New environment in web"), "qa");
     await userEvent.click(screen.getByRole("button", { name: "Add environment" }));
@@ -99,7 +105,7 @@ describe("projects and environments", () => {
 
     await userEvent.type(screen.getByLabelText("Project slug"), "api");
     await userEvent.click(screen.getByRole("button", { name: "Create project" }));
-    expect(await screen.findByText("api (api)")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Project api" })).toBeInTheDocument();
     expect(last("post /api/v1/orgs/{org}/projects")).toEqual({ slug: "api", name: "api" });
 
     await userEvent.click(screen.getAllByRole("button", { name: "Delete project" })[0]!);
@@ -179,9 +185,9 @@ describe("roles and the permission matrix", () => {
     open(`${ORG}/roles`);
     await rowOf("support");
     const sa = await rowOf("super_admin");
-    expect(within(sa).getByText("not assignable")).toBeInTheDocument();
+    expect(within(sa).getByText("Not assignable")).toBeInTheDocument();
     expect(within(sa).getByRole("button", { name: "View" })).toBeInTheDocument();
-    expect(within(await rowOf("owner")).getByText("seeded")).toBeInTheDocument();
+    expect(within(await rowOf("owner")).getByText("Seeded")).toBeInTheDocument();
     expect(within(await rowOf("owner")).queryByRole("button", { name: "Delete" })).toBeNull(); // seeded: no delete
   });
 
@@ -387,7 +393,10 @@ describe("empty states", () => {
   it("teaches when there are no organizations", async () => {
     st.orgs = [];
     open("/access");
-    expect(await screen.findByRole("region", { name: "No organizations yet." })).toHaveTextContent(/groups your team/);
+    const empty = await screen.findByRole("region", { name: "No organizations yet" });
+    expect(empty).toHaveTextContent(/groups your team/);
+    await userEvent.click(within(empty).getByRole("button", { name: "New organization" }));
+    expect(await screen.findByRole("form", { name: "New organization" })).toBeInTheDocument();
   });
 });
 

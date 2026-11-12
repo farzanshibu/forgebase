@@ -5,6 +5,7 @@ import { pick } from "../../test/pick";
 import { MockApi } from "../../test/mockApi";
 import { renderStudio, signedIn } from "../../test/helpers";
 import { installIdentity } from "../../test/idMock";
+import { sheet } from "../../test/dataStudioMock";
 import { nest } from "./util";
 
 // A test sets `adminScope.value` to see the studio as a realm administrator (what /api/auth/me reports, FB-137).
@@ -56,7 +57,7 @@ describe("Identity Studio shell", () => {
     expect(await screen.findByRole("cell", { name: "acme" })).toBeInTheDocument();
     await pick(screen.getByLabelText("Realm"), "acme");
     await userEvent.click(screen.getByRole("tab", { name: "Client apps" }));
-    expect(await screen.findByText("No client apps yet.")).toBeInTheDocument();
+    expect(await screen.findByText("No client apps yet")).toBeInTheDocument();
     expect(mock.problems).toEqual([]);
   });
 });
@@ -66,9 +67,11 @@ describe("Realms and tenant settings", () => {
     const { mock, st } = setup();
     renderStudio("/identity");
     await screen.findByRole("cell", { name: "acme" });
-    await userEvent.type(screen.getByLabelText("Realm id"), "globex");
-    await userEvent.type(screen.getByLabelText("Realm name"), "Globex");
-    await userEvent.click(screen.getByRole("button", { name: "Create realm" }));
+    await userEvent.click(screen.getByRole("button", { name: "New realm" }));
+    const create = await sheet("New realm");
+    await userEvent.type(within(create).getByLabelText("Realm id"), "globex");
+    await userEvent.type(within(create).getByLabelText("Realm name"), "Globex");
+    await userEvent.click(within(create).getByRole("button", { name: "Create realm" }));
     await waitFor(() => expect(st.realms.map((r) => r.realm)).toContain("globex"));
     // One call creates the realm with its identity settings (no separate policy-realm request).
     expect(body(mock, "post /api/auth/realms")).toMatchObject({ id: "globex", name: "Globex", config: { signup: true, methods: { password: true } } });
@@ -76,9 +79,9 @@ describe("Realms and tenant settings", () => {
     expect(mock.problems).toEqual([]);
 
     await userEvent.click(await screen.findByRole("button", { name: "Settings acme" }));
-    const form = screen.getByRole("form", { name: "Tenant settings" });
-    await userEvent.click(within(form).getByLabelText(/^Allow sign-up/));
-    await userEvent.click(within(form).getByLabelText("Passkey"));
+    const form = await screen.findByRole("form", { name: "Tenant settings" });
+    await userEvent.click(within(form).getByRole("switch", { name: /^Allow sign-up/ }));
+    await userEvent.click(within(form).getByRole("checkbox", { name: "Passkey" }));
     await pick(within(form).getByLabelText("Require verified email"), "true");
     await userEvent.click(within(form).getByRole("button", { name: "Save settings" }));
     expect(await within(form).findByRole("status")).toHaveTextContent("Saved");
@@ -93,11 +96,12 @@ describe("Client apps", () => {
     const { mock, st } = setup();
     renderStudio("/identity/clients");
     await screen.findByText("app_web");
-    const form = screen.getByRole("form", { name: "Create client app" });
+    await userEvent.click(screen.getByRole("button", { name: "New client app" }));
+    const form = await sheet("New client app");
     await userEvent.type(within(form).getByLabelText("Name"), "Billing");
     await userEvent.type(within(form).getByLabelText("Redirect URIs"), "https://bill.example.com/cb{enter}https://bill.example.com/cb2");
-    await userEvent.click(within(form).getByLabelText("client_credentials"));
-    await userEvent.click(within(form).getByLabelText(/^Skip consent screen/));
+    await userEvent.click(within(form).getByRole("checkbox", { name: "client_credentials" }));
+    await userEvent.click(within(form).getByRole("checkbox", { name: /^Skip consent screen/ }));
     await userEvent.type(within(form).getByLabelText("Access token lifetime"), "600");
     await userEvent.click(within(form).getByRole("button", { name: "Create client app" }));
     expect(await screen.findByTestId("secret-once")).toHaveTextContent("fbs_first_secret");
@@ -111,9 +115,10 @@ describe("Client apps", () => {
     expect(screen.queryByTestId("secret-once")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("fbs_first_secret");
 
-    await pick(screen.getByLabelText("Grace for Web app"), "86400");
     await userEvent.click(screen.getByRole("button", { name: "Rotate secret Web app" }));
-    await userEvent.click(screen.getByRole("button", { name: "Confirm rotate secret web app" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await pick(within(dialog).getByLabelText("Grace for Web app"), "86400");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rotate secret" }));
     expect(await screen.findByTestId("secret-once")).toHaveTextContent("fbs_rotated_secret");
     expect(body(mock, "post /api/auth/clients/{id}/secret")).toEqual({ grace_seconds: 86400 });
     expect(await screen.findByText(/old secret valid until/)).toBeInTheDocument();
@@ -128,7 +133,8 @@ describe("Client apps", () => {
     const { mock, st } = setup();
     renderStudio("/identity/clients");
     await screen.findByText("app_web");
-    const form = screen.getByRole("form", { name: "Create client app" });
+    await userEvent.click(screen.getByRole("button", { name: "New client app" }));
+    const form = await sheet("New client app");
     await userEvent.type(within(form).getByLabelText("Name"), "SPA");
     await pick(within(form).getByLabelText("Type"), "public");
     await userEvent.click(within(form).getByRole("button", { name: "Create client app" }));
@@ -137,10 +143,10 @@ describe("Client apps", () => {
     expect(body(mock, "post /api/auth/clients").type).toBe("public");
 
     await userEvent.click(screen.getByRole("button", { name: "Edit Web app" }));
-    const edit = screen.getByRole("form", { name: "Edit client app" });
+    const edit = await sheet("Edit client app");
     await userEvent.clear(within(edit).getByLabelText("Name"));
     await userEvent.type(within(edit).getByLabelText("Name"), "Web app v2");
-    await userEvent.click(within(edit).getByLabelText("Disabled"));
+    await userEvent.click(within(edit).getByRole("checkbox", { name: "Disabled" }));
     await userEvent.click(within(edit).getByRole("button", { name: "Save client app" }));
     expect(await screen.findByText("disabled")).toBeInTheDocument();
     expect(st.clients[0]).toMatchObject({ name: "Web app v2", disabled: true });
@@ -155,7 +161,7 @@ describe("Identity providers", () => {
     expect(await screen.findByText(/GitHub/)).toBeInTheDocument();
 
     const ldap = screen.getByRole("form", { name: "LDAP" });
-    await userEvent.click(within(ldap).getByLabelText("LDAP sign-in enabled"));
+    await userEvent.click(within(ldap).getByRole("switch", { name: "LDAP sign-in enabled" }));
     await userEvent.type(within(ldap).getByLabelText("LDAP URL"), "ldaps://ldap.example.com");
     await userEvent.type(within(ldap).getByLabelText("Base DN"), "dc=example,dc=com");
     await userEvent.type(within(ldap).getByLabelText("Bind password"), "s3cret");
@@ -185,21 +191,21 @@ describe("Identity providers", () => {
     renderStudio("/identity/providers");
     await screen.findByRole("form", { name: "LDAP" });
     const ts = screen.getByRole("form", { name: "Turnstile (bot protection)" });
-    await userEvent.click(within(ts).getByLabelText("Turnstile enabled"));
+    await userEvent.click(within(ts).getByRole("switch", { name: "Turnstile enabled" }));
     await userEvent.type(within(ts).getByLabelText("Site key"), "0xABC");
     await userEvent.type(within(ts).getByLabelText("Turnstile secret"), "ts-secret");
-    await userEvent.click(within(ts).getByLabelText("otp"));
+    await userEvent.click(within(ts).getByRole("checkbox", { name: "otp" }));
     await userEvent.click(within(ts).getByRole("button", { name: "Save Turnstile (bot protection)" }));
     await waitFor(() => expect(body(mock, "put /api/auth/realms/{realm}").config.turnstile).toMatchObject({ enabled: true, site_key: "0xABC", secret: "ts-secret", actions: ["signup", "login", "otp"] }));
 
     const sms = screen.getByRole("form", { name: "Phone (SMS)" });
-    await userEvent.click(within(sms).getByLabelText("Phone sign-in enabled"));
+    await userEvent.click(within(sms).getByRole("switch", { name: "Phone sign-in enabled" }));
     await userEvent.click(within(sms).getByRole("button", { name: "Save Phone (SMS)" }));
     await waitFor(() => expect(body(mock, "put /api/auth/realms/{realm}").config.methods.phone).toBe(true));
 
     // LDAP enabled without a URL: the server refuses and the message is shown.
     const ldap = screen.getByRole("form", { name: "LDAP" });
-    await userEvent.click(within(ldap).getByLabelText("LDAP sign-in enabled"));
+    await userEvent.click(within(ldap).getByRole("switch", { name: "LDAP sign-in enabled" }));
     await userEvent.click(within(ldap).getByRole("button", { name: "Save LDAP" }));
     expect(await within(ldap).findByRole("alert")).toHaveTextContent("ldap.url must be ldap:// or ldaps://");
   });
@@ -213,7 +219,7 @@ describe("Consents and OIDC keys", () => {
     expect(screen.queryByText("Other realm app")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Revoke Web app" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm revoke web app" }));
-    expect(await screen.findByText("No consents in this realm.")).toBeInTheDocument();
+    expect(await screen.findByText("No consents in this realm")).toBeInTheDocument();
     expect(st.consents.map((c) => c.id)).toEqual(["con2"]);
 
     await userEvent.click(screen.getByRole("button", { name: "Rotate keys for default" }));
@@ -247,7 +253,7 @@ describe("Social providers CRUD and SMS gateway", () => {
     renderStudio("/identity/providers");
     await screen.findByText(/GitHub/);
     await userEvent.click(screen.getByRole("button", { name: "Add provider" }));
-    const form = screen.getByRole("form", { name: "Social provider" });
+    const form = await sheet("New social provider");
     await userEvent.type(within(form).getByLabelText("Provider id"), "google");
     await userEvent.type(within(form).getByLabelText("Client id"), "g-client");
     await userEvent.type(within(form).getByLabelText("Client secret"), "g-secret");
@@ -258,7 +264,7 @@ describe("Social providers CRUD and SMS gateway", () => {
     expect(document.body.textContent).not.toContain("g-secret");
 
     await userEvent.click(await screen.findByRole("button", { name: "Edit provider google" }));
-    const edit = screen.getByRole("form", { name: "Social provider" });
+    const edit = await sheet("Edit provider google");
     await userEvent.type(within(edit).getByLabelText("Display name"), "Google SSO");
     await userEvent.click(within(edit).getByRole("button", { name: "Save provider" }));
     await waitFor(() => expect(st.providers.find((p) => p.id === "google")!.display_name).toBe("Google SSO"));

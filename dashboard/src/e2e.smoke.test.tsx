@@ -80,6 +80,8 @@ it("Identity Studio: realm -> public client app -> branding preview -> publish a
 
   await u.click(await screen.findByRole("tab", { name: "Client apps" }));
   await screen.findByText("app_web");
+  // Creating opens a sheet from the header's primary action.
+  await u.click(await screen.findByRole("button", { name: "New client app" }));
   await u.type(await screen.findByLabelText("Name"), "Mobile");
   await pick(screen.getByLabelText("Type"), "public");
   await u.click(await screen.findByRole("button", { name: "Create client app" }));

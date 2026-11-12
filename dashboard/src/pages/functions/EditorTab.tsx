@@ -1,11 +1,13 @@
 import { useNavigate } from "react-router-dom";
 import { getVersionSource, listFunctionVersions } from "../../api";
 import type { FunctionInfo, VersionSource } from "../../api";
+import { EmptyState } from "../../components/EmptyState";
 import { ErrorPanel } from "../../components/ErrorPanel";
 import { SkeletonLines } from "../../components/Skeleton";
 import { toaster } from "../../toaster";
 import { useLoad } from "../../hooks";
 import SourceEditor from "./SourceEditor";
+import { when } from "./util";
 
 /** Edit the active version's source and deploy the result as a new version. */
 export default function EditorTab({ info, onChanged }: { info: FunctionInfo; onChanged: () => void }) {
@@ -19,10 +21,10 @@ export default function EditorTab({ info, onChanged }: { info: FunctionInfo; onC
   }, key);
 
   if (active.error) return <ErrorPanel error={active.error} onRetry={active.reload} />;
-  if (active.loading || !active.data) return <SkeletonLines lines={6} label="Loading source" />;
+  if (active.loading || !active.data) return <SkeletonLines lines={8} label="Loading source" />;
   const { version, source } = active.data;
   if (!version || !source) {
-    return <p className="text-sm text-muted-foreground">The active version is a WebAssembly module, which has no source to edit. Upload a new module on the Versions tab, or create a JavaScript or TypeScript function.</p>;
+    return <EmptyState compact title="No source to edit" why="The active version is a WebAssembly module, which has no source to edit. Upload a new module on the Versions tab, or create a JavaScript or TypeScript function." />;
   }
   return (
     <div className="space-y-3">
@@ -34,6 +36,7 @@ export default function EditorTab({ info, onChanged }: { info: FunctionInfo; onC
         storageKey={info.name}
         capabilities={version.capabilities}
         config={version}
+        context={<span>Editing the active version <span className="font-mono text-foreground">v{version.version}</span>, deployed <span className="font-mono">{when(version.created_at)}</span>{version.created_by ? ` by ${version.created_by}` : ""}</span>}
         onDeployed={(d) => {
           toaster.add({ title: `Version v${d.version.version} deployed`, description: "It is the active version. Try it here.", type: "success" });
           onChanged();

@@ -11,6 +11,8 @@ import { CreateSheet, DetailSheet } from "../../components/CreateSheet";
 import { Toggle } from "../../components/controls";
 import { ErrorPanel, fieldErrors } from "../../components/ErrorPanel";
 import { UseFromCode } from "../../components/UseFromCode";
+import { CopyButton } from "../../components/ui";
+import { when } from "../functions/util";
 import { record as recordSnippet, serverUrl } from "../../snippets";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
@@ -105,6 +107,14 @@ function Editor({ collection, collections, recordId, record, onClose, onSaved }:
         return isNew ? { what: "Record" } : undefined;
       }}
     >
+      {!isNew && record && (
+        <dl aria-label="Record facts" className="grid grid-cols-[5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs">
+          <dt className="text-muted-foreground">id</dt>
+          <dd className="flex min-w-0 items-center justify-between gap-2"><span className="truncate font-mono" title={recordId}>{recordId}</span><CopyButton text={recordId} label="Copy id" className="h-6 px-2 text-xs" /></dd>
+          {typeof record.created === "string" && <><dt className="text-muted-foreground">Created</dt><dd className="tabular-nums">{when(record.created)}</dd></>}
+          {typeof record.updated === "string" && <><dt className="text-muted-foreground">Updated</dt><dd className="tabular-nums">{when(record.updated)}</dd></>}
+        </dl>
+      )}
       <Toggle checked={asJson} onChange={switchMode} label="Edit as JSON" description="Type the whole record as a JSON object." />
       {jsonError && <p role="alert" className="text-xs font-medium text-destructive">{jsonError}</p>}
       {asJson ? (
@@ -113,7 +123,7 @@ function Editor({ collection, collections, recordId, record, onClose, onSaved }:
         <RecordForm collection={collection} collections={collections} draft={draft} onChange={change} errors={errors} />
       )}
       {!isNew && (
-        <details className="rounded-md border border-border p-2 text-sm">
+        <details className="rounded-lg border border-border px-3 py-2 text-sm">
           <summary className="cursor-pointer font-medium">Use from code</summary>
           <div className="mt-2">
             <UseFromCode snippet={recordSnippet(serverUrl(), collection.name, recordId)} title={null} />

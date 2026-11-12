@@ -20,6 +20,8 @@ import { fieldErrors } from "../../errors";
 import { accessWords, seesNothing } from "./pgHelpers";
 import { useCreateParam, useLoad } from "../../hooks";
 import { notify } from "../../toaster";
+import { Badge } from "panelui-web/badge";
+import { TableCard } from "./parts";
 
 const NAME = /^[a-z][a-z0-9_]{0,39}$/;
 const PRINCIPAL = /^(user:[^/\s]+\/[^\s]+|service:[^\s]+)$/;
@@ -135,24 +137,24 @@ export default function Logins() {
         />
       )}
       {data && data.length > 0 && (
-        <div className="overflow-x-auto">
-          <Table aria-label="Direct logins" className="w-full text-left text-sm">
-            <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-              <Table.Row><Table.Head className="py-1">Login</Table.Head><Table.Head>Acts as</Table.Head><Table.Head>Access</Table.Head><Table.Head>Expires</Table.Head><Table.Head>Status</Table.Head><Table.Head><span className="sr-only">Actions</span></Table.Head></Table.Row>
+        <TableCard title="Direct logins" count={data.length}>
+          <Table framed density="compact" aria-label="Direct logins">
+            <Table.Header className="bg-muted/40">
+              <Table.Row><Table.Head>Login</Table.Head><Table.Head>Acts as</Table.Head><Table.Head>Access</Table.Head><Table.Head>Expires</Table.Head><Table.Head>Status</Table.Head><Table.Head align="end"><span className="sr-only">Actions</span></Table.Head></Table.Row>
             </Table.Header>
             <Table.Body>
               {data.map((l) => (
-                <Table.Row key={l.name} className="border-t border-border align-top">
-                  <Table.Cell className="py-1 font-mono text-xs">{l.role}</Table.Cell>
-                  <Table.Cell className="text-xs">{l.principal}{l.tenant ? ` · tenant ${l.tenant}` : ""}</Table.Cell>
-                  <Table.Cell className="text-xs">{accessWords(l)}</Table.Cell>
-                  <Table.Cell className="whitespace-nowrap text-xs">{l.valid_until ? l.valid_until.slice(0, 10) : "never"}</Table.Cell>
-                  <Table.Cell className="text-xs">
+                <Table.Row key={l.name}>
+                  <Table.Cell className="py-2 font-mono text-xs">{l.role}</Table.Cell>
+                  <Table.Cell className="py-2 text-xs"><span className="font-mono">{l.principal}</span>{l.tenant ? <span className="text-muted-foreground"> · tenant {l.tenant}</span> : ""}</Table.Cell>
+                  <Table.Cell className="py-2 text-xs">{accessWords(l)}</Table.Cell>
+                  <Table.Cell className="py-2 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{l.valid_until ? l.valid_until.slice(0, 10) : "never"}</Table.Cell>
+                  <Table.Cell className="py-2">
                     {seesNothing(l)
-                      ? <span className="text-warning" title="The user, service account or tenant it acts as no longer exists, so every query returns no rows.">Sees nothing</span>
-                      : <span className="text-success">{l.admin ? "Full access" : "Active"}</span>}
+                      ? <Badge variant="warning" size="sm" dot title="The user, service account or tenant it acts as no longer exists, so every query returns no rows.">Sees nothing</Badge>
+                      : <Badge variant="success" size="sm" dot>{l.admin ? "Full access" : "Active"}</Badge>}
                   </Table.Cell>
-                  <Table.Cell className="space-x-2 whitespace-nowrap text-right">
+                  <Table.Cell align="end" className="space-x-2 py-2 whitespace-nowrap">
                     <ConfirmDialog
                       trigger={<Button aria-label={`Rotate ${l.name}`}>Rotate password</Button>}
                       title={`Rotate the password of ${l.role}?`}
@@ -174,7 +176,7 @@ export default function Logins() {
               ))}
             </Table.Body>
           </Table>
-        </div>
+        </TableCard>
       )}
       <NewLoginSheet open={creating} onOpenChange={onCreatingChange} onCreated={(s) => { setSecret(s); reload(); }} />
       <SecretSheet secret={secret} onClose={() => setSecret(undefined)} />

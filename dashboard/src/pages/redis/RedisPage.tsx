@@ -4,6 +4,7 @@ import { Input } from "panelui-web/input";
 import { kvNamespaces } from "../../api";
 import type { KvNamespace } from "../../api";
 import { RouteTabs } from "../../components/controls";
+import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
 import { PageHeader } from "../../components/PageHeader";
 import { UseFromCodeButton } from "../../components/UseFromCode";
@@ -46,7 +47,7 @@ export default function RedisPage() {
           <Route path="pubsub" element={<PubSub key={ns} ns={ns} />} />
           <Route path="stats" element={<StatsPanel ns={ns} namespaces={names.data ?? []} />} />
           <Route path="rules" element={<Rules ns={ns} />} />
-          <Route path="*" element={<p className="text-muted-foreground">No such page in the Key-value studio.</p>} />
+          <Route path="*" element={<EmptyState compact title="No such page in Key-value" why="The link may be old or mistyped. Pick a section above." />} />
         </Routes>
       </div>
     </div>
@@ -57,10 +58,11 @@ export default function RedisPage() {
 function NamespaceForm({ ns, names, onChange }: { ns: string; names: KvNamespace[]; onChange: (ns: string) => void }) {
   const [draft, setDraft] = useState(ns);
   const draftError = draft.trim() && draft.trim() !== ns ? validate.namespaceName(draft.trim()) : undefined;
+  const current = names.find((n) => n.name === ns);
   return (
       <form className="mt-4 flex flex-wrap items-start gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); if (!draftError && draft.trim()) onChange(draft.trim()); }}>
-        <FormField label="Namespace" term="namespace" error={draftError} help={<>Names starting with <code className="font-mono">shared.</code> are shared by every tenant of a realm.</>}>
-          {(p) => <Input {...p} size="sm" list="kv-namespaces" className="w-48" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => draft.trim() && draft.trim() !== ns && !draftError && onChange(draft.trim())} />}
+        <FormField label="Namespace" term="namespace" error={draftError} help={<>{current ? `${current.keys.toLocaleString("en-US")} ${current.keys === 1 ? "key" : "keys"} · ` : ""}Names starting with <code className="font-mono">shared.</code> are shared by every tenant of a realm.</>}>
+          {(p) => <Input {...p} size="sm" list="kv-namespaces" className="w-56 font-mono" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => draft.trim() && draft.trim() !== ns && !draftError && onChange(draft.trim())} />}
         </FormField>
         <datalist id="kv-namespaces">{names.map((n) => <option key={n.name} value={n.name}>{`${n.keys} keys`}</option>)}</datalist>
       </form>

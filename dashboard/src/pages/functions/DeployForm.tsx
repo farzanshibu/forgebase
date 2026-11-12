@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { FUNCTION_CAPABILITIES, deployFunction, wasmToBase64 } from "../../api";
+import { deployFunction, wasmToBase64 } from "../../api";
 import type { Deployed, FunctionInfo, InvokeAccess, VersionConfig } from "../../api";
-import { Button, ErrorView, Panel } from "../../components/ui";
-import { csv, formatEnv, formatHooks, parseEnv, parseHooks, readFileBytes } from "./util";
+import { Button, ErrorView } from "../../components/ui";
+import { FormField } from "../../components/FormField";
+import { ACCESS_LABEL, csv, formatEnv, formatHooks, parseEnv, parseHooks, readFileBytes } from "./util";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
-import { Sel } from "../../components/controls";
+import { Check, Sel } from "../../components/controls";
+import CapabilitySwitches from "./CapabilitySwitches";
 
 interface Props {
   /** Fixed function name (deploying a new version); otherwise the name is typed. */
@@ -69,50 +71,68 @@ export default function DeployForm({ fixedName, info, config, onDone }: Props) {
     }
   }
 
-  const num = (label: string, v: string, set: (s: string) => void) => (
-    <label className="text-sm">{label}<Input size="sm" inputMode="numeric" className="mt-1 w-full" value={v} onChange={(e) => set(e.target.value)} placeholder="default" /></label>
+  const num = (label: string, v: string, set: (s: string) => void, unit: string) => (
+    <FormField label={label} help={unit}>
+      {(p) => <Input {...p} size="sm" inputMode="numeric" className="w-full font-mono" value={v} onChange={(e) => set(e.target.value)} placeholder="default" />}
+    </FormField>
   );
+  const section = "grid gap-3 border-t border-border px-4 py-4";
+  const heading = "text-xs font-medium uppercase tracking-wide text-muted-foreground md:col-span-4";
 
   return (
-    <Panel title={title}>
-      <form aria-label={title} onSubmit={(e) => void submit(e)} className="grid gap-3 md:grid-cols-4">
-        <label className="text-sm md:col-span-2">Name
-          <Input size="sm" className="mt-1 w-full" value={name} onChange={(e) => setName(e.target.value)} readOnly={!!fixedName} required pattern="[a-z][a-z0-9_-]{0,47}" title="Lower-case letters, digits, _ or -, starting with a letter" />
-        </label>
-        <label className="text-sm md:col-span-2">WebAssembly module
-          <Input size="sm" type="file" accept=".wasm,application/wasm" className="mt-1 w-full" onChange={(e) => setFile(e.target.files?.[0])} />
-        </label>
-        <label className="text-sm md:col-span-2">Description<Input size="sm" className="mt-1 w-full" value={description} onChange={(e) => setDescription(e.target.value)} /></label>
-        <label className="text-sm">HTTP access
-          <Sel aria-label="HTTP access" className="mt-1" value={access} onChange={(v) => setAccess(v as InvokeAccess)} options={[{ value: "permission", label: "permission" }, { value: "authenticated", label: "authenticated" }, { value: "public", label: "public" }]} />
-        </label>
-        <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={activate} onChange={(e) => setActivate(e.target.checked)} />Activate this version</label>
-        <fieldset className="md:col-span-4">
-          <legend className="text-sm">Capabilities</legend>
-          <div className="mt-1 flex flex-wrap gap-4 text-sm">
-            {FUNCTION_CAPABILITIES.map((c) => (
-              <label key={c} className="flex items-center gap-1.5">
-                <input type="checkbox" checked={caps.includes(c)} onChange={(e) => setCaps(e.target.checked ? [...caps, c] : caps.filter((x) => x !== c))} />{c}
-              </label>
-            ))}
+    <section aria-labelledby="fn-deploy-title" className="overflow-hidden rounded-xl border border-border bg-card">
+      <header className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+        <div>
+          <h2 id="fn-deploy-title" className="text-sm font-medium">{title}</h2>
+          <p className="text-xs text-muted-foreground">Upload a compiled WebAssembly module. To write JavaScript or TypeScript instead, use New function or the Editor tab.</p>
+        </div>
+      </header>
+      <form aria-label={title} onSubmit={(e) => void submit(e)}>
+        <div className={`${section} md:grid-cols-4`}>
+          <h3 className={heading}>Module</h3>
+          <FormField label="Name" className="md:col-span-2" help={fixedName ? "A new version of this function." : "Lower-case letters, digits, _ or -, starting with a letter."}>
+            {(p) => <Input {...p} size="sm" className="w-full font-mono" value={name} onChange={(e) => setName(e.target.value)} readOnly={!!fixedName} required pattern="[a-z][a-z0-9_-]{0,47}" title="Lower-case letters, digits, _ or -, starting with a letter" />}
+          </FormField>
+          <FormField label="WebAssembly module" className="md:col-span-2" help={file ? `${file.name}, ${file.size.toLocaleString("en-US")} bytes` : "A .wasm file."}>
+            {(p) => <Input {...p} size="sm" type="file" accept=".wasm,application/wasm" className="w-full" onChange={(e) => setFile(e.target.files?.[0])} />}
+          </FormField>
+          <FormField label="Description" className="md:col-span-2">
+            {(p) => <Input {...p} size="sm" className="w-full" value={description} onChange={(e) => setDescription(e.target.value)} />}
+          </FormField>
+          <FormField label="HTTP access" help="Who may call it over HTTP.">
+            {(p) => <Sel {...p} aria-label="HTTP access" className="w-full" value={access} onChange={(v) => setAccess(v as InvokeAccess)} options={(Object.keys(ACCESS_LABEL) as InvokeAccess[]).map((a) => ({ value: a, label: ACCESS_LABEL[a] }))} />}
+          </FormField>
+          <div className="flex items-end pb-2">
+            <Check checked={activate} onChange={setActivate} label="Activate this version" />
           </div>
-        </fieldset>
-        <label className="text-sm md:col-span-4">Fetch hosts (comma separated; empty allows any public host)
-          <Input size="sm" className="mt-1 w-full" value={hosts} onChange={(e) => setHosts(e.target.value)} placeholder="api.example.com, *.example.org" />
-        </label>
-        {num("Fuel", fuel, setFuel)}
-        {num("Memory bytes", memory, setMemory)}
-        {num("Timeout ms", timeout, setTimeoutMs)}
-        {num("Max concurrency", conc, setConc)}
-        <label className="text-sm md:col-span-2">Environment (KEY=value per line; not secret)
-          <Textarea size="sm" autoResize={false} className="mt-1 h-24 w-full font-mono text-xs" value={env} onChange={(e) => setEnv(e.target.value)} />
-        </label>
-        <label className="text-sm md:col-span-2">Record hooks (collection: events per line)
-          <Textarea size="sm" autoResize={false} className="mt-1 h-24 w-full font-mono text-xs" value={hooks} onChange={(e) => setHooks(e.target.value)} placeholder="orders: after_create, after_update" />
-        </label>
-        <div className="md:col-span-4"><Button tone="primary" type="submit" disabled={busy}>Deploy</Button></div>
+        </div>
+        <div className="border-t border-border px-4 py-4">
+          <CapabilitySwitches value={caps} onChange={setCaps} />
+        </div>
+        <div className={`${section} md:grid-cols-4`}>
+          <h3 className={heading}>Network and limits</h3>
+          <FormField label="Fetch hosts" className="md:col-span-4" help="Comma separated. Empty allows any public host (with the fetch capability).">
+            {(p) => <Input {...p} size="sm" className="w-full font-mono" value={hosts} onChange={(e) => setHosts(e.target.value)} placeholder="api.example.com, *.example.org" />}
+          </FormField>
+          {num("Fuel", fuel, setFuel, "Units of work per run.")}
+          {num("Memory bytes", memory, setMemory, "Bytes of memory.")}
+          {num("Timeout ms", timeout, setTimeoutMs, "Milliseconds per run.")}
+          {num("Max concurrency", conc, setConc, "Runs at the same time.")}
+        </div>
+        <div className={`${section} md:grid-cols-2`}>
+          <h3 className={`${heading} md:col-span-2`}>Environment and hooks</h3>
+          <FormField label="Environment" help="KEY=value per line. Not secret: use the Secrets tab for keys and passwords.">
+            {(p) => <Textarea {...p} size="sm" autoResize={false} className="h-24 w-full font-mono text-xs" value={env} onChange={(e) => setEnv(e.target.value)} placeholder="MODE=production" />}
+          </FormField>
+          <FormField label="Record hooks" help="collection: events per line, such as after_create, after_update.">
+            {(p) => <Textarea {...p} size="sm" autoResize={false} className="h-24 w-full font-mono text-xs" value={hooks} onChange={(e) => setHooks(e.target.value)} placeholder="orders: after_create, after_update" />}
+          </FormField>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-border bg-muted/40 px-4 py-3">
+          <Button tone="primary" type="submit" disabled={busy}>{busy ? "Deploying…" : "Deploy"}</Button>
+          <div className="min-w-0 flex-1"><ErrorView error={error} /></div>
+        </div>
       </form>
-      <div className="mt-3"><ErrorView error={error} /></div>
-    </Panel>
+    </section>
   );
 }

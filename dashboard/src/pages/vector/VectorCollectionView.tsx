@@ -5,6 +5,8 @@ import { PageHeader } from "../../components/PageHeader";
 import { SkeletonLines } from "../../components/Skeleton";
 import { UseFromCodeButton } from "../../components/UseFromCode";
 import { ErrorView } from "../../components/ui";
+import { Facts } from "../../components/Facts";
+import { count } from "../functions/util";
 import { serverUrl, vectorCollection } from "../../snippets";
 import { useLoad } from "../../hooks";
 import ResourceRules from "../../components/ResourceRules";
@@ -30,14 +32,22 @@ export default function VectorCollectionView() {
     <div>
       <PageHeader
         title={data.name}
-        description={`${data.description || "Vector collection"} · ${data.items} items · fields: ${data.fields.map((f) => `${f.name} (${f.dimension}, ${f.metric}, ${f.quantization})`).join(", ") || "none"}`}
+        description={data.description || "Vector collection"}
         docs="docs/adr/0012-vector.md"
         secondary={<UseFromCodeButton snippet={vectorCollection(serverUrl(), data.name, first?.name, first?.dimension)} />}
-      >
-        {source && <p className="mt-1 text-sm text-muted-foreground">Source collection: <span className="font-mono">{source}</span>. Hits are re-checked against its View rule and field mask.</p>}
-      </PageHeader>
+      />
+      <Facts
+        className="mt-4"
+        label="Collection summary"
+        items={[
+          { label: "Items", value: count(data.items) },
+          ...data.fields.map((f) => ({ label: <>Field <span className="font-mono">{f.name}</span></>, value: `${f.dimension} dimensions · ${f.metric} · ${f.quantization}`, mono: true })),
+          data.fields.length === 0 && { label: "Fields", value: "none" },
+          source ? { label: "Source collection", value: <span title="Hits are re-checked against its View rule and field mask.">{source}</span>, mono: true } : null,
+        ]}
+      />
       <RouteTabs label="Collection sections" tabs={tabs} className="mt-4" />
-      <div className="mt-4">
+      <div className="mt-6">
         <Routes>
           <Route index element={<VectorRecords collection={data} onChanged={reload} />} />
           <Route path="search" element={<VectorSearch collection={data} />} />
@@ -53,7 +63,7 @@ export default function VectorCollectionView() {
 function VectorRules({ name }: { name: string }) {
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">
+      <p className="max-w-3xl text-sm text-muted-foreground">
         A rule can test <code className="font-mono">id</code> and <code className="font-mono">metadata.&lt;key&gt;</code>, such as <code className="font-mono">metadata.owner = @request.auth.id</code>. It filters searches before the top results are chosen, and checks writes before and after the change. Callers without a tenant need a tenant, unless they are administrators.
       </p>
       <ResourceRules kind="vector_collection" name={name} noun="collection" />

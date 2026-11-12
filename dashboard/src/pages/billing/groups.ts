@@ -4,7 +4,7 @@
  *
  * Usage:
  *   groupOf("/billing/coupons")   // "catalog"
- *   GROUPS[0].pages               // [{ to: "/billing/catalog", label: "Catalog" }, …]
+ *   GROUPS[0].pages               // [{ to: "/billing/catalog", label: "Products" }, …]
  */
 export interface BillingPage {
   to: string;
@@ -19,10 +19,10 @@ export interface BillingGroup {
 }
 
 export const GROUPS: BillingGroup[] = [
-  { id: "catalog", label: "Catalog", pages: [{ to: "/billing/catalog", label: "Catalog" }, { to: "/billing/coupons", label: "Coupons" }, { to: "/billing/stores", label: "Stores" }] },
+  { id: "catalog", label: "Catalog", pages: [{ to: "/billing/catalog", label: "Products" }, { to: "/billing/coupons", label: "Coupons" }, { to: "/billing/stores", label: "Stores" }] },
   {
     id: "customers", label: "Customers",
-    pages: [{ to: "/billing/customers", label: "Customers" }, { to: "/billing/subscriptions", label: "Subscriptions" }, { to: "/billing/orders", label: "Orders" }, { to: "/billing/usage", label: "Usage meters" }],
+    pages: [{ to: "/billing/customers", label: "Customers" }, { to: "/billing/subscriptions", label: "Subscriptions" }, { to: "/billing/orders", label: "Orders" }, { to: "/billing/usage", label: "Usage" }],
   },
   {
     id: "money", label: "Money",

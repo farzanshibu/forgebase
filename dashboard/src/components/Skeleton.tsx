@@ -9,9 +9,10 @@
  *
  * Each group is one `role="status"` with a label, so a screen reader hears "Loading buckets" once, not every bar.
  */
+import type { CSSProperties } from "react";
 
-export function Skeleton({ className = "" }: { className?: string }) {
-  return <span aria-hidden="true" className={`block animate-pulse rounded-md bg-muted motion-reduce:animate-none ${className}`.trim()} />;
+export function Skeleton({ className = "", style }: { className?: string; style?: CSSProperties }) {
+  return <span aria-hidden="true" style={style} className={`block animate-pulse rounded-md bg-muted motion-reduce:animate-none ${className}`.trim()} />;
 }
 
 export function SkeletonTable({ rows = 5, columns = 4, label = "Loading" }: { rows?: number; columns?: number; label?: string }) {

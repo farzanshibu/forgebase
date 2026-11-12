@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useId, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, createQueueSubscription, deleteQueueTopic, getQueueTopic, listQueueSubscriptions, publishQueueMessages, queueTopicMessages, queueTopicMetrics } from "../../api";
 import type { QueueMessage, QueueSubscription } from "../../api";
-import { Button, ErrorView, Panel } from "../../components/ui";
+import { Button, ErrorView } from "../../components/ui";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { CreateSheet } from "../../components/CreateSheet";
 import { EmptyState } from "../../components/EmptyState";
@@ -18,8 +18,11 @@ import { notify } from "../../toaster";
 import { validate } from "../../validate";
 import Tenant from "../jobs/Tenant";
 import QueueRules from "./QueueRules";
-import { when } from "../functions/util";
 import { bytes, duration, parseAttrs, parseJson, pretty } from "./util";
+import { CardBody, HEAD_ROW, TableCard } from "../../components/TableCard";
+import { Code, CopyId, NUM, Section, StatGrid, When } from "../jobs/ops";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Table } from "panelui-web/table";
 import { Input } from "panelui-web/input";
 import { Textarea } from "panelui-web/textarea";
@@ -56,7 +59,7 @@ export default function TopicDetail() {
     <div className="space-y-4">
       <PageHeader
         title={topic}
-        description={<span className="inline-flex flex-wrap items-center gap-2">Topic · tenant <Tenant value={t?.tenant} />{t?.created_by ? <> · created by <span className="font-mono text-xs">{t.created_by}</span></> : null}</span>}
+        description={<span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">Topic · tenant <Tenant value={t?.tenant} />{t?.created_by ? <> · created by <span className="font-mono text-xs">{t.created_by}</span></> : null}{t ? <> · retention {duration(t.retention_ms)}</> : null}</span>}
         docs="docs/adr/0022-queues-pubsub.md"
         secondary={<><Button onClick={() => { info.reload(); metrics.reload(); subs.reload(); }}>Refresh</Button><UseFromCodeButton kind="topic" name={topic} /></>}
         primary={
@@ -74,25 +77,29 @@ export default function TopicDetail() {
         }
       />
       <ErrorView error={error ?? metrics.error ?? info.error} />
-      {metrics.loading && !metrics.error && <SkeletonLines lines={3} label="Loading topic" />}
+      {metrics.loading && !metrics.data && !metrics.error && <SkeletonLines lines={3} label="Loading topic" />}
       {t?.source && (
-        <p role="note" className="rounded-md border border-border p-3 text-sm text-muted-foreground">
+        <p role="note" className="rounded-lg border border-info/30 bg-info/5 p-3 text-sm text-foreground/80">
           This topic carries the record changes of <span className="font-mono">{t.source.collection}</span> ({t.source.ops.join(", ")}). A reader gets each record as <em>its subscription&apos;s owner</em> may see it: hidden fields are removed, and a record the owner may not see is withheld, so it never appears for that subscription. The messages listed below show your own view.
         </p>
       )}
       {m && (
-        <Panel title="Metrics">
-          <dl aria-label="Topic metrics" className="grid gap-x-6 gap-y-1 text-sm md:grid-cols-3">
-            {([
-              ["Retained messages", m.messages], ["Retained size", bytes(m.bytes)], ["Oldest message", m.oldest_message_age_ms == null ? "none" : `${duration(m.oldest_message_age_ms)} old`],
-              ["Published in total", m.published_total], ["Last minute", m.published_last_minute], ["Rate", `${m.publish_rate_per_sec.toFixed(2)}/s`], ["Subscriptions", m.subscriptions],
-            ] as [string, string | number][]).map(([k, v]) => <div key={k} className="flex gap-2"><dt className="w-36 shrink-0 text-muted-foreground">{k}</dt><dd>{v}</dd></div>)}
-          </dl>
-        </Panel>
+        <StatGrid
+          label="Topic metrics"
+          items={[
+            { label: "Retained messages", value: m.messages.toLocaleString() },
+            { label: "Retained size", value: bytes(m.bytes) },
+            { label: "Oldest message", value: m.oldest_message_age_ms == null ? "none" : `${duration(m.oldest_message_age_ms)} old` },
+            { label: "Published in total", value: m.published_total.toLocaleString() },
+            { label: "Last minute", value: m.published_last_minute.toLocaleString() },
+            { label: "Rate", value: `${m.publish_rate_per_sec.toFixed(2)}/s` },
+            { label: "Subscriptions", value: m.subscriptions, tone: m.subscriptions === 0 ? "warn" : undefined },
+          ]}
+        />
       )}
-      <PublishPanel topic={topic} onDone={() => metrics.reload()} />
       <Messages topic={topic} version={m?.published_total ?? 0} />
-      <Subscriptions topic={topic} subs={subs} />
+      <Subscriptions subs={subs} />
+      <PublishPanel topic={topic} onDone={() => metrics.reload()} />
       <NewSubscription topic={topic} tenant={t?.tenant ?? undefined} open={adding} onOpenChange={setAdding} onCreated={subs.reload} />
       <QueueRules kind="queue_topic" name={topic} />
     </div>
@@ -106,6 +113,8 @@ function PublishPanel({ topic, onDone }: { topic: string; onDone: () => void }) 
   const [dedup, setDedup] = useState("");
   const [error, setError] = useState<unknown>();
   const [last, setLast] = useState("");
+  const [busy, setBusy] = useState(false);
+  const id = useId();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -113,28 +122,45 @@ function PublishPanel({ topic, onDone }: { topic: string; onDone: () => void }) 
     setLast("");
     const parsed = parseJson(data);
     if (!parsed.ok) return setError(new Error("The message data is not valid JSON."));
+    setBusy(true);
     try {
       const [r] = await publishQueueMessages(topic, [{ data: parsed.value, attributes: parseAttrs(attrs), ...(key ? { ordering_key: key } : {}), ...(dedup ? { dedup_id: dedup } : {}) }]);
       setLast(r ? `Published ${r.message_id} (sequence ${r.seq})${r.duplicate ? ", a duplicate: accepted once before" : ""}.` : "");
       onDone();
     } catch (err) {
       setError(err);
+    } finally {
+      setBusy(false);
     }
   }
+  const lbl = "mb-1.5 flex items-center gap-1 text-sm font-medium";
   return (
-    <Panel title="Publish">
-      <form aria-label="Publish" onSubmit={(e) => void submit(e)} className="space-y-3 text-sm">
-        <label className="block">Data (JSON)<Textarea size="sm" autoResize={false} className="mt-1 block h-24 w-full font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} /></label>
-        <label className="block">Attributes (one key=value per line)<Textarea size="sm" autoResize={false} className="mt-1 block h-16 w-full font-mono text-xs" value={attrs} onChange={(e) => setAttrs(e.target.value)} /></label>
-        <div className="flex flex-wrap items-end gap-3">
-          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Ordering key <Input size="sm" className="ml-1 w-40" value={key} onChange={(e) => setKey(e.target.value)} /></label><HelpTip term="ordering_key" /></span>
-          <span className="inline-flex items-center gap-1"><label className="inline-flex items-center gap-1">Dedup id <Input size="sm" className="ml-1 w-40" value={dedup} onChange={(e) => setDedup(e.target.value)} /></label><HelpTip term="dedup_id" /></span>
-          <Button type="submit" tone="primary">Publish message</Button>
+    <Section title="Publish a message" description="Send a test message to this topic. Your app publishes the same way with the SDK (see Use from code).">
+      <form aria-label="Publish" onSubmit={(e) => void submit(e)} className="grid gap-4 text-sm lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <label htmlFor={`${id}data`} className={lbl}>Data (JSON)</label>
+          <Textarea id={`${id}data`} size="sm" autoResize={false} spellCheck={false} className="block h-28 w-full font-mono text-xs" value={data} onChange={(e) => setData(e.target.value)} />
         </div>
-        {last && <p role="status" className="text-success">{last}</p>}
-        <ErrorView error={error} />
+        <div>
+          <label htmlFor={`${id}attrs`} className={lbl}>Attributes</label>
+          <Textarea id={`${id}attrs`} size="sm" autoResize={false} spellCheck={false} placeholder={"source=checkout\nregion=eu"} aria-describedby={`${id}attrs-help`} className="block h-28 w-full font-mono text-xs" value={attrs} onChange={(e) => setAttrs(e.target.value)} />
+          <p id={`${id}attrs-help`} className="mt-1 text-xs text-muted-foreground">One key=value per line. Optional.</p>
+        </div>
+        <div className="flex flex-wrap items-end gap-3 lg:col-span-3">
+          <div>
+            <span className={lbl}><label htmlFor={`${id}key`}>Ordering key</label><HelpTip term="ordering_key" /></span>
+            <Input id={`${id}key`} size="sm" className="w-48" value={key} onChange={(e) => setKey(e.target.value)} />
+          </div>
+          <div>
+            <span className={lbl}><label htmlFor={`${id}dedup`}>Dedup id</label><HelpTip term="dedup_id" /></span>
+            <Input id={`${id}dedup`} size="sm" className="w-48" value={dedup} onChange={(e) => setDedup(e.target.value)} />
+          </div>
+          <Button type="submit" tone="primary" disabled={busy}>{busy ? "Publishing…" : "Publish message"}</Button>
+          {last && <p role="status" className="text-sm text-success">{last}</p>}
+        </div>
+        <div className="lg:col-span-3"><ErrorView error={error} /></div>
       </form>
-    </Panel>
+    </Section>
   );
 }
 
@@ -171,58 +197,74 @@ function Messages({ topic, version }: { topic: string; version: number }) {
   }
 
   return (
-    <Panel title="Messages">
-      <ErrorView error={error} />
-      {loading && <SkeletonTable rows={3} columns={6} label="Loading messages" />}
-      {!loading && rows.length === 0 && !error && <EmptyState compact title="No retained messages" why="Publish one above, or publish from your code (Use from code). Messages are kept for the topic's retention period." />}
+    <TableCard
+      title="Messages"
+      count={rows.length > 0 ? `${rows.length}${next ? "+" : ""}` : undefined}
+      description="Retained messages, oldest first. Open one to see its data and attributes."
+      footer={rows.length > 0 ? <Pager mode="more" shown={rows.length} hasMore={!!next} loading={more} onMore={() => void loadMore()} noun="messages" label="More messages" /> : undefined}
+    >
+      <CardBody className="space-y-3">
+        <ErrorView error={error} />
+        {loading && <SkeletonTable rows={3} columns={6} label="Loading messages" />}
+        {!loading && rows.length === 0 && !error && <EmptyState compact title="No retained messages" why="Publish one below, or publish from your code (Use from code). Messages are kept for the topic's retention period." />}
+      </CardBody>
       {rows.length > 0 && (
-        <Table aria-label="Messages" className="w-full text-left text-sm">
-          <Table.Header className="text-xs uppercase tracking-wide text-muted-foreground">
-            <Table.Row><Table.Head className="py-1">Seq</Table.Head><Table.Head>Message</Table.Head><Table.Head>Published</Table.Head><Table.Head>Key</Table.Head><Table.Head>Size</Table.Head><Table.Head /></Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {rows.map((r) => (
-              <Fragment key={r.id}>
-                <Table.Row className="border-t border-border">
-                  <Table.Cell className="py-1.5">{r.seq}</Table.Cell><Table.Cell className="font-mono text-xs">{r.id}</Table.Cell><Table.Cell className="text-muted-foreground">{when(r.published_at)}</Table.Cell>
-                  <Table.Cell>{r.ordering_key ?? ""}</Table.Cell><Table.Cell>{bytes(r.bytes)}</Table.Cell>
-                  <Table.Cell><button type="button" className="text-primary hover:underline" aria-label={`${open === r.id ? "Hide" : "Show"} message ${r.seq}`} onClick={() => setOpen(open === r.id ? undefined : r.id)}>{open === r.id ? "Hide" : "Show"}</button></Table.Cell>
-                </Table.Row>
-                {open === r.id && (
-                  <Table.Row>
-                    <Table.Cell colSpan={6} className="pb-2">
-                      <pre aria-label={`Message ${r.seq} data`} className="overflow-x-auto rounded bg-background p-2 font-mono text-xs">{pretty(r.data)}</pre>
-                      {Object.keys(r.attributes).length > 0 && <p className="mt-1 text-xs text-muted-foreground">Attributes: {Object.entries(r.attributes).map(([k, v]) => `${k}=${v}`).join(", ")}</p>}
+          <Table framed density="compact" aria-label="Messages">
+            <Table.Header className={HEAD_ROW}>
+              <Table.Row><Table.Head className={`py-1 ${NUM}`}>Seq</Table.Head><Table.Head>Message</Table.Head><Table.Head>Ordering key</Table.Head><Table.Head className={NUM}>Size</Table.Head><Table.Head className="text-right">Published</Table.Head><Table.Head><span className="sr-only">Data</span></Table.Head></Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {rows.map((r) => (
+                <Fragment key={r.id}>
+                  <Table.Row className={open === r.id ? "bg-muted/30" : undefined}>
+                    <Table.Cell className={`w-16 py-2 ${NUM}`}>{r.seq}</Table.Cell>
+                    <Table.Cell className="max-w-72"><CopyId id={r.id} noun="message" /></Table.Cell>
+                    <Table.Cell>{r.ordering_key ? <span className="font-mono text-xs">{r.ordering_key}</span> : <span className="text-muted-foreground">—</span>}</Table.Cell>
+                    <Table.Cell className={NUM}>{bytes(r.bytes)}</Table.Cell>
+                    <Table.Cell className="text-right text-muted-foreground"><When iso={r.published_at} /></Table.Cell>
+                    <Table.Cell className="w-20 text-right">
+                      <button type="button" aria-expanded={open === r.id} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-primary hover:bg-muted" aria-label={`${open === r.id ? "Hide" : "Show"} message ${r.seq}`} onClick={() => setOpen(open === r.id ? undefined : r.id)}>
+                        {open === r.id ? "Hide" : "Show"}
+                        <HugeiconsIcon icon={ArrowDown01Icon} size={14} strokeWidth={1.8} aria-hidden="true" className={`transition-transform ${open === r.id ? "rotate-180" : ""}`} />
+                      </button>
                     </Table.Cell>
                   </Table.Row>
-                )}
-              </Fragment>
-            ))}
-          </Table.Body>
-        </Table>
+                  {open === r.id && (
+                    <Table.Row className="bg-muted/30">
+                      <Table.Cell colSpan={6} className="pb-3">
+                        <Code label={`Message ${r.seq} data`}>{pretty(r.data)}</Code>
+                        {Object.keys(r.attributes).length > 0 && (
+                          <p className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">Attributes: {Object.entries(r.attributes).map(([k, v]) => <code key={k} className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">{`${k}=${v}`}</code>)}</p>
+                        )}
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
+                </Fragment>
+              ))}
+            </Table.Body>
+          </Table>
       )}
-      {rows.length > 0 && <Pager mode="more" shown={rows.length} hasMore={!!next} loading={more} onMore={() => void loadMore()} noun="messages" label="More messages" />}
-    </Panel>
+    </TableCard>
   );
 }
 
-function Subscriptions({ topic, subs }: { topic: string; subs: LoadState<QueueSubscription[]> }) {
+function Subscriptions({ subs }: { subs: LoadState<QueueSubscription[]> }) {
   return (
-    <Panel title="Subscriptions of this topic">
+    <Section title="Subscriptions of this topic" count={subs.data?.length} description="Each subscription gets its own copy of every message and keeps its own place.">
       <ErrorView error={subs.error} />
       {subs.data && subs.data.length === 0 && <EmptyState compact title="No subscriptions" why="Messages are kept for the retention period but delivered to nobody. Choose New subscription to add a reader." />}
       {subs.data && subs.data.length > 0 && (
-        <ul aria-label="Topic subscriptions" className="space-y-1 text-sm">
+        <ul aria-label="Topic subscriptions" className="divide-y divide-border text-sm">
           {subs.data.map((s) => (
-            <li key={s.name}>
-              <Link className="text-primary hover:underline" to={`/queues/s/${encodeURIComponent(s.name)}`}>{s.name}</Link>{" "}
-              <span className="text-muted-foreground">ack deadline {duration(s.ack_deadline_ms)}{s.ordering ? ", ordered" : ""} · owner {s.created_by}</span>
+            <li key={s.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 first:pt-0 last:pb-0">
+              <Link className="font-medium text-primary hover:underline" to={`/queues/s/${encodeURIComponent(s.name)}`}>{s.name}</Link>
+              <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs">{s.push ? `push (${s.push.kind})` : "pull"}</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">ack deadline {duration(s.ack_deadline_ms)}{s.ordering ? ", ordered" : ""} · owner {s.created_by}</span>
             </li>
           ))}
         </ul>
       )}
-      <span hidden>{topic}</span>
-    </Panel>
+    </Section>
   );
 }
 

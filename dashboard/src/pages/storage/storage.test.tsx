@@ -30,7 +30,10 @@ describe("Storage buckets", () => {
     expect(screen.getByRole("link", { name: "media" })).toBeInTheDocument();
     expect(within(rows("Buckets")[3]!).getByText("acme")).toBeInTheDocument();
     expect(within(rows("Buckets")[1]!).getByText("Instance")).toBeInTheDocument();
-    expect(await screen.findByLabelText("Storage totals")).toHaveTextContent("3 buckets · 4 objects · 5 versions");
+    const totals = await screen.findByLabelText("Storage totals");
+    expect(totals).toHaveTextContent("Buckets3");
+    expect(totals).toHaveTextContent("Objects4");
+    expect(totals).toHaveTextContent("5 versions");
     expect(await screen.findByText(/No quota applies to administrators/)).toBeInTheDocument();
     expect(screen.queryByRole("progressbar", { name: "Storage quota" })).not.toBeInTheDocument();
     // A-21: an administrator has no entitlements subject, so the dashboard never asks.
@@ -42,14 +45,17 @@ describe("Storage buckets", () => {
     mock.custom = mock.custom.filter((c) => !c.template.endsWith("/storage/stats"));
     mock.on("GET", "/api/v1/storage/stats", () => ({ status: 200, body: { buckets: 1, objects: 2, versions: 2, logical_bytes: 10, stored_bytes: 10, open_uploads: 0, scope: "tenant", tenant: "acme" } }));
     renderStudio("/storage");
-    expect(await screen.findByLabelText("Storage totals")).toHaveTextContent("Tenant acme only1 buckets");
+    expect(await screen.findByText("Tenant acme only")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Storage totals")).toHaveTextContent("Buckets1");
   });
 
   it("shows per-bucket usage from the usage endpoint", async () => {
     const { mock } = setup();
     renderStudio("/storage");
-    expect(await screen.findByLabelText("Usage of media")).toHaveTextContent("2.01 KiB · 3 objects");
-    expect(await screen.findByLabelText("Usage of docs")).toHaveTextContent("300 B · 1 object");
+    expect(await screen.findByLabelText("Size of media")).toHaveTextContent("2.01 KiB");
+    expect(await screen.findByLabelText("Objects in media")).toHaveTextContent("3");
+    expect(await screen.findByLabelText("Size of docs")).toHaveTextContent("300 B");
+    expect(await screen.findByLabelText("Objects in docs")).toHaveTextContent("1");
     expect(mock.problems).toEqual([]);
   });
 
