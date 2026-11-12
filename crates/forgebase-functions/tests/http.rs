@@ -32,6 +32,9 @@ fn app(h: &common::H) -> Router {
         state,
         RouterOptions {
             extensions: vec![forgebase_functions::extension(h.svc.clone())],
+            // A deploy compiles and checks the script; on a loaded CI runner
+            // (debug build, tests in parallel) it can pass the 30 s default.
+            request_timeout: std::time::Duration::from_secs(300),
             ..RouterOptions::default()
         },
     );
