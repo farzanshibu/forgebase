@@ -5,7 +5,7 @@
  * panelui-web/dist adds ~275 kB of CSS for components the dashboard does not use.
  * Add a component here when you import a new one.
  */
-@source "../node_modules/panelui-web/dist/components/{alert,alert-dialog,badge,breadcrumb,button,card,checkbox,command,dialog,input,menu,nav-rail,select,sheet,spinner,stat,steps,switch,table,tabs,textarea,toast,tooltip}";
+@source "../node_modules/panelui-web/dist/components/{alert,alert-dialog,badge,breadcrumb,button,card,checkbox,command,dialog,flow,input,menu,nav-rail,select,sheet,spinner,stat,steps,switch,table,tabs,textarea,toast,tooltip}";
 
 /* Dark mode follows the `dark` class on <html> (set before first paint by index.html). */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -36,10 +36,12 @@
   /* Field outlines: 3.38:1 on white, 3.24:1 on the page (WCAG 1.4.11 asks 3:1 for a control's boundary). */
   --input: #8b8b94;
 
-  --success: #065f46;
-  --warning: #7c5a00; /* yellow-olive: never the same hue as the orange primary (it was the same hex before). */
-  --info: #1d4ed8;
-  --destructive: #b91c1c;
+  /* Each state colour is the most saturated shade of its hue that still passes contrast.test.ts (as text on every
+     surface and on its own 15% tint), so the light theme is as vivid as AA allows. */
+  --success: #047635;
+  --warning: #806300; /* yellow-olive: never the same hue as the orange primary (it was the same hex before). */
+  --info: #2257e6;
+  --destructive: #c8102e;
 
   /* Accent preset "amber" (default, "Orange" in the menu: the forge colour). */
   --primary: #b03c0a;
@@ -75,7 +77,7 @@
   --info: #60a5fa;
   --destructive: #f87171;
 
-  --primary: #fb923c;
+  --primary: #f97316;
   --primary-foreground: #18181b;
 
   --chart-2: #2dd4bf;
@@ -84,23 +86,27 @@
   --chart-5: #facc15;
 }
 
-/* Accent presets: light value, then dark value. Keep in step with ACCENTS in src/theme/theme.ts. */
+/*
+ * Accent presets: light value, then dark value. Keep in step with ACCENTS in src/theme/theme.ts.
+ * Light values sit at the AA ceiling: the most saturated shade of the hue that passes contrast.test.ts as text
+ * (the default orange already was). Dark values are the bright 400/500 shades.
+ */
 [data-accent="amber"] { --primary: #b03c0a; --primary-foreground: #ffffff; }
-.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #fb923c; --primary-foreground: #18181b; }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #f97316; --primary-foreground: #18181b; }
 
-[data-accent="indigo"] { --primary: #4f46e5; --primary-foreground: #ffffff; }
+[data-accent="indigo"] { --primary: #4b3ff0; --primary-foreground: #ffffff; }
 .dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #818cf8; --primary-foreground: #09090b; }
 
-[data-accent="emerald"] { --primary: #065f46; --primary-foreground: #ffffff; }
+[data-accent="emerald"] { --primary: #00754c; --primary-foreground: #ffffff; }
 .dark[data-accent="emerald"], .dark [data-accent="emerald"] { --primary: #34d399; --primary-foreground: #09090b; }
 
-[data-accent="rose"] { --primary: #9f1239; --primary-foreground: #ffffff; }
+[data-accent="rose"] { --primary: #c0134a; --primary-foreground: #ffffff; }
 .dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: #fb7185; --primary-foreground: #09090b; }
 
-[data-accent="sky"] { --primary: #075985; --primary-foreground: #ffffff; }
+[data-accent="sky"] { --primary: #0369a1; --primary-foreground: #ffffff; }
 .dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: #38bdf8; --primary-foreground: #09090b; }
 
-[data-accent="violet"] { --primary: #6d28d9; --primary-foreground: #ffffff; }
+[data-accent="violet"] { --primary: #7c3aed; --primary-foreground: #ffffff; }
 .dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: #a78bfa; --primary-foreground: #09090b; }
 
 /* Tokens derived from the accent, declared wherever an accent is so they follow it. */
@@ -181,6 +187,26 @@
   color: var(--muted-foreground);
   font-size: 11px;
   letter-spacing: 0.06em;
+}
+
+/*
+ * Status badges label in the state colour itself. PanelUI pulls the text 30% toward the foreground, which turns every
+ * state grey-ish; the pure colour on its tint is what contrast.test.ts checks ("on its 15% tint"), so it stays AA.
+ */
+[data-slot="badge"]:is([data-variant="success"], [data-variant="info"], [data-variant="warning"], [data-variant="destructive"]) {
+  color: var(--badge-color);
+}
+
+/*
+ * Underline tabs: Base UI sets the indicator's `right` from the list's scrollWidth, but an absolute child's `right`
+ * is measured from the visible box, so in a row that scrolls (Identity's nine tabs) the line came out short by the
+ * hidden width. Position it by left + width instead, which are right in a scrolled row too.
+ */
+[data-slot="tabs"][data-variant="underline"] [data-slot="tabs-indicator"][data-orientation="horizontal"] {
+  right: auto;
+  width: var(--active-tab-width);
+  transition-property: left, width;
+  transition-duration: 300ms;
 }
 
 /* Native checkboxes, radios and ranges take the accent colour. */

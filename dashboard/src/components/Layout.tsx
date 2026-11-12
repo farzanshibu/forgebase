@@ -13,7 +13,7 @@ import { Fire03Icon, Logout01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { studioIcon } from "./studioIcons";
 import { NavRail, useNavRail } from "panelui-web/nav-rail";
-import { Suspense, lazy, useEffect, type MouseEvent } from "react";
+import { Suspense, lazy, useEffect, useState, type MouseEvent } from "react";
 import { Outlet, useHref, useLocation, useNavigate } from "react-router-dom";
 import ImpersonationBanner from "../auth/ImpersonationBanner";
 import { useSession } from "../auth/session";
@@ -25,6 +25,7 @@ import { Breadcrumbs, CrumbsProvider } from "./Breadcrumbs";
 import { CommandPalette } from "./CommandPalette";
 import { JourneyGuide } from "./JourneyGuide";
 import RouteLoading from "./RouteLoading";
+import { SaveBarSlotContext } from "./saveBarSlot";
 
 const ThemeMenu = lazy(() => import("./ThemeMenu"));
 
@@ -146,16 +147,22 @@ export default function Layout() {
   useEffect(() => setToastNavigator(navigate), [navigate]);
   const current = studioAt(pathname)?.path;
   const overview = studios.find((s) => s.group === null);
+  // Where a page's SaveBar is drawn: under the scrolling <main>, so it stays on the bottom edge (see SaveBar.tsx).
+  const [saveBarSlot, setSaveBarSlot] = useState<HTMLElement | null>(null);
   return (
     <FeaturesContext.Provider value={features}>
       <CrumbsProvider>
         <NavRail.Provider storageKey="forgebase.admin.rail" className="h-svh min-h-0">
           <div className="flex h-svh w-full bg-background">
-            <NavRail aria-label="Studios" className="border-e border-border bg-card">
+            {/* A flush sidebar inside the one app frame, not PanelUI's floating card: no rounding or ring, and a
+                single border between it and the page. */}
+            <NavRail aria-label="Studios" className="rounded-none border-e border-border bg-card ring-0">
               <NavRail.Header>
                 <BrandToggle />
               </NavRail.Header>
-              <NavRail.Content>
+              {/* shrink-0: PanelUI's content slot is min-h-0, so on a short window it shrank to fit and its rows
+                  spilled out under the account footer. Unshrunk, the whole rail scrolls between its sticky header and footer. */}
+              <NavRail.Content className="shrink-0">
                 {overview && (
                   <NavRail.Group>
                     <StudioItem studio={overview} active={current === overview.path} />
@@ -179,7 +186,8 @@ export default function Layout() {
               </NavRail.Footer>
             </NavRail>
 
-            <NavRail.Inset className="min-w-0 bg-background">
+            {/* A div: PanelUI draws the inset as <main>, and the page below is the one <main> of the document. */}
+            <NavRail.Inset render={<div />} className="min-w-0 rounded-none bg-background ring-0">
               <ImpersonationBanner />
               <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-background/80 px-3 backdrop-blur md:px-6">
                 <MobileNavButton />
@@ -192,14 +200,17 @@ export default function Layout() {
                   <ThemeMenu />
                 </Suspense>
               </header>
-              <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8">
-                {/* One readable width for every studio; wide screens get margins instead of 2000 px tables. */}
-                <div className="mx-auto w-full max-w-[1440px]">
-                  <Suspense fallback={<RouteLoading />}>
-                    <Outlet />
-                  </Suspense>
-                </div>
-              </main>
+              <SaveBarSlotContext.Provider value={saveBarSlot}>
+                <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8">
+                  {/* One readable width for every studio; wide screens get margins instead of 2000 px tables. */}
+                  <div className="mx-auto w-full max-w-[1440px]">
+                    <Suspense fallback={<RouteLoading />}>
+                      <Outlet />
+                    </Suspense>
+                  </div>
+                </main>
+              </SaveBarSlotContext.Provider>
+              <div ref={setSaveBarSlot} className="shrink-0" />
             </NavRail.Inset>
           </div>
         </NavRail.Provider>

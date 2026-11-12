@@ -4,15 +4,16 @@ import { getNode, neighbors, shortestPath, traverse } from "../../api";
 import type { Direction, GraphEdge, GraphNode, Neighbor, Page } from "../../api";
 import { Button, ErrorView } from "../../components/ui";
 import { FormField } from "../../components/FormField";
+import { GraphCanvas } from "./GraphCanvas";
 import { layout, type Pos } from "./layout";
 import { Input } from "panelui-web/input";
 import { Sel } from "../../components/controls";
 
-const W = 800;
-const H = 480;
-// Theme tokens, so nodes follow light/dark and the accent (chart-1 is the accent).
-const PALETTE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)", "var(--info)", "var(--success)"];
-const colour = (label: string) => PALETTE[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length]!;
+/**
+ * The area the layout spreads n nodes over. It grows with the graph so node cards (168 x 56) get room around them;
+ * the canvas zooms out to fit whatever size this gives.
+ */
+const area = (n: number) => ({ w: Math.max(900, Math.sqrt(n) * 520), h: Math.max(480, Math.sqrt(n) * 300) });
 
 interface View { nodes: Map<string, GraphNode>; edges: Map<string, GraphEdge>; pos: Map<string, Pos> }
 const EMPTY: View = { nodes: new Map(), edges: new Map(), pos: new Map() };
@@ -24,7 +25,8 @@ function merge(view: View, nodes: GraphNode[], edges: GraphEdge[]): View {
   edges.forEach((x) => e.set(x.id, x));
   const live = [...e.values()].filter((x) => n.has(x.source) && n.has(x.target));
   const edgeMap = new Map(live.map((x) => [x.id, x]));
-  return { nodes: n, edges: edgeMap, pos: layout([...n.keys()], live.map((x) => [x.source, x.target]), view.pos, W, H) };
+  const { w, h } = area(n.size);
+  return { nodes: n, edges: edgeMap, pos: layout([...n.keys()], live.map((x) => [x.source, x.target]), view.pos, w, h) };
 }
 
 interface StartData { id: string; node: GraphNode; nb: Page<Neighbor> }
@@ -46,6 +48,9 @@ export default function GraphExplorer() {
   const [pathTo, setPathTo] = useState("");
   const [status, setStatus] = useState<string>();
   const [error, setError] = useState<unknown>();
+  // Bumped whenever nodes are added or cleared: the canvas fits the whole graph into view again.
+  const [fitKey, setFitKey] = useState(0);
+  const refit = () => setFitKey((k) => k + 1);
 
   async function guard(fn: () => Promise<void>) {
     setError(undefined);
@@ -61,6 +66,7 @@ export default function GraphExplorer() {
     setView(merge(merge(EMPTY, [node], []), nb.items.map((x) => x.node), nb.items.map((x) => x.edge)));
     setSelected(node.id);
     setPath(undefined);
+    refit();
     setStatus(`Loaded ${id} and ${nb.items.length} neighbours`);
   };
   const loadStart = (id: string) => guard(async () => applyStart(await fetchStart(id)));
@@ -77,12 +83,14 @@ export default function GraphExplorer() {
     };
   }, [seed]);
 
-  const expand = () =>
+  const expand = (id = selected) =>
     guard(async () => {
-      if (!selected) throw new Error("Select a node first");
-      const nb = await neighbors(selected, { direction, limit: 100 });
+      if (!id) throw new Error("Select a node first");
+      const nb = await neighbors(id, { direction, limit: 100 });
       setView((v) => merge(v, nb.items.map((x) => x.node), nb.items.map((x) => x.edge)));
-      setStatus(`Expanded ${selected}: ${nb.items.length} neighbours${nb.next_after ? " (more available)" : ""}`);
+      setSelected(id);
+      refit();
+      setStatus(`Expanded ${id}: ${nb.items.length} neighbours${nb.next_after ? " (more available)" : ""}`);
     });
 
   const runTraverse = () =>
@@ -90,6 +98,7 @@ export default function GraphExplorer() {
       if (!selected) throw new Error("Select a node first");
       const r = await traverse({ start: selected, direction, max_depth: Number(depth), include_start: true, include_edges: true, limit: 200 });
       setView((v) => merge(v, r.nodes.map((x) => x.node), r.edges));
+      refit();
       setStatus(`Traversal to depth ${depth}: ${r.nodes.length} nodes, ${r.edges.length} edges${r.truncated ? " (truncated)" : ""}`);
     });
 
@@ -104,6 +113,7 @@ export default function GraphExplorer() {
         return;
       }
       setView((v) => merge(v, r.nodes, r.edges));
+      refit();
       setPath({ nodes: new Set(r.nodes.map((n) => n.id)), edges: new Set(r.edges.map((e) => e.id)) });
       setStatus(`Path of length ${r.length}: ${r.nodes.map((n) => n.id).join(" → ")}`);
     });
@@ -130,41 +140,24 @@ export default function GraphExplorer() {
             <FormField label="Path to">{(p) => <Input {...p} size="sm" aria-label="Path target id" className="w-36 font-mono" placeholder="node id" value={pathTo} onChange={(e) => setPathTo(e.target.value)} />}</FormField>
             <Button onClick={() => void findPath()} disabled={!selected}>Find path</Button>
           </div>
-          <Button className="ml-auto" onClick={() => { setView(EMPTY); setSelected(undefined); setPath(undefined); setStatus(undefined); }} disabled={view.nodes.size === 0}>Clear</Button>
+          <Button className="ml-auto" onClick={() => { setView(EMPTY); setSelected(undefined); setPath(undefined); setStatus(undefined); refit(); }} disabled={view.nodes.size === 0}>Clear</Button>
         </div>
-        <p className="text-xs text-muted-foreground">{selected ? <>Selected <span className="font-mono text-foreground">{selected}</span>. Expand, traverse from it, or find the shortest path to another node.</> : "Load a node, then select one in the canvas to expand, traverse from it or find the shortest path to another node."}</p>
+        <p className="text-xs text-muted-foreground">{selected ? <>Selected <span className="font-mono text-foreground">{selected}</span>. Expand, traverse from it, or find the shortest path to another node. Double-click a node to expand it; drag nodes or the canvas to arrange the view.</> : "Load a node, then select one in the canvas to expand, traverse from it or find the shortest path to another node."}</p>
       </section>
       <ErrorView error={error} />
       {status && <p role="status" className="rounded-lg border border-success/40 bg-success/5 px-3 py-2 text-sm text-success">{status}</p>}
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
-        <svg role="img" aria-label="Graph canvas" viewBox={`0 0 ${W} ${H}`} className="w-full rounded-xl border border-border bg-card [background-image:radial-gradient(var(--border)_1px,transparent_1px)] [background-size:20px_20px]">
-          <defs>
-            <marker id="arrow" viewBox="0 0 10 10" refX="24" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style={{ fill: "var(--muted-foreground)" }} /></marker>
-          </defs>
-          {[...view.edges.values()].map((e) => {
-            const a = view.pos.get(e.source), b = view.pos.get(e.target);
-            if (!a || !b) return null;
-            const on = path?.edges.has(e.id);
-            return (
-              <g key={e.id} data-testid={`edge-${e.id}`} data-on-path={on ? "true" : undefined}>
-                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} style={{ stroke: on ? "var(--primary)" : "var(--muted-foreground)" }} strokeOpacity={on ? 1 : 0.55} strokeWidth={on ? 3 : 1.5} markerEnd={e.directed ? "url(#arrow)" : undefined} />
-                <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 4} fontSize="9" style={{ fill: "var(--muted-foreground)" }} textAnchor="middle">{e.type}</text>
-              </g>
-            );
-          })}
-          {[...view.nodes.values()].map((n) => {
-            const p = view.pos.get(n.id);
-            if (!p) return null;
-            const on = path?.nodes.has(n.id);
-            return (
-              <g key={n.id} role="button" tabIndex={0} aria-label={`Node ${n.id}`} aria-pressed={selected === n.id} data-on-path={on ? "true" : undefined}
-                onClick={() => setSelected(n.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setSelected(n.id); }} className="cursor-pointer">
-                <circle cx={p.x} cy={p.y} r={14} style={{ fill: colour(n.label), stroke: selected === n.id ? "var(--foreground)" : on ? "var(--primary)" : "var(--background)" }} strokeWidth={selected === n.id || on ? 3 : 1.5} />
-                <text x={p.x} y={p.y + 28} fontSize="10" style={{ fill: "var(--foreground)" }} textAnchor="middle">{n.id}</text>
-              </g>
-            );
-          })}
-        </svg>
+        <GraphCanvas
+          nodes={[...view.nodes.values()]}
+          edges={[...view.edges.values()]}
+          pos={view.pos}
+          selected={selected}
+          path={path}
+          fitKey={fitKey}
+          onSelect={setSelected}
+          onMove={(id, centre) => setView((v) => ({ ...v, pos: new Map(v.pos).set(id, centre) }))}
+          onExpand={(id) => void expand(id)}
+        />
         <section aria-label="Node details" className="overflow-hidden rounded-xl border border-border bg-card">
           <header className="border-b border-border px-4 py-2.5">
             <h2 className="truncate text-sm font-medium" title={sel?.id}>{sel ? <>Node <span className="font-mono">{sel.id}</span></> : "Details"}</h2>

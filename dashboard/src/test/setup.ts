@@ -29,6 +29,13 @@ if (typeof globalThis.ResizeObserver !== "function") {
   };
 }
 
+// jsdom has no pointer capture; PanelUI's Flow (the graph canvas) captures the pointer when a node is pressed.
+if (typeof Element !== "undefined" && typeof Element.prototype.setPointerCapture !== "function") {
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+  Element.prototype.hasPointerCapture = () => false;
+}
+
 // jsdom has no Web Animations API; PanelUI's scroll areas (inside Tabs) call it from a timer.
 if (typeof Element !== "undefined" && typeof Element.prototype.getAnimations !== "function") {
   Element.prototype.getAnimations = () => [];

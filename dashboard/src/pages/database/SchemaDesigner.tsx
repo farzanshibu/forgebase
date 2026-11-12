@@ -12,6 +12,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { FormField } from "../../components/FormField";
 import { HelpTip } from "../../components/HelpTip";
 import { PageHeader } from "../../components/PageHeader";
+import { SaveBar } from "../../components/SaveBar";
 import { Button, ErrorView } from "../../components/ui";
 import type { GlossaryTerm } from "../../glossary";
 import { useLoad } from "../../hooks";
@@ -221,7 +222,7 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
       </TableCard>
 
       <ErrorView error={problem} />
-      <div className="sticky bottom-0 z-10 -mx-1 flex items-center justify-between gap-3 border-t border-border bg-background/95 px-1 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <SaveBar label={existing ? "Save schema" : "Create collection"}>
         <p className="text-xs text-muted-foreground">
           {touched && invalid ? <span className="font-medium text-destructive">Fix the highlighted fields to continue.</span> : existing ? "Changes apply when you save. Existing records keep their data." : `${userFields} ${userFields === 1 ? "field" : "fields"} so far. You can change them later.`}
         </p>
@@ -231,7 +232,7 @@ export default function SchemaDesigner({ existing, onSaved }: { existing?: Colle
             {existing ? (busy ? "Saving…" : "Save schema") : busy ? "Creating…" : "Create collection"}
           </Button>
         </div>
-      </div>
+      </SaveBar>
 
       {existing && !existing.system && (
         <section aria-label="Danger zone" className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-destructive/40 p-5">

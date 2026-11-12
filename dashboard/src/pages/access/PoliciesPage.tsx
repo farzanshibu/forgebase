@@ -6,6 +6,7 @@ import { Sel } from "../../components/controls";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorPanel } from "../../components/ErrorPanel";
 import { SkeletonLines } from "../../components/Skeleton";
+import { SaveBar } from "../../components/SaveBar";
 import { Button, ConfirmButton } from "../../components/ui";
 import { useLoad } from "../../hooks";
 import { notify } from "../../toaster";
@@ -147,7 +148,7 @@ function PolicyEditor({ policy, def, onChanged }: { policy: Policy; def: Collect
         </TableCard>
       )}
       {fields.length === 0 && <CardBody className="rounded-xl border border-dashed border-border text-xs text-muted-foreground">This collection has no fields of its own, so there are no field rules.</CardBody>}
-      <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card/95 px-4 py-3 shadow-sm backdrop-blur">
+      <SaveBar label="Save rules">
         <p className="text-sm">
           {dirty ? <span className="font-medium text-warning">Unsaved changes</span> : saved && !error ? <span role="status" className="text-success">Saved</span> : <span className="text-muted-foreground">No changes</span>}
         </p>
@@ -155,7 +156,7 @@ function PolicyEditor({ policy, def, onChanged }: { policy: Policy; def: Collect
           <ConfirmButton label="Lock all rules" consequence={`Every rule of ${def.name} is removed: only administrators and service keys can reach its records until you add rules again.`} onConfirm={() => void run(async () => { await deletePolicy(def.name); onChanged(); })} />
           <Button tone="primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save rules"}</Button>
         </div>
-      </div>
+      </SaveBar>
       <ActionError error={error} />
     </div>
   );

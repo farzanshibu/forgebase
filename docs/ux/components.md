@@ -30,6 +30,8 @@ ask god (FB-98 has merged) and it is added here.
 | A save failed and nothing on screen can show it | `notify.failed(error)` | `toaster` |
 | Checkbox, switch, select | `Check`, `Toggle`, `Sel` (`aria-label` is the accessible name, also next to a visible `label`) | `components/controls` |
 | Section tabs | `RouteTabs` (router driven) | `components/controls` |
+| The Save (or Next) bar of a long form | `SaveBar`: pinned to the bottom edge of the page, under the scroll area, not a `sticky` div: `<SaveBar label="Save changes" className="max-w-5xl">…</SaveBar>` | `components/SaveBar` |
+| A graph of nodes and edges to pan, zoom and drag | PanelUI `Flow`; the graph explorer's `GraphCanvas` shows edge labels and fit-to-view on top of it | `panelui-web/flow`, `pages/graph/GraphCanvas` |
 | Validate a name as the user types | `validate.collectionName`, `bucketName`, `functionName`, `topicName`, `namespaceName`, `json`, `integer`, `required`, `all` | `validate` |
 | Better breadcrumb names on a detail page | `useCrumbs([...])` | `components/crumbs` |
 | A list or table in a card: title, count, filters, pager | `TableCard` with `Th`, `NUM` and `HEAD_ROW`; `CardBody` pads an empty state, skeleton or error inside it: `<TableCard title="Invoices" count={n} toolbar={…} footer={<Pager … />}><Table framed …>…</Table></TableCard>` | `components/TableCard` |

@@ -163,15 +163,23 @@ function PriceSheet({ open, onOpenChange, products, onSaved }: { open: boolean; 
 
 function PriceLine({ pr, busy, onArchive }: { pr: Price; busy: boolean; onArchive: () => void }) {
   return (
-    <li className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span className={`font-medium tabular-nums ${pr.active ? "" : "text-muted-foreground line-through"}`.trim()}>{describePrice(pr)}</span>
-      {Object.entries(pr.currency_options).map(([c, o]) => <span key={c} className="text-muted-foreground tabular-nums">{formatMoney(o.unit_amount, c)}</span>)}
-      <Tag>{words(pr.type)}</Tag>
-      <span className="font-mono text-xs text-muted-foreground">{pr.key}</span>
-      {pr.trial_days > 0 && <span className="text-xs text-info">{pr.trial_days}-day trial</span>}
-      {pr.feature && <span className="text-xs text-muted-foreground">metered {pr.feature} ({pr.meter_basis})</span>}
-      {!pr.active && <Badge status="archived" />}
-      {pr.active && <span className="ml-auto"><ConfirmButton className="h-6 border-transparent px-2 text-xs" label={`Archive price ${pr.key}`} short="Archive" consequence="New subscriptions and orders can no longer use it. Existing ones keep it." disabled={busy} onConfirm={onArchive} /></span>}
+    // One price per row: what it costs on the first line, its key and terms on the second, and its own
+    // Archive button beside both, so the button never wraps away from the price it archives.
+    <li className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className={`font-medium tabular-nums ${pr.active ? "" : "text-muted-foreground line-through"}`.trim()}>{describePrice(pr)}</span>
+          {Object.entries(pr.currency_options).map(([c, o]) => <span key={c} className="text-muted-foreground tabular-nums">{formatMoney(o.unit_amount, c)}</span>)}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <Tag>{words(pr.type)}</Tag>
+          <span className="font-mono">{pr.key}</span>
+          {pr.trial_days > 0 && <span className="text-info">{pr.trial_days}-day trial</span>}
+          {pr.feature && <span>metered {pr.feature} ({pr.meter_basis})</span>}
+          {!pr.active && <Badge status="archived" />}
+        </div>
+      </div>
+      {pr.active && <ConfirmButton className="h-7 shrink-0 border-transparent px-2.5 text-xs" label={`Archive price ${pr.key}`} short="Archive" consequence="New subscriptions and orders can no longer use it. Existing ones keep it." disabled={busy} onConfirm={onArchive} />}
     </li>
   );
 }
@@ -251,8 +259,8 @@ export default function Catalog() {
                     <Tag>{words(p.kind)}</Tag>
                     {p.credits ? <span className="mt-1 block whitespace-nowrap text-xs text-muted-foreground tabular-nums">{formatCount(p.credits)} credits</span> : null}
                   </Table.Cell>
-                  <Table.Cell>
-                    <ul className="space-y-1.5">
+                  <Table.Cell className="min-w-80">
+                    <ul aria-label={`Prices of ${p.name}`} className="divide-y divide-border">
                       {byProduct(p.key).map((pr) => (
                         <PriceLine key={pr.key} pr={pr} busy={act.busy} onArchive={() => void act.run(() => archivePrice(pr.key), "Price archived")} />
                       ))}

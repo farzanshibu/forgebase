@@ -8,6 +8,7 @@ import { Alert } from "panelui-web/alert";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { FeaturesResponse, ServerFeature } from "../../api";
 import { ErrorPanel } from "../../components/ErrorPanel";
+import { SaveBar } from "../../components/SaveBar";
 import { Button } from "../../components/ui";
 import { notify } from "../../toaster";
 import FeatureCard from "./FeatureCard";
@@ -44,7 +45,7 @@ export default function FeaturesForm({ snapshot, apply }: {
   const jump = (id: string) => document.getElementById(settingsAnchor(id))?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   return (
-    <div className="space-y-6 pb-20">
+    <div className="space-y-6">
       {(snapshot.restart_pending || restart) && (
         <Alert tone="warning" variant="plain">
           <Alert.Icon />
@@ -126,7 +127,7 @@ export default function FeaturesForm({ snapshot, apply }: {
         {d.saveErr !== undefined && Object.keys(d.serverErr).length === 0 && <ErrorPanel error={d.saveErr} />}
       </section>
 
-      <div role="region" aria-label="Save changes" className="sticky bottom-0 -mx-1 flex items-center justify-between gap-3 border-t border-border bg-background/95 px-1 py-3 backdrop-blur">
+      <SaveBar label="Save changes" className="max-w-5xl">
         <span className="text-sm text-muted-foreground" aria-live="polite">
           {d.changed.length === 0 ? "No changes" : `${d.changed.length} unsaved ${d.changed.length === 1 ? "change" : "changes"}`}
         </span>
@@ -136,7 +137,7 @@ export default function FeaturesForm({ snapshot, apply }: {
             {d.busy ? "Saving…" : "Save changes"}
           </Button>
         </div>
-      </div>
+      </SaveBar>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ServerFeature, FeaturesResponse } from "../../api";
 import { ErrorPanel } from "../../components/ErrorPanel";
+import { SaveBar } from "../../components/SaveBar";
 import { Button } from "../../components/ui";
 import FeatureCard from "./FeatureCard";
 import SettingsSections from "./SettingsSections";
@@ -63,8 +64,6 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
   const elsewhere = Object.entries(d.serverErr).filter(([k]) => !visibleKeys.has(k) && !k.endsWith(".enabled"));
   const idx = ORDER.indexOf(step);
   const onCount = features.filter((f) => f.always_on || d.isOn(f)).length;
-  // Next / Save stay in reach on a long step: the same sticky bar as Features and settings.
-  const bar = "sticky bottom-0 z-10 -mx-1 flex items-center justify-between gap-3 border-t border-border bg-background/95 px-1 py-3 backdrop-blur";
 
   return (
     <div className="space-y-6">
@@ -118,12 +117,12 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
               );
             })}
           </ul>
-          <div className={bar}>
+          <SaveBar label="Next step">
             <span className="text-sm text-muted-foreground">You can change this later in System › Features and settings.</span>
             <Button tone="primary" onClick={() => setStep("configure")}>
               Next: configure
             </Button>
-          </div>
+          </SaveBar>
         </section>
       )}
 
@@ -152,7 +151,7 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
             </Alert>
           )}
           {d.saveErr !== undefined && Object.keys(d.serverErr).length === 0 && <ErrorPanel error={d.saveErr} />}
-          <div className={bar}>
+          <SaveBar label="Save and finish">
             <Button onClick={() => setStep("map")}>Back</Button>
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground" aria-live="polite">
@@ -162,7 +161,7 @@ export default function FeaturesFlow({ snapshot, apply, before = 0, onRestartPen
                 {d.changed.length === 0 ? "Finish" : "Save and finish"}
               </Button>
             </div>
-          </div>
+          </SaveBar>
         </section>
       )}
 
