@@ -85,6 +85,9 @@ jobs:
                   sums[name.strip().lstrip("*")] = digest
           lock = pathlib.Path("engine.lock")
           text = lock.read_text()
+          # Targets engine.lock marks pending-ci have no engine in this
+          # release: they ship the -lite binary only.
+          pending = {t for t, e in tomllib.loads(text)["archives"].items() if e.get("status") == "pending-ci"}
           cut = re.search(r'^\[archives\.', text, re.M).start()
           fragment = (d / "engine.lock.archives").read_text()
           lock.write_text(text[:cut] + fragment)
@@ -96,6 +99,9 @@ jobs:
           for t in targets:
               entry = archives.get(t)
               if not entry or "sha256" not in entry:
+                  if t in pending:
+                      print(f"{t}: no engine in this release (engine.lock: pending-ci), -lite only")
+                      continue
                   sys.exit(f"the engine release has no archive for {t}")
               f = d / entry["file"]
               got = hashlib.sha256(f.read_bytes()).hexdigest()
@@ -155,6 +161,18 @@ jobs:
           name: engine-pinned
           path: .
 
+      # A target whose engine is still pending-ci (engine.lock) ships -lite only.
+      - name: Engine for this target
+        id: eng
+        shell: bash
+        run: |
+          if ls engine-dl/forgebase-pg*-${{ matrix.target }}.tar.zst >/dev/null 2>&1; then
+            echo "has=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::no PostgreSQL engine for ${{ matrix.target }} in this engine release: -lite only"
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -192,7 +210,7 @@ jobs:
           cp "$bin" stage/lite/
 
       - name: Build with the PostgreSQL engine (cross)
-        if: matrix.builder == 'cross'
+        if: matrix.builder == 'cross' && steps.eng.outputs.has == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -202,7 +220,7 @@ jobs:
           cross build --release --locked --target ${{ matrix.target }} -p forgebase-cli --features bundled-postgres
 
       - name: Build with the PostgreSQL engine (cargo)
-        if: matrix.builder == 'cargo'
+        if: matrix.builder == 'cargo' && steps.eng.outputs.has == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -211,6 +229,7 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }} -p forgebase-cli --features bundled-postgres
 
       - name: Stage the standard binary
+        if: steps.eng.outputs.has == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -225,32 +244,39 @@ jobs:
       - name: Smoke test
         if: matrix.smoke
         shell: bash
+        env:
+          HAS_ENGINE: ${{ steps.eng.outputs.has }}
         run: |
           set -euo pipefail
           exe=forgebase; [ "${{ runner.os }}" = Windows ] && exe=forgebase.exe
           lite="$PWD/stage/lite/$exe"; full="$PWD/stage/bundled/$exe"
           "$lite" --version | tee lite.version
           grep -q 'lite' lite.version
-          "$full" --version | tee full.version
-          if grep -q 'lite' full.version; then echo "the standard build reports lite" >&2; exit 1; fi
           work=$(mktemp -d); cd "$work"
           export HOME="$work/home"; mkdir -p "$HOME"
-          "$full" init smoke --no-admin
-          cd smoke
-          "$full" status
-          "$full" doctor || true
-          "$full" db status --json | tee db.json
-          grep -q '"postgres"' db.json
-          cd ..
+          if [ "$HAS_ENGINE" = true ]; then
+            "$full" --version | tee full.version
+            if grep -q 'lite' full.version; then echo "the standard build reports lite" >&2; exit 1; fi
+            "$full" init smoke --no-admin
+            cd smoke
+            "$full" status
+            "$full" doctor || true
+            "$full" db status --json | tee db.json
+            grep -q '"postgres"' db.json
+            cd ..
+          fi
           "$lite" init smoke-lite --database sqlite --no-admin
           (cd smoke-lite && "$lite" status)
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          HAS_ENGINE: ${{ steps.eng.outputs.has }}
         run: |
           set -euo pipefail
-          for flavour in bundled lite; do
+          flavours="lite"; [ "$HAS_ENGINE" = true ] && flavours="bundled lite"
+          for flavour in $flavours; do
             name="forgebase-${{ github.ref_name }}-${{ matrix.target }}"
             [ "$flavour" = lite ] && name="$name-lite"
             mkdir -p "dist/$name"
@@ -264,8 +290,12 @@ jobs:
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          HAS_ENGINE: ${{ steps.eng.outputs.has }}
         run: |
-          foreach ($flavour in "bundled", "lite") {
+          $flavours = @("lite")
+          if ($env:HAS_ENGINE -eq "true") { $flavours = @("bundled", "lite") }
+          foreach ($flavour in $flavours) {
             $name = "forgebase-${{ github.ref_name }}-${{ matrix.target }}"
             if ($flavour -eq "lite") { $name = "$name-lite" }
             New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
