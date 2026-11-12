@@ -70,28 +70,28 @@
 }
 
 /*
- * Dark: a warm black, #1b1817, is the page. Every surface on top of it is a step lighter in the same hue (card, then
- * menus and dialogs), so overlapping surfaces read in order.
+ * Dark: one warm black, #1c1917, for the page and the cards on it (a card is told apart by its border and soft
+ * shadow, not by a lighter fill). Only what floats over the page, menus, dialogs and sheets, is a step lighter.
  */
 .dark {
   color-scheme: dark;
 
-  --background: #1b1817;
+  --background: #1c1917;
   --foreground: #fafaf9;
-  --card: #221f1d;
+  --card: #1c1917;
   --card-foreground: #fafaf9;
-  /* A step above the card, so a menu or dialog over a card reads as on top of it. */
-  --popover: #2a2624;
+  /* A step above the page, so a menu or dialog reads as on top of it. */
+  --popover: #221f1d;
   --popover-foreground: #fafaf9;
-  --secondary: #272321;
+  --secondary: #242120;
   --secondary-foreground: #fafaf9;
-  --muted: #272321;
-  /* 7.0:1 on the page, 6.5:1 on a card, 5.9:1 on a popover. */
+  --muted: #242120;
+  /* 7.0:1 on the page and cards, 6.5:1 on a popover, 6.3:1 on muted. */
   --muted-foreground: #a8a29e;
-  --accent: #322d2b;
+  --accent: #2b2725;
   --accent-foreground: #fafaf9;
-  --border: #34302d;
-  /* 3.83:1 on the page, 3.56:1 on a card, 3.25:1 on a popover. */
+  --border: #302c2a;
+  /* 3.83:1 on the page and cards, 3.56:1 on a popover. */
   --input: #7a7470;
 
   --success: #34d399;
@@ -100,7 +100,7 @@
   --destructive: #f87171;
 
   --primary: #f97316;
-  --primary-foreground: #1b1817;
+  --primary-foreground: #1c1917;
 
   --chart-2: #2dd4bf;
   --chart-3: #60a5fa;
@@ -123,22 +123,22 @@
  * (the default orange already was). Dark values are the bright 400/500 shades.
  */
 [data-accent="amber"] { --primary: #b03c0a; --primary-foreground: #ffffff; }
-.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #f97316; --primary-foreground: #1b1817; }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #f97316; --primary-foreground: #1c1917; }
 
 [data-accent="indigo"] { --primary: #4b3ff0; --primary-foreground: #ffffff; }
-.dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #8b95f9; --primary-foreground: #1b1817; }
+.dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #8b95f9; --primary-foreground: #1c1917; }
 
 [data-accent="emerald"] { --primary: #00754c; --primary-foreground: #ffffff; }
-.dark[data-accent="emerald"], .dark [data-accent="emerald"] { --primary: #34d399; --primary-foreground: #1b1817; }
+.dark[data-accent="emerald"], .dark [data-accent="emerald"] { --primary: #34d399; --primary-foreground: #1c1917; }
 
 [data-accent="rose"] { --primary: #c0134a; --primary-foreground: #ffffff; }
-.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: #fb7185; --primary-foreground: #1b1817; }
+.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: #fb7185; --primary-foreground: #1c1917; }
 
 [data-accent="sky"] { --primary: #0369a1; --primary-foreground: #ffffff; }
-.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: #38bdf8; --primary-foreground: #1b1817; }
+.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: #38bdf8; --primary-foreground: #1c1917; }
 
 [data-accent="violet"] { --primary: #7c3aed; --primary-foreground: #ffffff; }
-.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: #a78bfa; --primary-foreground: #1b1817; }
+.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: #a78bfa; --primary-foreground: #1c1917; }
 
 /* Tokens derived from the accent, declared wherever an accent is so they follow it. */
 :root, [data-accent] {
