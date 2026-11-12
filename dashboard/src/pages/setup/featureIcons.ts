@@ -3,6 +3,7 @@
  * same icons, so a feature on the map and its studio in the rail look alike.
  */
 import {
+  AiChat02Icon,
   AiNetworkIcon,
   CodeIcon,
   Coins01Icon,
@@ -41,6 +42,7 @@ const ICONS: Record<string, IconSvgElement> = {
   identity: IdentityCardIcon,
   access: Shield01Icon,
   resp: CommandLineIcon,
+  mcp: AiChat02Icon,
   billing: CreditCardIcon,
   entitlements: Ticket01Icon,
   credits: Coins01Icon,

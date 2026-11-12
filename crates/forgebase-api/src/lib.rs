@@ -34,6 +34,7 @@ pub mod error;
 pub mod features;
 pub mod gate;
 pub mod http;
+pub mod mcp;
 pub mod openapi;
 pub mod principal;
 pub mod routes;
@@ -500,6 +501,8 @@ pub fn router_with(
     if let Some(off) = &disabled {
         doc.paths.paths.retain(|path, _| off.owner(path).is_none());
     }
+    // ADR-0030: the MCP endpoint reaches the operations this document lists.
+    let mcp = mcp::McpState::new(&doc, policy.clone(), opts.cors_allowed_origins.clone());
     let doc = Arc::new(doc);
     let graph_on = opts.system_config.as_ref().is_none_or(|c| c.running().graph.enabled);
     let graph = if graph_on {
@@ -530,6 +533,7 @@ pub fn router_with(
                 .with_state(opts.system_config.clone()),
         )
         .route("/api/openapi.json", get(move || openapi::serve(doc.clone())))
+        .merge(mcp.clone().routes())
         .nest("/api/v1", v1)
         .merge(graph)
         .merge(extra)
@@ -587,7 +591,10 @@ pub fn router_with(
         Some(off) => app.layer(middleware::from_fn_with_state(off, features::gate)),
         None => app,
     };
-    app.layer(middleware::from_fn(context::request_context))
+    let app = app.layer(middleware::from_fn(context::request_context));
+    // Tool calls go through the finished router, every layer included.
+    mcp.attach(app.clone());
+    app
 }
 
 /// Lets `POST /api/auth/realms` create the realm record through the policy

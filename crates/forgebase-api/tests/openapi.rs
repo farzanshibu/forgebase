@@ -44,6 +44,8 @@ const EXPECTED: &[(&str, &str)] = &[
     ("get", "/api/system/database/agent/nodes/{id}/commands"),
     ("post", "/api/system/database/agent/nodes/{id}/heartbeat"),
     ("get", "/api/openapi.json"),
+    // MCP server (ADR-0030).
+    ("post", "/api/mcp"),
     ("get", "/api/v1/collections"),
     ("post", "/api/v1/collections"),
     ("get", "/api/v1/collections/{collection}"),

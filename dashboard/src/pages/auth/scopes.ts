@@ -80,9 +80,13 @@ export function parseScopes(scopes: readonly string[]): AreaChoice[] {
 }
 
 /** A scope in plain words: `collections:read:notes` reads "Read records in notes". */
+/** The scope that lets an AI agent use the MCP server (ADR-0030); what the agent may do comes from the other scopes. */
+export const MCP_SCOPE = "mcp:*";
+
 export function describeScope(scope: string): string {
   if (scope === "*") return "Full access to everything";
   const [area, access, name] = scope.split(":");
+  if (area === "mcp") return "AI agents may use this key through the MCP server";
   const a = AREAS.find((x) => x.id === area);
   if (!a) return scope;
   if (access === "*") return `Everything in ${a.label.toLowerCase()}`;
@@ -117,7 +121,7 @@ export function summarizeScopes(scopes: readonly string[]): ScopeSummary[] {
     g.access.add(access);
     if (access === "*") g.wide = true;
     const what = g.access.has("*") ? "everything" : ["read", "write"].filter((x) => g.access.has(x)).join(" and ") || [...g.access].join(", ");
-    g.label = `${a?.label ?? area}${name ? ` (${name})` : ""}: ${what}`;
+    g.label = area === "mcp" ? "AI agents (MCP)" : `${a?.label ?? area}${name ? ` (${name})` : ""}: ${what}`;
     out.set(key, g);
   }
   return [...out.values()].map(({ label, scopes: list, wide }) => ({ label, scopes: list, wide }));

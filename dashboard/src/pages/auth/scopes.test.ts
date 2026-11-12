@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildScopes, describeScope, emptyChoice, parseScopes, readExample, summarizeScopes } from "./scopes";
+import { MCP_SCOPE, buildScopes, describeScope, emptyChoice, parseScopes, readExample, summarizeScopes } from "./scopes";
 
 const choice = (area: string, o: Partial<ReturnType<typeof emptyChoice>>) => ({ ...emptyChoice(area), ...o });
 
@@ -58,5 +58,13 @@ describe("summarizeScopes", () => {
     expect(one).toMatchObject({ label: "Records (posts): read", wide: false, scopes: ["collections:read:posts"] });
     expect(all).toMatchObject({ label: "Key-value: everything", wide: true });
     expect(star).toMatchObject({ label: "Full access", wide: true });
+  });
+});
+
+describe("the MCP scope", () => {
+  it("reads as AI agent access, in the key list and in tooltips", () => {
+    expect(MCP_SCOPE).toBe("mcp:*");
+    expect(describeScope(MCP_SCOPE)).toBe("AI agents may use this key through the MCP server");
+    expect(summarizeScopes(["collections:read", MCP_SCOPE]).map((c) => c.label)).toEqual(["Records: read", "AI agents (MCP)"]);
   });
 });

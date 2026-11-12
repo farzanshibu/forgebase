@@ -846,6 +846,16 @@ const BILLING: &[SettingDef] = &[SettingDef::new(
 .env("FORGEBASE_BILLING_ENABLED")
 .flag("--billing")];
 
+/// `[mcp]`: the MCP server for AI agents (ADR-0030).
+const MCP: &[SettingDef] = &[SettingDef::new(
+    "mcp.enabled",
+    "MCP server for AI agents",
+    Bool,
+    "Opens POST /api/mcp, a Model Context Protocol server through which AI agents (Claude Code, Cursor and others) can read and change everything their API key allows: data, files, functions, jobs, users, keys and settings. Agents sign in with an API key or personal access token; a scoped key also needs the mcp scope. Off by default: turn it on only if you want agents to manage this server.",
+)
+.env("FORGEBASE_MCP_ENABLED")
+.flag("--mcp")];
+
 /// Every module, in display order.
 pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
@@ -1022,6 +1032,17 @@ pub const FEATURES: &[FeatureDef] = &[
         docs: "docs/adr/0013-resp.md#adr-0013-resp-listener-and-the-redisvalkey-adapter",
         routes: &[],
         settings: RESP,
+    },
+    FeatureDef {
+        id: "mcp",
+        name: "MCP server",
+        summary: "Lets AI agents operate and configure this server through the Model Context Protocol, with an API key's permissions.",
+        can_disable: true,
+        enable_key: Some("mcp.enabled"),
+        studio_path: None,
+        docs: "docs/mcp.md#mcp-server",
+        routes: &["/api/mcp"],
+        settings: MCP,
     },
     FeatureDef {
         id: "billing",
@@ -1600,6 +1621,7 @@ mod tests {
             "identity",
             "access",
             "resp",
+            "mcp",
             "billing",
         ] {
             assert!(ids.contains(&id), "{id} listed");
@@ -1661,9 +1683,10 @@ mod tests {
                 assert!(defaults.contains_key(s.key), "{} has a default", s.key);
             }
         }
-        // Defaults: on, except the Redis listener (a network listener stays opt-in).
+        // Defaults: on, except the Redis listener and the MCP server (entry
+        // points for other programs stay opt-in).
         for f in FEATURES.iter().filter(|f| f.can_disable) {
-            assert_eq!(f.enabled(&cfg), f.id != "resp", "{}", f.id);
+            assert_eq!(f.enabled(&cfg), !matches!(f.id, "resp" | "mcp"), "{}", f.id);
         }
     }
 
@@ -1692,7 +1715,7 @@ mod tests {
         let off = disabled(&cfg);
         assert_eq!(
             off.iter().map(|f| f.id).collect::<Vec<_>>(),
-            ["storage", "identity", "resp"]
+            ["storage", "identity", "resp", "mcp"]
         );
         assert_eq!(owner_of(&off, "/api/auth/oidc/default/token").unwrap().id, "identity");
         assert_eq!(owner_of(&off, "/api/v1/storage/buckets").unwrap().id, "storage");
@@ -1881,6 +1904,7 @@ mod tests {
             "SQLite",
             "Apache",
             "AGE",
+            "AI",
         ];
         const JARGON: &[(&str, &str)] = &[
             ("OIDC", "OpenID Connect"),

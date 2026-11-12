@@ -25,7 +25,7 @@ import { useLoad } from "../../hooks";
 import { serverUrl } from "../../snippets";
 import { validate } from "../../validate";
 import { SecretModal } from "./common";
-import { AREAS, EXPIRIES, buildScopes, describeScope, emptyChoice, readExample, summarizeScopes, type AreaChoice, type ScopeArea } from "./scopes";
+import { AREAS, EXPIRIES, MCP_SCOPE, buildScopes, describeScope, emptyChoice, readExample, summarizeScopes, type AreaChoice, type ScopeArea } from "./scopes";
 import { Chip } from "../../components/Chips";
 
 const NEW_ACCOUNT = "__new__";
@@ -86,6 +86,8 @@ function KeyForm({ open, onOpenChange, kind, accountId, onMade }: CreateKeyDialo
   const [name, setName] = useState("");
   const [account, setAccount] = useState(accountId ?? NEW_ACCOUNT);
   const [choices, setChoices] = useState<Record<string, AreaChoice>>({});
+  // MCP (ADR-0030): the key may also be used by an AI agent, with the same scopes as above.
+  const [agents, setAgents] = useState(false);
   const [expiry, setExpiry] = useState(90);
   const [tenant, setTenant] = useState("");
   const [touched, setTouched] = useState(false);
@@ -95,14 +97,15 @@ function KeyForm({ open, onOpenChange, kind, accountId, onMade }: CreateKeyDialo
 
   const choiceOf = (area: string) => choices[area] ?? emptyChoice(area);
   const setChoice = (area: string, patch: Partial<AreaChoice>) => setChoices((c) => ({ ...c, [area]: { ...(c[area] ?? emptyChoice(area)), ...patch } }));
-  const scopes = buildScopes(AREAS.map((a) => choiceOf(a.id)));
+  const areaScopes = buildScopes(AREAS.map((a) => choiceOf(a.id)));
+  const scopes = agents ? [...areaScopes, MCP_SCOPE] : areaScopes;
   const names: Record<string, string[]> = {
     collections: (collections.data ?? []).map((c) => c.name),
     storage: (buckets.data ?? []).map((b) => b.name),
   };
   const nameError = (touched ? validate.required(kind === "token" ? "a name for the token" : "the app's name")(name) : undefined) ?? fieldErrors(saveError).name;
-  const scopeError = touched && scopes.length === 0 ? "Pick at least one thing the key may do." : undefined;
-  const canSubmit = name.trim() !== "" && scopes.length > 0;
+  const scopeError = touched && areaScopes.length === 0 ? "Pick at least one thing the key may do." : undefined;
+  const canSubmit = name.trim() !== "" && areaScopes.length > 0;
   const accountOptions = [
     { value: NEW_ACCOUNT, label: name.trim() ? `New service account “${name.trim()}”` : "New service account named after the app" },
     ...(accounts.data ?? []).map((a) => ({ value: a.id, label: `${a.name}${a.role === "admin" ? " (administrator)" : ""}` })),
@@ -169,6 +172,15 @@ function KeyForm({ open, onOpenChange, kind, accountId, onMade }: CreateKeyDialo
           ))}
         </div>
         {scopeError && <p role="alert" className="text-xs font-medium text-destructive">{scopeError}</p>}
+        <div className="rounded-lg border border-border px-3 py-2.5">
+          <Check
+            checked={agents}
+            onChange={setAgents}
+            label="Let AI agents use this key (MCP)"
+            description={<>An agent such as Claude Code or Cursor connects to <code>/api/mcp</code> with this key and can do only what is ticked above. The MCP server must be on in Features and settings. <code>{MCP_SCOPE}</code></>}
+            aria-label="Let AI agents use this key through the MCP server"
+          />
+        </div>
       </fieldset>
 
       <FormSection title="Limits">

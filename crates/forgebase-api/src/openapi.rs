@@ -84,6 +84,26 @@ fn doc_system_features() {}
 #[allow(dead_code)]
 fn doc_system_config() {}
 
+/// MCP server (ADR-0030): one JSON-RPC 2.0 message of the Model Context
+/// Protocol (Streamable HTTP transport, JSON responses). Off unless
+/// `[mcp] enabled = true`. Authenticate like any API call; a scoped
+/// credential needs `mcp:write` (or `mcp:*`), and each tool call is then
+/// checked against its own scopes and rules.
+#[utoipa::path(
+    post, path = "/api/mcp", tag = "mcp",
+    request_body(content = Object, description = "A JSON-RPC 2.0 request or notification: `initialize`, `ping`, `tools/list`, `tools/call`"),
+    responses(
+        (status = 200, description = "The JSON-RPC response", body = Object),
+        (status = 202, description = "A notification or response was accepted"),
+        (status = 400, description = "Not JSON, a batch, or an unsupported `MCP-Protocol-Version`", body = Object),
+        (status = 401, description = "No credentials (`WWW-Authenticate: Bearer`)", body = ErrorEnvelope),
+        (status = 403, description = "`origin_not_allowed`, or a scoped credential without `mcp`", body = ErrorEnvelope),
+        (status = 404, description = "`feature_disabled`: `[mcp] enabled = false`", body = ErrorEnvelope),
+    )
+)]
+#[allow(dead_code)]
+fn doc_mcp() {}
+
 /// This document.
 #[utoipa::path(
     get, path = "/api/openapi.json", tag = "system",
@@ -105,7 +125,7 @@ fn doc_openapi() {}
         license(name = "MIT OR Apache-2.0"),
     ),
     paths(
-        doc_health, doc_ready, doc_metrics, doc_system_info, doc_system_features, doc_system_config, doc_openapi,
+        doc_health, doc_ready, doc_metrics, doc_system_info, doc_system_features, doc_system_config, doc_openapi, doc_mcp,
         collections::list, collections::create, collections::get, collections::update, collections::delete,
         collections::schema, collections::history,
         records::list, records::query, records::count, records::aggregate, records::explain, records::create,
@@ -152,6 +172,7 @@ fn doc_openapi() {}
     )),
     tags(
         (name = "system", description = "Health, metrics and instance information"),
+        (name = "mcp", description = "Model Context Protocol server for AI agents (ADR-0030)"),
         (name = "collections", description = "Collection definitions and their schema"),
         (name = "records", description = "Records: CRUD, filter, sort, expand, projection, pagination, count, aggregate"),
         (name = "documents", description = "JSON documents: merge patch and versions"),

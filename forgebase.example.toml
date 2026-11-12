@@ -192,6 +192,14 @@ enabled = true
 # Range 1 to 1000000. Env: FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL
 max_connections_per_principal = 32
 
+[mcp]
+# MCP server for AI agents (ADR-0030): POST /api/mcp speaks the Model Context
+# Protocol, so agents such as Claude Code or Cursor can read and change what
+# their API key allows (data, files, functions, jobs, users, keys, settings).
+# Off by default. Agents authenticate with an API key or personal access
+# token; a scoped key also needs "mcp:*". Env: FORGEBASE_MCP_ENABLED, flag --mcp
+enabled = false
+
 [billing]
 # Billing (ADR-0021): plans, subscriptions, invoices, provider webhooks under
 # /api/v1/billing. On by default, test mode only: live provider keys are

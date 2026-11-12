@@ -170,6 +170,18 @@ describe("Create API key", () => {
     expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toMatchObject({ scopes: ["storage:write"] });
   });
 
+  it("lets AI agents use the key only on top of what it may do", async () => {
+    const form = await openDialog();
+    await userEvent.type(within(form).getByLabelText(/^App name/), "agent");
+    await userEvent.click(within(form).getByRole("checkbox", { name: "Let AI agents use this key through the MCP server" }));
+    expect(within(form).getByRole("button", { name: "Create key" })).toBeDisabled();
+    const records = area(form, "Records");
+    await userEvent.click(records.getByRole("checkbox", { name: "Records: Read records" }));
+    await userEvent.click(within(form).getByRole("button", { name: "Create key" }));
+    await screen.findByRole("dialog");
+    expect(fake.mock.bodies["post /api/auth/service-accounts/{id}/keys"]?.[0]).toMatchObject({ scopes: ["collections:read", "mcp:*"] });
+  });
+
   it("binds the key to a tenant, with an expiry of never", async () => {
     const form = await openDialog();
     await userEvent.type(within(form).getByLabelText(/^App name/), "tenant-app");

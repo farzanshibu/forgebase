@@ -95,6 +95,9 @@ struct GlobalArgs {
     /// Mount billing (on by default; set the env var/config to false to turn off) [env: FORGEBASE_BILLING_ENABLED]
     #[arg(long, global = true)]
     billing: bool,
+    /// Open the MCP server for AI agents at /api/mcp (off by default) [env: FORGEBASE_MCP_ENABLED]
+    #[arg(long, global = true)]
+    mcp: bool,
 }
 
 impl GlobalArgs {
@@ -110,6 +113,7 @@ impl GlobalArgs {
             resp_host: self.resp_host.clone(),
             resp_port: self.resp_port,
             billing_enabled: self.billing.then_some(true),
+            mcp_enabled: self.mcp.then_some(true),
             ..ConfigOverrides::default()
         }
     }

@@ -98,6 +98,11 @@ max_connections = 1024      # FORGEBASE_RESP_MAX_CONNECTIONS
 max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
 idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
 
+# MCP server for AI agents (ADR-0030): POST /api/mcp. Off by default; agents
+# sign in with an API key or personal access token (a scoped key needs "mcp:*").
+[mcp]
+enabled = false             # FORGEBASE_MCP_ENABLED, flag --mcp
+
 # Billing (subscriptions, orders, invoices, Stripe and Razorpay webhooks).
 # On by default (test mode only); set enabled = false to turn it off.
 # Provider keys are configured at runtime through
@@ -523,6 +528,8 @@ pub struct Config {
     pub queue: QueueConfig,
     /// Billing settings.
     pub billing: BillingConfig,
+    /// MCP server for AI agents (ADR-0030), `[mcp]`.
+    pub mcp: McpConfig,
     /// Realtime (WebSocket) settings.
     pub realtime: RealtimeSettings,
     /// Key-value engine settings (FB-138), `[kv]`.
@@ -631,6 +638,13 @@ pub struct QueueConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BillingConfig {
     /// Whether billing is mounted and its maintenance job runs. On by default.
+    pub enabled: bool,
+}
+
+/// Settings of the MCP server for AI agents (ADR-0030).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct McpConfig {
+    /// Whether `POST /api/mcp` is open. Off by default.
     pub enabled: bool,
 }
 
@@ -796,6 +810,7 @@ impl Config {
                 dead_letter_retention_days: 14,
             },
             billing: BillingConfig { enabled: true },
+            mcp: McpConfig { enabled: false },
             realtime: RealtimeSettings {
                 enabled: true,
                 max_connections_per_principal: DEFAULT_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL,
@@ -1236,6 +1251,9 @@ impl Config {
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
+        if let Some(v) = o.mcp_enabled {
+            self.mcp.enabled = v;
+        }
         if let Some(v) = o.realtime_enabled {
             self.realtime.enabled = v;
         }
@@ -1310,6 +1328,8 @@ pub struct ConfigOverrides {
     pub queue: Option<QueueOverrides>,
     /// Mount billing.
     pub billing_enabled: Option<bool>,
+    /// Open the MCP endpoint.
+    pub mcp_enabled: Option<bool>,
     /// Most realtime connections per principal.
     pub realtime_max_connections_per_principal: Option<u32>,
     /// `[realtime] enabled`.
@@ -1403,6 +1423,7 @@ impl ConfigOverrides {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
                 "BILLING_ENABLED" => o.billing_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "MCP_ENABLED" => o.mcp_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "STORAGE_ENABLED" => {
                     o.storage.get_or_insert_with(StorageOverrides::default).enabled =
                         Some(parse_bool(&value).map_err(bad)?);
@@ -1523,6 +1544,7 @@ impl ConfigOverrides {
             );
         }
         put(self.billing_enabled.is_some(), "billing.enabled");
+        put(self.mcp_enabled.is_some(), "mcp.enabled");
         put(
             self.realtime_max_connections_per_principal.is_some(),
             "realtime.max_connections_per_principal",
@@ -1918,6 +1940,8 @@ struct FileConfig {
     #[serde(default)]
     billing: FileBilling,
     #[serde(default)]
+    mcp: FileMcp,
+    #[serde(default)]
     realtime: FileRealtime,
     #[serde(default)]
     kv: FileKv,
@@ -1972,6 +1996,12 @@ struct FileAuth {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileBilling {
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileMcp {
     enabled: Option<bool>,
 }
 
@@ -2057,6 +2087,7 @@ impl From<FileConfig> for ConfigOverrides {
             storage: f.storage,
             queue: f.queue,
             billing_enabled: f.billing.enabled,
+            mcp_enabled: f.mcp.enabled,
             realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
             realtime_enabled: f.realtime.enabled,
             kv_tenant_max_bytes: f.kv.tenant_max_bytes,
@@ -2311,6 +2342,20 @@ mod tests {
         assert_eq!(loaded.config.server.host, "127.0.0.1");
         assert_eq!(loaded.config.server.port, 8090);
         assert_eq!(loaded.config.data_dir, tmp.path().join("forgebase-data"));
+    }
+
+    #[test]
+    fn mcp_is_off_by_default_and_turned_on_by_file_or_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!Config::defaults(tmp.path()).mcp.enabled, "default off");
+        assert!(!ConfigLoader::new(tmp.path()).load().unwrap().config.mcp.enabled);
+        std::fs::write(tmp.path().join("forgebase.toml"), "[mcp]\nenabled = true\n").unwrap();
+        assert!(ConfigLoader::new(tmp.path()).load().unwrap().config.mcp.enabled);
+        // The template `forgebase init` writes keeps it off; the environment turns it on.
+        std::fs::write(tmp.path().join("forgebase.toml"), CONFIG_TEMPLATE).unwrap();
+        assert!(!ConfigLoader::new(tmp.path()).load().unwrap().config.mcp.enabled);
+        let on = env(&[("FORGEBASE_MCP_ENABLED", "true")]);
+        assert!(ConfigLoader::new(tmp.path()).env(on).load().unwrap().config.mcp.enabled);
     }
 
     #[test]
