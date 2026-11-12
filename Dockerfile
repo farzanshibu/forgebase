@@ -48,18 +48,22 @@ COPY . .
 # Put the freshly built dashboard where rust-embed reads it (dashboard/dist).
 COPY --from=dashboard /src/dashboard/dist ./dashboard/dist
 ARG ENGINE_ARCHIVE
+# crt-static for the binary. An explicit --target keeps RUSTFLAGS off build
+# scripts and proc-macros: a static musl host cannot load a proc-macro
+# ("cannot produce proc-macro ... does not support these crate types").
 ENV RUSTFLAGS="-C target-feature=+crt-static"
 # With ENGINE_ARCHIVE (a path inside the build context): the standard build,
 # the archive embedded and checked against engine.lock. Without it: -lite.
 RUN set -eu; \
+    target="$(rustc -vV | sed -n 's/^host: //p')"; \
     if [ -n "$ENGINE_ARCHIVE" ]; then \
       test -f "$ENGINE_ARCHIVE" || { echo "ENGINE_ARCHIVE $ENGINE_ARCHIVE is not in the build context" >&2; exit 1; }; \
       FORGEBASE_PG_ENGINE_ARCHIVE="/src/$ENGINE_ARCHIVE" \
-        cargo build --release --locked -p forgebase-cli --features bundled-postgres; \
+        cargo build --release --locked --target "$target" -p forgebase-cli --features bundled-postgres; \
     else \
-      cargo build --release --locked -p forgebase-cli; \
+      cargo build --release --locked --target "$target" -p forgebase-cli; \
     fi; \
-    cp target/release/forgebase /forgebase
+    cp "target/$target/release/forgebase" /forgebase
 
 # --- 3. Runtime: slim image, non-root user, /data volume --------------------
 FROM debian:bookworm-slim AS runtime
