@@ -26,14 +26,14 @@ export function SaveBar({ label, className = "", children }: { label: string; cl
   const slot = useContext(SaveBarSlotContext);
   if (!slot) {
     return (
-      <div role="region" aria-label={label} className={`sticky bottom-0 z-10 -mx-1 border-t border-border bg-background/95 px-1 backdrop-blur ${ROW}`}>
+      <div role="region" aria-label={label} className={`sticky bottom-0 z-10 -mx-1 border-t border-border bg-background/95 px-1 shadow-[var(--elev-up)] backdrop-blur ${ROW}`}>
         {children}
       </div>
     );
   }
   return createPortal(
     // The same gutters and 1440px column as the page above (Layout's <main>), so the bar lines up with the form.
-    <div role="region" aria-label={label} className="border-t border-border bg-card px-4 md:px-8">
+    <div role="region" aria-label={label} className="relative z-10 border-t border-border bg-card px-4 shadow-[var(--elev-up)] md:px-8">
       <div className="mx-auto w-full max-w-[1440px]">
         <div className={`${ROW} ${className}`.trim()}>{children}</div>
       </div>

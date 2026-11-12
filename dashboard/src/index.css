@@ -51,26 +51,48 @@
   --chart-3: #2563eb;
   --chart-4: #c026d3;
   --chart-5: #ca8a04;
+
+  /*
+   * Elevation: how far a surface sits above the page. Tailwind's shadow-2xs … shadow-2xl read these (see @theme),
+   * so PanelUI's cards, menus, dialogs, sheets and toasts all take them. Light: soft neutral shadows that grow with
+   * height. Dark (below): deep black shadows, since a 10% shadow vanishes on a near-black page, plus a faint top
+   * highlight, the edge light catches on a raised surface.
+   */
+  --elev-2xs: 0 1px 0 0 rgb(24 24 27 / 0.05);
+  --elev-xs: 0 1px 2px 0 rgb(24 24 27 / 0.06);
+  --elev-sm: 0 1px 3px 0 rgb(24 24 27 / 0.08), 0 1px 2px -1px rgb(24 24 27 / 0.08);
+  --elev-md: 0 4px 8px -2px rgb(24 24 27 / 0.09), 0 2px 4px -2px rgb(24 24 27 / 0.06);
+  --elev-lg: 0 12px 24px -6px rgb(24 24 27 / 0.14), 0 4px 8px -4px rgb(24 24 27 / 0.08);
+  --elev-xl: 0 24px 48px -12px rgb(24 24 27 / 0.2), 0 8px 16px -8px rgb(24 24 27 / 0.1);
+  --elev-2xl: 0 32px 72px -16px rgb(24 24 27 / 0.3), 0 12px 24px -12px rgb(24 24 27 / 0.12);
+  /* A bar pinned to the bottom edge, over content that scrolls under it. */
+  --elev-up: 0 -10px 24px -14px rgb(24 24 27 / 0.2);
 }
 
+/*
+ * Dark: a warm black, #1b1817, is the page. Every surface on top of it is a step lighter in the same hue (card, then
+ * menus and dialogs), so overlapping surfaces read in order.
+ */
 .dark {
   color-scheme: dark;
 
-  --background: #09090b;
-  --foreground: #fafafa;
-  --card: #121214;
-  --card-foreground: #fafafa;
-  --popover: #18181b;
-  --popover-foreground: #fafafa;
-  --secondary: #1f1f23;
-  --secondary-foreground: #fafafa;
-  --muted: #1f1f23;
-  --muted-foreground: #a1a1aa;
-  --accent: #27272a;
-  --accent-foreground: #fafafa;
-  --border: #27272a;
-  /* 3.14:1 on a card, 3.34:1 on the page. */
-  --input: #63636b;
+  --background: #1b1817;
+  --foreground: #fafaf9;
+  --card: #221f1d;
+  --card-foreground: #fafaf9;
+  /* A step above the card, so a menu or dialog over a card reads as on top of it. */
+  --popover: #2a2624;
+  --popover-foreground: #fafaf9;
+  --secondary: #272321;
+  --secondary-foreground: #fafaf9;
+  --muted: #272321;
+  /* 7.0:1 on the page, 6.5:1 on a card, 5.9:1 on a popover. */
+  --muted-foreground: #a8a29e;
+  --accent: #322d2b;
+  --accent-foreground: #fafaf9;
+  --border: #34302d;
+  /* 3.83:1 on the page, 3.56:1 on a card, 3.25:1 on a popover. */
+  --input: #7a7470;
 
   --success: #34d399;
   --warning: #facc15;
@@ -78,12 +100,21 @@
   --destructive: #f87171;
 
   --primary: #f97316;
-  --primary-foreground: #18181b;
+  --primary-foreground: #1b1817;
 
   --chart-2: #2dd4bf;
   --chart-3: #60a5fa;
   --chart-4: #e879f9;
   --chart-5: #facc15;
+
+  --elev-2xs: 0 1px 0 0 rgb(0 0 0 / 0.4);
+  --elev-xs: inset 0 1px 0 0 rgb(255 255 255 / 0.03), 0 1px 2px 0 rgb(0 0 0 / 0.5);
+  --elev-sm: inset 0 1px 0 0 rgb(255 255 255 / 0.04), 0 1px 3px 0 rgb(0 0 0 / 0.6), 0 1px 2px -1px rgb(0 0 0 / 0.6);
+  --elev-md: inset 0 1px 0 0 rgb(255 255 255 / 0.05), 0 4px 10px -2px rgb(0 0 0 / 0.6), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+  --elev-lg: inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 14px 32px -8px rgb(0 0 0 / 0.75), 0 4px 12px -4px rgb(0 0 0 / 0.6);
+  --elev-xl: inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 28px 60px -12px rgb(0 0 0 / 0.8), 0 10px 20px -8px rgb(0 0 0 / 0.6);
+  --elev-2xl: inset 0 1px 0 0 rgb(255 255 255 / 0.07), 0 40px 90px -16px rgb(0 0 0 / 0.85), 0 14px 28px -12px rgb(0 0 0 / 0.65);
+  --elev-up: 0 -12px 28px -14px rgb(0 0 0 / 0.75);
 }
 
 /*
@@ -92,22 +123,22 @@
  * (the default orange already was). Dark values are the bright 400/500 shades.
  */
 [data-accent="amber"] { --primary: #b03c0a; --primary-foreground: #ffffff; }
-.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #f97316; --primary-foreground: #18181b; }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: #f97316; --primary-foreground: #1b1817; }
 
 [data-accent="indigo"] { --primary: #4b3ff0; --primary-foreground: #ffffff; }
-.dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #818cf8; --primary-foreground: #09090b; }
+.dark[data-accent="indigo"], .dark [data-accent="indigo"] { --primary: #8b95f9; --primary-foreground: #1b1817; }
 
 [data-accent="emerald"] { --primary: #00754c; --primary-foreground: #ffffff; }
-.dark[data-accent="emerald"], .dark [data-accent="emerald"] { --primary: #34d399; --primary-foreground: #09090b; }
+.dark[data-accent="emerald"], .dark [data-accent="emerald"] { --primary: #34d399; --primary-foreground: #1b1817; }
 
 [data-accent="rose"] { --primary: #c0134a; --primary-foreground: #ffffff; }
-.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: #fb7185; --primary-foreground: #09090b; }
+.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: #fb7185; --primary-foreground: #1b1817; }
 
 [data-accent="sky"] { --primary: #0369a1; --primary-foreground: #ffffff; }
-.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: #38bdf8; --primary-foreground: #09090b; }
+.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: #38bdf8; --primary-foreground: #1b1817; }
 
 [data-accent="violet"] { --primary: #7c3aed; --primary-foreground: #ffffff; }
-.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: #a78bfa; --primary-foreground: #09090b; }
+.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: #a78bfa; --primary-foreground: #1b1817; }
 
 /* Tokens derived from the accent, declared wherever an accent is so they follow it. */
 :root, [data-accent] {
@@ -146,6 +177,15 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+
+  /* The shadow scale follows the theme's elevation tokens (:root and .dark above). */
+  --shadow-2xs: var(--elev-2xs);
+  --shadow-xs: var(--elev-xs);
+  --shadow-sm: var(--elev-sm);
+  --shadow-md: var(--elev-md);
+  --shadow-lg: var(--elev-lg);
+  --shadow-xl: var(--elev-xl);
+  --shadow-2xl: var(--elev-2xl);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -207,6 +247,14 @@
   width: var(--active-tab-width);
   transition-property: left, width;
   transition-duration: 300ms;
+}
+
+/*
+ * Side sheets (create and detail forms) carry a fixed rgb(0 0 0 / 0.3) shadow in PanelUI, too faint on the dark page:
+ * they take the dialog height instead. Only --tw-shadow is replaced, so the sheet keeps its ring.
+ */
+.group\/sheet {
+  --tw-shadow: var(--elev-xl);
 }
 
 /* Native checkboxes, radios and ranges take the accent colour. */

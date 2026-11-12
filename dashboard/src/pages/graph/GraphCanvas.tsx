@@ -78,7 +78,7 @@ export function GraphCanvas({ nodes, edges, pos, selected, path, fitKey, onSelec
         key={e.id}
         data-testid={`edge-${e.id}`}
         data-on-path={on ? "true" : undefined}
-        className={`pointer-events-none absolute z-[5] -translate-x-1/2 -translate-y-1/2 rounded-full border px-1.5 py-px font-mono text-xs whitespace-nowrap transition-opacity duration-150 ${on ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground"} ${hidden ? "opacity-0" : ""}`.trim()}
+        className={`pointer-events-none absolute z-[5] -translate-x-1/2 -translate-y-1/2 rounded-full border px-1.5 py-px font-mono text-xs whitespace-nowrap transition-opacity duration-150 ${on ? "border-primary bg-primary text-primary-foreground" : "border-border bg-popover text-muted-foreground"} shadow-xs ${hidden ? "opacity-0" : ""}`.trim()}
         // A loop has no line to sit on: its label goes just above the node.
         style={{ left: (a.x + b.x) / 2, top: (a.y + b.y) / 2 + (loop ? -(NODE_H / 2 + 14) : 0) + i * 20 }}
       >
@@ -124,7 +124,7 @@ export function GraphCanvas({ nodes, edges, pos, selected, path, fitKey, onSelec
               data-on-path={on ? "true" : undefined}
               onPress={() => onSelect(n.id)}
               onDoubleClick={() => onExpand(n.id)}
-              className={`flex items-center gap-2.5 rounded-xl px-3 ${on ? "border-primary bg-[color-mix(in_oklab,var(--primary)_10%,var(--card))]" : "border-border"}`}
+              className={`flex items-center gap-2.5 rounded-xl px-3 transition-shadow duration-150 hover:shadow-md active:shadow-lg ${isSelected ? "shadow-md" : ""} ${on ? "border-primary bg-[color-mix(in_oklab,var(--primary)_10%,var(--card))]" : "border-border"}`}
               style={{ width: NODE_W, height: NODE_H }}
             >
               <span aria-hidden="true" className="size-2.5 shrink-0 rounded-full ring-2 ring-background" style={{ background: colour(n.label) }} />
