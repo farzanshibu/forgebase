@@ -17,5 +17,5 @@
     "paths": { "monaco-esm/*": ["./node_modules/monaco-editor/esm/vs/*"] },
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "demo", "vite.config.ts", "vite.demo.config.ts"]
+  "include": ["src", "demo", "vite.config.ts", "vite.demo.config.ts", "eslint.config.ts"]
 }
