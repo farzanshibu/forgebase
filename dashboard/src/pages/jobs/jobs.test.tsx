@@ -71,7 +71,8 @@ describe("Jobs detail", () => {
     renderStudio("/jobs/j/job_d");
     expect(await screen.findByText("Last error: smtp refused")).toBeInTheDocument();
     const history = await screen.findByRole("list", { name: "Job history" });
-    expect(within(history).getAllByRole("listitem")).toHaveLength(2);
+    // The history's entries come from a second request: wait for them, not just for the list (flaky on CI).
+    await waitFor(() => expect(within(history).getAllByRole("listitem")).toHaveLength(2));
     expect(screen.getByLabelText("Payload")).toHaveTextContent('"to": "a@b.c"');
     expect(screen.queryByRole("button", { name: "Cancel job" })).not.toBeInTheDocument();
 
