@@ -641,6 +641,10 @@ struct Inner {
     changes: watch::Sender<u64>,
     options: RouterOptions,
     in_flight: Arc<InFlight>,
+    /// One reload at a time: each reads the topology and applies it later,
+    /// so two at once could apply an older read last (a replica removed by
+    /// one would come back from the other).
+    reload_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug)]
@@ -726,6 +730,7 @@ impl DbRouter {
                 changes: watch::channel(epoch).0,
                 options,
                 in_flight: Arc::new(InFlight::default()),
+                reload_lock: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -878,6 +883,7 @@ impl DbRouter {
         if self.inner.fixed {
             return Ok(());
         }
+        let _one = self.inner.reload_lock.lock().await;
         let control = &self.inner.control_db;
         let topology = topology::load(control).await?;
         let placements = topology::load_placements(control).await?;

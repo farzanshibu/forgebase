@@ -137,6 +137,9 @@ pub fn config(dir: &Path) -> Config {
     cfg.server.host = "127.0.0.1".into();
     cfg.server.port = 0;
     cfg.server.shutdown_timeout_secs = 5;
+    // A function deploy compiles and checks the script; on a loaded CI
+    // runner (every crate testing at once) it can pass the 30 s default.
+    cfg.server.request_timeout_secs = 120;
     cfg.queue.poll_interval_ms = 50;
     apply_backend(&mut cfg);
     cfg
