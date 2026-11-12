@@ -452,14 +452,27 @@ impl PgDatabase {
         let int = |i: usize| row.get(i).and_then(Value::as_i64).unwrap_or(0);
         let (size, block) = (int(0), int(1).max(1));
         // pg_ls_waldir needs pg_monitor (or superuser): 0 when not allowed.
-        let wal = self
+        // Ask first: calling it without the privilege makes the server log
+        // "permission denied for function pg_ls_waldir" on every info read.
+        let may_list_wal = self
             .read(&Statement::raw(
+                "SELECT has_function_privilege('pg_catalog.pg_ls_waldir()', 'EXECUTE')::int",
+            ))
+            .await
+            .ok()
+            .and_then(|r| r.scalar().and_then(Value::as_i64))
+            == Some(1);
+        let wal = if may_list_wal {
+            self.read(&Statement::raw(
                 "SELECT coalesce(sum(size), 0)::bigint FROM pg_ls_waldir()",
             ))
             .await
             .ok()
             .and_then(|r| r.scalar().and_then(Value::as_i64))
-            .unwrap_or(0);
+            .unwrap_or(0)
+        } else {
+            0
+        };
         Ok(DatabaseInfo {
             backend: BackendKind::Postgres,
             path: Default::default(),
