@@ -1,0 +1,14 @@
+{
+  // Type-checks the function prelude (prelude.ts + prelude.d.ts); prelude.js is
+  // generated from prelude.ts by scripts/build-js-prelude.ts. Not a browser:
+  // the prelude defines URL, Headers, fetch, TextEncoder, ... itself, so no DOM lib.
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": [],
+    "erasableSyntaxOnly": true
+  },
+  "files": ["prelude.ts", "prelude.d.ts"]
+}

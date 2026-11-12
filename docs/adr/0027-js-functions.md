@@ -24,7 +24,10 @@ sandbox, with the same limits, as any WebAssembly function.
 - **Glue**: `crates/forgebase-functions/js/engine.c` (natives: host call,
   log, UTF-8, base64, CSPRNG, monotonic clock; the module loader that knows
   only `"forgebase"`; the job/timer loop) and `js/prelude.js` (Web globals,
-  `serve`, `ctx`), embedded into the C file with C23 `#embed`.
+  `serve`, `ctx`), embedded into the C file with C23 `#embed`. The prelude's
+  source is `js/prelude.ts` (typed, `tsconfig.json` beside it); `prelude.js`
+  is generated from it by `scripts/build-js-prelude.ts`, which only blanks out
+  the types, so line and column numbers in error traces match the `.ts` file.
 - **Build**: `scripts/build-js-engine.sh` with **wasi-sdk 34.0** (clang 23)
   for `wasm32-wasip1`, reactor model, `-O2 -g0`, 1 MiB stack,
   `--strip-all`, `-ffile-prefix-map` for stable paths; tool and source

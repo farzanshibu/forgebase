@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the embedded JavaScript engine of ForgeBase functions (ADR-0027):
 # QuickJS (quickjs-ng) plus crates/forgebase-functions/js/engine.c and
-# prelude.js, compiled for wasm32-wasip1 with a pinned wasi-sdk.
+# prelude.js, compiled for wasm32-wasip1 with a pinned wasi-sdk. prelude.js is
+# generated from prelude.ts: run `node scripts/build-js-prelude.ts` first after
+# editing it.
 #
 #   scripts/build-js-engine.sh           rebuild and update the committed artifact
 #   scripts/build-js-engine.sh --check   rebuild into a temporary file and fail if

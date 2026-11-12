@@ -4,32 +4,32 @@
 // ({run, tick}); everything else is installed on globalThis.
 (() => {
   "use strict";
-  const N = globalThis.__forgebase_native;
+  const N = globalThis.__forgebase_native ;
   delete globalThis.__forgebase_native;
 
-  const define = (obj, name, value) =>
+  const define = (obj        , name             , value         ) =>
     Object.defineProperty(obj, name, { value, writable: true, configurable: true, enumerable: false });
-  const isBytes = (v) => v instanceof ArrayBuffer || ArrayBuffer.isView(v);
-  const toU8 = (v) =>
+  const isBytes = (v         )                                     => v instanceof ArrayBuffer || ArrayBuffer.isView(v);
+  const toU8 = (v                               )             =>
     v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-  const copyBuffer = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  const copyBuffer = (u8            ) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 
   // ------------------------------------------------------------- host calls
 
-  class ForgeBaseError extends Error {
-    constructor(code, message) {
+  class ForgeBaseError extends Error {                      
+    constructor(code        , message        ) {
       super(message);
       this.name = "ForgeBaseError";
       this.code = code;
     }
   }
 
-  function host(op, arg) {
+  function host(op        , arg          )         {
     try {
       return N.call(op, arg === undefined ? "" : JSON.stringify(arg));
-    } catch (e) {
+    } catch (e     ) {
       if (e && typeof e.hostError === "string") {
-        let j;
+        let j                                       ;
         try {
           j = JSON.parse(e.hostError);
         } catch {
@@ -40,17 +40,17 @@
       throw e;
     }
   }
-  const hostJson = (op, arg) => {
+  const hostJson =    (op        , arg          )    => {
     const s = host(op, arg);
-    return s === "" ? null : JSON.parse(s);
+    return s === "" ? null      : JSON.parse(s);
   };
   // Asynchronous facade: host calls complete synchronously inside the
   // sandbox, but the API is promise-based like other runtimes.
-  const call = (op, arg) => new Promise((resolve) => resolve(hostJson(op, arg)));
+  const call = (op        , arg          ) => new Promise((resolve) => resolve(hostJson(op, arg)));
 
   // ---------------------------------------------------------------- console
 
-  function inspect(v, seen = new Set(), depth = 0) {
+  function inspect(v              , seen               = new Set(), depth = 0)         {
     if (typeof v === "string") return depth ? JSON.stringify(v) : v;
     if (v === null || typeof v !== "object") {
       if (typeof v === "function") return `[Function ${v.name || "(anonymous)"}]`;
@@ -76,10 +76,10 @@
       seen.delete(v);
     }
   }
-  function format(args) {
+  function format(args                ) {
     if (typeof args[0] === "string" && args.length > 1 && /%[sdifoOj%]/.test(args[0])) {
       let i = 1;
-      const head = args[0].replace(/%([sdifoOj%])/g, (m, f) => {
+      const head = args[0].replace(/%([sdifoOj%])/g, (m        , f        ) => {
         if (f === "%") return "%";
         if (i >= args.length) return m;
         const a = args[i++];
@@ -93,21 +93,21 @@
     }
     return args.map((a) => inspect(a)).join(" ");
   }
-  const counts = new Map();
-  const timersByLabel = new Map();
-  const log = (level) => (...args) => N.log(level, format(args));
+  const counts                      = new Map();
+  const timersByLabel                      = new Map();
+  const log = (level        ) => (...args                ) => N.log(level, format(args));
   const console = {
     debug: log(0),
     log: log(1),
     info: log(1),
     warn: log(2),
     error: log(3),
-    trace: (...args) => N.log(0, `${format(args)}\n${new Error().stack || ""}`.trimEnd()),
-    assert: (cond, ...args) => {
+    trace: (...args                ) => N.log(0, `${format(args)}\n${new Error().stack || ""}`.trimEnd()),
+    assert: (cond         , ...args                ) => {
       if (!cond) N.log(3, `Assertion failed${args.length ? `: ${format(args)}` : ""}`);
     },
-    dir: (v) => N.log(1, inspect(v, new Set(), 1)),
-    table: (v) => N.log(1, inspect(v, new Set(), 1)),
+    dir: (v              ) => N.log(1, inspect(v, new Set(), 1)),
+    table: (v              ) => N.log(1, inspect(v, new Set(), 1)),
     count: (label = "default") => {
       const n = (counts.get(label) || 0) + 1;
       counts.set(label, n);
@@ -120,7 +120,7 @@
       timersByLabel.delete(label);
       if (t !== undefined) N.log(1, `${label}: ${Date.now() - t}ms`);
     },
-    timeLog: (label = "default", ...args) => {
+    timeLog: (label = "default", ...args                ) => {
       const t = timersByLabel.get(label);
       if (t !== undefined) N.log(1, `${label}: ${Date.now() - t}ms${args.length ? ` ${format(args)}` : ""}`);
     },
@@ -136,7 +136,7 @@
   // seed (xoshiro128**, seeded from the host CSPRNG) and the origin of
   // performance.now().
   let rs = new Uint32Array(4);
-  const rotl = (x, k) => (x << k) | (x >>> (32 - k));
+  const rotl = (x        , k        ) => (x << k) | (x >>> (32 - k));
   const nextU32 = () => {
     const r = Math.imul(rotl(Math.imul(rs[1], 5), 7), 9) >>> 0;
     const t = rs[1] << 9;
@@ -172,27 +172,27 @@
   // ----------------------------------------------------------------- timers
 
   let timerSeq = 0;
-  const timers = new Map();
-  function addTimer(fn, ms, args, repeat) {
+  const timers                     = new Map();
+  function addTimer(fn               , ms         , args           , repeat         ) {
     if (typeof fn !== "function") throw new TypeError("the callback must be a function");
     const delay = Math.max(0, Number(ms) || 0);
     const id = ++timerSeq;
     timers.set(id, { at: Date.now() + delay, fn, args, repeat: repeat ? Math.max(1, delay) : 0, seq: id });
     return id;
   }
-  define(globalThis, "setTimeout", (fn, ms, ...args) => addTimer(fn, ms, args, false));
-  define(globalThis, "setInterval", (fn, ms, ...args) => addTimer(fn, ms, args, true));
-  define(globalThis, "clearTimeout", (id) => void timers.delete(id));
-  define(globalThis, "clearInterval", (id) => void timers.delete(id));
+  define(globalThis, "setTimeout", (fn               , ms          , ...args           ) => addTimer(fn, ms, args, false));
+  define(globalThis, "setInterval", (fn               , ms          , ...args           ) => addTimer(fn, ms, args, true));
+  define(globalThis, "clearTimeout", (id        ) => void timers.delete(id));
+  define(globalThis, "clearInterval", (id        ) => void timers.delete(id));
 
   // Sleeps until the earliest timer is due and runs it; false when no timer is left.
   function tick() {
     if (timers.size === 0) return false;
-    let next = null;
+    let next                         = null;
     for (const [id, t] of timers) if (!next || t.at < next[1].at || (t.at === next[1].at && t.seq < next[1].seq)) next = [id, t];
-    const wait = next[1].at - Date.now();
+    const wait = next [1].at - Date.now();
     if (wait > 0) host("sleep", { ms: Math.ceil(wait) });
-    const [id, t] = next;
+    const [id, t] = next ;
     if (t.repeat) {
       t.at = Date.now() + t.repeat;
       t.seq = ++timerSeq;
@@ -209,10 +209,10 @@
     get encoding() {
       return "utf-8";
     }
-    encode(input = "") {
+    encode(input          = "") {
       return N.utf8encode(String(input));
     }
-    encodeInto(input, dest) {
+    encodeInto(input         , dest            ) {
       const bytes = N.utf8encode(String(input));
       // Write whole characters only.
       let n = Math.min(bytes.length, dest.length);
@@ -223,9 +223,9 @@
     }
   }
   class TextDecoder {
-    #fatal;
-    #ignoreBOM;
-    constructor(label = "utf-8", options = {}) {
+    #fatal         ;
+    #ignoreBOM         ;
+    constructor(label          = "utf-8", options                                           = {}) {
       const l = String(label).trim().toLowerCase();
       if (l !== "utf-8" && l !== "utf8" && l !== "unicode-1-1-utf-8") throw new RangeError(`the encoding ${label} is not supported (only utf-8)`);
       this.#fatal = !!options.fatal;
@@ -240,7 +240,7 @@
     get ignoreBOM() {
       return this.#ignoreBOM;
     }
-    decode(input) {
+    decode(input          ) {
       if (input === undefined) return "";
       if (!isBytes(input)) throw new TypeError("decode() takes an ArrayBuffer or a typed array");
       return N.utf8decode(toU8(input), this.#fatal, this.#ignoreBOM);
@@ -248,17 +248,17 @@
   }
   define(globalThis, "TextEncoder", TextEncoder);
   define(globalThis, "TextDecoder", TextDecoder);
-  const utf8 = (s) => N.utf8encode(String(s));
-  const fromUtf8 = (b) => N.utf8decode(b, false, false);
+  const utf8 = (s         ) => N.utf8encode(String(s));
+  const fromUtf8 = (b                               ) => N.utf8decode(b, false, false);
 
   // ---------------------------------------------------------- structuredClone
 
-  function structuredClone(value) {
-    const seen = new Map();
-    const fail = (what) => {
+  function structuredClone(value            ) {
+    const seen                        = new Map();
+    const fail                          = (what) => {
       throw new DOMException(`${what} could not be cloned`, "DataCloneError");
     };
-    const clone = (v) => {
+    const clone = (v            )          => {
       if (v === null || (typeof v !== "object" && typeof v !== "function" && typeof v !== "symbol")) return v;
       if (typeof v === "function") fail("a function");
       if (typeof v === "symbol") fail("a symbol");
@@ -267,8 +267,8 @@
       if (v instanceof Date) out = new Date(v.getTime());
       else if (v instanceof RegExp) out = new RegExp(v.source, v.flags);
       else if (v instanceof ArrayBuffer) out = v.slice(0);
-      else if (v instanceof DataView) out = new DataView(clone(v.buffer), v.byteOffset, v.byteLength);
-      else if (ArrayBuffer.isView(v)) out = new v.constructor(clone(v.buffer), v.byteOffset, v.length);
+      else if (v instanceof DataView) out = new DataView(clone(v.buffer               )               , v.byteOffset, v.byteLength);
+      else if (ArrayBuffer.isView(v)) out = new v.constructor(clone(v.buffer               )               , v.byteOffset, v.length);
       else if (v instanceof Map) {
         out = new Map();
         seen.set(v, out);
@@ -280,7 +280,7 @@
         for (const x of v) out.add(clone(x));
         return out;
       } else if (v instanceof Error) {
-        out = new (globalThis[v.name] && globalThis[v.name].prototype instanceof Error ? globalThis[v.name] : Error)(v.message);
+        out = new (globalThis[v.name                        ] && globalThis[v.name                        ].prototype instanceof Error ? globalThis[v.name                        ] : Error)(v.message);
         if (v.stack) out.stack = v.stack;
       } else if (Array.isArray(v)) {
         out = new Array(v.length);
@@ -289,7 +289,7 @@
         return out;
       } else if (v instanceof Promise || v instanceof WeakMap || v instanceof WeakSet) fail(v.constructor.name);
       else {
-        out = {};
+        out = {}                           ;
         seen.set(v, out);
         for (const k of Object.keys(v)) out[k] = clone(v[k]);
         return out;
@@ -304,7 +304,7 @@
   // -------------------------------------------------------------------- URL
 
   const FORM_SAFE = /[A-Za-z0-9*\-._]/;
-  function formEncode(s) {
+  function formEncode(s        ) {
     let out = "";
     for (const b of utf8(s)) {
       const c = String.fromCharCode(b);
@@ -314,8 +314,8 @@
     }
     return out;
   }
-  function percentDecode(s) {
-    const bytes = [];
+  function percentDecode(s        ) {
+    const bytes           = [];
     for (let i = 0; i < s.length; i++) {
       const c = s.charCodeAt(i);
       if (c === 0x25 && i + 2 < s.length && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3))) {
@@ -326,16 +326,16 @@
     }
     return fromUtf8(new Uint8Array(bytes));
   }
-  const formDecode = (s) => percentDecode(s.replace(/\+/g, " "));
+  const formDecode = (s        ) => percentDecode(s.replace(/\+/g, " "));
 
   class URLSearchParams {
-    #list = [];
-    #url = null;
-    constructor(init = "") {
+    #list                     = [];
+    #url             = null;
+    constructor(init                                           = "") {
       if (init instanceof URLSearchParams) this.#list = init.#list.map(([k, v]) => [k, v]);
       else if (typeof init === "object" && init !== null) {
         if (typeof init[Symbol.iterator] === "function") {
-          for (const pair of init) {
+          for (const pair of init                               ) {
             const p = [...pair];
             if (p.length !== 2) throw new TypeError("each pair must have exactly two items");
             this.#list.push([String(p[0]), String(p[1])]);
@@ -343,7 +343,7 @@
         } else for (const k of Object.keys(init)) this.#list.push([k, String(init[k])]);
       } else this.#parse(String(init));
     }
-    #parse(s) {
+    #parse(s        ) {
       this.#list = [];
       if (s.startsWith("?")) s = s.slice(1);
       for (const part of s.split("&")) {
@@ -352,11 +352,11 @@
         this.#list.push(i < 0 ? [formDecode(part), ""] : [formDecode(part.slice(0, i)), formDecode(part.slice(i + 1))]);
       }
     }
-    static _link(p, url, query) {
+    static _link(p                 , url     , query        ) {
       p.#url = url;
       p.#parse(query);
     }
-    static _reparse(p, query) {
+    static _reparse(p                 , query        ) {
       p.#parse(query);
     }
     #update() {
@@ -365,29 +365,29 @@
     get size() {
       return this.#list.length;
     }
-    append(k, v) {
+    append(k        , v        ) {
       this.#list.push([String(k), String(v)]);
       this.#update();
     }
-    delete(k, v) {
+    delete(k        , v         ) {
       k = String(k);
       this.#list = this.#list.filter(([a, b]) => a !== k || (v !== undefined && b !== String(v)));
       this.#update();
     }
-    get(k) {
+    get(k        ) {
       k = String(k);
       const e = this.#list.find(([a]) => a === k);
       return e ? e[1] : null;
     }
-    getAll(k) {
+    getAll(k        ) {
       k = String(k);
       return this.#list.filter(([a]) => a === k).map(([, b]) => b);
     }
-    has(k, v) {
+    has(k        , v         ) {
       k = String(k);
       return this.#list.some(([a, b]) => a === k && (v === undefined || b === String(v)));
     }
-    set(k, v) {
+    set(k        , v        ) {
       k = String(k);
       v = String(v);
       const i = this.#list.findIndex(([a]) => a === k);
@@ -400,15 +400,15 @@
     }
     sort() {
       this.#list = this.#list
-        .map((e, i) => [e, i])
+        .map((e, i)                             => [e, i])
         .sort((x, y) => (x[0][0] < y[0][0] ? -1 : x[0][0] > y[0][0] ? 1 : x[1] - y[1]))
         .map(([e]) => e);
       this.#update();
     }
-    forEach(fn, thisArg) {
+    forEach(fn                                                               , thisArg          ) {
       for (const [k, v] of this.#list) fn.call(thisArg, v, k, this);
     }
-    *entries() {
+    *entries()                                             {
       for (const [k, v] of this.#list) yield [k, v];
     }
     *keys() {
@@ -428,8 +428,8 @@
     }
   }
 
-  const SPECIAL = { "http:": "80", "https:": "443", "ws:": "80", "wss:": "443", "ftp:": "21", "file:": "" };
-  const encodeSet = (s, keep) =>
+  const SPECIAL                         = { "http:": "80", "https:": "443", "ws:": "80", "wss:": "443", "ftp:": "21", "file:": "" };
+  const encodeSet = (s        , keep        ) =>
     s.replace(/[\s\S]/gu, (c) => {
       if (keep.test(c)) return c;
       return Array.from(utf8(c), (b) => `%${b.toString(16).toUpperCase().padStart(2, "0")}`).join("");
@@ -439,10 +439,10 @@
   const FRAG_KEEP = /[A-Za-z0-9\-._~!$&'()*+,;=:@%\/?#]/;
   const USER_KEEP = /[A-Za-z0-9\-._~!$&'()*+,;=%]/;
 
-  function normalizePath(path, special) {
+  function normalizePath(path        , special         ) {
     if (special) path = path.replace(/\\/g, "/");
     const segs = path.split("/");
-    const out = [];
+    const out           = [];
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i];
       const last = i === segs.length - 1;
@@ -458,7 +458,7 @@
     return p;
   }
 
-  function parseAbsolute(input) {
+  function parseAbsolute(input        )                   {
     const m = /^([A-Za-z][A-Za-z0-9+.\-]*):(.*)$/s.exec(input);
     if (!m) return null;
     const protocol = `${m[1].toLowerCase()}:`;
@@ -516,7 +516,7 @@
     return r;
   }
 
-  function resolve(input, base) {
+  function resolve(input        , base                 )            {
     const abs = /^[A-Za-z][A-Za-z0-9+.\-]*:/.test(input) ? parseAbsolute(input) : null;
     if (abs && !(abs.protocol === base?._r?.protocol && abs.protocol in SPECIAL && !/^[A-Za-z][A-Za-z0-9+.\-]*:[\/\\]/.test(input))) return abs;
     if (!base) throw new TypeError(`Invalid URL: ${input}`);
@@ -527,7 +527,7 @@
     }
     let rel = abs ? input.replace(/^[A-Za-z][A-Za-z0-9+.\-]*:/, "") : input;
     if (b.protocol in SPECIAL) rel = rel.replace(/\\/g, "/");
-    if (rel.startsWith("//")) return parseAbsolute(`${b.protocol}${rel}`);
+    if (rel.startsWith("//")) return parseAbsolute(`${b.protocol}${rel}`) ;
     const r = { ...b, hash: "" };
     let hash = "";
     const h = rel.indexOf("#");
@@ -535,7 +535,7 @@
       hash = rel.slice(h);
       rel = rel.slice(0, h);
     }
-    let search = null;
+    let search                = null;
     const q = rel.indexOf("?");
     if (q >= 0) {
       search = rel.slice(q);
@@ -550,14 +550,14 @@
     return r;
   }
 
-  class URL {
-    constructor(url, base) {
+  class URL {                                                         
+    constructor(url         , base          ) {
       const b = base === undefined ? undefined : base instanceof URL ? base : new URL(String(base));
       define(this, "_r", resolve(String(url).trim(), b));
       define(this, "_params", new URLSearchParams());
       URLSearchParams._link(this._params, this, this._r.search);
     }
-    static canParse(url, base) {
+    static canParse(url         , base          ) {
       try {
         new URL(url, base);
         return true;
@@ -565,45 +565,45 @@
         return false;
       }
     }
-    static parse(url, base) {
+    static parse(url         , base          ) {
       try {
         return new URL(url, base);
       } catch {
         return null;
       }
     }
-    _setSearchFromParams(s) {
+    _setSearchFromParams(s        ) {
       this._r.search = s ? `?${s}` : "";
     }
     get protocol() {
       return this._r.protocol;
     }
-    set protocol(v) {
+    set protocol(v        ) {
       const p = `${String(v).replace(/:.*$/, "").toLowerCase()}:`;
       if ((p in SPECIAL) === (this._r.protocol in SPECIAL)) this._r.protocol = p;
     }
     get username() {
       return this._r.username;
     }
-    set username(v) {
+    set username(v        ) {
       this._r.username = encodeSet(String(v), USER_KEEP);
     }
     get password() {
       return this._r.password;
     }
-    set password(v) {
+    set password(v        ) {
       this._r.password = encodeSet(String(v), USER_KEEP);
     }
     get hostname() {
       return this._r.hostname;
     }
-    set hostname(v) {
+    set hostname(v        ) {
       if (!this._r.opaque) this._r.hostname = String(v).toLowerCase();
     }
     get port() {
       return this._r.port;
     }
-    set port(v) {
+    set port(v        ) {
       const s = String(v);
       if (s === "") this._r.port = "";
       else if (/^\d+$/.test(s) && Number(s) <= 65535) this._r.port = SPECIAL[this._r.protocol] === String(Number(s)) ? "" : String(Number(s));
@@ -611,7 +611,7 @@
     get host() {
       return this._r.port ? `${this._r.hostname}:${this._r.port}` : this._r.hostname;
     }
-    set host(v) {
+    set host(v        ) {
       const m = /^(\[[^\]]*\]|[^:\/?#]*)(?::(\d*))?/.exec(String(v));
       if (m && m[1]) {
         this.hostname = m[1];
@@ -625,13 +625,13 @@
     get pathname() {
       return this._r.pathname;
     }
-    set pathname(v) {
+    set pathname(v        ) {
       if (!this._r.opaque) this._r.pathname = encodeSet(normalizePath(String(v), this._r.protocol in SPECIAL), PATH_KEEP);
     }
     get search() {
       return this._r.search;
     }
-    set search(v) {
+    set search(v        ) {
       let s = String(v);
       if (s.startsWith("?")) s = s.slice(1);
       this._r.search = s ? `?${encodeSet(s, QUERY_KEEP)}` : "";
@@ -643,7 +643,7 @@
     get hash() {
       return this._r.hash;
     }
-    set hash(v) {
+    set hash(v        ) {
       let s = String(v);
       if (s.startsWith("#")) s = s.slice(1);
       this._r.hash = s ? `#${encodeSet(s, FRAG_KEEP)}` : "";
@@ -655,7 +655,7 @@
       const authority = r.hostname || r.protocol in SPECIAL || cred ? `//${cred}${this.host}` : "";
       return `${r.protocol}${authority}${r.pathname}${r.search}${r.hash}`;
     }
-    set href(v) {
+    set href(v        ) {
       const r = resolve(String(v), undefined);
       this._r = r;
       URLSearchParams._reparse(this._params, r.search);
@@ -676,15 +676,15 @@
   // ---------------------------------------------------------------- Headers
 
   const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-  const normValue = (v) => String(v).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
+  const normValue = (v         ) => String(v).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
   class Headers {
-    #map = new Map(); // lower-case name -> values
+    #map                        = new Map(); // lower-case name -> values
     #guard = "none";
-    constructor(init) {
+    constructor(init                          ) {
       if (init instanceof Headers) for (const [k, v] of init.#map) this.#map.set(k, [...v]);
       else if (init && typeof init === "object") {
         if (typeof init[Symbol.iterator] === "function") {
-          for (const pair of init) {
+          for (const pair of init                               ) {
             const p = [...pair];
             if (p.length !== 2) throw new TypeError("each header pair must have exactly two items");
             this.append(p[0], p[1]);
@@ -692,17 +692,17 @@
         } else for (const k of Object.keys(init)) this.append(k, init[k]);
       }
     }
-    static _immutable(h) {
+    static _immutable(h         ) {
       h.#guard = "immutable";
       return h;
     }
-    #check(name) {
+    #check(name         ) {
       if (this.#guard === "immutable") throw new TypeError("these headers are immutable");
       const n = String(name);
       if (!TOKEN.test(n)) throw new TypeError(`invalid header name ${JSON.stringify(n)}`);
       return n.toLowerCase();
     }
-    append(name, value) {
+    append(name         , value         ) {
       const n = this.#check(name);
       const v = normValue(value);
       if (/[\0\r\n]/.test(v)) throw new TypeError(`invalid value for header ${n}`);
@@ -710,16 +710,16 @@
       if (cur) cur.push(v);
       else this.#map.set(n, [v]);
     }
-    set(name, value) {
+    set(name         , value         ) {
       const n = this.#check(name);
       const v = normValue(value);
       if (/[\0\r\n]/.test(v)) throw new TypeError(`invalid value for header ${n}`);
       this.#map.set(n, [v]);
     }
-    delete(name) {
+    delete(name         ) {
       this.#map.delete(this.#check(name));
     }
-    get(name) {
+    get(name         ) {
       const v = this.#map.get(String(name).toLowerCase());
       if (!v) return null;
       return v.join(", ");
@@ -727,13 +727,13 @@
     getSetCookie() {
       return [...(this.#map.get("set-cookie") || [])];
     }
-    has(name) {
+    has(name         ) {
       return this.#map.has(String(name).toLowerCase());
     }
-    *entries() {
+    *entries()                                             {
       for (const k of [...this.#map.keys()].sort()) {
-        if (k === "set-cookie") for (const v of this.#map.get(k)) yield [k, v];
-        else yield [k, this.#map.get(k).join(", ")];
+        if (k === "set-cookie") for (const v of this.#map.get(k) ) yield [k, v];
+        else yield [k, this.#map.get(k) .join(", ")];
       }
     }
     *keys() {
@@ -742,7 +742,7 @@
     *values() {
       for (const [, v] of this.entries()) yield v;
     }
-    forEach(fn, thisArg) {
+    forEach(fn                                                       , thisArg          ) {
       for (const [k, v] of this.entries()) fn.call(thisArg, v, k, this);
     }
     [Symbol.iterator]() {
@@ -753,8 +753,8 @@
     }
   }
   define(globalThis, "Headers", Headers);
-  const headersObject = (h) => {
-    const o = {};
+  const headersObject = (h         ) => {
+    const o                         = {};
     for (const [k, v] of h) o[k] = o[k] === undefined ? v : `${o[k]}, ${v}`;
     return o;
   };
@@ -762,10 +762,10 @@
   // ---------------------------------------------------------- Blob, FormData
 
   class Blob {
-    #bytes;
-    #type;
-    constructor(parts = [], options = {}) {
-      const chunks = [];
+    #bytes            ;
+    #type        ;
+    constructor(parts                    = [], options                     = {}) {
+      const chunks               = [];
       for (const p of parts) chunks.push(p instanceof Blob ? p.#bytes : isBytes(p) ? toU8(p) : utf8(p));
       const total = chunks.reduce((n, c) => n + c.length, 0);
       this.#bytes = new Uint8Array(total);
@@ -782,7 +782,7 @@
     get type() {
       return this.#type;
     }
-    static _bytes(b) {
+    static _bytes(b      ) {
       return b.#bytes;
     }
     async text() {
@@ -803,7 +803,7 @@
   // -------------------------------------------------------------- Body mixin
 
   // Turns a BodyInit into bytes and a default content type.
-  function extractBody(body) {
+  function extractBody(body           )                                     {
     if (body === undefined || body === null) return [null, null];
     if (typeof body === "string") return [utf8(body), "text/plain;charset=UTF-8"];
     if (body instanceof URLSearchParams) return [utf8(body.toString()), "application/x-www-form-urlencoded;charset=UTF-8"];
@@ -813,10 +813,10 @@
     return [utf8(String(body)), "text/plain;charset=UTF-8"];
   }
 
-  class Body {
-    #bytes;
+           class Body {                                    
+    #bytes                    ;
     #used = false;
-    _initBody(bytes) {
+    _initBody(bytes                   ) {
       this.#bytes = bytes;
     }
     get bodyUsed() {
@@ -857,14 +857,14 @@
 
   const METHODS = ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"];
   class Request extends Body {
-    #url;
-    #method;
-    #headers;
-    #redirect;
-    #signal;
-    constructor(input, init = {}) {
+    #url        ;
+    #method        ;
+    #headers         ;
+    #redirect        ;
+    #signal                    ;
+    constructor(input         , init                                                                                                                             = {}) {
       super();
-      let bytes = null;
+      let bytes                    = null;
       if (input instanceof Request) {
         this.#url = input.url;
         this.#method = input.method;
@@ -920,13 +920,13 @@
   const NULL_BODY = [101, 103, 204, 205, 304];
   const REDIRECTS = [301, 302, 303, 307, 308];
   class Response extends Body {
-    #status;
-    #statusText;
-    #headers;
-    #type;
+    #status        ;
+    #statusText        ;
+    #headers         ;
+    #type        ;
     #url = "";
     #redirected = false;
-    constructor(body = null, init = {}) {
+    constructor(body            = null, init                                                                                = {}) {
       super();
       const status = init.status === undefined ? 200 : Number(init.status);
       if (!Number.isInteger(status) || status < 200 || status > 599) throw new RangeError(`invalid status ${init.status}`);
@@ -939,14 +939,14 @@
       if (type && !this.#headers.has("content-type")) this.#headers.set("content-type", type);
       this._initBody(bytes);
     }
-    static json(data, init = {}) {
+    static json(data         , init                                            = {}) {
       const text = JSON.stringify(data);
       if (text === undefined) throw new TypeError("the value cannot be serialised as JSON");
       const headers = new Headers(init.headers);
       if (!headers.has("content-type")) headers.set("content-type", "application/json");
       return new Response(text, { ...init, headers });
     }
-    static redirect(url, status = 302) {
+    static redirect(url         , status = 302) {
       if (!REDIRECTS.includes(status)) throw new RangeError(`invalid redirect status ${status}`);
       return new Response(null, { status, headers: { location: new URL(String(url)).href } });
     }
@@ -956,7 +956,7 @@
       r.#status = 0;
       return r;
     }
-    static _fromFetch(status, headers, bytes, url, redirected) {
+    static _fromFetch(status        , headers                        , bytes            , url        , redirected         ) {
       const r = new Response(null, { status: status < 200 ? 200 : status, headers });
       r.#status = status;
       r._initBody(NULL_BODY.includes(status) ? null : bytes);
@@ -1005,20 +1005,20 @@
 
   // ------------------------------------------------------------------ fetch
 
-  async function fetch(input, init = {}) {
+  async function fetch(input         , init                                           = {}) {
     const req = input instanceof Request && Object.keys(init).length === 0 ? input : new Request(input, init);
     if (req.signal && req.signal.aborted) throw new DOMException("the request was aborted", "AbortError");
     const u = new URL(req.url);
     if (u.protocol !== "http:" && u.protocol !== "https:") throw new TypeError(`fetch supports only http and https URLs, not ${u.protocol}`);
     const bytes = req._peek();
-    const arg = { url: req.url, method: req.method, headers: headersObject(req.headers) };
+    const arg                   = { url: req.url, method: req.method, headers: headersObject(req.headers) };
     if (bytes && bytes.length) arg.body_base64 = N.b64encode(bytes);
-    let res;
+    let res                   ;
     try {
       res = hostJson("fetch", arg);
     } catch (e) {
       if (e instanceof ForgeBaseError) {
-        const err = new TypeError(`fetch failed: ${e.message}`);
+        const err                                = new TypeError(`fetch failed: ${e.message}`);
         err.code = e.code;
         throw err;
       }
@@ -1031,14 +1031,14 @@
 
   // ----------------------------------------------------------------- crypto
 
-  const DIGESTS = { "SHA-1": "sha-1", "SHA-256": "sha-256", "SHA-384": "sha-384", "SHA-512": "sha-512" };
-  const algName = (a) => {
+  const DIGESTS                         = { "SHA-1": "sha-1", "SHA-256": "sha-256", "SHA-384": "sha-384", "SHA-512": "sha-512" };
+  const algName = (a                ) => {
     const n = (typeof a === "string" ? a : a && a.name ? a.name : "").toUpperCase();
     if (!(n in DIGESTS)) throw new DOMException(`unsupported algorithm ${n || a}`, "NotSupportedError");
     return n;
   };
-  class CryptoKey {
-    constructor(algorithm, extractable, usages, raw) {
+  class CryptoKey {                                                                                                                                             
+    constructor(algorithm                  , extractable         , usages                  , raw            ) {
       define(this, "_raw", raw);
       this.type = "secret";
       this.extractable = !!extractable;
@@ -1046,17 +1046,17 @@
       this.usages = [...usages];
     }
   }
-  const bytesOf = (data) => {
+  const bytesOf = (data         ) => {
     if (!isBytes(data)) throw new TypeError("expected an ArrayBuffer or a typed array");
     return toU8(data);
   };
   const subtle = {
-    async digest(algorithm, data) {
+    async digest(algorithm                , data         ) {
       const name = algName(algorithm);
-      const r = hostJson("crypto.digest", { algorithm: DIGESTS[name], data_base64: N.b64encode(bytesOf(data)) });
+      const r                     = hostJson("crypto.digest", { algorithm: DIGESTS[name], data_base64: N.b64encode(bytesOf(data)) });
       return copyBuffer(N.b64decode(r.base64));
     },
-    async importKey(format, keyData, algorithm, extractable, usages) {
+    async importKey(format         , keyData         , algorithm                , extractable         , usages                   ) {
       if (format !== "raw") throw new DOMException("only raw keys are supported", "NotSupportedError");
       const name = (typeof algorithm === "string" ? algorithm : algorithm.name || "").toUpperCase();
       if (name !== "HMAC") throw new DOMException("only HMAC keys are supported", "NotSupportedError");
@@ -1064,20 +1064,20 @@
       const raw = bytesOf(keyData).slice();
       return new CryptoKey({ name: "HMAC", hash: { name: hash }, length: raw.length * 8 }, extractable, usages || [], raw);
     },
-    async exportKey(format, key) {
+    async exportKey(format         , key           ) {
       if (format !== "raw" || !key.extractable) throw new DOMException("the key cannot be exported", "InvalidAccessError");
       return copyBuffer(key._raw);
     },
-    async sign(algorithm, key, data) {
+    async sign(algorithm         , key         , data         ) {
       if (!(key instanceof CryptoKey) || key.algorithm.name !== "HMAC") throw new DOMException("expected an HMAC key", "InvalidAccessError");
-      const r = hostJson("crypto.hmac", {
+      const r                     = hostJson("crypto.hmac", {
         algorithm: DIGESTS[key.algorithm.hash.name],
         key_base64: N.b64encode(key._raw),
         data_base64: N.b64encode(bytesOf(data)),
       });
       return copyBuffer(N.b64decode(r.base64));
     },
-    async verify(algorithm, key, signature, data) {
+    async verify(algorithm         , key         , signature         , data         ) {
       const expected = new Uint8Array(await subtle.sign(algorithm, key, data));
       const got = bytesOf(signature);
       if (got.length !== expected.length) return false;
@@ -1088,7 +1088,7 @@
   };
   const crypto = {
     subtle,
-    getRandomValues(arr) {
+    getRandomValues   (arr   )    {
       if (!ArrayBuffer.isView(arr) || arr instanceof Float32Array || arr instanceof Float64Array || arr instanceof DataView)
         throw new TypeError("getRandomValues takes an integer typed array");
       if (arr.byteLength > 65536) throw new DOMException("at most 65536 bytes", "QuotaExceededError");
@@ -1108,39 +1108,39 @@
 
   // ---------------------------------------------------------- AbortController
 
-  class AbortSignal {
+  class AbortSignal {                                                                                                                               
     constructor() {
       this.aborted = false;
       this.reason = undefined;
       this.onabort = null;
       define(this, "_listeners", []);
     }
-    addEventListener(type, fn) {
+    addEventListener(type        , fn               ) {
       if (type === "abort") this._listeners.push(fn);
     }
-    removeEventListener(type, fn) {
+    removeEventListener(type        , fn               ) {
       const i = this._listeners.indexOf(fn);
       if (i >= 0) this._listeners.splice(i, 1);
     }
     throwIfAborted() {
       if (this.aborted) throw this.reason;
     }
-    static abort(reason) {
+    static abort(reason          ) {
       const c = new AbortController();
       c.abort(reason);
       return c.signal;
     }
-    static timeout(ms) {
+    static timeout(ms        ) {
       const c = new AbortController();
       setTimeout(() => c.abort(new DOMException("the operation timed out", "TimeoutError")), ms);
       return c.signal;
     }
   }
-  class AbortController {
+  class AbortController {                             
     constructor() {
       this.signal = new AbortSignal();
     }
-    abort(reason = new DOMException("the operation was aborted", "AbortError")) {
+    abort(reason          = new DOMException("the operation was aborted", "AbortError")) {
       const s = this.signal;
       if (s.aborted) return;
       s.aborted = true;
@@ -1155,23 +1155,23 @@
 
   // -------------------------------------------------------- forgebase module
 
-  let handler = null;
-  function serve(fn) {
+  let handler                                                                      = null;
+  function serve(fn                                                            ) {
     if (typeof fn === "object" && fn !== null && typeof fn.fetch === "function") fn = fn.fetch.bind(fn);
     if (typeof fn !== "function") throw new TypeError("serve() takes a handler function (req, ctx) => Response");
     if (handler) throw new Error("serve() may be called only once");
     handler = fn;
   }
 
-  const envGet = (name) => hostJson("env.get", { name: String(name) }).value ?? undefined;
+  const envGet = (name         ) => hostJson                           ("env.get", { name: String(name) }).value ?? undefined;
   // `serve` is also a global (and Deno.serve), for code written without the import.
   define(globalThis, "serve", serve);
   define(globalThis, "Deno", Object.freeze({ env: Object.freeze({ get: envGet }), serve }));
 
-  const strValue = (v) => (typeof v === "string" ? v : typeof v === "number" || typeof v === "bigint" || typeof v === "boolean" ? String(v) : JSON.stringify(v));
-  const kvApi = (as, namespace) => {
-    const kv = (cmd) => hostJson("kv", { as, namespace, cmd }).value;
-    const api = {
+  const strValue = (v         ) => (typeof v === "string" ? v : typeof v === "number" || typeof v === "bigint" || typeof v === "boolean" ? String(v) : JSON.stringify(v));
+  const kvApi = (as        , namespace               )        => {
+    const kv =    (cmd          ) => hostJson              ("kv", { as, namespace, cmd }).value;
+    const api        = {
       get: async (key) => kv(["GET", String(key)]),
       set: async (key, value, opts = {}) => {
         const cmd = ["SET", String(key), strValue(value)];
@@ -1185,13 +1185,13 @@
       decr: async (key, by = 1) => kv(["DECRBY", String(key), String(Math.trunc(by))]),
       expire: async (key, ttlMs) => kv(["PEXPIRE", String(key), String(Math.max(1, Math.trunc(ttlMs)))]) === 1,
       ttl: async (key) => kv(["PTTL", String(key)]),
-      exists: async (key) => kv(["EXISTS", String(key)]) > 0,
+      exists: async (key) => kv        (["EXISTS", String(key)]) > 0,
       keys: async (prefix = "") => {
         const glob = `${String(prefix).replace(/[*?[\]\\]/g, "\\$&")}*`;
-        const out = [];
+        const out           = [];
         let cursor = "0";
         do {
-          const [next, batch] = kv(["SCAN", cursor, "MATCH", glob, "COUNT", "500"]);
+          const [next, batch] = kv                    (["SCAN", cursor, "MATCH", glob, "COUNT", "500"]);
           out.push(...batch);
           cursor = String(next);
         } while (cursor !== "0" && out.length < 100000);
@@ -1204,8 +1204,8 @@
       },
       hdel: async (key, ...fields) => kv(["HDEL", String(key), ...fields.flat().map(String)]),
       hgetall: async (key) => {
-        const flat = kv(["HGETALL", String(key)]) || [];
-        const o = {};
+        const flat = kv                 (["HGETALL", String(key)]) || [];
+        const o                         = {};
         for (let i = 0; i + 1 < flat.length; i += 2) o[flat[i]] = flat[i + 1];
         return o;
       },
@@ -1215,8 +1215,8 @@
     return Object.freeze(api);
   };
 
-  const listArgs = (o = {}) => {
-    const a = {};
+  const listArgs = (o              = {}) => {
+    const a           = {};
     if (o.filter !== undefined) a.filter = String(o.filter);
     if (o.params !== undefined) a.params = o.params;
     if (o.sort !== undefined) a.sort = String(o.sort);
@@ -1226,45 +1226,45 @@
     return a;
   };
 
-  const services = (as) => {
+  const services = (as        ) => {
     const db = Object.freeze({
-      from(collection) {
+      from(collection         ) {
         const c = String(collection);
         return Object.freeze({
-          get: (id) => call("db.get", { as, collection: c, id: String(id) }),
-          list: (opts) => call("db.list", { as, collection: c, ...listArgs(opts) }),
-          create: (data) => call("db.create", { as, collection: c, data }),
-          update: (id, data, opts = {}) => {
-            const a = { as, collection: c, id: String(id), data };
+          get: (id         ) => call("db.get", { as, collection: c, id: String(id) }),
+          list: (opts              ) => call("db.list", { as, collection: c, ...listArgs(opts) }),
+          create: (data         ) => call("db.create", { as, collection: c, data }),
+          update: (id         , data         , opts                                = {}) => {
+            const a           = { as, collection: c, id: String(id), data };
             if (opts.expectedVersion !== undefined) a.expected_version = opts.expectedVersion;
             return call("db.update", a);
           },
-          delete: (id) => call("db.delete", { as, collection: c, id: String(id) }).then(() => undefined),
+          delete: (id         ) => call("db.delete", { as, collection: c, id: String(id) }).then(() => undefined),
         });
       },
     });
     const vector = Object.freeze({
-      from(collection) {
+      from(collection         ) {
         const c = String(collection);
         return Object.freeze({
-          search: (q = {}) => {
-            const a = { as, collection: c, k: q.k ?? 10 };
+          search: (q                                         = {}) => {
+            const a           = { as, collection: c, k: q.k ?? 10 };
             for (const [from, to] of [["vector", "vector"], ["text", "text"], ["filter", "filter"], ["params", "params"], ["field", "field"], ["includeVectors", "include_vectors"], ["includeText", "include_text"], ["exact", "exact"]])
               if (q[from] !== undefined) a[to] = q[from];
             return call("vector.search", a);
           },
-          upsert: (items) => call("vector.upsert", { as, collection: c, items: Array.isArray(items) ? items : [items] }),
-          get: (id) => call("vector.get", { as, collection: c, id: String(id) }),
-          delete: (ids) => call("vector.delete", { as, collection: c, ids: (Array.isArray(ids) ? ids : [ids]).map(String) }),
+          upsert: (items         ) => call("vector.upsert", { as, collection: c, items: Array.isArray(items) ? items : [items] }),
+          get: (id         ) => call("vector.get", { as, collection: c, id: String(id) }),
+          delete: (ids         ) => call("vector.delete", { as, collection: c, ids: (Array.isArray(ids) ? ids : [ids]).map(String) }),
         });
       },
     });
     const storage = Object.freeze({
-      from(bucket) {
+      from(bucket         ) {
         const b = String(bucket);
         return Object.freeze({
-          get: async (key) => {
-            let r;
+          get: async (key         ) => {
+            let r                   ;
             try {
               r = hostJson("storage.get", { as, bucket: b, key: String(key) });
             } catch (e) {
@@ -1284,23 +1284,23 @@
               json: async () => JSON.parse(fromUtf8(bytes)),
             });
           },
-          put: (key, body, opts = {}) => {
+          put: (key         , body           , opts                                                = {}) => {
             const [bytes, type] = extractBody(body);
-            const a = { as, bucket: b, key: String(key), body_base64: N.b64encode(bytes || new Uint8Array(0)) };
-            if (opts.contentType !== undefined || type) a.content_type = opts.contentType !== undefined ? String(opts.contentType) : type.split(";")[0];
+            const a           = { as, bucket: b, key: String(key), body_base64: N.b64encode(bytes || new Uint8Array(0)) };
+            if (opts.contentType !== undefined || type) a.content_type = opts.contentType !== undefined ? String(opts.contentType) : type .split(";")[0];
             if (opts.metadata !== undefined) a.metadata = opts.metadata;
             return call("storage.put", a);
           },
-          list: (prefix = "", opts = {}) => {
-            const a = { as, bucket: b, prefix: String(prefix) };
+          list: (prefix          = "", opts                                                             = {}) => {
+            const a           = { as, bucket: b, prefix: String(prefix) };
             if (opts.limit !== undefined) a.limit = opts.limit;
             if (opts.cursor !== undefined) a.cursor = opts.cursor;
             if (opts.delimiter !== undefined) a.delimiter = opts.delimiter;
             return call("storage.list", a);
           },
-          delete: (key) => call("storage.delete", { as, bucket: b, key: String(key) }),
-          signedUrl: (key, opts = {}) => {
-            const a = { as, bucket: b, key: String(key) };
+          delete: (key         ) => call("storage.delete", { as, bucket: b, key: String(key) }),
+          signedUrl: (key         , opts                                                                                         = {}) => {
+            const a           = { as, bucket: b, key: String(key) };
             if (opts.expiresIn !== undefined) a.expires_in = opts.expiresIn;
             if (opts.method !== undefined) a.method = String(opts.method);
             if (opts.downloadAs !== undefined) a.download_as = String(opts.downloadAs);
@@ -1311,8 +1311,8 @@
       },
     });
     const queues = Object.freeze({
-      publish: (topic, message, opts = {}) => {
-        const a = { as, topic: String(topic), data: message === undefined ? null : message };
+      publish: (topic         , message         , opts                                                             = {}) => {
+        const a           = { as, topic: String(topic), data: message === undefined ? null : message };
         if (opts.key !== undefined) a.ordering_key = String(opts.key);
         if (opts.attributes !== undefined) a.attributes = opts.attributes;
         if (opts.dedupId !== undefined) a.dedup_id = String(opts.dedupId);
@@ -1320,23 +1320,23 @@
       },
     });
     const jobs = Object.freeze({
-      enqueue: (kind, payload, opts = {}) => {
-        const a = { as, kind: String(kind), payload: payload === undefined ? null : payload };
+      enqueue: (kind         , payload         , opts                                         = {}) => {
+        const a           = { as, kind: String(kind), payload: payload === undefined ? null : payload };
         const map = { runAt: "run_at", delayMs: "delay_ms", maxAttempts: "max_attempts", queue: "queue", priority: "priority", idempotencyKey: "idempotency_key", timeoutMs: "timeout_ms" };
         for (const [k, v] of Object.entries(map)) if (opts[k] !== undefined) a[v] = k === "runAt" && opts[k] instanceof Date ? opts[k].toISOString() : opts[k];
         return call("jobs.enqueue", a);
       },
     });
     const realtime = Object.freeze({
-      broadcast: (channel, event, payload) =>
+      broadcast: (channel         , event         , payload         ) =>
         call("realtime.broadcast", { as, channel: String(channel), event: String(event), payload: payload === undefined ? null : payload }).then(() => undefined),
     });
     return Object.freeze({ db, vector, kv: kvApi(as, null), storage, queues, jobs, realtime });
   };
 
-  const verify = (token) => call("auth.verify", { token: String(token) });
+  const verify = (token         ) => call("auth.verify", { token: String(token) });
 
-  function makeCtx(input) {
+  function makeCtx(input                ) {
     const caller = services("caller");
     const a = input.auth;
     const auth =
@@ -1363,16 +1363,16 @@
       event: input.trigger === "http" ? null : input,
       requestId: input.request_id ?? null,
       function: Object.freeze({ name: input.function?.name ?? null, version: input.function?.version ?? null }),
-      waitUntil: (p) => void Promise.resolve(p).catch((e) => console.error("waitUntil:", e)),
+      waitUntil: (p         ) => void Promise.resolve(p).catch((e) => console.error("waitUntil:", e)),
     });
   }
 
   const MAX_BODY = 4 * 1024 * 1024;
-  async function run(raw) {
-    const input = JSON.parse(raw);
+  async function run(raw        ) {
+    const input                 = JSON.parse(raw);
     if (!handler) throw new Error("the function did not register a handler: call serve(handler) from \"forgebase\"");
     const ctx = makeCtx(input);
-    let req;
+    let req         ;
     if (input.trigger === "http") {
       const headers = new Headers();
       for (const [k, v] of Object.entries(input.headers || {})) {
@@ -1397,7 +1397,7 @@
       if (res.type === "error") throw new TypeError("the handler returned Response.error()");
       const bytes = res._peek();
       if (bytes && bytes.length > MAX_BODY) throw new RangeError(`the response body is larger than ${MAX_BODY} bytes`);
-      const out = { status: res.status, headers: headersObject(res.headers) };
+      const out                   = { status: res.status, headers: headersObject(res.headers) };
       if (bytes && bytes.length) out.body_base64 = N.b64encode(bytes);
       return JSON.stringify(out);
     }
@@ -1407,6 +1407,6 @@
     return text === undefined ? "" : text;
   }
 
-  globalThis[Symbol.for("forgebase.module")] = Object.freeze({ serve, ForgeBaseError });
+  globalThis[Symbol.for("forgebase.module")         ] = Object.freeze({ serve, ForgeBaseError })         ;
   return { begin, run, tick };
 })();

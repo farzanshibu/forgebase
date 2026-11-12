@@ -214,6 +214,13 @@ jobs:
         with:
           path: .cache/js-engine-tools
           key: js-engine-tools-${{ hashFiles('scripts/build-js-engine.sh') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # prelude.ts is the source: it type-checks, and the committed prelude.js
+      # is exactly what scripts/build-js-prelude.ts strips it to.
+      - run: npx --yes -p typescript@5.9.3 tsc -p crates/forgebase-functions/js/tsconfig.json
+      - run: node scripts/build-js-prelude.ts --check
       # Rebuilds QuickJS + engine.c + prelude.js with the pinned wasi-sdk and
       # fails if the result differs from the committed forgebase-js.wasm.
       - run: scripts/build-js-engine.sh --check
