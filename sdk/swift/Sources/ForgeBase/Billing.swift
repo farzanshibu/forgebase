@@ -8,7 +8,7 @@ public enum StoreProvider: String, Sendable {
 
 /// What the app received from the store; each store reads its own fields.
 public struct StoreReceipt: Sendable {
-    /// App Store: the StoreKit 2 signed transaction (`Transaction.jsonRepresentation`'s JWS: `VerificationResult.jwsRepresentation`).
+    /// App Store: the StoreKit 2 signed transaction (`VerificationResult.jwsRepresentation`).
     public var signedTransaction: String?
     /// App Store: the transaction id (read back with the App Store Server API).
     public var transactionId: String?

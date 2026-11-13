@@ -259,6 +259,12 @@ final class Transport: Sendable {
             let retriable = cfg.statuses.contains(http.statusCode)
                 || ((http.statusCode == 502 || http.statusCode == 504) && idempotentMethods.contains(method))
             if retriable && attempt < cfg.maxRetries {
+                if http.statusCode == 429 {
+                    // An exhausted quota is final: waiting will not help.
+                    let body = await errorBody(result)
+                    let err = ForgeBaseError.from(status: 429, body: try? JSON(data: body), headers: http)
+                    if err.kind == .quotaExceeded { throw err }
+                }
                 let ra = parseRetryAfter(http.value(forHTTPHeaderField: "Retry-After"))
                 if ra == nil || ra! <= cfg.maxRetryAfter {
                     attempt += 1

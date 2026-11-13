@@ -2,6 +2,11 @@ import Foundation
 
 #if canImport(AuthenticationServices) && !os(tvOS)
 import AuthenticationServices
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// `BrowserAuthenticator` backed by `ASWebAuthenticationSession`.
 ///
