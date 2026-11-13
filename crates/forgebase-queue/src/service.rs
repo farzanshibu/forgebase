@@ -103,6 +103,28 @@ impl Db<'_> {
 }
 
 /// Commits on `Ok`, rolls back on `Err`.
+/// Message attribute carrying the W3C trace context of the publish
+/// (ADR-0035 §2).
+pub const TRACEPARENT_ATTRIBUTE: &str = "traceparent";
+/// Message attribute carrying the publish's `tracestate`.
+pub const TRACESTATE_ATTRIBUTE: &str = "tracestate";
+
+/// Gives every message the publish's trace context, unless it has one.
+pub(crate) fn stamp_trace(messages: &mut [NewMessage], traceparent: &str, tracestate: Option<&str>) {
+    for m in messages {
+        if m.attributes.contains_key(TRACEPARENT_ATTRIBUTE) {
+            continue;
+        }
+        m.attributes
+            .insert(TRACEPARENT_ATTRIBUTE.to_owned(), traceparent.to_owned());
+        if let Some(ts) = tracestate {
+            m.attributes
+                .entry(TRACESTATE_ATTRIBUTE.to_owned())
+                .or_insert_with(|| ts.to_owned());
+        }
+    }
+}
+
 pub(crate) async fn finish<T>(tx: Box<dyn WriteTx>, result: Result<T>) -> Result<T> {
     match result {
         Ok(v) => {
@@ -1369,8 +1391,44 @@ impl QueueService {
             .await
     }
 
-    /// [`Self::publish`] on this view's set.
+    /// [`Self::publish`] on this view's set: a producer span `publish
+    /// <topic>` whose `traceparent` (and `tracestate`) each message carries
+    /// as attributes while trace propagation is on, unless the publisher set
+    /// them (ADR-0035 §2). Consumers continue the trace from there.
     pub(crate) async fn publish_here(
+        &self,
+        ctx: &AccessContext,
+        topic: &str,
+        mut messages: Vec<NewMessage>,
+    ) -> Result<Vec<Published>> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!(
+            "queue.publish",
+            topic = %topic,
+            otel.name = %format_args!("publish {topic}"),
+            otel.kind = "producer",
+            messaging.system = "forgebase",
+            messaging.operation.type = "send",
+            messaging.destination.name = %topic,
+            messaging.batch.message_count = messages.len(),
+            otel.status_code = tracing::field::Empty,
+        );
+        if forgebase_observability::trace::propagation_enabled()
+            && let Some(c) = forgebase_observability::trace::span_context(&span)
+        {
+            stamp_trace(&mut messages, &c.traceparent(), c.trace_state.as_deref());
+        }
+        let r = self
+            .publish_traced(ctx, topic, messages)
+            .instrument(span.clone())
+            .await;
+        if r.is_err() {
+            span.record("otel.status_code", "error");
+        }
+        r
+    }
+
+    async fn publish_traced(
         &self,
         ctx: &AccessContext,
         topic: &str,
@@ -1442,8 +1500,11 @@ impl QueueService {
         tx: &mut dyn WriteTx,
         ctx: &AccessContext,
         topic: &str,
-        messages: Vec<NewMessage>,
+        mut messages: Vec<NewMessage>,
     ) -> Result<Vec<Published>> {
+        if let Some((tp, ts)) = forgebase_observability::trace::current_traceparent() {
+            stamp_trace(&mut messages, &tp, ts.as_deref());
+        }
         self.check(
             ctx,
             Action::QueuePublish,

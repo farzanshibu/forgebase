@@ -124,7 +124,7 @@ pub(crate) const JOB_COLS: &str = "id, queue, kind, payload, priority, status, r
     visibility_until, cancel_requested, result, last_error, created_by, created_at, updated_at, started_at, \
     finished_at, progress_percent, progress_stage, progress_message, progress_at, checkpoint IS NOT NULL AS \
     has_checkpoint, checkpoint_at, timeout_ms, deadline_at, heartbeat_at, workflow_id, step, parent_id, compensates, \
-    waiting_for, result_ref, result_size, tenant, context";
+    waiting_for, result_ref, result_size, tenant, context, traceparent";
 
 pub(crate) const SCHEDULE_COLS: &str = "id, name, cron, queue, kind, payload, priority, max_attempts, backoff_base_ms, \
     backoff_max_ms, visibility_timeout_ms, enabled, next_run_at, last_run_at, last_job_id, created_by, created_at, \
@@ -1380,7 +1380,9 @@ impl JobService {
         {
             let _ = store.delete(key.clone()).await;
         }
-        self.commit(tx, r, fx).await
+        let job = self.commit(tx, r, fx).await?;
+        count_completion(&job, "succeeded");
+        Ok(job)
     }
 
     async fn check_lease(&self, id: &str, lease: &str) -> Result<()> {
@@ -1433,7 +1435,14 @@ impl JobService {
         let mut fx = self.fx();
         let mut tx = self.begin().await?;
         let r = fail_tx(&mut *tx, id, lease_id, error, retryable, self.now(), &mut fx).await;
-        self.commit(tx, r, fx).await
+        let job = self.commit(tx, r, fx).await?;
+        let outcome = match job.status {
+            JobStatus::Dead => "dead",
+            JobStatus::Cancelled => "cancelled",
+            _ => "failed",
+        };
+        count_completion(&job, outcome);
+        Ok(job)
     }
 
     /// Gives a job back without counting the attempt (graceful shutdown).
@@ -1926,6 +1935,16 @@ impl<'a> Row<'a> {
     }
 }
 
+/// `forgebase_jobs_completed_total` (ADR-0035: the job failure rate rule).
+fn count_completion(job: &Job, outcome: &'static str) {
+    metrics::counter!(
+        forgebase_observability::names::JOBS_COMPLETED_TOTAL,
+        "queue" => job.queue.clone(),
+        "outcome" => outcome
+    )
+    .increment(1);
+}
+
 pub(crate) fn job_from(r: &Row<'_>) -> Result<Job> {
     let status = r.text("status");
     let progress = r.opt_int("progress_at").map(|at| Progress {
@@ -1958,6 +1977,7 @@ pub(crate) fn job_from(r: &Row<'_>) -> Result<Job> {
         created_by: r.text("created_by"),
         tenant: r.opt_text("tenant"),
         context: r.opt_text("context"),
+        traceparent: r.opt_text("traceparent"),
         created_at: iso(r.int("created_at")),
         updated_at: iso(r.int("updated_at")),
         started_at: r.opt_int("started_at").map(iso),
@@ -2228,9 +2248,9 @@ pub(crate) async fn insert_job(
         "INSERT INTO _forgebase_jobs (id, queue, kind, payload, priority, status, run_at, max_attempts, \
          backoff_base_ms, backoff_max_ms, visibility_timeout_ms, idempotency_key, schedule_id, created_by, \
          created_at, updated_at, timeout_ms, workflow_id, step, parent_id, compensates, compensate, waiting_for, \
-         tenant, context) \
+         tenant, context, traceparent) \
          VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16, ?17, ?18, \
-         ?19, ?20, ?21, ?22, ?23)",
+         ?19, ?20, ?21, ?22, ?23, ?24)",
         vec![
             id.as_str().into(),
             r.queue.as_str().into(),
@@ -2255,6 +2275,10 @@ pub(crate) async fn insert_job(
             waiting.into(),
             origin.tenant.clone().into(),
             origin.context.clone().into(),
+            // ADR-0035: the enqueuing span's trace, continued by the run.
+            forgebase_observability::trace::current_traceparent()
+                .map(|(tp, _)| tp)
+                .into(),
         ],
     ))
     .await?;

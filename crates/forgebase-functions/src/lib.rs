@@ -1199,6 +1199,11 @@ impl FunctionService {
     /// into a recorded rejection (`Some((status, message))`).
     /// `target` defaults to the active version; `caller` (whom JavaScript
     /// `ctx` services run as) defaults to the function's own identity.
+    ///
+    /// ADR-0035: the run is a span `function <name>` (a child of the
+    /// caller's span: the HTTP request, the hook, the job or the push
+    /// delivery); its trace id is stored on the execution log and given to
+    /// JavaScript as `ctx.trace`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &self,
@@ -1210,6 +1215,38 @@ impl FunctionService {
         caller: Option<AccessContext>,
         judge: impl FnOnce(Option<&[u8]>) -> Option<(&'static str, String)>,
     ) -> Result<Outcome> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!(
+            "function",
+            function = %e.row.name,
+            otel.name = %format_args!("function {}", e.row.name),
+            otel.kind = "internal",
+            faas.name = %e.row.name,
+            faas.trigger = trigger.as_str(),
+            otel.status_code = tracing::field::Empty,
+        );
+        let run = self
+            .execute_in_span(e, target, trigger, input, request_id, caller, judge)
+            .instrument(span.clone())
+            .await;
+        if run.is_err() {
+            span.record("otel.status_code", "error");
+        }
+        run
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_in_span(
+        &self,
+        e: &Entry,
+        target: Option<Target>,
+        trigger: Trigger,
+        input: Vec<u8>,
+        request_id: Option<String>,
+        caller: Option<AccessContext>,
+        judge: impl FnOnce(Option<&[u8]>) -> Option<(&'static str, String)>,
+    ) -> Result<Outcome> {
+        let trace = forgebase_observability::trace::current();
         let target = target.unwrap_or_else(|| Self::active(e));
         let depth = current_depth();
         if depth >= MAX_DEPTH {
@@ -1245,6 +1282,18 @@ impl FunctionService {
                     "function".into(),
                     serde_json::json!({"name": e.row.name, "version": target.version}),
                 );
+                // ADR-0035: ctx.trace, for log lines and manual propagation.
+                if let Some(t) = &trace {
+                    o.insert(
+                        "trace".into(),
+                        serde_json::json!({
+                            "trace_id": t.trace_id_hex(),
+                            "span_id": t.span_id_hex(),
+                            "traceparent": t.traceparent(),
+                            "sampled": t.sampled,
+                        }),
+                    );
+                }
                 input = Json::Object(o).to_string().into_bytes();
             }
         }
@@ -1324,6 +1373,7 @@ impl FunctionService {
             error,
             logs: &run.logs,
             request_id,
+            trace_id: trace.as_ref().map(|t| t.trace_id_hex()),
             created_at: started_at,
         };
         if let Err(err) = store::insert_log(self.backend().as_ref(), log, keep).await {

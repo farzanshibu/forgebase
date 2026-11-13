@@ -289,6 +289,7 @@ pub(crate) struct NewLog<'a> {
     pub(crate) error: Option<String>,
     pub(crate) logs: &'a [LogLine],
     pub(crate) request_id: Option<String>,
+    pub(crate) trace_id: Option<String>,
     pub(crate) created_at: String,
 }
 
@@ -298,8 +299,9 @@ pub(crate) async fn insert_log(db: &dyn Backend, log: NewLog<'_>, keep: Option<i
     let lines = serde_json::to_string(log.logs).unwrap_or_else(|_| "[]".into());
     let mut stmts = vec![Statement::new(
         "INSERT INTO _forgebase_function_logs
-             (function_id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (function_id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at,
+              trace_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         vec![
             log.function_id.into(),
             log.function.into(),
@@ -312,6 +314,7 @@ pub(crate) async fn insert_log(db: &dyn Backend, log: NewLog<'_>, keep: Option<i
             lines.into(),
             log.request_id.into(),
             log.created_at.into(),
+            log.trace_id.into(),
         ],
     )];
     if let Some(keep) = keep {
@@ -328,7 +331,8 @@ pub(crate) async fn insert_log(db: &dyn Backend, log: NewLog<'_>, keep: Option<i
 pub(crate) async fn logs(db: &dyn Backend, function_id: &str, limit: i64) -> Result<Vec<ExecutionLog>> {
     let rows = db
         .fetch_all(&Statement::new(
-            "SELECT id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at
+            "SELECT id, function, version, trigger, status, duration_ms, fuel_used, error, logs, request_id, created_at,
+                    trace_id
              FROM _forgebase_function_logs WHERE function_id = ?1 ORDER BY id DESC LIMIT ?2",
             vec![function_id.into(), limit.into()],
         ))
@@ -351,6 +355,7 @@ pub(crate) async fn logs(db: &dyn Backend, function_id: &str, limit: i64) -> Res
                 .unwrap_or_default(),
             request_id: r.get(9).and_then(Value::as_str).map(str::to_owned),
             created_at: text(r, 10),
+            trace_id: r.get(11).and_then(Value::as_str).map(str::to_owned),
         })
         .collect())
 }
