@@ -1,0 +1,44 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: forgebase
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: forgebase
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Outbound HTTPS: OAuth/OIDC, SMS, S3, webhooks, payment providers.
+    - ports:
+        - port: 443
+          protocol: TCP
+    # An external PostgreSQL server (external-postgres overlay): adjust the CIDR.
+    # - to:
+    #     - ipBlock:
+    #         cidr: 10.20.0.0/16
+    #   ports:
+    #     - port: 5432
+    #       protocol: TCP

@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgebase-backup
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            # Not app.kubernetes.io/name: forgebase: the Service must never
+            # route to this pod.
+            app.kubernetes.io/name: forgebase-backup
+        spec:
+          serviceAccountName: forgebase-backup
+          restartPolicy: Never
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              # Match your cluster's minor version.
+              image: registry.k8s.io/kubectl:v1.33.9
+              command: ["kubectl"]
+              args:
+                - exec
+                - --container=forgebase
+                - forgebase-0
+                - --
+                - forgebase
+                - backup
+                - --label=k8s-cronjob
+                - --keep-last=14
+                - --max-age-days=30
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

@@ -1400,6 +1400,8 @@ pub struct MaintenanceReport {
     pub fulfilled: i64,
     /// Entitlement syncs applied.
     pub synced: i64,
+    /// Inbound webhook deliveries deleted after the retention (ADR-0032).
+    pub webhook_deliveries_pruned: i64,
 }
 
 /// A page of objects.

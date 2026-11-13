@@ -1,0 +1,28 @@
+# ServiceMonitor with an API key, and a NetworkPolicy with restricted egress.
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus
+  authorization:
+    secretName: forgebase-metrics-token
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-nginx
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+  egress:
+    enabled: true
+    extra:
+      - to:
+          - ipBlock:
+              cidr: 10.20.0.0/16
+        ports:
+          - port: 5432
+            protocol: TCP
+podDisruptionBudget:
+  enabled: true

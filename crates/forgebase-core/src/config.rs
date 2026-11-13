@@ -24,6 +24,10 @@ use crate::error::{ErrorCode, ErrorKind};
 #[path = "topology_config.rs"]
 pub mod topology_config;
 
+/// `[tls]` and `[tls.acme]`: native TLS (ADR-0033).
+#[path = "tls_config.rs"]
+pub mod tls_config;
+
 /// Prefix of every environment variable ForgeBase reads.
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
@@ -97,6 +101,18 @@ port = 6380                 # FORGEBASE_RESP_PORT, flag --resp-port
 max_connections = 1024      # FORGEBASE_RESP_MAX_CONNECTIONS
 max_bulk_bytes = 16777216   # FORGEBASE_RESP_MAX_BULK_BYTES
 idle_timeout_secs = 300     # FORGEBASE_RESP_IDLE_TIMEOUT_SECS (0 = never)
+# tls = false               # FORGEBASE_RESP_TLS: RESP over TLS with the [tls] certificate
+
+# Native HTTPS (ADR-0033). Off by default: a reverse proxy terminates TLS.
+# "files" serves a PEM certificate and key (reloaded when they change or on
+# SIGHUP); "acme" gets and renews one from Let's Encrypt or another ACME CA.
+# [tls]
+# mode = "off"              # FORGEBASE_TLS_MODE: off | files | acme
+# cert_file = "tls/fullchain.pem"
+# key_file = "tls/privkey.pem"
+# [tls.acme]
+# domains = ["forgebase.example.com"]
+# email = "ops@example.com"
 
 # MCP server for AI agents (ADR-0030): POST /api/mcp. Off by default; agents
 # sign in with an API key or personal access token (a scoped key needs "mcp:*").
@@ -548,6 +564,8 @@ pub struct Config {
     pub identity: ModuleSwitch,
     /// Policies, organisations and tenancy management (FB-21), `[access]`.
     pub access: ModuleSwitch,
+    /// Native TLS (ADR-0033), `[tls]`; off by default.
+    pub tls: tls_config::TlsConfig,
 }
 
 /// `[<module>] enabled` of a module that has no other settings (FB-91,
@@ -632,6 +650,14 @@ pub struct QueueConfig {
     pub allow_http_push: bool,
     /// Days dead-letter records are kept.
     pub dead_letter_retention_days: u64,
+    /// Bytes of a push endpoint's response body kept in the attempt log (ADR-0031).
+    pub push_response_body_bytes: u64,
+    /// Push attempts kept per subscription in the attempt log.
+    pub push_attempts_per_subscription: u64,
+    /// Seconds push attempts are kept in the attempt log.
+    pub push_attempts_retention_secs: u64,
+    /// Test sends one push subscription may make per minute.
+    pub push_test_sends_per_minute: u64,
 }
 
 /// Settings of the billing application (FB-70, ADR-0021).
@@ -639,6 +665,8 @@ pub struct QueueConfig {
 pub struct BillingConfig {
     /// Whether billing is mounted and its maintenance job runs. On by default.
     pub enabled: bool,
+    /// Days the inbound webhook inspector keeps a delivery (ADR-0032; default 30).
+    pub webhook_log_retention_days: u32,
 }
 
 /// Settings of the MCP server for AI agents (ADR-0030).
@@ -702,6 +730,9 @@ pub struct RespConfig {
     /// Seconds a connection may sit idle before it is closed; `0` = never.
     /// Subscribed connections are exempt.
     pub idle_timeout_secs: u64,
+    /// Serve RESP over TLS with the `[tls]` certificate (ADR-0033); needs
+    /// `[tls] mode` other than `off`.
+    pub tls: bool,
 }
 
 /// HTTP server settings.
@@ -783,6 +814,7 @@ impl Config {
                 max_connections: 1024,
                 max_bulk_bytes: 16 * 1024 * 1024,
                 idle_timeout_secs: 300,
+                tls: false,
             },
             storage: StorageConfig {
                 enabled: true,
@@ -808,8 +840,15 @@ impl Config {
                 push_concurrency: 8,
                 allow_http_push: false,
                 dead_letter_retention_days: 14,
+                push_response_body_bytes: 4096,
+                push_attempts_per_subscription: 1000,
+                push_attempts_retention_secs: 7 * 86_400,
+                push_test_sends_per_minute: 10,
             },
-            billing: BillingConfig { enabled: true },
+            billing: BillingConfig {
+                enabled: true,
+                webhook_log_retention_days: 30,
+            },
             mcp: McpConfig { enabled: false },
             realtime: RealtimeSettings {
                 enabled: true,
@@ -823,6 +862,7 @@ impl Config {
             graph: ModuleSwitch::default(),
             identity: ModuleSwitch::default(),
             access: ModuleSwitch::default(),
+            tls: tls_config::TlsConfig::default(),
         }
     }
 
@@ -1046,7 +1086,38 @@ impl Config {
                 whole(1, 256, "", d.queue.push_concurrency as u64),
             );
         }
+        if q.push_response_body_bytes > 65_536 {
+            invalid(
+                "queue.push_response_body_bytes",
+                whole(0, 65_536, "bytes", d.queue.push_response_body_bytes),
+            );
+        }
+        if !(1..=100_000).contains(&q.push_attempts_per_subscription) {
+            invalid(
+                "queue.push_attempts_per_subscription",
+                whole(1, 100_000, "", d.queue.push_attempts_per_subscription),
+            );
+        }
+        if !(60..=31 * 86_400).contains(&q.push_attempts_retention_secs) {
+            invalid(
+                "queue.push_attempts_retention_secs",
+                whole(60, 31 * 86_400, "seconds", d.queue.push_attempts_retention_secs),
+            );
+        }
+        if !(1..=1000).contains(&q.push_test_sends_per_minute) {
+            invalid(
+                "queue.push_test_sends_per_minute",
+                whole(1, 1000, "", d.queue.push_test_sends_per_minute),
+            );
+        }
         self.database.topology.problems(&mut out);
+        self.tls.problems(self.server.port, &mut out);
+        if self.resp.tls && !self.tls.mode.is_on() {
+            out.push(ConfigError::Invalid {
+                field: "resp.tls",
+                message: "needs [tls] mode = \"files\" or \"acme\": RESP uses the same certificate as HTTPS".into(),
+            });
+        }
         out
     }
 
@@ -1220,6 +1291,18 @@ impl Config {
             if let Some(v) = q.dead_letter_retention_days {
                 c.dead_letter_retention_days = v;
             }
+            if let Some(v) = q.push_response_body_bytes {
+                c.push_response_body_bytes = v;
+            }
+            if let Some(v) = q.push_attempts_per_subscription {
+                c.push_attempts_per_subscription = v;
+            }
+            if let Some(v) = q.push_attempts_retention_secs {
+                c.push_attempts_retention_secs = v;
+            }
+            if let Some(v) = q.push_test_sends_per_minute {
+                c.push_test_sends_per_minute = v;
+            }
         }
         if let Some(v) = o.resp_enabled {
             self.resp.enabled = v;
@@ -1239,6 +1322,10 @@ impl Config {
         if let Some(v) = o.resp_idle_timeout_secs {
             self.resp.idle_timeout_secs = v;
         }
+        if let Some(v) = o.resp_tls {
+            self.resp.tls = v;
+        }
+        self.tls.apply(&o.tls, base_dir);
         if let Some(v) = o.realtime_max_connections_per_principal {
             self.realtime.max_connections_per_principal = v;
         }
@@ -1250,6 +1337,9 @@ impl Config {
         }
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
+        }
+        if let Some(v) = o.billing_webhook_log_retention_days {
+            self.billing.webhook_log_retention_days = v;
         }
         if let Some(v) = o.mcp_enabled {
             self.mcp.enabled = v;
@@ -1328,6 +1418,8 @@ pub struct ConfigOverrides {
     pub queue: Option<QueueOverrides>,
     /// Mount billing.
     pub billing_enabled: Option<bool>,
+    /// `[billing] webhook_log_retention_days`.
+    pub billing_webhook_log_retention_days: Option<u32>,
     /// Open the MCP endpoint.
     pub mcp_enabled: Option<bool>,
     /// Most realtime connections per principal.
@@ -1348,6 +1440,10 @@ pub struct ConfigOverrides {
     pub identity_enabled: Option<bool>,
     /// `[access] enabled`.
     pub access_enabled: Option<bool>,
+    /// `[resp] tls` (ADR-0033).
+    pub resp_tls: Option<bool>,
+    /// `[tls]` and `[tls.acme]` (ADR-0033).
+    pub tls: tls_config::TlsOverrides,
     /// Secret environment variables that were set (names only, never values),
     /// such as `FORGEBASE_STORAGE_S3_SECRET_KEY`. The loader does not read
     /// them; the feature registry reports them as set by the environment.
@@ -1417,12 +1513,25 @@ impl ConfigOverrides {
                 "RESP_MAX_CONNECTIONS" => o.resp_max_connections = Some(parse_num(&value).map_err(bad)?),
                 "RESP_MAX_BULK_BYTES" => o.resp_max_bulk_bytes = Some(parse_num(&value).map_err(bad)?),
                 "RESP_IDLE_TIMEOUT_SECS" => o.resp_idle_timeout_secs = Some(parse_num(&value).map_err(bad)?),
+                "RESP_TLS" => o.resp_tls = Some(parse_bool(&value).map_err(bad)?),
+                // ADR-0033: `[tls]` and `[tls.acme]`.
+                k if k.starts_with("TLS_") => {
+                    if !o.tls.env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                    if k == "TLS_ACME_EAB_HMAC_KEY" && !value.trim().is_empty() {
+                        o.secrets_set.push(name.clone());
+                    }
+                }
                 "KV_TENANT_MAX_BYTES" => o.kv_tenant_max_bytes = Some(parse_num(&value).map_err(bad)?),
                 "BACKUP_SOURCE" => o.backup_source = Some(value.parse().map_err(bad)?),
                 "REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL" => {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
                 "BILLING_ENABLED" => o.billing_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "BILLING_WEBHOOK_LOG_RETENTION_DAYS" => {
+                    o.billing_webhook_log_retention_days = Some(parse_num(&value).map_err(bad)?);
+                }
                 "MCP_ENABLED" => o.mcp_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "STORAGE_ENABLED" => {
                     o.storage.get_or_insert_with(StorageOverrides::default).enabled =
@@ -1515,6 +1624,8 @@ impl ConfigOverrides {
         put(self.resp_max_connections.is_some(), "resp.max_connections");
         put(self.resp_max_bulk_bytes.is_some(), "resp.max_bulk_bytes");
         put(self.resp_idle_timeout_secs.is_some(), "resp.idle_timeout_secs");
+        put(self.resp_tls.is_some(), "resp.tls");
+        self.tls.keys(&mut put);
         if let Some(st) = &self.storage {
             put(st.enabled.is_some(), "storage.enabled");
             put(st.driver.is_some(), "storage.driver");
@@ -1542,8 +1653,25 @@ impl ConfigOverrides {
                 q.dead_letter_retention_days.is_some(),
                 "queue.dead_letter_retention_days",
             );
+            put(q.push_response_body_bytes.is_some(), "queue.push_response_body_bytes");
+            put(
+                q.push_attempts_per_subscription.is_some(),
+                "queue.push_attempts_per_subscription",
+            );
+            put(
+                q.push_attempts_retention_secs.is_some(),
+                "queue.push_attempts_retention_secs",
+            );
+            put(
+                q.push_test_sends_per_minute.is_some(),
+                "queue.push_test_sends_per_minute",
+            );
         }
         put(self.billing_enabled.is_some(), "billing.enabled");
+        put(
+            self.billing_webhook_log_retention_days.is_some(),
+            "billing.webhook_log_retention_days",
+        );
         put(self.mcp_enabled.is_some(), "mcp.enabled");
         put(
             self.realtime_max_connections_per_principal.is_some(),
@@ -1920,6 +2048,14 @@ pub struct QueueOverrides {
     pub allow_http_push: Option<bool>,
     /// Days dead-letter records are kept.
     pub dead_letter_retention_days: Option<u64>,
+    /// Response body bytes kept per push attempt.
+    pub push_response_body_bytes: Option<u64>,
+    /// Push attempts kept per subscription.
+    pub push_attempts_per_subscription: Option<u64>,
+    /// Seconds push attempts are kept.
+    pub push_attempts_retention_secs: Option<u64>,
+    /// Test sends per push subscription and minute.
+    pub push_test_sends_per_minute: Option<u64>,
 }
 
 /// The TOML file shape. Every field is optional; unknown keys are errors.
@@ -1959,6 +2095,7 @@ struct FileConfig {
     identity: FileSwitch,
     #[serde(default)]
     access: FileSwitch,
+    tls: Option<tls_config::TlsOverrides>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1997,6 +2134,7 @@ struct FileAuth {
 #[serde(deny_unknown_fields)]
 struct FileBilling {
     enabled: Option<bool>,
+    webhook_log_retention_days: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2014,6 +2152,7 @@ struct FileResp {
     max_connections: Option<u32>,
     max_bulk_bytes: Option<u64>,
     idle_timeout_secs: Option<u64>,
+    tls: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2049,7 +2188,8 @@ struct FileLog {
 
 impl From<FileConfig> for ConfigOverrides {
     fn from(f: FileConfig) -> Self {
-        ConfigOverrides {
+        let tls = f.tls.unwrap_or_default();
+        let mut o = ConfigOverrides {
             config_file: None,
             data_dir: f.data_dir,
             host: f.server.host,
@@ -2087,6 +2227,7 @@ impl From<FileConfig> for ConfigOverrides {
             storage: f.storage,
             queue: f.queue,
             billing_enabled: f.billing.enabled,
+            billing_webhook_log_retention_days: f.billing.webhook_log_retention_days,
             mcp_enabled: f.mcp.enabled,
             realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
             realtime_enabled: f.realtime.enabled,
@@ -2097,7 +2238,14 @@ impl From<FileConfig> for ConfigOverrides {
             graph_enabled: f.graph.enabled,
             identity_enabled: f.identity.enabled,
             access_enabled: f.access.enabled,
+            resp_tls: f.resp.tls,
+            tls,
+        };
+        if o.tls.sets_secret() {
+            // The secret's source is the file (the registry reports it by variable name).
+            o.secrets_set.push(tls_config::ENV_ACME_EAB_HMAC_KEY.to_owned());
         }
+        o
     }
 }
 

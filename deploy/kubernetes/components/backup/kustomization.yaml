@@ -1,0 +1,12 @@
+# Optional: a nightly `forgebase backup` CronJob. It runs the command inside the
+# server pod (kubectl exec) because the CLI finds the running bundled PostgreSQL
+# through its postmaster pid, which another pod cannot see. Add to an overlay:
+#   components:
+#     - ../../components/backup
+# The pod name forgebase-0 and the container name forgebase come from the base.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - rbac.yaml
+  - cronjob.yaml

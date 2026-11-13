@@ -1,0 +1,11 @@
+# External PostgreSQL, URL from an existing Secret.
+database:
+  postgres:
+    mode: external
+    external:
+      existingSecret: forgebase-db
+      existingSecretKey: url
+config:
+  database:
+    postgres:
+      pool_size: 32

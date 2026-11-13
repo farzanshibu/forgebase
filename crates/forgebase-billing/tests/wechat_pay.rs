@@ -437,3 +437,73 @@ async fn wechat_pay_accounts_refuse_production_and_bad_keys() {
     assert_eq!(acct.webhook_path, "/api/v1/billing/webhooks/wechat_pay");
     assert!(env.billing.provider("wechat_pay").is_ok());
 }
+
+#[tokio::test]
+async fn wechat_pay_notification_is_recorded_linked_and_replayed_after_the_tolerance() {
+    let (env, _, _) = setup().await;
+    let co = env.subscribe("ann", &["pro-cny"], "sub-wx-i").await;
+    let inv = co.invoice.unwrap();
+    let ts = env.clock.now_ms() / 1000;
+    let raw = notice(
+        "EV-INSPECT-1",
+        "TRANSACTION.SUCCESS",
+        "2026-11-01T08:00:06+08:00",
+        "transaction",
+        &paid(&inv.id, "4200000009202611010000000009", 19_900),
+    );
+    let h = platform_headers("wechat-platform.key", CERT_SERIAL, ts, &raw);
+    let out = env.billing.handle_webhook("wechat_pay", &h, &raw).await.unwrap();
+    assert_eq!(out.result, "processed", "{out:?}");
+    let d = env
+        .billing
+        .webhook_deliveries(&admin(), forgebase_billing::WebhookDeliveryFilter::default())
+        .await
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        (d.provider.as_str(), d.account.as_deref(), d.outcome.as_str()),
+        ("wechat_pay", Some(MCHID), "applied")
+    );
+    assert_eq!(d.links.invoice.as_deref(), Some(inv.id.as_str()));
+    assert_eq!(d.links.subscription, co.subscription.map(|s| s.id));
+    assert!(d.links.payment.is_some() && d.links.customer.is_some());
+    let detail = env.billing.webhook_delivery(&admin(), &d.id).await.unwrap();
+    for k in [
+        "wechatpay-timestamp",
+        "wechatpay-nonce",
+        "wechatpay-signature",
+        "wechatpay-serial",
+    ] {
+        assert!(detail.headers[k].is_string(), "{k}");
+    }
+    // Ten minutes later (outside the 300 s signature tolerance) a replay is
+    // verified against the time it was received, then deduplicated.
+    env.clock.advance(10 * MIN);
+    let r = env.billing.replay_webhook_delivery(&admin(), &d.id).await.unwrap();
+    assert_eq!(r.result, "already_applied", "{r:?}");
+    // Signed with a key that is not the platform's: recorded, not processed.
+    let raw = notice(
+        "EV-INSPECT-2",
+        "TRANSACTION.SUCCESS",
+        "2026-11-01T08:10:00+08:00",
+        "transaction",
+        &paid(&inv.id, "4200000009202611010000000010", 19_900),
+    );
+    let ts = env.clock.now_ms() / 1000;
+    let h = platform_headers("wechat-merchant.key", CERT_SERIAL, ts, &raw);
+    let e = env.billing.handle_webhook("wechat_pay", &h, &raw).await.unwrap_err();
+    assert_eq!(code(&e), "invalid_signature");
+    let f = env
+        .billing
+        .webhook_deliveries(
+            &admin(),
+            forgebase_billing::WebhookDeliveryFilter {
+                outcome: Some("signature_invalid".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!((f.total, f.items[0].processing), (1, None));
+}

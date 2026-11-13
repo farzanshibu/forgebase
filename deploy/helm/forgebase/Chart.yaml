@@ -1,0 +1,18 @@
+apiVersion: v2
+name: forgebase
+description: ForgeBase, a self-hosted backend-as-a-service in one binary (single writer, one PVC).
+type: application
+# The chart version moves on its own; appVersion is the default image tag.
+version: 0.1.0
+appVersion: "0.3.4"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/farzanshibu/forgebase
+sources:
+  - https://github.com/farzanshibu/forgebase
+keywords:
+  - forgebase
+  - backend-as-a-service
+  - postgresql
+  - sqlite
+annotations:
+  category: Database

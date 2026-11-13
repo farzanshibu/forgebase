@@ -1,0 +1,10 @@
+{{- include "forgebase.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "forgebase.fullname" . }}
+  labels:
+    {{- include "forgebase.labels" . | nindent 4 }}
+data:
+  forgebase.toml: |
+    {{- include "forgebase.toml" . | nindent 4 }}

@@ -1,0 +1,21 @@
+# PostgreSQL's shared memory: Kubernetes gives a pod 64 MB of /dev/shm, which
+# parallel queries and a larger shared_buffers outgrow ("could not resize
+# shared memory segment"). A memory-backed emptyDir counts against the
+# container's memory limit.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: forgebase
+spec:
+  template:
+    spec:
+      containers:
+        - name: forgebase
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

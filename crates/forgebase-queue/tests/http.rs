@@ -271,7 +271,8 @@ fn openapi_operation_ids_are_unique_and_prefixed() {
             n += 1;
         }
     }
-    assert_eq!(n, 26);
+    // 26 of ADR-0022 and 10 of ADR-0031 (webhook tooling).
+    assert_eq!(n, 36);
 }
 
 async fn next_frame(

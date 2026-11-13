@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "forgebase.fullname" . }}
+  labels:
+    {{- include "forgebase.labels" . | nindent 4 }}
+    app.kubernetes.io/component: http
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  {{- with .Values.service.loadBalancerClass }}
+  loadBalancerClass: {{ . }}
+  {{- end }}
+  {{- with .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  {{- if and .Values.service.externalTrafficPolicy (has .Values.service.type (list "LoadBalancer" "NodePort")) }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: http
+      port: {{ int .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      {{- if and .Values.service.nodePort (has .Values.service.type (list "LoadBalancer" "NodePort")) }}
+      nodePort: {{ int .Values.service.nodePort }}
+      {{- end }}
+    {{- if and .Values.resp.enabled .Values.resp.exposeService }}
+    - name: resp
+      port: {{ int .Values.resp.port }}
+      targetPort: resp
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "forgebase.selectorLabels" . | nindent 4 }}
+---
+# Governing Service of the StatefulSet (stable pod DNS name).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "forgebase.fullname" . }}-headless
+  labels:
+    {{- include "forgebase.labels" . | nindent 4 }}
+    app.kubernetes.io/component: headless
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ int .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "forgebase.selectorLabels" . | nindent 4 }}

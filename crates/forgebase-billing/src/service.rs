@@ -85,6 +85,8 @@ pub(crate) struct Inner {
     pub jobs: OnceLock<JobService>,
     /// Serialises maintenance runs and usage ingestion.
     pub runner: tokio::sync::Mutex<()>,
+    /// The inbound webhook inspector (ADR-0032).
+    pub inspector: crate::inspector::InspectorState,
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +350,7 @@ impl BillingService {
                 registered_stores: RwLock::new(HashMap::new()),
                 jobs: OnceLock::new(),
                 runner: tokio::sync::Mutex::new(()),
+                inspector: crate::inspector::InspectorState::default(),
             }),
         };
         svc.load_providers().await?;

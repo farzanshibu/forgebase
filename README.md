@@ -26,6 +26,10 @@ functions and billing. SQLite is the optional one-file alternative.
 - Redis protocol listener (off by default), TOML config and `FORGEBASE_*`
   environment variables, `.env` for development.
 - JavaScript SDK in [`sdk/js`](sdk/js).
+- Terraform provider in [`integrations/terraform-provider-forgebase`](integrations/terraform-provider-forgebase): collections, storage, queues, functions, identity and plans as code.
+- Kotlin SDK for Android and the JVM in [`sdk/kotlin`](sdk/kotlin).
+- Swift SDK for iOS, macOS, tvOS, watchOS and visionOS in [`sdk/swift`](sdk/swift).
+- Dart / Flutter SDK in [`sdk/dart`](sdk/dart).
 - Docker image, Docker Compose file, a hardened systemd unit, and a release
   workflow for five targets.
 
@@ -202,7 +206,8 @@ docker compose up --build
 This starts ForgeBase on <http://127.0.0.1:8090> with data in the
 `forgebase-data` volume. The container listens on all interfaces inside the
 container; the compose file publishes the port on loopback only. Keep it that way unless
-a reverse proxy with TLS sits in front ([docs/security.md](docs/security.md)).
+a reverse proxy with TLS sits in front ([docs/security.md](docs/security.md)), or turn on
+native TLS with your certificate files or Let's Encrypt (`[tls]`, [docs/deployment.md §5](docs/deployment.md#5-tls)).
 
 Without Compose:
 
@@ -219,6 +224,13 @@ health check on `/health`.
 [deploy/systemd/forgebase.service](deploy/systemd/forgebase.service) runs
 ForgeBase under a dedicated user with state in `/var/lib/forgebase`. The header
 of the file has the install steps.
+
+## Kubernetes
+
+A Helm chart ([deploy/helm/forgebase](deploy/helm/forgebase/README.md)) and Kustomize
+manifests ([deploy/kubernetes](deploy/kubernetes/README.md)) run ForgeBase as one
+StatefulSet pod on a PVC, with the bundled PostgreSQL, an external PostgreSQL
+server or SQLite. See [docs/deployment.md §9](docs/deployment.md#9-kubernetes).
 
 ## Roadmap
 

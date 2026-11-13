@@ -27,9 +27,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::error::{BillingError, Result};
+use crate::inspector::{Handled, Links, Mode, Verified};
 use crate::model::{
     CreditNoteInput, HostedPage, Price, PriceType, ProductKind, StoreCheckoutInput, StoreProduct, StoreProductInput,
-    StorePurchaseRecord, StoreVerifyInput, WebhookOutcome,
+    StorePurchaseRecord, StoreVerifyInput,
 };
 use crate::money::hex;
 use crate::provider::store::{
@@ -421,16 +422,38 @@ impl BillingService {
         store: Arc<dyn StoreProvider>,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<WebhookOutcome> {
+        verify_at: i64,
+        mode: Mode,
+    ) -> Handled {
         let provider = store.name();
-        let now = self.now();
-        let settings = self.settings().await?;
-        let ev = store.verify_notification(headers, body, now).await?;
+        let account = store.account();
+        let settings = match self.settings().await {
+            Ok(s) => s,
+            Err(e) => return Handled::unverified(e, account),
+        };
+        // A replay of a delivery verified on arrival re-reads it where the
+        // store's transport authentication cannot be repeated (Google Play).
+        let reread = match mode {
+            Mode::Replay => store.reread_notification(body, verify_at),
+            Mode::Live | Mode::Reverify => None,
+        };
+        let verified = match reread {
+            Some(f) => f.await,
+            None => store.verify_notification(headers, body, verify_at).await,
+        };
+        let ev = match verified {
+            Ok(ev) => ev,
+            Err(e) => return Handled::unverified(e, account),
+        };
+        let delivery = Verified::new(account, &ev.id, &ev.event_type);
         let hash = hex(&Sha256::digest(body));
-        if let Some(dup) = self.replayed(provider, &ev.id, &hash).await? {
-            return Ok(dup);
+        match self.replayed(provider, &ev.id, &hash, mode == Mode::Live).await {
+            Ok(Some(dup)) => return delivery.duplicate(dup),
+            Ok(None) => {}
+            Err(e) => return delivery.failed(e, None),
         }
-        let too_old = ev.created_at < now - settings.webhook_max_age_secs * 1000;
+        let now = self.now();
+        let too_old = ev.created_at < verify_at - settings.webhook_max_age_secs * 1000;
         let applied = match (&ev.purchase, too_old) {
             (_, true) => Ok(StoreOutcome::ignored("too_old")),
             (None, _) => Ok(StoreOutcome::ignored(if ev.event_type.contains("TEST") {
@@ -464,20 +487,58 @@ impl BillingService {
             Ok(o) => (o.status, Some(o.detail.clone())),
             Err(e) => ("failed", Some(e.to_string())),
         };
-        let mut tx = self.begin().await?;
-        let res = async {
-            let mut t = Tx(tx.as_mut());
-            crate::webhook::record(&mut t, provider, &event, &hash, status, detail.as_deref(), now).await?;
-            Ok(((), true))
+        let recorded = async {
+            let mut tx = self.begin().await?;
+            let res = async {
+                let mut t = Tx(tx.as_mut());
+                let id =
+                    crate::webhook::record(&mut t, provider, &event, &hash, status, detail.as_deref(), now).await?;
+                Ok((id, true))
+            }
+            .await;
+            self.end(tx, res).await
         }
         .await;
-        self.end(tx, res).await?;
-        let o = applied?;
-        Ok(WebhookOutcome {
-            result: o.status.to_owned(),
-            detail: Some(o.detail),
-            event_id: ev.id,
-        })
+        let event_row = match recorded {
+            Ok(id) => id,
+            Err(e) => return delivery.failed(e, None),
+        };
+        match applied {
+            Ok(o) => {
+                let mut links = self.store_links(provider, o.record.as_ref()).await;
+                links.webhook_event = Some(event_row);
+                delivery.done(o.status, Some(o.detail), links)
+            }
+            Err(e) => delivery.failed(e, Some(event_row)),
+        }
+    }
+
+    /// The billing objects a store purchase stands for (inspector links).
+    async fn store_links(&self, provider: &str, rec: Option<&StorePurchaseRecord>) -> Links {
+        let Some(rec) = rec else {
+            return Links::default();
+        };
+        let mut links = Links {
+            store_purchase: Some(rec.id.clone()),
+            subscription: rec.subscription_id.clone(),
+            order: rec.order_id.clone(),
+            ..Links::default()
+        };
+        if let Some(txn) = &rec.last_transaction_id
+            && let Ok(rows) = self
+                .fetch(
+                    "SELECT id, invoice_id, customer_id FROM _forgebase_billing_payments
+                     WHERE provider = ?1 AND provider_ref = ?2 ORDER BY created_at DESC LIMIT 1",
+                    vec![provider.into(), txn.clone().into()],
+                )
+                .await
+            && let Some(r) = rows.rows.first()
+        {
+            links.payment = opt_text(r, 0);
+            links.invoice = opt_text(r, 1);
+            links.customer = opt_text(r, 2);
+        }
+        links
     }
 
     /// Reads store subscriptions past their period end back from the store

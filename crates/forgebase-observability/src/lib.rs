@@ -63,6 +63,42 @@ pub mod names {
     pub const QUEUE_DELIVERIES: &str = "forgebase_queue_deliveries";
     /// Gauge: messages retained across all topics.
     pub const QUEUE_MESSAGES: &str = "forgebase_queue_messages";
+    /// Counter: inbound billing webhook deliveries, labels `provider` (a known
+    /// provider or `other`) and `outcome` (`applied`, `ignored`, `duplicate`,
+    /// `failed`, or the verification failure).
+    pub const BILLING_WEBHOOK_DELIVERIES_TOTAL: &str = "forgebase_billing_webhook_deliveries_total";
+    /// Histogram: verification and processing time of a billing webhook in seconds, label `provider`.
+    pub const BILLING_WEBHOOK_PROCESSING_SECONDS: &str = "forgebase_billing_webhook_processing_seconds";
+    /// Counter: unverified billing webhook deliveries the inspector budget did not store,
+    /// labels `provider` and `kind` (`body`: row without body; `delivery`: no row).
+    pub const BILLING_WEBHOOK_LOG_DROPPED_TOTAL: &str = "forgebase_billing_webhook_log_dropped_total";
+    /// Counter: push delivery attempts (test sends excluded), labels `subscription`, `outcome` (`success`, `failure`).
+    pub const QUEUE_PUSH_ATTEMPTS_TOTAL: &str = "forgebase_queue_push_attempts_total";
+    /// Histogram: push delivery latency in seconds, label `subscription`.
+    pub const QUEUE_PUSH_LATENCY_SECONDS: &str = "forgebase_queue_push_latency_seconds";
+    /// Gauge: failed push attempts since the last success, label `subscription`.
+    pub const QUEUE_PUSH_CONSECUTIVE_FAILURES: &str = "forgebase_queue_push_consecutive_failures";
+    /// Gauge: 1 while push delivery of a subscription is paused, label `subscription`.
+    pub const QUEUE_PUSH_PAUSED: &str = "forgebase_queue_push_paused";
+    /// Counter: push subscriptions paused by the circuit breaker, label `subscription`.
+    pub const QUEUE_PUSH_AUTO_PAUSED_TOTAL: &str = "forgebase_queue_push_auto_paused_total";
+    /// Gauge: Unix time of the last successful push attempt, label `subscription`.
+    pub const QUEUE_PUSH_LAST_SUCCESS_SECONDS: &str = "forgebase_queue_push_last_success_timestamp_seconds";
+    /// Counter: dead letters redriven to their subscription, label `subscription`.
+    pub const QUEUE_REDRIVEN_TOTAL: &str = "forgebase_queue_redriven_total";
+    /// Gauge: seconds until the served TLS certificate expires (negative
+    /// once expired). Only with `[tls] mode` other than `off` (ADR-0033).
+    pub const TLS_CERTIFICATE_EXPIRY_SECONDS: &str = "forgebase_tls_certificate_expiry_seconds";
+    /// Counter: certificates issued over ACME.
+    pub const TLS_RENEWALS_TOTAL: &str = "forgebase_tls_renewals_total";
+    /// Counter: failed ACME certificate requests (each is retried with backoff).
+    pub const TLS_RENEWAL_FAILURES_TOTAL: &str = "forgebase_tls_renewal_failures_total";
+    /// Counter: certificate files loaded again after they changed.
+    pub const TLS_RELOADS_TOTAL: &str = "forgebase_tls_reloads_total";
+    /// Counter: changed certificate files that did not load (the old certificate stays).
+    pub const TLS_RELOAD_FAILURES_TOTAL: &str = "forgebase_tls_reload_failures_total";
+    /// Counter: TLS handshakes that failed or timed out.
+    pub const TLS_HANDSHAKE_FAILURES_TOTAL: &str = "forgebase_tls_handshake_failures_total";
 }
 
 /// Resident memory and CPU time of this process, where the platform reports them.
@@ -187,6 +223,18 @@ pub fn metrics_handle() -> &'static PrometheusHandle {
                     LATENCY_BUCKETS,
                 )
             })
+            .and_then(|b| {
+                b.set_buckets_for_metric(
+                    Matcher::Full(names::BILLING_WEBHOOK_PROCESSING_SECONDS.to_owned()),
+                    LATENCY_BUCKETS,
+                )
+            })
+            .and_then(|b| {
+                b.set_buckets_for_metric(
+                    Matcher::Full(names::QUEUE_PUSH_LATENCY_SECONDS.to_owned()),
+                    LATENCY_BUCKETS,
+                )
+            })
             .unwrap_or_else(|_| PrometheusBuilder::new());
         let recorder = builder.build_recorder();
         let handle = recorder.handle();
@@ -244,6 +292,43 @@ fn describe() {
     describe_gauge!(names::KV_MEMORY_BYTES, Unit::Bytes, "Key-value store memory.");
     describe_gauge!(names::QUEUE_DELIVERIES, "Queue deliveries by state.");
     describe_gauge!(names::QUEUE_MESSAGES, "Messages retained in topics.");
+    describe_counter!(
+        names::BILLING_WEBHOOK_DELIVERIES_TOTAL,
+        "Inbound billing webhook deliveries by outcome."
+    );
+    describe_histogram!(
+        names::BILLING_WEBHOOK_PROCESSING_SECONDS,
+        Unit::Seconds,
+        "Billing webhook verification and processing time."
+    );
+    describe_counter!(
+        names::BILLING_WEBHOOK_LOG_DROPPED_TOTAL,
+        "Unverified billing webhook deliveries not stored (over the inspector budget)."
+    );
+    describe_counter!(names::QUEUE_PUSH_ATTEMPTS_TOTAL, "Push delivery attempts by outcome.");
+    describe_histogram!(
+        names::QUEUE_PUSH_LATENCY_SECONDS,
+        Unit::Seconds,
+        "Push delivery latency."
+    );
+    describe_gauge!(
+        names::QUEUE_PUSH_CONSECUTIVE_FAILURES,
+        "Failed push attempts since the last success."
+    );
+    describe_gauge!(names::QUEUE_PUSH_PAUSED, "1 while push delivery is paused.");
+    describe_counter!(
+        names::QUEUE_PUSH_AUTO_PAUSED_TOTAL,
+        "Push subscriptions paused by the circuit breaker."
+    );
+    describe_gauge!(
+        names::QUEUE_PUSH_LAST_SUCCESS_SECONDS,
+        Unit::Seconds,
+        "Unix time of the last successful push attempt."
+    );
+    describe_counter!(
+        names::QUEUE_REDRIVEN_TOTAL,
+        "Dead letters redriven to their subscription."
+    );
 }
 
 #[cfg(test)]

@@ -28,10 +28,13 @@ use utoipa::{OpenApi, ToSchema};
 
 use crate::error::QueueError;
 use crate::model::{
-    AckRequest, AckResult, DeadLetter, DeadLetterPage, DeliveryAttempt, Message, MessagePage, ModifyDeadlineRequest,
-    NewMessage, NewSnapshot, NewSubscription, NewTopic, PublishRequest, PublishResponse, Published, PullRequest,
-    PullResponse, PushConfig, PushKind, ReceivedMessage, RecordSource, SeekRequest, SeekResult, Snapshot,
-    StartPosition, Subscription, SubscriptionMetrics, SubscriptionPatch, Topic, TopicMetrics, TopicPatch,
+    AckRequest, AckResult, AttemptQuery, CatalogEventType, CatalogTopic, DeadLetter, DeadLetterPage, DeliveryAttempt,
+    EventCatalog, ExampleSource, Message, MessagePage, ModifyDeadlineRequest, NewMessage, NewSnapshot, NewSubscription,
+    NewTopic, PauseRequest, PublishRequest, PublishResponse, Published, PullRequest, PullResponse, PushAttempt,
+    PushAttemptPage, PushConfig, PushErrorClass, PushHealth, PushKind, PushOutcome, ReceivedMessage, RecordSource,
+    RedriveRequest, RedriveResult, RetryRequest, RetryResult, RotateSecretRequest, RotatedSecret, SeekRequest,
+    SeekResult, Snapshot, StartPosition, Subscription, SubscriptionMetrics, SubscriptionPatch, TestSendRequest, Topic,
+    TopicMetrics, TopicPatch, parse_time,
 };
 use crate::service::QueueService;
 
@@ -52,6 +55,9 @@ pub fn api(e: QueueError) -> ApiError {
     match e {
         QueueError::Entitlement(inner) => forgebase_entitlements::http::api(inner),
         QueueError::TooLarge(msg) => ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "message_too_large", msg),
+        QueueError::RateLimited { message, .. } => {
+            ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
+        }
         other => ApiError::from_error(&other),
     }
 }
@@ -98,6 +104,50 @@ async fn sub_body<T>(
     Ok(body?.0)
 }
 
+/// An optional JSON body: empty means `T::default()` (so `POST …/resume`
+/// needs no body); anything else must be JSON of `T`.
+pub(crate) struct OptJson<T>(pub T);
+
+impl<S: Send + Sync, T: serde::de::DeserializeOwned + Default> axum::extract::FromRequest<S> for OptJson<T> {
+    type Rejection = ApiError;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = axum::body::Bytes::from_request(req, state).await.map_err(|e| {
+            if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    "request body is too large",
+                )
+            } else {
+                ApiError::bad_request("invalid_body", e.body_text())
+            }
+        })?;
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok(OptJson(T::default()));
+        }
+        serde_json::from_slice(&bytes).map(OptJson).map_err(|e| {
+            let code = if e.is_data() { "invalid_body" } else { "invalid_json" };
+            ApiError::bad_request(code, e.to_string())
+        })
+    }
+}
+
+type OptBody<T> = Result<OptJson<T>, ApiError>;
+
+/// As [`sub_body`], for an optional body.
+async fn sub_opt<T>(
+    s: &QueueService,
+    ctx: &AccessContext,
+    action: Action,
+    sub: &str,
+    op: ResourceOp,
+    body: OptBody<T>,
+) -> Result<T, ApiError> {
+    s.authorize_subscription(ctx, action, sub, op).await.map_err(api)?;
+    Ok(body?.0)
+}
+
 /// The routes, relative to `/api/v1`, with their state applied.
 pub fn router<S: Clone + Send + Sync + 'static>(service: QueueService) -> Router<S> {
     Router::<QueueService>::new()
@@ -128,6 +178,19 @@ pub fn router<S: Clone + Send + Sync + 'static>(service: QueueService) -> Router
         .route("/queues/subscriptions/{sub}/dead-letters", get(dead_letters))
         .route("/queues/subscriptions/{sub}/stream", get(stream))
         .route("/queues/subscriptions/{sub}/events", get(events))
+        .route("/queues/subscriptions/{sub}/attempts", get(list_attempts))
+        .route("/queues/subscriptions/{sub}/attempts/{id}", get(get_attempt))
+        .route("/queues/subscriptions/{sub}/test", post(test_push))
+        .route("/queues/subscriptions/{sub}/redrive", post(redrive))
+        .route("/queues/subscriptions/{sub}/retry", post(retry_now))
+        .route("/queues/subscriptions/{sub}/secret/rotate", post(rotate_secret))
+        .route(
+            "/queues/subscriptions/{sub}/secret/expire-previous",
+            post(expire_previous_secret),
+        )
+        .route("/queues/subscriptions/{sub}/pause", post(pause))
+        .route("/queues/subscriptions/{sub}/resume", post(resume))
+        .route("/queues/catalog", get(catalog))
         .route("/queues/snapshots", get(list_snapshots).post(create_snapshot))
         .route(
             "/queues/snapshots/{snapshot}",
@@ -156,14 +219,18 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
         list_topics, create_topic, get_topic, update_topic, delete_topic, publish, list_messages, topic_metrics,
         list_subscriptions, create_subscription, get_subscription, update_subscription, delete_subscription, pull,
         ack, nack, modify_deadline, seek, subscription_metrics, dead_letters, stream, events, list_snapshots,
-        create_snapshot, get_snapshot, delete_snapshot,
+        create_snapshot, get_snapshot, delete_snapshot, list_attempts, get_attempt, test_push, redrive, retry_now,
+        rotate_secret, expire_previous_secret, pause, resume, catalog,
     ),
     components(schemas(
         Topic, NewTopic, TopicPatch, TopicList, RecordSource, NewMessage, PublishRequest, PublishResponse, Published,
         Message, MessagePage, DeliveryAttempt, Subscription, NewSubscription, SubscriptionPatch, SubscriptionList,
         PushConfig, PushKind, StartPosition, PullRequest, PullResponse, ReceivedMessage, AckRequest, AckResult,
         ModifyDeadlineRequest, SeekRequest, SeekResult, NewSnapshot, Snapshot, SnapshotList, TopicMetrics,
-        SubscriptionMetrics, DeadLetter, DeadLetterPage, StreamClientMessage, StreamServerMessage,
+        SubscriptionMetrics, DeadLetter, DeadLetterPage, StreamClientMessage, StreamServerMessage, PushHealth,
+        PushAttempt, PushAttemptPage, PushOutcome, PushErrorClass, TestSendRequest, RedriveRequest, RedriveResult,
+        RetryRequest, RetryResult, RotateSecretRequest, RotatedSecret, PauseRequest, EventCatalog, CatalogTopic,
+        CatalogEventType, ExampleSource,
     )),
     tags((name = "queues", description = "Durable topics and queues: publish/subscribe, pull, streaming and push delivery")),
 )]
@@ -572,6 +639,210 @@ async fn dead_letters(
     let before = int_param(&q, "before")?;
     let limit = q.u32("limit")?.map_or(50, i64::from);
     Ok(Json(s.dead_letters(&ctx, &sub, before, limit).await.map_err(api)?).into_response())
+}
+
+// ------------------------------------------------------- webhook tooling
+
+/// Push attempts of a subscription (deliveries and test sends), newest first.
+#[utoipa::path(
+    get, path = "/api/v1/queues/subscriptions/{sub}/attempts", tag = "queues", operation_id = "queues_list_push_attempts",
+    params(
+        ("sub" = String, Path, description = "Subscription name"),
+        ("outcome" = Option<String>, Query, description = "`success` or `failure`"),
+        ("message_id" = Option<String>, Query, description = "Only attempts of this message"),
+        ("since" = Option<String>, Query, description = "Only attempts at or after this RFC 3339 time"),
+        ("until" = Option<String>, Query, description = "Only attempts before this RFC 3339 time"),
+        ("test" = Option<bool>, Query, description = "`true`: only test sends; `false`: only deliveries"),
+        ("before" = Option<i64>, Query, description = "Only records with a lower id (the page's `next_before`)"),
+        ("limit" = Option<u32>, Query, description = "Page size, default 50, at most 500"),
+    ),
+    responses((status = 200, description = "A page of attempts", body = PushAttemptPage))
+)]
+async fn list_attempts(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    q: Query,
+) -> ApiResult {
+    s.authorize_subscription(&ctx, Action::QueueRead, &sub, ResourceOp::List)
+        .await
+        .map_err(api)?;
+    let outcome = match q.get("outcome").filter(|v| !v.is_empty()) {
+        None => None,
+        Some("success") => Some(PushOutcome::Success),
+        Some("failure") => Some(PushOutcome::Failure),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_parameter",
+                "outcome must be success or failure",
+            ));
+        }
+    };
+    let time = |name: &str| -> Result<Option<i64>, ApiError> {
+        q.get(name)
+            .filter(|v| !v.is_empty())
+            .map(|v| parse_time(name, v).map_err(api))
+            .transpose()
+    };
+    let test = match q.get("test").filter(|v| !v.is_empty()) {
+        None => None,
+        Some(_) => Some(q.bool("test")?),
+    };
+    let query = AttemptQuery {
+        outcome,
+        message_id: q.get("message_id").filter(|v| !v.is_empty()).map(str::to_owned),
+        since_ms: time("since")?,
+        until_ms: time("until")?,
+        test,
+        before: int_param(&q, "before")?,
+        limit: q.u32("limit")?.map_or(50, i64::from),
+    };
+    Ok(Json(s.push_attempts(&ctx, &sub, query).await.map_err(api)?).into_response())
+}
+
+/// One push attempt with its request headers (signature masked), status,
+/// latency, error class and response.
+#[utoipa::path(
+    get, path = "/api/v1/queues/subscriptions/{sub}/attempts/{id}", tag = "queues", operation_id = "queues_get_push_attempt",
+    params(("sub" = String, Path, description = "Subscription name"), ("id" = i64, Path, description = "Attempt id")),
+    responses((status = 200, description = "The attempt", body = PushAttempt), (status = 404, description = "`attempt_not_found`"))
+)]
+async fn get_attempt(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path((sub, id)): Path<(String, i64)>,
+) -> ApiResult {
+    Ok(Json(s.push_attempt(&ctx, &sub, id).await.map_err(api)?).into_response())
+}
+
+/// Sends a synthetic signed `forgebase.test` event to the push endpoint now
+/// and returns the attempt. Not a message: no effect on cursors, totals or
+/// dead letters. Rate-limited per subscription.
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/test", tag = "queues", operation_id = "queues_test_push",
+    params(("sub" = String, Path, description = "Subscription name")),
+    request_body(content = Option<TestSendRequest>, description = "Optional; an empty body sends the default test data"),
+    responses(
+        (status = 200, description = "The attempt (its outcome says whether the endpoint accepted it)", body = PushAttempt),
+        (status = 409, description = "A pull subscription (`not_push_subscription`)"),
+        (status = 429, description = "Too many test sends (`rate_limited`)"),
+    )
+)]
+async fn test_push(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: OptBody<TestSendRequest>,
+) -> ApiResult {
+    let req = sub_opt(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
+    Ok(Json(s.test_push(&ctx, &sub, req).await.map_err(api)?).into_response())
+}
+
+/// Delivers dead letters to their subscription again (attempt counter reset):
+/// `ids`, or `all` (optionally `since` and `filter`). Each record is redriven once.
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/redrive", tag = "queues", operation_id = "queues_redrive",
+    params(("sub" = String, Path, description = "Subscription name")),
+    request_body = RedriveRequest,
+    responses((status = 200, description = "Outcome", body = RedriveResult))
+)]
+async fn redrive(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: Body<RedriveRequest>,
+) -> ApiResult {
+    let req = sub_body(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
+    Ok(Json(s.redrive(&ctx, &sub, req).await.map_err(api)?).into_response())
+}
+
+/// Retries now the deliveries waiting for a retry backoff (all, or `message_ids`).
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/retry", tag = "queues", operation_id = "queues_retry_now",
+    params(("sub" = String, Path, description = "Subscription name")),
+    request_body(content = Option<RetryRequest>, description = "Optional"),
+    responses((status = 200, description = "Outcome", body = RetryResult))
+)]
+async fn retry_now(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: OptBody<RetryRequest>,
+) -> ApiResult {
+    let req = sub_opt(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
+    Ok(Json(s.retry_now(&ctx, &sub, req).await.map_err(api)?).into_response())
+}
+
+/// Rotates a webhook's signing secret with a grace window in which both
+/// secrets sign (`t=…,v1=<new>,v1=<old>`). The new secret is shown here only.
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/secret/rotate", tag = "queues", operation_id = "queues_rotate_secret",
+    params(("sub" = String, Path, description = "Subscription name")),
+    request_body(content = Option<RotateSecretRequest>, description = "Optional; default grace 24 hours"),
+    responses(
+        (status = 200, description = "The new secret", body = RotatedSecret),
+        (status = 409, description = "Not a webhook subscription (`not_webhook_subscription`)"),
+    )
+)]
+async fn rotate_secret(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: OptBody<RotateSecretRequest>,
+) -> ApiResult {
+    let req = sub_opt(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
+    Ok(Json(s.rotate_secret(&ctx, &sub, req).await.map_err(api)?).into_response())
+}
+
+/// Ends a rotation's grace window now: only the new secret signs.
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/secret/expire-previous", tag = "queues", operation_id = "queues_expire_previous_secret",
+    params(("sub" = String, Path, description = "Subscription name")),
+    responses((status = 200, description = "The subscription", body = Subscription))
+)]
+async fn expire_previous_secret(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+) -> ApiResult {
+    Ok(Json(s.expire_previous_secret(&ctx, &sub).await.map_err(api)?).into_response())
+}
+
+/// Pauses push delivery; messages accumulate (none is dead-lettered) until resumed.
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/pause", tag = "queues", operation_id = "queues_pause",
+    params(("sub" = String, Path, description = "Subscription name")),
+    request_body(content = Option<PauseRequest>, description = "Optional"),
+    responses((status = 200, description = "The subscription", body = Subscription))
+)]
+async fn pause(
+    State(s): State<QueueService>,
+    Access(ctx): Access,
+    Path(sub): Path<String>,
+    b: OptBody<PauseRequest>,
+) -> ApiResult {
+    let req = sub_opt(&s, &ctx, Action::QueueAdmin, &sub, ResourceOp::Update, b).await?;
+    Ok(Json(s.pause(&ctx, &sub, req).await.map_err(api)?).into_response())
+}
+
+/// Resumes push delivery (manual or auto pause); the backlog is delivered in order.
+#[utoipa::path(
+    post, path = "/api/v1/queues/subscriptions/{sub}/resume", tag = "queues", operation_id = "queues_resume",
+    params(("sub" = String, Path, description = "Subscription name")),
+    responses((status = 200, description = "The subscription", body = Subscription))
+)]
+async fn resume(State(s): State<QueueService>, Access(ctx): Access, Path(sub): Path<String>) -> ApiResult {
+    Ok(Json(s.resume(&ctx, &sub).await.map_err(api)?).into_response())
+}
+
+/// The event catalog: every topic the caller may read, with description,
+/// data schema, example, and the event types of record-source topics.
+#[utoipa::path(
+    get, path = "/api/v1/queues/catalog", tag = "queues", operation_id = "queues_event_catalog",
+    responses((status = 200, description = "Subscribable event types", body = EventCatalog))
+)]
+async fn catalog(State(s): State<QueueService>, Access(ctx): Access) -> ApiResult {
+    Ok(Json(s.catalog(&ctx).await.map_err(api)?).into_response())
 }
 
 // --------------------------------------------------------------- streaming

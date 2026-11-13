@@ -1,0 +1,20 @@
+{{- if and (include "forgebase.backupVolume" .) (not .Values.backup.destination.volume.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "forgebase.backupClaimName" . }}
+  labels:
+    {{- include "forgebase.labels" . | nindent 4 }}
+  annotations:
+    # Backups outlive the release.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml .Values.backup.destination.volume.accessModes | nindent 4 }}
+  {{- with .Values.backup.destination.volume.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.destination.volume.size }}
+{{- end }}

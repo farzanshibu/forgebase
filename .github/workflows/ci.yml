@@ -303,3 +303,100 @@ jobs:
         with:
           command: check
           arguments: --all-features
+
+  # Kubernetes deployment files: the Helm chart (deploy/helm) and the Kustomize
+  # base, overlays and components (deploy/kubernetes). Lints and renders every
+  # variant, validates the output against the Kubernetes and CRD schemas, and
+  # checks that single-writer violations are refused.
+  kubernetes:
+    name: kubernetes manifests (helm, kustomize, kubeconform)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Install kubeconform
+        run: |
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: helm lint, helm template and kubeconform
+        run: deploy/helm/validate.sh
+      - name: kubectl kustomize and kubeconform
+        run: deploy/kubernetes/validate.sh
+
+  sdk-dart:
+    name: Dart SDK (analyze, format, test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk/dart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - run: dart analyze --fatal-infos
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: dart test
+
+  terraform-provider:
+    name: terraform provider (fmt, vet, test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: integrations/terraform-provider-forgebase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: integrations/terraform-provider-forgebase/go.mod
+          cache-dependency-path: integrations/terraform-provider-forgebase/go.sum
+      - run: go build ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      # Includes the docs-up-to-date check; run `go generate ./...` to refresh docs/.
+      - run: go test -race ./...
+
+  # Kotlin SDK (Android and JVM): a pure Kotlin/JVM Gradle library. The tests
+  # run against MockWebServer (HTTP, WebSocket, SSE), so no server is needed.
+  kotlin-sdk:
+    name: kotlin sdk (gradle test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk/kotlin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew test build --no-daemon
+
+  sdk-swift:
+    name: Swift SDK (build and test)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build
+        working-directory: sdk/swift
+        run: swift build
+      # Offline: URLProtocol mock and a fake WebSocket, no server needed.
+      - name: swift test
+        working-directory: sdk/swift
+        run: swift test
+      # The library also has to compile for the other Apple platforms.
+      - name: xcodebuild (iOS, tvOS, visionOS, watchOS)
+        working-directory: sdk/swift
+        run: |
+          for platform in iOS tvOS visionOS watchOS; do
+            xcodebuild build -scheme ForgeBase -destination "generic/platform=$platform" CODE_SIGNING_ALLOWED=NO -quiet
+          done
