@@ -433,6 +433,14 @@ pub static TABLES: &[TablePlacement] = &[
         "name",
         COPY,
     ),
+    // Push attempt log (ADR-0031, 0050_queue_push_attempts).
+    child(
+        "_forgebase_queue_push_attempts",
+        "subscription",
+        "_forgebase_queue_subscriptions",
+        "name",
+        COPY,
+    ),
     tenant("_forgebase_queue_snapshots", "tenant", REMAP),
     child(
         "_forgebase_queue_snapshot_items",
