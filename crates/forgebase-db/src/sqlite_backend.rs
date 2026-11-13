@@ -119,10 +119,11 @@ impl Backend for SqliteDatabase {
         Box::pin(async move {
             crate::backend::refuse_nul(stmt)?;
             let started = Instant::now();
-            let rows = bind(stmt)
-                .fetch_all(&self.inner.reader)
-                .await
-                .map_err(|e| self.classify(e))?;
+            let fetched = bind(stmt).fetch_all(&self.inner.reader).await;
+            if fetched.is_err() {
+                self.inner.slow.record_error(stmt, started.elapsed(), false);
+            }
+            let rows = fetched.map_err(|e| self.classify(e))?;
             let rows = decode_rows(rows).map_err(|e| self.classify(e))?;
             self.inner
                 .slow
@@ -330,10 +331,11 @@ impl WriteTx for SqliteTx {
             if !self.ddl && changes_schema(&stmt.sql) {
                 self.ddl = true;
             }
-            let done = bind(stmt)
-                .execute(&mut **self.conn()?)
-                .await
-                .map_err(|e| db.classify(e))?;
+            let done = bind(stmt).execute(&mut **self.conn()?).await;
+            if done.is_err() {
+                db.inner.slow.record_error(stmt, started.elapsed(), true);
+            }
+            let done = done.map_err(|e| db.classify(e))?;
             db.inner
                 .slow
                 .record(stmt, started.elapsed(), done.rows_affected(), true);
@@ -349,10 +351,11 @@ impl WriteTx for SqliteTx {
             let db = self.db.clone();
             crate::backend::refuse_nul(stmt)?;
             let started = Instant::now();
-            let rows = bind(stmt)
-                .fetch_all(&mut **self.conn()?)
-                .await
-                .map_err(|e| db.classify(e))?;
+            let fetched = bind(stmt).fetch_all(&mut **self.conn()?).await;
+            if fetched.is_err() {
+                db.inner.slow.record_error(stmt, started.elapsed(), true);
+            }
+            let rows = fetched.map_err(|e| db.classify(e))?;
             let rows = decode_rows(rows).map_err(|e| db.classify(e))?;
             db.inner.slow.record(stmt, started.elapsed(), rows.len() as u64, true);
             Ok(rows)

@@ -46,6 +46,7 @@ pub mod shards;
 mod slow_log;
 mod sqlite;
 mod sqlite_backend;
+pub mod stmtstats;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod topology;

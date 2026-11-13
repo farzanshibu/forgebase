@@ -203,7 +203,7 @@ impl PgDatabase {
                 location,
                 managed,
                 read_only: opts.read_only,
-                slow: SlowLog::default(),
+                slow: SlowLog::new("postgres"),
                 schema_gen: AtomicU64::new(1),
                 writer_gen: AtomicU64::new(0),
                 sql: Mutex::new(HashMap::new()),
@@ -293,6 +293,9 @@ impl PgDatabase {
             }
         } else if matches!(&result, Err(RunError::Driver(e)) if error::is_lost_unnamed_statement(e)) {
             result = self.read_once(&mut conn, stmt, gen_now, run_as).await;
+        }
+        if result.is_err() {
+            self.inner.slow.record_error(stmt, started.elapsed(), false);
         }
         let rows = result.map_err(|e| self.run_error(e))?;
         self.inner
@@ -1537,6 +1540,9 @@ impl WriteTx for PgTx {
             let ddl = changes_schema(&stmt.sql);
             let conn = self.conn()?;
             let r = execute(&db, conn, stmt).await;
+            if r.is_err() {
+                db.inner.slow.record_error(stmt, started.elapsed(), true);
+            }
             let rows = self.note(r)?;
             if ddl {
                 self.ddl = true;
@@ -1564,6 +1570,9 @@ impl WriteTx for PgTx {
             } else {
                 fetch(&db, conn, stmt).await
             };
+            if r.is_err() {
+                db.inner.slow.record_error(stmt, started.elapsed(), true);
+            }
             let rows = self.note(r)?;
             db.inner.slow.record(stmt, started.elapsed(), rows.len() as u64, true);
             Ok(rows)
