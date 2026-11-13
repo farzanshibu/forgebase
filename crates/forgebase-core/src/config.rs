@@ -24,6 +24,10 @@ use crate::error::{ErrorCode, ErrorKind};
 #[path = "topology_config.rs"]
 pub mod topology_config;
 
+/// `[observability]` and `[alerts]` (ADR-0035).
+#[path = "telemetry_config.rs"]
+pub mod telemetry_config;
+
 /// Prefix of every environment variable ForgeBase reads.
 pub const ENV_PREFIX: &str = "FORGEBASE_";
 /// Environment variable naming the config file.
@@ -548,6 +552,10 @@ pub struct Config {
     pub identity: ModuleSwitch,
     /// Policies, organisations and tenancy management (FB-21), `[access]`.
     pub access: ModuleSwitch,
+    /// Trace context and OpenTelemetry export (ADR-0035), `[observability]`.
+    pub observability: telemetry_config::ObservabilityConfig,
+    /// Alerting engine, notifiers and SLOs (ADR-0035), `[alerts]`.
+    pub alerts: telemetry_config::AlertsConfig,
 }
 
 /// `[<module>] enabled` of a module that has no other settings (FB-91,
@@ -840,6 +848,8 @@ impl Config {
             graph: ModuleSwitch::default(),
             identity: ModuleSwitch::default(),
             access: ModuleSwitch::default(),
+            observability: telemetry_config::ObservabilityConfig::default(),
+            alerts: telemetry_config::AlertsConfig::default(),
         }
     }
 
@@ -1088,6 +1098,9 @@ impl Config {
             );
         }
         self.database.topology.problems(&mut out);
+        for (field, message) in self.observability.problems().into_iter().chain(self.alerts.problems()) {
+            out.push(ConfigError::Invalid { field, message });
+        }
         out
     }
 
@@ -1324,6 +1337,12 @@ impl Config {
                 switch.enabled = v;
             }
         }
+        if let Some(x) = &o.observability {
+            self.observability.apply(x);
+        }
+        if let Some(x) = &o.alerts {
+            self.alerts.apply(x);
+        }
     }
 }
 
@@ -1406,6 +1425,10 @@ pub struct ConfigOverrides {
     pub identity_enabled: Option<bool>,
     /// `[access] enabled`.
     pub access_enabled: Option<bool>,
+    /// `[observability]` (ADR-0035).
+    pub observability: Option<telemetry_config::ObservabilityOverrides>,
+    /// `[alerts]` (ADR-0035).
+    pub alerts: Option<telemetry_config::AlertsOverrides>,
     /// Secret environment variables that were set (names only, never values),
     /// such as `FORGEBASE_STORAGE_S3_SECRET_KEY`. The loader does not read
     /// them; the feature registry reports them as set by the environment.
@@ -1499,6 +1522,24 @@ impl ConfigOverrides {
                 "GRAPH_ENABLED" => o.graph_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "IDENTITY_ENABLED" => o.identity_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "ACCESS_ENABLED" => o.access_enabled = Some(parse_bool(&value).map_err(bad)?),
+                // ADR-0035: read by the exporter, never stored by the loader.
+                "OTLP_HEADERS" => {
+                    if !value.trim().is_empty() {
+                        o.secrets_set.push(name.clone());
+                    }
+                }
+                k if k.starts_with("OTLP_") || k == "TRUST_INCOMING_TRACE" => {
+                    let x = o.observability.get_or_insert_with(Default::default);
+                    if !x.env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                }
+                k if k.starts_with("ALERTS_") => {
+                    let x = o.alerts.get_or_insert_with(Default::default);
+                    if !x.env(k, &value).map_err(bad)? {
+                        return Err(bad("unknown ForgeBase environment variable".into()));
+                    }
+                }
                 // FB-175: `[database.replicas]` and `[database.sharding]`.
                 k if k.starts_with("DATABASE_REPLICAS_") || k.starts_with("DATABASE_SHARDING_") => {
                     if !o.topology.env(k, &value).map_err(bad)? {
@@ -1635,6 +1676,12 @@ impl ConfigOverrides {
         put(self.graph_enabled.is_some(), "graph.enabled");
         put(self.identity_enabled.is_some(), "identity.enabled");
         put(self.access_enabled.is_some(), "access.enabled");
+        if let Some(x) = &self.observability {
+            x.keys(&mut put);
+        }
+        if let Some(x) = &self.alerts {
+            x.keys(&mut put);
+        }
         k
     }
 }
@@ -2045,6 +2092,8 @@ struct FileConfig {
     identity: FileSwitch,
     #[serde(default)]
     access: FileSwitch,
+    observability: Option<telemetry_config::ObservabilityOverrides>,
+    alerts: Option<telemetry_config::AlertsOverrides>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2185,6 +2234,8 @@ impl From<FileConfig> for ConfigOverrides {
             graph_enabled: f.graph.enabled,
             identity_enabled: f.identity.enabled,
             access_enabled: f.access.enabled,
+            observability: f.observability,
+            alerts: f.alerts,
         }
     }
 }

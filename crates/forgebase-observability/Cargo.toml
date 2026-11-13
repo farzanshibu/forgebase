@@ -1,6 +1,6 @@
 [package]
 name = "forgebase-observability"
-description = "ForgeBase logging (tracing) and Prometheus metrics setup."
+description = "ForgeBase logging (tracing), Prometheus metrics, W3C trace context and OTLP export."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,12 +10,20 @@ license.workspace = true
 [dependencies]
 forgebase-core.workspace = true
 cpu-time.workspace = true
+getrandom.workspace = true
 memory-stats.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+# OTLP/HTTP export (ADR-0035): already in the tree; no OpenTelemetry crates.
+rustls.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
 
 [lints]
 workspace = true

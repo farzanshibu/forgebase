@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::Json;
-use axum::extract::{MatchedPath, Request};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -100,9 +100,14 @@ fn rebuild(res: Response, err: &ApiError, request_id: &str) -> Response {
     Response::from_parts(parts, body)
 }
 
+/// HTTP observers told about every answered request (the SLO engine,
+/// ADR-0035 §5).
+pub type Observers = Arc<[Arc<dyn forgebase_observability::HttpObserver>]>;
+
 /// Records request count, latency and in-flight gauge, labelled by the
-/// matched route template (never the raw path, to bound cardinality).
-pub async fn track_metrics(req: Request, next: Next) -> Response {
+/// matched route template (never the raw path, to bound cardinality), and
+/// tells the [`Observers`].
+pub async fn track_metrics(State(observers): State<Observers>, req: Request, next: Next) -> Response {
     let route = req
         .extensions()
         .get::<MatchedPath>()
@@ -112,11 +117,87 @@ pub async fn track_metrics(req: Request, next: Next) -> Response {
     let start = Instant::now();
     let _in_flight = InFlight::enter();
     let res = next.run(req).await;
-    let status = res.status().as_u16().to_string();
+    let code = res.status().as_u16();
+    let elapsed = start.elapsed().as_secs_f64();
+    for o in observers.iter() {
+        o.observe(&method, &route, code, elapsed);
+    }
+    let status = code.to_string();
     metrics::counter!(names::HTTP_REQUESTS_TOTAL, "method" => method.clone(), "route" => route.clone(), "status" => status)
         .increment(1);
     metrics::histogram!(names::HTTP_REQUEST_DURATION_SECONDS, "method" => method, "route" => route)
-        .record(start.elapsed().as_secs_f64());
+        .record(elapsed);
+    res
+}
+
+/// The server span of a request (ADR-0035 §2): named `<METHOD> <route
+/// template>` (never the raw path), kind `server`, with the caller's
+/// `traceparent` as parent when [`forgebase_observability::trace::accept_incoming`]
+/// accepts it. A caller may decide the sampling when it is trusted: behind
+/// `[auth] trust_forwarded_for`, or a direct loopback client.
+pub fn server_span(req: &Request) -> tracing::Span {
+    use forgebase_observability::trace;
+    let request_id = req.extensions().get::<RequestId>().map_or("-", RequestId::as_str);
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("<unmatched>", |p| p.as_str());
+    let method = req.method().as_str();
+    let header = |n: &str| req.headers().get(n).and_then(|v| v.to_str().ok());
+    let parent = trace::accept_incoming(
+        header(trace::TRACEPARENT),
+        header(trace::TRACESTATE),
+        trace::caller_trusted(crate::routes::direct_loopback(req)),
+    );
+    let (parent, state) = match &parent {
+        Some(p) => (p.traceparent(), p.trace_state.clone().unwrap_or_default()),
+        None => (String::new(), String::new()),
+    };
+    // Path only in the local log: query strings may carry tokens. Exported
+    // attributes are the dotted fields (no raw path).
+    tracing::info_span!(
+        "http",
+        method = %method,
+        path = %req.uri().path(),
+        request_id = %request_id,
+        otel.name = %format_args!("{method} {route}"),
+        otel.kind = "server",
+        otel.parent = %parent,
+        otel.tracestate = %state,
+        http.request.method = %method,
+        http.route = %route,
+        forgebase.request_id = %request_id,
+        http.response.status_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    )
+}
+
+/// Records the status of the answered request on its span, then logs it as
+/// [`DefaultOnResponse`](tower_http::trace::DefaultOnResponse) does.
+#[derive(Debug, Clone)]
+pub struct RecordStatus(pub tower_http::trace::DefaultOnResponse);
+
+impl<B> tower_http::trace::OnResponse<B> for RecordStatus {
+    fn on_response(self, res: &axum::http::Response<B>, latency: std::time::Duration, span: &tracing::Span) {
+        span.record("http.response.status_code", res.status().as_u16());
+        if res.status().is_server_error() {
+            span.record("otel.status_code", "error");
+        }
+        self.0.on_response(res, latency, span);
+    }
+}
+
+/// Adds the server span's `traceparent` to the response while trace
+/// propagation is on (`[observability.otlp] enabled`).
+pub async fn trace_header(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    if forgebase_observability::trace::propagation_enabled()
+        && let Some(c) = forgebase_observability::trace::current()
+        && let Ok(v) = HeaderValue::from_str(&c.traceparent())
+    {
+        res.headers_mut()
+            .insert(HeaderName::from_static(forgebase_observability::trace::TRACEPARENT), v);
+    }
     res
 }
 
