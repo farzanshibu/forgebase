@@ -266,6 +266,10 @@ stops startup with an error.
 | `FORGEBASE_LOG_LEVEL`, `FORGEBASE_LOG_FORMAT` | Logging. |
 | `FORGEBASE_RESP_ENABLED`, `FORGEBASE_RESP_HOST`, `FORGEBASE_RESP_PORT` | Redis protocol listener. |
 | `FORGEBASE_RESP_MAX_CONNECTIONS`, `FORGEBASE_RESP_MAX_BULK_BYTES`, `FORGEBASE_RESP_IDLE_TIMEOUT_SECS` | Redis protocol limits. |
+| `FORGEBASE_RESP_TLS` | Redis protocol over TLS with the `[tls]` certificate (§5). |
+| `FORGEBASE_TLS_MODE`, `FORGEBASE_TLS_CERT_FILE`, `FORGEBASE_TLS_KEY_FILE`, `FORGEBASE_TLS_RELOAD_INTERVAL_SECS`, `FORGEBASE_TLS_MIN_VERSION`, `FORGEBASE_TLS_HSTS_MAX_AGE_SECS`, `FORGEBASE_TLS_HSTS_INCLUDE_SUBDOMAINS`, `FORGEBASE_TLS_REDIRECT_HTTP`, `FORGEBASE_TLS_HTTP_PORT` | Native TLS (§5, §7). |
+| `FORGEBASE_TLS_ACME_DOMAINS`, `FORGEBASE_TLS_ACME_EMAIL`, `FORGEBASE_TLS_ACME_DIRECTORY_URL`, `FORGEBASE_TLS_ACME_CHALLENGES`, `FORGEBASE_TLS_ACME_EAB_KID`, `FORGEBASE_TLS_ACME_CA_FILE` | ACME (§5); lists are comma-separated. |
+| `FORGEBASE_TLS_ACME_EAB_HMAC_KEY` | ACME external account binding key (a secret: environment or `.env`). |
 | `FORGEBASE_BILLING_ENABLED` | Mount the billing API. |
 | `FORGEBASE_STORAGE_ENABLED`, `FORGEBASE_FUNCTIONS_ENABLED`, `FORGEBASE_QUEUE_ENABLED`, `FORGEBASE_REALTIME_ENABLED`, `FORGEBASE_VECTOR_ENABLED`, `FORGEBASE_GRAPH_ENABLED`, `FORGEBASE_IDENTITY_ENABLED`, `FORGEBASE_ACCESS_ENABLED` | Switch a module on or off (default on; ADR-0026, [architecture.md §6](architecture.md#6-feature-flags)). |
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
@@ -376,6 +380,18 @@ See [database.md §5](database.md#5-backups-and-rollback).
 
 ## 5. TLS
 
+Two setups are supported; pick one per server (ADR-0033):
+
+- **Behind a reverse proxy** (the default, `[tls] mode = "off"`): the binary
+  serves plain HTTP and a proxy (nginx, Caddy, a cloud load balancer, a
+  Kubernetes ingress) terminates TLS. Read on below.
+- **Native TLS** (`[tls] mode = "files"` or `"acme"`): the binary serves
+  HTTPS itself, with your certificate files or with a certificate it gets and
+  renews from Let's Encrypt or another ACME authority. See
+  [Native TLS](#native-tls-certificate-files) further down.
+
+#### Behind a reverse proxy
+
 The binary serves plain HTTP. Terminate TLS in a reverse proxy (nginx, Caddy,
 a cloud load balancer) and forward to ForgeBase on loopback:
 
@@ -403,6 +419,127 @@ Prometheus scraping `127.0.0.1:8090`. A proxy that does not add any forwarding
 header would make every remote client look local: configure it to send
 `X-Forwarded-For`, or set `ops_access = "admin"`. A scraper elsewhere uses an
 admin service-account API key with the `system:read` scope as a bearer token.
+
+#### Native TLS: certificate files
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 443
+
+[tls]
+mode = "files"
+cert_file = "/etc/forgebase/tls/fullchain.pem"   # chain, leaf first
+key_file = "/etc/forgebase/tls/privkey.pem"      # PKCS#8, PKCS#1 or SEC1; RSA, ECDSA or Ed25519
+# reload_interval_secs = 30   # 0 = only on SIGHUP
+# min_version = "1.2"         # or "1.3"
+# hsts_max_age_secs = 31536000
+# redirect_http = true        # plain HTTP on http_port (80) redirects to HTTPS
+```
+
+```text
+internet ──TLS──► 0.0.0.0:443 (forgebase)
+internet ──HTTP─► 0.0.0.0:80  (forgebase: 308 to https://, when redirect_http = true)
+```
+
+- The files are read and checked before anything else starts. A missing
+  file, a file without a certificate, or a key that does not belong to the
+  certificate stops the server with an error naming both files
+  (`tls_key_mismatch`, `tls_file_unreadable`, ...). Make the key readable by
+  the server's user only.
+- **Renewing the files needs no restart.** The server compares the files'
+  contents every `reload_interval_secs` (default 30) and on `SIGHUP`
+  (`systemctl reload` with `ExecReload=/bin/kill -HUP $MAINPID`, or
+  `kill -HUP <pid>`), and serves the new pair from the next handshake on.
+  Open connections are not dropped. A changed pair that does not load (for
+  example the key written before the certificate) is logged and reported in
+  `/api/system/info` under `tls.last_error`; the old certificate stays until
+  a good pair is in place. This works with certbot's `--deploy-hook`, a
+  Kubernetes Secret mounted as files (cert-manager), or any tool that
+  rewrites the files.
+- ALPN offers HTTP/2 and HTTP/1.1. WebSockets (realtime) use HTTP/1.1.
+- HSTS (`hsts_max_age_secs`) is off by default. Turn it on once HTTPS works;
+  browsers then refuse plain HTTP for that long.
+
+#### Native TLS: ACME (Let's Encrypt)
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 443                  # the CA connects to port 443 (tls-alpn-01)
+public_url = "https://forgebase.example.com"
+
+[tls]
+mode = "acme"
+# redirect_http = true      # also redirect http:// to https://
+
+[tls.acme]
+domains = ["forgebase.example.com"]
+email = "ops@example.com"
+# directory_url = "letsencrypt-staging"   # try the staging CA first
+# challenges = ["tls-alpn-01", "http-01"]
+```
+
+- **Setting `mode = "acme"` accepts the certificate authority's terms of
+  service** (for Let's Encrypt, the Subscriber Agreement); the account is
+  created on the first start with `email` as its contact.
+- Every name in `domains` must resolve to this server. Wildcards are not
+  supported (they need the `dns-01` challenge); use files mode for them.
+- Challenges: `tls-alpn-01` (default) is answered on the HTTPS port, which
+  the CA reaches as port **443**. `http-01` is answered by a plain HTTP
+  listener on `[tls] http_port` (default 80), which the CA reaches as port
+  **80**; that listener also redirects other requests to HTTPS. Ports below
+  1024 need `CAP_NET_BIND_SERVICE` on Linux
+  (`AmbientCapabilities=CAP_NET_BIND_SERVICE` in the systemd unit) or a port
+  mapping (`-p 443:8443` with `port = 8443`, and `public_url` set so redirects
+  name the public port).
+- The first certificate is requested in the background: the server starts
+  at once, and HTTPS handshakes fail until it is issued (usually seconds;
+  watch the log or `tls` in `/api/system/info`). It is renewed at about two
+  thirds of its lifetime (day 54 to 60 for Let's Encrypt's 90 days). A
+  failed request is retried after 2 minutes, doubling up to 6 hours, while
+  the current certificate keeps being served.
+- Other authorities: `directory_url` takes any RFC 8555 directory (ZeroSSL,
+  Google Trust Services, your own step-ca). For one that needs external
+  account binding set `eab_kid` and the secret
+  `FORGEBASE_TLS_ACME_EAB_HMAC_KEY`. For a private authority whose own HTTPS
+  endpoint uses a private root, set `ca_file` to that root (PEM).
+- The account key and certificate are stored under `<data_dir>/tls/acme/`,
+  sealed with the data directory's master key (`<data_dir>/auth/master.key`;
+  a backup of the data directory carries both). `status.json` next to them
+  holds the expiry and last error for `forgebase doctor`.
+
+#### Redis protocol over TLS
+
+`[resp] tls = true` serves the RESP listener with the same certificate
+(`rediss://`; `redis-cli --tls`). It needs `[tls] mode = "files"` or
+`"acme"`. Renewals and reloads apply to it too.
+
+#### Several servers
+
+ACME runs on one server per domain: each server keeps its ACME state in its
+own data directory, and a CA's validation request may reach a server that
+did not ask for it. With more than one ForgeBase server behind a load
+balancer (Kubernetes replicas), either terminate TLS at the load balancer
+(`mode = "off"`), or use `mode = "files"` with a certificate the platform
+renews (cert-manager writing a Secret mounted into every pod): each server
+reloads it on its own. PostgreSQL replicas and shards (ADR-0029) are not
+affected: `forgebase node` serves no HTTP.
+
+#### Client addresses and operational endpoints with native TLS
+
+Clients connect directly, so the socket address is the client's: keep
+`[auth] trust_forwarded_for = false` (the server warns when it is on with
+native TLS; only a TLS pass-through or re-encrypting proxy that appends
+`X-Forwarded-For` justifies it). `ops_access = "loopback"` keeps its meaning:
+a Prometheus on the same host scraping `https://127.0.0.1:443/metrics`
+directly (with `tls_config.server_name` set to the certificate's domain) is
+admitted without credentials; everyone else needs an administrator's
+credentials.
+
+Check the certificate with `forgebase doctor` (a warning under 14 days, a
+failure when expired) or the `forgebase_tls_certificate_expiry_seconds`
+metric.
 
 ### 5.1 Metrics (`/metrics`)
 
@@ -438,6 +575,10 @@ Scrape every 15 s or so; each scrape refreshes the gauges below.
 | `forgebase_kv_keys`, `forgebase_kv_memory_bytes` | gauge | none |
 | `forgebase_queue_deliveries` | gauge | `state` = `ready`, `delayed`, `in_flight` (only when `[queue]` is enabled) |
 | `forgebase_queue_messages` | gauge | none (only when `[queue]` is enabled) |
+| `forgebase_tls_certificate_expiry_seconds` | gauge | none (only with native TLS; negative once expired) |
+| `forgebase_tls_renewals_total`, `forgebase_tls_renewal_failures_total` | counter | none (ACME mode) |
+| `forgebase_tls_reloads_total`, `forgebase_tls_reload_failures_total` | counter | none (files mode) |
+| `forgebase_tls_handshake_failures_total` | counter | `listener` = `https` or `resp` |
 
 Notes:
 
@@ -514,6 +655,21 @@ Keys in the TOML file, with defaults. Ranges are the accepted values.
 | `resp.max_connections` | `1024` | `1`–`1000000` |
 | `resp.max_bulk_bytes` | `16777216` | `1`–`536870912` |
 | `resp.idle_timeout_secs` | `300` | `0` = never. Subscribed connections are exempt. |
+| `resp.tls` | `false` | RESP over TLS with the `[tls]` certificate; needs `tls.mode` `files` or `acme`. |
+| `tls.mode` | `"off"` | `off` (plain HTTP behind a proxy), `files`, `acme` (§5). |
+| `tls.cert_file`, `tls.key_file` | `""` | Files mode: PEM chain and key; required with `files`. Relative paths resolve against the config file's directory. |
+| `tls.reload_interval_secs` | `30` | `0`–`86400`; `0` = reload on `SIGHUP` only. |
+| `tls.min_version` | `"1.2"` | `1.2`, `1.3`. |
+| `tls.hsts_max_age_secs` | `0` | `0` (no header)–`63072000`. |
+| `tls.hsts_include_subdomains` | `false` | |
+| `tls.redirect_http` | `false` | Plain HTTP listener that redirects to HTTPS (always on with `http-01`). |
+| `tls.http_port` | `80` | Port of that listener on `server.host`; must differ from `server.port`. |
+| `tls.acme.domains` | `[]` | DNS names, no wildcards; required with `acme`. |
+| `tls.acme.email` | `""` | Contact address for the CA. |
+| `tls.acme.directory_url` | Let's Encrypt production | `letsencrypt`, `letsencrypt-staging` or an `https://` RFC 8555 directory. |
+| `tls.acme.challenges` | `["tls-alpn-01"]` | `tls-alpn-01`, `http-01`, in order of preference. |
+| `tls.acme.eab_kid` | `""` | External account binding key id; the HMAC key is `FORGEBASE_TLS_ACME_EAB_HMAC_KEY`. |
+| `tls.acme.ca_file` | `""` | PEM root for a private CA's own HTTPS endpoint. |
 | `storage.driver` | `"local"` | `local`, `s3` |
 | `storage.max_object_bytes` | `5368709120` (5 GiB) | |
 | `storage.upload_ttl_secs` | `86400` | |

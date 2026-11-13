@@ -125,3 +125,41 @@ sends a printable but disallowed id.
   which runs against a real server on loopback but not the built binary.
 - Push subscriptions to external URLs, real payment providers, S3 and SMTP are
   not exercised (no outbound network on a clean machine).
+
+## 7. Native TLS and ACME (ADR-0033)
+
+The TLS tests run against a real server on loopback (`127.0.0.1:0`):
+
+```sh
+cargo test -p forgebase-server --test tls --test tls_renewal
+```
+
+`tls` (10 tests) covers HTTPS with a generated certificate, hot reload
+(contents check and `SIGHUP`), a mismatched key refusing to start, RESP over
+TLS, the redirect and `http-01` listener, the `tls-alpn-01` resolver and
+`doctor`. With `FORGEBASE_TEST_BACKEND=postgres` and an engine in
+`FORGEBASE_PG_ENGINE_DIR`, `files_mode_serves_https_on_postgres` repeats the
+HTTPS test on PostgreSQL (it skips otherwise). `tls_renewal` (4 tests) drives
+the ACME scheduler with a fake clock and a fake CA.
+
+ACME end to end runs against [Pebble](https://github.com/letsencrypt/pebble),
+Let's Encrypt's test CA, and `pebble-challtestsrv` as its DNS server (every
+test domain resolves to 127.0.0.1). The tests are `#[ignore]` and skip unless
+both variables are set:
+
+```sh
+go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.3
+go install github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.3
+FORGEBASE_TEST_PEBBLE_BIN="$(go env GOPATH)/bin" \
+FORGEBASE_TEST_PEBBLE_CERTS="$(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@v2.10.3/test/certs" \
+  cargo test -p forgebase-server --test tls_acme_pebble -- --ignored
+```
+
+`acme_end_to_end_against_pebble` obtains a certificate with `tls-alpn-01` and
+then with `http-01` (Pebble connects back to the server's HTTPS and plain
+listeners), verifies the served chain up to Pebble's root, and restarts the
+server to check the sealed certificate is served without asking the CA.
+`acme_with_external_account_binding_against_pebble` runs Pebble with external
+account binding required: refused (counted, retried, server running) without
+the key, issued with it. Last run: 2026-11-14, Pebble 2.10.3, both passed in
+about 6 s on the machine in §3.

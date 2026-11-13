@@ -29,6 +29,13 @@ Decisions behind these conventions: [ADR-0001 §6–7](adr/0001-architecture.md)
 Example: `GET /api/system/info` returns the instance information; `GET /health`
 is the probe a load balancer should use.
 
+`GET /api/system/info` also has a `tls` object (ADR-0033): `{"mode": "off"}`
+behind a proxy; with native TLS the mode, `min_version`, `alpn`, the served
+`certificate` (`subject`, `names`, `issuer`, `serial`, `not_before`,
+`not_after`, `expires_in_secs`), `last_error`, and per mode `cert_file`,
+`last_reload` (files) or `domains`, `directory_url`, `last_renewal`,
+`next_renewal`, `renewal_failures` (ACME).
+
 ## 2. Versioning
 
 Inside `/api/v1`, changes are additive only: new fields, new endpoints, new
