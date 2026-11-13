@@ -130,9 +130,9 @@ format = "pretty"
 # Optional Redis protocol (RESP2 and RESP3) listener for the built-in KV engine,
 # so redis-cli and Redis client libraries can connect. Off by default. Every
 # connection must AUTH with a ForgeBase API key or personal access token first
-# (`AUTH <token>` or `AUTH <user> <token>`). There is no TLS: keep it on
-# loopback or behind a tunnel/proxy. See docs/adr/0013-resp.md for the
-# compatibility matrix (this is not a full Redis).
+# (`AUTH <token>` or `AUTH <user> <token>`). Plain TCP unless `tls = true`
+# below: without TLS keep it on loopback or behind a tunnel/proxy. See
+# docs/adr/0013-resp.md for the compatibility matrix (this is not a full Redis).
 # Env: FORGEBASE_RESP_ENABLED   Flag: --resp
 enabled = false
 
@@ -153,6 +153,10 @@ max_bulk_bytes = 16777216
 # Close a connection idle this long, seconds (0 = never; subscribed
 # connections are exempt). Env: FORGEBASE_RESP_IDLE_TIMEOUT_SECS
 idle_timeout_secs = 300
+
+# Serve RESP over TLS with the [tls] certificate (ADR-0033); clients use
+# rediss://. Needs [tls] mode = "files" or "acme". Env: FORGEBASE_RESP_TLS
+tls = false
 
 [storage]
 # Object storage: /api/v1/storage and its blob reconciler.
@@ -266,3 +270,70 @@ enabled = true
 # (ADR-0008). Off, the API is gone but stored rules are still enforced.
 # Env: FORGEBASE_ACCESS_ENABLED
 enabled = true
+
+[tls]
+# Native HTTPS (ADR-0033, docs/deployment.md §5). "off" (default): plain HTTP;
+# a reverse proxy (nginx, Caddy, a load balancer) terminates TLS in front.
+# "files": HTTPS on [server] host:port with the PEM files below.
+# "acme": HTTPS with a certificate from an ACME CA ([tls.acme]), renewed at
+# about two thirds of its lifetime; account key and certificate are stored
+# sealed under <data_dir>/tls/.
+# Env: FORGEBASE_TLS_MODE
+mode = "off"
+
+# Files mode: certificate chain (leaf first) and its private key, PEM.
+# Relative paths resolve against the directory of this file. The server
+# refuses to start when the key does not match the certificate.
+# Env: FORGEBASE_TLS_CERT_FILE, FORGEBASE_TLS_KEY_FILE
+cert_file = ""
+key_file = ""
+
+# Files mode: check the files for changes every this many seconds and load
+# them without dropping connections (0 = only on SIGHUP; SIGHUP always works
+# on Unix). Range 0..=86400. Env: FORGEBASE_TLS_RELOAD_INTERVAL_SECS
+reload_interval_secs = 30
+
+# Oldest TLS version: "1.2" or "1.3". ALPN offers h2 and http/1.1.
+# Env: FORGEBASE_TLS_MIN_VERSION
+min_version = "1.2"
+
+# Strict-Transport-Security max-age in seconds (0 = no header). Set it once
+# HTTPS works, for example 31536000 (one year). Range 0..=63072000.
+# Env: FORGEBASE_TLS_HSTS_MAX_AGE_SECS, FORGEBASE_TLS_HSTS_INCLUDE_SUBDOMAINS
+hsts_max_age_secs = 0
+hsts_include_subdomains = false
+
+# A plain HTTP listener on [server] host and this port that redirects to
+# HTTPS (308). It always runs with the http-01 challenge, which it answers
+# under /.well-known/acme-challenge/. Ports below 1024 need
+# CAP_NET_BIND_SERVICE (Linux) or a port mapping (Docker).
+# Env: FORGEBASE_TLS_REDIRECT_HTTP, FORGEBASE_TLS_HTTP_PORT
+redirect_http = false
+http_port = 80
+
+[tls.acme]
+# Domain names on the certificate (no wildcards). Each must resolve to this
+# server. Env: FORGEBASE_TLS_ACME_DOMAINS (comma-separated)
+domains = []
+
+# Contact address for the CA (expiry notices). Env: FORGEBASE_TLS_ACME_EMAIL
+email = ""
+
+# ACME directory: Let's Encrypt production by default; "letsencrypt-staging"
+# for tests; any RFC 8555 CA (ZeroSSL, step-ca, ...).
+# Env: FORGEBASE_TLS_ACME_DIRECTORY_URL
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+
+# Challenges, in order of preference: "tls-alpn-01" (the CA connects to port
+# 443, which must reach [server] port) and/or "http-01" (port 80, which must
+# reach http_port). Env: FORGEBASE_TLS_ACME_CHALLENGES (comma-separated)
+challenges = ["tls-alpn-01"]
+
+# External account binding (ZeroSSL, Google Trust Services, some step-ca
+# setups). The HMAC key is a secret: set FORGEBASE_TLS_ACME_EAB_HMAC_KEY in
+# the environment or in .env. Env: FORGEBASE_TLS_ACME_EAB_KID
+eab_kid = ""
+
+# PEM root of a private CA's own HTTPS endpoint (step-ca, Pebble); "" = the
+# public roots only. Env: FORGEBASE_TLS_ACME_CA_FILE
+ca_file = ""
