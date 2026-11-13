@@ -186,7 +186,7 @@ impl Engine {
         }
 
         let endpoint = endpoint(layout, cfg)?;
-        process::clear_stale(&pgdata, cfg.stop_timeout).await?;
+        process::clear_stale(&pgdata, &engine.bin("pg_ctl"), cfg.stop_timeout).await?;
         // FB-153: TCP only when the operator set `listen`, and then always
         // with TLS; pg_hba.conf is rewritten every start.
         let tls = match cfg.listen {
@@ -488,7 +488,7 @@ async fn supervise(
                         set(EngineState::Stopped, None, restarts, Some(last));
                         return;
                     }
-                    if let Err(e) = process::clear_stale(&pgdata, ctx.stop_timeout).await {
+                    if let Err(e) = process::clear_stale(&pgdata, &ctx.engine.bin("pg_ctl"), ctx.stop_timeout).await {
                         last = e.to_string();
                         continue;
                     }

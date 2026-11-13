@@ -383,9 +383,54 @@ fn alive(pid: u32) -> Option<bool> {
 /// fast shutdown. A dead pid is left to PostgreSQL, which removes stale
 /// files itself. A live pid that never answers is refused, never deleted
 /// (deleting the file under a live postmaster can corrupt the cluster).
-pub(crate) async fn clear_stale(pgdata: &Path, timeout: Duration) -> Result<()> {
+///
+/// Windows has no signals to probe or stop a pid with (and the workspace
+/// forbids the `unsafe` a process handle needs), so it asks the engine's
+/// `pg_ctl`, which reads `postmaster.pid` itself: `pg_ctl status` exits 0
+/// while that postmaster runs, and `pg_ctl stop` shuts it down (fast, then
+/// immediate). Without this, a ForgeBase killed or crashed on Windows left a
+/// postmaster that made every later start fail with `lock file
+/// "postmaster.pid" already exists`.
+pub(crate) async fn clear_stale(pgdata: &Path, pg_ctl: &Path, timeout: Duration) -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        let Some(pf) = PidFile::read(pgdata) else {
+            return Ok(());
+        };
+        if pf.pid == std::process::id() || !pg_ctl_reports_running(pg_ctl, pgdata).await {
+            return Ok(());
+        }
+        tracing::warn!(
+            target: "forgebase::postgres",
+            pid = pf.pid,
+            "stopping a PostgreSQL left running by an earlier ForgeBase"
+        );
+        for (mode, wait) in [("fast", timeout), ("immediate", Duration::from_secs(10))] {
+            let _ = Command::new(pg_ctl)
+                .args(["stop", "-m", mode, "-w", "-t"])
+                .arg(wait.as_secs().max(1).to_string())
+                .arg("-D")
+                .arg(pgdata)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+            if !pg_ctl_reports_running(pg_ctl, pgdata).await {
+                return Ok(());
+            }
+        }
+        Err(EngineError::Cluster {
+            dir: pgdata.to_path_buf(),
+            reason: format!(
+                "the leftover postmaster {} did not stop; end postgres.exe (pid {}) and start again",
+                pf.pid, pf.pid
+            ),
+        })
+    }
     #[cfg(unix)]
     {
+        let _ = pg_ctl;
         let Some(pf) = PidFile::read(pgdata) else {
             return Ok(());
         };
@@ -437,11 +482,22 @@ pub(crate) async fn clear_stale(pgdata: &Path, timeout: Duration) -> Result<()> 
             reason: format!("the leftover postmaster {} did not stop", pf.pid),
         })
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (pgdata, timeout);
-        Ok(())
-    }
+}
+
+/// `pg_ctl status -D`: exit 0 while the postmaster named in `postmaster.pid`
+/// runs (3 when none does, 4 for an inaccessible directory).
+#[cfg(not(unix))]
+async fn pg_ctl_reports_running(pg_ctl: &Path, pgdata: &Path) -> bool {
+    Command::new(pg_ctl)
+        .arg("status")
+        .arg("-D")
+        .arg(pgdata)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
 }
 
 /// Waits until the postmaster we started reports `ready` in
@@ -578,7 +634,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         // A pid that cannot exist on any system.
         std::fs::write(dir.path().join("postmaster.pid"), "2147483646\n/d\n").expect("write");
-        clear_stale(dir.path(), Duration::from_millis(200))
+        clear_stale(dir.path(), Path::new("pg_ctl"), Duration::from_millis(200))
             .await
             .expect("dead pid");
         assert!(dir.path().join("postmaster.pid").exists());
@@ -595,7 +651,7 @@ mod tests {
             format!("{pid}\n/d\n1\n5432\n{}\n", dir.path().display()),
         )
         .expect("write");
-        let err = clear_stale(dir.path(), Duration::from_millis(300))
+        let err = clear_stale(dir.path(), Path::new("pg_ctl"), Duration::from_millis(300))
             .await
             .expect_err("refused");
         assert!(err.to_string().contains("does not answer"), "{err}");
