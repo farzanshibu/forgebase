@@ -39,6 +39,9 @@ pub enum QueueError {
     /// No such snapshot.
     #[error("snapshot {0:?} not found")]
     SnapshotNotFound(String),
+    /// No such push attempt of the subscription.
+    #[error("push attempt {0} not found")]
+    AttemptNotFound(i64),
     /// The name is taken.
     #[error("{kind} {name:?} already exists")]
     Exists {
@@ -58,6 +61,14 @@ pub enum QueueError {
     /// A message is larger than its topic allows.
     #[error("{0}")]
     TooLarge(String),
+    /// Too many calls of a rate-limited operation (test sends); HTTP 429.
+    #[error("{message}")]
+    RateLimited {
+        /// Explanation.
+        message: String,
+        /// Seconds until a call is accepted again.
+        retry_after_secs: u64,
+    },
     /// Stored data could not be decoded (corrupt row or bug).
     #[error("internal queue error: {0}")]
     Internal(String),
@@ -90,12 +101,14 @@ impl ErrorCode for QueueError {
             QueueError::TopicNotFound(_) => "topic_not_found",
             QueueError::SubscriptionNotFound(_) => "subscription_not_found",
             QueueError::SnapshotNotFound(_) => "snapshot_not_found",
+            QueueError::AttemptNotFound(_) => "attempt_not_found",
             QueueError::Exists { kind, .. } => match *kind {
                 "topic" => "topic_exists",
                 "subscription" => "subscription_exists",
                 _ => "snapshot_exists",
             },
             QueueError::TooLarge(_) => "message_too_large",
+            QueueError::RateLimited { .. } => "rate_limited",
             QueueError::Internal(_) => "internal_error",
         }
     }
@@ -106,11 +119,14 @@ impl ErrorCode for QueueError {
             QueueError::Db(e) => e.kind(),
             QueueError::Router(e) => e.kind(),
             QueueError::Entitlement(e) => e.kind(),
-            // The HTTP layer answers `413` for TooLarge.
-            QueueError::Invalid { .. } | QueueError::TooLarge(_) => ErrorKind::InvalidInput,
-            QueueError::TopicNotFound(_) | QueueError::SubscriptionNotFound(_) | QueueError::SnapshotNotFound(_) => {
-                ErrorKind::NotFound
+            // The HTTP layer answers `413` for TooLarge and `429` for RateLimited.
+            QueueError::Invalid { .. } | QueueError::TooLarge(_) | QueueError::RateLimited { .. } => {
+                ErrorKind::InvalidInput
             }
+            QueueError::TopicNotFound(_)
+            | QueueError::SubscriptionNotFound(_)
+            | QueueError::SnapshotNotFound(_)
+            | QueueError::AttemptNotFound(_) => ErrorKind::NotFound,
             QueueError::Exists { .. } | QueueError::Conflict { .. } => ErrorKind::Conflict,
             QueueError::Internal(_) => ErrorKind::Internal,
         }

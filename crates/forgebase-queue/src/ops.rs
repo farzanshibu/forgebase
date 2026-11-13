@@ -228,9 +228,12 @@ impl QueueService {
             .read_replica(
                 "queue.subscription_metrics",
                 &Statement::new(
-                    "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
-                 (SELECT COUNT(*) FROM _forgebase_queue_dead_letters WHERE subscription = ?3) AS dl \
-                 FROM _forgebase_queue_messages WHERE topic = ?1 AND seq > ?2",
+                    format!(
+                        "SELECT COUNT(*) AS n, coalesce(sum(bytes), 0) AS b, min(published_at) AS oldest, \
+                         (SELECT COUNT(*) FROM _forgebase_queue_dead_letters WHERE subscription = ?3) AS dl \
+                         FROM _forgebase_queue_messages WHERE topic = ?1 AND seq > ?2 AND {}",
+                        crate::service::for_sub("", 3)
+                    ),
                     vec![s.topic.as_str().into(), s.cursor_seq.into(), sub.into()],
                 ),
             )
@@ -241,6 +244,10 @@ impl QueueService {
             (a, b) => a.or(b),
         };
         let (last, per_sec) = self.rate("subscription", sub, "acked", now).await?;
+        let push = match &s.push {
+            Some(_) => Some(self.push_health(&s, now).await?),
+            None => None,
+        };
         Ok(SubscriptionMetrics {
             subscription: bare(&s.name).to_owned(),
             topic: bare(&s.topic).to_owned(),
@@ -258,6 +265,7 @@ impl QueueService {
             dead_letters: u.int("dl"),
             acked_last_minute: last,
             ack_rate_per_sec: per_sec,
+            push,
         })
     }
 
@@ -296,7 +304,8 @@ impl QueueService {
         let rows = self
             .read_replica("queue.dead_letters", &Statement::new(
                 "SELECT id, subscription, topic, message_id, data, attributes, ordering_key, published_at, attempts, \
-                 history, reason, dead_letter_topic, forwarded_message_id, at FROM _forgebase_queue_dead_letters \
+                 history, reason, dead_letter_topic, forwarded_message_id, at, redriven_at, redriven_by \
+                 FROM _forgebase_queue_dead_letters \
                  WHERE subscription = ?1 AND id < ?2 ORDER BY id DESC LIMIT ?3",
                 vec![
                     sub.into(),
@@ -322,6 +331,8 @@ impl QueueService {
                     dead_letter_topic: r.opt_text("dead_letter_topic").map(|d| bare(&d).to_owned()),
                     forwarded_message_id: r.opt_text("forwarded_message_id"),
                     at: iso(r.int("at")),
+                    redriven_at: r.opt_int("redriven_at").map(iso),
+                    redriven_by: r.opt_text("redriven_by"),
                 })
             })
             .collect::<Result<_>>()?;
@@ -346,6 +357,7 @@ impl QueueService {
             total.pruned += r.pruned;
             total.relayed += r.relayed;
             total.metered += r.metered;
+            total.expired_subscriptions += r.expired_subscriptions;
         }
         Ok(total)
     }
@@ -356,7 +368,26 @@ impl QueueService {
             ..MaintenanceReport::default()
         };
         let now = self.now();
-        let subs = self.all_subs().await?;
+        let mut subs = self.all_subs().await?;
+        // Subscriptions whose `ttl_ms` ran out (ADR-0031 §7).
+        let mut kept = Vec::with_capacity(subs.len());
+        for s in subs {
+            if s.expires_at.is_some_and(|e| e <= now) && self.expire_subscription(&s, now).await? {
+                report.expired_subscriptions += 1;
+            } else {
+                kept.push(s);
+            }
+        }
+        subs = kept;
+        for s in subs.iter().filter(|s| s.push.is_some()) {
+            // Endpoint health gauges survive restarts this way (ADR-0031 §5).
+            let name = s.name.clone();
+            metrics::gauge!(forgebase_observability::names::QUEUE_PUSH_PAUSED, "subscription" => name.clone())
+                .set(if s.paused_at.is_some() { 1.0 } else { 0.0 });
+            #[allow(clippy::cast_precision_loss)]
+            metrics::gauge!(forgebase_observability::names::QUEUE_PUSH_CONSECUTIVE_FAILURES, "subscription" => name)
+                .set(s.consecutive_failures as f64);
+        }
         for s in &subs {
             let eng = self.store().await?;
             let mut tx = self.begin().await?;
@@ -377,9 +408,9 @@ impl QueueService {
                 Err(e) => return Err(e),
             }
         }
-        report.pruned = self.enforce_retention(now).await?;
+        report.pruned = self.enforce_retention(now, &subs).await?;
         report.metered = self.meter_pending_here().await?;
-        if report.expired > 0 || report.relayed > 0 {
+        if report.expired > 0 || report.relayed > 0 || report.expired_subscriptions > 0 {
             self.notify();
         }
         Ok(report)
@@ -416,7 +447,7 @@ impl QueueService {
     /// Drops messages beyond each topic's retention (time, then size) with
     /// their deliveries, and prunes expired bookkeeping. Returns the number of
     /// messages dropped.
-    pub(crate) async fn enforce_retention(&self, now: i64) -> Result<u64> {
+    pub(crate) async fn enforce_retention(&self, now: i64, subs: &[SubRow]) -> Result<u64> {
         let topics = self.all_topics().await?;
         let dl_cutoff = now - self.inner.settings.dead_letter_retention_ms;
         let eng = self.store().await?;
@@ -476,6 +507,7 @@ impl QueueService {
                 vec![dl_cutoff.into()],
             ))
             .await?;
+            self.prune_push_state_tx(&mut *tx, subs, now).await?;
             Ok(pruned)
         }
         .await;

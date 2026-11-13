@@ -998,6 +998,11 @@ async fn open_queue(
         push_concurrency: usize::try_from(qc.push_concurrency).unwrap_or(8),
         allow_http_push: qc.allow_http_push,
         dead_letter_retention_ms: secs(qc.dead_letter_retention_days.saturating_mul(86_400)),
+        // ADR-0031: the push attempt log and test sends.
+        push_response_body_bytes: usize::try_from(qc.push_response_body_bytes).unwrap_or(4096),
+        push_attempts_per_subscription: i64::try_from(qc.push_attempts_per_subscription).unwrap_or(1000),
+        push_attempts_retention_ms: secs(qc.push_attempts_retention_secs),
+        push_test_sends_per_minute: u32::try_from(qc.push_test_sends_per_minute).unwrap_or(10),
         ..forgebase_queue::QueueSettings::default()
     };
     let tls = auth.tls_settings().map_err(|e| ServerError::Queue(e.to_string()))?;

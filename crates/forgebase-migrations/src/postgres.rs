@@ -141,6 +141,21 @@ pub static POSTGRES_MIGRATIONS: &[Migration] = &[
         include_str!("../../../migrations/postgres/0043_db_node_agents.sql"),
     ),
     Migration::new(
+        50,
+        "queue_push_attempts",
+        include_str!("../../../migrations/postgres/0050_queue_push_attempts.sql"),
+    ),
+    Migration::new(
+        51,
+        "queue_push_health",
+        include_str!("../../../migrations/postgres/0051_queue_push_health.sql"),
+    ),
+    Migration::new(
+        52,
+        "queue_redrive_catalog",
+        include_str!("../../../migrations/postgres/0052_queue_redrive_catalog.sql"),
+    ),
+    Migration::new(
         53,
         "billing_webhook_deliveries",
         include_str!("../../../migrations/postgres/0053_billing_webhook_deliveries.sql"),

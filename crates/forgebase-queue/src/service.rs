@@ -83,6 +83,8 @@ pub(crate) struct Inner {
     pub(crate) engines: Mutex<std::collections::HashMap<String, Arc<crate::pgmq::EngineSlot>>>,
     /// The database sets (FB-172); none: one database.
     pub(crate) router: OnceLock<DbRouter>,
+    /// Recent test sends per subscription (epoch ms), for their rate limit (ADR-0031 §2).
+    pub(crate) test_sends: Mutex<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
 }
 
 /// Reads through the read pool or inside a write transaction.
@@ -146,7 +148,7 @@ pub(crate) async fn bump_rate(
 
 pub(crate) const TOPIC_COLS: &str = "name, retention_ms, retention_bytes, max_message_bytes, dedup_window_ms, \
     message_schema, source_collection, source_ops, source_after_seq, labels, published_total, published_bytes, \
-    created_by, created_at, updated_at, tenant";
+    created_by, created_at, updated_at, tenant, description, example";
 
 /// A topic as stored.
 #[derive(Debug, Clone)]
@@ -163,6 +165,8 @@ pub(crate) struct TopicRow {
     pub(crate) source: Option<RecordSource>,
     pub(crate) source_after_seq: i64,
     labels: BTreeMap<String, String>,
+    pub(crate) description: Option<String>,
+    pub(crate) example: Option<Json>,
     published_total: i64,
     published_bytes: i64,
     created_by: String,
@@ -191,6 +195,8 @@ impl TopicRow {
             source,
             source_after_seq: r.int("source_after_seq"),
             labels: r.map("labels")?,
+            description: r.opt_text("description"),
+            example: r.opt_json("example")?,
             published_total: r.int("published_total"),
             published_bytes: r.int("published_bytes"),
             created_by: r.text("created_by"),
@@ -210,6 +216,8 @@ impl TopicRow {
             schema: self.schema.clone(),
             source: self.source.clone(),
             labels: self.labels.clone(),
+            description: self.description.clone(),
+            example: self.example.clone(),
             published_total: self.published_total,
             published_bytes: self.published_bytes,
             created_by: self.created_by.clone(),
@@ -232,7 +240,9 @@ pub(crate) async fn topic_row(db: &mut Db<'_>, name: &str) -> Result<Option<Topi
 pub(crate) const SUB_COLS: &str = "name, topic, filter, ack_deadline_ms, max_delivery_attempts, backoff_base_ms, \
     backoff_max_ms, dead_letter_topic, ordering, push_kind, push_endpoint, push_secret, cursor_seq, \
     delivered_total, acked_total, nacked_total, expired_total, dead_lettered_total, labels, created_by, \
-    created_at, updated_at, tenant, owner_context";
+    created_at, updated_at, tenant, owner_context, push_secret_previous, push_secret_previous_until, \
+    pause_after_failures, paused_at, paused_reason, consecutive_failures, last_success_at, last_failure_at, \
+    last_error, expires_at";
 
 /// A subscription as stored.
 #[derive(Debug, Clone)]
@@ -255,6 +265,19 @@ pub(crate) struct SubRow {
     pub(crate) ordering: bool,
     pub(crate) push: Option<PushConfig>,
     pub(crate) push_secret: Option<Vec<u8>>,
+    /// The secret a rotation replaced, and the end of its grace window (ADR-0031 §4).
+    pub(crate) push_secret_previous: Option<Vec<u8>>,
+    pub(crate) push_secret_previous_until: Option<i64>,
+    /// Circuit breaker and endpoint health (ADR-0031 §5).
+    pub(crate) pause_after_failures: Option<i64>,
+    pub(crate) paused_at: Option<i64>,
+    pub(crate) paused_reason: Option<String>,
+    pub(crate) consecutive_failures: i64,
+    pub(crate) last_success_at: Option<i64>,
+    pub(crate) last_failure_at: Option<i64>,
+    pub(crate) last_error: Option<String>,
+    /// Deleted by maintenance after this time.
+    pub(crate) expires_at: Option<i64>,
     pub(crate) cursor_seq: i64,
     pub(crate) delivered_total: i64,
     pub(crate) acked_total: i64,
@@ -297,6 +320,16 @@ impl SubRow {
             ordering: r.int("ordering") == 1,
             push,
             push_secret: r.blob("push_secret"),
+            push_secret_previous: r.blob("push_secret_previous"),
+            push_secret_previous_until: r.opt_int("push_secret_previous_until"),
+            pause_after_failures: r.opt_int("pause_after_failures"),
+            paused_at: r.opt_int("paused_at"),
+            paused_reason: r.opt_text("paused_reason"),
+            consecutive_failures: r.int("consecutive_failures"),
+            last_success_at: r.opt_int("last_success_at"),
+            last_failure_at: r.opt_int("last_failure_at"),
+            last_error: r.opt_text("last_error"),
+            expires_at: r.opt_int("expires_at"),
             cursor_seq: r.int("cursor_seq"),
             delivered_total: r.int("delivered_total"),
             acked_total: r.int("acked_total"),
@@ -324,6 +357,14 @@ impl SubRow {
             ordering: self.ordering,
             push: self.push.clone(),
             push_secret: None,
+            push_secret_previous_expires_at: self
+                .push_secret_previous_until
+                .filter(|_| self.push_secret_previous.is_some())
+                .map(iso),
+            pause_after_failures: self.pause_after_failures,
+            paused_at: self.paused_at.map(iso),
+            paused_reason: self.paused_reason.clone(),
+            expires_at: self.expires_at.map(iso),
             labels: self.labels.clone(),
             created_by: self.created_by.clone(),
             created_at: iso(self.created_at),
@@ -464,6 +505,18 @@ pub(crate) struct Prepared {
     pub(crate) history: Option<String>,
     /// The changed row of a record-change message ([`crate::access::source_row`]).
     pub(crate) source_row: Option<String>,
+}
+
+/// The condition "message `m` is for subscription `?n`": every published
+/// message, and the copies of redriven dead letters stored for that one
+/// subscription (ADR-0031 §3).
+pub(crate) fn for_sub(alias: &str, n: u8) -> String {
+    let col = if alias.is_empty() {
+        "only_subscription".to_owned()
+    } else {
+        format!("{alias}.only_subscription")
+    };
+    format!("({col} IS NULL OR {col} = CAST(?{n} AS TEXT))")
 }
 
 pub(crate) fn prepare(topic: &TopicRow, m: &NewMessage, system: bool) -> Result<Prepared> {
@@ -610,6 +663,7 @@ impl QueueService {
                 background: Mutex::new(None),
                 engines: Mutex::new(engines),
                 router: OnceLock::new(),
+                test_sends: Mutex::new(std::collections::HashMap::new()),
             }),
         }
     }
@@ -795,6 +849,11 @@ impl QueueService {
             None => None,
             Some(sch) => Some(check_topic_schema(sch)?),
         };
+        let description = check_description(new.description.as_deref())?;
+        let example_text = match &new.example {
+            None => None,
+            Some(ex) => Some(check_example(ex, new.schema.as_ref())?),
+        };
         let (source_collection, source_ops) = match &new.source {
             None => (None, None),
             Some(src) => {
@@ -852,8 +911,8 @@ impl QueueService {
             tx.execute(&Statement::new(
                 "INSERT INTO _forgebase_queue_topics (name, retention_ms, retention_bytes, max_message_bytes, \
                  dedup_window_ms, message_schema, source_collection, source_ops, source_after_seq, labels, \
-                 created_by, created_at, updated_at, tenant) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
+                 created_by, created_at, updated_at, tenant, description, example) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15)",
                 vec![
                     key.as_str().into(),
                     retention.into(),
@@ -868,6 +927,8 @@ impl QueueService {
                     ctx.actor().into(),
                     now.into(),
                     tenant.clone().into(),
+                    description.clone().into(),
+                    example_text.clone().into(),
                 ],
             ))
             .await?;
@@ -1018,11 +1079,39 @@ impl QueueService {
             check_labels(labels)?;
             set("labels", serde_json::to_string(labels).unwrap_or_default().into());
         }
+        if let Some(d) = &patch.description {
+            set("description", check_description(Some(d))?.into());
+        }
+        if patch.clear_example {
+            set("example", Value::Null);
+        } else if let Some(ex) = &patch.example {
+            if ex.to_string().len() > crate::model::MAX_EXAMPLE_BYTES {
+                return Err(QueueError::invalid(
+                    "invalid_example",
+                    format!("the example is larger than {} bytes", crate::model::MAX_EXAMPLE_BYTES),
+                ));
+            }
+            set("example", ex.to_string().into());
+        }
         let now = self.now();
         set("updated_at", now.into());
         let mut tx = self.begin().await?;
         let r: Result<_> = async {
             let t = resolve_topic(&mut Db::Tx(&mut *tx), ctx.tenant.as_deref(), name).await?;
+            // The example must satisfy the schema the topic has afterwards.
+            let schema_after = if patch.clear_schema {
+                None
+            } else {
+                patch.schema.as_ref().or(t.schema.as_ref())
+            };
+            let example_after = if patch.clear_example {
+                None
+            } else {
+                patch.example.as_ref().or(t.example.as_ref())
+            };
+            if let Some(ex) = example_after {
+                check_example(ex, schema_after)?;
+            }
             let mut params = params;
             params[0] = t.name.as_str().into();
             if t.source.is_some() && patch.schema.is_some() {
@@ -1425,7 +1514,7 @@ impl QueueService {
                 &Statement::new(
                     format!(
                         "SELECT {MESSAGE_COLS} FROM _forgebase_queue_messages m WHERE m.topic = ?1 AND m.seq > ?2 \
-                         ORDER BY m.seq LIMIT ?3"
+                         AND m.only_subscription IS NULL ORDER BY m.seq LIMIT ?3"
                     ),
                     vec![t.name.as_str().into(), after.into(), (limit + 1).into()],
                 ),
@@ -1486,7 +1575,7 @@ impl QueueService {
     }
 
     /// A fresh webhook signing secret, plain and sealed for storage.
-    fn new_secret(&self, sub: &str) -> Result<(String, Vec<u8>)> {
+    pub(crate) fn new_secret(&self, sub: &str) -> Result<(String, Vec<u8>)> {
         let plain = forgebase_auth::crypto::random_token(32).map_err(|e| QueueError::Internal(e.to_string()))?;
         let sealed = self
             .inner
@@ -1593,6 +1682,21 @@ impl QueueService {
             Some(StartPosition::Time(t)) => Some(parse_time("start.time", t)?),
             _ => None,
         };
+        let pause_after = new
+            .pause_after_failures
+            .map(|n| in_range("pause_after_failures", n, 1, crate::model::MAX_PAUSE_AFTER_FAILURES))
+            .transpose()?;
+        let ttl = new
+            .ttl_ms
+            .map(|t| {
+                in_range(
+                    "ttl_ms",
+                    t,
+                    crate::model::MIN_SUBSCRIPTION_TTL_MS,
+                    crate::model::MAX_SUBSCRIPTION_TTL_MS,
+                )
+            })
+            .transpose()?;
         let tenant = ctx.tenant.clone();
         let key = stored(tenant.as_deref(), &new.name);
         let secret = match &new.push {
@@ -1644,8 +1748,8 @@ impl QueueService {
                 "INSERT INTO _forgebase_queue_subscriptions (name, topic, filter, ack_deadline_ms, \
                  max_delivery_attempts, backoff_base_ms, backoff_max_ms, dead_letter_topic, ordering, push_kind, \
                  push_endpoint, push_secret, cursor_seq, labels, created_by, created_at, updated_at, tenant, \
-                 owner_context) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16, ?17, ?18)",
+                 owner_context, pause_after_failures, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16, ?17, ?18, ?19, ?20)",
                 vec![
                     key.as_str().into(),
                     topic.name.as_str().into(),
@@ -1665,6 +1769,8 @@ impl QueueService {
                     now.into(),
                     tenant.clone().into(),
                     owner.as_str().into(),
+                    pause_after.into(),
+                    ttl.map(|t| now + t).into(),
                 ],
             ))
             .await?;
@@ -1889,10 +1995,17 @@ impl QueueService {
             set("push_kind", Value::Null);
             set("push_endpoint", Value::Null);
             set("push_secret", Value::Null);
+            set("push_secret_previous", Value::Null);
+            set("push_secret_previous_until", Value::Null);
+            set("paused_at", Value::Null);
+            set("paused_reason", Value::Null);
         } else if let Some(p) = &patch.push {
             self.check_push(p)?;
             set("push_kind", p.kind.as_str().into());
             set("push_endpoint", p.endpoint.as_str().into());
+            // A new endpoint is a new receiver: no old secret signs for it.
+            set("push_secret_previous", Value::Null);
+            set("push_secret_previous_until", Value::Null);
             if p.kind == PushKind::Webhook {
                 let (plain, sealed) = self.new_secret(name)?;
                 set("push_secret", Value::Blob(sealed));
@@ -1900,6 +2013,35 @@ impl QueueService {
             } else {
                 set("push_secret", Value::Null);
             }
+        }
+        if let Some(n) = patch.pause_after_failures {
+            let v = if n == 0 {
+                None
+            } else {
+                Some(in_range(
+                    "pause_after_failures",
+                    n,
+                    1,
+                    crate::model::MAX_PAUSE_AFTER_FAILURES,
+                )?)
+            };
+            set("pause_after_failures", v.into());
+        }
+        if let Some(t) = patch.ttl_ms {
+            let v = if t == 0 {
+                None
+            } else {
+                Some(
+                    self.now()
+                        + in_range(
+                            "ttl_ms",
+                            t,
+                            crate::model::MIN_SUBSCRIPTION_TTL_MS,
+                            crate::model::MAX_SUBSCRIPTION_TTL_MS,
+                        )?,
+                )
+            };
+            set("expires_at", v.into());
         }
         if let Some(labels) = &patch.labels {
             check_labels(labels)?;
@@ -2009,6 +2151,42 @@ fn check_topic_schema(s: &Json) -> Result<String> {
         ));
     }
     schema::check_schema(s).map_err(|e| QueueError::invalid("invalid_schema", e))?;
+    Ok(text)
+}
+
+fn check_description(d: Option<&str>) -> Result<Option<String>> {
+    let Some(d) = d.map(str::trim).filter(|d| !d.is_empty()) else {
+        return Ok(None);
+    };
+    if d.chars().count() > crate::model::MAX_DESCRIPTION {
+        return Err(QueueError::invalid(
+            "invalid_description",
+            format!(
+                "the description is longer than {} characters",
+                crate::model::MAX_DESCRIPTION
+            ),
+        ));
+    }
+    Ok(Some(d.to_owned()))
+}
+
+/// Checks a topic example (size, and the schema when one is set); returns its text.
+fn check_example(ex: &Json, schema: Option<&Json>) -> Result<String> {
+    let text = ex.to_string();
+    if text.len() > crate::model::MAX_EXAMPLE_BYTES {
+        return Err(QueueError::invalid(
+            "invalid_example",
+            format!("the example is larger than {} bytes", crate::model::MAX_EXAMPLE_BYTES),
+        ));
+    }
+    if let Some(s) = schema {
+        schema::validate(s, ex).map_err(|e| {
+            QueueError::invalid(
+                "invalid_example",
+                format!("the example does not satisfy the schema: {e}"),
+            )
+        })?;
+    }
     Ok(text)
 }
 

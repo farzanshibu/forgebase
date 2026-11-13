@@ -152,6 +152,9 @@ and run against a live server; the others are crate tests.
 | SSRF through a push webhook URL | `https://` only (unless `allow_http_push`), no credentials in URLs, literal blocked addresses refused at creation; names resolved and vetted at **delivery** by the functions fetcher | `security_bypass::outbound_clients_never_reach_internal_addresses` |
 | Forged deliveries to the subscriber | Each delivery is HMAC-signed with the subscription's secret | `forgebase-queue` tests |
 | Reading another tenant's messages | `engine:queue_*` permissions through the policy engine | `forgebase-queue` tests |
+| Leaked or rotated webhook secret (ADR-0031) | Rotation with a grace window signs with both secrets (`t=…,v1=<new>,v1=<old>`; receivers accept any matching `v1`), then only the new one; `expire-previous` ends it at once; both stay sealed with the keyring; rotations are audited | `webhooks::rotation_signs_with_both_secrets_during_the_grace_window_only` |
+| Secrets or cookies kept in the push attempt log | Signatures are masked; only allowlisted response headers are stored (no `set-cookie`); bodies are cut to `push_response_body_bytes` | `webhooks::attempts_record_status_latency_headers_and_a_truncated_body` |
+| Test sends or redrives used to flood an endpoint | Test sends limited per subscription and minute (`429`); both need `engine:queue_admin`; a dead letter is redriven once | `webhooks::a_test_send_is_signed_and_leaves_no_trace`, `webhooks::redrive_one_then_all_delivers_again_once_even_concurrently` |
 
 ### 4.8 Jobs (`forgebase-jobs`, ADR-0007, 0023)
 

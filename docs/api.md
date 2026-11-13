@@ -202,6 +202,36 @@ Permissions are the policy keys `engine:queue_read`, `engine:queue_publish`,
 endpoint through the same outbound address guard as functions `fetch`
 ([security.md](security.md)).
 
+#### Webhook delivery tooling
+
+Debugging and operating push subscriptions ([ADR-0031](adr/0031-webhook-tooling.md)).
+Reads need `engine:queue_read`, everything else `engine:queue_admin`, on the
+subscription (its creator holds both). Bodies marked optional may be empty.
+
+| Route | Purpose |
+|---|---|
+| `GET .../attempts` | Push attempts, newest first: deliveries and test sends with `status`, `latency_ms`, `error_class` (`timeout`, `dns`, `connect`, `tls`, `ssrf_refused`, `http_status`, `redirect`, `protocol`, `invalid_request`, `config`, `function`), the request headers sent (signature masked), allowlisted response headers and the response body cut to `[queue] push_response_body_bytes` (`response_truncated`, `response_bytes`). Filters `outcome`, `message_id`, `since`, `until`, `test`; paging `before` / `next_before`, `limit`. |
+| `GET .../attempts/{id}` | One attempt (`404 attempt_not_found`). |
+| `POST .../test` | Optional `{"data": <json>}`. Sends a synthetic signed event now (`"type": "forgebase.test"` in the usual `{subscription, delivery_attempt, message}` envelope, header `X-Forgebase-Test: 1`) and returns the attempt. Not a message: cursors, totals, health and dead letters are untouched. `[queue] push_test_sends_per_minute` per subscription (`429 rate_limited`); pull subscriptions answer `409 not_push_subscription`. |
+| `POST .../redrive` | `{"ids": [..]}` or `{"all": true, "since": "<RFC 3339>", "filter": {...}, "limit": n}`. Delivers dead letters to the subscription again with a fresh attempt counter. Each record is redriven once (`redriven_at`, `redriven_by` on the dead letter), also under concurrent calls; the result lists `redriven`, `already_redriven`, `not_found` and `remaining`. Audited (`queue.dead_letters.redrive`). |
+| `POST .../retry` | Optional `{"message_ids": [..]}`. Deliveries waiting for a retry backoff become ready now. |
+| `POST .../secret/rotate` | Optional `{"grace_ms": n}` (default 24 h, at most 7 days). Returns the new `push_secret` once. During the grace window `X-Forgebase-Signature` carries both signatures, new first: `t=<ts>,v1=<new>,v1=<old>`; afterwards only the new one. Receivers must accept the request when **any** `v1` matches. `409 not_webhook_subscription` for functions. |
+| `POST .../secret/expire-previous` | Ends the grace window now. |
+| `POST .../pause`, `POST .../resume` | Optional `{"reason": ".."}` on pause. A paused push subscription keeps accumulating messages (none is dead-lettered while paused); resume makes every delayed delivery ready and delivers the backlog in order. `pause_after_failures` on a subscription (1-1000, `0` in a change turns it off) pauses it automatically after that many consecutive failed attempts (`paused_reason` starts with `auto:`). |
+| `GET /queues/catalog` | Every topic the caller may read with `description`, `data_schema`, `example` and `example_source` (`topic`, `schema`, `none`); record-source topics list their `event_types` (`record.created`, `record.updated`, `record.deleted`) with the subscription `filter` that selects each, the change message schema (the collection's fields, when the caller may read its schema) and an example. Topics take `description` and `example` (checked against the schema) on create and change. |
+
+`GET .../metrics` of a push subscription adds `push`: success rate and p50/p95/p99
+latency of the last hour (newest 1000 attempts, test sends excluded),
+`consecutive_failures`, `last_success_at`, `last_failure_at`, `last_error` and the
+pause state. Prometheus: `forgebase_queue_push_attempts_total{subscription,outcome}`,
+`forgebase_queue_push_latency_seconds`, `forgebase_queue_push_consecutive_failures`,
+`forgebase_queue_push_paused`, `forgebase_queue_push_auto_paused_total`,
+`forgebase_queue_push_last_success_timestamp_seconds` and
+`forgebase_queue_redriven_total`. A subscription created or changed with
+`ttl_ms` (60 s to 31 days) is deleted when it runs out; `forgebase queues listen
+<topic> --forward-to http://localhost:3000/hook` uses one to forward a topic to a
+local endpoint, signed with a session secret.
+
 ### 11.2 Backups (`/api/v1/system/backups`)
 
 Snapshots of the database and storage over HTTP (FB-83). Administrators only.

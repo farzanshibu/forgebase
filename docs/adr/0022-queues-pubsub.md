@@ -7,6 +7,9 @@
 - Builds on: ADR-0001 (one writer, error model), ADR-0003 (`Authorizer`), ADR-0007 (jobs: leases,
   backoff), ADR-0010 (quotas), ADR-0011 (realtime outbox), ADR-0015 (outbound HTTPS),
   ADR-0017 (functions, SSRF-safe fetch).
+- Extended by: [ADR-0031](0031-webhook-tooling.md) (push attempt log, test send, dead-letter
+  redrive, secret rotation with two signatures, endpoint health and auto-pause, event catalog,
+  subscription `ttl_ms`; 10 more operations).
 
 ## Context
 
