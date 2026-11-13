@@ -116,9 +116,11 @@ pub fn verify(secret: &str, header: &str, body: &[u8], now_secs: i64, tolerance_
     }
     let expected = hmac_hex(secret, ts, body);
     // Compare every candidate (no early exit).
-    sigs.iter().fold(false, |ok, s| {
-        forgebase_auth::crypto::ct_eq(expected.as_bytes(), s.as_bytes()) || ok
-    })
+    let mut ok = false;
+    for s in &sigs {
+        ok |= forgebase_auth::crypto::ct_eq(expected.as_bytes(), s.as_bytes());
+    }
+    ok
 }
 
 /// The header as recorded in the attempt log: the timestamp kept, every

@@ -286,31 +286,74 @@ impl QueueService {
         let r: Result<_> = async {
             let s = sub_row(&mut Db::Tx(&mut *tx), &found.name).await?;
             let cols = "id, message_id, data, attributes, ordering_key, redriven_at, at";
-            let rows = if req.all {
-                tx.fetch_all(&Statement::new(
-                    format!(
-                        "SELECT {cols} FROM _forgebase_queue_dead_letters WHERE subscription = ?1 \
-                         AND redriven_at IS NULL AND at >= ?2 ORDER BY id"
-                    ),
-                    vec![s.name.as_str().into(), since.unwrap_or(i64::MIN).into()],
-                ))
-                .await?
+            let take = usize::try_from(limit).unwrap_or(max);
+            let mut remaining = 0_i64;
+            // `all`: pick the ids first (only they and the attributes are read
+            // for a filter), then load at most `limit` records.
+            let ids: Vec<i64> = if !req.all {
+                req.ids.clone()
+            } else if let Some(f) = &filter {
+                let rows = tx
+                    .fetch_all(&Statement::new(
+                        "SELECT id, attributes FROM _forgebase_queue_dead_letters WHERE subscription = ?1 \
+                         AND redriven_at IS NULL AND at >= ?2 ORDER BY id",
+                        vec![s.name.as_str().into(), since.unwrap_or(i64::MIN).into()],
+                    ))
+                    .await?;
+                let matching: Vec<i64> = Row::all(&rows)
+                    .filter(|r| {
+                        let attrs: std::collections::BTreeMap<String, String> =
+                            serde_json::from_str(&r.text("attributes")).unwrap_or_default();
+                        f.matches(&attrs)
+                    })
+                    .map(|r| r.int("id"))
+                    .collect();
+                remaining = i64::try_from(matching.len().saturating_sub(take)).unwrap_or(i64::MAX);
+                matching.into_iter().take(take).collect()
+            } else {
+                let rows = tx
+                    .fetch_all(&Statement::new(
+                        "SELECT id FROM _forgebase_queue_dead_letters WHERE subscription = ?1 \
+                         AND redriven_at IS NULL AND at >= ?2 ORDER BY id LIMIT ?3",
+                        vec![
+                            s.name.as_str().into(),
+                            since.unwrap_or(i64::MIN).into(),
+                            (limit + 1).into(),
+                        ],
+                    ))
+                    .await?;
+                let mut picked: Vec<i64> = Row::all(&rows).map(|r| r.int("id")).collect();
+                if picked.len() > take {
+                    picked.truncate(take);
+                    let total = crate::row::scalar(
+                        &tx.fetch_all(&Statement::new(
+                            "SELECT COUNT(*) FROM _forgebase_queue_dead_letters WHERE subscription = ?1 \
+                             AND redriven_at IS NULL AND at >= ?2",
+                            vec![s.name.as_str().into(), since.unwrap_or(i64::MIN).into()],
+                        ))
+                        .await?,
+                    );
+                    remaining = (total - limit).max(0);
+                }
+                picked
+            };
+            let rows = if ids.is_empty() {
+                forgebase_db::Rows::default()
             } else {
                 let mut params: Vec<Value> = vec![s.name.as_str().into()];
-                params.extend(req.ids.iter().map(|i| Value::from(*i)));
+                params.extend(ids.iter().map(|i| Value::from(*i)));
                 tx.fetch_all(&Statement::new(
                     format!(
                         "SELECT {cols} FROM _forgebase_queue_dead_letters WHERE subscription = ?1 \
                          AND id IN ({}) ORDER BY id",
-                        marks(2, req.ids.len())
+                        marks(2, ids.len())
                     ),
                     params,
                 ))
                 .await?
             };
-            let mut dead: Vec<DeadRow> = Vec::new();
-            for r in Row::all(&rows) {
-                let row = DeadRow {
+            let dead: Vec<DeadRow> = Row::all(&rows)
+                .map(|r| DeadRow {
                     id: r.int("id"),
                     message_id: r.text("message_id"),
                     data: r.text("data"),
@@ -318,27 +361,17 @@ impl QueueService {
                     ordering_key: r.opt_text("ordering_key"),
                     redriven: r.opt_int("redriven_at").is_some(),
                     at: r.int("at"),
-                };
-                if let Some(f) = &filter {
-                    let attrs: std::collections::BTreeMap<String, String> =
-                        serde_json::from_str(&row.attributes).unwrap_or_default();
-                    if !f.matches(&attrs) {
-                        continue;
-                    }
-                }
-                dead.push(row);
-            }
-            let mut out = RedriveResult::default();
+                })
+                .collect();
+            let mut out = RedriveResult {
+                remaining,
+                ..RedriveResult::default()
+            };
             if !req.all {
                 let seen: std::collections::BTreeSet<i64> = dead.iter().map(|d| d.id).collect();
                 out.not_found = req.ids.iter().copied().filter(|i| !seen.contains(i)).collect();
                 out.not_found.sort_unstable();
                 out.not_found.dedup();
-            }
-            let take = usize::try_from(limit).unwrap_or(max);
-            if req.all && dead.len() > take {
-                out.remaining = i64::try_from(dead.len() - take).unwrap_or(i64::MAX);
-                dead.truncate(take);
             }
             for d in &dead {
                 if d.redriven {

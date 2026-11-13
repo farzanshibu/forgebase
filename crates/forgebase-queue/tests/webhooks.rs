@@ -718,48 +718,45 @@ async fn redrive_all_filters_by_time_and_attributes() {
     h.publish("t", json!(3)).await;
     h.svc.deliver_push().await.unwrap();
     assert_eq!(dead_letter_ids(&h, "hook").await.len(), 3);
-    let out = h
-        .svc
-        .redrive(
-            &admin(),
-            "hook",
-            RedriveRequest {
-                all: true,
-                filter: Some(json!({"kind": "b"})),
-                ..RedriveRequest::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(out.redriven.len(), 1);
-    let out = h
-        .svc
-        .redrive(
-            &admin(),
-            "hook",
-            RedriveRequest {
-                all: true,
-                since: Some(cut),
-                ..RedriveRequest::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(out.redriven.len(), 1);
-    let out = h
-        .svc
-        .redrive(
-            &admin(),
-            "hook",
-            RedriveRequest {
-                all: true,
-                limit: Some(1),
-                ..RedriveRequest::default()
-            },
-        )
-        .await
-        .unwrap();
+    let redrive = |req: RedriveRequest| {
+        let svc = h.svc.clone();
+        async move { svc.redrive(&admin(), "hook", req).await.unwrap() }
+    };
+    // Oldest first, `limit` at a time.
+    let out = redrive(RedriveRequest {
+        all: true,
+        limit: Some(1),
+        ..RedriveRequest::default()
+    })
+    .await;
+    assert_eq!((out.redriven.len(), out.remaining), (1, 2));
+    let out = redrive(RedriveRequest {
+        all: true,
+        filter: Some(json!({"kind": "a"})),
+        ..RedriveRequest::default()
+    })
+    .await;
+    assert!(out.redriven.is_empty(), "the oldest (kind a) went first: {out:?}");
+    let out = redrive(RedriveRequest {
+        all: true,
+        filter: Some(json!({"kind": "b"})),
+        ..RedriveRequest::default()
+    })
+    .await;
     assert_eq!((out.redriven.len(), out.remaining), (1, 0));
+    let out = redrive(RedriveRequest {
+        all: true,
+        since: Some(cut),
+        ..RedriveRequest::default()
+    })
+    .await;
+    assert_eq!((out.redriven.len(), out.remaining), (1, 0));
+    let out = redrive(RedriveRequest {
+        all: true,
+        ..RedriveRequest::default()
+    })
+    .await;
+    assert!(out.redriven.is_empty() && out.remaining == 0);
     r.set_status(204);
     while h.svc.deliver_push().await.unwrap() > 0 {}
     let data: BTreeSet<i64> = r
