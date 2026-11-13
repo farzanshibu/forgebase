@@ -1,0 +1,25 @@
+name: forgebase
+description: >-
+  Dart and Flutter SDK for ForgeBase: auth, records, realtime, storage, KV,
+  functions, queues, jobs, entitlements and billing. Pure Dart: runs on
+  iOS, Android, web, desktop and the server.
+version: 0.1.0
+repository: https://github.com/farzanshibu/forgebase/tree/main/sdk/dart
+issue_tracker: https://github.com/farzanshibu/forgebase/issues
+topics:
+  - backend
+  - baas
+  - realtime
+  - storage
+
+environment:
+  sdk: ^3.3.0
+
+dependencies:
+  crypto: ^3.0.3
+  http: ^1.2.0
+  web_socket_channel: ^3.0.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0
