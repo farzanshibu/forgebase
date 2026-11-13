@@ -8,7 +8,7 @@ functions and billing. SQLite is the optional one-file alternative.
 
 - `forgebase` binary: `init`, `serve`, `migrate`, `status`, `doctor`, `backup`,
   `restore`, `export`, `import`, `version`, `admin`, `functions`, `queues`,
-  `jobs`, `db`, `node`.
+  `jobs`, `db`, `node`, `project`, `deploy`, `new`.
 - PostgreSQL 18 as the default database: the engine is embedded in the
   standard release, runs as a child of `forgebase serve` and listens on a Unix
   socket only (TCP is off; Windows, which has no socket, uses loopback TCP).
@@ -26,6 +26,9 @@ functions and billing. SQLite is the optional one-file alternative.
 - Redis protocol listener (off by default), TOML config and `FORGEBASE_*`
   environment variables, `.env` for development.
 - JavaScript SDK in [`sdk/js`](sdk/js).
+- Project as code in the CLI: `forgebase new`, `forgebase project pull|plan|apply|drift`
+  and `forgebase deploy` keep collections, functions, queues, buckets and rules as files
+  next to your app and apply them from CI ([docs/project-as-code.md](docs/project-as-code.md)).
 - Terraform provider in [`integrations/terraform-provider-forgebase`](integrations/terraform-provider-forgebase): collections, storage, queues, functions, identity and plans as code.
 - Kotlin SDK for Android and the JVM in [`sdk/kotlin`](sdk/kotlin).
 - Swift SDK for iOS, macOS, tvOS, watchOS and visionOS in [`sdk/swift`](sdk/swift).
@@ -120,6 +123,9 @@ Commands:
   jobs       Follow long-running jobs on a running server
   db         The database engine: status, and psql on the bundled PostgreSQL
   node       Run this host's PostgreSQL as a managed replica of a ForgeBase server (engine only: no API, no services)
+  project    The server's configuration as code: pull, plan, apply, drift (ADR-0037)
+  deploy     Build functions and apply the project directory to a server (plan + apply)
+  new        Create an app project: the project-as-code layout, samples, seed data, a CI workflow
   help       Print this message or the help of the given subcommand(s)
 
 Options:

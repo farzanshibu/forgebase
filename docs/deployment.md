@@ -271,6 +271,7 @@ stops startup with an error.
 | `FORGEBASE_STORAGE_ENABLED`, `FORGEBASE_FUNCTIONS_ENABLED`, `FORGEBASE_QUEUE_ENABLED`, `FORGEBASE_REALTIME_ENABLED`, `FORGEBASE_VECTOR_ENABLED`, `FORGEBASE_GRAPH_ENABLED`, `FORGEBASE_IDENTITY_ENABLED`, `FORGEBASE_ACCESS_ENABLED` | Switch a module on or off (default on; ADR-0026, [architecture.md §6](architecture.md#6-feature-flags)). |
 | `FORGEBASE_REALTIME_MAX_CONNECTIONS_PER_PRINCIPAL` | Most realtime connections one user or key may hold (default 32). |
 | `FORGEBASE_STORAGE_S3_ACCESS_KEY`, `FORGEBASE_STORAGE_S3_SECRET_KEY`, `FORGEBASE_STORAGE_S3_SESSION_TOKEN` | S3 credentials, read from the environment only (the storage driver reads them; the config loader only notes that they are set). |
+| `FORGEBASE_URL`, `FORGEBASE_TOKEN`, `FORGEBASE_ADMIN_EMAIL`, `FORGEBASE_ADMIN_PASSWORD`, `FORGEBASE_CA_FILE` | Server and credential of `forgebase project` / `forgebase deploy` ([project-as-code.md](project-as-code.md)) and of the Terraform provider. Not configuration; ignored by the config loader. |
 
 `FORGEBASE_TEST_*` variables (`FORGEBASE_TEST_BACKEND`, `FORGEBASE_TEST_REDIS_URL`,
 `FORGEBASE_TEST_PG_*`) belong to the test suite; the parser ignores them. Do not
@@ -712,3 +713,14 @@ Notes for operators:
   realm roles also need an administrator principal.
 - Applies are not transactional across resources. After a failed apply, rerun it: every resource
   reads its real state first.
+
+## 11. Project as code (`forgebase project`, `forgebase deploy`)
+
+Without Terraform, the `forgebase` binary itself keeps an app's server
+configuration in a versioned directory and applies it through the same REST
+API: `forgebase new` scaffolds an app with a CI workflow, `forgebase project
+plan` exits 2 when the server differs from the files, `forgebase deploy` builds
+functions and applies, `forgebase project drift` reports changes made outside
+the project. It needs only `FORGEBASE_URL` (`http://` or `https://`) and
+`FORGEBASE_TOKEN`; see [project-as-code.md](project-as-code.md) and
+[ADR-0037](adr/0037-project-as-code.md).
