@@ -12,6 +12,7 @@ does not repeat it.
 | JavaScript / TypeScript (`@forgebase/sdk`) | [`sdk/js`](../sdk/js) | Version 0.1.0. Covers auth, collections and records, storage, KV, functions, vector, graph, SQL, realtime, queues, jobs, billing, entitlements, credits, webhook verification, and the organization, access, identity, customization and system administration APIs. |
 | Rust (`forgebase-sdk`) | [`sdk/rust`](../sdk/rust) | Version 0.1.0 (FB-82), its own Cargo workspace. Covers auth, records, KV, storage, realtime, functions, jobs, queues, billing and entitlements. See [sdk/rust/README.md](../sdk/rust/README.md). |
 | Dart / Flutter (`forgebase`) | [`sdk/dart`](../sdk/dart) | Version 0.1.0 (requested after the 2026-11-10 skip). Pure Dart, so it runs in Flutter and on servers. Covers auth, records, realtime, storage, KV, functions, queues, jobs, entitlements and store billing. See [§8](#8-dart--flutter-sdk) and [sdk/dart/README.md](../sdk/dart/README.md). |
+| Kotlin (Android and JVM, `dev.forgebase:forgebase`) | [`sdk/kotlin`](../sdk/kotlin) | Version 0.1.0, a pure Kotlin/JVM Gradle library (Android needs no plugin). Covers auth with a pluggable token store and Custom Tabs sign-in, records, storage (multipart and resumable), realtime with resume, functions, KV, queues, jobs, entitlements, billing customer and store verification, vector, graph, SQL reads and webhook verification. Administration APIs are left to the JS and Rust SDKs. See [sdk/kotlin/README.md](../sdk/kotlin/README.md). |
 
 ## 2. JavaScript / TypeScript SDK
 
@@ -298,3 +299,25 @@ skips `test/live_test.dart`. Set `FORGEBASE_LIVE_URL`,
 `FORGEBASE_LIVE_ADMIN_EMAIL` and `FORGEBASE_LIVE_ADMIN_PASSWORD` to run the live
 test against a server. CI runs analysis, the format check and the unit tests in
 the `sdk-dart` job.
+## 9. Kotlin SDK (Android and JVM)
+
+[`sdk/kotlin`](../sdk/kotlin) is one Kotlin/JVM library (Kotlin 2, JVM 17, explicit API mode) built on OkHttp,
+kotlinx.coroutines and kotlinx.serialization. It follows the module layout of the JavaScript SDK
+(`fb.auth`, `fb.collection(...)`, `fb.storage`, `fb.realtime`, `fb.functions`, `fb.kv`, `fb.queues`, `fb.jobs`,
+`fb.entitlements`, `fb.billing`, `fb.vector`, `fb.graph`, `fb.sql`, `fb.credits`) with suspend functions and `Flow`s.
+
+```kotlin
+val fb = ForgeBase("https://api.example.com", ForgeBaseOptions(tokenStore = myEncryptedStore))
+fb.auth.signIn("ada@example.com", "password")
+val posts = fb.collection("posts").list(ListOptions(filter = "views > {:min}", params = mapOf("min" to 100)))
+fb.realtime.subscribe(SubscribeOptions(collection = "posts")).collect { event -> /* resumes after a reconnect */ }
+```
+
+- **Auth**: refresh-token rotation is single-flight, a `401` is retried once after a refresh, and the session is kept in a
+  pluggable `TokenStore` (the README shows an `EncryptedSharedPreferences` adapter). Social sign-in is `oauth.start()` (open the
+  URL in a Custom Tab) then `oauth.completeFromUrl()` on the App Link redirect; the server holds the PKCE verifier.
+- **Realtime**: WebSocket only. Each subscription resumes from its last cursor after a reconnect.
+- **Webhooks**: `Webhooks.constructEvent(secrets, header, rawBody)` for JVM servers, with the same test vectors as the JS SDK.
+- **Tests**: `cd sdk/kotlin && ./gradlew test` (MockWebServer for HTTP, WebSocket and SSE; no server needed). CI runs it on JDK 17.
+- **Left out**: administration APIs (function deploy, bucket ACLs, billing catalog, organizations, identity admin, system),
+  cookie sessions, the realtime SSE fallback and OpenAPI code generation. `fb.request(path)` reaches any route.
