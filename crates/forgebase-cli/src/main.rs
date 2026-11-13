@@ -214,14 +214,35 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let cli = Cli::parse();
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(STACK_SIZE)
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("error: cannot start the async runtime: {e}");
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run(cli)) {
+    // The command future runs on a thread of its own: `block_on` polls it on
+    // the calling thread, and the main thread's stack is 1 MiB on Windows
+    // (8 MiB on Linux and macOS), which `serve` overflowed during startup.
+    let main = std::thread::Builder::new()
+        .name("forgebase-main".into())
+        .stack_size(STACK_SIZE)
+        .spawn(move || runtime.block_on(run(cli)));
+    let result = match main {
+        Ok(handle) => match handle.join() {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        },
+        Err(e) => {
+            eprintln!("error: cannot start the main thread: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match result {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -229,6 +250,10 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// Stack of the command thread and the runtime's workers: the Linux default,
+/// so every platform gets the same headroom (Windows defaults to 1 MiB).
+const STACK_SIZE: usize = 8 * 1024 * 1024;
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let g = &cli.global;
