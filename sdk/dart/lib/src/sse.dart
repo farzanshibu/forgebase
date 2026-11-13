@@ -18,10 +18,15 @@ class SseEvent {
 
 /// Parses a `text/event-stream` body into events. Tolerates events split
 /// across chunks and CRLF line ends; comment lines are skipped.
-Stream<SseEvent> parseSse(Stream<List<int>> body) async* {
-  final decoded = body.transform(utf8.decoder);
+///
+/// Cancelling the returned stream cancels [body] at once (a generator would
+/// only notice at its next event).
+Stream<SseEvent> parseSse(Stream<List<int>> body) {
+  late final StreamController<SseEvent> ctl;
+  StreamSubscription<String>? sub;
   var buf = '';
-  await for (final chunk in decoded) {
+
+  void onChunk(String chunk) {
     buf = (buf + chunk).replaceAll('\r\n', '\n');
     int i;
     while ((i = buf.indexOf('\n\n')) >= 0) {
@@ -46,8 +51,20 @@ Stream<SseEvent> parseSse(Stream<List<int>> body) async* {
         }
       }
       if (data.isNotEmpty || event != 'message') {
-        yield SseEvent(event: event, data: data.join('\n'), id: id);
+        ctl.add(SseEvent(event: event, data: data.join('\n'), id: id));
       }
     }
   }
+
+  ctl = StreamController<SseEvent>(
+    onListen: () {
+      sub = body
+          .transform(utf8.decoder)
+          .listen(onChunk, onError: ctl.addError, onDone: ctl.close);
+    },
+    onPause: () => sub?.pause(),
+    onResume: () => sub?.resume(),
+    onCancel: () => sub?.cancel(),
+  );
+  return ctl.stream;
 }

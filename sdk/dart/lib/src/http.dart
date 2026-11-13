@@ -299,23 +299,31 @@ class Transport {
       final retriable = cfg.statuses.contains(res.statusCode) ||
           ((res.statusCode == 502 || res.statusCode == 504) &&
               _idempotent.contains(m));
-      if (retriable && attempt < cfg.maxRetries) {
+      // The body is read once: a quota 429 must not be retried.
+      final errBytes = await _readAll(res);
+      final errJson =
+          tryDecodeJson(utf8.decode(errBytes, allowMalformed: true));
+      final err = errorFromResponse(res.statusCode, errJson, res.headers);
+      if (retriable &&
+          attempt < cfg.maxRetries &&
+          err is! QuotaExceededException) {
         final ra = parseRetryAfter(res.headers['retry-after']);
         if (ra == null || ra <= cfg.maxRetryAfter) {
           attempt++;
-          await _drain(res);
           await sleep(backoff(attempt, ra, cfg));
           continue;
         }
       }
-      var errBody = <int>[];
-      try {
-        errBody = await res.stream.toBytes();
-      } on Object {
-        // An unreadable error body still maps to a typed error.
-      }
-      final text = utf8.decode(errBody, allowMalformed: true);
-      throw errorFromResponse(res.statusCode, tryDecodeJson(text), res.headers);
+      throw err;
+    }
+  }
+
+  Future<List<int>> _readAll(http.StreamedResponse res) async {
+    try {
+      return await res.stream.toBytes();
+    } on Object {
+      // An unreadable error body still maps to a typed error.
+      return const [];
     }
   }
 

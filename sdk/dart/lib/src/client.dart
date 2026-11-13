@@ -126,9 +126,15 @@ class ForgeBase {
   Consistency get consistency => transport.consistency;
   set consistency(Consistency c) => transport.consistency = c;
 
-  /// Records of a collection: `fb.collection('posts').list(...)`. Pass
-  /// [decode] to map rows to your own type.
-  RecordsApi<T> collection<T>(String name, {T Function(Row row)? decode}) =>
+  /// Records of a collection as maps: `fb.collection('posts').list(...)`.
+  RecordsApi<Row> collection(String name) => RecordsApi<Row>(transport, name);
+
+  /// Records of a collection mapped to your own type with [decode]:
+  /// `fb.collectionOf('posts', decode: Post.fromJson)`.
+  RecordsApi<T> collectionOf<T>(
+    String name, {
+    required T Function(Row row) decode,
+  }) =>
       RecordsApi<T>(transport, name, decode: decode);
 
   /// One key-value namespace: `fb.kv('cache').set('k', 'v')`.

@@ -361,22 +361,49 @@ class KvApi {
   /// Subscribes to a channel as server-sent events. Messages are not stored:
   /// only subscribers connected at publish time receive them. Cancel the
   /// stream subscription to disconnect.
-  Stream<KvMessage> subscribe(String channel) async* {
-    final res = await _t.send(
-      '$_base/subscribe/${_enc(channel)}',
-      headers: {'Accept': 'text/event-stream'},
-      retry: RetryOptions.none,
+  Stream<KvMessage> subscribe(String channel) {
+    StreamSubscription<SseEvent>? sub;
+    var cancelled = false;
+    late final StreamController<KvMessage> ctl;
+    ctl = StreamController<KvMessage>(
+      onListen: () async {
+        try {
+          final res = await _t.send(
+            '$_base/subscribe/${_enc(channel)}',
+            headers: {'Accept': 'text/event-stream'},
+            retry: RetryOptions.none,
+          );
+          if (cancelled) {
+            unawaited(res.stream.listen(null).cancel());
+            return;
+          }
+          sub = parseSse(res.stream).listen(
+            (ev) {
+              if (ev.event != 'message') return;
+              final j = tryDecodeJson(ev.data);
+              if (j is Map<String, dynamic>) {
+                ctl.add(
+                  KvMessage(
+                    channel: j['channel'] as String? ?? channel,
+                    message: kvDecode(j['message']),
+                  ),
+                );
+              }
+            },
+            onError: ctl.addError,
+            onDone: ctl.close,
+          );
+        } on Object catch (e, st) {
+          ctl.addError(e, st);
+          await ctl.close();
+        }
+      },
+      onCancel: () {
+        cancelled = true;
+        return sub?.cancel();
+      },
     );
-    await for (final ev in parseSse(res.stream)) {
-      if (ev.event != 'message') continue;
-      final j = tryDecodeJson(ev.data);
-      if (j is Map<String, dynamic>) {
-        yield KvMessage(
-          channel: j['channel'] as String? ?? channel,
-          message: kvDecode(j['message']),
-        );
-      }
-    }
+    return ctl.stream;
   }
 
   /// Live pub/sub channels of the namespace.
