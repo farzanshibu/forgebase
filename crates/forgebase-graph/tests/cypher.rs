@@ -753,7 +753,10 @@ async fn the_routes_answer_409_then_rows() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{b}");
-    assert_eq!(b, json!({"columns": ["name"], "rows": [["Ann"]], "truncated": false}));
+    assert_eq!(
+        b,
+        json!({"columns": ["name"], "rows": [["Ann"]], "truncated": false, "engine": "age"})
+    );
     let (s, b) = call("/api/v1/graph/cypher", json!({"query": "CREATE (n) RETURN n"})).await;
     assert_eq!(
         (s, b["error"]["code"].as_str()),

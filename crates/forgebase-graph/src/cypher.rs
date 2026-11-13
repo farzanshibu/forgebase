@@ -355,11 +355,17 @@ impl GraphService {
             let Some(forgebase_db::Value::Text(t)) = r.first() else {
                 return Err(GraphError::Internal("openCypher row is not text".into()));
             };
-            let cells: Vec<String> = serde_json::from_str(t).map_err(|e| GraphError::Internal(e.to_string()))?;
+            // A cell is SQL NULL where AGE returns no agtype at all (a
+            // missing property): JSON null.
+            let cells: Vec<Option<String>> =
+                serde_json::from_str(t).map_err(|e| GraphError::Internal(e.to_string()))?;
             out.push(
                 cells
                     .iter()
-                    .map(|c| age::agtype::parse(c).map_err(GraphError::Internal))
+                    .map(|c| match c {
+                        Some(c) => age::agtype::parse(c).map_err(GraphError::Internal),
+                        None => Ok(Json::Null),
+                    })
                     .collect::<Result<Vec<_>>>()?,
             );
         }

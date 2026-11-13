@@ -11,9 +11,11 @@
 //!   caller's tenant; every value is a bound parameter.
 //! * **Semantics** follow the Apache AGE engine on the derived graph: a
 //!   directed pattern follows the stored direction (`-[]->` from source to
-//!   target, whether the edge is directed or not; `-[]-` either way), a
-//!   relationship is matched at most once per `MATCH` clause (edge
-//!   uniqueness, also inside a walk), `n.__id`, `r.__id`, `r.__source` and
+//!   target, whether the edge is directed or not; `-[]-` either way), the
+//!   fixed-length relationships of a `MATCH` clause are different edges and
+//!   a walk never repeats an edge, but (as AGE 1.8) a walk may use an edge
+//!   that another relationship of the clause matched; `n.__id`, `r.__id`,
+//!   `r.__source` and
 //!   `r.__target` read the ForgeBase ids, results come back as JSON in
 //!   ForgeBase's shapes.
 //! * **Rules** (FB-139): every node alias and every node a walk enters
@@ -133,7 +135,7 @@ struct Walk {
 #[derive(Debug, Clone)]
 enum EdgeRef {
     Fixed(String),
-    Walk(String),
+    Walk,
 }
 
 struct Compiler<'a, 'd> {
@@ -283,7 +285,6 @@ impl Compiler<'_, '_> {
             let p = self.b.bind(l.clone());
             anchor.push(format!("a.label = {p}"));
         }
-        self.vars.insert("\u{0}start".into(), Binding::Node("a".into()));
         for (k, v) in &start.props {
             let cond = self.const_prop_eq(Ty::Node("a".into()), "a", k, v)?;
             anchor.push(cond);
@@ -413,28 +414,19 @@ impl Compiler<'_, '_> {
                 left = right;
             }
         }
-        // Edge uniqueness within the clause.
-        for (i, a) in edges.iter().enumerate() {
-            for b in &edges[i + 1..] {
-                let cond = match (a, b) {
-                    (EdgeRef::Fixed(x), EdgeRef::Fixed(y)) => format!("{x}.id <> {y}.id"),
-                    (EdgeRef::Fixed(e), EdgeRef::Walk(w)) | (EdgeRef::Walk(w), EdgeRef::Fixed(e)) => match self.f {
-                        Flavor::Sqlite => format!("instr({w}.path, ',' || {e}.id || ',') = 0"),
-                        Flavor::Pg => format!("NOT ({e}.id = ANY ({w}.path))"),
-                    },
-                    (EdgeRef::Walk(x), EdgeRef::Walk(y)) => match self.f {
-                        Flavor::Sqlite => {
-                            let j = format!("u{}", self.next_id());
-                            format!(
-                                "NOT EXISTS (SELECT 1 FROM json_each('[\"' || replace(substr({x}.path, 2, \
-                                 length({x}.path) - 2), ',', '\",\"') || '\"]') AS {j} WHERE {j}.value <> '' \
-                                 AND instr({y}.path, ',' || {j}.value || ',') > 0)"
-                            )
-                        }
-                        Flavor::Pg => format!("NOT ({x}.path && {y}.path)"),
-                    },
-                };
-                self.conds.push(cond);
+        // Edge uniqueness within the clause, between fixed-length
+        // relationships (a walk keeps its own edges unique; AGE 1.8 does not
+        // compare a walk's edges with the clause's other relationships).
+        let fixed: Vec<&str> = edges
+            .iter()
+            .filter_map(|e| match e {
+                EdgeRef::Fixed(a) => Some(a.as_str()),
+                EdgeRef::Walk => None,
+            })
+            .collect();
+        for (i, x) in fixed.iter().enumerate() {
+            for y in &fixed[i + 1..] {
+                self.conds.push(format!("{x}.id <> {y}.id"));
             }
         }
         if let Some(w) = &clause.filter {
@@ -531,7 +523,7 @@ impl Compiler<'_, '_> {
             if let Some(v) = &rp.var {
                 self.vars.insert(v.clone(), Binding::Walk(a.clone(), w.reversed));
             }
-            return Ok(EdgeRef::Walk(a));
+            return Ok(EdgeRef::Walk);
         }
         let e = format!("e{}", self.next_id());
         self.froms.push(format!("{EDGES} AS {e}"));
