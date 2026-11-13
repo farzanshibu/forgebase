@@ -639,6 +639,8 @@ pub struct QueueConfig {
 pub struct BillingConfig {
     /// Whether billing is mounted and its maintenance job runs. On by default.
     pub enabled: bool,
+    /// Days the inbound webhook inspector keeps a delivery (ADR-0032; default 30).
+    pub webhook_log_retention_days: u32,
 }
 
 /// Settings of the MCP server for AI agents (ADR-0030).
@@ -809,7 +811,10 @@ impl Config {
                 allow_http_push: false,
                 dead_letter_retention_days: 14,
             },
-            billing: BillingConfig { enabled: true },
+            billing: BillingConfig {
+                enabled: true,
+                webhook_log_retention_days: 30,
+            },
             mcp: McpConfig { enabled: false },
             realtime: RealtimeSettings {
                 enabled: true,
@@ -1251,6 +1256,9 @@ impl Config {
         if let Some(v) = o.billing_enabled {
             self.billing.enabled = v;
         }
+        if let Some(v) = o.billing_webhook_log_retention_days {
+            self.billing.webhook_log_retention_days = v;
+        }
         if let Some(v) = o.mcp_enabled {
             self.mcp.enabled = v;
         }
@@ -1328,6 +1336,8 @@ pub struct ConfigOverrides {
     pub queue: Option<QueueOverrides>,
     /// Mount billing.
     pub billing_enabled: Option<bool>,
+    /// `[billing] webhook_log_retention_days`.
+    pub billing_webhook_log_retention_days: Option<u32>,
     /// Open the MCP endpoint.
     pub mcp_enabled: Option<bool>,
     /// Most realtime connections per principal.
@@ -1423,6 +1433,9 @@ impl ConfigOverrides {
                     o.realtime_max_connections_per_principal = Some(parse_num(&value).map_err(bad)?);
                 }
                 "BILLING_ENABLED" => o.billing_enabled = Some(parse_bool(&value).map_err(bad)?),
+                "BILLING_WEBHOOK_LOG_RETENTION_DAYS" => {
+                    o.billing_webhook_log_retention_days = Some(parse_num(&value).map_err(bad)?);
+                }
                 "MCP_ENABLED" => o.mcp_enabled = Some(parse_bool(&value).map_err(bad)?),
                 "STORAGE_ENABLED" => {
                     o.storage.get_or_insert_with(StorageOverrides::default).enabled =
@@ -1544,6 +1557,10 @@ impl ConfigOverrides {
             );
         }
         put(self.billing_enabled.is_some(), "billing.enabled");
+        put(
+            self.billing_webhook_log_retention_days.is_some(),
+            "billing.webhook_log_retention_days",
+        );
         put(self.mcp_enabled.is_some(), "mcp.enabled");
         put(
             self.realtime_max_connections_per_principal.is_some(),
@@ -1997,6 +2014,7 @@ struct FileAuth {
 #[serde(deny_unknown_fields)]
 struct FileBilling {
     enabled: Option<bool>,
+    webhook_log_retention_days: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2087,6 +2105,7 @@ impl From<FileConfig> for ConfigOverrides {
             storage: f.storage,
             queue: f.queue,
             billing_enabled: f.billing.enabled,
+            billing_webhook_log_retention_days: f.billing.webhook_log_retention_days,
             mcp_enabled: f.mcp.enabled,
             realtime_max_connections_per_principal: f.realtime.max_connections_per_principal,
             realtime_enabled: f.realtime.enabled,

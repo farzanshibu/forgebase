@@ -837,14 +837,24 @@ const RESP: &[SettingDef] = &[
     .env("FORGEBASE_RESP_IDLE_TIMEOUT_SECS"),
 ];
 
-const BILLING: &[SettingDef] = &[SettingDef::new(
-    "billing.enabled",
-    "Billing",
-    Bool,
-    "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
-)
-.env("FORGEBASE_BILLING_ENABLED")
-.flag("--billing")];
+const BILLING: &[SettingDef] = &[
+    SettingDef::new(
+        "billing.enabled",
+        "Billing",
+        Bool,
+        "Turns billing on or off: plans, subscriptions, invoices and payment provider webhooks under /api/v1/billing (test mode only in this version). Turn it off if you do not charge your users.",
+    )
+    .env("FORGEBASE_BILLING_ENABLED")
+    .flag("--billing"),
+    SettingDef::new(
+        "billing.webhook_log_retention_days",
+        "Webhook log retention",
+        Int,
+        "How many days every incoming payment provider webhook (headers, body, whether its signature checked out and what it changed) is kept for inspection and replay. Bodies can hold customer names and emails. 30 is a good value.",
+    )
+    .unit("days")
+    .env("FORGEBASE_BILLING_WEBHOOK_LOG_RETENTION_DAYS"),
+];
 
 /// `[mcp]`: the MCP server for AI agents (ADR-0030).
 const MCP: &[SettingDef] = &[SettingDef::new(
