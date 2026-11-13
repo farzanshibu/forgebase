@@ -719,6 +719,32 @@ const QUEUES: &[SettingDef] = &[
         "How many days messages that failed delivery too many times (dead letters) are kept for inspection and replay. 14 is a good value.",
     )
     .unit("days"),
+    SettingDef::new(
+        "queue.push_response_body_bytes",
+        "Logged response body",
+        Int,
+        "How much of a webhook's response body each delivery attempt keeps in the attempt log, from 0 to 65536 bytes. 4096 is a good value.",
+    )
+    .unit("bytes"),
+    SettingDef::new(
+        "queue.push_attempts_per_subscription",
+        "Attempts kept per subscription",
+        Int,
+        "How many recent delivery attempts the attempt log keeps for each push subscription, from 1 to 100000. 1000 is a good value.",
+    ),
+    SettingDef::new(
+        "queue.push_attempts_retention_secs",
+        "Attempt log retention",
+        Int,
+        "How long delivery attempts stay in the attempt log, from 60 seconds to 31 days. 604800 (7 days) is a good value.",
+    )
+    .unit("seconds"),
+    SettingDef::new(
+        "queue.push_test_sends_per_minute",
+        "Test sends per minute",
+        Int,
+        "How many test events one push subscription may send per minute, from 1 to 1000. 10 is a good value.",
+    ),
 ];
 
 const REALTIME: &[SettingDef] = &[

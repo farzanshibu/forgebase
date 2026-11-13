@@ -239,6 +239,15 @@ allow_http_push = false
 # Days dead-letter records are kept.
 dead_letter_retention_days = 14
 
+# Push attempt log (ADR-0031): response body bytes kept per attempt, attempts
+# kept per subscription, and how long they are kept (seconds).
+push_response_body_bytes = 4096
+push_attempts_per_subscription = 1000
+push_attempts_retention_secs = 604800
+
+# Test sends (POST .../subscriptions/{sub}/test) per push subscription and minute.
+push_test_sends_per_minute = 10
+
 [functions]
 # Server functions (ADR-0017): /api/v1/functions, record hooks and the
 # after-hook dispatcher. Off, record writes skip function hooks.
