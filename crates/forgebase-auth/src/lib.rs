@@ -68,7 +68,8 @@ pub use openapi::openapi;
 pub use password::{Argon2Config, PasswordHasher};
 pub use scopes::Scope;
 pub use service::{
-    AdminScope, AdminView, ApiKeyView, AuditEntry, AuditQuery, AuthService, BoundKey, ClientInfo, CreatedKey,
+    AUDIT_PAGE_MAX, AdminScope, AdminView, ApiKeyView, AuditEntry, AuditPage, AuditQuery, AuditRelated, AuditSearch,
+    AuditSummary, AuthService, BoundKey, ClientInfo, CreatedKey,
     IDENTITY_ADMIN, ImpersonationGrant, ImpersonationView, KeyOptions, LoginOptions, LoginOutcome, RealmAdminCheck,
     ServiceAccountView, SessionTokens, SessionView, TotpSetup, UserView,
 };

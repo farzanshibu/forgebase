@@ -6,6 +6,7 @@
 //! [`machine`](self::machine) service accounts, API keys and personal access
 //! tokens.
 
+mod audit_search;
 mod flows;
 mod impersonation;
 mod machine;
@@ -27,6 +28,7 @@ use crate::store::{self, Tx, first, i, ot, read, rfc3339, rows, t};
 use crate::{AuthConfig, AuthError, AuthMethod, Authenticated, CredentialKind, Subject};
 
 pub(crate) use flows::normalize_email;
+pub use audit_search::{AUDIT_PAGE_MAX, AuditPage, AuditRelated, AuditSearch, AuditSummary};
 pub use flows::{LoginOptions, LoginOutcome, TotpSetup, UserView};
 pub use impersonation::{ImpersonationGrant, ImpersonationView};
 pub use machine::{ADMIN_PASSWORD_MIN, AdminView, ApiKeyView, BoundKey, CreatedKey, KeyOptions, ServiceAccountView};

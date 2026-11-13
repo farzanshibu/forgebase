@@ -347,6 +347,13 @@ pub enum Action {
     /// Create, change and delete topics, subscriptions and snapshots; seek
     /// subscriptions (FB-63).
     QueueAdmin,
+    /// Read operations insights: statement statistics, the slow statement
+    /// log, query regressions, per-tenant usage and cost, function profiles
+    /// (ADR-0036). `engine:read_insights`; platform administrators hold it.
+    ReadInsights,
+    /// Search, read and export the audit trail (ADR-0036 §4).
+    /// `engine:read_audit`; platform administrators hold it.
+    ReadAudit,
 }
 
 /// A row-level predicate in the filter language, with its parameters.
