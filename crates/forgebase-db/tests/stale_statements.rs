@@ -115,3 +115,50 @@ async fn readers_see_an_index_created_in_a_normal_transaction() {
         "{plan:?}"
     );
 }
+
+/// ADR-0034 (found by the trigram tests): the writer's own cached `SELECT *`
+/// must see a table rebuilt by a schema change (a dropped column), not
+/// decode the old column count.
+#[tokio::test]
+async fn the_writer_sees_a_table_rebuilt_by_a_schema_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Database::open(DbOptions {
+        target: forgebase_db::DbTarget::sqlite(tmp.path().join("t.db")),
+        synchronous: Synchronous::Full,
+        busy_timeout: Duration::from_millis(5000),
+        read_pool_size: 1,
+        create_if_missing: true,
+        read_only: false,
+    })
+    .await
+    .unwrap();
+    let mut tx = db.begin(TxMode::SchemaChange).await.unwrap();
+    tx.execute(&Statement::raw("CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER)"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let star = Statement::new("SELECT * FROM t WHERE a = ?1", vec![1i64.into()]);
+    // Prepare + cache on the writer.
+    let mut tx = db.begin(TxMode::Normal).await.unwrap();
+    tx.execute(&Statement::raw("INSERT INTO t VALUES (1, 2, 3)"))
+        .await
+        .unwrap();
+    assert_eq!(tx.fetch_all(&star).await.unwrap().columns, ["a", "b", "c"]);
+    tx.commit().await.unwrap();
+    // Rebuild without `b`.
+    let mut tx = db.begin(TxMode::SchemaChange).await.unwrap();
+    for sql in [
+        "CREATE TABLE t2 (a INTEGER, c INTEGER)",
+        "INSERT INTO t2 SELECT a, c FROM t",
+        "DROP TABLE t",
+        "ALTER TABLE t2 RENAME TO t",
+    ] {
+        tx.execute(&Statement::raw(sql)).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let mut tx = db.begin(TxMode::Normal).await.unwrap();
+    let rows = tx.fetch_all(&star).await.unwrap();
+    assert_eq!(rows.columns, ["a", "c"]);
+    assert_eq!(rows.rows[0].len(), 2);
+    tx.commit().await.unwrap();
+}

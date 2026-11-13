@@ -301,3 +301,15 @@ to the billing audit log. Errors: `409 delivery_not_verified` (replay of a refus
 `409 delivery_already_verified` (re-verify of a verified one: replay it), `409 reverify_in_progress`,
 `409 body_not_stored` (dropped by the budget or cut at the size limit) and `409 not_reverifiable` (Google Play:
 its push token is not stored; Pub/Sub redelivers unacknowledged pushes).
+
+### 11.5 Capabilities (`/api/system/capabilities`)
+
+`GET /api/system/capabilities` lists every feature of the server (`vector`,
+`graph`, `opencypher`, `fulltext`, `fuzzy`, `queue`, `cron`, `kv`,
+`realtime`, `read_replicas`, `sharding`) with the `engine` it runs on,
+whether that is a PostgreSQL extension (`accelerated`), its `state`
+(`active`, `portable`, `off`, `native`, `unavailable`), the configured
+`mode`, a `reason` and its `limits` (ADR-0034). `GET /api/system/info`
+carries the same list as `database.capabilities`. Access as in
+[§11.3](#113-operational-endpoints-ops_access). The cross-backend table is
+[feature-parity.md](feature-parity.md).

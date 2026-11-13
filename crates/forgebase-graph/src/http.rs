@@ -462,16 +462,19 @@ async fn stats(State(g): State<GraphService>, Access(ctx): Access) -> ApiResult 
     ok(g.stats(&ctx).await?)
 }
 
-/// A read-only openCypher query on the tenant's derived Apache AGE graph
-/// (PostgreSQL with AGE; FB-163). Needs `engine:graph_cypher`; the caller's
-/// graph label and edge-type rules apply inside the query. The first query
-/// of a tenant builds the graph (`409 graph_materialising` with the job id).
+/// A read-only openCypher query on the tenant's graph. Where Apache AGE is
+/// in use (PostgreSQL with AGE; FB-163) it runs on the derived AGE graph,
+/// and the first query of a tenant builds it (`409 graph_materialising`
+/// with the job id); elsewhere the portable engine (ADR-0034) compiles a
+/// subset of openCypher to SQL over the graph tables. `engine` in the
+/// response says which. Needs `engine:graph_cypher`; the caller's graph
+/// label and edge-type rules apply inside the query.
 #[utoipa::path(
     post, path = "/api/v1/graph/cypher", operation_id = "graph_cypher", tag = "graph",
     request_body = CypherQuery,
     responses(
-        (status = 200, description = "Columns and rows", body = CypherResult),
-        (status = 400, description = "Invalid or writing query (`cypher_invalid`, `cypher_read_only`, `cypher_error`, `cypher_timeout`), or no Apache AGE (`cypher_unsupported`)"),
+        (status = 200, description = "Columns, rows and the engine (`age` or `portable`)", body = CypherResult),
+        (status = 400, description = "Invalid or writing query (`cypher_invalid`, `cypher_read_only`, `cypher_error`, `cypher_timeout`); portable engine: outside its subset (`cypher_unsupported`, naming the construct and position) or over a limit (`cypher_too_complex`)"),
         (status = 403, description = "No `engine:graph_cypher`, or rules that cannot be applied (`cypher_rules_unsupported`)"),
         (status = 409, description = "`graph_materialising` (with `job_id`): the tenant's graph is being built; or `tenant_moving`"),
     )
@@ -486,7 +489,7 @@ async fn cypher(State(g): State<GraphService>, Access(ctx): Access, Body(b): Bod
     post, path = "/api/v1/graph/cypher/drop", operation_id = "graph_cypher_drop", tag = "graph",
     responses(
         (status = 200, description = "Whether there was one", body = CypherDropped),
-        (status = 400, description = "No Apache AGE (`cypher_unsupported`)"),
+        (status = 400, description = "Apache AGE is not in use here (`cypher_unsupported`)"),
     )
 )]
 async fn cypher_drop(State(g): State<GraphService>, Access(ctx): Access) -> ApiResult {

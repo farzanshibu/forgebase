@@ -8,6 +8,7 @@
 //! | `GET /health/ready` | readiness (database + storage) |
 //! | `GET /metrics` | Prometheus metrics |
 //! | `GET /api/system/info` | instance information |
+//! | `GET /api/system/capabilities` | per feature: engine (accelerator or portable), state, limits (ADR-0034) |
 //! | `GET /api/system/features` | feature registry and settings (administrators; FB-91) |
 //! | `PATCH /api/system/config` | write settings to the config file (administrators; FB-91) |
 //! | `/api/system/database/*` | database topology: replicas, shards, operations (administrators; FB-175) |
@@ -28,6 +29,7 @@
 //! request gates (plan-based rate limits; FB-24) → handler.
 
 pub mod admin;
+pub mod capabilities;
 pub mod consistency;
 pub mod context;
 pub mod error;
@@ -556,6 +558,7 @@ pub fn router_with(
             Router::new()
                 .route("/metrics", get(routes::metrics))
                 .route("/api/system/info", get(routes::system_info))
+                .route("/api/system/capabilities", get(capabilities::get_capabilities))
                 .route_layer(middleware::from_fn_with_state(opts.ops_access, routes::ops_gate)),
         )
         .merge(

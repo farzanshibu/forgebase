@@ -37,8 +37,10 @@ pub enum GraphError {
     /// (FB-163: they select too many rows to pass along).
     #[error("{0}")]
     RulesUnsupported(String),
-    /// openCypher needs PostgreSQL with Apache AGE (FB-163).
-    #[error("openCypher needs PostgreSQL with Apache AGE; this server answers the REST graph API only")]
+    /// The derived Apache AGE graph is not in use here (FB-163): its
+    /// operations (`drop`, materialisation) do not exist; `POST
+    /// /graph/cypher` answers on the portable engine (ADR-0034).
+    #[error("the Apache AGE openCypher graph is not in use on this server (queries run on the portable engine)")]
     CypherUnsupported,
     /// The tenant's derived graph is being built (FB-163); `job_id` is the
     /// `graph.materialise` job, when the jobs service runs it.

@@ -287,6 +287,14 @@ impl SqliteTx {
             if refresh {
                 db.bump_schema_generation();
             }
+            if self.mode == TxMode::SchemaChange || self.ddl {
+                // The writer's own statements prepared before the DDL (a
+                // `SELECT *` of a rebuilt table) would decode the old
+                // columns: readers are refreshed by their pool hook, the
+                // writer here.
+                use sqlx::Connection as _;
+                conn.clear_cached_statements().await.map_err(|e| db.classify(e))?;
+            }
             Ok(())
         }
         .await;

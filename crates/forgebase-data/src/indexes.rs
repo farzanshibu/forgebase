@@ -14,9 +14,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
-use forgebase_db::{
-    Dialect, EXTENSION_SCHEMA, Feature, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx,
-};
+use forgebase_db::{Dialect, PG_UNACCENT_FN, PlanStep, SlowQuery, Statement, TxMode, Value, WriteTx};
 use forgebase_query::{CompileOptions, Compiler, FieldPath, SqlBuilder, parse_filter};
 use forgebase_schema::{Collection, FieldKind};
 use serde::{Deserialize, Serialize};
@@ -40,9 +38,11 @@ pub enum IndexKind {
     Btree,
     /// Full-text index (FTS5 on SQLite, GIN over a `tsvector` on PostgreSQL).
     Fulltext,
-    /// Trigram index (`pg_trgm`, PostgreSQL only): a GIN index with
-    /// `gin_trgm_ops` per key. It serves the `~` (contains) filter and the
-    /// `fuzzy` list parameter (ADR-0029 §1.8).
+    /// Trigram index for the `fuzzy` list parameter (ADR-0029 §1.8,
+    /// ADR-0034), on every backend: a GIN index with `gin_trgm_ops` where
+    /// `pg_trgm` is in use (it also serves the `~` filter), else the
+    /// portable engine's (a GIN index over the trigram set on PostgreSQL, a
+    /// trigger-maintained trigram table on SQLite; see `fuzzy`).
     Trigram,
 }
 
@@ -340,7 +340,7 @@ pub(crate) fn auto_indexes(d: &dyn Dialect, coll: &Collection) -> Vec<IndexDefin
 
 /// Compiles key expressions of a definition against a row alias ("" for
 /// unqualified column names, `new` / `old` in triggers).
-fn key_exprs(
+pub(crate) fn key_exprs(
     d: &dyn Dialect,
     cat: &CatalogSnapshot,
     coll: &Collection,
@@ -414,14 +414,6 @@ pub(crate) fn fulltext_match(
     }
 }
 
-/// `400 index_kind_unsupported`: trigram indexes need `pg_trgm`.
-pub(crate) fn trigram_unsupported_index() -> DataError {
-    DataError::invalid(
-        "index_kind_unsupported",
-        "trigram indexes need PostgreSQL with the pg_trgm extension",
-    )
-}
-
 /// DDL creating an index (and, for full-text, its triggers and initial
 /// content).
 pub(crate) fn create_index_sql(
@@ -472,28 +464,8 @@ pub(crate) fn create_index_sql(
             }
             Ok(vec![sql])
         }
-        IndexKind::Trigram => {
-            if def.unique || def.partial.is_some() {
-                return Err(DataError::invalid(
-                    "invalid_index",
-                    "trigram indexes cannot be unique or partial",
-                ));
-            }
-            if !pg {
-                return Err(trigram_unsupported_index());
-            }
-            // One `gin_trgm_ops` key per field, written without a cast so
-            // the planner matches `~` (`ILIKE`) and `%` on the plain column.
-            let keys: Vec<String> = key_exprs(d, cat, coll, def, "")?
-                .iter()
-                .map(|e| format!("({e}) {EXTENSION_SCHEMA}.gin_trgm_ops"))
-                .collect();
-            Ok(vec![format!(
-                "CREATE INDEX {} ON {table} USING gin ({})",
-                q(&def.name),
-                keys.join(", ")
-            )])
-        }
+        // ADR-0034: pg_trgm or the portable engine, by `cat.pg_trgm()`.
+        IndexKind::Trigram => crate::fuzzy::create_sql(d, cat, coll, def),
         IndexKind::Fulltext => {
             if def.unique || def.partial.is_some() {
                 return Err(DataError::invalid(
@@ -571,7 +543,8 @@ pub(crate) fn fts_trigger_sql(
 pub(crate) fn drop_index_sql(d: &dyn Dialect, def: &IndexDefinition) -> Vec<String> {
     let q = |s: &str| d.quote_ident(s);
     match def.kind {
-        IndexKind::Btree | IndexKind::Trigram => vec![format!("DROP INDEX IF EXISTS {}", rel(d, &def.name))],
+        IndexKind::Btree => vec![format!("DROP INDEX IF EXISTS {}", rel(d, &def.name))],
+        IndexKind::Trigram => crate::fuzzy::drop_sql(d, def),
         IndexKind::Fulltext if is_pg(d) => {
             vec![format!("DROP INDEX IF EXISTS {}", rel(d, &fts_table(d, &def.name)))]
         }
@@ -698,9 +671,6 @@ impl DataService {
         }
         validate_index_name(&def.name)?;
         def.collection = coll.name.clone();
-        if def.kind == IndexKind::Trigram && !self.inner.backend.feature_active(Feature::Trigram) {
-            return Err(trigram_unsupported_index());
-        }
         let d = self.inner.backend.dialect();
         let mut tx = self.begin(TxMode::Normal).await?;
         let result = async {
@@ -709,7 +679,7 @@ impl DataService {
             {
                 return Err(DataError::AlreadyExists(format!("index {}", def.name)));
             }
-            let cat = CatalogSnapshot::load_tx(&mut *tx).await?;
+            let cat = CatalogSnapshot::load_tx(&mut *tx).await?.with_pg_trgm(self.pg_trgm());
             let mut log = DdlLog::new(&mut *tx);
             for sql in create_index_sql(d, &cat, &coll, &def)? {
                 log.run(sql).await.map_err(|e| unique_build_error(e, &def))?;
@@ -869,15 +839,23 @@ impl DataService {
             }
             def
         });
-        if let Some(def) = definition.as_ref().filter(|d| d.kind == IndexKind::Fulltext) {
-            let fts = fts_table(d, &def.name);
+        // Full-text indexes, and SQLite's trigram tables (ADR-0034): no
+        // engine index of that name.
+        if let Some(def) = definition
+            .as_ref()
+            .filter(|x| x.kind == IndexKind::Fulltext || (x.kind == IndexKind::Trigram && !is_pg(d)))
+        {
+            let fts = match def.kind {
+                IndexKind::Trigram => crate::fuzzy::side_table(d, &def.name),
+                _ => fts_table(d, &def.name),
+            };
             let size = self.object_size(&fts).await;
             return Ok(IndexInfo {
                 name: name.to_owned(),
                 table: collection.clone().unwrap_or_default(),
                 collection,
                 origin: origin.unwrap_or(IndexOrigin::Manual),
-                kind: IndexKind::Fulltext,
+                kind: def.kind,
                 unique: false,
                 partial: false,
                 columns: def.keys.iter().map(|k| k.path.clone()).collect(),

@@ -16,6 +16,11 @@ pub(crate) struct CatalogSnapshot {
     /// tenant-scoped collections to shared ones get no SQL foreign key, on
     /// control or on any shard (ADR-0029 §3.6); the data core enforces them.
     shards: bool,
+    /// `pg_trgm` serves trigram indexes here (ADR-0034): which engine the
+    /// DDL of a `trigram` index uses on PostgreSQL. Set by [`Self::load`]
+    /// from the backend; snapshots read inside a transaction get it from
+    /// the caller ([`Self::with_pg_trgm`]).
+    pg_trgm: bool,
 }
 
 const SELECT_DEFINITIONS: &str = "SELECT definition FROM _forgebase_collections ORDER BY name";
@@ -30,6 +35,7 @@ impl CatalogSnapshot {
         let shards = backend.fetch_all(&Statement::new(SELECT_SHARDS, vec![])).await?;
         let mut s = Self::from_rows(rows.rows)?;
         s.shards = shards.scalar().and_then(Value::as_i64).unwrap_or(0) > 0;
+        s.pg_trgm = backend.feature_active(forgebase_db::Feature::Trigram);
         Ok(s)
     }
 
@@ -40,6 +46,17 @@ impl CatalogSnapshot {
         let mut s = Self::from_rows(rows.rows)?;
         s.shards = shards.scalar().and_then(Value::as_i64).unwrap_or(0) > 0;
         Ok(s)
+    }
+
+    /// Says whether `pg_trgm` serves trigram indexes (ADR-0034).
+    pub(crate) fn with_pg_trgm(mut self, on: bool) -> Self {
+        self.pg_trgm = on;
+        self
+    }
+
+    /// Whether `pg_trgm` serves trigram indexes (else the portable engine).
+    pub(crate) fn pg_trgm(&self) -> bool {
+        self.pg_trgm
     }
 
     /// Whether the topology has shard sets (relations across placements
